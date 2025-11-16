@@ -399,18 +399,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest<{ Body: { uid?: string; email?: string } }>, reply: FastifyReply) => {
     try {
       const setupHeader = (request.headers['x-admin-setup'] || (request.headers as any)['X-Admin-Setup']) as string | undefined;
-      // Support Firebase runtime config with safe fallbacks
-      let setupToken = process.env.ADMIN_SETUP_TOKEN || 'SUPER-SECRET-998877';
-      try {
-        const functions = await import('firebase-functions');
-        const cfg = (functions as any).config?.();
-        const runtimeToken = cfg?.server?.admin_setup_token;
-        if (runtimeToken) {
-          setupToken = runtimeToken;
-        }
-      } catch {
-        // ignore – not running in Functions environment
-      }
+      const setupToken = process.env.ADMIN_SETUP_TOKEN || 'SUPER-SECRET-998877';
       if (!setupHeader || setupHeader !== setupToken) {
         return reply.code(401).send({ error: 'Invalid setup token' });
       }
