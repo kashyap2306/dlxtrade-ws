@@ -1,0 +1,25 @@
+{
+  "name": "dlxtrade",
+  "version": "1.0.0",
+  "description": "Market-Making HFT Trading Agent",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "pnpm --parallel --filter './backend' --filter './frontend' dev",
+    "build": "pnpm --filter './backend' build && pnpm --filter './frontend' build",
+    "test": "pnpm --filter './backend' test && pnpm --filter './frontend' test",
+    "lint": "pnpm --filter './backend' lint && pnpm --filter './frontend' lint",
+    "typecheck": "pnpm --filter './backend' typecheck && pnpm --filter './frontend' typecheck",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\""
+  },
+  "devDependencies": {
+    "prettier": "^3.2.5"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
+
