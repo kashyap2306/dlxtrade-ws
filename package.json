@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "build": "npm --prefix backend install --no-audit --no-fund && npm --prefix backend run build",
-    "start": "node index.js"
+    "build": "cd backend && npm install --no-audit --no-fund && npx tsc",
+    "start": "node backend/dist/server.js"
   },
   "engines": {
     "node": ">=20"
