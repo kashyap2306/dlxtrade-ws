@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "build": "cd backend && npm install --legacy-peer-deps --no-audit --no-fund && npm run build",
+    "build": "tsc -p backend/tsconfig.json",
     "start": "node backend/dist/server.js"
   },
   "engines": {
