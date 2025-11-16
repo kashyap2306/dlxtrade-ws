@@ -862,8 +862,10 @@ export class FirestoreAdapter {
   }
 
   async isAdmin(uid: string): Promise<boolean> {
-    const admin = await this.getAdmin(uid);
-    return admin !== null;
+    const userDoc = await db().collection('users').doc(uid).get();
+    if (!userDoc.exists) return false;
+    const data: any = userDoc.data() || {};
+    return data.role === 'admin' || data.isAdmin === true;
   }
 
   async getAllAdmins(): Promise<any[]> {

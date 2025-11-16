@@ -3,19 +3,16 @@ type MessageHandler = (data: any) => void;
 class WebSocketService {
   private ws: WebSocket | null = null;
   private handlers: Map<string, Set<MessageHandler>> = new Map();
-  private reconnectAttempts = 0;
-  private maxReconnectAttempts = 5;
 
-  connect(): void {
-    const token = localStorage.getItem('firebaseToken');
-    const wsUrl = import.meta.env.VITE_WS_URL || `ws://localhost:4000/ws?token=${token || ''}`;
+  async connect(): Promise<void> {
+    const wsUrl = 'wss://dlxtrade-ws.onrender.com';
     
     try {
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
-        console.log('WebSocket connected');
-        this.reconnectAttempts = 0;
+        console.log('WebSocket connection successful using Render server.');
+        console.debug('[WS] readyState=', this.ws?.readyState);
       };
 
       this.ws.onmessage = (event) => {
@@ -27,32 +24,20 @@ class WebSocketService {
         }
       };
 
-      this.ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
+      this.ws.onerror = (error: any) => {
+        console.error('WebSocket error:', error?.message || error);
+        console.debug('[WS] error event=', error);
       };
 
-      this.ws.onclose = () => {
-        console.log('WebSocket disconnected');
-        this.reconnect();
+      this.ws.onclose = (ev) => {
+        console.log('WebSocket disconnected from Render server');
+        console.debug('[WS] close code=', ev.code, 'reason=', ev.reason, 'wasClean=', ev.wasClean);
+        // Simple reconnect after a short delay, no token logic
+        setTimeout(() => this.connect(), 3000);
       };
     } catch (err) {
       console.error('Error connecting WebSocket:', err);
     }
-  }
-
-  private reconnect(): void {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error('Max reconnection attempts reached');
-      return;
-    }
-
-    this.reconnectAttempts++;
-    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
-    
-    setTimeout(() => {
-      console.log(`Reconnecting... (attempt ${this.reconnectAttempts})`);
-      this.connect();
-    }, delay);
   }
 
   private handleMessage(data: any): void {

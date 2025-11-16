@@ -97,9 +97,10 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
       try {
         const userDoc = await getDoc(doc(db, 'users', user.uid));
         if (userDoc.exists()) {
-          const userData = userDoc.data();
-          const profile = userData?.profile || {};
-          setIsAdmin(profile.role === 'admin');
+          const userData: any = userDoc.data();
+          setIsAdmin(userData.role === 'admin' || userData.isAdmin === true);
+        } else {
+          setIsAdmin(false);
         }
       } catch (error) {
         console.error('Error checking admin role:', error);
@@ -111,6 +112,11 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
       checkAdmin();
     }
   }, [user]);
+
+  if (isAdmin) {
+    // Hide user sidebar entirely when admin
+    return <></>;
+  }
 
   const menuItems = [
     { path: '/', label: 'Dashboard', Icon: Icons.Dashboard },

@@ -69,9 +69,10 @@ export default function TopNavigation() {
       try {
         const userDoc = await getDoc(doc(db, 'users', user.uid));
         if (userDoc.exists()) {
-          const userData = userDoc.data();
-          const profile = userData?.profile || {};
-          setIsAdmin(profile.role === 'admin');
+          const userData: any = userDoc.data();
+          setIsAdmin(userData.role === 'admin' || userData.isAdmin === true);
+        } else {
+          setIsAdmin(false);
         }
       } catch (error) {
         console.error('Error checking admin role:', error);
@@ -83,6 +84,11 @@ export default function TopNavigation() {
       checkAdmin();
     }
   }, [user]);
+
+  if (isAdmin) {
+    // Hide user navigation entirely when admin
+    return <div className="hidden" />;
+  }
 
   const menuItems = [
     { path: '/', label: 'Dashboard', Icon: Icons.Dashboard },
@@ -155,44 +161,7 @@ export default function TopNavigation() {
                 );
               })}
               
-              {isAdmin && (
-                <>
-                  <div className="w-px h-6 bg-cyan-500/20 mx-2" />
-                  {adminMenuItems.map((item) => {
-                    const active = isActive(item.path);
-                    const Icon = item.Icon;
-                    return (
-                      <Link
-                        key={item.path}
-                        to={item.path}
-                        className={`
-                          group relative flex items-center space-x-2 px-4 py-2 rounded-lg transition-all duration-200
-                          ${active
-                            ? 'text-cyan-400 bg-cyan-500/10'
-                            : 'text-gray-400 hover:text-cyan-300 hover:bg-cyan-500/5'
-                          }
-                        `}
-                      >
-                        <div className={`
-                          transition-colors
-                          ${active ? 'text-cyan-400' : 'text-gray-500 group-hover:text-cyan-400'}
-                        `}>
-                          <Icon />
-                        </div>
-                        <span className={`
-                          text-sm font-medium
-                          ${active ? 'text-cyan-400' : 'text-gray-400 group-hover:text-cyan-300'}
-                        `}>
-                          {item.label}
-                        </span>
-                        {active && (
-                          <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-cyan-400 to-blue-400 rounded-full" />
-                        )}
-                      </Link>
-                    );
-                  })}
-                </>
-              )}
+              {/* Admin menu removed from TopNavigation; admin uses AdminLayout */}
             </nav>
           </div>
         </div>

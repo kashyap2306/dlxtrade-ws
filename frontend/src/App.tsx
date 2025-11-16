@@ -15,9 +15,12 @@ import AdminUsersList from './pages/AdminUsersList';
 import AdminUserDetail from './pages/AdminUserDetail';
 import AdminAgentsManager from './pages/AdminAgentsManager';
 import AdminLogin from './pages/AdminLogin';
+import AdminToken from './pages/AdminToken';
+import AdminRoute from './components/AdminRoute';
 import AgentsMarketplace from './pages/AgentsMarketplace';
 import AgentCheckout from './pages/AgentCheckout';
 import TopNavigation from './components/TopNavigation';
+import UserRoute from './components/UserRoute';
 import { wsService } from './services/ws';
 import { useAuth } from './hooks/useAuth';
 import { useEffect, useState } from 'react';
@@ -43,64 +46,7 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
   ) : <Navigate to="/login" />;
 }
 
-function AdminRoute({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth();
-  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
-  const [checking, setChecking] = useState(true);
-
-  useEffect(() => {
-    const checkAdmin = async () => {
-      if (!user) {
-        setIsAdmin(false);
-        setChecking(false);
-        return;
-      }
-
-      try {
-        const userDoc = await getDoc(doc(db, 'users', user.uid));
-        if (userDoc.exists()) {
-          const userData = userDoc.data();
-          const profile = userData?.profile || {};
-          setIsAdmin(profile.role === 'admin');
-        } else {
-          setIsAdmin(false);
-        }
-      } catch (error) {
-        console.error('Error checking admin role:', error);
-        setIsAdmin(false);
-      } finally {
-        setChecking(false);
-      }
-    };
-
-    if (!loading) {
-      checkAdmin();
-    }
-  }, [user, loading]);
-
-  if (loading || checking) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-lg">Loading...</div>
-      </div>
-    );
-  }
-
-  if (!user) {
-    return <Navigate to="/login" />;
-  }
-
-  if (!isAdmin) {
-    return <Navigate to="/admin-login" />;
-  }
-
-  return (
-    <>
-      <TopNavigation />
-      {children}
-    </>
-  );
-}
+// AdminRoute moved to components/AdminRoute with simplified logic
 
 function App() {
   const { user } = useAuth();
@@ -123,89 +69,89 @@ function App() {
       <Route
         path="/"
         element={
-          <PrivateRoute>
+          <UserRoute>
             <Dashboard />
-          </PrivateRoute>
+          </UserRoute>
         }
       />
       <Route
         path="/engine"
         element={
-          <PrivateRoute>
+          <UserRoute>
             <EngineControl />
-          </PrivateRoute>
+          </UserRoute>
         }
       />
       <Route
         path="/research"
         element={
-          <PrivateRoute>
+          <UserRoute>
             <ResearchPanel />
-          </PrivateRoute>
+          </UserRoute>
         }
       />
       <Route
         path="/settings"
         element={
-          <PrivateRoute>
+          <UserRoute>
             <Settings />
-          </PrivateRoute>
+          </UserRoute>
         }
       />
       <Route
         path="/execution"
         element={
-          <PrivateRoute>
+          <UserRoute>
             <ExecutionLogs />
-          </PrivateRoute>
+          </UserRoute>
         }
       />
       <Route
         path="/integrations"
         element={
-          <PrivateRoute>
+          <UserRoute>
             <APIIntegrations />
-          </PrivateRoute>
+          </UserRoute>
         }
       />
       <Route
         path="/profile"
         element={
-          <PrivateRoute>
+          <UserRoute>
             <Profile />
-          </PrivateRoute>
+          </UserRoute>
         }
       />
       <Route
         path="/agents"
         element={
-          <PrivateRoute>
+          <UserRoute>
             <AgentsMarketplace />
-          </PrivateRoute>
+          </UserRoute>
         }
       />
       <Route
         path="/checkout/:agentId"
         element={
-          <PrivateRoute>
+          <UserRoute>
             <AgentCheckout />
-          </PrivateRoute>
+          </UserRoute>
         }
       />
       <Route
         path="/hft/settings"
         element={
-          <PrivateRoute>
+          <UserRoute>
             <HFTSettings />
-          </PrivateRoute>
+          </UserRoute>
         }
       />
       <Route
         path="/hft/logs"
         element={
-          <PrivateRoute>
+          <UserRoute>
             <HFTLogs />
-          </PrivateRoute>
+          </UserRoute>
         }
       />
       {/* Admin Routes */}
@@ -239,6 +185,30 @@ function App() {
           <AdminRoute>
             <AdminAgentsManager />
           </AdminRoute>
+        }
+      />
+      <Route
+        path="/admin/settings"
+        element={
+          <AdminRoute>
+            <AdminDashboard />
+          </AdminRoute>
+        }
+      />
+      <Route
+        path="/admin/logs"
+        element={
+          <AdminRoute>
+            <AdminDashboard />
+          </AdminRoute>
+        }
+      />
+      <Route
+        path="/admin-token"
+        element={
+          <PrivateRoute>
+            <AdminToken />
+          </PrivateRoute>
         }
       />
     </Routes>

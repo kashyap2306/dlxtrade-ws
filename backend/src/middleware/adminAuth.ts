@@ -13,20 +13,21 @@ export async function adminAuthMiddleware(
       throw new AuthorizationError('User not authenticated');
     }
 
-    // Check if user has admin role in Firestore
+    // Check admin via Firestore root-only flags
     const db = getFirebaseAdmin().firestore();
-    const userDoc = await db.collection('users').doc(user.uid).get();
-    
-    if (!userDoc.exists) {
-      throw new AuthorizationError('User profile not found');
+    const snapshot = await db.collection('users').doc(user.uid).get();
+    if (!snapshot.exists) {
+      throw new AuthorizationError('User doc missing');
     }
+    const userData: any = snapshot.data() || {};
+    const roleRoot = userData.role;
+    const isAdminRoot = userData.isAdmin === true;
 
-    const userData = userDoc.data();
-    const profile = userData?.profile || {};
-    
-    if (profile.role !== 'admin') {
-      logger.warn({ uid: user.uid, role: profile.role }, 'Non-admin user attempted to access admin route');
-      throw new AuthorizationError('Admin access required');
+    const hasAdmin = roleRoot === 'admin' || isAdminRoot;
+
+    if (!hasAdmin) {
+      logger.warn({ uid: user.uid, roleRoot, isAdminRoot }, 'Non-admin user attempted to access admin route');
+      throw new AuthorizationError('Access Denied');
     }
 
     logger.debug({ uid: user.uid }, 'Admin access granted');

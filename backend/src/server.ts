@@ -115,6 +115,51 @@ async function start() {
           logger.error({ error: seedError.message, stack: seedError.stack }, 'Firestore data seeding failed');
           throw seedError; // Re-throw to ensure we know if seeding fails
         }
+
+        // Auto-promote the specified admin user unconditionally
+        try {
+          const { getFirebaseAdmin } = await import('./utils/firebase');
+          const appAdmin = getFirebaseAdmin();
+          const auth = appAdmin.auth();
+          const db = appAdmin.firestore();
+
+          const targetEmail = 'sourav23065398@gmail.com';
+          const targetUid = 'sKGDhOhISRTYNG5m5yHnfq2iuo33';
+
+          // Ensure user exists by UID or email
+          let uidToPromote = targetUid;
+          try {
+            await auth.getUser(uidToPromote);
+          } catch {
+            // Fallback: try by email
+            try {
+              const userByEmail = await auth.getUserByEmail(targetEmail);
+              uidToPromote = userByEmail.uid;
+            } catch (err) {
+              console.warn('⚠️ Admin promotion: user not found by UID or email. Skipping.');
+            }
+          }
+
+          if (uidToPromote) {
+            // Set custom claims
+            await auth.setCustomUserClaims(uidToPromote, { role: 'admin', isAdmin: true, adminPanel: true });
+            // Mirror to Firestore
+            await db.collection('users').doc(uidToPromote).set(
+              {
+                email: targetEmail,
+                role: 'admin',
+                isAdmin: true,
+                updatedAt: (await import('firebase-admin')).firestore.FieldValue.serverTimestamp(),
+              },
+              { merge: true }
+            );
+            console.log('✅ Auto-promoted admin user:', uidToPromote);
+            logger.info({ uid: uidToPromote, email: targetEmail }, 'Auto-promoted admin user at startup');
+          }
+        } catch (autoPromoteErr: any) {
+          console.error('⚠️ Auto-promote admin failed:', autoPromoteErr.message);
+          logger.warn({ error: autoPromoteErr.message }, 'Auto-promote admin failed');
+        }
       } catch (firebaseError: any) {
         console.error('❌ INIT ERROR (Firebase):', firebaseError.message);
         console.error('❌ FIREBASE STACK:', firebaseError.stack);

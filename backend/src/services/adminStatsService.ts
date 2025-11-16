@@ -18,35 +18,37 @@ export interface GlobalStats {
 
 export class AdminStatsService {
   async getGlobalStats(): Promise<GlobalStats> {
-    try {
-      // Get all users
-      const allUsers = await firestoreAdapter.getAllUsers();
-      
-      // Count active engines and HFT bots
-      let activeEngines = 0;
-      let activeHFTBots = 0;
-      let activeUsers = 0;
+    // Always be resilient - default to zeros if any dependency fails
+    let activeUsers = 0;
+    let activeEngines = 0;
+    let activeHFTBots = 0;
+    let totalTradesToday = 0;
+    let totalVolumeToday = 0;
+    let totalPnLToday = 0;
+    let totalErrors = 0;
+    let totalCancels = 0;
+    let totalExecuted = 0;
 
+    try {
+      const allUsers = await firestoreAdapter.getAllUsers();
       for (const user of allUsers) {
         const engineStatus = userEngineManager.getUserEngineStatus(user.uid);
         const hftStatus = userEngineManager.getHFTStatus(user.uid);
-        
         if (engineStatus.running) {
           activeEngines++;
           activeUsers++;
         }
         if (hftStatus.running) {
           activeHFTBots++;
-          if (!engineStatus.running) {
-            activeUsers++;
-          }
+          if (!engineStatus.running) activeUsers++;
         }
       }
+    } catch (error) {
+      logger.warn({ error }, 'Global stats: failed to compute engine counts, defaulting');
+    }
 
-      // Get today's date
+    try {
       const today = new Date().toISOString().split('T')[0];
-      
-      // Get today's trades and volume from orders table
       const todayOrders = await query<any>(
         `SELECT 
           COUNT(*) as trade_count,
@@ -56,17 +58,15 @@ export class AdminStatsService {
         WHERE DATE(created_at) = $1 AND status = 'FILLED'`,
         [today]
       );
+      totalTradesToday = parseInt(todayOrders[0]?.trade_count || '0', 10);
+      totalVolumeToday = parseFloat(todayOrders[0]?.volume || '0');
+      totalPnLToday = parseFloat(todayOrders[0]?.total_pnl || '0');
+    } catch (error) {
+      logger.warn({ error }, 'Global stats: DB unavailable, defaulting trade metrics');
+    }
 
-      const totalTradesToday = parseInt(todayOrders[0]?.trade_count || '0', 10);
-      const totalVolumeToday = parseFloat(todayOrders[0]?.volume || '0');
-      const totalPnLToday = parseFloat(todayOrders[0]?.total_pnl || '0');
-
-      // Get errors and cancels from metrics
+    try {
       const allMetrics = metricsService.getMetrics();
-      let totalErrors = 0;
-      let totalCancels = 0;
-      let totalExecuted = 0;
-
       for (const [, strategyMetrics] of allMetrics.values()) {
         for (const metrics of strategyMetrics.values()) {
           totalErrors += metrics.failedOrders;
@@ -74,28 +74,24 @@ export class AdminStatsService {
           totalExecuted += metrics.tradesExecuted;
         }
       }
-
-      // Calculate success rate
-      const totalAttempts = totalExecuted + totalErrors;
-      const globalSuccessRate = totalAttempts > 0 
-        ? (totalExecuted / totalAttempts) * 100 
-        : 0;
-
-      return {
-        activeUsers,
-        activeEngines,
-        activeHFTBots,
-        totalVolumeToday,
-        totalPnLToday,
-        totalErrors,
-        totalCancels,
-        globalSuccessRate: Math.round(globalSuccessRate * 100) / 100,
-        totalTradesToday,
-      };
     } catch (error) {
-      logger.error({ error }, 'Error calculating global stats');
-      throw error;
+      logger.warn({ error }, 'Global stats: metrics unavailable, defaulting error metrics');
     }
+
+    const totalAttempts = totalExecuted + totalErrors;
+    const globalSuccessRate = totalAttempts > 0 ? (totalExecuted / totalAttempts) * 100 : 0;
+
+    return {
+      activeUsers,
+      activeEngines,
+      activeHFTBots,
+      totalVolumeToday,
+      totalPnLToday,
+      totalErrors,
+      totalCancels,
+      globalSuccessRate: Math.round(globalSuccessRate * 100) / 100,
+      totalTradesToday,
+    };
   }
 
   async getUserStats(uid: string): Promise<{
@@ -108,29 +104,27 @@ export class AdminStatsService {
     hftEnabled: boolean;
     unlockedAgents: string[];
   }> {
+    const engineStatus = userEngineManager.getUserEngineStatus(uid);
+    const hftStatus = userEngineManager.getHFTStatus(uid);
+
+    let currentPnL = 0;
+    let openOrders = 0;
     try {
-      const engineStatus = userEngineManager.getUserEngineStatus(uid);
-      const hftStatus = userEngineManager.getHFTStatus(uid);
-
-      // Get current PnL (today's PnL)
       const today = new Date().toISOString().split('T')[0];
-      const pnlRows = await query<any>(
-        'SELECT total FROM pnl WHERE user_id = $1 AND date = $2',
-        [uid, today]
-      );
-      const currentPnL = pnlRows.length > 0 ? parseFloat(pnlRows[0].total || '0') : 0;
-
-      // Get open orders count
+      const pnlRows = await query<any>('SELECT total FROM pnl WHERE user_id = $1 AND date = $2', [uid, today]);
+      currentPnL = pnlRows.length > 0 ? parseFloat(pnlRows[0].total || '0') : 0;
       const openOrdersRows = await query<any>(
         `SELECT COUNT(*) as count FROM orders WHERE user_id = $1 AND status IN ('NEW', 'PARTIALLY_FILLED')`,
         [uid]
       );
-      const openOrders = parseInt(openOrdersRows[0]?.count || '0', 10);
+      openOrders = parseInt(openOrdersRows[0]?.count || '0', 10);
+    } catch (error) {
+      logger.warn({ error, uid }, 'User stats: DB unavailable, defaulting PnL/open orders');
+    }
 
-      // Get API integrations status
+    const apiStatus: Record<string, { connected: boolean; hasKey: boolean }> = {};
+    try {
       const integrations = await firestoreAdapter.getAllIntegrations(uid);
-      const apiStatus: Record<string, { connected: boolean; hasKey: boolean }> = {};
-      
       const apiNames = ['binance', 'cryptoquant', 'lunarcrush', 'coinapi'];
       for (const apiName of apiNames) {
         const integration = integrations[apiName];
@@ -139,31 +133,41 @@ export class AdminStatsService {
           hasKey: !!integration?.apiKey,
         };
       }
+    } catch (error) {
+      logger.warn({ error, uid }, 'User stats: integrations unavailable, defaulting api status');
+    }
 
-      // Get settings
+    let autoTradeEnabled = false;
+    let hftEnabled = false;
+    try {
       const settings = await firestoreAdapter.getSettings(uid);
       const hftSettings = await firestoreAdapter.getHFTSettings(uid);
+      autoTradeEnabled = settings?.autoTradeEnabled || false;
+      hftEnabled = hftSettings?.enabled || false;
+    } catch (error) {
+      logger.warn({ error, uid }, 'User stats: settings unavailable, defaulting feature flags');
+    }
 
-      // Get unlocked agents
+    let unlockedAgents: string[] = [];
+    try {
       const agents = await firestoreAdapter.getAllUserAgents(uid);
-      const unlockedAgents = Object.entries(agents)
+      unlockedAgents = Object.entries(agents)
         .filter(([_, status]) => status.unlocked)
         .map(([name, _]) => name);
-
-      return {
-        engineRunning: engineStatus.running,
-        hftRunning: hftStatus.running,
-        currentPnL,
-        openOrders,
-        apiStatus,
-        autoTradeEnabled: settings?.autoTradeEnabled || false,
-        hftEnabled: hftSettings?.enabled || false,
-        unlockedAgents,
-      };
     } catch (error) {
-      logger.error({ error, uid }, 'Error getting user stats');
-      throw error;
+      logger.warn({ error, uid }, 'User stats: agents unavailable, defaulting unlocked agents');
     }
+
+    return {
+      engineRunning: engineStatus.running,
+      hftRunning: hftStatus.running,
+      currentPnL,
+      openOrders,
+      apiStatus,
+      autoTradeEnabled,
+      hftEnabled,
+      unlockedAgents,
+    };
   }
 }
 

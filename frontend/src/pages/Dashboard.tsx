@@ -6,7 +6,8 @@ import OrdersTable from '../components/OrdersTable';
 import PnLWidget from '../components/PnLWidget';
 import Sidebar from '../components/Sidebar';
 import Header from '../components/Header';
-import { engineApi, settingsApi, hftApi, globalStatsApi, usersApi, tradesApi, activityLogsApi, agentsApi, uiPreferencesApi, autoTradeApi } from '../services/api';
+import { engineApi, settingsApi, globalStatsApi, usersApi, tradesApi, activityLogsApi, agentsApi, uiPreferencesApi, autoTradeApi } from '../services/api';
+import PremiumAgentsGrid from '../components/PremiumAgentsGrid';
 import Toast from '../components/Toast';
 import { useAuth } from '../hooks/useAuth';
 
@@ -14,11 +15,11 @@ export default function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [engineStatus, setEngineStatus] = useState<any>(null);
-  const [hftStatus, setHftStatus] = useState<any>(null);
+  // HFT status removed from dashboard (managed as Premium Agent only)
   const [autoTradeEnabled, setAutoTradeEnabled] = useState(false);
   const [autoTradeStatus, setAutoTradeStatus] = useState<any>(null);
   const [loading, setLoading] = useState(false);
-  const [hftLoading, setHftLoading] = useState(false);
+  // HFT loading removed
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [dismissedAgents, setDismissedAgents] = useState<string[]>([]);
   const [unlockedAgents, setUnlockedAgents] = useState<Record<string, boolean>>({});
@@ -55,8 +56,7 @@ export default function Dashboard() {
       // Stagger requests to avoid bursts that trigger rate limits
       await loadStatus();
       await delay(150);
-      await loadHFTStatus();
-      await delay(150);
+      // HFT status removed
       await loadSettings();
       await delay(150);
       await loadGlobalStats();
@@ -259,17 +259,7 @@ export default function Dashboard() {
     }
   };
 
-  const loadHFTStatus = async () => {
-    if (!user) return;
-    try {
-      const response = await hftApi.getStatus();
-      console.log('HFT status API response:', response.data);
-      setHftStatus(response.data);
-    } catch (err: any) {
-      console.error('Error loading HFT status:', err);
-      console.error('Error details:', err.response?.data);
-    }
-  };
+  // HFT status function removed
 
   const handleStartAutoTrade = async () => {
     setLoading(true);
@@ -310,32 +300,7 @@ export default function Dashboard() {
     }
   };
 
-  const handleStartHFT = async () => {
-    setHftLoading(true);
-    try {
-      await hftApi.start();
-      showToast('HFT Bot started', 'success');
-      loadHFTStatus();
-    } catch (err: any) {
-      showToast(err.response?.data?.error || 'Error starting HFT Bot', 'error');
-    } finally {
-      setHftLoading(false);
-    }
-  };
-
-  const handleStopHFT = async () => {
-    if (!confirm('Are you sure you want to stop HFT Bot?')) return;
-    setHftLoading(true);
-    try {
-      await hftApi.stop();
-      showToast('HFT Bot stopped', 'success');
-      loadHFTStatus();
-    } catch (err: any) {
-      showToast(err.response?.data?.error || 'Error stopping HFT Bot', 'error');
-    } finally {
-      setHftLoading(false);
-    }
-  };
+  // HFT controls removed (HFT appears only as Premium Agent)
 
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
@@ -451,30 +416,7 @@ export default function Dashboard() {
                 )}
               </div>
               
-              {/* Global Stats */}
-              {globalStats && (
-                <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl shadow-lg p-6">
-                  <h2 className="text-xl font-semibold mb-4 text-white">Platform Stats</h2>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="text-center p-3 bg-slate-900/50 rounded-lg border border-purple-500/20">
-                      <div className="text-2xl font-bold text-purple-400">{globalStats.totalUsers || 0}</div>
-                      <div className="text-xs text-gray-400 mt-1">Total Users</div>
-                    </div>
-                    <div className="text-center p-3 bg-slate-900/50 rounded-lg border border-purple-500/20">
-                      <div className="text-2xl font-bold text-green-400">{globalStats.totalTrades || 0}</div>
-                      <div className="text-xs text-gray-400 mt-1">Total Trades</div>
-                    </div>
-                    <div className="text-center p-3 bg-slate-900/50 rounded-lg border border-purple-500/20">
-                      <div className="text-2xl font-bold text-blue-400">{globalStats.activeEngines || 0}</div>
-                      <div className="text-xs text-gray-400 mt-1">Active Engines</div>
-                    </div>
-                    <div className="text-center p-3 bg-slate-900/50 rounded-lg border border-purple-500/20">
-                      <div className="text-2xl font-bold text-cyan-400">{globalStats.activeHFT || 0}</div>
-                      <div className="text-xs text-gray-400 mt-1">Active HFT</div>
-                    </div>
-                  </div>
-                </div>
-              )}
+              {/* Platform Stats section removed per request */}
               
               {/* AI/Level Bot Control */}
               <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl shadow-lg p-6">
@@ -536,45 +478,7 @@ export default function Dashboard() {
                 )}
               </div>
 
-              {/* HFT Bot Control */}
-              <div className="bg-slate-800/40 backdrop-blur-xl border border-blue-500/20 rounded-xl shadow-lg p-6">
-                <h2 className="text-xl font-semibold mb-4 text-white">HFT Bot</h2>
-                {hftStatus ? (
-                  <div className="space-y-4">
-                    <div className="space-y-2">
-                      <div className="flex justify-between">
-                        <span className="text-gray-300">Status:</span>
-                        <span className={hftStatus.running ? 'text-green-400' : 'text-gray-400'}>
-                          {hftStatus.running ? 'Running' : 'Stopped'}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="pt-4 border-t border-blue-500/20">
-                      <div className="flex gap-2">
-                        {hftStatus.running ? (
-                          <button
-                            onClick={handleStopHFT}
-                            disabled={hftLoading}
-                            className="flex-1 px-4 py-2 text-sm font-medium text-red-300 bg-red-900/30 backdrop-blur-sm border border-red-500/30 rounded-lg hover:bg-red-900/50 transition-all disabled:opacity-50"
-                          >
-                            {hftLoading ? 'Stopping...' : 'Stop HFT Bot'}
-                          </button>
-                        ) : (
-                          <button
-                            onClick={handleStartHFT}
-                            disabled={hftLoading}
-                            className="flex-1 px-4 py-2 text-sm font-medium text-white bg-gradient-to-r from-blue-500 to-cyan-500 rounded-lg hover:from-blue-600 hover:to-cyan-600 transition-all disabled:opacity-50 shadow-lg shadow-blue-500/50"
-                          >
-                            {hftLoading ? 'Starting...' : 'Start HFT Bot'}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="text-gray-400">Loading...</p>
-                )}
-              </div>
+              {/* HFT Bot control removed */}
             </div>
           </div>
 
@@ -591,74 +495,13 @@ export default function Dashboard() {
                 View All →
               </button>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {agents
-                .filter((agent: any) => !dismissedAgents.includes(agent.id || agent.name))
-                .map((agent: any) => {
-                  const aid = agent.id || agent.name;
-                  const isUnlocked = !!unlockedAgents[aid];
-                  const supportNumber = import.meta.env.VITE_SUPPORT_NUMBER || '15551234567';
-                  const waUrl = `https://wa.me/${supportNumber}?text=${encodeURIComponent(`Please unlock agent: ${agent.name}`)}`;
-
-                  return (
-                    <div
-                      key={aid}
-                      className={`group relative bg-gradient-to-br from-slate-800/60 via-slate-800/40 to-slate-900/60 backdrop-blur-xl border ${isUnlocked ? 'border-green-500/30' : 'border-purple-500/20'} rounded-xl shadow-lg p-5 hover:shadow-xl transition-all`}
-                    >
-                      {/* Dismiss Button */}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDismissFromDashboard(aid);
-                        }}
-                        className="absolute top-3 right-3 w-6 h-6 flex items-center justify-center text-gray-400 hover:text-red-400 hover:bg-red-500/20 rounded-full transition-all"
-                        title="Remove from dashboard"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
-
-                      {/* Status Badge */}
-                      <div className={`absolute top-3 left-3 px-2 py-1 rounded-lg text-xs font-medium ${isUnlocked ? 'bg-green-500/20 border border-green-500/50 text-green-400' : 'bg-slate-700/50 border border-slate-500/30 text-gray-300'}`}>
-                        {isUnlocked ? '✓ Active Agent' : '🔒 Locked'}
-                      </div>
-
-                      {/* Content */}
-                      <h3 className="text-lg font-bold text-white mb-2">{agent.name}</h3>
-                      <p className="text-gray-400 text-sm mb-4 line-clamp-2">{agent.description || 'Premium trading agent'}</p>
-
-                      <div className="pt-3 border-t border-purple-500/20 flex items-center justify-between">
-                        <div className="text-2xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
-                          ${agent.price || 0}
-                        </div>
-                        {!isUnlocked ? (
-                          <a
-                            href={waUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="px-3 py-2 text-xs font-medium rounded-lg bg-slate-900/60 border border-purple-500/30 text-purple-200 hover:bg-slate-900/80 transition-colors"
-                          >
-                            Unlock via WhatsApp
-                          </a>
-                        ) : (
-                          <button
-                            onClick={() => navigate(`/agent/${encodeURIComponent(aid)}`)}
-                            className="px-3 py-2 text-xs font-medium rounded-lg bg-green-600/80 hover:bg-green-600 text-white transition-colors"
-                          >
-                            Use Agent
-                          </button>
-                        )}
-                      </div>
-
-                      {/* Lock overlay for locked agents */}
-                      {!isUnlocked && (
-                        <div className="absolute inset-0 rounded-xl bg-slate-900/30 backdrop-blur-[1px] pointer-events-none"></div>
-                      )}
-                    </div>
-                  );
-                })}
-            </div>
+            <PremiumAgentsGrid
+              agents={agents}
+              unlockedAgents={unlockedAgents}
+              supportNumber={import.meta.env.VITE_SUPPORT_NUMBER || '15551234567'}
+              dismissedAgents={dismissedAgents}
+              onDismiss={(id) => handleDismissFromDashboard(id)}
+            />
           </div>
           </div>
         </div>

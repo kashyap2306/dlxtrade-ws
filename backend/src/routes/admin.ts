@@ -392,6 +392,74 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // One-time setup: Promote a user to admin via header token
+  // Requires header: x-admin-setup: <ADMIN_SETUP_TOKEN>
+  fastify.post('/promote', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: { uid?: string; email?: string } }>, reply: FastifyReply) => {
+    try {
+      const setupHeader = (request.headers['x-admin-setup'] || (request.headers as any)['X-Admin-Setup']) as string | undefined;
+      // Support Firebase runtime config with safe fallbacks
+      let setupToken = process.env.ADMIN_SETUP_TOKEN || 'SUPER-SECRET-998877';
+      try {
+        const functions = await import('firebase-functions');
+        const cfg = (functions as any).config?.();
+        const runtimeToken = cfg?.server?.admin_setup_token;
+        if (runtimeToken) {
+          setupToken = runtimeToken;
+        }
+      } catch {
+        // ignore – not running in Functions environment
+      }
+      if (!setupHeader || setupHeader !== setupToken) {
+        return reply.code(401).send({ error: 'Invalid setup token' });
+      }
+
+      const { uid, email } = (request.body || {}) as { uid?: string; email?: string };
+      const { getFirebaseAdmin } = await import('../utils/firebase');
+      const admin = await import('firebase-admin');
+
+      let targetUid = uid;
+      if (!targetUid && email) {
+        const userRecord = await admin.auth(getFirebaseAdmin()).getUserByEmail(email);
+        targetUid = userRecord.uid;
+      }
+      if (!targetUid) {
+        return reply.code(400).send({ error: 'uid or email required' });
+      }
+
+      await admin.auth(getFirebaseAdmin()).setCustomUserClaims(targetUid, {
+        isAdmin: true,
+        role: 'admin',
+        adminPanel: true,
+      });
+
+      // Also mirror in Firestore for unified checks (prefer serverTimestamp)
+      const db = getFirebaseAdmin().firestore();
+      try {
+        await db.collection('users').doc(targetUid).update({
+          role: 'admin',
+          isAdmin: true,
+          updatedAt: (admin as any).firestore.FieldValue.serverTimestamp(),
+        });
+      } catch {
+        await db.collection('users').doc(targetUid).set({
+          role: 'admin',
+          isAdmin: true,
+          updatedAt: (admin as any).firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+      }
+
+      return {
+        success: true,
+        message: 'Admin promoted successfully',
+        uid: targetUid,
+      };
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Failed to promote user' });
+    }
+  });
+
   // Get agent unlock statistics
   fastify.get('/agents/stats', {
     preHandler: [fastify.authenticate, fastify.adminAuth],

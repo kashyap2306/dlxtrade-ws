@@ -19,11 +19,12 @@ export async function firebaseAuthMiddleware(
     try {
       const decodedToken = await verifyFirebaseToken(token);
       
-      // Attach user info to request
+      // Attach user info + claims to request
       (request as any).user = {
         uid: decodedToken.uid,
         email: decodedToken.email,
         emailVerified: decodedToken.email_verified,
+        claims: decodedToken, // contains custom claims (e.g., role, isAdmin)
       };
 
       logger.debug({ uid: decodedToken.uid }, 'Firebase token verified');

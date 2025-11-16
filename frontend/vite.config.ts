@@ -17,7 +17,7 @@ export default defineConfig({
         changeOrigin: true,
       },
       '/ws': {
-        target: 'ws://localhost:4000',
+        target: 'wss://dlxtrade-ws.onrender.com',
         ws: true,
       },
     },

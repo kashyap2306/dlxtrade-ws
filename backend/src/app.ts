@@ -39,10 +39,21 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(fastifyHelmet);
   // CORS - allow all origins in development, specific origin in production
   await app.register(fastifyCors, {
-    origin: process.env.FRONTEND_URL || '*', // Allow all origins for development
+    origin: (origin, cb) => {
+      const allowed = [
+        'https://dlx-trading.web.app',
+        'http://localhost:5173',
+        process.env.FRONTEND_URL || '',
+      ].filter(Boolean);
+      if (!origin || allowed.includes(origin)) {
+        cb(null, true);
+      } else {
+        cb(null, false);
+      }
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-setup'],
   });
 
   // Rate limiting with user-aware keys and local allow list
@@ -131,6 +142,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   console.log('  - /api/metrics');
   console.log('  - /ws (WebSocket)');
   console.log('  - /ws/admin (Admin WebSocket)');
+  console.log('  - / (Root WebSocket - unauthenticated, for Render WS health)');
 
   // Test route to verify server is running (no auth required)
   app.get('/api/test', async (request, reply) => {
@@ -153,7 +165,7 @@ export async function buildApp(): Promise<FastifyInstance> {
         const decoded = await verifyFirebaseToken(token);
         uid = decoded.uid;
         
-        // Check admin role
+        // Check admin role (root fields only)
         const { getFirebaseAdmin } = await import('./utils/firebase');
         const db = getFirebaseAdmin().firestore();
         const userDoc = await db.collection('users').doc(uid).get();
@@ -161,9 +173,11 @@ export async function buildApp(): Promise<FastifyInstance> {
           connection.socket.close();
           return;
         }
-        const userData = userDoc.data();
-        const profile = userData?.profile || {};
-        if (profile.role !== 'admin') {
+        const userData: any = userDoc.data() || {};
+        const roleRoot = userData.role;
+        const isAdminRoot = userData.isAdmin === true;
+        const hasAdmin = roleRoot === 'admin' || isAdminRoot;
+        if (!hasAdmin) {
           logger.warn({ uid }, 'Non-admin attempted to connect to admin WebSocket');
           connection.socket.close();
           return;
@@ -192,26 +206,34 @@ export async function buildApp(): Promise<FastifyInstance> {
     });
   });
 
+  // Root WebSocket endpoint: allow plain connections without auth (Render compatibility/health)
+  app.get('/', { websocket: true }, async (connection, req) => {
+    logger.info('Root WebSocket client connected (no auth)');
+    try {
+      connection.socket.send(JSON.stringify({ type: 'welcome', data: 'ok' }));
+    } catch {}
+
+    connection.socket.on('close', () => {
+      logger.info('Root WebSocket client disconnected');
+    });
+  });
+
   // WebSocket endpoint for real-time updates (user channel)
   app.get('/ws', { websocket: true }, async (connection, req) => {
-    // Verify Firebase token from query or headers
+    // Allow unauthenticated connections for Render plain WS; if token provided, attach user
     let uid: string | null = null;
-    try {
-      const token = (req.query as any).token || req.headers.authorization?.replace('Bearer ', '');
-      if (token) {
+    const token = (req.query as any).token || req.headers.authorization?.replace('Bearer ', '');
+    if (token) {
+      try {
         const { verifyFirebaseToken } = await import('./utils/firebase');
         const decoded = await verifyFirebaseToken(token);
         uid = decoded.uid;
         (req as any).user = { uid: decoded.uid, email: decoded.email };
-      } else {
-        logger.warn('WebSocket connection without token');
-        connection.socket.close();
-        return;
+      } catch (err) {
+        logger.warn({ err }, 'WebSocket auth failed; continuing unauthenticated');
       }
-    } catch (err) {
-      logger.warn({ err }, 'WebSocket auth failed');
-      connection.socket.close();
-      return;
+    } else {
+      logger.info('WebSocket connection without token (unauthenticated)');
     }
 
     // Register WebSocket to user's engines if they exist
@@ -219,17 +241,17 @@ export async function buildApp(): Promise<FastifyInstance> {
     const accuracyEngine = userEngineManager.getAccuracyEngine(uid!);
     const hftEngine = userEngineManager.getHFTEngine(uid!);
     
-    if (accuracyEngine) {
+    if (uid && accuracyEngine) {
       accuracyEngine.registerWebSocketClient(connection.socket);
       logger.info({ uid }, 'WebSocket connection registered to AI engine');
     }
     
-    if (hftEngine) {
+    if (uid && hftEngine) {
       hftEngine.registerWebSocketClient(connection.socket);
       logger.info({ uid }, 'WebSocket connection registered to HFT engine');
     }
     
-    if (!accuracyEngine && !hftEngine) {
+    if (uid && !accuracyEngine && !hftEngine) {
       logger.debug({ uid }, 'WebSocket connected but user engines not initialized yet');
     }
 
