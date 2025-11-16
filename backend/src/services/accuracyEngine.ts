@@ -20,7 +20,6 @@ export class AccuracyEngine {
 
   setAdapter(adapter: BinanceAdapter): void {
     this.adapter = adapter;
-    researchEngine.setAdapter(adapter);
   }
 
   setOrderManager(orderManager: OrderManager): void {
@@ -90,13 +89,13 @@ export class AccuracyEngine {
             await firestoreAdapter.saveExecutionLog(this.uid, {
               symbol,
               timestamp: admin.firestore.Timestamp.now(),
-              action: 'CLOSED',
+              action: 'EXECUTED',
               reason,
               status: 'FILLED',
             });
             this.broadcast({
               type: 'execution',
-              data: { symbol, action: 'CLOSED', reason, timestamp: new Date().toISOString() },
+              data: { symbol, action: 'EXECUTED', reason, timestamp: new Date().toISOString() },
             });
           } catch (err) {
             logger.error({ err, symbol, posId: pos.id }, 'Error closing position on exit monitor');

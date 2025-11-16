@@ -7,18 +7,8 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
-    "build": "tsc || echo \"TypeScript errors ignored for build emission\"",
-    "start": "node dist/server.js",
-    "test": "jest",
-    "lint": "eslint src --ext .ts",
-    "typecheck": "tsc --noEmit",
-    "migrate": "node -r ts-node/register src/db/migrate.ts",
-    "init:firestore": "node dist/scripts/initFirestore.js",
-    "seed:firestore": "ts-node src/scripts/seedFirestore.ts",
-    "check:system": "ts-node src/scripts/checkSystem.ts",
-    "archive:demo-users": "ts-node src/scripts/archiveDemoUsers.ts",
-    "backfill:auth-users": "ts-node src/scripts/backfillAuthUsers.ts"
+    "build": "tsc",
+    "start": "node dist/server.js"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",

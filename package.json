@@ -1,18 +1,13 @@
 {
   "name": "dlxtrade",
   "version": "1.0.0",
-  "description": "Market-Making HFT Trading Agent",
   "private": true,
   "scripts": {
     "build": "npm --prefix backend install --no-audit --no-fund && npm --prefix backend run build",
-    "start": "node index.js",
-    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\""
-  },
-  "devDependencies": {
-    "prettier": "^3.2.5"
+    "start": "node index.js"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20"
   },
   "main": "index.js",
   "dependencies": {
@@ -558,8 +553,5 @@
     "yn": "^3.1.1",
     "yocto-queue": "^0.1.0",
     "zod": "^3.25.76"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC"
+  }
 }

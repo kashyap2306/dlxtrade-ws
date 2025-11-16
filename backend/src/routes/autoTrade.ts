@@ -50,7 +50,7 @@ export async function autoTradeRoutes(fastify: FastifyInstance) {
 
       // PART 2: Verify user has connected API keys
       const userData = await firestoreAdapter.getUser(user.uid);
-      if (!userData?.isApiConnected) {
+      if (!userData?.apiConnected) {
         return reply.code(400).send({
           error: 'Please connect your Binance API keys first in API Integrations',
         });

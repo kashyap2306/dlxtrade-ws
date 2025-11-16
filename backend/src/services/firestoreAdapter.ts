@@ -527,6 +527,9 @@ export class FirestoreAdapter {
     phone?: string;
     plan?: string;
     apiConnected?: boolean;
+    isApiConnected?: boolean;
+    autoTradeEnabled?: boolean;
+    connectedExchanges?: string[];
     unlockedAgents?: string[];
     profilePicture?: string;
     hftStatus?: string;

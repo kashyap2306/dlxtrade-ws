@@ -8,17 +8,19 @@ export class QuoteEngine {
   private config: EngineConfig;
   private adapter: BinanceAdapter | null = null;
   private isRunning: boolean = false;
+  private uid: string | null = null;
   private activeQuotes: Map<string, { bidOrderId?: string; askOrderId?: string; timestamp: number }> = new Map();
   private lastMidPrice: Map<string, number> = new Map();
   private cancelTimers: Map<string, NodeJS.Timeout> = new Map();
 
-  async start(config: EngineConfig, adapter: BinanceAdapter): Promise<void> {
+  async start(config: EngineConfig, adapter: BinanceAdapter, uid: string): Promise<void> {
     if (this.isRunning) {
       throw new Error('Engine already running');
     }
 
     this.config = config;
     this.adapter = adapter;
+    this.uid = uid;
     this.isRunning = true;
 
     logger.info({ config }, 'Quote engine started');
@@ -39,16 +41,16 @@ export class QuoteEngine {
 
     // Cancel all active quotes
     for (const [symbol, quotes] of this.activeQuotes.entries()) {
-      if (quotes.bidOrderId) {
+      if (quotes.bidOrderId && this.uid) {
         try {
-          await orderManager.cancelOrder(quotes.bidOrderId);
+          await orderManager.cancelOrder(this.uid, quotes.bidOrderId);
         } catch (err) {
           logger.error({ err, orderId: quotes.bidOrderId }, 'Error canceling bid quote');
         }
       }
-      if (quotes.askOrderId) {
+      if (quotes.askOrderId && this.uid) {
         try {
-          await orderManager.cancelOrder(quotes.askOrderId);
+          await orderManager.cancelOrder(this.uid, quotes.askOrderId);
         } catch (err) {
           logger.error({ err, orderId: quotes.askOrderId }, 'Error canceling ask quote');
         }
@@ -146,17 +148,20 @@ export class QuoteEngine {
 
     try {
       // Place bid quote if within position limits
-      // Note: quoteEngine needs uid - this will be handled by engine manager
-      if (position < maxPos) {
-        // This will be updated when we create per-user engine instances
-        throw new Error('Quote engine requires user context');
+      if (position < maxPos && this.uid) {
+        const bidOrder = await orderManager.placeOrder(this.uid, {
+          symbol,
+          side: 'BUY',
+          type: 'LIMIT',
+          quantity: this.config.quoteSize,
+          price: bidPrice,
+        });
 
         if (bidOrder) {
           const quote = this.activeQuotes.get(symbol) || { timestamp: Date.now() };
           quote.bidOrderId = bidOrder.id;
           this.activeQuotes.set(symbol, quote);
 
-          // Set cancel timer
           const timer = setTimeout(() => {
             this.cancelQuotes(symbol);
           }, this.config.cancelMs);
@@ -165,8 +170,8 @@ export class QuoteEngine {
       }
 
       // Place ask quote if within position limits
-      if (position > -maxPos) {
-        const askOrder = await orderManager.placeOrder({
+      if (position > -maxPos && this.uid) {
+        const askOrder = await orderManager.placeOrder(this.uid, {
           symbol,
           side: 'SELL',
           type: 'LIMIT',
@@ -196,16 +201,16 @@ export class QuoteEngine {
     if (!quote) return;
 
     try {
-      if (quote.bidOrderId) {
-        await orderManager.cancelOrder(quote.bidOrderId);
+      if (quote.bidOrderId && this.uid) {
+        await orderManager.cancelOrder(this.uid, quote.bidOrderId);
         const timer = this.cancelTimers.get(`${symbol}-bid`);
         if (timer) {
           clearTimeout(timer);
           this.cancelTimers.delete(`${symbol}-bid`);
         }
       }
-      if (quote.askOrderId) {
-        await orderManager.cancelOrder(quote.askOrderId);
+      if (quote.askOrderId && this.uid) {
+        await orderManager.cancelOrder(this.uid, quote.askOrderId);
         const timer = this.cancelTimers.get(`${symbol}-ask`);
         if (timer) {
           clearTimeout(timer);

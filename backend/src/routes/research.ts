@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { firestoreAdapter } from '../services/firestoreAdapter';
 import { researchEngine } from '../services/researchEngine';
 import { z } from 'zod';
+import { logger } from '../utils/logger';
 
 const researchQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(500).optional().default(100),

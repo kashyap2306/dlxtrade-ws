@@ -53,6 +53,7 @@ class UserEngineManager {
       hftEngine,
       orderManager,
       isRunning: false,
+      autoTradeEnabled: false,
     };
 
     this.userEngines.set(uid, engine);

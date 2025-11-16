@@ -69,6 +69,7 @@ export class AdminStatsService {
       const allMetrics = metricsService.getMetrics();
       for (const [, strategyMetrics] of allMetrics.values()) {
         for (const metrics of strategyMetrics.values()) {
+          if (typeof metrics === 'string') continue;
           totalErrors += metrics.failedOrders;
           totalCancels += metrics.cancels;
           totalExecuted += metrics.tradesExecuted;

@@ -530,7 +530,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
           .doc(agentName)
           .get();
 
-        if (agentDoc.exists()) {
+        if (agentDoc.exists) {
           const data = agentDoc.data();
           if (data?.unlocked) {
             usersWithAgent.push({

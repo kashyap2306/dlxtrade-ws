@@ -18,10 +18,32 @@ const listOrdersSchema = z.object({
   offset: z.coerce.number().int().nonnegative().optional(),
 });
 
+type ListOrdersQuery = {
+  symbol?: string;
+  status?: string;
+  limit?: number;
+  offset?: number;
+};
+
+type FillsQuery = {
+  orderId?: string;
+  symbol?: string;
+  limit?: string;
+  offset?: string;
+};
+
+type PlaceOrder = {
+  symbol: string;
+  side: 'BUY' | 'SELL';
+  type: 'LIMIT' | 'MARKET';
+  quantity: number;
+  price?: number;
+};
+
 export async function ordersRoutes(fastify: FastifyInstance) {
   fastify.get('/orders', {
     preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Querystring: any }>, reply: FastifyReply) => {
+  }, async (request: FastifyRequest<{ Querystring: ListOrdersQuery }>, reply: FastifyReply) => {
     const user = (request as any).user;
     const filters = listOrdersSchema.parse(request.query);
     const orderManager = (await import('../services/userEngineManager')).userEngineManager.getOrderManager(user.uid);
@@ -52,7 +74,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = (request as any).user;
-    const body = placeOrderSchema.parse(request.body);
+    const body = placeOrderSchema.parse(request.body) as PlaceOrder;
     const orderManager = (await import('../services/userEngineManager')).userEngineManager.getOrderManager(user.uid);
     if (!orderManager) {
       return reply.code(400).send({ error: 'Engine not initialized. Please start the engine first.' });
@@ -78,7 +100,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
 
   fastify.get('/fills', {
     preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Querystring: any }>, reply: FastifyReply) => {
+  }, async (request: FastifyRequest<{ Querystring: FillsQuery }>, reply: FastifyReply) => {
     const user = (request as any).user;
     const filters: any = {};
     if (request.query.orderId) filters.orderId = request.query.orderId;

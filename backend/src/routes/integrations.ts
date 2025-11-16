@@ -13,12 +13,13 @@ const integrationUpdateSchema = z.object({
   enabled: z.boolean(),
   apiKey: z.string().optional(),
   secretKey: z.string().optional(),
-  apiType: z.enum(['market', 'flatfile', 'exchangerate']).optional(), // For CoinAPI
+  // Allow legacy and namespaced CoinAPI types
+  apiType: z.enum(['market', 'flatfile', 'exchangerate', 'coinapi_market', 'coinapi_flatfile', 'coinapi_exchangerate']).optional(),
 });
 
 const integrationDeleteSchema = z.object({
   apiName: z.enum(['binance', 'cryptoquant', 'lunarcrush', 'coinapi']),
-  apiType: z.enum(['market', 'flatfile', 'exchangerate']).optional(), // For CoinAPI
+  apiType: z.enum(['market', 'flatfile', 'exchangerate', 'coinapi_market', 'coinapi_flatfile', 'coinapi_exchangerate']).optional(),
 });
 
 export async function integrationsRoutes(fastify: FastifyInstance) {
@@ -71,9 +72,11 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     const body = integrationUpdateSchema.parse(request.body);
 
     // Handle CoinAPI sub-types
-    let docName = body.apiName;
+    let docName: string = body.apiName;
     if (body.apiName === 'coinapi' && body.apiType) {
-      docName = `coinapi_${body.apiType}`;
+      // Accept both 'market' and 'coinapi_market' - normalize to 'coinapi_market'
+      const t = body.apiType.startsWith('coinapi_') ? body.apiType : `coinapi_${body.apiType}`;
+      docName = t;
     }
 
     // Validate required fields based on API type
@@ -166,7 +169,6 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         await firestoreAdapter.createOrUpdateUser(user.uid, {
           isApiConnected: true,
           apiConnected: true, // Keep for backward compatibility
-          apiStatus: 'connected',
           connectedExchanges,
         });
 
@@ -200,9 +202,10 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     const body = integrationDeleteSchema.parse(request.body);
     
     // Handle CoinAPI sub-types - check if apiType is provided in body
-    let docName = body.apiName;
+    let docName: string = body.apiName;
     if (body.apiName === 'coinapi' && (request.body as any).apiType) {
-      docName = `coinapi_${(request.body as any).apiType}`;
+      const t = ((request.body as any).apiType as string);
+      docName = t.startsWith('coinapi_') ? t : `coinapi_${t}`;
     }
 
     await firestoreAdapter.deleteIntegration(user.uid, docName);
@@ -218,9 +221,10 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     const body = integrationUpdateSchema.parse(request.body);
 
     // Handle CoinAPI sub-types
-    let docName = body.apiName;
+    let docName: string = body.apiName;
     if (body.apiName === 'coinapi' && body.apiType) {
-      docName = `coinapi_${body.apiType}`;
+      const t = body.apiType.startsWith('coinapi_') ? body.apiType : `coinapi_${body.apiType}`;
+      docName = t;
     }
 
     // Validate required fields based on API type
@@ -313,7 +317,6 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         await firestoreAdapter.createOrUpdateUser(user.uid, {
           isApiConnected: true,
           apiConnected: true, // Keep for backward compatibility
-          apiStatus: 'connected',
           connectedExchanges,
         });
 
@@ -348,10 +351,11 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
 
     try {
       // Handle CoinAPI sub-types
-      let docName = body.apiName;
-      if (body.apiName === 'coinapi' && body.apiType) {
-        docName = `coinapi_${body.apiType}`;
-      }
+    let docName: string = body.apiName;
+    if (body.apiName === 'coinapi' && body.apiType) {
+      const t = body.apiType.startsWith('coinapi_') ? body.apiType : `coinapi_${body.apiType}`;
+      docName = t;
+    }
 
       // Validate based on API type
       if (body.apiName === 'binance') {
@@ -443,14 +447,15 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
 
         try {
           const { CoinAPIAdapter } = await import('../services/coinapiAdapter');
-          const adapter = new CoinAPIAdapter(body.apiKey, body.apiType);
+          const apiTypePlain = (body.apiType.startsWith('coinapi_') ? body.apiType.replace('coinapi_', '') : body.apiType) as 'market' | 'flatfile' | 'exchangerate';
+          const adapter = new CoinAPIAdapter(body.apiKey, apiTypePlain);
           
           // Test based on type
-          if (body.apiType === 'market') {
+          if (body.apiType === 'market' || body.apiType === 'coinapi_market') {
             await adapter.getMarketData('BTCUSDT');
-          } else if (body.apiType === 'flatfile') {
+          } else if (body.apiType === 'flatfile' || body.apiType === 'coinapi_flatfile') {
             await adapter.getHistoricalData('BTCUSDT', 1);
-          } else if (body.apiType === 'exchangerate') {
+          } else if (body.apiType === 'exchangerate' || body.apiType === 'coinapi_exchangerate') {
             await adapter.getExchangeRate('BTC', 'USD');
           }
           
