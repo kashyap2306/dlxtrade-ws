@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "build": "cd backend && npm install --no-audit --no-fund && npx tsc",
+    "build": "cd backend && npm install --no-audit --no-fund && npm run build",
     "start": "node backend/dist/server.js"
   },
   "engines": {
