@@ -181,5 +181,225 @@ export async function usersRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: err.message || 'Error updating user' });
     }
   });
+
+  // GET /api/users/:id/details - Get user details
+  fastify.get('/:id/details', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    try {
+      const { id } = request.params;
+      const user = (request as any).user;
+      
+      // Users can only view their own data unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (id !== user.uid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      const userData = await firestoreAdapter.getUser(id);
+      if (!userData) {
+        throw new NotFoundError('User not found');
+      }
+
+      // Convert timestamps
+      const result: any = { ...userData };
+      if (result.createdAt) {
+        result.createdAt = result.createdAt.toDate().toISOString();
+      }
+      if (result.updatedAt) {
+        result.updatedAt = result.updatedAt.toDate().toISOString();
+      }
+
+      return result;
+    } catch (err: any) {
+      if (err instanceof NotFoundError) {
+        return reply.code(404).send({ error: err.message });
+      }
+      logger.error({ err }, 'Error getting user details');
+      return reply.code(500).send({ error: err.message || 'Error fetching user details' });
+    }
+  });
+
+  // GET /api/users/:id/stats - Get user statistics
+  fastify.get('/:id/stats', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    try {
+      const { id } = request.params;
+      const user = (request as any).user;
+      
+      // Users can only view their own stats unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (id !== user.uid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      const userData = await firestoreAdapter.getUser(id);
+      if (!userData) {
+        throw new NotFoundError('User not found');
+      }
+
+      // Get trades for PnL calculation
+      const trades = await firestoreAdapter.getTrades(id, 1000);
+      const totalPnL = trades.reduce((sum, trade) => sum + (trade.pnl || 0), 0);
+      const winningTrades = trades.filter(t => (t.pnl || 0) > 0).length;
+      const losingTrades = trades.filter(t => (t.pnl || 0) < 0).length;
+
+      return {
+        totalPnL: userData.totalPnL || totalPnL,
+        totalTrades: userData.totalTrades || trades.length,
+        winningTrades,
+        losingTrades,
+        winRate: trades.length > 0 ? (winningTrades / trades.length) * 100 : 0,
+        avgPnL: trades.length > 0 ? totalPnL / trades.length : 0,
+      };
+    } catch (err: any) {
+      if (err instanceof NotFoundError) {
+        return reply.code(404).send({ error: err.message });
+      }
+      logger.error({ err }, 'Error getting user stats');
+      return reply.code(500).send({ error: err.message || 'Error fetching user stats' });
+    }
+  });
+
+  // GET /api/users/:id/pnl - Get user PnL
+  fastify.get('/:id/pnl', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    try {
+      const { id } = request.params;
+      const user = (request as any).user;
+      
+      // Users can only view their own PnL unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (id !== user.uid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      const userData = await firestoreAdapter.getUser(id);
+      if (!userData) {
+        throw new NotFoundError('User not found');
+      }
+
+      // Get trades for PnL calculation
+      const trades = await firestoreAdapter.getTrades(id, 1000);
+      const totalPnL = trades.reduce((sum, trade) => sum + (trade.pnl || 0), 0);
+
+      return {
+        totalPnL: userData.totalPnL || totalPnL,
+        dailyPnL: trades
+          .filter(t => {
+            let tradeDate: Date;
+            if (t.createdAt?.toDate) {
+              tradeDate = t.createdAt.toDate();
+            } else if (t.createdAt) {
+              tradeDate = new Date(t.createdAt);
+            } else {
+              return false;
+            }
+            const today = new Date();
+            return tradeDate.toDateString() === today.toDateString();
+          })
+          .reduce((sum, trade) => sum + (trade.pnl || 0), 0),
+        weeklyPnL: trades
+          .filter(t => {
+            let tradeDate: Date;
+            if (t.createdAt?.toDate) {
+              tradeDate = t.createdAt.toDate();
+            } else if (t.createdAt) {
+              tradeDate = new Date(t.createdAt);
+            } else {
+              return false;
+            }
+            const weekAgo = new Date();
+            weekAgo.setDate(weekAgo.getDate() - 7);
+            return tradeDate >= weekAgo;
+          })
+          .reduce((sum, trade) => sum + (trade.pnl || 0), 0),
+        monthlyPnL: trades
+          .filter(t => {
+            let tradeDate: Date;
+            if (t.createdAt?.toDate) {
+              tradeDate = t.createdAt.toDate();
+            } else if (t.createdAt) {
+              tradeDate = new Date(t.createdAt);
+            } else {
+              return false;
+            }
+            const monthAgo = new Date();
+            monthAgo.setMonth(monthAgo.getMonth() - 1);
+            return tradeDate >= monthAgo;
+          })
+          .reduce((sum, trade) => sum + (trade.pnl || 0), 0),
+      };
+    } catch (err: any) {
+      if (err instanceof NotFoundError) {
+        return reply.code(404).send({ error: err.message });
+      }
+      logger.error({ err }, 'Error getting user PnL');
+      return reply.code(500).send({ error: err.message || 'Error fetching user PnL' });
+    }
+  });
+
+  // GET /api/users/:id/trades - Get user trades
+  fastify.get('/:id/trades', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { id: string }; Querystring: { limit?: number } }>, reply: FastifyReply) => {
+    try {
+      const { id } = request.params;
+      const { limit = 100 } = request.query;
+      const user = (request as any).user;
+      
+      // Users can only view their own trades unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (id !== user.uid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      const trades = await firestoreAdapter.getTrades(id, limit);
+      
+      return {
+        trades: trades.map(trade => ({
+          ...trade,
+          createdAt: trade.createdAt?.toDate?.()?.toISOString() || new Date(trade.createdAt).toISOString(),
+          updatedAt: trade.updatedAt?.toDate?.()?.toISOString() || new Date(trade.updatedAt).toISOString(),
+        })),
+        count: trades.length,
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting user trades');
+      return reply.code(500).send({ error: err.message || 'Error fetching user trades' });
+    }
+  });
+
+  // GET /api/users/:id/logs - Get user activity logs
+  fastify.get('/:id/logs', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { id: string }; Querystring: { limit?: number } }>, reply: FastifyReply) => {
+    try {
+      const { id } = request.params;
+      const { limit = 100 } = request.query;
+      const user = (request as any).user;
+      
+      // Users can only view their own logs unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (id !== user.uid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      const logs = await firestoreAdapter.getActivityLogs(id, limit);
+      
+      return {
+        logs: logs.map(log => ({
+          ...log,
+          timestamp: log.timestamp?.toDate?.()?.toISOString() || new Date(log.timestamp).toISOString(),
+        })),
+        count: logs.length,
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting user logs');
+      return reply.code(500).send({ error: err.message || 'Error fetching user logs' });
+    }
+  });
 }
 

@@ -73,5 +73,28 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: err.message || 'Error fetching agent unlocks' });
     }
   });
+
+  // GET /api/agents/unlocked - Get user's unlocked agent names
+  fastify.get('/unlocked', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const userData = await firestoreAdapter.getUser(user.uid);
+      const unlockedAgents = userData?.unlockedAgents || [];
+      
+      // Also get from unlocks subcollection for completeness
+      const unlocks = await firestoreAdapter.getUserAgentUnlocks(user.uid);
+      const unlockNames = unlocks.map(u => u.agentName);
+      
+      // Combine and deduplicate
+      const allUnlocked = [...new Set([...unlockedAgents, ...unlockNames])];
+      
+      return { unlocked: allUnlocked };
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting unlocked agents');
+      return reply.code(500).send({ error: err.message || 'Error fetching unlocked agents' });
+    }
+  });
 }
 
