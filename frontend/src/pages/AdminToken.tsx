@@ -8,7 +8,8 @@ export default function AdminTokenPage() {
   const promote = async (idToken: string) => {
     setStatus("Sending promote request…");
     try {
-      const response = await fetch("http://localhost:4000/api/admin/promote", {
+      const baseURL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+      const response = await fetch(`${baseURL}/admin/promote`, {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${idToken}`,

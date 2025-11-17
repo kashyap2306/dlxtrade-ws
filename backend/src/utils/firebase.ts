@@ -11,7 +11,10 @@ export function initializeFirebaseAdmin(): void {
   try {
     const raw = process.env.FIREBASE_SERVICE_ACCOUNT || process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
     if (!raw) {
-      throw new Error('FIREBASE_SERVICE_ACCOUNT env var is required to initialize Firebase Admin');
+      const error = new Error('FIREBASE_SERVICE_ACCOUNT env var is required to initialize Firebase Admin');
+      logger.warn({ error: error.message }, 'Firebase Admin initialization skipped - missing service account');
+      // Don't throw - allow server to continue without Firebase (for development/testing)
+      return;
     }
 
     let parsed: any;
@@ -19,7 +22,8 @@ export function initializeFirebaseAdmin(): void {
       parsed = JSON.parse(raw);
     } catch (err: any) {
       logger.error({ err }, 'Failed to parse FIREBASE_SERVICE_ACCOUNT JSON');
-      throw err;
+      // Don't throw - allow server to continue
+      return;
     }
 
     // Fix private_key: replace literal \n with actual newlines (Render env vars escape them)
@@ -34,7 +38,9 @@ export function initializeFirebaseAdmin(): void {
       (parsed.projectId as string | undefined);
 
     if (!projectId) {
-      throw new Error('Firebase projectId could not be determined from FIREBASE_SERVICE_ACCOUNT or FIREBASE_PROJECT_ID');
+      logger.warn('Firebase projectId could not be determined - Firebase Admin will not be initialized');
+      // Don't throw - allow server to continue
+      return;
     }
 
     // Initialize Firebase Admin with explicit credential and projectId
@@ -58,8 +64,8 @@ export function initializeFirebaseAdmin(): void {
     firebaseAdmin = app;
     logger.info({ projectId }, 'Firebase Admin initialized with service account from environment');
   } catch (error: any) {
-    logger.error({ error: error.message, stack: error.stack }, 'Error initializing Firebase Admin');
-    throw error;
+    // Log error but don't throw - allow server to start even if Firebase fails
+    logger.error({ error: error.message, stack: error.stack }, 'Error initializing Firebase Admin - server will continue without Firebase');
   }
 }
 
@@ -85,13 +91,30 @@ export async function performForcedTestWrite(): Promise<void> {
 	if (!firebaseAdmin) {
 		initializeFirebaseAdmin();
 	}
-	const db = getFirebaseAdmin().firestore();
-	const docRef = db.collection('system').doc('_admin_init_check');
-	await docRef.set(
-		{
-			ok: true,
-			checkedAt: admin.firestore.FieldValue.serverTimestamp(),
-		},
-		{ merge: true }
-	);
+	
+	// If Firebase Admin still not initialized, skip test write
+	if (!firebaseAdmin) {
+		logger.warn('Skipping Firebase test write - Firebase Admin not initialized');
+		return;
+	}
+	
+	try {
+		const db = getFirebaseAdmin().firestore();
+		const docRef = db.collection('system').doc('_admin_init_check');
+		await docRef.set(
+			{
+				ok: true,
+				checkedAt: admin.firestore.FieldValue.serverTimestamp(),
+			},
+			{ merge: true }
+		);
+	} catch (error: any) {
+		// Handle "Unable to detect a Project Id" and other auth errors gracefully
+		if (error.message?.includes('Unable to detect') || error.message?.includes('project id') || error.code === 'auth/') {
+			logger.warn({ error: error.message }, 'Firebase test write failed - project ID or auth issue (non-fatal)');
+		} else {
+			logger.error({ error: error.message, stack: error.stack }, 'Firebase test write failed');
+		}
+		// Don't throw - allow server to continue
+	}
 }

@@ -5,7 +5,8 @@ class AdminWebSocketService {
   private handlers: Map<string, Set<MessageHandler>> = new Map();
 
   connect(): void {
-    const adminWsUrl = 'wss://dlxtrade-ws.onrender.com';
+    // Use environment variable for WebSocket URL, fallback to localhost for dev
+    const adminWsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:4000/ws';
     
     try {
       this.ws = new WebSocket(adminWsUrl);
