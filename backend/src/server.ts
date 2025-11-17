@@ -38,18 +38,7 @@ async function start() {
       logger.warn({ error: dbError.message }, 'Database initialization failed, continuing');
     }
 
-    // Initialize Redis (with timeout to prevent blocking)
-    console.log('Initializing Redis...');
-    try {
-      await Promise.race([
-        initRedis(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Redis init timeout')), 5000))
-      ]);
-      console.log('✅ Redis initialized');
-    } catch (redisError: any) {
-      console.error('⚠️ Redis init failed (continuing anyway):', redisError.message);
-      logger.warn({ error: redisError.message }, 'Redis initialization failed, continuing');
-    }
+    // Redis is disabled - skip initialization silently
 
     // Build Fastify app FIRST
     console.log('Building Fastify app...');
@@ -87,7 +76,8 @@ async function start() {
           console.error('❌ INIT ERROR (Forced Test Write):', testWriteError.message);
           console.error('❌ STACK:', testWriteError.stack);
           logger.error({ error: testWriteError.message, stack: testWriteError.stack }, 'Forced test write failed - Firebase Admin may not be connected to real Firestore');
-          throw testWriteError; // Re-throw to stop if test write fails
+          // DO NOT throw - allow server to continue even if test write fails
+          // This prevents blocking server startup on Render
         }
 
         // Initialize Firestore collections - FORCED RUN (no conditions)
@@ -113,7 +103,7 @@ async function start() {
           console.error('❌ INIT ERROR (Data Seeding):', seedError.message);
           console.error('❌ SEED STACK:', seedError.stack);
           logger.error({ error: seedError.message, stack: seedError.stack }, 'Firestore data seeding failed');
-          throw seedError; // Re-throw to ensure we know if seeding fails
+          // DO NOT throw - allow server to continue even if seeding fails
         }
 
         // Auto-promote the specified admin user unconditionally

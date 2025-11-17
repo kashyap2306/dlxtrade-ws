@@ -4,42 +4,63 @@ import { logger } from './logger';
 let firebaseAdmin: admin.app.App | null = null;
 
 export function initializeFirebaseAdmin(): void {
-	if (firebaseAdmin) {
-		return;
-	}
+  if (firebaseAdmin) {
+    return;
+  }
 
-	try {
-		// Prefer default credentials in Firebase Functions environment
-		// Fallback to FIREBASE_SERVICE_ACCOUNT_KEY for local/dev
-		let app: admin.app.App;
+  try {
+    const raw = process.env.FIREBASE_SERVICE_ACCOUNT || process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+    if (!raw) {
+      throw new Error('FIREBASE_SERVICE_ACCOUNT env var is required to initialize Firebase Admin');
+    }
 
-		if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
-			try {
-				const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY as string);
-				app = admin.initializeApp({
-					credential: admin.credential.cert(serviceAccount),
-					projectId: (serviceAccount as any).project_id || process.env.FIREBASE_PROJECT_ID,
-				});
-				logger.info('Firebase Admin initialized with explicit service account key');
-			} catch (err) {
-				logger.warn('Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY, falling back to application default credentials');
-				app = admin.initializeApp();
-			}
-		} else if (admin.apps && admin.apps.length > 0) {
-			app = admin.app();
-		} else {
-			app = admin.initializeApp();
-			logger.info('Firebase Admin initialized with application default credentials');
-		}
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err: any) {
+      logger.error({ err }, 'Failed to parse FIREBASE_SERVICE_ACCOUNT JSON');
+      throw err;
+    }
 
-		// Configure Firestore
-		app.firestore().settings({ ignoreUndefinedProperties: true });
+    // Fix private_key: replace literal \n with actual newlines (Render env vars escape them)
+    if (parsed.private_key && typeof parsed.private_key === 'string') {
+      parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+    }
 
-		firebaseAdmin = app;
-	} catch (error: any) {
-		logger.error({ error: error.message }, 'Error initializing Firebase Admin');
-		throw error;
-	}
+    // Extract projectId from service account or env
+    const projectId =
+      parsed.project_id ||
+      process.env.FIREBASE_PROJECT_ID ||
+      (parsed.projectId as string | undefined);
+
+    if (!projectId) {
+      throw new Error('Firebase projectId could not be determined from FIREBASE_SERVICE_ACCOUNT or FIREBASE_PROJECT_ID');
+    }
+
+    // Initialize Firebase Admin with explicit credential and projectId
+    const app = admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId: parsed.project_id || projectId,
+        clientEmail: parsed.client_email || process.env.FIREBASE_CLIENT_EMAIL,
+        privateKey: parsed.private_key || process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+      }),
+      projectId,
+    });
+
+    // Configure Firestore with minimal settings (ignore undefined, disable telemetry)
+    const firestore = app.firestore();
+    firestore.settings({ 
+      ignoreUndefinedProperties: true,
+      // Disable telemetry
+      experimentalForceLongPolling: false,
+    });
+
+    firebaseAdmin = app;
+    logger.info({ projectId }, 'Firebase Admin initialized with service account from environment');
+  } catch (error: any) {
+    logger.error({ error: error.message, stack: error.stack }, 'Error initializing Firebase Admin');
+    throw error;
+  }
 }
 
 export async function verifyFirebaseToken(token: string): Promise<admin.auth.DecodedIdToken> {

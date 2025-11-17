@@ -1,33 +1,12 @@
-import Redis from 'ioredis';
-import { config } from '../config';
-import { logger } from '../utils/logger';
+// Redis is completely disabled - no connections, no errors, no logs
+// This file exists only to maintain compatibility with imports
 
-let redis: Redis | null = null;
-
-export function getRedis(): Redis {
-  if (!redis) {
-    redis = new Redis(config.redis.url, {
-      retryStrategy: (times) => {
-        const delay = Math.min(times * 50, 2000);
-        return delay;
-      },
-      maxRetriesPerRequest: 3,
-    });
-
-    redis.on('error', (err) => {
-      logger.error({ err }, 'Redis connection error');
-    });
-
-    redis.on('connect', () => {
-      logger.info('Redis connected');
-    });
-  }
-  return redis;
+export function getRedis(): null {
+  return null;
 }
 
 export async function initRedis(): Promise<void> {
-  const client = getRedis();
-  await client.ping();
-  logger.info('Redis initialized');
+  // Redis is disabled - resolve immediately without any action
+  return Promise.resolve();
 }
 
