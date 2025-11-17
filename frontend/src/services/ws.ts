@@ -5,11 +5,15 @@ class WebSocketService {
   private handlers: Map<string, Set<MessageHandler>> = new Map();
 
   async connect(): Promise<void> {
-    // Use environment variable for WebSocket URL, fallback to localhost for dev
-    const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:4000/ws';
+    // Use environment variable for WebSocket URL
+    const WS_URL = import.meta.env.VITE_WS_URL;
+    if (!WS_URL) {
+      console.error('VITE_WS_URL environment variable is not set');
+      return;
+    }
     
     try {
-      this.ws = new WebSocket(wsUrl);
+      this.ws = new WebSocket(WS_URL);
 
       this.ws.onopen = () => {
         console.log('WebSocket connection successful using Render server.');

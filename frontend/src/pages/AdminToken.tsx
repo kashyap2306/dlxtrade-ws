@@ -8,7 +8,11 @@ export default function AdminTokenPage() {
   const promote = async (idToken: string) => {
     setStatus("Sending promote request…");
     try {
-      const baseURL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+      const API_BASE = import.meta.env.VITE_API_BASE_URL;
+      if (!API_BASE) {
+        throw new Error('VITE_API_BASE_URL environment variable is not set');
+      }
+      const baseURL = API_BASE.endsWith('/api') ? API_BASE : `${API_BASE}/api`;
       const response = await fetch(`${baseURL}/admin/promote`, {
         method: "POST",
         headers: {

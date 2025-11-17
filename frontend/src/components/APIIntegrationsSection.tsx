@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { integrationsApi } from '../services/api';
-import Toast from '../components/Toast';
-import Sidebar from '../components/Sidebar';
+import Toast from './Toast';
+import { useNotificationContext } from '../contexts/NotificationContext';
 import {
   CheckCircleIcon,
   XCircleIcon,
@@ -86,7 +86,8 @@ interface CoinApiData {
   exchangerate?: CoinApiIntegration;
 }
 
-export default function APIIntegrations() {
+export default function APIIntegrationsSection() {
+  const { addNotification } = useNotificationContext();
   const [integrations, setIntegrations] = useState<Record<ApiName, Integration | CoinApiData>>({
     binance: { enabled: false, apiKey: null, secretKey: null },
     cryptoquant: { enabled: false, apiKey: null, secretKey: null },
@@ -111,7 +112,6 @@ export default function APIIntegrations() {
     try {
       setLoading(true);
       const response = await integrationsApi.load();
-      console.log('Integrations API response:', response.data);
       const data = response.data;
 
       const loaded: Record<ApiName, Integration | CoinApiData> = {
@@ -121,7 +121,6 @@ export default function APIIntegrations() {
         coinapi: {},
       };
 
-      // Load regular APIs
       ['binance', 'cryptoquant', 'lunarcrush'].forEach((apiName) => {
         const api = apiName as ApiName;
         if (data[api]) {
@@ -134,7 +133,6 @@ export default function APIIntegrations() {
         }
       });
 
-      // Load CoinAPI sub-types
       if (data.coinapi) {
         loaded.coinapi = {
           market: data.coinapi.market || { enabled: false, apiKey: null },
@@ -178,10 +176,8 @@ export default function APIIntegrations() {
       const coinApi = integrations.coinapi as CoinApiData;
       const integration = coinApi[apiType];
       if (integration?.enabled && integration?.apiKey) {
-        // Don't auto-edit if already configured
         setEditingApi(null);
       } else {
-        // Auto-edit if not configured
         setEditingApi({ apiName: 'coinapi', apiType });
       }
       setFormData({ apiKey: '', secretKey: '' });
@@ -212,7 +208,6 @@ export default function APIIntegrations() {
         return;
       }
 
-      // Enable and expand
       setExpandedCoinApiType(apiType);
       setEditingApi({ apiName, apiType });
       setFormData({ apiKey: '', secretKey: '' });
@@ -287,9 +282,21 @@ export default function APIIntegrations() {
         setExpandedCoinApiType(apiType);
       }
       setFormData({ apiKey: '', secretKey: '' });
-      showToast(`${apiType ? COINAPI_TYPES.find((t) => t.value === apiType)?.label : config.displayName} saved successfully`, 'success');
+      const apiDisplayName = apiType ? COINAPI_TYPES.find((t) => t.value === apiType)?.label : config.displayName;
+      showToast(`${apiDisplayName} saved successfully`, 'success');
+      await addNotification({
+        title: 'API Connected Successfully',
+        message: `${apiDisplayName} has been connected and configured`,
+        type: 'success',
+      });
     } catch (err: any) {
-      showToast(err.response?.data?.error || 'Error saving integration', 'error');
+      const errorMsg = err.response?.data?.error || 'Error saving integration';
+      showToast(errorMsg, 'error');
+      await addNotification({
+        title: 'API Connection Failed',
+        message: `${apiType ? COINAPI_TYPES.find((t) => t.value === apiType)?.label : config.displayName}: ${errorMsg}`,
+        type: 'error',
+      });
     } finally {
       setLoading(false);
     }
@@ -318,14 +325,6 @@ export default function APIIntegrations() {
     }
   };
 
-  const maskKey = (key: string): string => {
-    if (!key || key.length <= 8) return '****';
-    if (key.length > 20) {
-      return `****${key.slice(-4)}`;
-    }
-    return `${key.slice(0, 4)}****${key.slice(-4)}`;
-  };
-
   const toggleExpand = (apiName: ApiName) => {
     if (expandedApi === apiName) {
       setExpandedApi(null);
@@ -335,9 +334,6 @@ export default function APIIntegrations() {
       }
     } else {
       setExpandedApi(apiName);
-      if (apiName === 'coinapi') {
-        // Don't auto-expand sub-cards when main card expands
-      }
     }
   };
 
@@ -355,33 +351,10 @@ export default function APIIntegrations() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
-      {/* Animated background elements */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob"></div>
-        <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-blue-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-2000"></div>
-        <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-80 h-80 bg-pink-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-4000"></div>
-      </div>
-
-      <Sidebar onLogout={async () => {
-        const { signOut } = await import('firebase/auth');
-        const { auth } = await import('../config/firebase');
-        await signOut(auth);
-        localStorage.removeItem('firebaseToken');
-        localStorage.removeItem('firebaseUser');
-        window.location.href = '/login';
-      }} />
-
-      <main className="min-h-screen">
-        <div className="max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
-          <div className="mb-8">
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent mb-2">
-              API Integrations
-            </h1>
-            <p className="text-gray-300">
-              Connect and manage your API integrations. All keys are encrypted and stored securely.
-            </p>
-          </div>
+    <>
+      <div className="border-t border-purple-500/20 pt-6 mt-6">
+        <h3 className="text-lg font-semibold text-white mb-4">Trading API Integration</h3>
+        <p className="text-sm text-gray-400 mb-6">Connect and manage your API integrations. All keys are encrypted and stored securely.</p>
 
         {loading && !integrations.binance && (
           <div className="flex items-center justify-center py-12">
@@ -389,7 +362,7 @@ export default function APIIntegrations() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
           {(['binance', 'cryptoquant', 'lunarcrush'] as ApiName[]).map((apiName) => {
             const config = API_CONFIGS[apiName];
             const integration = integrations[apiName] as Integration;
@@ -497,24 +470,24 @@ export default function APIIntegrations() {
                               </div>
                             )}
                           </div>
-                          <div className="flex flex-wrap gap-2 pt-2">
+                          <div className="flex flex-col sm:flex-row gap-2 pt-2">
                             <button
                               onClick={() => handleEdit(apiName)}
-                              className="inline-flex items-center px-4 py-2 text-sm font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
+                              className="btn-mobile-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
                             >
                               <PencilIcon className="w-4 h-4 mr-2" />
                               Edit
                             </button>
                             <button
                               onClick={() => handleRotate(apiName)}
-                              className="inline-flex items-center px-4 py-2 text-sm font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
+                              className="btn-mobile-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
                             >
                               <ArrowPathIcon className="w-4 h-4 mr-2" />
                               Rotate
                             </button>
                             <button
                               onClick={() => handleDelete(apiName)}
-                              className="inline-flex items-center px-4 py-2 text-sm font-medium text-red-300 bg-red-900/30 backdrop-blur-sm border border-red-500/30 rounded-lg hover:bg-red-900/50 transition-all"
+                              className="btn-mobile-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-red-300 bg-red-900/30 backdrop-blur-sm border border-red-500/30 rounded-lg hover:bg-red-900/50 transition-all"
                             >
                               <TrashIcon className="w-4 h-4 mr-2" />
                               Delete
@@ -551,23 +524,20 @@ export default function APIIntegrations() {
                               </div>
                             )}
                           </div>
-                          <div className="flex gap-2 pt-2">
+                          <div className="flex flex-col sm:flex-row gap-2 pt-2">
                             <button
                               onClick={() => {
                                 setEditingApi(null);
                                 setFormData({ apiKey: '', secretKey: '' });
                               }}
-                              className="flex-1 px-4 py-2.5 text-sm font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
+                              className="btn-mobile-full px-4 py-2.5 text-sm font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
                               disabled={loading}
                             >
                               Cancel
                             </button>
                             <button
-                              onClick={() => {
-                                // Use connect endpoint for saving API keys
-                                handleSave(apiName);
-                              }}
-                              className="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/50"
+                              onClick={() => handleSave(apiName)}
+                              className="btn-mobile-full px-4 py-2.5 text-sm font-medium text-white bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/50"
                               disabled={loading}
                             >
                               {loading ? 'Connecting...' : 'Connect API'}
@@ -643,7 +613,6 @@ export default function APIIntegrations() {
                         key={type.value}
                         className="bg-slate-800/40 backdrop-blur-sm rounded-xl border border-purple-500/20 transition-all hover:border-purple-500/40 cursor-pointer"
                         onClick={(e) => {
-                          // Don't trigger if clicking on toggle or buttons
                           if ((e.target as HTMLElement).closest('label, button')) return;
                           handleCoinApiSubCardClick(type.value);
                         }}
@@ -825,10 +794,9 @@ export default function APIIntegrations() {
             )}
           </div>
         </div>
-        </div>
-      </main>
-
+      </div>
       {toast && <Toast message={toast.message} type={toast.type} />}
-    </div>
+    </>
   );
 }
+

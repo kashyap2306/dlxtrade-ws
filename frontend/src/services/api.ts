@@ -1,7 +1,12 @@
 import axios from 'axios';
 
 // API base URL - must include /api prefix since backend routes are prefixed
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+const API_BASE = import.meta.env.VITE_API_BASE_URL;
+if (!API_BASE) {
+  throw new Error('VITE_API_BASE_URL environment variable is not set');
+}
+// Ensure /api prefix is included
+const API_URL = API_BASE.endsWith('/api') ? API_BASE : `${API_BASE}/api`;
 
 const api = axios.create({
   baseURL: API_URL,
@@ -80,6 +85,20 @@ export const adminApi = {
   reloadAllEngines: () => api.post('/admin/reload-all-engines'),
   getAgentStats: () => api.get('/admin/agents/stats'),
   getAgentUsers: (agentName: string) => api.get(`/admin/agents/${encodeURIComponent(agentName)}/users`),
+  updateAgent: (agentId: string, data: any) => api.put(`/admin/agents/${agentId}`, data),
+  createAgent: (data: any) => api.post('/admin/agents', data),
+  deleteAgent: (agentId: string) => api.delete(`/admin/agents/${agentId}`),
+  toggleAgent: (agentId: string) => api.post(`/admin/agents/${agentId}/toggle`),
+  getUnlockRequests: () => api.get('/admin/unlock-requests'),
+  approveUnlockRequest: (requestId: string) => api.post(`/admin/unlock-requests/${requestId}/approve`),
+  denyUnlockRequest: (requestId: string, reason?: string) => api.post(`/admin/unlock-requests/${requestId}/deny`, { reason }),
+  updateUserAgentSettings: (uid: string, agentName: string, settings: any) => api.put(`/admin/user/${uid}/agent/${encodeURIComponent(agentName)}/settings`, settings),
+    // Agent purchases
+    getPurchases: (params?: { status?: string; limit?: number }) => api.get('/admin/agents/purchases', { params }),
+    approvePurchase: (purchaseId: string) => api.post(`/admin/agents/purchases/${purchaseId}/approve`),
+    rejectPurchase: (purchaseId: string, reason?: string) => api.post(`/admin/agents/purchases/${purchaseId}/reject`, { reason }),
+    // Broadcast Popup
+    broadcastPopup: (data: any) => api.post('/admin/popup-broadcast', data),
 };
 
 // Orders - routes already include /api prefix from baseURL
@@ -113,12 +132,18 @@ export const researchApi = {
   getLogs: (params?: any) => api.get('/research/logs', { params }),
   runResearch: (symbol: string) => api.post('/research/run', { symbol }),
   deepRun: (data: { symbols?: string[]; topN?: number }) => api.post('/research/deep-run', data),
+  manualDeepResearch: () => api.get('/research/manual'),
+  manualDeepResearchPost: (data?: { selectedExchange?: string; symbols?: string[]; topN?: number }) => 
+    api.post('/research/manual', data),
 };
 
 // Settings - routes already include /api prefix from baseURL
 export const settingsApi = {
   load: () => api.get('/settings/load'),
   update: (settings: any) => api.post('/settings/update', settings),
+  saveApiKeys: (apiKeys: { apiKey: string; secretKey: string; testnet?: boolean }) => 
+    api.post('/settings/saveApiKeys', apiKeys),
+  getApiKeys: () => api.get('/settings/apiKeys'),
 };
 
 // Execution - routes already include /api prefix from baseURL
@@ -152,7 +177,8 @@ export const hftApi = {
 // Users - routes already include /api prefix from baseURL
 export const usersApi = {
   getAll: () => api.get('/users'),
-  get: (uid: string) => api.get(`/users/${uid}`),
+  get: (uid: string) => api.get(`/users/${uid}/details`),
+  getStats: (uid: string) => api.get(`/users/${uid}/stats`),
   create: (data: any) => api.post('/users/create', data),
   update: (data: any) => api.post('/users/update', data),
 };
@@ -160,8 +186,13 @@ export const usersApi = {
 // Agents - routes already include /api prefix from baseURL
 export const agentsApi = {
   getAll: () => api.get('/agents'),
+  get: (id: string) => api.get(`/agents/${id}`),
   unlock: (agentName: string) => api.post('/agents/unlock', { agentName }),
   getUnlocks: () => api.get('/agents/unlocks'),
+  getUnlocked: () => api.get('/agents/unlocked'),
+  submitUnlockRequest: (data: { agentId: string; agentName: string; fullName: string; phoneNumber: string; email: string }) =>
+    api.post('/agents/submit-unlock-request', data),
+  updateAgentSettings: (agentId: string, settings: any) => api.put(`/agents/${agentId}/settings`, settings),
 };
 
 // Activity Logs - routes already include /api prefix from baseURL
@@ -179,6 +210,8 @@ export const tradesApi = {
 export const notificationsApi = {
   get: (params?: { limit?: number }) => api.get('/notifications', { params }),
   markRead: (notificationId: string) => api.post('/notifications/mark-read', { notificationId }),
+  push: (data: { uid: string; type: 'success' | 'error' | 'info' | 'warning'; title: string; message: string; timestamp?: number }) => 
+    api.post('/notifications/push', data),
 };
 
 // System Logs - routes already include /api prefix from baseURL

@@ -3,6 +3,8 @@ import { useAuth } from '../hooks/useAuth';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { useEffect, useState } from 'react';
+import NotificationBell from './NotificationBell';
+import { suppressConsoleError } from '../utils/errorHandler';
 
 // Crypto-style SVG Icons
 const Icons = {
@@ -75,7 +77,7 @@ export default function TopNavigation() {
           setIsAdmin(false);
         }
       } catch (error) {
-        console.error('Error checking admin role:', error);
+        suppressConsoleError(error, 'checkAdminRole');
         setIsAdmin(false);
       }
     };
@@ -91,7 +93,7 @@ export default function TopNavigation() {
   }
 
   const menuItems = [
-    { path: '/', label: 'Dashboard', Icon: Icons.Dashboard },
+    { path: '/dashboard', label: 'Dashboard', Icon: Icons.Dashboard },
     { path: '/agents', label: 'Agents', Icon: Icons.Agents },
     { path: '/integrations', label: 'Integrations', Icon: Icons.Integrations },
     { path: '/research', label: 'Research', Icon: Icons.Research },
@@ -107,8 +109,8 @@ export default function TopNavigation() {
   ];
 
   const isActive = (path: string) => {
-    if (path === '/') {
-      return location.pathname === '/';
+    if (path === '/dashboard') {
+      return location.pathname === '/dashboard';
     }
     return location.pathname.startsWith(path);
   };
@@ -118,15 +120,15 @@ export default function TopNavigation() {
       {/* Desktop Navigation Bar - Fixed at top */}
       <div className="hidden lg:block fixed top-0 left-0 right-0 z-50 bg-slate-900/95 backdrop-blur-2xl border-b border-cyan-500/20 shadow-lg">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between py-4">
+          <div className="flex items-center justify-between py-3 lg:py-4">
             <Link
               to="/"
-              className="text-lg font-bold bg-gradient-to-r from-cyan-400 via-blue-400 to-purple-400 bg-clip-text text-transparent hover:opacity-80 transition-opacity"
+              className="text-lg sm:text-xl font-bold bg-gradient-to-r from-cyan-400 via-blue-400 to-purple-400 bg-clip-text text-transparent hover:opacity-80 transition-opacity"
             >
-              DLXTRADE
+              Trading Agent
             </Link>
             
-            <nav className="flex items-center space-x-1">
+            <nav className="flex items-center space-x-1 overflow-x-auto scrollbar-hide">
               {menuItems.map((item) => {
                 const active = isActive(item.path);
                 const Icon = item.Icon;
@@ -135,15 +137,15 @@ export default function TopNavigation() {
                     key={item.path}
                     to={item.path}
                     className={`
-                      group relative flex items-center space-x-2 px-4 py-2 rounded-lg transition-all duration-200
+                      group relative flex items-center space-x-2 px-3 lg:px-4 py-2 rounded-lg transition-all duration-200 whitespace-nowrap
                       ${active
-                        ? 'text-cyan-400 bg-cyan-500/10'
+                        ? 'text-cyan-400 bg-cyan-500/10 shadow-lg shadow-cyan-500/20'
                         : 'text-gray-400 hover:text-cyan-300 hover:bg-cyan-500/5'
                       }
                     `}
                   >
                     <div className={`
-                      transition-colors
+                      transition-colors flex-shrink-0
                       ${active ? 'text-cyan-400' : 'text-gray-500 group-hover:text-cyan-400'}
                     `}>
                       <Icon />
@@ -162,6 +164,9 @@ export default function TopNavigation() {
               })}
               
               {/* Admin menu removed from TopNavigation; admin uses AdminLayout */}
+              
+              {/* Notification Bell */}
+              <NotificationBell />
             </nav>
           </div>
         </div>

@@ -2,11 +2,11 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Dashboard from './pages/Dashboard';
+import Home from './pages/Home';
 import EngineControl from './pages/EngineControl';
 import ResearchPanel from './pages/ResearchPanel';
 import Settings from './pages/Settings';
 import ExecutionLogs from './pages/ExecutionLogs';
-import APIIntegrations from './pages/APIIntegrations';
 import Profile from './pages/Profile';
 import HFTSettings from './pages/HFTSettings';
 import HFTLogs from './pages/HFTLogs';
@@ -14,18 +14,24 @@ import AdminDashboard from './pages/AdminDashboard';
 import AdminUsersList from './pages/AdminUsersList';
 import AdminUserDetail from './pages/AdminUserDetail';
 import AdminAgentsManager from './pages/AdminAgentsManager';
+import AdminUnlockRequests from './pages/AdminUnlockRequests';
+import AdminBroadcastPopup from './pages/AdminBroadcastPopup';
 import AdminLogin from './pages/AdminLogin';
 import AdminToken from './pages/AdminToken';
 import AdminRoute from './components/AdminRoute';
 import AgentsMarketplace from './pages/AgentsMarketplace';
-import AgentCheckout from './pages/AgentCheckout';
+import AgentDetails from './pages/AgentDetails';
+import AgentFeature from './pages/AgentFeature';
+import Onboarding from './pages/Onboarding';
 import TopNavigation from './components/TopNavigation';
 import UserRoute from './components/UserRoute';
+import { ErrorProvider } from './contexts/ErrorContext';
+import { NotificationProvider } from './contexts/NotificationContext';
+import NotificationToast from './components/NotificationToast';
+import BroadcastPopup from './components/BroadcastPopup';
 import { wsService } from './services/ws';
 import { useAuth } from './hooks/useAuth';
-import { useEffect, useState } from 'react';
-import { doc, getDoc } from 'firebase/firestore';
-import { db } from './config/firebase';
+import { useEffect } from 'react';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -62,12 +68,21 @@ function App() {
   }, [user]);
 
   return (
-    <Routes>
+    <ErrorProvider>
+      <NotificationProvider>
+        <NotificationToast />
+        <BroadcastPopup />
+        <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/signup" element={<Signup />} />
+      <Route path="/onboarding" element={<Onboarding />} />
       <Route path="/admin-login" element={<AdminLogin />} />
       <Route
         path="/"
+        element={<Home />}
+      />
+      <Route
+        path="/dashboard"
         element={
           <UserRoute>
             <Dashboard />
@@ -107,14 +122,6 @@ function App() {
         }
       />
       <Route
-        path="/integrations"
-        element={
-          <UserRoute>
-            <APIIntegrations />
-          </UserRoute>
-        }
-      />
-      <Route
         path="/profile"
         element={
           <UserRoute>
@@ -131,10 +138,18 @@ function App() {
         }
       />
       <Route
-        path="/checkout/:agentId"
+        path="/agents/:agentId"
         element={
           <UserRoute>
-            <AgentCheckout />
+            <AgentDetails />
+          </UserRoute>
+        }
+      />
+      <Route
+        path="/agent/:agentId"
+        element={
+          <UserRoute>
+            <AgentFeature />
           </UserRoute>
         }
       />
@@ -188,6 +203,22 @@ function App() {
         }
       />
       <Route
+        path="/admin/unlock-requests"
+        element={
+          <AdminRoute>
+            <AdminUnlockRequests />
+          </AdminRoute>
+        }
+      />
+      <Route
+        path="/admin/broadcast-popup"
+        element={
+          <AdminRoute>
+            <AdminBroadcastPopup />
+          </AdminRoute>
+        }
+      />
+      <Route
         path="/admin/settings"
         element={
           <AdminRoute>
@@ -212,6 +243,8 @@ function App() {
         }
       />
     </Routes>
+      </NotificationProvider>
+    </ErrorProvider>
   );
 }
 

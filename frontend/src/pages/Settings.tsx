@@ -2,6 +2,9 @@ import { useState, useEffect } from 'react';
 import { settingsApi, integrationsApi } from '../services/api';
 import Toast from '../components/Toast';
 import Sidebar from '../components/Sidebar';
+import Header from '../components/Header';
+import APIIntegrationsSection from '../components/APIIntegrationsSection';
+import ExchangeAccountsSection from '../components/ExchangeAccountsSection';
 import { useAuth } from '../hooks/useAuth';
 
 export default function Settings() {
@@ -34,6 +37,7 @@ export default function Settings() {
       console.error('Error details:', err.response?.data);
     }
   };
+
 
   const loadGlobalSettings = async () => {
     try {
@@ -126,9 +130,9 @@ export default function Settings() {
     }
   };
 
-  const handleAutoTradeToggle = (enabled: boolean) => {
+  const handleAutoTradeToggle = async (enabled: boolean) => {
     if (enabled && !hasBinance) {
-      showToast('Please configure Binance integration first', 'error');
+      showToast('Please add your Binance API keys first in Settings', 'error');
       return;
     }
     setSettings({ ...settings, autoTradeEnabled: enabled });
@@ -176,7 +180,7 @@ export default function Settings() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 pb-20 lg:pb-0">
       {/* Animated background elements */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob"></div>
@@ -187,16 +191,29 @@ export default function Settings() {
       <Sidebar onLogout={handleLogout} />
 
       <main className="min-h-screen">
-        <div className="max-w-4xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
-          <div className="mb-8">
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent mb-2">
-              Trading Settings
-            </h1>
-            <p className="text-gray-300">Configure your trading parameters and preferences</p>
+        <div className="max-w-4xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8 pt-20 lg:pt-8">
+          <div className="mb-6 sm:mb-8">
+            <div className="lg:hidden mb-4">
+              <Header
+                title="Trading Settings"
+                subtitle="Configure your trading parameters"
+                onMenuToggle={() => {
+                  const toggle = (window as any).__sidebarToggle;
+                  if (toggle) toggle();
+                }}
+                menuOpen={(window as any).__sidebarOpen || false}
+              />
+            </div>
+            <div className="hidden lg:block">
+              <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent mb-2">
+                Trading Settings
+              </h1>
+              <p className="text-gray-300">Configure your trading parameters and preferences</p>
+            </div>
           </div>
           <div className="card">
-            <form onSubmit={handleSave} className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <form onSubmit={handleSave} className="space-y-4 sm:space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
                 <div>
                   <label className="block text-sm font-medium mb-1 text-gray-300">Symbol</label>
                   <input
@@ -343,6 +360,7 @@ export default function Settings() {
                 </div>
               </div>
 
+
               {/* Auto-Trade Settings */}
               <div className="border-t border-purple-500/20 pt-6">
                 <h3 className="text-lg font-semibold text-white mb-4">Auto-Trade Settings</h3>
@@ -361,7 +379,7 @@ export default function Settings() {
                     </label>
                     <p className="text-xs text-gray-400 mt-1 ml-6">
                       When enabled, trades will automatically execute when research accuracy meets the threshold
-                      {!hasBinance && ' (Binance integration required)'}
+                      {!hasBinance && ' (Binance API keys required)'}
                     </p>
                   </div>
 
@@ -387,13 +405,19 @@ export default function Settings() {
               <div className="flex justify-end">
                 <button
                   type="submit"
-                  className="btn btn-primary"
+                  className="btn-mobile-full btn btn-primary"
                   disabled={saving}
                 >
                   {saving ? 'Saving...' : 'Save Settings'}
                 </button>
               </div>
             </form>
+
+            {/* Exchange Accounts Section - Unified Exchange Management */}
+            <ExchangeAccountsSection />
+
+            {/* API Integrations Section */}
+            <APIIntegrationsSection />
           </div>
         </div>
       </main>

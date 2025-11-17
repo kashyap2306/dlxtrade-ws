@@ -43,7 +43,7 @@ export function useAuth() {
       await signOut(auth);
       localStorage.removeItem('firebaseToken');
       localStorage.removeItem('firebaseUser');
-      window.location.href = '/login';
+      window.location.href = '/';
     } catch (error) {
       console.error('Error signing out:', error);
     }

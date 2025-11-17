@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
+import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
 
 interface SidebarProps {
   onLogout?: () => void;
@@ -29,6 +30,11 @@ const Icons = {
   Agents: () => (
     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
+    </svg>
+  ),
+  Agent: () => (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
     </svg>
   ),
   Integrations: () => (
@@ -79,6 +85,7 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
   const [isAdmin, setIsAdmin] = useState(false);
   const location = useLocation();
   const { user } = useAuth();
+  const { unlockedAgents } = useUnlockedAgents();
 
   // Notify parent component of menu state changes
   useEffect(() => {
@@ -119,9 +126,8 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
   }
 
   const menuItems = [
-    { path: '/', label: 'Dashboard', Icon: Icons.Dashboard },
+    { path: '/dashboard', label: 'Dashboard', Icon: Icons.Dashboard },
     { path: '/agents', label: 'Agents Marketplace', Icon: Icons.Agents },
-    { path: '/integrations', label: 'API Integrations', Icon: Icons.Integrations },
     { path: '/research', label: 'Research', Icon: Icons.Research },
     { path: '/execution', label: 'Execution Logs', Icon: Icons.Logs },
     { path: '/settings', label: 'Settings', Icon: Icons.Settings },
@@ -135,8 +141,8 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
   ];
 
   const isActive = (path: string) => {
-    if (path === '/') {
-      return location.pathname === '/';
+    if (path === '/dashboard') {
+      return location.pathname === '/dashboard';
     }
     return location.pathname.startsWith(path);
   };
@@ -186,9 +192,9 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
               <Link
                 to="/"
                 onClick={() => setMobileMenuOpen(false)}
-                className="text-xl font-bold bg-gradient-to-r from-cyan-400 via-blue-400 to-purple-400 bg-clip-text text-transparent hover:opacity-80 transition-opacity"
+                className="text-xl sm:text-2xl font-bold bg-gradient-to-r from-cyan-400 via-blue-400 to-purple-400 bg-clip-text text-transparent hover:opacity-80 transition-opacity"
               >
-                DLXTRADE
+                Trading Agent
               </Link>
               {/* Close button for mobile only */}
               <button
@@ -261,6 +267,69 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
                 </Link>
               );
             })}
+
+            {/* Dynamic Agent Menu Items */}
+            {unlockedAgents.length > 0 && (
+              <>
+                <div className="my-4 px-3">
+                  <div className="h-px bg-gradient-to-r from-transparent via-purple-500/20 to-transparent" />
+                </div>
+                <div className="px-3 mb-2">
+                  <div className="text-xs font-semibold text-purple-400/60 uppercase tracking-wider">
+                    Premium Agents
+                  </div>
+                </div>
+                {unlockedAgents.map((unlockedAgent) => {
+                  const agentPath = `/agent/${encodeURIComponent(unlockedAgent.agentId)}`;
+                  const active = isActive(agentPath);
+                  return (
+                    <Link
+                      key={unlockedAgent.agentId}
+                      to={agentPath}
+                      onClick={() => setMobileMenuOpen(false)}
+                      className={`
+                        group relative flex items-center space-x-3 px-4 py-3 lg:px-3 lg:py-2 rounded-xl transition-all duration-200
+                        ${active
+                          ? 'text-purple-400 bg-purple-500/10 border-l-2 border-purple-400'
+                          : 'text-gray-400 hover:text-purple-300 hover:bg-purple-500/5 border-l-2 border-transparent'
+                        }
+                      `}
+                    >
+                      {/* Active Left Neon Bar */}
+                      {active && (
+                        <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-8 bg-gradient-to-b from-purple-400 to-pink-400 rounded-r-full shadow-lg shadow-purple-400/50" />
+                      )}
+                      
+                      {/* Hover Glow Effect */}
+                      <div 
+                        className={`
+                          absolute inset-0 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-200
+                          ${active ? 'bg-purple-500/5' : 'bg-[rgba(168,85,247,0.08)]'}
+                        `}
+                      />
+                      
+                      {/* Icon */}
+                      <div className={`
+                        relative z-10 flex-shrink-0 transition-colors
+                        ${active ? 'text-purple-400' : 'text-gray-500 group-hover:text-purple-400'}
+                      `}>
+                        <div className="w-6 h-6 lg:w-5 lg:h-5">
+                          <Icons.Agent />
+                        </div>
+                      </div>
+                      
+                      {/* Label */}
+                      <span className={`
+                        relative z-10 font-medium text-base lg:text-sm tracking-wide
+                        ${active ? 'text-purple-400' : 'text-gray-400 group-hover:text-purple-300'}
+                      `}>
+                        {unlockedAgent.agent?.name || unlockedAgent.agentName}
+                      </span>
+                    </Link>
+                  );
+                })}
+              </>
+            )}
 
             {/* Admin Section */}
             {isAdmin && (

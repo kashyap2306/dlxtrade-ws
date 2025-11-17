@@ -3,7 +3,9 @@ import { executionApi, hftLogsApi, systemLogsApi } from '../services/api';
 import { wsService } from '../services/ws';
 import Toast from '../components/Toast';
 import Sidebar from '../components/Sidebar';
+import Header from '../components/Header';
 import { useAuth } from '../hooks/useAuth';
+import { useNotificationContext } from '../contexts/NotificationContext';
 
 interface ExecutionLog {
   id: string;
@@ -25,6 +27,7 @@ interface ExecutionLog {
 
 export default function ExecutionLogs() {
   const { user } = useAuth();
+  const { addNotification } = useNotificationContext();
   const [logs, setLogs] = useState<ExecutionLog[]>([]);
   const [hftLogs, setHftLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -37,8 +40,24 @@ export default function ExecutionLogs() {
       
       // Subscribe to live execution updates
       const unsubscribe = wsService.subscribe('execution', (data: any) => {
+        const logData = data.data;
         // Add to logs
-        setLogs((prev) => [data.data, ...prev].slice(0, 100));
+        setLogs((prev) => [logData, ...prev].slice(0, 100));
+        
+        // Send notification for executed trades
+        if (logData.action === 'EXECUTED') {
+          addNotification({
+            title: 'Trade Executed',
+            message: `${logData.symbol || 'Unknown'} ${logData.signal || 'BUY'} order executed${logData.orderId ? ` - Order ID: ${logData.orderId}` : ''}`,
+            type: 'success',
+          });
+        } else if (logData.action === 'SKIPPED' && logData.reason) {
+          addNotification({
+            title: 'Trade Skipped',
+            message: `${logData.symbol || 'Unknown'}: ${logData.reason}`,
+            type: 'info',
+          });
+        }
       });
 
       return () => unsubscribe();
@@ -119,18 +138,31 @@ export default function ExecutionLogs() {
       <Sidebar onLogout={handleLogout} />
 
       <main className="min-h-screen">
-        <div className="max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
-          <div className="mb-8">
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-              <div>
-                <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent mb-2">
-                  Execution Logs
-                </h1>
-                <p className="text-gray-300">View detailed execution history and trade outcomes</p>
+        <div className="max-w-7xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8 pt-20 lg:pt-8">
+          <div className="mb-6 sm:mb-8">
+            <div className="lg:hidden mb-4">
+              <Header
+                title="Execution Logs"
+                subtitle="View detailed execution history"
+                onMenuToggle={() => {
+                  const toggle = (window as any).__sidebarToggle;
+                  if (toggle) toggle();
+                }}
+                menuOpen={(window as any).__sidebarOpen || false}
+              />
+            </div>
+            <div className="hidden lg:block">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div>
+                  <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent mb-2">
+                    Execution Logs
+                  </h1>
+                  <p className="text-gray-300">View detailed execution history and trade outcomes</p>
+                </div>
+                <button onClick={loadLogs} className="btn btn-secondary" disabled={loading}>
+                  {loading ? 'Loading...' : 'Refresh'}
+                </button>
               </div>
-              <button onClick={loadLogs} className="btn btn-secondary" disabled={loading}>
-                {loading ? 'Loading...' : 'Refresh'}
-              </button>
             </div>
           </div>
           <div className="space-y-6">
@@ -181,9 +213,11 @@ export default function ExecutionLogs() {
 
             {/* Logs Table */}
             <div className="card">
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto -mx-4 sm:mx-0">
                 {activeTab === 'execution' ? (
-                  <table className="min-w-full divide-y divide-purple-500/20">
+                  <>
+                    {/* Desktop Table View */}
+                    <table className="hidden md:table min-w-full divide-y divide-purple-500/20">
                     <thead className="bg-slate-900/50">
                       <tr>
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase">Time</th>
@@ -271,6 +305,71 @@ export default function ExecutionLogs() {
                       )}
                     </tbody>
                   </table>
+                  
+                  {/* Mobile Card View */}
+                  <div className="md:hidden space-y-4 px-4">
+                    {logs.length === 0 ? (
+                      <div className="text-center text-gray-400 py-8">
+                        No execution logs yet
+                      </div>
+                    ) : (
+                      logs.map((log) => (
+                        <div key={log.id} className="bg-slate-800/60 border border-purple-500/20 rounded-lg p-4 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className={`px-2 py-1 rounded text-xs font-medium ${
+                              log.action === 'EXECUTED' 
+                                ? 'bg-green-500/20 text-green-300 border border-green-400/30' 
+                                : 'bg-yellow-500/20 text-yellow-300 border border-yellow-400/30'
+                            }`}>
+                              {log.action}
+                            </span>
+                            <span className="text-xs text-gray-400">
+                              {new Date(log.timestamp).toLocaleString()}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 text-xs">
+                            <div>
+                              <span className="text-gray-400">Symbol:</span>
+                              <span className="text-white ml-1">{log.symbol}</span>
+                            </div>
+                            <div>
+                              <span className="text-gray-400">Accuracy:</span>
+                              <span className="text-white ml-1">{log.accuracy ? `${(log.accuracy * 100).toFixed(1)}%` : '-'}</span>
+                            </div>
+                            {log.strategy && (
+                              <div>
+                                <span className="text-gray-400">Strategy:</span>
+                                <span className="text-white ml-1">{log.strategy}</span>
+                              </div>
+                            )}
+                            {log.executionLatency && (
+                              <div>
+                                <span className="text-gray-400">Latency:</span>
+                                <span className="text-white ml-1">{log.executionLatency}ms</span>
+                              </div>
+                            )}
+                            {log.pnl !== undefined && (
+                              <div className="col-span-2">
+                                <span className="text-gray-400">PnL:</span>
+                                <span className={`ml-1 font-medium ${
+                                  log.pnl > 0 ? 'text-green-400' : log.pnl < 0 ? 'text-red-400' : 'text-gray-200'
+                                }`}>
+                                  ${log.pnl.toFixed(2)}
+                                </span>
+                              </div>
+                            )}
+                            {log.reason && (
+                              <div className="col-span-2">
+                                <span className="text-gray-400">Reason:</span>
+                                <span className="text-white ml-1 break-words">{log.reason}</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  </>
                 ) : (
                   <table className="min-w-full divide-y divide-purple-500/20">
                     <thead className="bg-slate-900/50">

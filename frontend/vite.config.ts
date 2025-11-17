@@ -13,11 +13,11 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: process.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:4000',
+        target: process.env.VITE_API_BASE_URL?.replace('/api', '') || 'https://dlxtrade-ws-1.onrender.com',
         changeOrigin: true,
       },
       '/ws': {
-        target: process.env.VITE_WS_URL?.replace('ws://', 'http://').replace('wss://', 'https://') || 'ws://localhost:4000',
+        target: process.env.VITE_WS_URL?.replace('ws://', 'http://').replace('wss://', 'https://') || 'https://dlxtrade-ws-1.onrender.com',
         ws: true,
         changeOrigin: true,
       },

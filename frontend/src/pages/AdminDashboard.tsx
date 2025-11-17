@@ -68,6 +68,28 @@ export default function AdminDashboard() {
           </h1>
         </div>
 
+        {/* Quick Actions */}
+        <div className="flex gap-4 mb-6">
+          <button
+            onClick={() => navigate('/admin/unlock-requests')}
+            className="btn btn-primary"
+          >
+            🔔 View Unlock Requests
+          </button>
+          <button
+            onClick={() => navigate('/admin/agents')}
+            className="btn btn-secondary"
+          >
+            Manage Agents
+          </button>
+          <button
+            onClick={() => navigate('/admin/users')}
+            className="btn btn-secondary"
+          >
+            Manage Users
+          </button>
+        </div>
+
         {/* Global Stats Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <div className="card">

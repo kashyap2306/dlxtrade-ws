@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { engineApi, settingsApi, usersApi, agentsApi, engineStatusApi, hftApi } from '../services/api';
 import Sidebar from '../components/Sidebar';
+import Header from '../components/Header';
 import Toast from '../components/Toast';
 import { User } from 'firebase/auth';
 
@@ -214,12 +215,25 @@ export default function Profile() {
       <Sidebar onLogout={handleLogout} />
 
       <main className="min-h-screen">
-        <div className="max-w-4xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
-          <div className="mb-8">
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent mb-2">
-              User Profile
-            </h1>
-            <p className="text-gray-300">Manage your account settings and preferences</p>
+        <div className="max-w-4xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8 pt-20 lg:pt-8">
+          <div className="mb-6 sm:mb-8">
+            <div className="lg:hidden mb-4">
+              <Header
+                title="User Profile"
+                subtitle="Manage your account settings"
+                onMenuToggle={() => {
+                  const toggle = (window as any).__sidebarToggle;
+                  if (toggle) toggle();
+                }}
+                menuOpen={(window as any).__sidebarOpen || false}
+              />
+            </div>
+            <div className="hidden lg:block">
+              <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent mb-2">
+                User Profile
+              </h1>
+              <p className="text-gray-300">Manage your account settings and preferences</p>
+            </div>
           </div>
 
           <div className="space-y-6">
@@ -421,7 +435,7 @@ export default function Profile() {
                 <div className="flex flex-col sm:flex-row gap-3 pt-4">
                   <button
                     type="submit"
-                    className="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/50"
+                    className="btn-mobile-full px-4 py-2.5 text-sm font-medium text-white bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/50"
                     disabled={saving}
                   >
                     {saving ? 'Saving...' : 'Save Changes'}
@@ -431,18 +445,18 @@ export default function Profile() {
             </div>
 
             {/* Action Buttons */}
-            <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl shadow-lg p-6">
-              <h3 className="text-xl font-semibold text-white mb-4">Actions</h3>
+            <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl shadow-lg p-4 sm:p-6">
+              <h3 className="text-lg sm:text-xl font-semibold text-white mb-4">Actions</h3>
               <div className="flex flex-col sm:flex-row gap-3">
                 <button
                   onClick={handleManageKeys}
-                  className="flex-1 px-4 py-2.5 text-sm font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
+                  className="btn-mobile-full px-4 py-2.5 text-sm font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
                 >
                   Manage API Keys
                 </button>
                 <button
                   onClick={handleLogout}
-                  className="flex-1 px-4 py-2.5 text-sm font-medium text-red-300 bg-red-900/30 backdrop-blur-sm border border-red-500/30 rounded-lg hover:bg-red-900/50 transition-all"
+                  className="btn-mobile-full px-4 py-2.5 text-sm font-medium text-red-300 bg-red-900/30 backdrop-blur-sm border border-red-500/30 rounded-lg hover:bg-red-900/50 transition-all"
                 >
                   Logout
                 </button>

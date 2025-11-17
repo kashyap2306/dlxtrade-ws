@@ -82,19 +82,19 @@ export default function OrdersTable() {
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-between items-center">
-        <div className="flex space-x-2">
+      <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3">
+        <div className="flex flex-col sm:flex-row gap-2 flex-1">
           <input
             type="text"
             placeholder="Symbol filter"
             value={filter.symbol}
             onChange={(e) => setFilter({ ...filter, symbol: e.target.value })}
-            className="input text-sm bg-slate-900/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500"
+            className="input text-sm bg-slate-900/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500 flex-1 min-w-0"
           />
           <select
             value={filter.status}
             onChange={(e) => setFilter({ ...filter, status: e.target.value })}
-            className="input text-sm bg-slate-900/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200"
+            className="input text-sm bg-slate-900/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 flex-1 sm:flex-initial sm:min-w-[140px]"
           >
             <option value="">All Status</option>
             <option value="NEW">New</option>
@@ -103,24 +103,24 @@ export default function OrdersTable() {
             <option value="REJECTED">Rejected</option>
           </select>
         </div>
-        <button onClick={exportCSV} className="btn btn-secondary text-sm">
+        <button onClick={exportCSV} className="btn btn-secondary text-sm whitespace-nowrap">
           Export CSV
         </button>
       </div>
 
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0 scrollbar-hide">
         <table className="min-w-full divide-y divide-purple-500/20">
           <thead className="bg-slate-900/50">
             <tr>
-              <th className="px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase">ID</th>
-              <th className="px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase">Symbol</th>
-              <th className="px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase">Side</th>
-              <th className="px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase">Type</th>
-              <th className="px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase">Qty</th>
-              <th className="px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase">Price</th>
-              <th className="px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase">Status</th>
-              <th className="px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase">Filled</th>
-              <th className="px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase">Actions</th>
+              <th className="px-2 sm:px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase whitespace-nowrap">ID</th>
+              <th className="px-2 sm:px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase whitespace-nowrap">Symbol</th>
+              <th className="px-2 sm:px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase whitespace-nowrap">Side</th>
+              <th className="px-2 sm:px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase whitespace-nowrap">Type</th>
+              <th className="px-2 sm:px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase whitespace-nowrap">Qty</th>
+              <th className="px-2 sm:px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase whitespace-nowrap">Price</th>
+              <th className="px-2 sm:px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase whitespace-nowrap">Status</th>
+              <th className="px-2 sm:px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase whitespace-nowrap">Filled</th>
+              <th className="px-2 sm:px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase whitespace-nowrap">Actions</th>
             </tr>
           </thead>
           <tbody className="bg-slate-800/40 divide-y divide-purple-500/20">
@@ -139,16 +139,16 @@ export default function OrdersTable() {
             ) : (
               orders.map((order) => (
                 <tr key={order.id} className="hover:bg-slate-700/30 transition-colors">
-                  <td className="px-4 py-2 text-xs text-gray-200">{order.id.slice(0, 8)}...</td>
-                  <td className="px-4 py-2 text-xs text-gray-200">{order.symbol}</td>
-                  <td className={`px-4 py-2 text-xs ${order.side === 'BUY' ? 'text-green-400' : 'text-red-400'}`}>
+                  <td className="px-2 sm:px-4 py-2 text-xs text-gray-200 truncate max-w-[80px] sm:max-w-none">{order.id.slice(0, 8)}...</td>
+                  <td className="px-2 sm:px-4 py-2 text-xs text-gray-200 whitespace-nowrap">{order.symbol}</td>
+                  <td className={`px-2 sm:px-4 py-2 text-xs whitespace-nowrap ${order.side === 'BUY' ? 'text-green-400' : 'text-red-400'}`}>
                     {order.side}
                   </td>
-                  <td className="px-4 py-2 text-xs text-gray-200">{order.type}</td>
-                  <td className="px-4 py-2 text-xs text-gray-200">{order.quantity}</td>
-                  <td className="px-4 py-2 text-xs text-gray-200">{order.price || '-'}</td>
-                  <td className="px-4 py-2 text-xs">
-                    <span className={`px-2 py-1 rounded text-xs ${
+                  <td className="px-2 sm:px-4 py-2 text-xs text-gray-200 whitespace-nowrap">{order.type}</td>
+                  <td className="px-2 sm:px-4 py-2 text-xs text-gray-200 whitespace-nowrap">{order.quantity}</td>
+                  <td className="px-2 sm:px-4 py-2 text-xs text-gray-200 whitespace-nowrap">{order.price || '-'}</td>
+                  <td className="px-2 sm:px-4 py-2 text-xs">
+                    <span className={`px-1.5 sm:px-2 py-1 rounded text-xs whitespace-nowrap ${
                       order.status === 'FILLED' ? 'bg-green-500/20 text-green-300 border border-green-400/30' :
                       order.status === 'CANCELED' ? 'bg-gray-500/20 text-gray-300 border border-gray-400/30' :
                       order.status === 'REJECTED' ? 'bg-red-500/20 text-red-300 border border-red-400/30' :
@@ -157,12 +157,12 @@ export default function OrdersTable() {
                       {order.status}
                     </span>
                   </td>
-                  <td className="px-4 py-2 text-xs text-gray-200">{order.filledQty}</td>
-                  <td className="px-4 py-2 text-xs">
+                  <td className="px-2 sm:px-4 py-2 text-xs text-gray-200 whitespace-nowrap">{order.filledQty}</td>
+                  <td className="px-2 sm:px-4 py-2 text-xs whitespace-nowrap">
                     {order.status !== 'FILLED' && order.status !== 'CANCELED' && (
                       <button
                         onClick={() => handleCancel(order.id)}
-                        className="text-red-400 hover:text-red-300 text-xs transition-colors"
+                        className="text-red-400 hover:text-red-300 text-xs transition-colors px-2 py-1 rounded hover:bg-red-500/10"
                       >
                         Cancel
                       </button>

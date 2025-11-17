@@ -5,8 +5,12 @@ class AdminWebSocketService {
   private handlers: Map<string, Set<MessageHandler>> = new Map();
 
   connect(): void {
-    // Use environment variable for WebSocket URL, fallback to localhost for dev
-    const adminWsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:4000/ws';
+    // Use environment variable for WebSocket URL
+    const adminWsUrl = import.meta.env.VITE_WS_URL;
+    if (!adminWsUrl) {
+      console.error('VITE_WS_URL environment variable is not set');
+      return;
+    }
     
     try {
       this.ws = new WebSocket(adminWsUrl);
