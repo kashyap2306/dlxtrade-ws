@@ -20,6 +20,16 @@ export interface ExchangeConnector {
   getTicker(symbol?: string): Promise<any>;
   getKlines(symbol: string, interval: string, limit?: number): Promise<any[]>;
   testConnection(): Promise<{ success: boolean; message: string }>;
+
+  // Must be optional for compatibility
+  getAccount?(): Promise<any>;
+  placeOrder?(params: {
+    symbol: string;
+    side: "BUY" | "SELL";
+    type?: "MARKET" | "LIMIT";
+    quantity: number;
+    price?: number;
+  }): Promise<any>;
 }
 
 export class ExchangeConnectorFactory {

@@ -335,7 +335,7 @@ export default function Dashboard() {
               
               {/* Platform Stats section removed per request */}
               
-              {/* API Diagnostic Panel */}
+              {/* API Diagnostic Panel - Now opens as modal */}
               <APIDiagnosticPanel />
 
               {/* AI/Level Bot Control */}

@@ -52,8 +52,8 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
   };
 
   return (
-    <div className="bg-black/30 backdrop-blur-md border border-white/10 rounded-2xl shadow-lg max-h-[400px] flex flex-col animate-fade-in overflow-hidden">
-      <div className="flex items-center justify-between p-4 border-b border-white/10">
+    <div className="bg-black/70 backdrop-blur-xl border border-white/10 rounded-2xl shadow-lg max-h-[400px] flex flex-col animate-fade-in overflow-hidden">
+      <div className="flex items-center justify-between p-4 border-b border-white/10 bg-black/50">
         <h3 className="text-lg font-semibold text-white">Notifications</h3>
         <div className="flex items-center gap-2">
           {notifications.length > 0 && notifications.some(n => !n.read) && (
@@ -74,7 +74,7 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
         </div>
       </div>
 
-      <div className="overflow-y-auto flex-1">
+      <div className="overflow-y-auto flex-1 bg-black/50">
         {notifications.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-8 px-4">
             <BellIcon className="w-12 h-12 text-gray-500 mb-3" />
@@ -82,14 +82,14 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
             <p className="text-xs text-gray-500 mt-1 opacity-70">You're all caught up</p>
           </div>
         ) : (
-          <div className="p-2">
+          <div className="p-2 bg-black/50">
             {notifications.map((notification) => (
               <div
                 key={notification.id}
                 onClick={() => !notification.read && markAsRead(notification.id)}
                 className={`mb-2 p-3 rounded-lg border cursor-pointer transition-all ${
                   notification.read
-                    ? 'bg-slate-900/50 border-gray-700/30 opacity-70'
+                    ? 'bg-slate-900/70 border-gray-700/30 opacity-70'
                     : getBgColor(notification.type)
                 } hover:opacity-100`}
               >

@@ -119,10 +119,10 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
 
     await firestoreAdapter.saveIntegration(user.uid, docName, updateData);
 
-    // PART 2: Also save to apiKeys collection if Binance with validation
+    // If Binance (trading exchange), also save to exchangeConfig/current (primary location)
     if (body.apiName === 'binance' && body.apiKey && body.secretKey) {
-      // PART 2: Validate Binance API keys via connectivity test
       try {
+        // Validate Binance API keys via connectivity test
         const testAdapter = new BinanceAdapter(body.apiKey, body.secretKey, true); // Test with testnet first
         const validation = await testAdapter.validateApiKey();
         
@@ -138,47 +138,25 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
           });
         }
 
-        // Keys are valid - encrypt and save
+        // Keys are valid - save to exchangeConfig/current (primary location for trading exchanges)
         const db = admin.firestore(getFirebaseAdmin());
-        const apiKeysRef = db.collection('apiKeys').doc(user.uid);
-        
-        await apiKeysRef.set({
-          uid: user.uid,
+        await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').set({
           exchange: 'binance',
+          type: 'binance',
           apiKeyEncrypted: encrypt(body.apiKey),
-          apiSecretEncrypted: encrypt(body.secretKey),
+          secretEncrypted: encrypt(body.secretKey),
+          testnet: true,
           createdAt: admin.firestore.Timestamp.now(),
           updatedAt: admin.firestore.Timestamp.now(),
-          status: 'connected',
-        });
+        }, { merge: true });
 
-        // Also save to integrations subcollection
-        await firestoreAdapter.saveApiKeyToCollection(user.uid, {
-          publicKey: body.apiKey,
-          secretKey: body.secretKey,
-          exchange: 'binance',
-        });
-        
-        // PART 2: Update user's apiConnected status and connectedExchanges
-        const userData = await firestoreAdapter.getUser(user.uid);
-        const connectedExchanges = userData?.connectedExchanges || [];
-        if (!connectedExchanges.includes('binance')) {
-          connectedExchanges.push('binance');
-        }
-
-        await firestoreAdapter.createOrUpdateUser(user.uid, {
-          isApiConnected: true,
-          apiConnected: true, // Keep for backward compatibility
-          connectedExchanges,
-        });
-
-        // PART 2: Log activity
+        // Log activity
         await firestoreAdapter.logActivity(user.uid, 'API_CONNECTED', {
           message: 'Binance API connected successfully',
           exchange: 'binance',
         });
 
-        logger.info({ uid: user.uid, exchange: 'binance' }, 'Binance API keys validated and saved');
+        logger.info({ uid: user.uid, exchange: 'binance' }, 'Binance API keys validated and saved to exchangeConfig/current');
       } catch (error: any) {
         logger.error({ error: error.message, uid: user.uid }, 'Binance API key validation error');
         return reply.code(400).send({
@@ -267,10 +245,10 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
 
     await firestoreAdapter.saveIntegration(user.uid, docName, updateData);
 
-    // PART 2: Also save to apiKeys collection if Binance with validation
+    // If Binance (trading exchange), also save to exchangeConfig/current (primary location)
     if (body.apiName === 'binance' && body.apiKey && body.secretKey) {
-      // PART 2: Validate Binance API keys via connectivity test
       try {
+        // Validate Binance API keys via connectivity test
         const testAdapter = new BinanceAdapter(body.apiKey, body.secretKey, true); // Test with testnet first
         const validation = await testAdapter.validateApiKey();
         
@@ -286,47 +264,25 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
           });
         }
 
-        // Keys are valid - encrypt and save
+        // Keys are valid - save to exchangeConfig/current (primary location for trading exchanges)
         const db = admin.firestore(getFirebaseAdmin());
-        const apiKeysRef = db.collection('apiKeys').doc(user.uid);
-        
-        await apiKeysRef.set({
-          uid: user.uid,
+        await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').set({
           exchange: 'binance',
+          type: 'binance',
           apiKeyEncrypted: encrypt(body.apiKey),
-          apiSecretEncrypted: encrypt(body.secretKey),
+          secretEncrypted: encrypt(body.secretKey),
+          testnet: true,
           createdAt: admin.firestore.Timestamp.now(),
           updatedAt: admin.firestore.Timestamp.now(),
-          status: 'connected',
-        });
+        }, { merge: true });
 
-        // Also save to integrations subcollection
-        await firestoreAdapter.saveApiKeyToCollection(user.uid, {
-          publicKey: body.apiKey,
-          secretKey: body.secretKey,
-          exchange: 'binance',
-        });
-        
-        // PART 2: Update user's apiConnected status and connectedExchanges
-        const userData = await firestoreAdapter.getUser(user.uid);
-        const connectedExchanges = userData?.connectedExchanges || [];
-        if (!connectedExchanges.includes('binance')) {
-          connectedExchanges.push('binance');
-        }
-
-        await firestoreAdapter.createOrUpdateUser(user.uid, {
-          isApiConnected: true,
-          apiConnected: true, // Keep for backward compatibility
-          connectedExchanges,
-        });
-
-        // PART 2: Log activity
+        // Log activity
         await firestoreAdapter.logActivity(user.uid, 'API_CONNECTED', {
           message: 'Binance API connected successfully',
           exchange: 'binance',
         });
 
-        logger.info({ uid: user.uid, exchange: 'binance' }, 'Binance API keys validated and saved');
+        logger.info({ uid: user.uid, exchange: 'binance' }, 'Binance API keys validated and saved to exchangeConfig/current');
       } catch (error: any) {
         logger.error({ error: error.message, uid: user.uid }, 'Binance API key validation error');
         return reply.code(400).send({

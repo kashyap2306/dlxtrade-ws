@@ -61,10 +61,11 @@ export async function authRoutes(fastify: FastifyInstance) {
       }
 
       // Run idempotent user onboarding
+      // For OAuth logins, phone will be null initially
       const result = await ensureUser(uid, {
         name,
         email,
-        phone: null,
+        phone: null, // Phone can be added during onboarding
       });
 
       if (!result.success) {

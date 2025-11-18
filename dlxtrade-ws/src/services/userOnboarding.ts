@@ -46,6 +46,16 @@ export async function ensureUser(
         phone: profileData?.phone || null,
         createdAt: now,
         updatedAt: now,
+        onboardingRequired: true, // New users must complete onboarding
+        tradingMarkets: [],
+        experienceLevel: '',
+        interestedAgents: [],
+        portfolioSize: '',
+        preferences: {
+          riskLevel: '',
+          tradingStyle: '',
+          analysisType: '',
+        },
         isApiConnected: false,
         connectedExchanges: [],
         totalTrades: 0,
@@ -84,6 +94,29 @@ export async function ensureUser(
       }
       if (!existingData.phone && profileData?.phone) {
         updateData.phone = profileData.phone;
+      }
+      // Ensure onboarding fields exist (don't overwrite if already set)
+      if (existingData.onboardingRequired === undefined) {
+        updateData.onboardingRequired = true;
+      }
+      if (existingData.tradingMarkets === undefined) {
+        updateData.tradingMarkets = [];
+      }
+      if (existingData.experienceLevel === undefined) {
+        updateData.experienceLevel = '';
+      }
+      if (existingData.interestedAgents === undefined) {
+        updateData.interestedAgents = [];
+      }
+      if (existingData.portfolioSize === undefined) {
+        updateData.portfolioSize = '';
+      }
+      if (existingData.preferences === undefined) {
+        updateData.preferences = {
+          riskLevel: '',
+          tradingStyle: '',
+          analysisType: '',
+        };
       }
       
       // Ensure required fields exist

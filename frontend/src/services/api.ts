@@ -129,12 +129,16 @@ export const metricsApi = {
 
 // Research - routes already include /api prefix from baseURL
 export const researchApi = {
+  run: (data?: { symbol?: string; symbols?: string[] }) => 
+    api.post('/research/run', data),
   getLogs: (params?: any) => api.get('/research/logs', { params }),
   runResearch: (symbol: string) => api.post('/research/run', { symbol }),
   deepRun: (data: { symbols?: string[]; topN?: number }) => api.post('/research/deep-run', data),
   manualDeepResearch: () => api.get('/research/manual'),
   manualDeepResearchPost: (data?: { selectedExchange?: string; symbols?: string[]; topN?: number }) => 
     api.post('/research/manual', data),
+  queue: (data?: { symbol?: string; symbols?: string[]; topN?: number }) => 
+    api.post('/research/queue', data),
 };
 
 // Settings - routes already include /api prefix from baseURL
@@ -244,5 +248,16 @@ export const hftLogsApi = {
 export const autoTradeApi = {
   getStatus: () => api.get('/auto-trade/status'),
   toggle: (enabled: boolean) => api.post('/auto-trade/toggle', { enabled }),
+  updateConfig: (config: any) => api.post('/auto-trade/config', config),
+  queue: (signal: any) => api.post('/auto-trade/queue', signal),
+  run: () => api.post('/auto-trade/run'),
+  execute: (data: { requestId: string; signal: any }) => api.post('/auto-trade/execute', data),
+  simulate: (signal: any) => api.post('/auto-trade/simulate', signal),
+  resetCircuitBreaker: () => api.post('/auto-trade/reset-circuit-breaker'),
+};
+
+// Chatbot - routes already include /api prefix from baseURL
+export const chatbotApi = {
+  sendMessage: (data: { message: string }) => api.post('/chatbot', data),
 };
 

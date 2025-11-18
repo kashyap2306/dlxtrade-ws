@@ -31,6 +31,8 @@ import { engineStatusRoutes } from './routes/engineStatus';
 import { hftLogsRoutes } from './routes/hftLogs';
 import { autoTradeRoutes } from './routes/autoTrade';
 import { exchangeRoutes } from './routes/exchange';
+import { diagnosticsRoutes } from './routes/diagnostics';
+import { chatbotRoutes } from './routes/chatbot';
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -119,6 +121,9 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(hftLogsRoutes, { prefix: '/api/hft-logs' });
   await app.register(autoTradeRoutes, { prefix: '/api/auto-trade' });
   await app.register(exchangeRoutes, { prefix: '/api' });
+  await app.register(diagnosticsRoutes, { prefix: '/api/diagnostics' });
+  await app.register(notificationsRoutes, { prefix: '/api' });
+  await app.register(chatbotRoutes, { prefix: '/api' });
 
   console.log('✅ All routes registered:');
   console.log('  - /api/auth/*');
@@ -144,6 +149,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     console.log('  - /api/exchange/*');
     console.log('  - /api/health');
   console.log('  - /api/metrics');
+  console.log('  - /api/chatbot');
   console.log('  - /ws (WebSocket)');
   console.log('  - /ws/admin (Admin WebSocket)');
   console.log('  - / (Root WebSocket - unauthenticated, for Render WS health)');

@@ -1,6 +1,7 @@
 import { useLocation, useNavigate } from 'react-router-dom';
 import { HomeIcon, SparklesIcon, ChartBarIcon, UserIcon } from '@heroicons/react/24/outline';
 import { HomeIcon as HomeIconSolid, SparklesIcon as SparklesIconSolid, ChartBarIcon as ChartBarIconSolid, UserIcon as UserIconSolid } from '@heroicons/react/24/solid';
+import { useChatbot } from '../contexts/ChatbotContext';
 
 interface NavItem {
   path: string;
@@ -19,6 +20,12 @@ const navItems: NavItem[] = [
 export default function MobileBottomNav() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { isOpen: chatbotOpen } = useChatbot();
+
+  // Hide bottom nav when chatbot is open
+  if (chatbotOpen) {
+    return null;
+  }
 
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 bg-slate-900/95 backdrop-blur-xl border-t border-purple-500/30 lg:hidden safe-bottom">

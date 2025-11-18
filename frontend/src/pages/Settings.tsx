@@ -12,8 +12,6 @@ export default function Settings() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-  const [showLiveModeModal, setShowLiveModeModal] = useState(false);
-  const [liveModeConfirm, setLiveModeConfirm] = useState('');
   const [hasBinance, setHasBinance] = useState(false);
   const [globalSettings, setGlobalSettings] = useState<any>(null);
   const [settings, setSettings] = useState<any>(null);
@@ -64,9 +62,7 @@ export default function Settings() {
           cancelMs: response.data.cancelMs || 40,
           maxPos: response.data.maxPos || 0.01,
           minAccuracyThreshold: response.data.minAccuracyThreshold || 0.85,
-          autoTradeEnabled: response.data.autoTradeEnabled || false,
           strategy: response.data.strategy || 'orderbook_imbalance',
-          liveMode: response.data.liveMode || false,
           max_loss_pct: response.data.max_loss_pct || 5,
           max_drawdown_pct: response.data.max_drawdown_pct || 10,
           per_trade_risk_pct: response.data.per_trade_risk_pct || 1,
@@ -80,9 +76,7 @@ export default function Settings() {
           cancelMs: 40,
           maxPos: 0.01,
           minAccuracyThreshold: 0.85,
-          autoTradeEnabled: false,
           strategy: 'orderbook_imbalance',
-          liveMode: false,
           max_loss_pct: 5,
           max_drawdown_pct: 10,
           per_trade_risk_pct: 1,
@@ -99,9 +93,7 @@ export default function Settings() {
         cancelMs: 40,
         maxPos: 0.01,
         minAccuracyThreshold: 0.85,
-        autoTradeEnabled: false,
         strategy: 'orderbook_imbalance',
-        liveMode: false,
         max_loss_pct: 5,
         max_drawdown_pct: 10,
         per_trade_risk_pct: 1,
@@ -130,32 +122,7 @@ export default function Settings() {
     }
   };
 
-  const handleAutoTradeToggle = async (enabled: boolean) => {
-    if (enabled && !hasBinance) {
-      showToast('Please add your Binance API keys first in Settings', 'error');
-      return;
-    }
-    setSettings({ ...settings, autoTradeEnabled: enabled });
-  };
 
-  const handleLiveModeToggle = (enabled: boolean) => {
-    if (enabled) {
-      setShowLiveModeModal(true);
-    } else {
-      setSettings({ ...settings, liveMode: false });
-    }
-  };
-
-  const confirmLiveMode = () => {
-    if (liveModeConfirm.toUpperCase() === 'CONFIRM') {
-      setSettings({ ...settings, liveMode: true });
-      setShowLiveModeModal(false);
-      setLiveModeConfirm('');
-      showToast('Live trading mode enabled. Use with extreme caution!', 'error');
-    } else {
-      showToast('Please type CONFIRM to enable live trading', 'error');
-    }
-  };
 
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
@@ -361,46 +328,6 @@ export default function Settings() {
               </div>
 
 
-              {/* Auto-Trade Settings */}
-              <div className="border-t border-purple-500/20 pt-6">
-                <h3 className="text-lg font-semibold text-white mb-4">Auto-Trade Settings</h3>
-                
-                <div className="space-y-4">
-                  <div>
-                    <label className="flex items-center text-gray-300">
-                      <input
-                        type="checkbox"
-                        checked={settings.autoTradeEnabled}
-                        onChange={(e) => handleAutoTradeToggle(e.target.checked)}
-                        disabled={!hasBinance}
-                        className="mr-2 h-4 w-4 text-purple-600 focus:ring-purple-500 border-gray-300 rounded disabled:opacity-50"
-                      />
-                      <span className="font-medium">Enable Auto-Trade</span>
-                    </label>
-                    <p className="text-xs text-gray-400 mt-1 ml-6">
-                      When enabled, trades will automatically execute when research accuracy meets the threshold
-                      {!hasBinance && ' (Binance API keys required)'}
-                    </p>
-                  </div>
-
-                  {settings.autoTradeEnabled && (
-                    <div>
-                      <label className="flex items-center text-gray-300">
-                        <input
-                          type="checkbox"
-                          checked={settings.liveMode}
-                          onChange={(e) => handleLiveModeToggle(e.target.checked)}
-                          className="mr-2 h-4 w-4 text-red-600 focus:ring-red-500 border-gray-300 rounded"
-                        />
-                        <span className="font-medium text-red-400">Enable Live Trading Mode</span>
-                      </label>
-                      <p className="text-xs text-red-400 mt-1 ml-6">
-                        ⚠️ WARNING: This will execute REAL trades with REAL money. Default is TESTNET mode.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
 
               <div className="flex justify-end">
                 <button
@@ -424,56 +351,6 @@ export default function Settings() {
 
       {toast && <Toast message={toast.message} type={toast.type} />}
 
-      {/* Live Mode Confirmation Modal */}
-      {showLiveModeModal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-800 border border-red-500/50 rounded-xl shadow-2xl max-w-md w-full p-6">
-            <h3 className="text-2xl font-bold text-red-400 mb-4">⚠️ Enable Live Trading?</h3>
-            <p className="text-gray-300 mb-4">
-              You are about to enable <strong className="text-red-400">LIVE TRADING MODE</strong>. This will execute real trades with real money on Binance.
-            </p>
-            <div className="bg-red-900/20 border border-red-500/30 rounded-lg p-4 mb-4">
-              <p className="text-sm text-red-300 font-medium mb-2">Before proceeding, confirm:</p>
-              <ul className="text-xs text-red-200 space-y-1 list-disc list-inside">
-                <li>Your API keys have NO withdrawal permission</li>
-                <li>You understand the risks of automated trading</li>
-                <li>You have tested on TESTNET first</li>
-                <li>You are ready to monitor trades actively</li>
-              </ul>
-            </div>
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-300 mb-2">
-                Type <strong className="text-red-400">CONFIRM</strong> to enable live trading:
-              </label>
-              <input
-                type="text"
-                className="input"
-                value={liveModeConfirm}
-                onChange={(e) => setLiveModeConfirm(e.target.value)}
-                placeholder="Type CONFIRM"
-                autoFocus
-              />
-            </div>
-            <div className="flex gap-3">
-              <button
-                onClick={() => {
-                  setShowLiveModeModal(false);
-                  setLiveModeConfirm('');
-                }}
-                className="flex-1 btn btn-secondary"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={confirmLiveMode}
-                className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-all"
-              >
-                Enable Live Mode
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

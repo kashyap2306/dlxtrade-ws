@@ -3,7 +3,8 @@ import { onAuthStateChanged, signOut, User } from 'firebase/auth';
 import { auth } from '../config/firebase';
 
 export function useAuth() {
-  const [user, setUser] = useState<User | null>(null);
+  // Initialize with current Firebase user if available
+  const [user, setUser] = useState<User | null>(() => auth.currentUser);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -17,9 +18,14 @@ export function useAuth() {
         }));
         setUser(firebaseUser);
       } else {
-        localStorage.removeItem('firebaseToken');
-        localStorage.removeItem('firebaseUser');
-        setUser(null);
+        // Only clear if we're sure there's no user
+        // Don't clear on initial load if token exists
+        const token = localStorage.getItem('firebaseToken');
+        if (!token) {
+          localStorage.removeItem('firebaseToken');
+          localStorage.removeItem('firebaseUser');
+          setUser(null);
+        }
       }
       setLoading(false);
     });

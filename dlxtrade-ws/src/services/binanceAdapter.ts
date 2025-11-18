@@ -100,15 +100,20 @@ export class BinanceAdapter implements ExchangeConnector {
     };
   }
 
-  async placeOrder(
-    symbol: string,
-    side: 'BUY' | 'SELL',
-    type: 'LIMIT' | 'MARKET',
-    quantity: number,
-    price?: number,
-    timeInForce: string = 'GTC'
-  ): Promise<Order> {
-    const params: Record<string, any> = {
+  async getAccount(): Promise<any> {
+    return await this.request('GET', '/api/v3/account', {}, true);
+  }
+
+  async placeOrder(params: {
+    symbol: string;
+    side: "BUY" | "SELL";
+    type?: "MARKET" | "LIMIT";
+    quantity: number;
+    price?: number;
+  }): Promise<Order> {
+    const { symbol, side, type = 'MARKET', quantity, price } = params;
+    const timeInForce = 'GTC';
+    const orderParams: Record<string, any> = {
       symbol: symbol.toUpperCase(),
       side,
       type,
@@ -117,11 +122,11 @@ export class BinanceAdapter implements ExchangeConnector {
 
     if (type === 'LIMIT') {
       if (!price) throw new Error('Price required for LIMIT orders');
-      params.price = price.toString();
-      params.timeInForce = timeInForce;
+      orderParams.price = price.toString();
+      orderParams.timeInForce = timeInForce;
     }
 
-    const data = await this.request('POST', '/api/v3/order', params, true);
+    const data = await this.request('POST', '/api/v3/order', orderParams, true);
 
     return {
       id: data.orderId.toString(),

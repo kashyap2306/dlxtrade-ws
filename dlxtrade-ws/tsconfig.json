@@ -8,10 +8,7 @@
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "strict": false,
-    "noImplicitAny": false,
-    "moduleResolution": "node",
-    "types": ["node"]
+    "noImplicitAny": false
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src/**/*"]
 }

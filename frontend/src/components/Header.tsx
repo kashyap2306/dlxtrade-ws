@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
+import { useChatbot } from '../contexts/ChatbotContext';
 import NotificationBell from './NotificationBell';
 
 interface HeaderProps {
@@ -140,6 +141,13 @@ export default function Header({
   menuOpen = false,
   children,
 }: HeaderProps) {
+  const { isOpen: chatbotOpen } = useChatbot();
+
+  // Hide header when chatbot is open
+  if (chatbotOpen) {
+    return null;
+  }
+
   return (
     <>
       {/* Mobile Header - Fixed, Safe Area Aware */}

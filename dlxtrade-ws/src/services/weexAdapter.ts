@@ -149,5 +149,51 @@ export class WeexAdapter implements ExchangeConnector {
       return { success: false, message };
     }
   }
+
+  async getAccount(): Promise<any> {
+    try {
+      return await this.request('GET', '/api/v1/account/info', {}, true);
+    } catch (error: any) {
+      logger.error({ error }, 'Error getting Weex account');
+      return { error: error.message || 'Failed to get account' };
+    }
+  }
+
+  async placeOrder(params: {
+    symbol: string;
+    side: "BUY" | "SELL";
+    type?: "MARKET" | "LIMIT";
+    quantity: number;
+    price?: number;
+  }): Promise<any> {
+    try {
+      const { symbol, side, type = 'MARKET', quantity, price } = params;
+      const orderParams: any = {
+        symbol: symbol.toUpperCase(),
+        side,
+        orderType: type,
+        quantity: quantity.toString(),
+      };
+
+      if (type === 'LIMIT' && price) {
+        orderParams.price = price.toString();
+      }
+
+      const response = await this.request('POST', '/api/v1/order/place', orderParams, true);
+      return {
+        id: response.data?.orderId?.toString() || Date.now().toString(),
+        symbol,
+        side,
+        type,
+        quantity,
+        price: price || 0,
+        status: 'NEW',
+        exchangeOrderId: response.data?.orderId?.toString() || '',
+      };
+    } catch (error: any) {
+      logger.error({ error }, 'Error placing Weex order');
+      throw error;
+    }
+  }
 }
 

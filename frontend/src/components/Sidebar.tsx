@@ -4,6 +4,7 @@ import { useAuth } from '../hooks/useAuth';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
+import { useChatbot } from '../contexts/ChatbotContext';
 
 interface SidebarProps {
   onLogout?: () => void;
@@ -53,6 +54,11 @@ const Icons = {
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
     </svg>
   ),
+  AutoTrade: () => (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+    </svg>
+  ),
   Logs: () => (
     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -86,6 +92,10 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
   const location = useLocation();
   const { user } = useAuth();
   const { unlockedAgents } = useUnlockedAgents();
+  const { isOpen: chatbotOpen } = useChatbot();
+
+  // Hide sidebar when chatbot is open
+  if (chatbotOpen) return null;
 
   // Notify parent component of menu state changes
   useEffect(() => {
@@ -120,15 +130,11 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
     }
   }, [user]);
 
-  if (isAdmin) {
-    // Hide user sidebar entirely when admin
-    return <></>;
-  }
-
   const menuItems = [
     { path: '/dashboard', label: 'Dashboard', Icon: Icons.Dashboard },
     { path: '/agents', label: 'Agents Marketplace', Icon: Icons.Agents },
     { path: '/research', label: 'Research', Icon: Icons.Research },
+    { path: '/auto-trade', label: 'Auto-Trade', Icon: Icons.AutoTrade },
     { path: '/execution', label: 'Execution Logs', Icon: Icons.Logs },
     { path: '/settings', label: 'Settings', Icon: Icons.Settings },
     { path: '/profile', label: 'Profile', Icon: Icons.Profile },
@@ -161,6 +167,11 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
       delete (window as any).__sidebarOpen;
     };
   }, [mobileMenuOpen]);
+
+  // Hide sidebar when chatbot is open or when admin (AFTER all hooks are called)
+  if (isAdmin || chatbotOpen) {
+    return null;
+  }
 
   return (
     <>

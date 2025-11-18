@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard';
 import Home from './pages/Home';
 import EngineControl from './pages/EngineControl';
 import ResearchPanel from './pages/ResearchPanel';
+import AutoTrade from './pages/AutoTrade';
 import Settings from './pages/Settings';
 import ExecutionLogs from './pages/ExecutionLogs';
 import Profile from './pages/Profile';
@@ -27,8 +28,10 @@ import TopNavigation from './components/TopNavigation';
 import UserRoute from './components/UserRoute';
 import { ErrorProvider } from './contexts/ErrorContext';
 import { NotificationProvider } from './contexts/NotificationContext';
+import { ChatbotProvider } from './contexts/ChatbotContext';
 import NotificationToast from './components/NotificationToast';
 import BroadcastPopup from './components/BroadcastPopup';
+import Chatbot from './components/Chatbot';
 import { wsService } from './services/ws';
 import { useAuth } from './hooks/useAuth';
 import { useEffect } from 'react';
@@ -70,9 +73,11 @@ function App() {
   return (
     <ErrorProvider>
       <NotificationProvider>
-        <NotificationToast />
-        <BroadcastPopup />
-        <Routes>
+        <ChatbotProvider>
+          <NotificationToast />
+          <BroadcastPopup />
+          <Chatbot />
+          <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/signup" element={<Signup />} />
       <Route path="/onboarding" element={<Onboarding />} />
@@ -102,6 +107,14 @@ function App() {
         element={
           <UserRoute>
             <ResearchPanel />
+          </UserRoute>
+        }
+      />
+      <Route
+        path="/auto-trade"
+        element={
+          <UserRoute>
+            <AutoTrade />
           </UserRoute>
         }
       />
@@ -243,6 +256,7 @@ function App() {
         }
       />
     </Routes>
+        </ChatbotProvider>
       </NotificationProvider>
     </ErrorProvider>
   );

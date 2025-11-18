@@ -299,7 +299,8 @@ export class ResearchEngine {
               if (historicalData.historicalData && historicalData.historicalData.length >= 2) {
                 const recent = historicalData.historicalData[historicalData.historicalData.length - 1];
                 const previous = historicalData.historicalData[historicalData.historicalData.length - 2];
-                const trend = (recent.price - previous.price) / previous.price;
+                // CoinAPI OHLCV uses 'close' field, not 'price'
+                const trend = (recent.close - previous.close) / previous.close;
                 
                 if (trend > 0.02) {
                   accuracy += 0.03; // Uptrend

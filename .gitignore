@@ -17,6 +17,11 @@ build/
 .env.local
 .env.production
 
+# Firebase service account keys (sensitive)
+serviceAccountKey.json
+**/serviceAccountKey.json
+*.serviceAccount.json
+
 # IDE
 .vscode/
 .idea/

@@ -538,6 +538,239 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // ========== AGENT CRUD ROUTES ==========
+  
+  // PUT /api/admin/agents/:id - Update agent
+  fastify.put('/agents/:id', {
+    preHandler: [fastify.authenticate, fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Params: { id: string }; Body: any }>, reply: FastifyReply) => {
+    try {
+      const { id } = request.params;
+      const body = request.body as any;
+      const { getFirebaseAdmin } = await import('../utils/firebase');
+      const admin = await import('firebase-admin');
+      const db = getFirebaseAdmin().firestore();
+      
+      const agentRef = db.collection('agents').doc(id);
+      const agentDoc = await agentRef.get();
+      
+      if (!agentDoc.exists) {
+        return reply.code(404).send({ error: 'Agent not found' });
+      }
+
+      const updateData: any = {
+        updatedAt: admin.firestore.Timestamp.now(),
+      };
+      
+      // Only include valid fields from body
+      if (body.name !== undefined) updateData.name = body.name;
+      if (body.description !== undefined) updateData.description = body.description;
+      if (body.longDescription !== undefined) updateData.longDescription = body.longDescription;
+      if (body.price !== undefined) updateData.price = body.price;
+      if (body.features !== undefined) updateData.features = body.features;
+      if (body.category !== undefined) updateData.category = body.category;
+      if (body.badge !== undefined) updateData.badge = body.badge;
+      if (body.imageUrl !== undefined) updateData.imageUrl = body.imageUrl;
+      if (body.enabled !== undefined) updateData.enabled = body.enabled;
+      if (body.displayOrder !== undefined) updateData.displayOrder = body.displayOrder;
+      if (body.tags !== undefined) updateData.tags = body.tags;
+      if (body.benefits !== undefined) updateData.benefits = body.benefits;
+      if (body.requirements !== undefined) updateData.requirements = body.requirements;
+      if (body.buyingInstructions !== undefined) updateData.buyingInstructions = body.buyingInstructions;
+      if (body.faq !== undefined) updateData.faq = body.faq;
+
+      await agentRef.update(updateData);
+      logger.info({ agentId: id, adminUid: (request as any).user.uid }, 'Agent updated');
+      return { message: 'Agent updated successfully', agentId: id };
+    } catch (err: any) {
+      logger.error({ err }, 'Error updating agent');
+      return reply.code(500).send({ error: err.message || 'Error updating agent' });
+    }
+  });
+
+  // POST /api/admin/agents - Create agent
+  fastify.post('/agents', {
+    preHandler: [fastify.authenticate, fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Body: any }>, reply: FastifyReply) => {
+    try {
+      const body = z.object({
+        name: z.string().min(1),
+        description: z.string().optional(),
+        longDescription: z.string().optional(),
+        price: z.number().min(0),
+        features: z.array(z.string()).optional(),
+        category: z.string().optional(),
+        badge: z.string().optional(),
+        imageUrl: z.string().optional(),
+        enabled: z.boolean().optional().default(true),
+        displayOrder: z.number().optional().default(0),
+        tags: z.array(z.string()).optional(),
+        benefits: z.array(z.string()).optional(),
+        requirements: z.string().optional(),
+        buyingInstructions: z.string().optional(),
+        faq: z.array(z.object({ question: z.string(), answer: z.string() })).optional(),
+      }).parse(request.body);
+
+      const { getFirebaseAdmin } = await import('../utils/firebase');
+      const admin = await import('firebase-admin');
+      const db = getFirebaseAdmin().firestore();
+      
+      const agentRef = db.collection('agents').doc();
+      await agentRef.set({
+        id: agentRef.id,
+        ...body,
+        createdAt: admin.firestore.Timestamp.now(),
+        updatedAt: admin.firestore.Timestamp.now(),
+      });
+
+      logger.info({ agentId: agentRef.id, adminUid: (request as any).user.uid }, 'Agent created');
+      return { message: 'Agent created successfully', agentId: agentRef.id };
+    } catch (err: any) {
+      if (err instanceof z.ZodError) {
+        return reply.code(400).send({ error: 'Invalid input', details: err.errors });
+      }
+      logger.error({ err }, 'Error creating agent');
+      return reply.code(500).send({ error: err.message || 'Error creating agent' });
+    }
+  });
+
+  // DELETE /api/admin/agents/:id - Delete agent
+  fastify.delete('/agents/:id', {
+    preHandler: [fastify.authenticate, fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    try {
+      const { id } = request.params;
+      const { getFirebaseAdmin } = await import('../utils/firebase');
+      const db = getFirebaseAdmin().firestore();
+      
+      await db.collection('agents').doc(id).delete();
+      logger.info({ agentId: id, adminUid: (request as any).user.uid }, 'Agent deleted');
+      return { message: 'Agent deleted successfully' };
+    } catch (err: any) {
+      logger.error({ err }, 'Error deleting agent');
+      return reply.code(500).send({ error: err.message || 'Error deleting agent' });
+    }
+  });
+
+  // GET /api/admin/agents/purchases - Get all agent purchases
+  fastify.get('/agents/purchases', {
+    preHandler: [fastify.authenticate, fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Querystring: { status?: string; limit?: string } }>, reply: FastifyReply) => {
+    try {
+      const { status, limit } = request.query;
+      const { getFirebaseAdmin } = await import('../utils/firebase');
+      const db = getFirebaseAdmin().firestore();
+      
+      let query: any = db.collection('agentPurchases').orderBy('submittedAt', 'desc');
+      
+      if (status) {
+        query = query.where('status', '==', status);
+      }
+      
+      const limitNum = limit ? parseInt(limit, 10) : 100;
+      const snapshot = await query.limit(limitNum).get();
+      
+      const purchases = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          ...data,
+          submittedAt: data.submittedAt?.toDate?.()?.toISOString() || new Date(data.submittedAt).toISOString(),
+          createdAt: data.createdAt?.toDate?.()?.toISOString() || new Date(data.createdAt).toISOString(),
+          approvedAt: data.approvedAt?.toDate?.()?.toISOString() || (data.approvedAt ? new Date(data.approvedAt).toISOString() : null),
+        };
+      });
+
+      return { purchases };
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting purchases');
+      return reply.code(500).send({ error: err.message || 'Error fetching purchases' });
+    }
+  });
+
+  // POST /api/admin/agents/purchases/:id/approve - Approve purchase and unlock agent
+  fastify.post('/agents/purchases/:id/approve', {
+    preHandler: [fastify.authenticate, fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    try {
+      const { id } = request.params;
+      const { getFirebaseAdmin } = await import('../utils/firebase');
+      const admin = await import('firebase-admin');
+      const db = getFirebaseAdmin().firestore();
+      
+      const purchaseRef = db.collection('agentPurchases').doc(id);
+      const purchaseDoc = await purchaseRef.get();
+      
+      if (!purchaseDoc.exists) {
+        return reply.code(404).send({ error: 'Purchase not found' });
+      }
+
+      const purchase = purchaseDoc.data()!;
+      
+      // Unlock agent for user
+      await firestoreAdapter.unlockAgent(purchase.uid, purchase.agentName);
+      await firestoreAdapter.createAgentUnlock(purchase.uid, purchase.agentName, {
+        unlockedBy: (request as any).user.uid,
+        purchaseId: id,
+      });
+
+      // Update user's unlockedAgents array
+      const userData = await firestoreAdapter.getUser(purchase.uid);
+      const currentUnlocked = userData?.unlockedAgents || [];
+      if (!currentUnlocked.includes(purchase.agentName)) {
+        await firestoreAdapter.createOrUpdateUser(purchase.uid, {
+          unlockedAgents: [...currentUnlocked, purchase.agentName],
+        });
+      }
+
+      // Update purchase status
+      await purchaseRef.update({
+        status: 'approved',
+        approvedAt: admin.firestore.Timestamp.now(),
+        approvedBy: (request as any).user.uid,
+      });
+
+      logger.info({ purchaseId: id, uid: purchase.uid, agentName: purchase.agentName, adminUid: (request as any).user.uid }, 'Purchase approved and agent unlocked');
+      return { message: 'Purchase approved and agent unlocked successfully' };
+    } catch (err: any) {
+      logger.error({ err }, 'Error approving purchase');
+      return reply.code(500).send({ error: err.message || 'Error approving purchase' });
+    }
+  });
+
+  // POST /api/admin/agents/purchases/:id/reject - Reject purchase
+  fastify.post('/agents/purchases/:id/reject', {
+    preHandler: [fastify.authenticate, fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Params: { id: string }; Body: { reason?: string } }>, reply: FastifyReply) => {
+    try {
+      const { id } = request.params;
+      const { reason } = request.body || {};
+      const { getFirebaseAdmin } = await import('../utils/firebase');
+      const admin = await import('firebase-admin');
+      const db = getFirebaseAdmin().firestore();
+      
+      const purchaseRef = db.collection('agentPurchases').doc(id);
+      const purchaseDoc = await purchaseRef.get();
+      
+      if (!purchaseDoc.exists) {
+        return reply.code(404).send({ error: 'Purchase not found' });
+      }
+
+      await purchaseRef.update({
+        status: 'rejected',
+        rejectedAt: admin.firestore.Timestamp.now(),
+        rejectedBy: (request as any).user.uid,
+        rejectionReason: reason || 'No reason provided',
+      });
+
+      logger.info({ purchaseId: id, adminUid: (request as any).user.uid }, 'Purchase rejected');
+      return { message: 'Purchase rejected successfully' };
+    } catch (err: any) {
+      logger.error({ err }, 'Error rejecting purchase');
+      return reply.code(500).send({ error: err.message || 'Error rejecting purchase' });
+    }
+  });
+
   // System health endpoint
   fastify.get('/system-health', {
     preHandler: [fastify.authenticate, fastify.adminAuth],

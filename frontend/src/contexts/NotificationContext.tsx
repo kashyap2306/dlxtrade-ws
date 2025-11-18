@@ -56,9 +56,29 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       // Update notifications
       setNotifications(fetchedNotifications);
 
+      // Check if we just logged in (to prevent showing login success on refresh)
+      const justLoggedIn = sessionStorage.getItem('justLoggedIn') === 'true';
+      
+      // Clear the flag after first use
+      if (justLoggedIn) {
+        sessionStorage.removeItem('justLoggedIn');
+      }
+
       // Trigger toast for new notifications (only unread ones)
+      // Skip login success notifications if we didn't just log in
       newNotifications
-        .filter((n: Notification) => !n.read)
+        .filter((n: Notification) => {
+          if (!n.read) {
+            // If it's a login success notification and we didn't just log in, skip it
+            if (n.title === 'Login Success' && !justLoggedIn) {
+              // Mark it as read to prevent future toasts
+              markAsRead(n.id).catch(() => {});
+              return false;
+            }
+            return true;
+          }
+          return false;
+        })
         .forEach((notification: Notification) => {
           // Dispatch custom event for toast
           window.dispatchEvent(

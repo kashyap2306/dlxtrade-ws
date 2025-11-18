@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import { integrationsApi } from '../services/api';
+import api from '../services/api';
 import Toast from './Toast';
 import { useNotificationContext } from '../contexts/NotificationContext';
+import { useAuth } from '../hooks/useAuth';
 import {
   CheckCircleIcon,
   XCircleIcon,
@@ -88,6 +90,7 @@ interface CoinApiData {
 
 export default function APIIntegrationsSection() {
   const { addNotification } = useNotificationContext();
+  const { user } = useAuth();
   const [integrations, setIntegrations] = useState<Record<ApiName, Integration | CoinApiData>>({
     binance: { enabled: false, apiKey: null, secretKey: null },
     cryptoquant: { enabled: false, apiKey: null, secretKey: null },
@@ -268,13 +271,39 @@ export default function APIIntegrationsSection() {
 
     try {
       setLoading(true);
-      await integrationsApi.update({
-        apiName,
-        apiType,
-        enabled: true,
-        apiKey: formData.apiKey.trim(),
-        secretKey: config.requiresSecret ? formData.secretKey.trim() : undefined,
-      });
+      
+      // If Binance (trading exchange), save to exchangeConfig/current instead of integrations
+      if (apiName === 'binance' && !apiType) {
+        if (!user) {
+          throw new Error('User not authenticated');
+        }
+        
+        // Save to exchangeConfig/current (primary location)
+        await api.post(`/users/${user.uid}/exchange-config`, {
+          exchange: 'binance',
+          type: 'binance',
+          apiKey: formData.apiKey.trim(),
+          secret: formData.secretKey.trim(),
+          testnet: true,
+        });
+        
+        // Also save to integrations for backward compatibility (but exchangeConfig is primary)
+        await integrationsApi.update({
+          apiName: 'binance',
+          enabled: true,
+          apiKey: formData.apiKey.trim(),
+          secretKey: formData.secretKey.trim(),
+        });
+      } else {
+        // Research APIs (CryptoQuant, LunarCrush, CoinAPI) go to integrations
+        await integrationsApi.update({
+          apiName,
+          apiType,
+          enabled: true,
+          apiKey: formData.apiKey.trim(),
+          secretKey: config.requiresSecret ? formData.secretKey.trim() : undefined,
+        });
+      }
 
       await loadIntegrations();
       setEditingApi(null);
@@ -290,7 +319,7 @@ export default function APIIntegrationsSection() {
         type: 'success',
       });
     } catch (err: any) {
-      const errorMsg = err.response?.data?.error || 'Error saving integration';
+      const errorMsg = err.response?.data?.error || err.message || 'Error saving integration';
       showToast(errorMsg, 'error');
       await addNotification({
         title: 'API Connection Failed',

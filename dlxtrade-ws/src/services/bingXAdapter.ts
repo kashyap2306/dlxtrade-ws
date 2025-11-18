@@ -143,5 +143,51 @@ export class BingXAdapter implements ExchangeConnector {
       return { success: false, message };
     }
   }
+
+  async getAccount(): Promise<any> {
+    try {
+      return await this.request('GET', '/openApi/account/v1/info', {}, true);
+    } catch (error: any) {
+      logger.error({ error }, 'Error getting BingX account');
+      return { error: error.message || 'Failed to get account' };
+    }
+  }
+
+  async placeOrder(params: {
+    symbol: string;
+    side: "BUY" | "SELL";
+    type?: "MARKET" | "LIMIT";
+    quantity: number;
+    price?: number;
+  }): Promise<any> {
+    try {
+      const { symbol, side, type = 'MARKET', quantity, price } = params;
+      const orderParams: any = {
+        symbol: symbol.toUpperCase(),
+        side,
+        type,
+        quantity: quantity.toString(),
+      };
+
+      if (type === 'LIMIT' && price) {
+        orderParams.price = price.toString();
+      }
+
+      const response = await this.request('POST', '/openApi/spot/v1/trade', orderParams, true);
+      return {
+        id: response.data?.orderId?.toString() || Date.now().toString(),
+        symbol,
+        side,
+        type,
+        quantity,
+        price: price || 0,
+        status: 'NEW',
+        exchangeOrderId: response.data?.orderId?.toString() || '',
+      };
+    } catch (error: any) {
+      logger.error({ error }, 'Error placing BingX order');
+      throw error;
+    }
+  }
 }
 

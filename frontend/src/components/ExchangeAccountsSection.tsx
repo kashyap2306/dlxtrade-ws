@@ -185,6 +185,7 @@ export default function ExchangeAccountsSection() {
       setLoading(true);
       await api.post(`/users/${user.uid}/exchange-config`, {
         exchange: selectedExchange,
+        type: selectedExchange, // Explicitly set type field
         apiKey: credentials.apiKey,
         secret: credentials.secretKey,
         passphrase: exchangeInfo.requiresPassphrase ? credentials.passphrase : undefined,

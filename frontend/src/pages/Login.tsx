@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, GithubAuthProvider, sendPasswordResetEmail } from 'firebase/auth';
+import { signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, GithubAuthProvider, sendPasswordResetEmail, onAuthStateChanged } from 'firebase/auth';
 import { auth } from '../config/firebase';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
@@ -19,6 +19,18 @@ export default function Login() {
   const { showError } = useError();
   // NotificationContext is available since NotificationProvider wraps all routes
   const { addNotification } = useNotificationContext();
+
+  // Redirect if already logged in
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      const token = localStorage.getItem('firebaseToken');
+      if (user || token) {
+        // User is already logged in, redirect to dashboard
+        navigate('/dashboard', { replace: true });
+      }
+    });
+    return () => unsubscribe();
+  }, [navigate]);
 
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
@@ -65,30 +77,22 @@ export default function Login() {
       
       wsService.connect();
       
-      // Add login success notification
+      // Add login success notification with a flag to prevent showing on refresh
+      // Store a flag in sessionStorage to mark that we just logged in
+      sessionStorage.setItem('justLoggedIn', 'true');
       await addNotification({
         title: 'Login Success',
         message: `Welcome back! Successfully logged in as ${userCredential.user.email}`,
         type: 'success',
       });
       
-      // Wait for auth state to be confirmed
-      // Firebase auth state should be updated immediately after signIn
-      // We use a small delay to ensure onAuthStateChanged has fired
-      await new Promise(resolve => setTimeout(resolve, 150));
+      // Determine target path
+      const targetPath = needsOnboarding ? '/onboarding' : '/dashboard';
       
-      // Double-check that auth state is ready
-      if (!auth.currentUser) {
-        // If still not ready, wait a bit more
-        await new Promise(resolve => setTimeout(resolve, 200));
-      }
-      
-      // Navigate with replace to prevent back button issues
-      if (needsOnboarding) {
-        navigate('/onboarding', { replace: true });
-      } else {
-        navigate('/dashboard', { replace: true });
-      }
+      // Use window.location.href for reliable redirect
+      // This ensures a full page reload and proper auth state initialization
+      // The onAuthStateChanged in useAuth will fire on page load
+      window.location.href = targetPath;
     } catch (err: any) {
       suppressConsoleError(err, 'completeSignIn');
       const { message, type } = getFirebaseErrorMessage(err);

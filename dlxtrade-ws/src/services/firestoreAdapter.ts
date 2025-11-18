@@ -253,6 +253,7 @@ export class FirestoreAdapter {
   }
 
   async getResearchLogs(uid: string, limit: number = 100): Promise<ResearchLogDocument[]> {
+    // Get logs from both researchLogs collection (scheduled research) and old research collection
     const snapshot = await db()
       .collection('users')
       .doc(uid)

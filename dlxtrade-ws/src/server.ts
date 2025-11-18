@@ -81,21 +81,24 @@ async function start() {
           // This prevents blocking server startup on Render
         }
 
-        // Initialize Firestore collections - FORCED RUN (no conditions)
-        try {
-          await initializeFirestoreCollections();
-        } catch (initError: any) {
-          console.error('❌ INIT ERROR (Collection Initializer):', initError.message);
-          logger.error({ error: initError.message, stack: initError.stack }, 'Firestore collection initialization failed');
-        }
+        // Initialize Firestore collections - DISABLED (collections created naturally)
+        // Collections are created automatically when first document is added
+        // No need for "__initializer__" documents
+        // try {
+        //   await initializeFirestoreCollections();
+        // } catch (initError: any) {
+        //   console.error('❌ INIT ERROR (Collection Initializer):', initError.message);
+        //   logger.error({ error: initError.message, stack: initError.stack }, 'Firestore collection initialization failed');
+        // }
 
-        // Run auto-migration to patch missing fields
-        try {
-          await migrateFirestoreDocuments();
-        } catch (migrationError: any) {
-          console.error('❌ INIT ERROR (Migration):', migrationError.message);
-          logger.error({ error: migrationError.message }, 'Firestore migration failed');
-        }
+        // Auto-migration DISABLED - no longer running on startup
+        // Migration should be run manually via scripts if needed
+        // try {
+        //   await migrateFirestoreDocuments();
+        // } catch (migrationError: any) {
+        //   console.error('❌ INIT ERROR (Migration):', migrationError.message);
+        //   logger.error({ error: migrationError.message }, 'Firestore migration failed');
+        // }
 
         // Seed Firestore with default data
         try {
@@ -150,6 +153,17 @@ async function start() {
         } catch (autoPromoteErr: any) {
           console.error('⚠️ Auto-promote admin failed:', autoPromoteErr.message);
           logger.warn({ error: autoPromoteErr.message }, 'Auto-promote admin failed');
+        }
+
+        // Start scheduled research service (runs every 5 minutes)
+        try {
+          const { scheduledResearchService } = await import('./services/scheduledResearch');
+          scheduledResearchService.start();
+          console.log('✅ Scheduled research service started (every 5 minutes)');
+          logger.info('Scheduled research service started');
+        } catch (scheduledErr: any) {
+          console.error('⚠️ Scheduled research service failed to start:', scheduledErr.message);
+          logger.warn({ error: scheduledErr.message }, 'Scheduled research service failed to start');
         }
       } catch (firebaseError: any) {
         console.error('❌ INIT ERROR (Firebase):', firebaseError.message);

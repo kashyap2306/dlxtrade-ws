@@ -96,5 +96,125 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: err.message || 'Error fetching unlocked agents' });
     }
   });
+
+  // GET /api/agents/:id - Get single agent by ID
+  fastify.get('/:id', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    try {
+      const { id } = request.params;
+      const agent = await firestoreAdapter.getAgent(id);
+      if (!agent) {
+        return reply.code(404).send({ error: 'Agent not found' });
+      }
+      return { agent };
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting agent');
+      return reply.code(500).send({ error: err.message || 'Error fetching agent' });
+    }
+  });
+
+  // POST /api/agents/submit-unlock-request - Submit unlock request (creates purchase)
+  fastify.post('/submit-unlock-request', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: { agentId: string; agentName: string; fullName: string; phoneNumber: string; email: string } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const body = z.object({
+        agentId: z.string().min(1),
+        agentName: z.string().min(1),
+        fullName: z.string().min(1),
+        phoneNumber: z.string().min(1),
+        email: z.string().email(),
+      }).parse(request.body);
+
+      // Save purchase request to Firestore
+      const { getFirebaseAdmin } = await import('../utils/firebase');
+      const admin = await import('firebase-admin');
+      const db = getFirebaseAdmin().firestore();
+      
+      const purchaseRef = db.collection('agentPurchases').doc();
+      await purchaseRef.set({
+        id: purchaseRef.id,
+        uid: user.uid,
+        agentId: body.agentId,
+        agentName: body.agentName,
+        fullName: body.fullName,
+        phoneNumber: body.phoneNumber,
+        email: body.email,
+        status: 'pending',
+        submittedAt: admin.firestore.Timestamp.now(),
+        createdAt: admin.firestore.Timestamp.now(),
+      });
+
+      // Also create unlock request entry for backward compatibility
+      const unlockRequestRef = db.collection('agentUnlockRequests').doc();
+      await unlockRequestRef.set({
+        uid: user.uid,
+        agentId: body.agentId,
+        agentName: body.agentName,
+        fullName: body.fullName,
+        phoneNumber: body.phoneNumber,
+        email: body.email,
+        submittedAt: admin.firestore.Timestamp.now(),
+        status: 'pending',
+      });
+
+      // Log activity
+      await firestoreAdapter.logActivity(user.uid, 'AGENT_PURCHASE_REQUEST_SUBMITTED', {
+        agentId: body.agentId,
+        agentName: body.agentName,
+        purchaseId: purchaseRef.id,
+      });
+
+      logger.info({ uid: user.uid, agentName: body.agentName, purchaseId: purchaseRef.id }, 'Agent purchase request submitted');
+      return { 
+        success: true,
+        message: 'Purchase request submitted successfully', 
+        purchaseId: purchaseRef.id 
+      };
+    } catch (err: any) {
+      if (err instanceof z.ZodError) {
+        return reply.code(400).send({ error: 'Invalid input', details: err.errors });
+      }
+      logger.error({ err }, 'Error submitting purchase request');
+      return reply.code(500).send({ error: err.message || 'Error submitting purchase request' });
+    }
+  });
+
+  // PUT /api/agents/:agentId/settings - Update agent settings for user
+  fastify.put('/:agentId/settings', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { agentId: string }; Body: any }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const { agentId } = request.params;
+      const settings = request.body;
+
+      // Get agent name from agentId
+      const allAgents = await firestoreAdapter.getAllAgents();
+      const agent = allAgents.find((a: any) => a.id === agentId);
+      if (!agent) {
+        return reply.code(404).send({ error: 'Agent not found' });
+      }
+
+      // Update agent settings in user's subcollection
+      const { getFirebaseAdmin } = await import('../utils/firebase');
+      const admin = await import('firebase-admin');
+      const db = getFirebaseAdmin().firestore();
+      const userAgentRef = db.collection('users').doc(user.uid).collection('agents').doc(agent.id);
+      const updateData: any = {
+        updatedAt: admin.firestore.Timestamp.now(),
+      };
+      Object.assign(updateData, settings);
+      await userAgentRef.set(updateData, { merge: true });
+      
+      logger.info({ uid: user.uid, agentName: agent.name }, 'Agent settings updated');
+      return { message: 'Settings updated successfully' };
+    } catch (err: any) {
+      logger.error({ err }, 'Error updating agent settings');
+      return reply.code(500).send({ error: err.message || 'Error updating agent settings' });
+    }
+  });
 }
 
