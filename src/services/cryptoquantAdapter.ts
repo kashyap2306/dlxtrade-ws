@@ -51,8 +51,22 @@ export class CryptoQuantAdapter {
   private apiKey: string;
   private baseUrl = 'https://api.cryptoquant.com/v1';
   private httpClient: AxiosInstance;
+  private disabled: boolean;
 
   constructor(apiKey: string) {
+    // If apiKey is missing, empty, undefined, or null, disable the adapter
+    if (!apiKey || apiKey.trim() === '' || apiKey === 'undefined' || apiKey === 'null') {
+      this.disabled = true;
+      this.apiKey = '';
+      // Create a dummy httpClient that will never be used
+      this.httpClient = axios.create({
+        baseURL: this.baseUrl,
+        timeout: 10000,
+      });
+      return;
+    }
+
+    this.disabled = false;
     this.apiKey = apiKey;
     this.httpClient = axios.create({
       baseURL: this.baseUrl,
@@ -65,6 +79,11 @@ export class CryptoQuantAdapter {
 
   // Get Exchange Reserve
   async getExchangeReserve(symbol: string): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      return {};
+    }
+
     const coinSymbol = symbol.replace('USDT', '').replace('USD', '');
     const url = `${this.baseUrl}/btc/network-data/exchange-reserve`;
     
@@ -119,6 +138,11 @@ export class CryptoQuantAdapter {
 
   // Get Miner Reserve
   async getMinerReserve(symbol: string): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      return {};
+    }
+
     try {
       const coinSymbol = symbol.replace('USDT', '').replace('USD', '');
       const response = await this.httpClient.get(`/btc/network-data/miner-reserve`, {
@@ -138,6 +162,11 @@ export class CryptoQuantAdapter {
 
   // Get Stablecoin Supply
   async getStablecoinSupply(symbol: string = 'USDT'): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      return {};
+    }
+
     try {
       const response = await this.httpClient.get(`/stablecoins/supply`, {
         params: {
@@ -158,6 +187,11 @@ export class CryptoQuantAdapter {
 
   // Get Netflow
   async getExchangeFlow(symbol: string): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      return {};
+    }
+
     const coinSymbol = symbol.replace('USDT', '').replace('USD', '');
     const url = `${this.baseUrl}/btc/network-data/exchange-netflow`;
     
@@ -210,6 +244,11 @@ export class CryptoQuantAdapter {
 
   // Get Long/Short Ratio
   async getLongShortRatio(symbol: string): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      return {};
+    }
+
     try {
       const response = await this.httpClient.get(`/derivatives/ratio/long-short-ratio`, {
         params: {
@@ -230,6 +269,11 @@ export class CryptoQuantAdapter {
 
   // Get Futures Open Interest
   async getFuturesOI(symbol: string): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      return {};
+    }
+
     try {
       const response = await this.httpClient.get(`/derivatives/oi/open-interest`, {
         params: {
@@ -249,6 +293,11 @@ export class CryptoQuantAdapter {
 
   // Get Funding Rate
   async getFundingRate(symbol: string): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      return {};
+    }
+
     try {
       const response = await this.httpClient.get(`/derivatives/funding-rate`, {
         params: {
@@ -268,6 +317,11 @@ export class CryptoQuantAdapter {
 
   // Get Whale Transactions
   async getWhaleTransactions(symbol: string): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      return {};
+    }
+
     try {
       const coinSymbol = symbol.replace('USDT', '').replace('USD', '');
       const response = await this.httpClient.get(`/btc/network-data/whale-transactions`, {
@@ -289,6 +343,11 @@ export class CryptoQuantAdapter {
 
   // Get Liquidation Data
   async getLiquidationData(symbol: string): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      return {};
+    }
+
     try {
       const response = await this.httpClient.get(`/derivatives/liquidation`, {
         params: {
@@ -309,6 +368,11 @@ export class CryptoQuantAdapter {
 
   // Get Active Addresses
   async getActiveAddresses(symbol: string): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      return {};
+    }
+
     const coinSymbol = symbol.replace('USDT', '').replace('USD', '');
     const url = `${this.baseUrl}/btc/network-data/active-addresses`;
     
