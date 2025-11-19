@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { engineApi, settingsApi, usersApi, agentsApi, engineStatusApi, hftApi } from '../services/api';
 import Sidebar from '../components/Sidebar';
-import Header from '../components/Header';
 import Toast from '../components/Toast';
 import { User } from 'firebase/auth';
 
@@ -48,10 +47,7 @@ export default function Profile() {
         hftApi.getStatus(),
       ]);
       
-      console.log('Profile user API response:', userResponse.data);
-      console.log('Profile agents unlocks API response:', agentsResponse.data);
-      console.log('Profile engine status API response:', engineStatusResponse.data);
-      console.log('Profile HFT status API response:', hftStatusResponse.data);
+      // Profile data loaded successfully
       
       setUserData(userResponse.data);
       setUnlockedAgents(agentsResponse.data.unlocks || []);
@@ -216,25 +212,14 @@ export default function Profile() {
 
       <main className="min-h-screen">
         <div className="max-w-4xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8 pt-20 lg:pt-8">
-          <div className="mb-6 sm:mb-8">
-            <div className="lg:hidden mb-4">
-              <Header
-                title="User Profile"
-                subtitle="Manage your account settings"
-                onMenuToggle={() => {
-                  const toggle = (window as any).__sidebarToggle;
-                  if (toggle) toggle();
-                }}
-                menuOpen={(window as any).__sidebarOpen || false}
-              />
-            </div>
-            <div className="hidden lg:block">
-              <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent mb-2">
+          <section className="mb-6 sm:mb-8">
+            <div className="space-y-2">
+              <h1 className="text-3xl sm:text-4xl font-bold bg-gradient-to-r from-purple-300 via-pink-300 to-cyan-300 bg-clip-text text-transparent">
                 User Profile
               </h1>
-              <p className="text-gray-300">Manage your account settings and preferences</p>
+              <p className="text-sm sm:text-base text-gray-300">Manage your account settings and preferences</p>
             </div>
-          </div>
+          </section>
 
           <div className="space-y-6">
             {/* Profile Card */}

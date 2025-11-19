@@ -1,7 +1,7 @@
 import pino from 'pino';
 
 export const logger = pino({
-  level: process.env.LOG_LEVEL || 'info',
+  level: process.env.LOG_LEVEL || 'warn', // Changed from 'info' to 'warn' to reduce log spam
   transport: process.env.NODE_ENV === 'development'
     ? {
         target: 'pino-pretty',

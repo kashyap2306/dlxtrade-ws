@@ -1,15 +1,19 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
-import Header from '../components/Header';
 import { autoTradeApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
+import { useAutoTradeMode } from '../hooks/useAutoTradeMode';
 import { useError } from '../contexts/ErrorContext';
 import { useNotificationContext } from '../contexts/NotificationContext';
 import { suppressConsoleError, getApiErrorMessage } from '../utils/errorHandler';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import Toast from '../components/Toast';
+import WalletCard from '../components/Wallet/WalletCard';
+import ConfigCard from '../components/AutoTrade/ConfigCard';
+import ActivityList from '../components/AutoTrade/ActivityList';
+import ExchangeAccountsSection from '../components/ExchangeAccountsSection';
 
 interface AutoTradeConfig {
   autoTradeEnabled: boolean;
@@ -18,15 +22,11 @@ interface AutoTradeConfig {
   maxDailyLossPct: number;
   stopLossPct: number;
   takeProfitPct: number;
-  trailingStop: boolean;
-  trailingPct: number;
   manualOverride: boolean;
-  mode: 'AUTO' | 'MANUAL' | 'SIMULATION';
 }
 
 interface AutoTradeStatus {
   enabled: boolean;
-  mode: string;
   activeTrades: number;
   dailyPnL: number;
   dailyTrades: number;
@@ -41,8 +41,6 @@ interface AutoTradeStatus {
     maxDailyLossPct: number;
     stopLossPct: number;
     takeProfitPct: number;
-    trailingStop: boolean;
-    trailingPct: number;
   };
   stats?: {
     totalTrades: number;
@@ -69,18 +67,16 @@ export default function AutoTrade() {
     maxDailyLossPct: 5,
     stopLossPct: 1.5,
     takeProfitPct: 3,
-    trailingStop: false,
-    trailingPct: 0.5,
     manualOverride: false,
-    mode: 'SIMULATION',
   });
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [showExchangeModal, setShowExchangeModal] = useState(false);
+  const [showApiRequiredModal, setShowApiRequiredModal] = useState(false);
 
   useEffect(() => {
     if (user) {
       checkAdmin();
       loadStatus();
-      loadConfig();
     }
   }, [user]);
 
@@ -97,65 +93,73 @@ export default function AutoTrade() {
     }
   };
 
-  const loadStatus = async () => {
+  const loadStatus = useCallback(async () => {
     if (!user) return;
     try {
       const response = await autoTradeApi.getStatus();
       setStatus(response.data);
       if (response.data.config) {
-        setConfig(prev => ({ ...prev, ...response.data.config }));
+        setConfig(prev => ({
+          ...prev,
+          perTradeRiskPct: response.data.config?.perTradeRiskPct ?? prev.perTradeRiskPct,
+          maxConcurrentTrades: response.data.config?.maxConcurrentTrades ?? prev.maxConcurrentTrades,
+          maxDailyLossPct: response.data.config?.maxDailyLossPct ?? prev.maxDailyLossPct,
+          stopLossPct: response.data.config?.stopLossPct ?? prev.stopLossPct,
+          takeProfitPct: response.data.config?.takeProfitPct ?? prev.takeProfitPct,
+        }));
       }
     } catch (err: any) {
       suppressConsoleError(err, 'loadAutoTradeStatus');
     }
-  };
+  }, [user]);
 
-  const loadConfig = async () => {
-    // Config is loaded from status endpoint
-    await loadStatus();
-  };
+  // Use shared hook for Auto-Trade Mode logic
+  const autoTradeMode = useAutoTradeMode();
 
-  const handleConfigUpdate = async (updates: Partial<AutoTradeConfig>) => {
+  const handleEnableToggle = useCallback(async (enabled: boolean) => {
     if (!user) return;
-    setLoading(true);
-    try {
-      // Warn if switching to AUTO mode
-      if (updates.mode === 'AUTO' && config.mode !== 'AUTO' && !isAdmin) {
-        showError('Only admins can enable AUTO (live trading) mode. Use SIMULATION mode for testing.', 'auth');
+
+    // Use shared hook logic
+    if (enabled) {
+      if (!autoTradeMode.isApiConnected) {
+        setShowApiRequiredModal(true);
         return;
       }
-
-      // Show warning for AUTO mode
-      if (updates.mode === 'AUTO') {
-        const confirmed = window.confirm(
-          '⚠️ WARNING: AUTO mode enables LIVE TRADING with real money.\n\n' +
-          'Trading involves risk. Past performance is no guarantee of future results.\n\n' +
-          'Are you sure you want to enable live trading?'
-        );
-        if (!confirmed) return;
+      
+      if (!autoTradeMode.allRequiredAPIsConnected) {
+        const missingNames = autoTradeMode.missingAPIs.map((m) => {
+          if (m === 'coinapi_market') return 'CoinAPI Market';
+          if (m === 'coinapi_flatfile') return 'CoinAPI Flatfile';
+          if (m === 'coinapi_exchangerate') return 'CoinAPI Exchange Rate';
+          return m.charAt(0).toUpperCase() + m.slice(1);
+        }).join(', ');
+        
+        showError(`Please submit all required APIs to enable Auto-Trade Mode. Missing: ${missingNames}`, 'validation');
+        return;
       }
+    }
 
-      await autoTradeApi.updateConfig(updates);
-      setConfig(prev => ({ ...prev, ...updates }));
-      setToast({ message: 'Configuration updated successfully', type: 'success' });
+    try {
+      await autoTradeMode.toggle();
+      // Refresh status to get updated enabled state
       await loadStatus();
+      setToast({ 
+        message: enabled ? 'Auto-Trade enabled successfully' : 'Auto-Trade disabled successfully', 
+        type: 'success' 
+      });
     } catch (err: any) {
       const { message, type } = getApiErrorMessage(err);
       showError(message, type);
-    } finally {
-      setLoading(false);
     }
-  };
+  }, [user, autoTradeMode, loadStatus, showError]);
 
-  const handleRunNow = async () => {
+  const handleConfigSave = useCallback(async (updates: Partial<AutoTradeConfig>) => {
     if (!user) return;
     setLoading(true);
     try {
-      const response = await autoTradeApi.run();
-      setToast({ 
-        message: `Processed ${response.data.processed} queued signals`, 
-        type: 'success' 
-      });
+      await autoTradeApi.updateConfig(updates);
+      setConfig(prev => ({ ...prev, ...updates }));
+      setToast({ message: 'Trading configuration updated!', type: 'success' });
       await loadStatus();
     } catch (err: any) {
       const { message, type } = getApiErrorMessage(err);
@@ -163,13 +167,14 @@ export default function AutoTrade() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [user, loadStatus, showError]);
 
-  const handleToggleOverride = async () => {
-    await handleConfigUpdate({ manualOverride: !config.manualOverride });
-  };
+  const handleConfigUpdate = useCallback(async (updates: Partial<AutoTradeConfig>) => {
+    // For individual field updates, just update local state
+    setConfig(prev => ({ ...prev, ...updates }));
+  }, []);
 
-  const handleResetCircuitBreaker = async () => {
+  const handleResetCircuitBreaker = useCallback(async () => {
     if (!isAdmin) {
       showError('Only admins can reset circuit breaker', 'auth');
       return;
@@ -185,27 +190,46 @@ export default function AutoTrade() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [isAdmin, loadStatus, showError]);
 
-  const showToast = (message: string, type: 'success' | 'error') => {
+  const showToast = useCallback((message: string, type: 'success' | 'error') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
-  };
+  }, []);
 
-  const handleLogout = async () => {
+  const handleLogout = useCallback(async () => {
     const { signOut } = await import('firebase/auth');
     const { auth } = await import('../config/firebase');
     await signOut(auth);
     localStorage.removeItem('firebaseToken');
     localStorage.removeItem('firebaseUser');
     window.location.href = '/login';
-  };
+  }, []);
 
-  const winRate = status?.stats 
-    ? status.stats.totalTrades > 0 
-      ? ((status.stats.winningTrades / status.stats.totalTrades) * 100).toFixed(1)
-      : '0.0'
-    : '0.0';
+  const winRate = useMemo(() => {
+    return status?.stats 
+      ? status.stats.totalTrades > 0 
+        ? ((status.stats.winningTrades / status.stats.totalTrades) * 100).toFixed(1)
+        : '0.0'
+      : '0.0';
+  }, [status?.stats]);
+
+  const statusChip = useMemo(() => {
+    if (!status) return { text: 'Loading...', color: 'text-gray-400' };
+    return status.enabled
+      ? { text: 'Enabled', color: 'text-green-400' }
+      : { text: 'Disabled', color: 'text-gray-400' };
+  }, [status]);
+
+  const isConfigValid = useMemo(() => {
+    return (
+      config.perTradeRiskPct >= 0.1 && config.perTradeRiskPct <= 10 &&
+      config.maxConcurrentTrades >= 1 && config.maxConcurrentTrades <= 10 &&
+      config.maxDailyLossPct >= 0.5 && config.maxDailyLossPct <= 50 &&
+      config.stopLossPct >= 0.5 && config.stopLossPct <= 10 &&
+      config.takeProfitPct >= 0.5 && config.takeProfitPct <= 20
+    );
+  }, [config]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#0a0f1c] via-[#101726] to-[#0a0f1c] pb-20 lg:pb-0 relative overflow-hidden">
@@ -220,74 +244,40 @@ export default function AutoTrade() {
 
       <main className="min-h-screen relative z-10">
         <div className="max-w-7xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8 pt-20 lg:pt-8">
-          <Header
-            title="Auto-Trade Dashboard"
-            subtitle="Automated trading with risk management and safety controls"
-            onMenuToggle={() => {
-              const toggle = (window as any).__sidebarToggle;
-              if (toggle) toggle();
-            }}
-            menuOpen={(window as any).__sidebarOpen || false}
-          />
-
-          {/* Safety Disclaimer */}
-          <div className="mb-6 p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-xl">
-            <div className="flex items-start gap-3">
-              <span className="text-2xl">⚠️</span>
-              <div>
-                <h3 className="text-yellow-400 font-semibold mb-1">Trading Risk Disclaimer</h3>
-                <p className="text-sm text-gray-300">
-                  Trading involves risk. Past performance is no guarantee of future results. 
-                  You may lose money when trading. Only trade with funds you can afford to lose. 
-                  This system does not guarantee profits or prevent losses.
+          {/* Header */}
+          <section className="mb-6 sm:mb-8">
+            <div className="flex items-center justify-between flex-wrap gap-4">
+              <div className="space-y-2">
+                <h1 className="text-3xl sm:text-4xl font-bold bg-gradient-to-r from-purple-300 via-pink-300 to-cyan-300 bg-clip-text text-transparent">
+                  Auto-Trade
+                </h1>
+                <p className="text-sm sm:text-base text-gray-300 max-w-3xl">
+                  Automated trading with risk management and safety controls
                 </p>
               </div>
-            </div>
-          </div>
-
-          {/* Live Trading Warning */}
-          {config.mode === 'AUTO' && config.autoTradeEnabled && (
-            <div className="mb-6 p-4 bg-red-500/20 border-2 border-red-500/50 rounded-xl animate-pulse">
-              <div className="flex items-center gap-3">
-                <span className="text-2xl">🔴</span>
-                <div>
-                  <h3 className="text-red-400 font-bold text-lg mb-1">LIVE TRADING ENABLED</h3>
-                  <p className="text-sm text-red-300">
-                    Real money trades are being executed. Monitor your positions closely.
-                  </p>
-                </div>
+              <div className="flex items-center gap-2">
+                <span className={`text-sm font-semibold ${statusChip.color}`}>
+                  {statusChip.text}
+                </span>
               </div>
             </div>
-          )}
+          </section>
 
+          {/* Wallet Section - Moved to Top */}
+          <div className="mb-6">
+            <WalletCard onConnectClick={() => setShowExchangeModal(true)} />
+          </div>
+
+          {/* Main Dashboard Grid */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-            {/* Status Cards */}
+            {/* Left Column: Configuration */}
             <div className="lg:col-span-2 space-y-6">
-              {/* Current Status */}
+              {/* Status Overview */}
               <div className="bg-black/30 backdrop-blur-xl border border-purple-500/30 rounded-2xl p-6">
                 <h2 className="text-xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent mb-4">
-                  Current Status
+                  Trading Status
                 </h2>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <div className="text-sm text-gray-400 mb-1">Mode</div>
-                    <div className={`text-lg font-bold ${
-                      config.mode === 'AUTO' ? 'text-red-400' :
-                      config.mode === 'SIMULATION' ? 'text-blue-400' :
-                      'text-yellow-400'
-                    }`}>
-                      {config.mode}
-                      {config.mode === 'SIMULATION' && ' (Safe Testing)'}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-sm text-gray-400 mb-1">Status</div>
-                    <div className={`text-lg font-bold ${
-                      status?.enabled ? 'text-green-400' : 'text-gray-400'
-                    }`}>
-                      {status?.enabled ? '🟢 Enabled' : '⚪ Disabled'}
-                    </div>
-                  </div>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                   <div>
                     <div className="text-sm text-gray-400 mb-1">Active Trades</div>
                     <div className="text-lg font-bold text-white">
@@ -312,6 +302,22 @@ export default function AutoTrade() {
                     <div className="text-sm text-gray-400 mb-1">Equity</div>
                     <div className="text-lg font-bold text-white">
                       ${(status?.equity || 0).toFixed(2)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-sm text-gray-400 mb-1">Engine Status</div>
+                    <div className={`text-lg font-bold ${
+                      status?.engineRunning ? 'text-green-400' : 'text-gray-400'
+                    }`}>
+                      {status?.engineRunning ? '🟢 Running' : '⚪ Stopped'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-sm text-gray-400 mb-1">API Connection</div>
+                    <div className={`text-lg font-bold ${
+                      status?.isApiConnected ? 'text-green-400' : 'text-red-400'
+                    }`}>
+                      {status?.isApiConnected ? 'Connected' : 'Disconnected'}
                     </div>
                   </div>
                 </div>
@@ -376,203 +382,95 @@ export default function AutoTrade() {
                 </div>
               )}
 
-              {/* Manual Controls */}
-              <div className="bg-black/30 backdrop-blur-xl border border-purple-500/30 rounded-2xl p-6">
-                <h2 className="text-xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent mb-4">
-                  Manual Controls
-                </h2>
-                <div className="flex flex-wrap gap-3">
-                  <button
-                    onClick={handleRunNow}
-                    disabled={loading || !status?.enabled}
-                    className="px-6 py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold rounded-xl hover:from-purple-500 hover:to-pink-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {loading ? 'Processing...' : 'Run Now'}
-                  </button>
-                  <button
-                    onClick={handleToggleOverride}
-                    disabled={loading}
-                    className={`px-6 py-3 font-semibold rounded-xl transition-all ${
-                      config.manualOverride
-                        ? 'bg-yellow-600 hover:bg-yellow-700 text-white'
-                        : 'bg-gray-700 hover:bg-gray-600 text-gray-200'
-                    }`}
-                  >
-                    {config.manualOverride ? 'Resume Trading' : 'Pause Trading'}
-                  </button>
-                </div>
-              </div>
+              {/* Configuration Card */}
+              <ConfigCard 
+                config={config} 
+                loading={loading} 
+                isApiConnected={status?.isApiConnected ?? false}
+                onUpdate={handleConfigUpdate}
+                onSave={handleConfigSave}
+                onEnableToggle={handleEnableToggle}
+                isConfigValid={isConfigValid}
+              />
+
+              {/* Activity List */}
+              <ActivityList />
             </div>
 
-            {/* Configuration Panel */}
-            <div className="bg-black/30 backdrop-blur-xl border border-purple-500/30 rounded-2xl p-6">
-              <h2 className="text-xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent mb-4">
-                Configuration
-              </h2>
-              
-              <div className="space-y-4">
-                {/* Mode Selection */}
+            {/* Right Column: Empty for now (previously had Wallet) */}
+            <div className="space-y-6">
+              {/* Reserved for future content */}
+            </div>
+          </div>
+
+          {/* Trading Risk Disclaimer - Moved to Footer */}
+          <div className="mt-8 pt-6 border-t border-purple-500/20">
+            <div className="p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-xl">
+              <div className="flex items-start gap-3">
+                <span className="text-2xl">⚠️</span>
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-2">
-                    Trading Mode
-                  </label>
-                  <select
-                    value={config.mode}
-                    onChange={(e) => handleConfigUpdate({ mode: e.target.value as any })}
-                    disabled={loading || !isAdmin}
-                    className="w-full px-4 py-2 bg-black/40 border border-purple-500/40 rounded-lg text-white focus:outline-none focus:border-purple-400 disabled:opacity-50"
-                  >
-                    <option value="SIMULATION">SIMULATION (Safe Testing)</option>
-                    <option value="MANUAL">MANUAL (No Auto-Execute)</option>
-                    {isAdmin && <option value="AUTO">AUTO (Live Trading)</option>}
-                  </select>
-                  {!isAdmin && (
-                    <p className="text-xs text-yellow-400 mt-1">
-                      Only admins can enable AUTO mode
-                    </p>
-                  )}
-                </div>
-
-                {/* Enable Toggle */}
-                <div className="flex items-center justify-between p-3 bg-black/40 rounded-lg">
-                  <span className="text-sm text-gray-300">Enable Auto-Trade</span>
-                  <button
-                    onClick={async () => {
-                      await handleConfigUpdate({ autoTradeEnabled: !config.autoTradeEnabled });
-                    }}
-                    disabled={loading}
-                    className={`relative w-12 h-6 rounded-full transition-colors ${
-                      config.autoTradeEnabled ? 'bg-green-500' : 'bg-gray-600'
-                    }`}
-                    aria-label={config.autoTradeEnabled ? 'Disable Auto-Trade' : 'Enable Auto-Trade'}
-                  >
-                    <span
-                      className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${
-                        config.autoTradeEnabled ? 'translate-x-6' : ''
-                      }`}
-                    />
-                  </button>
-                </div>
-
-                {/* Risk Settings */}
-                <div className="space-y-3 pt-3 border-t border-purple-500/20">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-1">
-                      Per-Trade Risk (%)
-                    </label>
-                    <input
-                      type="number"
-                      min="0.1"
-                      max="10"
-                      step="0.1"
-                      value={config.perTradeRiskPct}
-                      onChange={(e) => handleConfigUpdate({ perTradeRiskPct: parseFloat(e.target.value) })}
-                      disabled={loading}
-                      className="w-full px-3 py-2 bg-black/40 border border-purple-500/40 rounded-lg text-white focus:outline-none focus:border-purple-400 disabled:opacity-50"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-1">
-                      Max Concurrent Trades
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="10"
-                      value={config.maxConcurrentTrades}
-                      onChange={(e) => handleConfigUpdate({ maxConcurrentTrades: parseInt(e.target.value) })}
-                      disabled={loading}
-                      className="w-full px-3 py-2 bg-black/40 border border-purple-500/40 rounded-lg text-white focus:outline-none focus:border-purple-400 disabled:opacity-50"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-1">
-                      Max Daily Loss (%)
-                    </label>
-                    <input
-                      type="number"
-                      min="0.5"
-                      max="50"
-                      step="0.5"
-                      value={config.maxDailyLossPct}
-                      onChange={(e) => handleConfigUpdate({ maxDailyLossPct: parseFloat(e.target.value) })}
-                      disabled={loading}
-                      className="w-full px-3 py-2 bg-black/40 border border-purple-500/40 rounded-lg text-white focus:outline-none focus:border-purple-400 disabled:opacity-50"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-1">
-                      Stop Loss (%)
-                    </label>
-                    <input
-                      type="number"
-                      min="0.5"
-                      max="10"
-                      step="0.1"
-                      value={config.stopLossPct}
-                      onChange={(e) => handleConfigUpdate({ stopLossPct: parseFloat(e.target.value) })}
-                      disabled={loading}
-                      className="w-full px-3 py-2 bg-black/40 border border-purple-500/40 rounded-lg text-white focus:outline-none focus:border-purple-400 disabled:opacity-50"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-1">
-                      Take Profit (%)
-                    </label>
-                    <input
-                      type="number"
-                      min="0.5"
-                      max="20"
-                      step="0.1"
-                      value={config.takeProfitPct}
-                      onChange={(e) => handleConfigUpdate({ takeProfitPct: parseFloat(e.target.value) })}
-                      disabled={loading}
-                      className="w-full px-3 py-2 bg-black/40 border border-purple-500/40 rounded-lg text-white focus:outline-none focus:border-purple-400 disabled:opacity-50"
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between p-3 bg-black/40 rounded-lg">
-                    <span className="text-sm text-gray-300">Trailing Stop</span>
-                    <button
-                      onClick={() => handleConfigUpdate({ trailingStop: !config.trailingStop })}
-                      disabled={loading}
-                      className={`relative w-12 h-6 rounded-full transition-colors ${
-                        config.trailingStop ? 'bg-green-500' : 'bg-gray-600'
-                      }`}
-                    >
-                      <span
-                        className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${
-                          config.trailingStop ? 'translate-x-6' : ''
-                        }`}
-                      />
-                    </button>
-                  </div>
-
-                  {config.trailingStop && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-300 mb-1">
-                        Trailing Stop (%)
-                      </label>
-                      <input
-                        type="number"
-                        min="0.1"
-                        max="5"
-                        step="0.1"
-                        value={config.trailingPct}
-                        onChange={(e) => handleConfigUpdate({ trailingPct: parseFloat(e.target.value) })}
-                        disabled={loading}
-                        className="w-full px-3 py-2 bg-black/40 border border-purple-500/40 rounded-lg text-white focus:outline-none focus:border-purple-400 disabled:opacity-50"
-                      />
-                    </div>
-                  )}
+                  <h3 className="text-yellow-400 font-semibold mb-1">Trading Risk Disclaimer</h3>
+                  <p className="text-sm text-gray-300">
+                    Trading involves risk. Past performance is no guarantee of future results. 
+                    You may lose money when trading. Only trade with funds you can afford to lose. 
+                    This system does not guarantee profits or prevent losses.
+                  </p>
                 </div>
               </div>
             </div>
           </div>
+
+          {/* Exchange Accounts Modal */}
+          {showExchangeModal && (
+            <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-slate-800 border border-purple-500/50 rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+                <div className="sticky top-0 bg-slate-800/95 backdrop-blur-xl border-b border-purple-500/30 px-6 py-4 flex items-center justify-between">
+                  <h3 className="text-xl font-bold text-white">Exchange Accounts</h3>
+                  <button
+                    onClick={() => {
+                      setShowExchangeModal(false);
+                      loadStatus(); // Refresh status after closing modal
+                    }}
+                    className="text-gray-400 hover:text-white transition-colors p-2 hover:bg-white/10 rounded-lg"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div className="p-6">
+                  <ExchangeAccountsSection />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* API Required Modal */}
+          {showApiRequiredModal && (
+            <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-slate-800 border border-purple-500/50 rounded-2xl shadow-2xl max-w-md w-full p-6">
+                <h3 className="text-xl font-bold text-white mb-4">Exchange API Required</h3>
+                <p className="text-gray-300 mb-6">
+                  Please connect your exchange API before enabling Auto-Trade.
+                </p>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => {
+                      setShowApiRequiredModal(false);
+                      setShowExchangeModal(true);
+                    }}
+                    className="flex-1 px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold rounded-lg hover:from-purple-500 hover:to-pink-500 transition-all"
+                  >
+                    Connect Exchange
+                  </button>
+                  <button
+                    onClick={() => setShowApiRequiredModal(false)}
+                    className="px-4 py-2 bg-gray-700 text-gray-200 font-semibold rounded-lg hover:bg-gray-600 transition-all"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </main>
 
@@ -580,4 +478,3 @@ export default function AutoTrade() {
     </div>
   );
 }
-

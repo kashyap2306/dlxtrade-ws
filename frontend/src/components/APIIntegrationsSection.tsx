@@ -16,7 +16,7 @@ import {
   ChevronUpIcon,
 } from '@heroicons/react/24/outline';
 
-type ApiName = 'binance' | 'cryptoquant' | 'lunarcrush' | 'coinapi';
+type ApiName = 'cryptoquant' | 'lunarcrush' | 'coinapi';
 type CoinApiType = 'market' | 'flatfile' | 'exchangerate';
 
 interface ApiConfig {
@@ -29,14 +29,6 @@ interface ApiConfig {
 }
 
 const API_CONFIGS: Record<ApiName, ApiConfig> = {
-  binance: {
-    name: 'binance',
-    displayName: 'Binance API',
-    requiresSecret: true,
-    description: 'Trading and market data from Binance exchange',
-    icon: '⚡',
-    gradient: 'from-yellow-500/20 via-orange-500/20 to-red-500/20',
-  },
   cryptoquant: {
     name: 'cryptoquant',
     displayName: 'CryptoQuant API',
@@ -118,13 +110,12 @@ export default function APIIntegrationsSection() {
       const data = response.data;
 
       const loaded: Record<ApiName, Integration | CoinApiData> = {
-        binance: { enabled: false, apiKey: null, secretKey: null },
         cryptoquant: { enabled: false, apiKey: null, secretKey: null },
         lunarcrush: { enabled: false, apiKey: null, secretKey: null },
         coinapi: {},
       };
 
-      ['binance', 'cryptoquant', 'lunarcrush'].forEach((apiName) => {
+      ['cryptoquant', 'lunarcrush'].forEach((apiName) => {
         const api = apiName as ApiName;
         if (data[api]) {
           loaded[api] = {
@@ -265,45 +256,21 @@ export default function APIIntegrationsSection() {
     }
 
     if (config.requiresSecret && !formData.secretKey.trim()) {
-      showToast('Secret key is required for Binance', 'error');
+      showToast('Secret key is required', 'error');
       return;
     }
 
     try {
       setLoading(true);
       
-      // If Binance (trading exchange), save to exchangeConfig/current instead of integrations
-      if (apiName === 'binance' && !apiType) {
-        if (!user) {
-          throw new Error('User not authenticated');
-        }
-        
-        // Save to exchangeConfig/current (primary location)
-        await api.post(`/users/${user.uid}/exchange-config`, {
-          exchange: 'binance',
-          type: 'binance',
-          apiKey: formData.apiKey.trim(),
-          secret: formData.secretKey.trim(),
-          testnet: true,
-        });
-        
-        // Also save to integrations for backward compatibility (but exchangeConfig is primary)
-        await integrationsApi.update({
-          apiName: 'binance',
-          enabled: true,
-          apiKey: formData.apiKey.trim(),
-          secretKey: formData.secretKey.trim(),
-        });
-      } else {
-        // Research APIs (CryptoQuant, LunarCrush, CoinAPI) go to integrations
-        await integrationsApi.update({
-          apiName,
-          apiType,
-          enabled: true,
-          apiKey: formData.apiKey.trim(),
-          secretKey: config.requiresSecret ? formData.secretKey.trim() : undefined,
-        });
-      }
+      // Research APIs (CryptoQuant, LunarCrush, CoinAPI) go to integrations only
+      await integrationsApi.update({
+        apiName,
+        apiType,
+        enabled: true,
+        apiKey: formData.apiKey.trim(),
+        secretKey: config.requiresSecret ? formData.secretKey.trim() : undefined,
+      });
 
       await loadIntegrations();
       setEditingApi(null);
@@ -382,17 +349,17 @@ export default function APIIntegrationsSection() {
   return (
     <>
       <div className="border-t border-purple-500/20 pt-6 mt-6">
-        <h3 className="text-lg font-semibold text-white mb-4">Trading API Integration</h3>
-        <p className="text-sm text-gray-400 mb-6">Connect and manage your API integrations. All keys are encrypted and stored securely.</p>
+        <h3 className="text-lg font-semibold text-white mb-4">Research API Integration</h3>
+        <p className="text-sm text-gray-400 mb-6">Connect and manage your research API integrations. All keys are encrypted and stored securely.</p>
 
-        {loading && !integrations.binance && (
+        {loading && (
           <div className="flex items-center justify-center py-12">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-400"></div>
           </div>
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
-          {(['binance', 'cryptoquant', 'lunarcrush'] as ApiName[]).map((apiName) => {
+          {(['cryptoquant', 'lunarcrush'] as ApiName[]).map((apiName) => {
             const config = API_CONFIGS[apiName];
             const integration = integrations[apiName] as Integration;
             const isExpanded = expandedApi === apiName;

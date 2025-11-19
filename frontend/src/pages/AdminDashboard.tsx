@@ -12,9 +12,12 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [realtimeEvents, setRealtimeEvents] = useState<any[]>([]);
+  const [coinmarketcapApiKey, setCoinmarketcapApiKey] = useState('');
+  const [savingApiKey, setSavingApiKey] = useState(false);
 
   useEffect(() => {
     loadStats();
+    loadGlobalSettings();
     const interval = setInterval(loadStats, 10000); // Refresh every 10 seconds
 
     // Connect to admin WebSocket
@@ -29,6 +32,28 @@ export default function AdminDashboard() {
       adminWsService.disconnect();
     };
   }, []);
+
+  const loadGlobalSettings = async () => {
+    try {
+      const response = await adminApi.getGlobalSettings();
+      setCoinmarketcapApiKey(response.data?.coinmarketcapApiKey || '');
+    } catch (err: any) {
+      // Settings might not exist yet, that's okay
+      console.log('Global settings not found, will create on save');
+    }
+  };
+
+  const handleSaveCoinmarketcapKey = async () => {
+    setSavingApiKey(true);
+    try {
+      await adminApi.updateGlobalSettings({ coinmarketcapApiKey });
+      showToast('CoinMarketCap API key saved successfully', 'success');
+    } catch (err: any) {
+      showToast(err.response?.data?.error || 'Error saving API key', 'error');
+    } finally {
+      setSavingApiKey(false);
+    }
+  };
 
   const loadStats = async () => {
     try {
@@ -173,6 +198,40 @@ export default function AdminDashboard() {
                 </div>
               ))
             )}
+          </div>
+        </div>
+
+        {/* Global Settings - CoinMarketCap API Key */}
+        <div className="card">
+          <h2 className="text-xl font-bold text-white mb-4">Global Settings</h2>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                CoinMarketCap API Key
+              </label>
+              <p className="text-xs text-gray-400 mb-3">
+                This API key will be used by all users for Market Scanner. Get your free API key from{' '}
+                <a href="https://coinmarketcap.com/api/" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 underline">
+                  CoinMarketCap API
+                </a>
+              </p>
+              <div className="flex gap-3">
+                <input
+                  type="password"
+                  value={coinmarketcapApiKey}
+                  onChange={(e) => setCoinmarketcapApiKey(e.target.value)}
+                  placeholder="Enter CoinMarketCap API Key"
+                  className="flex-1 px-4 py-2 bg-slate-700/50 border border-purple-500/30 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+                />
+                <button
+                  onClick={handleSaveCoinmarketcapKey}
+                  disabled={savingApiKey || !coinmarketcapApiKey.trim()}
+                  className="px-6 py-2 bg-purple-600 hover:bg-purple-700 text-white font-semibold rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {savingApiKey ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 

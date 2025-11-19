@@ -8,15 +8,17 @@ import { initializeFirestoreCollections } from './utils/firestoreInitializer';
 import { seedFirestoreData } from './utils/firestoreSeed';
 import { migrateFirestoreDocuments } from './utils/firestoreMigration';
 
-// Global error handlers to catch all errors
+// Global error handlers to catch all errors (DO NOT EXIT PROCESS)
 process.on('uncaughtException', (error) => {
-  console.error('UNCAUGHT EXCEPTION:', error);
-  logger.error({ error }, 'Uncaught exception');
+  // Log error but don't crash the process
+  logger.error({ error: error.message, stack: error.stack }, 'Uncaught exception - continuing');
+  // DO NOT call process.exit() - keep server running
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('UNHANDLED REJECTION:', reason);
-  logger.error({ reason, promise }, 'Unhandled rejection');
+process.on('unhandledRejection', (reason: any, promise) => {
+  // Log error but don't crash the process
+  logger.error({ reason: reason?.message || reason, promise }, 'Unhandled rejection - continuing');
+  // DO NOT call process.exit() - keep server running
 });
 
 async function start() {

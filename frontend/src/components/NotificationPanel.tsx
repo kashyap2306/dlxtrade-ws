@@ -1,3 +1,4 @@
+import React, { memo, useCallback, useMemo } from 'react';
 import { useNotificationContext } from '../contexts/NotificationContext';
 import { XMarkIcon, CheckCircleIcon, ExclamationTriangleIcon, InformationCircleIcon, XCircleIcon, BellIcon } from '@heroicons/react/24/outline';
 
@@ -5,7 +6,8 @@ interface NotificationPanelProps {
   onClose: () => void;
 }
 
-function formatTimestamp(timestamp: string | number): string {
+// Memoized formatTimestamp function
+const formatTimestamp = (timestamp: string | number): string => {
   const date = typeof timestamp === 'string' ? new Date(timestamp) : new Date(timestamp);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
@@ -18,11 +20,10 @@ function formatTimestamp(timestamp: string | number): string {
   if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
   if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
   return date.toLocaleDateString();
-}
+};
 
-export default function NotificationPanel({ onClose }: NotificationPanelProps) {
-  const { notifications, markAsRead, markAllAsRead } = useNotificationContext();
-
+// Memoized notification item component
+const NotificationItem = memo(({ notification, onMarkAsRead }: { notification: any; onMarkAsRead: (id: string) => void }) => {
   const getIcon = (type: string) => {
     switch (type) {
       case 'success':
@@ -51,22 +52,79 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
     }
   };
 
+  const handleClick = useCallback(() => {
+    if (!notification.read) {
+      onMarkAsRead(notification.id);
+    }
+  }, [notification.read, notification.id, onMarkAsRead]);
+
+  return (
+    <div
+      onClick={handleClick}
+      className={`mb-2 p-3 rounded-lg border cursor-pointer transition-all ${
+        notification.read
+          ? 'bg-slate-900/70 border-gray-700/30 opacity-70'
+          : getBgColor(notification.type)
+      } hover:opacity-100`}
+    >
+      <div className="flex items-start space-x-3">
+        <div className="flex-shrink-0 mt-0.5">
+          {getIcon(notification.type)}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between">
+            <h4 className={`text-sm font-semibold ${
+              notification.read ? 'text-gray-400' : 'text-white'
+            }`}>
+              {notification.title}
+            </h4>
+            {!notification.read && (
+              <span className="flex-shrink-0 w-2 h-2 bg-purple-500 rounded-full ml-2 mt-1 animate-pulse"></span>
+            )}
+          </div>
+          <p className={`text-xs mt-1 ${
+            notification.read ? 'text-gray-500' : 'text-gray-300'
+          }`}>
+            {notification.message}
+          </p>
+          <p className="text-xs text-gray-500 mt-2">
+            {formatTimestamp(notification.timestamp)}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+NotificationItem.displayName = 'NotificationItem';
+
+const NotificationPanel = memo(({ onClose }: NotificationPanelProps) => {
+  const { notifications, markAsRead, markAllAsRead } = useNotificationContext();
+
+  const handleMarkAsRead = useCallback((id: string) => {
+    markAsRead(id);
+  }, [markAsRead]);
+
+  const hasUnread = useMemo(() => {
+    return notifications.some(n => !n.read);
+  }, [notifications]);
+
   return (
     <div className="bg-black/70 backdrop-blur-xl border border-white/10 rounded-2xl shadow-lg max-h-[400px] flex flex-col animate-fade-in overflow-hidden">
       <div className="flex items-center justify-between p-4 border-b border-white/10 bg-black/50">
         <h3 className="text-lg font-semibold text-white">Notifications</h3>
         <div className="flex items-center gap-2">
-          {notifications.length > 0 && notifications.some(n => !n.read) && (
+          {notifications.length > 0 && hasUnread && (
             <button
               onClick={markAllAsRead}
-              className="text-xs text-purple-400 hover:text-purple-300 transition-colors px-2 py-1"
+              className="text-xs text-purple-400 hover:text-purple-300 transition-colors px-2 py-1 active:scale-95"
             >
               Mark all read
             </button>
           )}
           <button
             onClick={onClose}
-            className="text-gray-400 hover:text-white transition-colors p-1"
+            className="text-gray-400 hover:text-white transition-colors p-1 active:scale-95"
             aria-label="Close notifications"
           >
             <XMarkIcon className="w-5 h-5" />
@@ -84,46 +142,20 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
         ) : (
           <div className="p-2 bg-black/50">
             {notifications.map((notification) => (
-              <div
+              <NotificationItem
                 key={notification.id}
-                onClick={() => !notification.read && markAsRead(notification.id)}
-                className={`mb-2 p-3 rounded-lg border cursor-pointer transition-all ${
-                  notification.read
-                    ? 'bg-slate-900/70 border-gray-700/30 opacity-70'
-                    : getBgColor(notification.type)
-                } hover:opacity-100`}
-              >
-                <div className="flex items-start space-x-3">
-                  <div className="flex-shrink-0 mt-0.5">
-                    {getIcon(notification.type)}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-start justify-between">
-                      <h4 className={`text-sm font-semibold ${
-                        notification.read ? 'text-gray-400' : 'text-white'
-                      }`}>
-                        {notification.title}
-                      </h4>
-                      {!notification.read && (
-                        <span className="flex-shrink-0 w-2 h-2 bg-purple-500 rounded-full ml-2 mt-1 animate-pulse"></span>
-                      )}
-                    </div>
-                    <p className={`text-xs mt-1 ${
-                      notification.read ? 'text-gray-500' : 'text-gray-300'
-                    }`}>
-                      {notification.message}
-                    </p>
-                    <p className="text-xs text-gray-500 mt-2">
-                      {formatTimestamp(notification.timestamp)}
-                    </p>
-                  </div>
-                </div>
-              </div>
+                notification={notification}
+                onMarkAsRead={handleMarkAsRead}
+              />
             ))}
           </div>
         )}
       </div>
     </div>
   );
-}
+});
+
+NotificationPanel.displayName = 'NotificationPanel';
+
+export default NotificationPanel;
 

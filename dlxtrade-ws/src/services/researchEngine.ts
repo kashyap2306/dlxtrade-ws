@@ -29,47 +29,31 @@ export class ResearchEngine {
   private imbalanceHistory: Map<string, number[]> = new Map();
 
   async runResearch(symbol: string, uid: string, adapter?: BinanceAdapter): Promise<ResearchResult> {
-    // If adapter is provided, use it; otherwise try to get from user engine
-    let binanceAdapter = adapter;
-    if (!binanceAdapter) {
-      // Fallback: try to get adapter from user engine manager
-      try {
-        const { userEngineManager } = await import('./userEngineManager');
-        const engine = userEngineManager.getUserEngine(uid);
-        if (engine) {
-          binanceAdapter = engine.adapter;
-        }
-      } catch (err) {
-        logger.debug({ err, uid }, 'Could not get adapter from user engine');
-      }
-    }
+    // IMPORTANT: This method works ENTIRELY on research APIs only
+    // The adapter parameter is DEPRECATED and will be ignored
+    // For scheduled research, NO adapter is provided - uses research APIs only
+    // For manual research, NO adapter should be provided - uses research APIs only
+    // Trading exchange adapters (Binance, Bitget, BingX, WEEX) are NEVER used in research flow
+    // All data comes from: CryptoQuant, LunarCrush, CoinAPI (market/flatfile/exchangerate)
     
-    if (!binanceAdapter) {
-      throw new Error('Binance adapter not available');
-    }
+    // Skip all exchange-based logic - use research APIs only
+    const orderbook: Orderbook | null = null;
+    const imbalance = 0;
+    const microSignals: ResearchResult['microSignals'] = {
+      spread: 0,
+      volume: 0,
+      priceMomentum: 0,
+      orderbookDepth: 0,
+    };
 
-    // Get current orderbook
-    const orderbook = await binanceAdapter.getOrderbook(symbol, 20);
-
-    // Calculate orderbook imbalance
-    const imbalance = this.calculateOrderbookImbalance(orderbook);
-    
-    // Get micro-signals
-    const microSignals = this.calculateMicroSignals(symbol, orderbook);
-
-    // Persist snapshot for momentum/history-based features (after computing micro-signals)
-    this.addOrderbook(symbol, orderbook);
-    
-    // Calculate accuracy based on historical data and all available sources
+    // Calculate accuracy based on research APIs only (no orderbook data)
     let accuracy = await this.calculateAccuracy(symbol, imbalance, microSignals, uid);
 
-    // Liquidity filters: dynamically block low-liquidity / high-spread conditions
-    if (this.shouldBlockForLiquidity(symbol, microSignals)) {
-      accuracy = Math.min(accuracy, 0.49);
-    }
+    // Liquidity filters: NOT APPLICABLE (no orderbook data in research flow)
+    // Removed: if (orderbook && this.shouldBlockForLiquidity(symbol, microSignals))
     
-    // Determine signal using dynamic thresholds
-    const signal = this.determineSignalDynamic(symbol, imbalance, microSignals, accuracy);
+    // Determine signal using research APIs only (no orderbook-based logic)
+    const signal = await this.determineSignalFromResearchAPIs(symbol, accuracy, uid);
     
     // Recommended action
     const recommendedAction = this.getRecommendedAction(signal, accuracy);
@@ -94,9 +78,84 @@ export class ResearchEngine {
       microSignals,
     });
 
-    logger.info({ symbol, signal, accuracy }, 'Research completed');
+    logger.info({ symbol, signal, accuracy, hasOrderbook: false }, 'Research completed (research APIs only)');
 
     return result;
+  }
+
+  /**
+   * Determine signal from research APIs only (when no orderbook data available)
+   */
+  private async determineSignalFromResearchAPIs(
+    symbol: string,
+    accuracy: number,
+    uid: string
+  ): Promise<'BUY' | 'SELL' | 'HOLD'> {
+    if (accuracy < 0.5) {
+      return 'HOLD';
+    }
+
+    try {
+      const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
+      let bullishSignals = 0;
+      let bearishSignals = 0;
+
+      // Analyze CryptoQuant data
+      if (integrations.cryptoquant) {
+        try {
+          const cryptoquantAdapter = new CryptoQuantAdapter(integrations.cryptoquant.apiKey);
+          const flowData = await cryptoquantAdapter.getExchangeFlow(symbol);
+          if (flowData.exchangeFlow && flowData.exchangeFlow > 0) {
+            bullishSignals++;
+          } else if (flowData.exchangeFlow && flowData.exchangeFlow < 0) {
+            bearishSignals++;
+          }
+        } catch (err) {
+          // Ignore errors
+        }
+      }
+
+      // Analyze LunarCrush sentiment
+      if (integrations.lunarcrush) {
+        try {
+          const lunarcrushAdapter = new LunarCrushAdapter(integrations.lunarcrush.apiKey);
+          const sentimentData = await lunarcrushAdapter.getCoinData(symbol);
+          if (sentimentData.sentiment && sentimentData.sentiment > 0.3) {
+            bullishSignals++;
+          } else if (sentimentData.sentiment && sentimentData.sentiment < -0.3) {
+            bearishSignals++;
+          }
+        } catch (err) {
+          // Ignore errors
+        }
+      }
+
+      // Analyze CoinAPI market data
+      const coinapiMarket = integrations['coinapi_market'];
+      if (coinapiMarket) {
+        try {
+          const marketAdapter = new CoinAPIAdapter(coinapiMarket.apiKey, 'market');
+          const marketData = await marketAdapter.getMarketData(symbol);
+          if (marketData.priceChangePercent24h && marketData.priceChangePercent24h > 2) {
+            bullishSignals++;
+          } else if (marketData.priceChangePercent24h && marketData.priceChangePercent24h < -2) {
+            bearishSignals++;
+          }
+        } catch (err) {
+          // Ignore errors
+        }
+      }
+
+      if (bullishSignals > bearishSignals) {
+        return 'BUY';
+      } else if (bearishSignals > bullishSignals) {
+        return 'SELL';
+      }
+    } catch (err) {
+      logger.debug({ err, symbol }, 'Error determining signal from research APIs');
+    }
+
+    return 'HOLD';
   }
 
   private calculateOrderbookImbalance(orderbook: Orderbook): number {
@@ -172,39 +231,45 @@ export class ResearchEngine {
     // Multi-source accuracy calculation using all available data sources
     let accuracy = 0.5; // Base accuracy
 
-    // 1. Orderbook imbalance strength (Binance data)
-    const imbalanceStrength = Math.abs(imbalance);
-    if (imbalanceStrength > 0.3) {
-      accuracy += 0.15;
-    } else if (imbalanceStrength > 0.15) {
-      accuracy += 0.1;
-    } else if (imbalanceStrength > 0.05) {
-      accuracy += 0.05;
-    }
+    // Orderbook-based calculations (only if we have orderbook data)
+    // When adapter is not provided (scheduled research), imbalance=0 and microSignals are zeros
+    const hasOrderbookData = imbalance !== 0 || microSignals.spread > 0 || microSignals.volume > 0;
 
-    // 2. Spread analysis (tighter spread = higher confidence)
-    if (microSignals.spread < 0.05) {
-      accuracy += 0.15; // Very tight spread
-    } else if (microSignals.spread < 0.1) {
-      accuracy += 0.1;
-    } else if (microSignals.spread < 0.2) {
-      accuracy += 0.05;
-    }
+    if (hasOrderbookData) {
+      // 1. Orderbook imbalance strength (trading exchange data)
+      const imbalanceStrength = Math.abs(imbalance);
+      if (imbalanceStrength > 0.3) {
+        accuracy += 0.15;
+      } else if (imbalanceStrength > 0.15) {
+        accuracy += 0.1;
+      } else if (imbalanceStrength > 0.05) {
+        accuracy += 0.05;
+      }
 
-    // 3. Volume depth analysis
-    if (microSignals.volume > 500000) {
-      accuracy += 0.15; // Very high volume
-    } else if (microSignals.volume > 100000) {
-      accuracy += 0.1;
-    } else if (microSignals.volume > 50000) {
-      accuracy += 0.05;
-    }
+      // 2. Spread analysis (tighter spread = higher confidence)
+      if (microSignals.spread < 0.05) {
+        accuracy += 0.15; // Very tight spread
+      } else if (microSignals.spread < 0.1) {
+        accuracy += 0.1;
+      } else if (microSignals.spread < 0.2) {
+        accuracy += 0.05;
+      }
 
-    // 4. Orderbook depth analysis
-    if (microSignals.orderbookDepth > 1000000) {
-      accuracy += 0.1;
-    } else if (microSignals.orderbookDepth > 500000) {
-      accuracy += 0.05;
+      // 3. Volume depth analysis
+      if (microSignals.volume > 500000) {
+        accuracy += 0.15; // Very high volume
+      } else if (microSignals.volume > 100000) {
+        accuracy += 0.1;
+      } else if (microSignals.volume > 50000) {
+        accuracy += 0.05;
+      }
+
+      // 4. Orderbook depth analysis
+      if (microSignals.orderbookDepth > 1000000) {
+        accuracy += 0.1;
+      } else if (microSignals.orderbookDepth > 500000) {
+        accuracy += 0.05;
+      }
     }
 
     // 5. Fetch external data sources if integrations are available
@@ -326,8 +391,8 @@ export class ResearchEngine {
       }
     }
 
-    // 6. Price momentum (if we have historical data)
-    if (this.orderbookHistory.has(symbol)) {
+    // 6. Price momentum (if we have historical orderbook data - only for manual research with adapter)
+    if (hasOrderbookData && this.orderbookHistory.has(symbol)) {
       const history = this.orderbookHistory.get(symbol)!;
       if (history.length >= 2) {
         const recent = history[history.length - 1];

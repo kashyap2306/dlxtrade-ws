@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import Sidebar from './Sidebar';
-import Header from './Header';
 import Toast from './Toast';
 import { useAuth } from '../hooks/useAuth';
 import { useUnlockedAgents } from '../hooks/useUnlockedAgents';

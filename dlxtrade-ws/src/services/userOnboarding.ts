@@ -31,7 +31,7 @@ export async function ensureUser(
     const db = getFirebaseAdmin().firestore();
     const now = admin.firestore.Timestamp.now();
 
-    logger.info({ uid, email: profileData?.email }, 'Starting user onboarding (ensureUser)');
+    logger.info({ uid, email: profileData?.email }, '🚀 Starting user onboarding (ensureUser) - creating all required Firestore documents');
 
     // 1. Ensure users/{uid} exists with ALL required fields (idempotent)
     const userRef = db.collection('users').doc(uid);
@@ -56,15 +56,12 @@ export async function ensureUser(
           tradingStyle: '',
           analysisType: '',
         },
-        isApiConnected: false,
-        connectedExchanges: [],
         totalTrades: 0,
         totalPnl: 0,
         dailyPnl: 0,
         weeklyPnl: 0,
         monthlyPnl: 0,
         unlockedAgents: [],
-        apiStatus: 'disconnected',
         engineStatus: 'stopped',
         hftRunning: false,
         engineRunning: false,
@@ -76,7 +73,7 @@ export async function ensureUser(
       
       await userRef.set(userData);
       createdNew = true;
-      logger.info({ uid, createdNew: true }, '✅ User document created');
+      logger.info({ uid, createdNew: true, path: `users/${uid}` }, '✅ Main user document created: users/{uid}');
     } else {
       // Update only missing fields (do not overwrite existing user-provided fields)
       const existingData = existingUser.data() || {};
@@ -120,12 +117,6 @@ export async function ensureUser(
       }
       
       // Ensure required fields exist
-      if (existingData.isApiConnected === undefined) {
-        updateData.isApiConnected = false;
-      }
-      if (existingData.connectedExchanges === undefined) {
-        updateData.connectedExchanges = [];
-      }
       if (existingData.totalTrades === undefined) {
         updateData.totalTrades = 0;
       }
@@ -143,9 +134,6 @@ export async function ensureUser(
       }
       if (existingData.unlockedAgents === undefined) {
         updateData.unlockedAgents = [];
-      }
-      if (existingData.apiStatus === undefined) {
-        updateData.apiStatus = 'disconnected';
       }
       if (existingData.engineStatus === undefined) {
         updateData.engineStatus = 'stopped';
@@ -173,25 +161,11 @@ export async function ensureUser(
         await userRef.update(updateData); // Still update lastLogin
       }
       
-      logger.info({ uid, createdNew: false }, '✅ User document exists');
+      logger.info({ uid, createdNew: false, path: `users/${uid}` }, '✅ Main user document exists: users/{uid}');
     }
 
-    // 2. Create apiKeys/{uid} (if not exists)
-    const apiKeysRef = db.collection('apiKeys').doc(uid);
-    const existingApiKeys = await apiKeysRef.get();
-    
-    if (!existingApiKeys.exists) {
-      await apiKeysRef.set({
-        uid,
-        exchange: '',
-        apiKeyEncrypted: '',
-        apiSecretEncrypted: '',
-        createdAt: now,
-        updatedAt: now,
-        status: 'disconnected',
-      });
-      logger.info({ uid }, 'API keys document created');
-    }
+    // 2. API keys are now stored in users/{uid}/exchangeConfig/current and users/{uid}/integrations/{apiName}
+    // No need to create apiKeys collection document
 
     // 3. Create engineStatus/{uid}
     const engineStatusRef = db.collection('engineStatus').doc(uid);
@@ -371,21 +345,56 @@ export async function ensureUser(
     // 9. Initialize required collections and docs under users/{uid}
     const userDocRef = db.collection('users').doc(uid);
 
-    // users/{uid}/integrations: create default disabled docs
-    const integrations = ['binance', 'lunarcrush', 'cryptoquant', 'coinapi_market', 'coinapi_flatfile', 'coinapi_exchangerate'];
+    // users/{uid}/integrations: create default disabled docs for RESEARCH APIs only
+    // Trading exchanges (binance, bitget, bingx, weex) are stored in exchangeConfig/current, NOT in integrations
+    const integrations = ['lunarcrush', 'cryptoquant', 'coinapi_market', 'coinapi_flatfile', 'coinapi_exchangerate'];
     for (const apiName of integrations) {
       const ref = userDocRef.collection('integrations').doc(apiName);
       const doc = await ref.get();
       if (!doc.exists) {
-        await ref.set({
+        const integrationData: any = {
           enabled: false,
-          apiKey: '',
-          secretKey: '',
-          apiType: apiName.startsWith('coinapi_') ? apiName.replace('coinapi_', '') : undefined,
+          createdAt: now,
           updatedAt: now,
-          verified: false,
-          lastCheckedAt: null,
-        });
+        };
+        
+        // Add apiType only for CoinAPI sub-types
+        if (apiName.startsWith('coinapi_')) {
+          integrationData.apiType = apiName.replace('coinapi_', '');
+        }
+        
+        await ref.set(integrationData);
+        logger.info({ uid, apiName, path: `users/${uid}/integrations/${apiName}` }, `✅ Research integration doc created: users/{uid}/integrations/${apiName}`);
+      }
+    }
+
+    // users/{uid}/exchangeConfig/current - Create empty trading exchange config doc
+    const exchangeConfigRef = userDocRef.collection('exchangeConfig').doc('current');
+    const exchangeConfigDoc = await exchangeConfigRef.get();
+    if (!exchangeConfigDoc.exists) {
+      // Create empty trading exchange config - fields will be set when user configures an exchange
+      await exchangeConfigRef.set({
+        testnet: true,
+        createdAt: now,
+        updatedAt: now,
+      });
+      logger.info({ uid, path: `users/${uid}/exchangeConfig/current` }, `✅ Trading exchange config doc created: users/{uid}/exchangeConfig/current`);
+    } else {
+      // Ensure required fields exist
+      const existingData = exchangeConfigDoc.data() || {};
+      const updateData: any = {};
+      if (existingData.createdAt === undefined) {
+        updateData.createdAt = now;
+      }
+      if (existingData.updatedAt === undefined) {
+        updateData.updatedAt = now;
+      }
+      if (existingData.testnet === undefined) {
+        updateData.testnet = true;
+      }
+      if (Object.keys(updateData).length > 0) {
+        await exchangeConfigRef.update(updateData);
+        logger.info({ uid, updatedFields: Object.keys(updateData), path: `users/${uid}/exchangeConfig/current` }, 'Exchange config updated with missing fields');
       }
     }
 
@@ -511,13 +520,36 @@ export async function ensureUser(
     }
 
     const duration = Date.now() - startTime;
+    
+    // Log summary of all documents created/verified
+    const createdDocs = [];
+    if (createdNew) {
+      createdDocs.push(`users/${uid}`);
+      createdDocs.push(`users/${uid}/integrations/lunarcrush`);
+      createdDocs.push(`users/${uid}/integrations/cryptoquant`);
+      createdDocs.push(`users/${uid}/integrations/coinapi_market`);
+      createdDocs.push(`users/${uid}/integrations/coinapi_flatfile`);
+      createdDocs.push(`users/${uid}/integrations/coinapi_exchangerate`);
+      createdDocs.push(`users/${uid}/exchangeConfig/current`);
+    }
+    
     logger.info({ 
       uid, 
       createdNew, 
       duration, 
       activityType,
-      email: profileData?.email 
-    }, '✅ User onboarding completed successfully');
+      email: profileData?.email,
+      createdDocs: createdDocs.length > 0 ? createdDocs : undefined,
+      requiredDocs: [
+        `users/${uid}`,
+        `users/${uid}/integrations/lunarcrush`,
+        `users/${uid}/integrations/cryptoquant`,
+        `users/${uid}/integrations/coinapi_market`,
+        `users/${uid}/integrations/coinapi_flatfile`,
+        `users/${uid}/integrations/coinapi_exchangerate`,
+        `users/${uid}/exchangeConfig/current`
+      ]
+    }, '✅ User onboarding completed successfully - all required Firestore documents created/verified');
 
     return {
       success: true,

@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
-import Header from '../components/Header';
 import Toast from '../components/Toast';
 import UnlockFormModal from '../components/UnlockFormModal';
 import { useAuth } from '../hooks/useAuth';
@@ -16,7 +15,7 @@ export default function AgentDetails() {
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [, setMenuOpen] = useState(false);
   const [showUnlockModal, setShowUnlockModal] = useState(false);
 
   useEffect(() => {

@@ -30,6 +30,7 @@ import { globalStatsRoutes } from './routes/globalStats';
 import { engineStatusRoutes } from './routes/engineStatus';
 import { hftLogsRoutes } from './routes/hftLogs';
 import { autoTradeRoutes } from './routes/autoTrade';
+import { exchangeConfigRoutes } from './routes/exchangeConfig';
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -123,6 +124,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(engineStatusRoutes, { prefix: '/api/engine-status' });
   await app.register(hftLogsRoutes, { prefix: '/api/hft-logs' });
   await app.register(autoTradeRoutes, { prefix: '/api/auto-trade' });
+  await app.register(exchangeConfigRoutes, { prefix: '/api/exchange-config' });
 
   console.log('✅ All routes registered:');
   console.log('  - /api/auth/*');

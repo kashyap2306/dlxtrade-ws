@@ -338,10 +338,19 @@ export class FirestoreAdapter {
       .collection('integrations')
       .doc(apiName);
 
+    // Check if document exists to determine if we should set createdAt
+    const existingDoc = await docRef.get();
+    const now = admin.firestore.Timestamp.now();
+
     const docData: IntegrationDocument = {
       enabled: data.enabled,
-      updatedAt: admin.firestore.Timestamp.now(),
+      updatedAt: now,
     };
+
+    // Add createdAt only if document doesn't exist
+    if (!existingDoc.exists) {
+      (docData as any).createdAt = now;
+    }
 
     if (data.apiKey) {
       docData.apiKey = encrypt(data.apiKey);
@@ -354,7 +363,14 @@ export class FirestoreAdapter {
     }
 
     await docRef.set(docData, { merge: true });
-    logger.info({ uid, apiName, enabled: data.enabled }, 'Integration saved to Firestore');
+    logger.info({ 
+      uid, 
+      apiName, 
+      enabled: data.enabled,
+      hasApiKey: !!data.apiKey,
+      hasSecretKey: !!data.secretKey,
+      hasCreatedAt: !existingDoc.exists 
+    }, 'Integration saved to Firestore');
   }
 
   async deleteIntegration(uid: string, apiName: string): Promise<void> {

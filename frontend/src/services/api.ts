@@ -93,6 +93,9 @@ export const adminApi = {
   approveUnlockRequest: (requestId: string) => api.post(`/admin/unlock-requests/${requestId}/approve`),
   denyUnlockRequest: (requestId: string, reason?: string) => api.post(`/admin/unlock-requests/${requestId}/deny`, { reason }),
   updateUserAgentSettings: (uid: string, agentName: string, settings: any) => api.put(`/admin/user/${uid}/agent/${encodeURIComponent(agentName)}/settings`, settings),
+  getGlobalSettings: () => api.get('/admin/global-settings'),
+  updateGlobalSettings: (settings: any) => api.post('/admin/global-settings', settings),
+  getMarketData: () => api.get('/market/top-coins'),
     // Agent purchases
     getPurchases: (params?: { status?: string; limit?: number }) => api.get('/admin/agents/purchases', { params }),
     approvePurchase: (purchaseId: string) => api.post(`/admin/agents/purchases/${purchaseId}/approve`),
@@ -145,9 +148,7 @@ export const researchApi = {
 export const settingsApi = {
   load: () => api.get('/settings/load'),
   update: (settings: any) => api.post('/settings/update', settings),
-  saveApiKeys: (apiKeys: { apiKey: string; secretKey: string; testnet?: boolean }) => 
-    api.post('/settings/saveApiKeys', apiKeys),
-  getApiKeys: () => api.get('/settings/apiKeys'),
+  // Removed: saveApiKeys and getApiKeys - use exchange-config endpoint instead
 };
 
 // Execution - routes already include /api prefix from baseURL
@@ -161,9 +162,9 @@ export const executionApi = {
 // Integrations - routes already include /api prefix from baseURL
 export const integrationsApi = {
   load: () => api.get('/integrations/load'),
-  update: (data: { apiName: string; enabled: boolean; apiKey?: string; secretKey?: string; apiType?: string }) => 
+  update: (data: { apiName: string; enabled: boolean; apiKey?: string; secretKey?: string; apiType?: string; passphrase?: string }) => 
     api.post('/integrations/update', data),
-  connect: (data: { apiName: string; enabled: boolean; apiKey?: string; secretKey?: string; apiType?: string }) => 
+  connect: (data: { apiName: string; enabled: boolean; apiKey?: string; secretKey?: string; apiType?: string; passphrase?: string }) => 
     api.post('/integrations/connect', data),
   delete: (apiName: string, apiType?: string) => api.post('/integrations/delete', { apiName, apiType }),
 };
@@ -252,12 +253,16 @@ export const autoTradeApi = {
   queue: (signal: any) => api.post('/auto-trade/queue', signal),
   run: () => api.post('/auto-trade/run'),
   execute: (data: { requestId: string; signal: any }) => api.post('/auto-trade/execute', data),
-  simulate: (signal: any) => api.post('/auto-trade/simulate', signal),
   resetCircuitBreaker: () => api.post('/auto-trade/reset-circuit-breaker'),
 };
 
 // Chatbot - routes already include /api prefix from baseURL
 export const chatbotApi = {
   sendMessage: (data: { message: string }) => api.post('/chatbot', data),
+};
+
+// Wallet - routes already include /api prefix from baseURL
+export const walletApi = {
+  getBalances: () => api.get('/wallet/balances'),
 };
 

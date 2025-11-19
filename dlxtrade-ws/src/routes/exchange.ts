@@ -4,6 +4,7 @@ import { firestoreAdapter } from '../services/firestoreAdapter';
 import { ExchangeConnectorFactory, type ExchangeName, type ExchangeCredentials } from '../services/exchangeConnector';
 import { encrypt, decrypt } from '../services/keyManager';
 import { logger } from '../utils/logger';
+import * as admin from 'firebase-admin';
 
 const exchangeConfigSchema = z.object({
   exchange: z.enum(['binance', 'bitget', 'weex', 'bingx', 'cryptoquant', 'lunarcrush', 'coinapi']).optional(),
@@ -22,6 +23,18 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
     try {
       const { id } = request.params;
       const user = (request as any).user;
+      
+      // Log request details
+      logger.info({ 
+        uid: user.uid, 
+        targetId: id,
+        body: JSON.stringify(request.body),
+        hasApiKey: !!(request.body as any).apiKey,
+        hasSecret: !!(request.body as any).secret,
+        hasPassphrase: !!(request.body as any).passphrase,
+        exchange: (request.body as any).exchange,
+        type: (request.body as any).type 
+      }, 'Exchange config save request received');
       
       // Users can only update their own config unless they're admin
       const isAdmin = await firestoreAdapter.isAdmin(user.uid);
@@ -45,14 +58,23 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
         }
       }
 
+      // Get existing document to check if createdAt should be set
+      const { getFirebaseAdmin } = await import('../utils/firebase');
+      const db = getFirebaseAdmin().firestore();
+      const existingDoc = await db.collection('users').doc(id).collection('exchangeConfig').doc('current').get();
+      const now = admin.firestore.Timestamp.now();
+
       // Encrypt credentials
       const encryptedConfig: any = {
         exchange: configType, // Keep for backward compatibility
-        type: configType, // New field
         apiKeyEncrypted: encrypt(body.apiKey),
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        updatedAt: now,
       };
+      
+      // Add createdAt only if document doesn't exist
+      if (!existingDoc.exists) {
+        encryptedConfig.createdAt = now;
+      }
       
       // Only add secret/passphrase for trading exchanges
       if (['binance', 'bitget', 'weex', 'bingx'].includes(configType)) {
@@ -66,11 +88,20 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       }
 
       // Save to Firestore in user's exchangeConfig collection
-      const { getFirebaseAdmin } = await import('../utils/firebase');
-      const db = getFirebaseAdmin().firestore();
       await db.collection('users').doc(id).collection('exchangeConfig').doc('current').set(encryptedConfig, { merge: true });
 
-      logger.info({ uid: id, type: configType }, 'Exchange/API config saved');
+      // Verify it was saved
+      const savedDoc = await db.collection('users').doc(id).collection('exchangeConfig').doc('current').get();
+      logger.info({ 
+        uid: id, 
+        type: configType,
+        saved: savedDoc.exists,
+        hasApiKey: !!savedDoc.data()?.apiKeyEncrypted,
+        hasSecret: !!savedDoc.data()?.secretEncrypted,
+        hasPassphrase: !!savedDoc.data()?.passphraseEncrypted,
+        hasCreatedAt: !!savedDoc.data()?.createdAt,
+        hasUpdatedAt: !!savedDoc.data()?.updatedAt
+      }, 'Exchange config saved and verified');
 
       return {
         success: true,
@@ -80,9 +111,10 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       };
     } catch (err: any) {
       if (err instanceof z.ZodError) {
+        logger.warn({ err: err.errors, uid: (request as any).user?.uid }, 'Exchange config validation error');
         return reply.code(400).send({ error: 'Invalid input', details: err.errors });
       }
-      logger.error({ err }, 'Error saving exchange config');
+      logger.error({ err: err.message, stack: err.stack, uid: (request as any).user?.uid }, 'Error saving exchange config');
       return reply.code(500).send({ error: err.message || 'Error saving exchange configuration' });
     }
   });

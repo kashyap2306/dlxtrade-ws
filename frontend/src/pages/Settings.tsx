@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { settingsApi, integrationsApi } from '../services/api';
 import Toast from '../components/Toast';
 import Sidebar from '../components/Sidebar';
-import Header from '../components/Header';
 import APIIntegrationsSection from '../components/APIIntegrationsSection';
 import ExchangeAccountsSection from '../components/ExchangeAccountsSection';
 import { useAuth } from '../hooks/useAuth';
@@ -12,29 +11,15 @@ export default function Settings() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-  const [hasBinance, setHasBinance] = useState(false);
   const [globalSettings, setGlobalSettings] = useState<any>(null);
   const [settings, setSettings] = useState<any>(null);
 
   useEffect(() => {
     if (user) {
       loadSettings();
-      checkBinanceIntegration();
       loadGlobalSettings();
     }
   }, [user]);
-
-  const checkBinanceIntegration = async () => {
-    try {
-      const response = await integrationsApi.load();
-      console.log('Settings integrations API response:', response.data);
-      const integrations = response.data;
-      setHasBinance(integrations.binance?.enabled && !!integrations.binance?.apiKey);
-    } catch (err: any) {
-      console.error('Error checking Binance integration:', err);
-      console.error('Error details:', err.response?.data);
-    }
-  };
 
 
   const loadGlobalSettings = async () => {
@@ -53,7 +38,7 @@ export default function Settings() {
     setLoading(true);
     try {
       const response = await settingsApi.load();
-      console.log('Settings API response:', response.data);
+      // Settings loaded successfully
       if (response.data) {
         setSettings({
           symbol: response.data.symbol || 'BTCUSDT',
@@ -110,7 +95,7 @@ export default function Settings() {
 
     try {
       const response = await settingsApi.update(settings);
-      console.log('Settings update API response:', response.data);
+      // Settings updated successfully
       showToast('Settings saved successfully', 'success');
       // Reload settings to ensure sync
       await loadSettings();
@@ -159,25 +144,16 @@ export default function Settings() {
 
       <main className="min-h-screen">
         <div className="max-w-4xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8 pt-20 lg:pt-8">
-          <div className="mb-6 sm:mb-8">
-            <div className="lg:hidden mb-4">
-              <Header
-                title="Trading Settings"
-                subtitle="Configure your trading parameters"
-                onMenuToggle={() => {
-                  const toggle = (window as any).__sidebarToggle;
-                  if (toggle) toggle();
-                }}
-                menuOpen={(window as any).__sidebarOpen || false}
-              />
-            </div>
-            <div className="hidden lg:block">
-              <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent mb-2">
+          <section className="mb-6 sm:mb-8">
+            <div className="space-y-2">
+              <h1 className="text-3xl sm:text-4xl font-bold bg-gradient-to-r from-purple-300 via-pink-300 to-cyan-300 bg-clip-text text-transparent">
                 Trading Settings
               </h1>
-              <p className="text-gray-300">Configure your trading parameters and preferences</p>
+              <p className="text-sm sm:text-base text-gray-300">
+                Configure your trading parameters and preferences
+              </p>
             </div>
-          </div>
+          </section>
           <div className="card">
             <form onSubmit={handleSave} className="space-y-4 sm:space-y-6">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">

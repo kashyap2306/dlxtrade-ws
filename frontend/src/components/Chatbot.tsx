@@ -94,9 +94,12 @@ export default function Chatbot() {
         message: userMessage.text,
       });
 
+      // Handle response - check both data.reply and direct reply field
+      const replyText = response?.data?.reply || response?.data?.message || response?.reply || 'No response received';
+      
       const botMessage: Message = {
         id: `bot-${Date.now()}`,
-        text: response.data.reply || response.data.message || 'No response received',
+        text: replyText,
         sender: 'bot',
         timestamp: new Date(),
       };
@@ -104,8 +107,16 @@ export default function Chatbot() {
       setMessages(prev => [...prev, botMessage]);
     } catch (err: any) {
       console.error('Error sending message:', err);
-      // Always extract reply from response if available, otherwise use error message
-      const errorText = err.response?.data?.reply || err.response?.data?.error || err.message || 'Sorry, I encountered an error. Please try again.';
+      
+      // Extract error message from various possible locations
+      let errorText = 'Sorry, I encountered an error. Please try again.';
+      
+      if (err.response?.data) {
+        errorText = err.response.data.reply || err.response.data.error || err.response.data.message || errorText;
+      } else if (err.message) {
+        errorText = err.message;
+      }
+      
       const errorMessage: Message = {
         id: `error-${Date.now()}`,
         text: errorText,

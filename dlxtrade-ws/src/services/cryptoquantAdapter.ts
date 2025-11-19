@@ -1,5 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import { logger } from '../utils/logger';
+import { extractAdapterError, AdapterError } from '../utils/adapterErrorHandler';
 
 export interface CryptoQuantData {
   // Exchange Reserve
@@ -50,9 +51,24 @@ export class CryptoQuantAdapter {
   private apiKey: string;
   private baseUrl = 'https://api.cryptoquant.com/v1';
   private httpClient: AxiosInstance;
+  private disabled: boolean;
 
   constructor(apiKey: string) {
-    this.apiKey = apiKey;
+    // Validate API key - throw clear error if missing
+    if (!apiKey || typeof apiKey !== 'string' || apiKey.trim() === '' || apiKey === 'undefined' || apiKey === 'null') {
+      this.disabled = true;
+      this.apiKey = '';
+      const errorMsg = 'CryptoQuant API key missing or invalid';
+      logger.error({ apiKeyProvided: !!apiKey, apiKeyType: typeof apiKey }, errorMsg);
+      throw new Error(errorMsg);
+    }
+
+    this.disabled = false;
+    this.apiKey = apiKey.trim();
+    
+    // Log API key status (for testing - shows if key is loaded, not the actual key)
+    logger.info({ apiKeyLoaded: true, apiKeyLength: this.apiKey.length }, 'CryptoQuant API key loaded');
+    
     this.httpClient = axios.create({
       baseURL: this.baseUrl,
       timeout: 10000,
@@ -60,29 +76,76 @@ export class CryptoQuantAdapter {
         'Authorization': `Bearer ${this.apiKey}`,
       },
     });
+    
+    logger.debug({ baseUrl: this.baseUrl, hasAuthHeader: true }, 'CryptoQuant HTTP client initialized');
   }
 
   // Get Exchange Reserve
   async getExchangeReserve(symbol: string): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      return {};
+    }
+
+    const coinSymbol = symbol.replace('USDT', '').replace('USD', '');
+    const url = `${this.baseUrl}/btc/network-data/exchange-reserve`;
+    
     try {
-      const coinSymbol = symbol.replace('USDT', '').replace('USD', '');
+      // Log request details
+      logger.debug({ 
+        adapter: 'CryptoQuant', 
+        method: 'getExchangeReserve', 
+        url, 
+        symbol,
+        headers: { Authorization: 'Bearer ***' } // Redact API key
+      }, 'CryptoQuant request: getExchangeReserve');
+      
       const response = await this.httpClient.get(`/btc/network-data/exchange-reserve`, {
         params: {
           market: coinSymbol,
         },
       });
       
+      // Log successful response
+      logger.debug({ 
+        adapter: 'CryptoQuant', 
+        method: 'getExchangeReserve', 
+        status: response.status,
+        symbol 
+      }, 'CryptoQuant response: getExchangeReserve success');
+      
       return {
         exchangeReserve: response.data?.result?.value || 0,
       };
     } catch (error: any) {
-      logger.debug({ error, symbol }, 'CryptoQuant exchange reserve error');
-      return {};
+      // Extract detailed error information
+      const errorDetails = extractAdapterError('CryptoQuant', 'getExchangeReserve', url, error);
+      
+      // Log full error details
+      logger.error({
+        adapter: 'CryptoQuant',
+        method: 'getExchangeReserve',
+        url,
+        symbol,
+        statusCode: errorDetails.statusCode,
+        statusText: errorDetails.statusText,
+        responseSnippet: errorDetails.responseSnippet?.substring(0, 500),
+        errorMessage: errorDetails.errorMessage,
+        isAuthError: errorDetails.isAuthError,
+      }, 'CryptoQuant getExchangeReserve error');
+      
+      // Throw adapter-specific error
+      throw new AdapterError(errorDetails);
     }
   }
 
   // Get Miner Reserve
   async getMinerReserve(symbol: string): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      return {};
+    }
+
     try {
       const coinSymbol = symbol.replace('USDT', '').replace('USD', '');
       const response = await this.httpClient.get(`/btc/network-data/miner-reserve`, {
@@ -102,6 +165,11 @@ export class CryptoQuantAdapter {
 
   // Get Stablecoin Supply
   async getStablecoinSupply(symbol: string = 'USDT'): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      return {};
+    }
+
     try {
       const response = await this.httpClient.get(`/stablecoins/supply`, {
         params: {
@@ -122,14 +190,44 @@ export class CryptoQuantAdapter {
 
   // Get Netflow
   async getExchangeFlow(symbol: string): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      logger.warn('CryptoQuant adapter is disabled - cannot fetch exchange flow');
+      return {};
+    }
+
+    // Verify API key is still valid before making request
+    if (!this.apiKey || this.apiKey.trim() === '') {
+      logger.error('CryptoQuant API key is missing during getExchangeFlow call');
+      throw new Error('CryptoQuant API key missing');
+    }
+
+    const coinSymbol = symbol.replace('USDT', '').replace('USD', '');
+    const url = `${this.baseUrl}/btc/network-data/exchange-netflow`;
+    
     try {
-      const coinSymbol = symbol.replace('USDT', '').replace('USD', '');
+      logger.debug({ 
+        adapter: 'CryptoQuant', 
+        method: 'getExchangeFlow', 
+        url, 
+        symbol,
+        hasApiKey: !!this.apiKey,
+        apiKeyLength: this.apiKey.length,
+      }, 'CryptoQuant request: getExchangeFlow');
+      
       const response = await this.httpClient.get(`/btc/network-data/exchange-netflow`, {
         params: {
           market: coinSymbol,
           window: '1d',
         },
       });
+      
+      logger.debug({ 
+        adapter: 'CryptoQuant', 
+        method: 'getExchangeFlow', 
+        status: response.status,
+        symbol 
+      }, 'CryptoQuant response: getExchangeFlow success');
       
       return {
         netflow: response.data?.result?.netflow || 0,
@@ -138,13 +236,31 @@ export class CryptoQuantAdapter {
         exchangeOutflow: response.data?.result?.outflow || 0,
       };
     } catch (error: any) {
-      logger.debug({ error, symbol }, 'CryptoQuant exchange flow error');
-      return {};
+      const errorDetails = extractAdapterError('CryptoQuant', 'getExchangeFlow', url, error);
+      
+      logger.error({
+        adapter: 'CryptoQuant',
+        method: 'getExchangeFlow',
+        url,
+        symbol,
+        statusCode: errorDetails.statusCode,
+        statusText: errorDetails.statusText,
+        responseSnippet: errorDetails.responseSnippet?.substring(0, 500),
+        errorMessage: errorDetails.errorMessage,
+        isAuthError: errorDetails.isAuthError,
+      }, 'CryptoQuant getExchangeFlow error');
+      
+      throw new AdapterError(errorDetails);
     }
   }
 
   // Get Long/Short Ratio
   async getLongShortRatio(symbol: string): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      return {};
+    }
+
     try {
       const response = await this.httpClient.get(`/derivatives/ratio/long-short-ratio`, {
         params: {
@@ -165,6 +281,11 @@ export class CryptoQuantAdapter {
 
   // Get Futures Open Interest
   async getFuturesOI(symbol: string): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      return {};
+    }
+
     try {
       const response = await this.httpClient.get(`/derivatives/oi/open-interest`, {
         params: {
@@ -184,6 +305,11 @@ export class CryptoQuantAdapter {
 
   // Get Funding Rate
   async getFundingRate(symbol: string): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      return {};
+    }
+
     try {
       const response = await this.httpClient.get(`/derivatives/funding-rate`, {
         params: {
@@ -203,6 +329,11 @@ export class CryptoQuantAdapter {
 
   // Get Whale Transactions
   async getWhaleTransactions(symbol: string): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      return {};
+    }
+
     try {
       const coinSymbol = symbol.replace('USDT', '').replace('USD', '');
       const response = await this.httpClient.get(`/btc/network-data/whale-transactions`, {
@@ -224,6 +355,11 @@ export class CryptoQuantAdapter {
 
   // Get Liquidation Data
   async getLiquidationData(symbol: string): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      return {};
+    }
+
     try {
       const response = await this.httpClient.get(`/derivatives/liquidation`, {
         params: {
@@ -244,20 +380,54 @@ export class CryptoQuantAdapter {
 
   // Get Active Addresses
   async getActiveAddresses(symbol: string): Promise<CryptoQuantData> {
+    // If adapter is disabled (no API key), return empty data immediately
+    if (this.disabled) {
+      return {};
+    }
+
+    const coinSymbol = symbol.replace('USDT', '').replace('USD', '');
+    const url = `${this.baseUrl}/btc/network-data/active-addresses`;
+    
     try {
-      const coinSymbol = symbol.replace('USDT', '').replace('USD', '');
+      logger.debug({ 
+        adapter: 'CryptoQuant', 
+        method: 'getActiveAddresses', 
+        url, 
+        symbol 
+      }, 'CryptoQuant request: getActiveAddresses');
+      
       const response = await this.httpClient.get(`/btc/network-data/active-addresses`, {
         params: {
           market: coinSymbol,
         },
       });
       
+      logger.debug({ 
+        adapter: 'CryptoQuant', 
+        method: 'getActiveAddresses', 
+        status: response.status,
+        symbol 
+      }, 'CryptoQuant response: getActiveAddresses success');
+      
       return {
         activeAddresses: response.data?.result?.value || 0,
       };
     } catch (error: any) {
-      logger.debug({ error, symbol }, 'CryptoQuant active addresses error');
-      return {};
+      const errorDetails = extractAdapterError('CryptoQuant', 'getActiveAddresses', url, error);
+      
+      logger.error({
+        adapter: 'CryptoQuant',
+        method: 'getActiveAddresses',
+        url,
+        symbol,
+        statusCode: errorDetails.statusCode,
+        statusText: errorDetails.statusText,
+        responseSnippet: errorDetails.responseSnippet?.substring(0, 500),
+        errorMessage: errorDetails.errorMessage,
+        isAuthError: errorDetails.isAuthError,
+      }, 'CryptoQuant getActiveAddresses error');
+      
+      throw new AdapterError(errorDetails);
     }
   }
 
@@ -290,7 +460,7 @@ export class CryptoQuantAdapter {
       this.getActiveAddresses(symbol),
     ]);
 
-    // Merge all results
+    // Merge all results (only fulfilled promises)
     if (exchangeReserve.status === 'fulfilled') Object.assign(results, exchangeReserve.value);
     if (minerReserve.status === 'fulfilled') Object.assign(results, minerReserve.value);
     if (stablecoinSupply.status === 'fulfilled') Object.assign(results, stablecoinSupply.value);
@@ -302,12 +472,45 @@ export class CryptoQuantAdapter {
     if (liquidationData.status === 'fulfilled') Object.assign(results, liquidationData.value);
     if (activeAddresses.status === 'fulfilled') Object.assign(results, activeAddresses.value);
 
+    // Log any rejected promises (errors are already logged in individual methods)
+    const rejected = [
+      exchangeReserve, minerReserve, stablecoinSupply, netflow, longShortRatio,
+      futuresOI, fundingRate, whaleTransactions, liquidationData, activeAddresses
+    ].filter(r => r.status === 'rejected');
+    
+    if (rejected.length > 0) {
+      logger.warn({ 
+        adapter: 'CryptoQuant', 
+        symbol, 
+        rejectedCount: rejected.length,
+        totalMethods: 10
+      }, 'CryptoQuant getAllData: some methods failed');
+    }
+
     return results;
   }
 
   // Legacy method for backward compatibility
   async getOnChainMetrics(symbol: string): Promise<CryptoQuantData> {
-    return this.getAllData(symbol);
+    // Verify API key is still valid before making request
+    if (this.disabled || !this.apiKey || this.apiKey.trim() === '') {
+      logger.error('CryptoQuant API key is missing during getOnChainMetrics call');
+      throw new Error('CryptoQuant API key missing');
+    }
+    
+    try {
+      logger.debug({ symbol, hasApiKey: !!this.apiKey }, 'CryptoQuant getOnChainMetrics: calling getAllData');
+      return await this.getAllData(symbol);
+    } catch (error: any) {
+      // If it's an AdapterError, rethrow it
+      if (error instanceof AdapterError) {
+        throw error;
+      }
+      // Otherwise, wrap it
+      const url = `${this.baseUrl}/btc/network-data/*`;
+      const errorDetails = extractAdapterError('CryptoQuant', 'getOnChainMetrics', url, error);
+      throw new AdapterError(errorDetails);
+    }
   }
 }
 

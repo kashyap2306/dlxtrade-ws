@@ -33,6 +33,7 @@ import { autoTradeRoutes } from './routes/autoTrade';
 import { exchangeRoutes } from './routes/exchange';
 import { diagnosticsRoutes } from './routes/diagnostics';
 import { chatbotRoutes } from './routes/chatbot';
+import { walletRoutes } from './routes/wallet';
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -124,6 +125,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(diagnosticsRoutes, { prefix: '/api/diagnostics' });
   await app.register(notificationsRoutes, { prefix: '/api' });
   await app.register(chatbotRoutes, { prefix: '/api' });
+  await app.register(walletRoutes, { prefix: '/api/wallet' });
 
   console.log('✅ All routes registered:');
   console.log('  - /api/auth/*');

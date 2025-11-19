@@ -34,71 +34,84 @@ export async function resolveExchangeConnector(
     if (configDoc.exists) {
       const config = configDoc.data()!;
       
-      // Validate required fields
+      // Validate required fields EARLY - return null immediately if invalid
       if (!config.exchange) {
         logger.warn({ uid }, 'Exchange config exists but missing exchange field');
-      } else if (!config.apiKeyEncrypted || !config.secretEncrypted) {
+        return null;
+      }
+      
+      if (!config.apiKeyEncrypted || !config.secretEncrypted) {
         logger.warn({ uid, exchange: config.exchange }, 'Exchange config exists but missing encrypted credentials');
-      } else {
-        try {
-          // Normalize exchange name
-          const exchange = (config.exchange as string).toLowerCase().trim() as ExchangeName;
-          const validExchanges: ExchangeName[] = ['binance', 'bitget', 'bingx', 'weex'];
-          
-          if (!validExchanges.includes(exchange)) {
-            logger.warn({ uid, exchange: config.exchange }, 'Unsupported exchange name in config');
-          } else {
-            // Decrypt credentials
-            let apiKey: string;
-            let secret: string;
-            let passphrase: string | undefined;
-            
-            try {
-              apiKey = decrypt(config.apiKeyEncrypted);
-              secret = decrypt(config.secretEncrypted);
-              passphrase = config.passphraseEncrypted ? decrypt(config.passphraseEncrypted) : undefined;
-            } catch (decryptErr: any) {
-              logger.error({ uid, exchange, error: decryptErr.message }, 'Failed to decrypt exchange credentials');
-              return null;
-            }
-            
-            // Validate decrypted values
-            if (!apiKey || !secret) {
-              logger.warn({ uid, exchange }, 'Decrypted credentials are empty');
-              return null;
-            }
-            
-            const testnet = config.testnet ?? true;
-            
-            // Create connector using factory
-            try {
-              const connector = ExchangeConnectorFactory.create(exchange, {
-                apiKey,
-                secret,
-                passphrase,
-                testnet,
-              });
-              
-              logger.info({ uid, exchange, testnet }, 'Exchange connector resolved from exchangeConfig');
-              
-              return {
-                exchange,
-                connector,
-                credentials: {
-                  apiKey,
-                  secret,
-                  passphrase,
-                  testnet,
-                },
-              };
-            } catch (createErr: any) {
-              logger.error({ uid, exchange, error: createErr.message }, 'Failed to create exchange connector');
-              return null;
-            }
-          }
-        } catch (parseErr: any) {
-          logger.error({ uid, error: parseErr.message }, 'Error parsing exchange config');
+        return null;
+      }
+      
+      try {
+        // Normalize exchange name
+        const exchange = (config.exchange as string).toLowerCase().trim() as ExchangeName;
+        const validExchanges: ExchangeName[] = ['binance', 'bitget', 'bingx', 'weex'];
+        
+        // Validate exchange name EARLY - return null immediately if invalid
+        if (!validExchanges.includes(exchange)) {
+          logger.warn({ uid, exchange: config.exchange }, 'Unsupported exchange name in config');
+          return null;
         }
+        
+        // Proceed with decryption and connector creation
+        // Decrypt credentials
+        let apiKey: string;
+        let secret: string;
+        let passphrase: string | undefined;
+        
+        try {
+          apiKey = decrypt(config.apiKeyEncrypted);
+          secret = decrypt(config.secretEncrypted);
+          passphrase = config.passphraseEncrypted ? decrypt(config.passphraseEncrypted) : undefined;
+        } catch (decryptErr: any) {
+          logger.error({ uid, exchange, error: decryptErr.message }, 'Failed to decrypt exchange credentials');
+          return null;
+        }
+        
+        // Validate decrypted values - return null immediately if empty
+        if (!apiKey || apiKey.trim() === '') {
+          logger.warn({ uid, exchange }, 'Decrypted API key is empty');
+          return null;
+        }
+        
+        if (!secret || secret.trim() === '') {
+          logger.warn({ uid, exchange }, 'Decrypted secret is empty');
+          return null;
+        }
+        
+        const testnet = config.testnet ?? true;
+        
+        // Create connector using factory
+        try {
+          const connector = ExchangeConnectorFactory.create(exchange, {
+            apiKey,
+            secret,
+            passphrase,
+            testnet,
+          });
+          
+          logger.info({ uid, exchange, testnet }, 'Exchange connector resolved from exchangeConfig');
+          
+          return {
+            exchange,
+            connector,
+            credentials: {
+              apiKey,
+              secret,
+              passphrase,
+              testnet,
+            },
+          };
+        } catch (createErr: any) {
+          logger.error({ uid, exchange, error: createErr.message }, 'Failed to create exchange connector');
+          return null;
+        }
+      } catch (parseErr: any) {
+        logger.error({ uid, error: parseErr.message }, 'Error parsing exchange config');
+        return null;
       }
     }
     

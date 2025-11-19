@@ -125,17 +125,34 @@ export class AdminStatsService {
 
     const apiStatus: Record<string, { connected: boolean; hasKey: boolean }> = {};
     try {
+      // Check trading exchanges from exchangeConfig/current
+      const { getFirebaseAdmin } = await import('../utils/firebase');
+      const db = getFirebaseAdmin().firestore();
+      const exchangeConfigDoc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+      if (exchangeConfigDoc.exists) {
+        const exchange = exchangeConfigDoc.data()?.exchange || exchangeConfigDoc.data()?.type;
+        if (exchange) {
+          apiStatus[exchange] = {
+            connected: true,
+            hasKey: true,
+          };
+        }
+      }
+      
+      // Check research APIs from integrations collection
       const integrations = await firestoreAdapter.getAllIntegrations(uid);
-      const apiNames = ['binance', 'cryptoquant', 'lunarcrush', 'coinapi'];
-      for (const apiName of apiNames) {
+      const researchApis = ['cryptoquant', 'lunarcrush', 'coinapi_market', 'coinapi_flatfile', 'coinapi_exchangerate'];
+      for (const apiName of researchApis) {
         const integration = integrations[apiName];
-        apiStatus[apiName] = {
-          connected: integration?.enabled || false,
-          hasKey: !!integration?.apiKey,
-        };
+        if (integration) {
+          apiStatus[apiName] = {
+            connected: integration.enabled || false,
+            hasKey: !!integration.apiKey,
+          };
+        }
       }
     } catch (error) {
-      logger.warn({ error, uid }, 'User stats: integrations unavailable, defaulting api status');
+      logger.warn({ error, uid }, 'User stats: API status check failed, defaulting api status');
     }
 
     let autoTradeEnabled = false;

@@ -8,15 +8,27 @@ import { initializeFirestoreCollections } from './utils/firestoreInitializer';
 import { seedFirestoreData } from './utils/firestoreSeed';
 import { migrateFirestoreDocuments } from './utils/firestoreMigration';
 
-// Global error handlers to catch all errors
+// Global error handlers to catch all errors and prevent crashes
 process.on('uncaughtException', (error) => {
   console.error('UNCAUGHT EXCEPTION:', error);
-  logger.error({ error }, 'Uncaught exception');
+  console.error('STACK:', error.stack);
+  logger.error({ error: error.message, stack: error.stack, name: error.name }, 'Uncaught exception - server will continue');
+  // Don't exit - allow server to continue running
 });
 
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason: any, promise) => {
   console.error('UNHANDLED REJECTION:', reason);
-  logger.error({ reason, promise }, 'Unhandled rejection');
+  console.error('PROMISE:', promise);
+  if (reason && typeof reason === 'object') {
+    console.error('REASON MESSAGE:', reason.message);
+    console.error('REASON STACK:', reason.stack);
+  }
+  logger.error({ 
+    reason: reason?.message || String(reason), 
+    stack: reason?.stack,
+    promise: promise.toString() 
+  }, 'Unhandled rejection - server will continue');
+  // Don't exit - allow server to continue running
 });
 
 async function start() {
@@ -156,14 +168,31 @@ async function start() {
         }
 
         // Start scheduled research service (runs every 5 minutes)
+        // Wrap in try/catch and error boundary to prevent crashes
         try {
           const { scheduledResearchService } = await import('./services/scheduledResearch');
+          
+          // Wrap start() in error handler
+          const originalStart = scheduledResearchService.start.bind(scheduledResearchService);
+          scheduledResearchService.start = function() {
+            try {
+              originalStart();
+              console.log('✅ Scheduled research service started (every 5 minutes)');
+              logger.info('Scheduled research service started');
+            } catch (startErr: any) {
+              console.error('⚠️ Scheduled research service start error:', startErr.message);
+              console.error('STACK:', startErr.stack);
+              logger.error({ error: startErr.message, stack: startErr.stack }, 'Scheduled research service start error');
+              // Don't throw - allow server to continue
+            }
+          };
+          
           scheduledResearchService.start();
-          console.log('✅ Scheduled research service started (every 5 minutes)');
-          logger.info('Scheduled research service started');
         } catch (scheduledErr: any) {
-          console.error('⚠️ Scheduled research service failed to start:', scheduledErr.message);
-          logger.warn({ error: scheduledErr.message }, 'Scheduled research service failed to start');
+          console.error('⚠️ Scheduled research service failed to import/start:', scheduledErr.message);
+          console.error('STACK:', scheduledErr.stack);
+          logger.error({ error: scheduledErr.message, stack: scheduledErr.stack }, 'Scheduled research service failed to start');
+          // Don't throw - allow server to continue
         }
       } catch (firebaseError: any) {
         console.error('❌ INIT ERROR (Firebase):', firebaseError.message);

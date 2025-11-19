@@ -1,9 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { researchApi, settingsApi } from '../services/api';
 import { wsService } from '../services/ws';
 import Toast from '../components/Toast';
 import Sidebar from '../components/Sidebar';
-import Header from '../components/Header';
 import { useError } from '../contexts/ErrorContext';
 import { useNotificationContext } from '../contexts/NotificationContext';
 import { getApiErrorMessage, suppressConsoleError } from '../utils/errorHandler';
@@ -20,29 +19,7 @@ interface ResearchLog {
   orderbookImbalance: number;
   recommendedAction: string;
   microSignals: any;
-}
-
-interface ManualResearchResult {
-  symbol: string;
-  accuracy: number;
-  price: number;
-  trend: string;
-  suggestion: 'BUY' | 'SELL';
-  reasoning: string;
-  indicators?: {
-    rsi: number;
-    trendStrength: number;
-    volume: number;
-    priceChangePercent: number;
-  };
-  entryPrice: number;
-  exitPrice: number;
-  takeProfit: number;
-  stopLoss: number;
-  trendDirection: 'UP' | 'DOWN' | 'SIDEWAYS';
-  totalAnalyzed?: number;
-  candidatesFound?: number;
-  exchange?: string;
+  researchType?: 'manual' | 'auto';
 }
 
 interface AnalysisReportItem {
@@ -60,8 +37,6 @@ export default function ResearchPanel() {
   const [liveData, setLiveData] = useState<any>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [settings, setSettings] = useState<any>(null);
-  const [manualResearchLoading, setManualResearchLoading] = useState(false);
-  const [manualResearchResult, setManualResearchResult] = useState<ManualResearchResult | null>(null);
   const [analysisReport, setAnalysisReport] = useState<AnalysisReportItem[]>([]);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [deepResearchLoading, setDeepResearchLoading] = useState(false);
@@ -71,198 +46,227 @@ export default function ResearchPanel() {
     status: 'pending' | 'loading' | 'success' | 'error';
     error?: string;
   }[]>([]);
+  const [showMoreAnalysis, setShowMoreAnalysis] = useState(false);
   const { showError } = useError();
   const { addNotification } = useNotificationContext();
   const { user } = useAuth();
-  
-  // Define isAdmin properly
-  const isAdmin = user?.role === 'admin' || (user as any)?.isAdmin === true;
+  const [isAdmin, setIsAdmin] = useState(false);
 
-  useEffect(() => {
-    loadLogs();
-    loadSettings();
-    fetchAnalysis();
-    
-    // Subscribe to live research updates
-    const unsubscribe = wsService.subscribe('research', (data: any) => {
-      setLiveData(data.data);
-      // Add to logs
-      setLogs((prev) => [data.data, ...prev].slice(0, 100));
-    });
+  const checkAdmin = async () => {
+    if (!user) return;
+    try {
+      const userDoc = await getDoc(doc(db, 'users', user.uid));
+      if (userDoc.exists()) {
+        const userData: any = userDoc.data();
+        setIsAdmin(userData.role === 'admin' || userData.isAdmin === true);
+      }
+    } catch (error) {
+      console.error('Error checking admin role:', error);
+    }
+  };
 
-    // Auto-refresh analysis every 5 minutes (300000ms)
-    const analysisInterval = setInterval(() => {
-      fetchAnalysis();
-    }, 300000);
 
-    return () => {
-      unsubscribe();
-      clearInterval(analysisInterval);
-    };
-  }, []);
+  const loadLogs = useCallback(async () => {
+    if (!user) return;
+    try {
+      const response = await researchApi.getLogs({ limit: 100 });
+      if (response.data && Array.isArray(response.data)) {
+        setLogs(response.data);
+      }
+    } catch (err: any) {
+      suppressConsoleError(err, 'loadLogs');
+    }
+  }, [user]);
 
-  const loadSettings = async () => {
+  const loadSettings = useCallback(async () => {
     try {
       const response = await settingsApi.load();
-      console.log('Research settings API response:', response.data);
       setSettings(response.data);
     } catch (err: any) {
       suppressConsoleError(err, 'loadSettings');
     }
-  };
+  }, []);
+
+  const fetchAnalysis = useCallback(async () => {
+    if (!user) return;
+    setAnalysisLoading(true);
+    try {
+      const response = await researchApi.getLogs({ limit: 50 });
+      if (response.data && Array.isArray(response.data)) {
+        // Filter only auto research (researchType === 'auto' or undefined/not 'manual')
+        const autoLogs = response.data.filter((log: ResearchLog) => 
+          log.researchType !== 'manual'
+        );
+        // Process logs into analysis report
+        const report: AnalysisReportItem[] = autoLogs.map((log: ResearchLog) => ({
+          id: log.id,
+          symbol: log.symbol,
+          price: null,
+          longSignals: log.signal === 'BUY' ? 1 : 0,
+          accuracy: log.accuracy,
+          timestamp: log.timestamp,
+        }));
+        setAnalysisReport(report);
+      }
+    } catch (err: any) {
+      suppressConsoleError(err, 'fetchAnalysis');
+    } finally {
+      setAnalysisLoading(false);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    if (user) {
+      checkAdmin();
+      loadLogs();
+      loadSettings();
+      // Don't auto-fetch analysis on page load - only when user requests it
+      // fetchAnalysis();
+    }
+  }, [user, loadLogs, loadSettings]);
+
+  useEffect(() => {
+    if (!user) return;
+    
+    // Subscribe to live research updates
+    const unsubscribe = wsService.subscribe('research', (data: any) => {
+      setLiveData(data.data);
+      // Add to logs (only if it's auto research)
+      if (data.data && data.data.researchType !== 'manual') {
+        setLogs((prev) => [data.data, ...prev].slice(0, 100));
+      }
+    });
+
+    // Auto-refresh analysis every 5 minutes (300000ms) - only if user is on the page
+    // Removed auto-refresh to prevent performance issues - user can manually refresh
+
+    return () => {
+      unsubscribe();
+    };
+  }, [user]);
 
   const canExecute = (accuracy: number): boolean => {
     if (!settings) return false;
     return settings.autoTradeEnabled && accuracy >= (settings.minAccuracyThreshold || 0.85);
   };
 
-  const loadLogs = async () => {
-    setLoading(true);
-    try {
-      const response = await researchApi.getLogs({ limit: 100 });
-      console.log('Research logs API response:', response.data);
-      setLogs(response.data);
-    } catch (err: any) {
-      suppressConsoleError(err, 'loadLogs');
-      const { message, type } = getApiErrorMessage(err);
-      showError(message, type);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchAnalysis = async () => {
-    setAnalysisLoading(true);
-    try {
-      const response = await researchApi.getLogs({ limit: 50 });
-      const logsData = response.data || [];
-      
-      // Group by symbol and aggregate data
-      const symbolMap = new Map<string, {
-        symbol: string;
-        buyCount: number;
-        latestLog: ResearchLog;
-        price: number | null;
-      }>();
-
-      // First pass: count all BUY signals per symbol and find latest log
-      logsData.forEach((log: ResearchLog) => {
-        const existing = symbolMap.get(log.symbol);
-        
-        // Extract price from microSignals or use null
-        let price: number | null = null;
-        if (log.microSignals && typeof log.microSignals === 'object') {
-          price = (log.microSignals as any).price || (log.microSignals as any).currentPrice || null;
-        }
-        
-        if (!existing) {
-          // First occurrence of this symbol
-          symbolMap.set(log.symbol, {
-            symbol: log.symbol,
-            buyCount: log.signal === 'BUY' ? 1 : 0,
-            latestLog: log,
-            price: price,
-          });
-        } else {
-          // Update buy count
-          if (log.signal === 'BUY') {
-            existing.buyCount += 1;
-          }
-          // Update latest log if this one is newer
-          if (new Date(log.timestamp) > new Date(existing.latestLog.timestamp)) {
-            existing.latestLog = log;
-            if (price !== null) {
-              existing.price = price;
-            }
-          } else if (price !== null && existing.price === null) {
-            // Use price from older log if latest doesn't have it
-            existing.price = price;
-          }
-        }
-      });
-
-      // Convert to analysis report items
-      const reportItems: AnalysisReportItem[] = Array.from(symbolMap.values())
-        .map((item) => ({
-          id: item.latestLog.id || `analysis-${item.symbol}`,
-          symbol: item.symbol,
-          price: item.price,
-          longSignals: item.buyCount,
-          accuracy: item.latestLog.accuracy || 0,
-          timestamp: item.latestLog.timestamp,
-        }))
-        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-        .slice(0, 20); // Limit to top 20
-
-      setAnalysisReport(reportItems);
-    } catch (err: any) {
-      suppressConsoleError(err, 'fetchAnalysis');
-      // Don't show error toast for analysis, just log it
-      console.error('Error fetching analysis report:', err);
-    } finally {
-      setAnalysisLoading(false);
-    }
-  };
-
-  // Run deep research instantly with step-by-step progress
+  // Run deep research with 10-second processing animation
   const handleDeepResearch = async () => {
     setDeepResearchLoading(true);
-    setDeepResearchResults([]);
     
-    // Initialize progress steps
+    // Initialize progress steps with new messaging
     const steps = [
-      { step: 'Fetching CryptoQuant data…', status: 'pending' as const },
-      { step: 'Fetching LunarCrush data…', status: 'pending' as const },
-      { step: 'Fetching CoinAPI Market Data…', status: 'pending' as const },
-      { step: 'Fetching CoinAPI Exchange Rates…', status: 'pending' as const },
-      { step: 'Fetching CoinAPI Flat Files…', status: 'pending' as const },
-      { step: 'Calculating Indicators…', status: 'pending' as const },
-      { step: 'Generating AI Decision…', status: 'pending' as const },
+      { step: 'Checking latest market data…', status: 'pending' as const },
+      { step: 'Fetching on-chain metrics…', status: 'pending' as const },
+      { step: 'Analyzing whale activity…', status: 'pending' as const },
+      { step: 'Evaluating sentiment…', status: 'pending' as const },
+      { step: 'Combining indicators…', status: 'pending' as const },
+      { step: 'Generating final score…', status: 'pending' as const },
     ];
     setResearchProgress(steps);
     
+    const PROCESSING_DURATION = 10000; // 10 seconds
+    
+    // Update progress function
+    const updateProgress = (index: number, status: 'loading' | 'success' | 'error', error?: string) => {
+      setResearchProgress(prev => {
+        const newProgress = [...prev];
+        newProgress[index] = { ...newProgress[index], status, error };
+        return newProgress;
+      });
+    };
+    
+    // Animate progress steps over 10 seconds
+    const stepDelays = [1000, 2000, 3000, 4000, 5000, 6000]; // When each step starts
+    
     try {
-      // Update progress as we go (simulated - actual progress comes from backend)
-      const updateProgress = (index: number, status: 'loading' | 'success' | 'error', error?: string) => {
-        setResearchProgress(prev => {
-          const newProgress = [...prev];
-          newProgress[index] = { ...newProgress[index], status, error };
-          return newProgress;
-        });
-      };
+      // Start API call immediately (don't wait for animation)
+      const apiCallPromise = researchApi.run({ symbol: 'BTCUSDT' });
       
-      // Mark first step as loading
-      updateProgress(0, 'loading');
+      // Animate steps
+      for (let i = 0; i < steps.length; i++) {
+        setTimeout(() => {
+          updateProgress(i, 'loading');
+        }, stepDelays[i]);
+      }
       
-      const response = await researchApi.run({ symbol: 'BTCUSDT' });
+      // Wait for API call and animation to complete
+      const [response] = await Promise.all([
+        apiCallPromise,
+        new Promise(resolve => setTimeout(resolve, PROCESSING_DURATION))
+      ]);
       
-      // Simulate progress updates based on response
-      setTimeout(() => updateProgress(0, 'success'), 500);
-      setTimeout(() => updateProgress(1, 'loading'), 600);
-      setTimeout(() => updateProgress(1, 'success'), 1000);
-      setTimeout(() => updateProgress(2, 'loading'), 1100);
-      setTimeout(() => updateProgress(2, 'success'), 1500);
-      setTimeout(() => updateProgress(3, 'loading'), 1600);
-      setTimeout(() => updateProgress(3, 'success'), 2000);
-      setTimeout(() => updateProgress(4, 'loading'), 2100);
-      setTimeout(() => updateProgress(4, 'success'), 2500);
-      setTimeout(() => updateProgress(5, 'loading'), 2600);
-      setTimeout(() => updateProgress(5, 'success'), 3000);
-      setTimeout(() => updateProgress(6, 'loading'), 3100);
-      setTimeout(() => updateProgress(6, 'success'), 3500);
-      
-      if (response.data.success && response.data.results) {
-        setDeepResearchResults(response.data.results);
-        showToast(`Deep research completed for ${response.data.totalAnalyzed} symbol(s)`, 'success');
+      // Update progress based on actual response data
+      if (response.data?.results && response.data.results.length > 0) {
+        const result = response.data.results[0];
         
+        // Update progress based on available data
+        if (result.cryptoQuant && !result.cryptoQuant.error) {
+          updateProgress(1, 'success'); // on-chain metrics
+        } else if (result.cryptoQuant?.error) {
+          updateProgress(1, 'error', result.cryptoQuant.error);
+        }
+        
+        if (result.lunarCrush && !result.lunarCrush.error) {
+          updateProgress(3, 'success'); // sentiment
+        } else if (result.lunarCrush?.error) {
+          updateProgress(3, 'error', result.lunarCrush.error);
+        }
+        
+        if (result.coinApi?.marketData && !result.coinApi.marketData.error) {
+          updateProgress(0, 'success'); // market data
+        } else if (result.coinApi?.marketData?.error) {
+          updateProgress(0, 'error', result.coinApi.marketData.error);
+        }
+        
+        // Whale activity (from CryptoQuant)
+        if (result.cryptoQuant && !result.cryptoQuant.error && result.cryptoQuant.whaleTransactions) {
+          updateProgress(2, 'success');
+        } else {
+          updateProgress(2, 'success'); // Mark as success even if no whale data
+        }
+        
+        if (result.indicators) {
+          updateProgress(4, 'success'); // combining indicators
+        }
+        
+        if (result.finalAnalysis) {
+          updateProgress(5, 'success'); // final score
+        }
+      } else {
+        // Fallback: mark all as success if we got a response
+        for (let i = 0; i < steps.length; i++) {
+          updateProgress(i, 'success');
+        }
+      }
+      
+      if (response.data?.success && response.data.results) {
+        // Add results to deep research results array (newest first)
+        const resultsWithTimestamp = response.data.results.map((result: any) => ({
+          ...result,
+          timestamp: new Date().toISOString(),
+          id: `deep_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        }));
+        setDeepResearchResults((prev) => [...resultsWithTimestamp, ...prev]);
+        
+        const result = response.data.results[0];
         await addNotification({
           title: 'Deep Research Completed',
-          message: `Analyzed ${response.data.totalAnalyzed} symbol(s) using CryptoQuant + LunarCrush + CoinAPI`,
+          message: `Analyzed ${response.data.totalAnalyzed || response.data.results.length} symbol(s) with ${result?.finalAnalysis?.confidencePercent || 0}% accuracy`,
           type: 'success',
         });
+      } else if (response.data?.results && response.data.results.length > 0) {
+        // Partial success
+        const resultsWithTimestamp = response.data.results.map((result: any) => ({
+          ...result,
+          timestamp: new Date().toISOString(),
+          id: `deep_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        }));
+        setDeepResearchResults((prev) => [...resultsWithTimestamp, ...prev]);
+        showToast('Deep research completed with some API errors', 'success');
       } else {
         showError('No research data received from server. Please try again.', 'api');
-        updateProgress(6, 'error', 'No data received');
+        updateProgress(5, 'error', 'No data received');
       }
     } catch (err: any) {
       suppressConsoleError(err, 'deepResearch');
@@ -350,71 +354,56 @@ export default function ResearchPanel() {
           </div>
 
           {/* Desktop Header */}
-          <div className="hidden lg:block mb-6 sm:mb-8">
-            <Header
-              title="Research Panel"
-              subtitle="Run instant deep research with full exchange API data"
-              onMenuToggle={() => {
-                const toggle = (window as any).__sidebarToggle;
-                if (toggle) toggle();
-              }}
-              menuOpen={(window as any).__sidebarOpen || false}
-            >
-              <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
-                <button
-                  onClick={handleDeepResearch}
-                  disabled={deepResearchLoading}
-                  className="btn-mobile-full px-6 py-3 bg-gradient-to-r from-purple-600 via-pink-600 to-cyan-600 text-white font-semibold rounded-xl hover:from-purple-500 hover:via-pink-500 hover:to-cyan-500 transition-all duration-300 shadow-lg shadow-purple-500/40 hover:shadow-purple-500/60 disabled:opacity-50 disabled:cursor-not-allowed transform hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2"
-                >
-                  {deepResearchLoading ? (
-                    <>
-                      <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
-                      Running Deep Research...
-                    </>
-                  ) : (
-                    <>
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                      </svg>
-                      Run Deep Research
-                    </>
-                  )}
-                </button>
-                <button 
-                  onClick={loadLogs} 
-                  className="btn-mobile-full px-6 py-3 bg-black/30 backdrop-blur-sm border border-purple-500/40 text-gray-200 rounded-xl hover:bg-purple-500/20 hover:border-purple-400/60 transition-all duration-300 disabled:opacity-50 flex items-center justify-center gap-2 transform hover:scale-105 active:scale-95" 
-                  disabled={loading}
-                >
-                  {loading ? (
-                    <>
-                      <span className="w-4 h-4 border-2 border-purple-400/30 border-t-purple-400 rounded-full animate-spin"></span>
-                      Loading...
-                    </>
-                  ) : (
-                    <>
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                      </svg>
-                      Refresh
-                    </>
-                  )}
-                </button>
-              </div>
-            </Header>
-          </div>
-
-          {/* Mobile Header (simplified) */}
-          <div className="lg:hidden mb-6">
-            <Header
-              title="Research Panel"
-              subtitle="Analyze market signals"
-              onMenuToggle={() => {
-                const toggle = (window as any).__sidebarToggle;
-                if (toggle) toggle();
-              }}
-              menuOpen={(window as any).__sidebarOpen || false}
-            />
-          </div>
+          <section className="hidden lg:block mb-6 sm:mb-8">
+            <div className="space-y-2">
+              <h1 className="text-3xl sm:text-4xl font-bold bg-gradient-to-r from-purple-300 via-pink-300 to-cyan-300 bg-clip-text text-transparent">
+                Research Panel
+              </h1>
+              <p className="text-sm sm:text-base text-gray-300">
+                Run instant deep research with full exchange API data
+              </p>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+              <button
+                onClick={handleDeepResearch}
+                disabled={deepResearchLoading}
+                className="btn-mobile-full px-6 py-3 bg-gradient-to-r from-purple-600 via-pink-600 to-cyan-600 text-white font-semibold rounded-xl hover:from-purple-500 hover:via-pink-500 hover:to-cyan-500 transition-all duration-300 shadow-lg shadow-purple-500/40 hover:shadow-purple-500/60 disabled:opacity-50 disabled:cursor-not-allowed transform hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2"
+              >
+                {deepResearchLoading ? (
+                  <>
+                    <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                    Running Deep Research...
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                    Run Deep Research
+                  </>
+                )}
+              </button>
+              <button 
+                onClick={loadLogs} 
+                className="btn-mobile-full px-6 py-3 bg-black/30 backdrop-blur-sm border border-purple-500/40 text-gray-200 rounded-xl hover:bg-purple-500/20 hover:border-purple-400/60 transition-all duration-300 disabled:opacity-50 flex items-center justify-center gap-2 transform hover:scale-105 active:scale-95" 
+                disabled={loading}
+              >
+                {loading ? (
+                  <>
+                    <span className="w-4 h-4 border-2 border-purple-400/30 border-t-purple-400 rounded-full animate-spin"></span>
+                    Loading...
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    Refresh
+                  </>
+                )}
+              </button>
+            </div>
+          </section>
           <div className="space-y-6">
             {/* Analysis Report Section */}
             <div className="relative bg-black/30 backdrop-blur-xl border border-purple-500/30 rounded-2xl p-6 shadow-2xl shadow-purple-500/10 hover:shadow-purple-500/20 transition-all duration-300 overflow-hidden">
@@ -482,7 +471,7 @@ export default function ResearchPanel() {
                         </td>
                       </tr>
                     ) : (
-                      analysisReport.map((item, index) => (
+                      (showMoreAnalysis ? analysisReport : analysisReport.slice(0, 3)).map((item, index) => (
                         <tr 
                           key={item.id} 
                           className="hover:bg-gradient-to-r hover:from-purple-500/10 hover:to-pink-500/10 transition-all duration-200 group border-l-2 border-transparent hover:border-purple-500/50"
@@ -547,6 +536,32 @@ export default function ResearchPanel() {
                 </table>
               </div>
 
+              {/* View More Button */}
+              {analysisReport.length > 3 && (
+                <div className="mt-4 flex justify-center">
+                  <button
+                    onClick={() => setShowMoreAnalysis(!showMoreAnalysis)}
+                    className="px-6 py-2 bg-black/40 backdrop-blur-sm border border-purple-500/40 text-gray-200 rounded-xl hover:bg-purple-500/20 hover:border-purple-400/60 transition-all duration-300 flex items-center justify-center gap-2 transform hover:scale-105 active:scale-95"
+                  >
+                    {showMoreAnalysis ? (
+                      <>
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                        </svg>
+                        Show Less
+                      </>
+                    ) : (
+                      <>
+                        View More ({analysisReport.length - 3} more)
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+
               {/* Mobile Card View */}
               <div className="md:hidden space-y-3">
                 {analysisReport.length === 0 ? (
@@ -561,7 +576,7 @@ export default function ResearchPanel() {
                     </p>
                   </div>
                 ) : (
-                  analysisReport.map((item, index) => (
+                  (showMoreAnalysis ? analysisReport : analysisReport.slice(0, 3)).map((item, index) => (
                     <div 
                       key={item.id} 
                       className="relative bg-black/40 backdrop-blur-sm border border-purple-500/30 rounded-xl p-4 space-y-3 hover:border-purple-400/50 transition-all duration-300 overflow-hidden group"
@@ -629,219 +644,33 @@ export default function ResearchPanel() {
                   ))
                 )}
               </div>
+
+              {/* View More Button (Mobile) */}
+              {analysisReport.length > 3 && (
+                <div className="mt-4 flex justify-center">
+                  <button
+                    onClick={() => setShowMoreAnalysis(!showMoreAnalysis)}
+                    className="px-6 py-2 bg-black/40 backdrop-blur-sm border border-purple-500/40 text-gray-200 rounded-xl hover:bg-purple-500/20 hover:border-purple-400/60 transition-all duration-300 flex items-center justify-center gap-2 transform hover:scale-105 active:scale-95"
+                  >
+                    {showMoreAnalysis ? (
+                      <>
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                        </svg>
+                        Show Less
+                      </>
+                    ) : (
+                      <>
+                        View More ({analysisReport.length - 3} more)
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
             </div>
-
-            {/* Manual Deep Research Loading */}
-            {manualResearchLoading && (
-              <div className="relative bg-black/30 backdrop-blur-xl border border-purple-500/30 rounded-2xl p-8 sm:p-12 shadow-2xl shadow-purple-500/20 overflow-hidden">
-                {/* Gradient accent line */}
-                <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-purple-500 via-pink-500 to-cyan-500"></div>
-                
-                <div className="flex flex-col items-center justify-center py-12">
-                  <div className="relative w-24 h-24 mb-8">
-                    {/* Outer glow */}
-                    <div className="absolute inset-0 border-4 border-purple-500/20 rounded-full"></div>
-                    {/* Spinning rings */}
-                    <div className="absolute inset-0 border-4 border-transparent border-t-purple-500 rounded-full animate-spin"></div>
-                    <div className="absolute inset-0 border-4 border-transparent border-r-pink-500 rounded-full animate-spin" style={{ animationDelay: '0.15s' }}></div>
-                    <div className="absolute inset-0 border-4 border-transparent border-b-cyan-500 rounded-full animate-spin" style={{ animationDelay: '0.3s' }}></div>
-                    {/* Center pulse */}
-                    <div className="absolute inset-4 bg-gradient-to-br from-purple-500/30 to-pink-500/30 rounded-full animate-pulse"></div>
-                  </div>
-                  <h3 className="text-2xl sm:text-3xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-cyan-400 bg-clip-text text-transparent mb-3">
-                    Analyzing 100+ markets...
-                  </h3>
-                  <p className="text-sm text-gray-400 text-center mb-6">This may take 10-20 seconds</p>
-                  <div className="w-full max-w-md bg-black/40 rounded-full h-3 overflow-hidden border border-purple-500/30">
-                    <div className="h-full bg-gradient-to-r from-purple-500 via-pink-500 to-cyan-500 rounded-full animate-pulse shadow-lg shadow-purple-500/50" style={{ width: '60%' }}></div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Manual Deep Research Result */}
-            {manualResearchResult && !manualResearchLoading && (
-              <div className="relative bg-black/30 backdrop-blur-xl border border-purple-500/30 rounded-2xl p-6 sm:p-8 shadow-2xl shadow-purple-500/20 hover:shadow-purple-500/30 transition-all duration-300 overflow-hidden animate-fade-in">
-                {/* Gradient accent line */}
-                <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-purple-500 via-pink-500 to-cyan-500"></div>
-                
-                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
-                  <h2 className="text-2xl sm:text-3xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-cyan-400 bg-clip-text text-transparent">
-                    Deep Research Result
-                  </h2>
-                  {manualResearchResult.exchange && (
-                    <span className="inline-flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-purple-500/20 to-pink-500/20 text-purple-300 rounded-xl border border-purple-400/40 text-sm font-semibold backdrop-blur-sm">
-                      <span className="w-2 h-2 bg-purple-400 rounded-full animate-pulse"></span>
-                      {manualResearchResult.exchange.toUpperCase()}
-                    </span>
-                  )}
-                </div>
-                
-                {/* Main Result Card */}
-                <div className="relative bg-gradient-to-br from-purple-900/40 via-pink-900/30 to-cyan-900/30 rounded-2xl p-6 sm:p-8 mb-6 border border-purple-500/40 shadow-xl overflow-hidden">
-                  {/* Animated background pattern */}
-                  <div className="absolute inset-0 opacity-10">
-                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(139,92,246,0.3),transparent_50%)]"></div>
-                  </div>
-                  <div className="relative z-10">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
-                    <div>
-                      <div className="text-xs sm:text-sm text-gray-400 mb-1">Coin</div>
-                      <div className="text-2xl sm:text-3xl font-bold text-purple-400 break-words">
-                        {manualResearchResult.symbol || 'N/A'}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-xs sm:text-sm text-gray-400 mb-1">Accuracy</div>
-                      <div className={`text-2xl sm:text-3xl font-bold ${
-                        (manualResearchResult.accuracy ?? 0) >= 0.85 ? 'text-green-400' : 
-                        (manualResearchResult.accuracy ?? 0) >= 0.7 ? 'text-yellow-400' : 
-                        'text-red-400'
-                      }`}>
-                        {((manualResearchResult.accuracy ?? 0) * 100).toFixed(2)}%
-                      </div>
-                    </div>
-                  </div>
-                  
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
-                    <div>
-                      <div className="text-xs sm:text-sm text-gray-400 mb-1">Current Price</div>
-                      <div className="text-lg sm:text-xl font-bold text-white">
-                        ${((manualResearchResult.price ?? 0)).toFixed(2)}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-xs sm:text-sm text-gray-400 mb-1">Trend</div>
-                      <div className={`text-lg sm:text-xl font-bold ${
-                        manualResearchResult.trend?.includes('up') ? 'text-green-400' :
-                        manualResearchResult.trend?.includes('down') ? 'text-red-400' :
-                        'text-yellow-400'
-                      }`}>
-                        {manualResearchResult.trend || 'sideways'}
-                      </div>
-                    </div>
-                  </div>
-                  
-                  <div className="mb-4">
-                    <div className="text-xs sm:text-sm text-gray-400 mb-2">Suggested Action</div>
-                    <div className={`inline-flex items-center px-4 py-2 rounded-lg font-bold text-lg ${
-                      manualResearchResult.suggestion === 'BUY' 
-                        ? 'bg-green-500/20 text-green-300 border border-green-400/30' 
-                        : 'bg-red-500/20 text-red-300 border border-red-400/30'
-                    }`}>
-                      {manualResearchResult.suggestion || 'HOLD'}
-                    </div>
-                  </div>
-                  
-                  <div className="bg-black/40 backdrop-blur-sm rounded-xl p-4 sm:p-5 border border-purple-500/30 shadow-lg">
-                    <div className="text-xs sm:text-sm text-purple-300 font-semibold mb-3 flex items-center gap-2">
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                      </svg>
-                      Reasoning
-                    </div>
-                    <div className="text-sm sm:text-base text-gray-200 leading-relaxed break-words">
-                      {manualResearchResult.reasoning || 'Analysis completed'}
-                    </div>
-                  </div>
-                  </div>
-                </div>
-
-                {/* Indicators */}
-                  {manualResearchResult.indicators && (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
-                    <div className="bg-black/40 backdrop-blur-sm rounded-xl p-4 border border-purple-500/30 hover:border-purple-400/50 transition-all duration-300 shadow-lg hover:shadow-purple-500/20">
-                      <div className="text-xs text-gray-400 mb-1">RSI</div>
-                      <div className="text-lg font-bold text-white">
-                        {(manualResearchResult.indicators.rsi ?? 50).toFixed(1)}
-                      </div>
-                    </div>
-                    <div className="bg-slate-900/50 rounded-lg p-3 border border-purple-500/20">
-                      <div className="text-xs text-gray-400 mb-1">Price Change</div>
-                      <div className={`text-lg font-bold ${
-                        (manualResearchResult.indicators.priceChangePercent ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
-                      }`}>
-                        {((manualResearchResult.indicators.priceChangePercent ?? 0)).toFixed(2)}%
-                      </div>
-                    </div>
-                    <div className="bg-slate-900/50 rounded-lg p-3 border border-purple-500/20">
-                      <div className="text-xs text-gray-400 mb-1">Volume</div>
-                      <div className="text-lg font-bold text-white">
-                        ${((manualResearchResult.indicators.volume ?? 0) / 1000000).toFixed(1)}M
-                      </div>
-                    </div>
-                    <div className="bg-slate-900/50 rounded-lg p-3 border border-purple-500/20">
-                      <div className="text-xs text-gray-400 mb-1">Trend Strength</div>
-                      <div className={`text-lg font-bold ${
-                        (manualResearchResult.indicators.trendStrength ?? 0) > 0 ? 'text-green-400' : 'text-red-400'
-                      }`}>
-                        {((manualResearchResult.indicators.trendStrength ?? 0)).toFixed(1)}%
-                      </div>
-                    </div>
-                    {(manualResearchResult.indicators.socialScore !== undefined || manualResearchResult.indicators.socialSentiment !== undefined) && (
-                      <div className="bg-slate-900/50 rounded-lg p-3 border border-purple-500/20">
-                        <div className="text-xs text-gray-400 mb-1">Social Sentiment</div>
-                        <div className={`text-lg font-bold ${
-                          (manualResearchResult.indicators.socialSentiment ?? 0) > 0 ? 'text-green-400' : 'text-red-400'
-                        }`}>
-                          {((manualResearchResult.indicators.socialSentiment ?? 0) * 100).toFixed(1)}%
-                        </div>
-                        {manualResearchResult.indicators.socialScore !== undefined && (
-                          <div className="text-xs text-gray-500 mt-1">
-                            Score: {manualResearchResult.indicators.socialScore.toFixed(0)}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    {manualResearchResult.indicators.onChainFlow !== undefined && (
-                      <div className="bg-slate-900/50 rounded-lg p-3 border border-purple-500/20">
-                        <div className="text-xs text-gray-400 mb-1">On-chain Flow</div>
-                        <div className={`text-lg font-bold ${
-                          (manualResearchResult.indicators.onChainFlow ?? 0) > 0 ? 'text-green-400' : 'text-red-400'
-                        }`}>
-                          ${((manualResearchResult.indicators.onChainFlow ?? 0) / 1000000).toFixed(2)}M
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Trading Details */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="bg-black/40 backdrop-blur-sm rounded-xl p-5 border border-purple-500/30 hover:border-purple-400/50 transition-all duration-300 shadow-lg">
-                    <div className="text-xs sm:text-sm text-purple-300 font-semibold mb-2">Entry Price</div>
-                    <div className="text-2xl sm:text-3xl font-bold text-white">
-                      ${((manualResearchResult.entryPrice ?? 0)).toFixed(2)}
-                    </div>
-                  </div>
-                  <div className="bg-black/40 backdrop-blur-sm rounded-xl p-5 border border-green-500/40 hover:border-green-400/60 transition-all duration-300 shadow-lg shadow-green-500/10">
-                    <div className="text-xs sm:text-sm text-green-300 font-semibold mb-2">Take Profit</div>
-                    <div className="text-2xl sm:text-3xl font-bold text-green-400">
-                      ${((manualResearchResult.takeProfit ?? 0)).toFixed(2)}
-                    </div>
-                  </div>
-                  <div className="bg-black/40 backdrop-blur-sm rounded-xl p-5 border border-red-500/40 hover:border-red-400/60 transition-all duration-300 shadow-lg shadow-red-500/10">
-                    <div className="text-xs sm:text-sm text-red-300 font-semibold mb-2">Stop Loss</div>
-                    <div className="text-2xl sm:text-3xl font-bold text-red-400">
-                      ${((manualResearchResult.stopLoss ?? 0)).toFixed(2)}
-                    </div>
-                  </div>
-                  <div className="bg-black/40 backdrop-blur-sm rounded-xl p-5 border border-purple-500/30 hover:border-purple-400/50 transition-all duration-300 shadow-lg">
-                    <div className="text-xs sm:text-sm text-purple-300 font-semibold mb-2">Exit Price</div>
-                    <div className="text-2xl sm:text-3xl font-bold text-white">
-                      ${((manualResearchResult.exitPrice ?? 0)).toFixed(2)}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Analysis Summary */}
-                {(manualResearchResult.totalAnalyzed || manualResearchResult.candidatesFound) && (
-                  <div className="mt-4 pt-4 border-t border-purple-500/20 text-xs text-gray-400 text-center">
-                    Analyzed {manualResearchResult.totalAnalyzed ?? 0} markets, found {manualResearchResult.candidatesFound ?? 0} candidates
-                  </div>
-                )}
-              </div>
-            )}
 
             {/* Deep Research Loading State with Step-by-Step Progress */}
             {deepResearchLoading && (
@@ -890,25 +719,52 @@ export default function ResearchPanel() {
               </div>
             )}
 
-            {/* Deep Research Results with Raw API Outputs */}
-            {!deepResearchLoading && deepResearchResults.length > 0 && (
-              <div className="relative bg-black/30 backdrop-blur-xl border border-purple-500/30 rounded-2xl p-6 shadow-2xl shadow-purple-500/10 hover:shadow-purple-500/20 transition-all duration-300 overflow-hidden">
-                <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-purple-500 via-pink-500 to-cyan-500"></div>
-                
-                <div className="mb-6">
+            {/* Deep Research Report */}
+            <div className="relative bg-black/30 backdrop-blur-xl border border-purple-500/30 rounded-2xl p-6 shadow-2xl shadow-purple-500/10 hover:shadow-purple-500/20 transition-all duration-300 overflow-hidden">
+              {/* Gradient accent line */}
+              <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-purple-500 via-pink-500 to-cyan-500"></div>
+              
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+                <div>
                   <h2 className="text-xl sm:text-2xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-cyan-400 bg-clip-text text-transparent mb-1">
-                    Deep Research Results
+                    Deep Research Report
                   </h2>
-                  <p className="text-xs sm:text-sm text-gray-400">
-                    Full exchange API data and AI analysis
+                  <p className="text-xs sm:text-sm text-gray-400 flex items-center gap-2">
+                    <span className="w-2 h-2 bg-purple-400 rounded-full animate-pulse"></span>
+                    Manual deep research results only
                   </p>
                 </div>
+              </div>
 
+              {deepResearchLoading ? (
+                <div className="text-center py-12">
+                  <div className="w-16 h-16 rounded-full bg-purple-500/10 flex items-center justify-center mx-auto mb-4">
+                    <span className="w-8 h-8 border-4 border-purple-500/30 border-t-purple-500 rounded-full animate-spin"></span>
+                  </div>
+                  <p className="text-gray-400 text-sm">Running deep research...</p>
+                </div>
+              ) : deepResearchResults.length === 0 ? (
+                <div className="text-center py-12">
+                  <div className="w-16 h-16 rounded-full bg-purple-500/10 flex items-center justify-center mx-auto mb-4">
+                    <svg className="w-8 h-8 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                  </div>
+                  <p className="text-gray-400 text-sm">No deep research results yet. Run deep research to see results here.</p>
+                </div>
+              ) : (
                 <div className="space-y-6">
                   {deepResearchResults.map((result, idx) => (
-                    <div key={idx} className="bg-black/40 backdrop-blur-sm rounded-xl p-5 border border-purple-500/30">
+                    <div key={result.id || idx} className="bg-black/40 backdrop-blur-sm rounded-xl p-5 border border-purple-500/30">
                       <div className="mb-4">
-                        <h3 className="text-lg font-bold text-white mb-2">{result.symbol}</h3>
+                        <div className="flex items-center justify-between mb-2">
+                          <h3 className="text-lg font-bold text-white">{result.symbol}</h3>
+                          {result.timestamp && (
+                            <span className="text-xs text-gray-400 font-mono">
+                              {new Date(result.timestamp).toLocaleString()}
+                            </span>
+                          )}
+                        </div>
                         <p className="text-xs text-gray-400">
                           Exchange: <span className="text-purple-300 font-semibold">
                             {result.exchange && result.exchange !== 'N/A' && result.exchange !== 'unknown' 
@@ -1077,8 +933,8 @@ export default function ResearchPanel() {
                     </div>
                   ))}
                 </div>
-              </div>
-            )}
+              )}
+            </div>
 
             {/* Live Research Card */}
             {liveData && (
@@ -1158,158 +1014,10 @@ export default function ResearchPanel() {
               </div>
             )}
 
-            {/* Research Timeline */}
-            <div className="relative bg-black/30 backdrop-blur-xl border border-purple-500/30 rounded-2xl p-6 shadow-2xl shadow-purple-500/10 hover:shadow-purple-500/20 transition-all duration-300 overflow-hidden">
-              {/* Gradient accent line */}
-              <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-purple-500 via-pink-500 to-cyan-500"></div>
-              
-              <h2 className="text-xl sm:text-2xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-cyan-400 bg-clip-text text-transparent mb-6">
-                Research Timeline
-              </h2>
-              {/* Desktop Table View */}
-              <div className="hidden md:block overflow-x-auto rounded-xl border border-purple-500/20 bg-black/20">
-                <table className="min-w-full divide-y divide-purple-500/10">
-                  <thead className="bg-gradient-to-r from-purple-900/30 to-pink-900/30">
-                    <tr>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-purple-300 uppercase tracking-wider">Time</th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-purple-300 uppercase tracking-wider">Symbol</th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-purple-300 uppercase tracking-wider">Signal</th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-purple-300 uppercase tracking-wider">Accuracy</th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-purple-300 uppercase tracking-wider">Imbalance</th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-purple-300 uppercase tracking-wider">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-black/10 divide-y divide-purple-500/10">
-                    {logs.length === 0 ? (
-                      <tr>
-                        <td colSpan={6} className="px-6 py-12 text-center">
-                          <div className="flex flex-col items-center gap-3">
-                            <div className="w-12 h-12 rounded-full bg-purple-500/10 flex items-center justify-center">
-                              <svg className="w-6 h-6 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                              </svg>
-                            </div>
-                            <p className="text-gray-400 text-sm">No research logs yet</p>
-                          </div>
-                        </td>
-                      </tr>
-                    ) : (
-                      logs.map((log) => (
-                        <tr 
-                          key={log.id} 
-                          className="hover:bg-gradient-to-r hover:from-purple-500/10 hover:to-pink-500/10 transition-all duration-200 group border-l-2 border-transparent hover:border-purple-500/50"
-                        >
-                          <td className="px-6 py-4 text-xs text-gray-300 font-mono">
-                            {new Date(log.timestamp).toLocaleString()}
-                          </td>
-                          <td className="px-6 py-4">
-                            <div className="flex items-center gap-2">
-                              <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></div>
-                              <span className="text-sm font-bold text-white">{log.symbol}</span>
-                            </div>
-                          </td>
-                          <td className="px-6 py-4">
-                            <span className={`inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-semibold ${
-                              log.signal === 'BUY' 
-                                ? 'bg-gradient-to-r from-green-500/20 to-emerald-500/20 text-green-300 border border-green-400/40' 
-                                : log.signal === 'SELL'
-                                ? 'bg-gradient-to-r from-red-500/20 to-rose-500/20 text-red-300 border border-red-400/40'
-                                : 'bg-gray-500/10 text-gray-400 border border-gray-500/20'
-                            }`}>
-                              {log.signal}
-                            </span>
-                          </td>
-                          <td className={`px-6 py-4 text-sm font-bold ${
-                            log.accuracy >= 0.85 ? 'text-green-400' :
-                            log.accuracy >= 0.7 ? 'text-yellow-400' :
-                            'text-red-400'
-                          }`}>
-                            {((log.accuracy ?? 0) * 100).toFixed(1)}%
-                            {log.accuracy >= 0.85 && <span className="ml-1 text-xs">⭐</span>}
-                          </td>
-                          <td className="px-6 py-4 text-sm text-gray-200 font-medium">
-                            {((log.orderbookImbalance ?? 0) * 100).toFixed(2)}%
-                          </td>
-                          <td className="px-6 py-4 text-xs text-gray-300 break-words font-medium">{log.recommendedAction}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-              
-              {/* Mobile Card View */}
-              <div className="md:hidden space-y-3">
-                {logs.length === 0 ? (
-                  <div className="text-center py-12">
-                    <div className="w-16 h-16 rounded-full bg-purple-500/10 flex items-center justify-center mx-auto mb-4">
-                      <svg className="w-8 h-8 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                    </div>
-                    <p className="text-gray-400 text-sm">No research logs yet</p>
-                  </div>
-                ) : (
-                  logs.map((log) => (
-                    <div 
-                      key={log.id} 
-                      className="relative bg-black/40 backdrop-blur-sm border border-purple-500/30 rounded-xl p-4 space-y-3 hover:border-purple-400/50 transition-all duration-300 overflow-hidden group"
-                    >
-                      {/* Gradient accent */}
-                      <div className="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-purple-500 to-pink-500 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                      
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></div>
-                          <span className="text-base font-bold text-white">{log.symbol}</span>
-                        </div>
-                        <span className={`inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-semibold ${
-                          log.signal === 'BUY' 
-                            ? 'bg-gradient-to-r from-green-500/20 to-emerald-500/20 text-green-300 border border-green-400/40' 
-                            : log.signal === 'SELL'
-                            ? 'bg-gradient-to-r from-red-500/20 to-rose-500/20 text-red-300 border border-red-400/40'
-                            : 'bg-gray-500/10 text-gray-400 border border-gray-500/20'
-                        }`}>
-                          {log.signal}
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-3 text-sm">
-                        <div className={`rounded-lg p-2.5 border ${
-                          log.accuracy >= 0.85 ? 'bg-green-500/10 border-green-400/30' :
-                          log.accuracy >= 0.7 ? 'bg-yellow-500/10 border-yellow-400/30' :
-                          'bg-red-500/10 border-red-400/30'
-                        }`}>
-                          <div className="text-xs text-gray-400 mb-1">Accuracy</div>
-                          <div className={`font-bold ${
-                            log.accuracy >= 0.85 ? 'text-green-400' :
-                            log.accuracy >= 0.7 ? 'text-yellow-400' :
-                            'text-red-400'
-                          }`}>
-                            {((log.accuracy ?? 0) * 100).toFixed(1)}%
-                            {log.accuracy >= 0.85 && <span className="ml-1 text-xs">⭐</span>}
-                          </div>
-                        </div>
-                        <div className="bg-black/30 rounded-lg p-2.5 border border-purple-500/10">
-                          <div className="text-xs text-gray-400 mb-1">Imbalance</div>
-                          <div className="text-white font-semibold">{((log.orderbookImbalance ?? 0) * 100).toFixed(2)}%</div>
-                        </div>
-                        <div className="col-span-2 bg-black/30 rounded-lg p-2.5 border border-purple-500/10">
-                          <div className="text-xs text-gray-400 mb-1">Time</div>
-                          <div className="text-white text-xs font-mono">{new Date(log.timestamp).toLocaleString()}</div>
-                        </div>
-                        <div className="col-span-2 bg-black/30 rounded-lg p-2.5 border border-purple-500/10">
-                          <div className="text-xs text-gray-400 mb-1">Action</div>
-                          <div className="text-white text-sm break-words font-medium">{log.recommendedAction}</div>
-                        </div>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
           </div>
         </div>
       </main>
+
 
       {toast && <Toast message={toast.message} type={toast.type} />}
     </div>

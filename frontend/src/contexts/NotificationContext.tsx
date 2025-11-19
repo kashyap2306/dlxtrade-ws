@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import api from '../services/api';
 
@@ -177,20 +177,27 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     }
   }, []);
 
-  const unreadCount = notifications.filter((n) => !n.read).length;
+  // Memoize unreadCount to prevent unnecessary recalculations
+  const unreadCount = useMemo(() => {
+    return notifications.filter((n) => !n.read).length;
+  }, [notifications]);
+
+  // Memoize context value to prevent unnecessary re-renders
+  const contextValue = useMemo(
+    () => ({
+      notifications,
+      unreadCount,
+      loading,
+      addNotification,
+      markAsRead,
+      markAllAsRead,
+      refresh: loadNotifications,
+    }),
+    [notifications, unreadCount, loading, addNotification, markAsRead, markAllAsRead, loadNotifications]
+  );
 
   return (
-    <NotificationContext.Provider
-      value={{
-        notifications,
-        unreadCount,
-        loading,
-        addNotification,
-        markAsRead,
-        markAllAsRead,
-        refresh: loadNotifications,
-      }}
-    >
+    <NotificationContext.Provider value={contextValue}>
       {children}
     </NotificationContext.Provider>
   );

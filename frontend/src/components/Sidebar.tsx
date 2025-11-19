@@ -94,9 +94,6 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
   const { unlockedAgents } = useUnlockedAgents();
   const { isOpen: chatbotOpen } = useChatbot();
 
-  // Hide sidebar when chatbot is open
-  if (chatbotOpen) return null;
-
   // Notify parent component of menu state changes
   useEffect(() => {
     if (onMenuToggle) {
@@ -135,7 +132,6 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
     { path: '/agents', label: 'Agents Marketplace', Icon: Icons.Agents },
     { path: '/research', label: 'Research', Icon: Icons.Research },
     { path: '/auto-trade', label: 'Auto-Trade', Icon: Icons.AutoTrade },
-    { path: '/execution', label: 'Execution Logs', Icon: Icons.Logs },
     { path: '/settings', label: 'Settings', Icon: Icons.Settings },
     { path: '/profile', label: 'Profile', Icon: Icons.Profile },
   ];
@@ -168,8 +164,8 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
     };
   }, [mobileMenuOpen]);
 
-  // Hide sidebar when chatbot is open or when admin (AFTER all hooks are called)
-  if (isAdmin || chatbotOpen) {
+  // Hide sidebar when chatbot is open (AFTER all hooks are called)
+  if (chatbotOpen) {
     return null;
   }
 

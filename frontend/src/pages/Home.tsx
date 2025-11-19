@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
-import Header from '../components/Header';
 import { globalStatsApi, usersApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { suppressConsoleError } from '../utils/errorHandler';
@@ -9,7 +8,7 @@ import { suppressConsoleError } from '../utils/errorHandler';
 export default function Home() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [, setMenuOpen] = useState(false);
   const [stats, setStats] = useState({
     totalTrades: 0,
     liveAgents: 0,
@@ -123,19 +122,14 @@ export default function Home() {
 
       <main className="min-h-screen relative z-10">
         <div className={`max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 ${user ? 'pt-20 lg:pt-8' : 'pt-8'}`}>
-          {user && (
-            <Header
-              title="Home"
-              subtitle="Your Advanced AI Trading Ecosystem"
-              onMenuToggle={() => {
-                const toggle = (window as any).__sidebarToggle;
-                if (toggle) toggle();
-              }}
-              menuOpen={menuOpen}
-            />
-          )}
-          
-          {!user && (
+          {user ? (
+            <div className="mb-8">
+              <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-cyan-400 bg-clip-text text-transparent mb-4">
+                DLX TRADING
+              </h1>
+              <p className="text-lg text-gray-300">Your Advanced AI Trading Ecosystem</p>
+            </div>
+          ) : (
             <div className="mb-8 text-center">
               <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-cyan-400 bg-clip-text text-transparent mb-4">
                 DLX TRADING

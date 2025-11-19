@@ -7,7 +7,6 @@ import EngineControl from './pages/EngineControl';
 import ResearchPanel from './pages/ResearchPanel';
 import AutoTrade from './pages/AutoTrade';
 import Settings from './pages/Settings';
-import ExecutionLogs from './pages/ExecutionLogs';
 import Profile from './pages/Profile';
 import HFTSettings from './pages/HFTSettings';
 import HFTLogs from './pages/HFTLogs';
@@ -123,14 +122,6 @@ function App() {
         element={
           <UserRoute>
             <Settings />
-          </UserRoute>
-        }
-      />
-      <Route
-        path="/execution"
-        element={
-          <UserRoute>
-            <ExecutionLogs />
           </UserRoute>
         }
       />

@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import Sidebar from '../components/Sidebar';
-import Header from '../components/Header';
 import Toast from '../components/Toast';
 import { useAuth } from '../hooks/useAuth';
 import { agentsApi } from '../services/api';
@@ -26,7 +25,7 @@ export default function AgentsMarketplace() {
   const [unlockedAgents, setUnlockedAgents] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [, setMenuOpen] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<AgentCardData | null>(null);
   const [showUnlockModal, setShowUnlockModal] = useState(false);
 
@@ -132,28 +131,6 @@ export default function AgentsMarketplace() {
             }}
           ></div>
           <div className="relative px-4 sm:px-6 md:px-8 py-6 sm:py-8 md:py-12 lg:py-20">
-            <div className="lg:hidden mb-4">
-              <Header
-                title="Premium Agents Marketplace"
-                subtitle="Unlock powerful AI-powered trading agents"
-                onMenuToggle={() => {
-                  const toggle = (window as any).__sidebarToggle;
-                  if (toggle) toggle();
-                }}
-                menuOpen={menuOpen}
-              />
-            </div>
-            <div className="hidden lg:block">
-              <Header
-                title="Premium Agents Marketplace"
-                subtitle="Unlock powerful AI-powered trading agents to maximize your profits and automate your trading strategy"
-                onMenuToggle={() => {
-                  const toggle = (window as any).__sidebarToggle;
-                  if (toggle) toggle();
-                }}
-                menuOpen={menuOpen}
-              />
-            </div>
             <div className="max-w-4xl mx-auto mt-8 animate-fade-in">
               <h1 className="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-extrabold bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent mb-4 leading-tight">
                 Discover Premium Trading Agents

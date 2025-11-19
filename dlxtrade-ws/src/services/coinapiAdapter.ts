@@ -1,5 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import { logger } from '../utils/logger';
+import { extractAdapterError, AdapterError } from '../utils/adapterErrorHandler';
 
 export interface CoinAPIData {
   // Market Data API
@@ -61,9 +62,19 @@ export class CoinAPIAdapter {
       return {};
     }
     
+    // Map symbol to CoinAPI format (e.g., BTCUSDT -> BINANCE_SPOT_BTC_USDT)
+    const coinapiSymbol = `BINANCE_SPOT_${symbol.replace('USDT', '_USDT')}`;
+    const url = `${this.baseUrl}/quotes/current`;
+    
     try {
-      // Map symbol to CoinAPI format (e.g., BTCUSDT -> BINANCE_SPOT_BTC_USDT)
-      const coinapiSymbol = `BINANCE_SPOT_${symbol.replace('USDT', '_USDT')}`;
+      logger.debug({ 
+        adapter: 'CoinAPI', 
+        method: 'getMarketData', 
+        url, 
+        symbol,
+        apiType: this.apiType,
+        headers: { 'X-CoinAPI-Key': '***' } // Redact API key
+      }, 'CoinAPI request: getMarketData');
       
       const response = await this.httpClient.get(`/quotes/current`, {
         params: {
@@ -71,8 +82,17 @@ export class CoinAPIAdapter {
         },
       });
       
+      logger.debug({ 
+        adapter: 'CoinAPI', 
+        method: 'getMarketData', 
+        status: response.status,
+        symbol,
+        apiType: this.apiType
+      }, 'CoinAPI response: getMarketData success');
+      
       const data = response.data?.[0];
       if (!data) {
+        logger.warn({ adapter: 'CoinAPI', symbol, apiType: this.apiType }, 'CoinAPI getMarketData: no data returned');
         return {};
       }
       
@@ -84,8 +104,23 @@ export class CoinAPIAdapter {
         priceChangePercent24h: data.price_change_percent_24h || 0,
       };
     } catch (error: any) {
-      logger.debug({ error, symbol, apiType: this.apiType }, 'CoinAPI market API error (non-critical)');
-      return {};
+      const errorDetails = extractAdapterError('CoinAPI', 'getMarketData', url, error);
+      errorDetails.adapter = `CoinAPI_${this.apiType}`; // Include API type in adapter name
+      
+      logger.error({
+        adapter: `CoinAPI_${this.apiType}`,
+        method: 'getMarketData',
+        url,
+        symbol,
+        apiType: this.apiType,
+        statusCode: errorDetails.statusCode,
+        statusText: errorDetails.statusText,
+        responseSnippet: errorDetails.responseSnippet?.substring(0, 500),
+        errorMessage: errorDetails.errorMessage,
+        isAuthError: errorDetails.isAuthError,
+      }, 'CoinAPI getMarketData error');
+      
+      throw new AdapterError(errorDetails);
     }
   }
 
@@ -195,10 +230,20 @@ export class CoinAPIAdapter {
       return {};
     }
     
+    const coinapiSymbol = `BINANCE_SPOT_${symbol.replace('USDT', '_USDT')}`;
+    const endTime = new Date().toISOString();
+    const startTime = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const url = `${this.baseUrl}/ohlcv/${coinapiSymbol}/history`;
+    
     try {
-      const coinapiSymbol = `BINANCE_SPOT_${symbol.replace('USDT', '_USDT')}`;
-      const endTime = new Date().toISOString();
-      const startTime = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+      logger.debug({ 
+        adapter: 'CoinAPI', 
+        method: 'getHistoricalData', 
+        url, 
+        symbol,
+        apiType: this.apiType,
+        days
+      }, 'CoinAPI request: getHistoricalData');
       
       const response = await this.httpClient.get(`/ohlcv/${coinapiSymbol}/history`, {
         params: {
@@ -207,6 +252,15 @@ export class CoinAPIAdapter {
           time_end: endTime,
         },
       });
+      
+      logger.debug({ 
+        adapter: 'CoinAPI', 
+        method: 'getHistoricalData', 
+        status: response.status,
+        symbol,
+        apiType: this.apiType,
+        dataPoints: response.data?.length || 0
+      }, 'CoinAPI response: getHistoricalData success');
       
       const historicalData = (response.data || []).map((item: any) => ({
         time: item.time_period_start,
@@ -238,8 +292,23 @@ export class CoinAPIAdapter {
         ma200,
       };
     } catch (error: any) {
-      logger.debug({ error, symbol, apiType: this.apiType }, 'CoinAPI historical API error (non-critical)');
-      return {};
+      const errorDetails = extractAdapterError('CoinAPI', 'getHistoricalData', url, error);
+      errorDetails.adapter = `CoinAPI_${this.apiType}`;
+      
+      logger.error({
+        adapter: `CoinAPI_${this.apiType}`,
+        method: 'getHistoricalData',
+        url,
+        symbol,
+        apiType: this.apiType,
+        statusCode: errorDetails.statusCode,
+        statusText: errorDetails.statusText,
+        responseSnippet: errorDetails.responseSnippet?.substring(0, 500),
+        errorMessage: errorDetails.errorMessage,
+        isAuthError: errorDetails.isAuthError,
+      }, 'CoinAPI getHistoricalData error');
+      
+      throw new AdapterError(errorDetails);
     }
   }
 
@@ -254,15 +323,51 @@ export class CoinAPIAdapter {
       return {};
     }
     
+    const url = `${this.baseUrl}/exchangerate/${baseAsset}/${quoteAsset}`;
+    
     try {
+      logger.debug({ 
+        adapter: 'CoinAPI', 
+        method: 'getExchangeRate', 
+        url, 
+        baseAsset,
+        quoteAsset,
+        apiType: this.apiType
+      }, 'CoinAPI request: getExchangeRate');
+      
       const response = await this.httpClient.get(`/exchangerate/${baseAsset}/${quoteAsset}`);
+      
+      logger.debug({ 
+        adapter: 'CoinAPI', 
+        method: 'getExchangeRate', 
+        status: response.status,
+        baseAsset,
+        quoteAsset,
+        apiType: this.apiType
+      }, 'CoinAPI response: getExchangeRate success');
       
       return {
         exchangeRate: response.data?.rate || 0,
       };
     } catch (error: any) {
-      logger.debug({ error, baseAsset, quoteAsset, apiType: this.apiType }, 'CoinAPI exchange rate API error (non-critical)');
-      return {};
+      const errorDetails = extractAdapterError('CoinAPI', 'getExchangeRate', url, error);
+      errorDetails.adapter = `CoinAPI_${this.apiType}`;
+      
+      logger.error({
+        adapter: `CoinAPI_${this.apiType}`,
+        method: 'getExchangeRate',
+        url,
+        baseAsset,
+        quoteAsset,
+        apiType: this.apiType,
+        statusCode: errorDetails.statusCode,
+        statusText: errorDetails.statusText,
+        responseSnippet: errorDetails.responseSnippet?.substring(0, 500),
+        errorMessage: errorDetails.errorMessage,
+        isAuthError: errorDetails.isAuthError,
+      }, 'CoinAPI getExchangeRate error');
+      
+      throw new AdapterError(errorDetails);
     }
   }
 

@@ -1,5 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import { logger } from '../utils/logger';
+import { extractAdapterError, AdapterError } from '../utils/adapterErrorHandler';
 
 export interface LunarCrushData {
   // Galaxy Score
@@ -50,9 +51,18 @@ export class LunarCrushAdapter {
   }
 
   async getCoinData(symbol: string): Promise<LunarCrushData> {
+    // Map symbol to LunarCrush format (e.g., BTCUSDT -> BTC)
+    const coinSymbol = symbol.replace('USDT', '').replace('USD', '');
+    const url = `${this.baseUrl}/assets/coin`;
+    
     try {
-      // Map symbol to LunarCrush format (e.g., BTCUSDT -> BTC)
-      const coinSymbol = symbol.replace('USDT', '').replace('USD', '');
+      logger.debug({ 
+        adapter: 'LunarCrush', 
+        method: 'getCoinData', 
+        url, 
+        symbol,
+        params: { symbol: coinSymbol, data_points: 1, key: '***' } // Redact API key
+      }, 'LunarCrush request: getCoinData');
       
       const response = await this.httpClient.get('/assets/coin', {
         params: {
@@ -61,8 +71,16 @@ export class LunarCrushAdapter {
         },
       });
       
+      logger.debug({ 
+        adapter: 'LunarCrush', 
+        method: 'getCoinData', 
+        status: response.status,
+        symbol 
+      }, 'LunarCrush response: getCoinData success');
+      
       const data = response.data?.data?.[0];
       if (!data) {
+        logger.warn({ adapter: 'LunarCrush', symbol }, 'LunarCrush getCoinData: no data returned');
         return {};
       }
       
@@ -98,9 +116,21 @@ export class LunarCrushAdapter {
         volume24h: data.volume_24h || 0,
       };
     } catch (error: any) {
-      logger.debug({ error, symbol }, 'LunarCrush API error (non-critical)');
-      // Return empty data on error - don't block research
-      return {};
+      const errorDetails = extractAdapterError('LunarCrush', 'getCoinData', url, error);
+      
+      logger.error({
+        adapter: 'LunarCrush',
+        method: 'getCoinData',
+        url,
+        symbol,
+        statusCode: errorDetails.statusCode,
+        statusText: errorDetails.statusText,
+        responseSnippet: errorDetails.responseSnippet?.substring(0, 500),
+        errorMessage: errorDetails.errorMessage,
+        isAuthError: errorDetails.isAuthError,
+      }, 'LunarCrush getCoinData error');
+      
+      throw new AdapterError(errorDetails);
     }
   }
 
