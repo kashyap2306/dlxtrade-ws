@@ -63,13 +63,17 @@ export async function autoTradeRoutes(fastify: FastifyInstance) {
       
       // Get engine status from Firestore
       const engineStatus = await firestoreAdapter.getEngineStatus(user.uid);
-      const userData = await firestoreAdapter.getUser(user.uid);
+      
+      // Check if user has exchange API keys configured (read from exchangeConfig/current)
+      const db = getFirebaseAdmin().firestore();
+      const exchangeConfigDoc = await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').get();
+      const hasExchangeConfig = exchangeConfigDoc.exists && exchangeConfigDoc.data()?.apiKeyEncrypted && exchangeConfigDoc.data()?.secretEncrypted;
       
       return {
         ...status,
         engineRunning: engineStatus?.engineRunning || false,
-        isApiConnected: userData?.isApiConnected || false,
-        apiStatus: userData?.apiStatus || 'disconnected',
+        isApiConnected: hasExchangeConfig || false,
+        apiStatus: hasExchangeConfig ? 'connected' : 'disconnected',
         config: {
           perTradeRiskPct: config.perTradeRiskPct,
           maxConcurrentTrades: config.maxConcurrentTrades,
@@ -344,27 +348,28 @@ export async function autoTradeRoutes(fastify: FastifyInstance) {
       const user = (request as any).user;
       const body = toggleAutoTradeSchema.parse(request.body);
 
-      // Verify user has connected API keys
-      const userData = await firestoreAdapter.getUser(user.uid);
-      if (!userData?.apiConnected) {
-        return reply.code(400).send({
-          error: 'Please connect your Binance API keys first in API Integrations',
-        });
-      }
-
+      // Verify user has connected exchange API keys (read from exchangeConfig/current)
       const db = getFirebaseAdmin().firestore();
-      const apiKeysDoc = await db.collection('apiKeys').doc(user.uid).get();
+      const exchangeConfigDoc = await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').get();
       
-      if (!apiKeysDoc.exists) {
+      if (!exchangeConfigDoc.exists) {
         return reply.code(400).send({
-          error: 'API keys not found. Please connect your Binance API keys first.',
+          error: 'Exchange API keys not found. Please connect your exchange API keys first in Settings → API Integration.',
         });
       }
 
-      const apiKeysData = apiKeysDoc.data();
-      if (!apiKeysData?.apiKeyEncrypted || !apiKeysData?.apiSecretEncrypted || apiKeysData?.status !== 'connected') {
+      const exchangeConfig = exchangeConfigDoc.data();
+      if (!exchangeConfig?.apiKeyEncrypted || !exchangeConfig?.secretEncrypted) {
         return reply.code(400).send({
-          error: 'API keys not connected. Please connect your Binance API keys first.',
+          error: 'Exchange API keys not properly configured. Please connect your exchange API keys first.',
+        });
+      }
+
+      // Verify it's a trading exchange (not research API)
+      const exchange = exchangeConfig.exchange || exchangeConfig.type;
+      if (!['binance', 'bitget', 'weex', 'bingx'].includes(exchange)) {
+        return reply.code(400).send({
+          error: 'Trading exchange API keys required. Please connect a trading exchange (Binance, Bitget, BingX, or WEEX) first.',
         });
       }
 

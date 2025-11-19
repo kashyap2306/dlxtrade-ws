@@ -76,6 +76,12 @@ export async function usersRoutes(fastify: FastifyInstance) {
         throw new NotFoundError('User not found');
       }
 
+      // Check if user has exchange API keys configured (read from exchangeConfig/current)
+      const { getFirebaseAdmin } = await import('../utils/firebase');
+      const db = getFirebaseAdmin().firestore();
+      const exchangeConfigDoc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+      const hasExchangeConfig = exchangeConfigDoc.exists && exchangeConfigDoc.data()?.apiKeyEncrypted && exchangeConfigDoc.data()?.secretEncrypted;
+
       // Convert timestamps
       const result: any = { ...userData };
       if (result.createdAt) {
@@ -84,6 +90,9 @@ export async function usersRoutes(fastify: FastifyInstance) {
       if (result.updatedAt) {
         result.updatedAt = result.updatedAt.toDate().toISOString();
       }
+
+      // Override apiConnected with computed value from exchangeConfig/current
+      result.apiConnected = hasExchangeConfig || false;
 
       return result;
     } catch (err: any) {
@@ -201,6 +210,12 @@ export async function usersRoutes(fastify: FastifyInstance) {
         throw new NotFoundError('User not found');
       }
 
+      // Check if user has exchange API keys configured (read from exchangeConfig/current)
+      const { getFirebaseAdmin } = await import('../utils/firebase');
+      const db = getFirebaseAdmin().firestore();
+      const exchangeConfigDoc = await db.collection('users').doc(id).collection('exchangeConfig').doc('current').get();
+      const hasExchangeConfig = exchangeConfigDoc.exists && exchangeConfigDoc.data()?.apiKeyEncrypted && exchangeConfigDoc.data()?.secretEncrypted;
+
       // Convert timestamps
       const result: any = { ...userData };
       if (result.createdAt) {
@@ -209,6 +224,9 @@ export async function usersRoutes(fastify: FastifyInstance) {
       if (result.updatedAt) {
         result.updatedAt = result.updatedAt.toDate().toISOString();
       }
+
+      // Override apiConnected with computed value from exchangeConfig/current
+      result.apiConnected = hasExchangeConfig || false;
 
       return result;
     } catch (err: any) {
