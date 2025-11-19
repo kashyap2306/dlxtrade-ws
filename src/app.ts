@@ -31,6 +31,10 @@ import { engineStatusRoutes } from './routes/engineStatus';
 import { hftLogsRoutes } from './routes/hftLogs';
 import { autoTradeRoutes } from './routes/autoTrade';
 import { exchangeConfigRoutes } from './routes/exchangeConfig';
+import { marketRoutes } from './routes/market';
+import { walletRoutes } from './routes/wallet';
+import { chatbotRoutes } from './routes/chatbot';
+import { diagnosticsRoutes } from './routes/diagnostics';
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -125,6 +129,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(hftLogsRoutes, { prefix: '/api/hft-logs' });
   await app.register(autoTradeRoutes, { prefix: '/api/auto-trade' });
   await app.register(exchangeConfigRoutes, { prefix: '/api/exchange-config' });
+  await app.register(marketRoutes, { prefix: '/api/market' });
+  await app.register(walletRoutes, { prefix: '/api/wallet' });
+  await app.register(chatbotRoutes, { prefix: '/api' });
+  await app.register(diagnosticsRoutes, { prefix: '/api/diagnostics' });
 
   console.log('✅ All routes registered:');
   console.log('  - /api/auth/*');
@@ -147,6 +155,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   console.log('  - /api/engine-status/*');
   console.log('  - /api/hft-logs/*');
   console.log('  - /api/auto-trade/*');
+  console.log('  - /api/market/*');
+  console.log('  - /api/wallet/*');
+  console.log('  - /api/chatbot');
+  console.log('  - /api/diagnostics/*');
   console.log('  - /api/health');
   console.log('  - /api/metrics');
   console.log('  - /ws (WebSocket)');

@@ -17,28 +17,61 @@ export async function executionRoutes(fastify: FastifyInstance) {
   fastify.get('/logs', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Querystring: any }>, reply: FastifyReply) => {
-    const user = (request as any).user;
-    const query = executionQuerySchema.parse(request.query);
-    const logs = await firestoreAdapter.getExecutionLogs(user.uid, query.limit);
-    
-    return logs.map((log) => ({
-      id: log.id,
-      symbol: log.symbol,
-      timestamp: log.timestamp?.toDate().toISOString(),
-      action: log.action,
-      reason: log.reason,
-      accuracy: log.accuracy,
-      accuracyUsed: log.accuracyUsed,
-      orderId: log.orderId,
-      orderIds: log.orderIds,
-      executionLatency: log.executionLatency,
-      slippage: log.slippage,
-      pnl: log.pnl,
-      strategy: log.strategy,
-      signal: log.signal,
-      status: log.status,
-      createdAt: log.createdAt?.toDate().toISOString(),
-    }));
+    try {
+      const user = (request as any).user;
+      if (!user || !user.uid) {
+        return reply.code(401).send({ error: 'Unauthorized', logs: [] });
+      }
+
+      const query = executionQuerySchema.parse(request.query);
+      const safeLimit = Math.min(Math.max(1, query.limit), 1000);
+      
+      let logs: any[] = [];
+      try {
+        logs = await firestoreAdapter.getExecutionLogs(user.uid, safeLimit);
+      } catch (logErr: any) {
+        logger.error({ err: logErr, uid: user.uid }, 'Error fetching execution logs, returning empty array');
+        logs = [];
+      }
+      
+      // Map logs with proper null checks and ensure all fields are defined
+      const mappedLogs = logs.map((log: any) => {
+        const mapped: any = {
+          id: log.id || '',
+          symbol: log.symbol || '',
+          timestamp: log.timestamp?.toDate?.()?.toISOString() || log.timestamp || new Date().toISOString(),
+          action: log.action || 'UNKNOWN',
+          reason: log.reason || null,
+          accuracy: log.accuracy ?? null,
+          accuracyUsed: log.accuracyUsed ?? null,
+          orderId: log.orderId || null,
+          orderIds: log.orderIds || null,
+          executionLatency: log.executionLatency ?? null,
+          slippage: log.slippage ?? null,
+          pnl: log.pnl ?? null,
+          strategy: log.strategy || null,
+          signal: log.signal || null,
+          status: log.status || null,
+          createdAt: log.createdAt?.toDate?.()?.toISOString() || log.createdAt || new Date().toISOString(),
+        };
+        
+        // Remove null orderIds array if empty
+        if (mapped.orderIds === null || (Array.isArray(mapped.orderIds) && mapped.orderIds.length === 0)) {
+          delete mapped.orderIds;
+        }
+        
+        return mapped;
+      }).filter((log: any) => log.id); // Remove any invalid entries
+      
+      return mappedLogs;
+    } catch (err: any) {
+      logger.error({ err, uid: (request as any).user?.uid }, 'Error getting execution logs');
+      // Always return valid JSON structure even on error
+      return reply.code(200).send({ 
+        logs: [],
+        error: err.message || 'Error fetching execution logs' 
+      });
+    }
   });
 
   fastify.post('/execute', {

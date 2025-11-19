@@ -109,6 +109,59 @@ export async function usersRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // GET /api/users/:uid/exchange-config - Get user's exchange config (MUST be before /:uid route)
+  fastify.get('/:uid/exchange-config', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
+    try {
+      const { uid } = request.params;
+      const user = (request as any).user;
+      
+      // Users can only view their own exchange config unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (uid !== user.uid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      const { getFirebaseAdmin } = await import('../utils/firebase');
+      const db = getFirebaseAdmin().firestore();
+      const { maskKey } = await import('../services/keyManager');
+      
+      const configDoc = await db
+        .collection('users')
+        .doc(uid)
+        .collection('exchangeConfig')
+        .doc('current')
+        .get();
+      
+      if (!configDoc.exists) {
+        return {
+          exchange: '',
+          apiKey: null,
+          secret: null,
+          passphrase: null,
+          testnet: false,
+          enabled: false,
+        };
+      }
+      
+      const data = configDoc.data() || {};
+      
+      return {
+        exchange: data.exchange || '',
+        apiKey: data.apiKeyEncrypted ? maskKey(data.apiKeyEncrypted) : null,
+        secret: data.secretEncrypted ? maskKey(data.secretEncrypted) : null,
+        passphrase: data.passphraseEncrypted ? maskKey(data.passphraseEncrypted) : null,
+        testnet: data.testnet || false,
+        enabled: data.enabled || false,
+        updatedAt: data.updatedAt?.toDate().toISOString(),
+      };
+    } catch (err: any) {
+      logger.error({ err, uid: (request as any).user?.uid }, 'Error getting exchange config');
+      return reply.code(500).send({ error: err.message || 'Error loading exchange config' });
+    }
+  });
+
   // GET /api/users/:uid/stats - Get user statistics (MUST be before /:uid route)
   fastify.get('/:uid/stats', {
     preHandler: [fastify.authenticate],
