@@ -31,49 +31,100 @@ export async function ensureUser(
     const db = getFirebaseAdmin().firestore();
     const now = admin.firestore.Timestamp.now();
 
-    logger.info({ uid, email: profileData?.email }, '🚀 Starting user onboarding (ensureUser) - creating all required Firestore documents');
+    logger.info({ uid, email: profileData?.email }, 'Starting user onboarding (ensureUser)');
 
     // 1. Ensure users/{uid} exists with ALL required fields (idempotent)
     const userRef = db.collection('users').doc(uid);
     const existingUser = await userRef.get();
     
     if (!existingUser.exists) {
-      // Create new user with full schema
+      // Create new user with full schema - ALL required fields
       const userData: any = {
         uid,
-        name: profileData?.name || '',
         email: profileData?.email || '',
+        name: profileData?.name || '',
         phone: profileData?.phone || null,
-        createdAt: now,
-        updatedAt: now,
-        onboardingRequired: true, // New users must complete onboarding
-        tradingMarkets: [],
-        experienceLevel: '',
-        interestedAgents: [],
-        portfolioSize: '',
+        role: 'user',
+        onboardingRequired: true,
+        autoTradeEnabled: false,
+        engineRunning: false,
+        hftRunning: false,
+        engineStatus: 'stopped',
         preferences: {
-          riskLevel: '',
-          tradingStyle: '',
-          analysisType: '',
+          analysisType: 'technical',
+          riskLevel: 'medium',
+          tradingStyle: 'swing',
         },
+        interestedAgents: [],
+        unlockedAgents: [],
+        tradingMarkets: [],
+        portfolioSize: 'small',
+        experienceLevel: 'beginner',
         totalTrades: 0,
-        totalPnl: 0,
         dailyPnl: 0,
         weeklyPnl: 0,
         monthlyPnl: 0,
-        unlockedAgents: [],
-        engineStatus: 'stopped',
-        hftRunning: false,
-        engineRunning: false,
-        autoTradeEnabled: false,
-        role: 'user',
-        profilePicture: null,
+        totalPnl: 0,
+        createdAt: now,
+        updatedAt: now,
         lastLogin: now,
+        profilePicture: null,
+        // Additional fields for backward compatibility
+        isApiConnected: false,
+        connectedExchanges: [],
+        apiStatus: 'disconnected',
       };
       
+      // Write user document to Firestore
+      logger.info({ uid, email: profileData?.email }, 'Saving user document to Firestore');
       await userRef.set(userData);
       createdNew = true;
-      logger.info({ uid, createdNew: true, path: `users/${uid}` }, '✅ Main user document created: users/{uid}');
+      logger.info({ uid, createdNew: true, path: `users/${uid}` }, '✅ User document created');
+      
+      // Post-write verification: read back the document immediately
+      logger.info({ uid }, 'Performing post-write verification');
+      const verification = await userRef.get();
+      if (!verification.exists) {
+        logger.error({ uid, path: `users/${uid}` }, '❌ User document verification failed - document not found after write');
+        throw new Error('Post-write verification failed: user document not found');
+      }
+      
+      const verifiedData = verification.data();
+      
+      // Verify all required fields are present
+      const requiredFields = [
+        'uid', 'email', 'name', 'role', 'onboardingRequired',
+        'autoTradeEnabled', 'engineRunning', 'hftRunning', 'engineStatus',
+        'preferences', 'interestedAgents', 'unlockedAgents', 'tradingMarkets',
+        'portfolioSize', 'experienceLevel', 'totalTrades', 'dailyPnl',
+        'weeklyPnl', 'monthlyPnl', 'totalPnl', 'createdAt', 'updatedAt',
+        'lastLogin', 'profilePicture'
+      ];
+      
+      const missingFields = requiredFields.filter(field => {
+        if (field === 'preferences') {
+          return !verifiedData?.preferences || 
+                 !verifiedData.preferences.analysisType ||
+                 !verifiedData.preferences.riskLevel ||
+                 !verifiedData.preferences.tradingStyle;
+        }
+        return verifiedData?.[field] === undefined;
+      });
+      
+      if (missingFields.length > 0) {
+        logger.error({ uid, missingFields }, '❌ Post-write verification failed - missing required fields');
+        throw new Error(`Post-write verification failed: missing required fields: ${missingFields.join(', ')}`);
+      }
+      
+      logger.info({ 
+        uid, 
+        path: `users/${uid}`,
+        hasEmail: !!verifiedData?.email,
+        hasName: !!verifiedData?.name,
+        hasPreferences: !!verifiedData?.preferences,
+        hasOnboardingRequired: verifiedData?.onboardingRequired !== undefined,
+        allFieldsPresent: true,
+      }, '✅ Post-write verification success - user document confirmed with all required fields');
     } else {
       // Update only missing fields (do not overwrite existing user-provided fields)
       const existingData = existingUser.data() || {};
@@ -92,31 +143,48 @@ export async function ensureUser(
       if (!existingData.phone && profileData?.phone) {
         updateData.phone = profileData.phone;
       }
-      // Ensure onboarding fields exist (don't overwrite if already set)
+      
+      // Ensure ALL required fields exist
+      if (existingData.role === undefined) {
+        updateData.role = 'user';
+      }
       if (existingData.onboardingRequired === undefined) {
-        updateData.onboardingRequired = true;
+        updateData.onboardingRequired = false; // Existing users have completed onboarding
       }
-      if (existingData.tradingMarkets === undefined) {
-        updateData.tradingMarkets = [];
+      if (existingData.autoTradeEnabled === undefined) {
+        updateData.autoTradeEnabled = false;
       }
-      if (existingData.experienceLevel === undefined) {
-        updateData.experienceLevel = '';
+      if (existingData.engineRunning === undefined) {
+        updateData.engineRunning = false;
+      }
+      if (existingData.hftRunning === undefined) {
+        updateData.hftRunning = false;
+      }
+      if (existingData.engineStatus === undefined) {
+        updateData.engineStatus = 'stopped';
+      }
+      if (!existingData.preferences) {
+        updateData.preferences = {
+          analysisType: 'technical',
+          riskLevel: 'medium',
+          tradingStyle: 'swing',
+        };
       }
       if (existingData.interestedAgents === undefined) {
         updateData.interestedAgents = [];
       }
+      if (existingData.unlockedAgents === undefined) {
+        updateData.unlockedAgents = [];
+      }
+      if (existingData.tradingMarkets === undefined) {
+        updateData.tradingMarkets = [];
+      }
       if (existingData.portfolioSize === undefined) {
-        updateData.portfolioSize = '';
+        updateData.portfolioSize = 'small';
       }
-      if (existingData.preferences === undefined) {
-        updateData.preferences = {
-          riskLevel: '',
-          tradingStyle: '',
-          analysisType: '',
-        };
+      if (existingData.experienceLevel === undefined) {
+        updateData.experienceLevel = 'beginner';
       }
-      
-      // Ensure required fields exist
       if (existingData.totalTrades === undefined) {
         updateData.totalTrades = 0;
       }
@@ -132,26 +200,18 @@ export async function ensureUser(
       if (existingData.monthlyPnl === undefined) {
         updateData.monthlyPnl = 0;
       }
-      if (existingData.unlockedAgents === undefined) {
-        updateData.unlockedAgents = [];
-      }
-      if (existingData.engineStatus === undefined) {
-        updateData.engineStatus = 'stopped';
-      }
-      if (existingData.hftRunning === undefined) {
-        updateData.hftRunning = false;
-      }
-      if (existingData.engineRunning === undefined) {
-        updateData.engineRunning = false;
-      }
-      if (existingData.autoTradeEnabled === undefined) {
-        updateData.autoTradeEnabled = false;
-      }
-      if (existingData.role === undefined) {
-        updateData.role = 'user';
-      }
       if (existingData.profilePicture === undefined) {
         updateData.profilePicture = null;
+      }
+      // Backward compatibility fields
+      if (existingData.isApiConnected === undefined) {
+        updateData.isApiConnected = false;
+      }
+      if (existingData.connectedExchanges === undefined) {
+        updateData.connectedExchanges = [];
+      }
+      if (existingData.apiStatus === undefined) {
+        updateData.apiStatus = 'disconnected';
       }
       
       if (Object.keys(updateData).length > 2) { // More than just updatedAt and lastLogin
@@ -161,11 +221,25 @@ export async function ensureUser(
         await userRef.update(updateData); // Still update lastLogin
       }
       
-      logger.info({ uid, createdNew: false, path: `users/${uid}` }, '✅ Main user document exists: users/{uid}');
+      logger.info({ uid, createdNew: false }, '✅ User document exists');
     }
 
-    // 2. API keys are now stored in users/{uid}/exchangeConfig/current and users/{uid}/integrations/{apiName}
-    // No need to create apiKeys collection document
+    // 2. Create apiKeys/{uid} (if not exists)
+    const apiKeysRef = db.collection('apiKeys').doc(uid);
+    const existingApiKeys = await apiKeysRef.get();
+    
+    if (!existingApiKeys.exists) {
+      await apiKeysRef.set({
+        uid,
+        exchange: '',
+        apiKeyEncrypted: '',
+        apiSecretEncrypted: '',
+        createdAt: now,
+        updatedAt: now,
+        status: 'disconnected',
+      });
+      logger.info({ uid }, 'API keys document created');
+    }
 
     // 3. Create engineStatus/{uid}
     const engineStatusRef = db.collection('engineStatus').doc(uid);
@@ -345,58 +419,11 @@ export async function ensureUser(
     // 9. Initialize required collections and docs under users/{uid}
     const userDocRef = db.collection('users').doc(uid);
 
-    // users/{uid}/integrations: create default disabled docs for RESEARCH APIs only
-    // Trading exchanges (binance, bitget, bingx, weex) are stored in exchangeConfig/current, NOT in integrations
-    const integrations = ['lunarcrush', 'cryptoquant', 'coinapi_market', 'coinapi_flatfile', 'coinapi_exchangerate'];
-    for (const apiName of integrations) {
-      const ref = userDocRef.collection('integrations').doc(apiName);
-      const doc = await ref.get();
-      if (!doc.exists) {
-        const integrationData: any = {
-          enabled: false,
-          createdAt: now,
-          updatedAt: now,
-        };
-        
-        // Add apiType only for CoinAPI sub-types
-        if (apiName.startsWith('coinapi_')) {
-          integrationData.apiType = apiName.replace('coinapi_', '');
-        }
-        
-        await ref.set(integrationData);
-        logger.info({ uid, apiName, path: `users/${uid}/integrations/${apiName}` }, `✅ Research integration doc created: users/{uid}/integrations/${apiName}`);
-      }
-    }
-
-    // users/{uid}/exchangeConfig/current - Create empty trading exchange config doc
-    const exchangeConfigRef = userDocRef.collection('exchangeConfig').doc('current');
-    const exchangeConfigDoc = await exchangeConfigRef.get();
-    if (!exchangeConfigDoc.exists) {
-      // Create empty trading exchange config - fields will be set when user configures an exchange
-      await exchangeConfigRef.set({
-        testnet: true,
-        createdAt: now,
-        updatedAt: now,
-      });
-      logger.info({ uid, path: `users/${uid}/exchangeConfig/current` }, `✅ Trading exchange config doc created: users/{uid}/exchangeConfig/current`);
-    } else {
-      // Ensure required fields exist
-      const existingData = exchangeConfigDoc.data() || {};
-      const updateData: any = {};
-      if (existingData.createdAt === undefined) {
-        updateData.createdAt = now;
-      }
-      if (existingData.updatedAt === undefined) {
-        updateData.updatedAt = now;
-      }
-      if (existingData.testnet === undefined) {
-        updateData.testnet = true;
-      }
-      if (Object.keys(updateData).length > 0) {
-        await exchangeConfigRef.update(updateData);
-        logger.info({ uid, updatedFields: Object.keys(updateData), path: `users/${uid}/exchangeConfig/current` }, 'Exchange config updated with missing fields');
-      }
-    }
+    // NOTE: We do NOT create empty integration or exchangeConfig documents at signup.
+    // These documents are created ONLY when the user submits API keys via:
+    // - POST /api/integrations/update (creates users/{uid}/integrations/{apiName})
+    // - POST /api/exchange-config/update (creates users/{uid}/exchangeConfig/current)
+    // This ensures no empty documents exist at signup time.
 
     // users/{uid}/riskLimits/current
     const riskRef = userDocRef.collection('riskLimits').doc('current');
@@ -520,36 +547,13 @@ export async function ensureUser(
     }
 
     const duration = Date.now() - startTime;
-    
-    // Log summary of all documents created/verified
-    const createdDocs = [];
-    if (createdNew) {
-      createdDocs.push(`users/${uid}`);
-      createdDocs.push(`users/${uid}/integrations/lunarcrush`);
-      createdDocs.push(`users/${uid}/integrations/cryptoquant`);
-      createdDocs.push(`users/${uid}/integrations/coinapi_market`);
-      createdDocs.push(`users/${uid}/integrations/coinapi_flatfile`);
-      createdDocs.push(`users/${uid}/integrations/coinapi_exchangerate`);
-      createdDocs.push(`users/${uid}/exchangeConfig/current`);
-    }
-    
     logger.info({ 
       uid, 
       createdNew, 
       duration, 
       activityType,
-      email: profileData?.email,
-      createdDocs: createdDocs.length > 0 ? createdDocs : undefined,
-      requiredDocs: [
-        `users/${uid}`,
-        `users/${uid}/integrations/lunarcrush`,
-        `users/${uid}/integrations/cryptoquant`,
-        `users/${uid}/integrations/coinapi_market`,
-        `users/${uid}/integrations/coinapi_flatfile`,
-        `users/${uid}/integrations/coinapi_exchangerate`,
-        `users/${uid}/exchangeConfig/current`
-      ]
-    }, '✅ User onboarding completed successfully - all required Firestore documents created/verified');
+      email: profileData?.email 
+    }, '✅ User onboarding completed successfully');
 
     return {
       success: true,

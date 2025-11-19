@@ -4,8 +4,8 @@ dotenv.config();
 
 export const config = {
   env: process.env.NODE_ENV || 'development',
-  // Use PORT from environment (Render sets this automatically)
-  port: parseInt(process.env.PORT || '4000', 10),
+  // Force port to 4000 - ensure it's always correct
+  port: parseInt(process.env.PORT || '4000', 10) || 4000,
   jwtSecret: process.env.JWT_SECRET || 'change_me',
   jwtExpiry: '7d',
   

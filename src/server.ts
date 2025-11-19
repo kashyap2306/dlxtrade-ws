@@ -8,27 +8,17 @@ import { initializeFirestoreCollections } from './utils/firestoreInitializer';
 import { seedFirestoreData } from './utils/firestoreSeed';
 import { migrateFirestoreDocuments } from './utils/firestoreMigration';
 
-// Global error handlers to catch all errors and prevent crashes
+// Global error handlers to catch all errors (DO NOT EXIT PROCESS)
 process.on('uncaughtException', (error) => {
-  console.error('UNCAUGHT EXCEPTION:', error);
-  console.error('STACK:', error.stack);
-  logger.error({ error: error.message, stack: error.stack, name: error.name }, 'Uncaught exception - server will continue');
-  // Don't exit - allow server to continue running
+  // Log error but don't crash the process
+  logger.error({ error: error.message, stack: error.stack }, 'Uncaught exception - continuing');
+  // DO NOT call process.exit() - keep server running
 });
 
 process.on('unhandledRejection', (reason: any, promise) => {
-  console.error('UNHANDLED REJECTION:', reason);
-  console.error('PROMISE:', promise);
-  if (reason && typeof reason === 'object') {
-    console.error('REASON MESSAGE:', reason.message);
-    console.error('REASON STACK:', reason.stack);
-  }
-  logger.error({ 
-    reason: reason?.message || String(reason), 
-    stack: reason?.stack,
-    promise: promise.toString() 
-  }, 'Unhandled rejection - server will continue');
-  // Don't exit - allow server to continue running
+  // Log error but don't crash the process
+  logger.error({ reason: reason?.message || reason, promise }, 'Unhandled rejection - continuing');
+  // DO NOT call process.exit() - keep server running
 });
 
 async function start() {
@@ -59,8 +49,7 @@ async function start() {
     console.log('EXPRESS ROUTES MOUNTED');
 
     // Start server IMMEDIATELY - don't block on Firebase
-    // Use PORT from environment (Render sets this automatically)
-    const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : config.port;
+    const PORT = config.port || 4000;
     console.log(`Starting server on port ${PORT}...`);
     console.log(`Server will listen on: http://0.0.0.0:${PORT}`);
     console.log(`Server will be accessible at: http://localhost:${PORT}`);
@@ -93,24 +82,21 @@ async function start() {
           // This prevents blocking server startup on Render
         }
 
-        // Initialize Firestore collections - DISABLED (collections created naturally)
-        // Collections are created automatically when first document is added
-        // No need for "__initializer__" documents
-        // try {
-        //   await initializeFirestoreCollections();
-        // } catch (initError: any) {
-        //   console.error('❌ INIT ERROR (Collection Initializer):', initError.message);
-        //   logger.error({ error: initError.message, stack: initError.stack }, 'Firestore collection initialization failed');
-        // }
+        // Initialize Firestore collections - FORCED RUN (no conditions)
+        try {
+          await initializeFirestoreCollections();
+        } catch (initError: any) {
+          console.error('❌ INIT ERROR (Collection Initializer):', initError.message);
+          logger.error({ error: initError.message, stack: initError.stack }, 'Firestore collection initialization failed');
+        }
 
-        // Auto-migration DISABLED - no longer running on startup
-        // Migration should be run manually via scripts if needed
-        // try {
-        //   await migrateFirestoreDocuments();
-        // } catch (migrationError: any) {
-        //   console.error('❌ INIT ERROR (Migration):', migrationError.message);
-        //   logger.error({ error: migrationError.message }, 'Firestore migration failed');
-        // }
+        // Run auto-migration to patch missing fields
+        try {
+          await migrateFirestoreDocuments();
+        } catch (migrationError: any) {
+          console.error('❌ INIT ERROR (Migration):', migrationError.message);
+          logger.error({ error: migrationError.message }, 'Firestore migration failed');
+        }
 
         // Seed Firestore with default data
         try {
@@ -165,34 +151,6 @@ async function start() {
         } catch (autoPromoteErr: any) {
           console.error('⚠️ Auto-promote admin failed:', autoPromoteErr.message);
           logger.warn({ error: autoPromoteErr.message }, 'Auto-promote admin failed');
-        }
-
-        // Start scheduled research service (runs every 5 minutes)
-        // Wrap in try/catch and error boundary to prevent crashes
-        try {
-          const { scheduledResearchService } = await import('./services/scheduledResearch');
-          
-          // Wrap start() in error handler
-          const originalStart = scheduledResearchService.start.bind(scheduledResearchService);
-          scheduledResearchService.start = function() {
-            try {
-              originalStart();
-              console.log('✅ Scheduled research service started (every 5 minutes)');
-              logger.info('Scheduled research service started');
-            } catch (startErr: any) {
-              console.error('⚠️ Scheduled research service start error:', startErr.message);
-              console.error('STACK:', startErr.stack);
-              logger.error({ error: startErr.message, stack: startErr.stack }, 'Scheduled research service start error');
-              // Don't throw - allow server to continue
-            }
-          };
-          
-          scheduledResearchService.start();
-        } catch (scheduledErr: any) {
-          console.error('⚠️ Scheduled research service failed to import/start:', scheduledErr.message);
-          console.error('STACK:', scheduledErr.stack);
-          logger.error({ error: scheduledErr.message, stack: scheduledErr.stack }, 'Scheduled research service failed to start');
-          // Don't throw - allow server to continue
         }
       } catch (firebaseError: any) {
         console.error('❌ INIT ERROR (Firebase):', firebaseError.message);

@@ -25,9 +25,6 @@ export class OrderManager {
     const clientOrderId = `dlx_${uuidv4()}`;
 
     try {
-      if (!this.adapter.placeOrder) {
-        throw new Error('Exchange adapter does not support placeOrder');
-      }
       const exchangeOrder = await this.adapter.placeOrder({
         symbol: params.symbol,
         side: params.side,

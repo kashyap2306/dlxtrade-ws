@@ -73,7 +73,12 @@ export async function verifyFirebaseToken(token: string): Promise<admin.auth.Dec
 	if (!firebaseAdmin) {
 		initializeFirebaseAdmin();
 	}
-	return admin.auth().verifyIdToken(token);
+	
+	if (!firebaseAdmin) {
+		throw new Error('Firebase Admin not initialized - cannot verify token');
+	}
+	
+	return admin.auth(firebaseAdmin).verifyIdToken(token);
 }
 
 export function getFirebaseAdmin(): admin.app.App {

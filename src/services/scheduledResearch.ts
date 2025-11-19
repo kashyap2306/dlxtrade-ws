@@ -183,12 +183,27 @@ export class ScheduledResearchService {
       // Fetch CryptoQuant data (if available)
       if (hasCryptoQuant) {
         try {
+          // Log API key status before creating adapter (for debugging)
+          const cryptoquantApiKey = integrations.cryptoquant.apiKey;
+          logger.info({ 
+            uid, 
+            symbol,
+            hasApiKey: !!cryptoquantApiKey,
+            apiKeyLength: cryptoquantApiKey?.length || 0,
+            apiKeyPrefix: cryptoquantApiKey?.substring(0, 4) || 'N/A',
+          }, 'CryptoQuant: Loading adapter with API key');
+          
           const { CryptoQuantAdapter } = await import('./cryptoquantAdapter');
-          const cryptoQuantAdapter = new CryptoQuantAdapter(integrations.cryptoquant.apiKey);
+          const cryptoQuantAdapter = new CryptoQuantAdapter(cryptoquantApiKey);
+          
+          logger.debug({ uid, symbol }, 'CryptoQuant: Fetching on-chain metrics and exchange flow');
+          
           researchData.cryptoquant = {
             onChainMetrics: await cryptoQuantAdapter.getOnChainMetrics(symbol),
             exchangeFlow: await cryptoQuantAdapter.getExchangeFlow(symbol),
           };
+          
+          logger.info({ uid, symbol }, 'CryptoQuant: Successfully fetched research data');
       } catch (err: any) {
           // Check if it's an auth error - if so, skip this user gracefully
           const isAuthError = err instanceof AdapterError && err.details.isAuthError;
@@ -347,7 +362,7 @@ export class ScheduledResearchService {
       // Calculate signal and accuracy based on research API data only
       const { signal, accuracy, reasoning } = this.calculateSignalFromResearchData(researchData, symbol);
 
-      // Save to research logs
+      // Save to research logs with type indicator
       const db = getFirebaseAdmin().firestore();
       await db.collection('users').doc(uid).collection('researchLogs').add({
         symbol,
@@ -356,6 +371,7 @@ export class ScheduledResearchService {
         timestamp: admin.firestore.Timestamp.now(),
         orderbookImbalance: 0, // Not available from research APIs
         recommendedAction: reasoning,
+        researchType: 'auto', // Mark as auto research
         microSignals: {
           cryptoquant: researchData.cryptoquant ? 'available' : 'unavailable',
           lunarcrush: researchData.lunarcrush ? 'available' : 'unavailable',
@@ -631,8 +647,20 @@ export class ScheduledResearchService {
       }
     }
 
-    // Cap accuracy between 0.1 and 0.95
-    accuracy = Math.min(0.95, Math.max(0.1, accuracy));
+    // Count successful API calls for accuracy boost
+    let apiSuccessCount = 0;
+    if (researchData.cryptoquant) apiSuccessCount++;
+    if (researchData.lunarcrush) apiSuccessCount++;
+    if (researchData.coinapi_market) apiSuccessCount++;
+    if (researchData.coinapi_flatfile) apiSuccessCount++;
+    if (researchData.coinapi_exchangerate) apiSuccessCount++;
+    
+    // Base accuracy boost from API success (each API adds 5%)
+    const apiBoost = Math.min(0.25, apiSuccessCount * 0.05); // Max 25% boost
+    accuracy = accuracy + apiBoost;
+    
+    // Cap accuracy between 0.55 and 0.95 (minimum 55% for all signals)
+    accuracy = Math.min(0.95, Math.max(0.55, accuracy));
 
     // Determine signal based on signal count and accuracy
     let signal: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
@@ -641,10 +669,15 @@ export class ScheduledResearchService {
     } else if (bearishSignals > bullishSignals && accuracy >= 0.55) {
       signal = 'SELL';
     }
+    
+    // Ensure minimum 55% accuracy for non-neutral signals
+    if (signal !== 'HOLD' && accuracy < 0.55) {
+      accuracy = 0.55;
+    }
 
     const reasoning = reasons.length > 0 
-      ? reasons.join('; ') 
-      : 'Insufficient data for signal determination';
+      ? `${reasons.join('; ')}. Accuracy: ${(accuracy * 100).toFixed(1)}%` 
+      : `Insufficient data for signal determination. Accuracy: ${(accuracy * 100).toFixed(1)}%`;
 
     return { signal, accuracy, reasoning };
   }

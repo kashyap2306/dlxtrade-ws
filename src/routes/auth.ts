@@ -61,11 +61,11 @@ export async function authRoutes(fastify: FastifyInstance) {
       }
 
       // Run idempotent user onboarding
-      // For OAuth logins, phone will be null initially
+      logger.info({ uid, email }, 'Starting user onboarding from afterSignIn');
       const result = await ensureUser(uid, {
         name,
         email,
-        phone: null, // Phone can be added during onboarding
+        phone: null,
       });
 
       if (!result.success) {
@@ -76,13 +76,40 @@ export async function authRoutes(fastify: FastifyInstance) {
         });
       }
 
-      // Get full user document to return
-      const userDoc = await firestoreAdapter.getUser(uid);
+      // Post-onboarding verification: verify document exists in Firestore
+      logger.info({ uid }, 'Verifying user document exists after onboarding');
+      let userDoc = await firestoreAdapter.getUser(uid);
       if (!userDoc) {
-        logger.error({ uid }, 'User document not found after onboarding');
-        return reply.code(500).send({ 
-          error: 'User document not found after onboarding' 
+        logger.error({ uid }, '❌ User document not found after onboarding - CRITICAL ERROR');
+        
+        // Retry onboarding once
+        logger.info({ uid }, 'Retrying user onboarding after verification failure');
+        const retryResult = await ensureUser(uid, {
+          name,
+          email,
+          phone: null,
         });
+        
+        if (!retryResult.success) {
+          logger.error({ uid, error: retryResult.error }, 'Retry onboarding also failed');
+          return reply.code(500).send({ 
+            error: 'User document not found after onboarding and retry failed',
+            details: retryResult.error 
+          });
+        }
+        
+        // Try to get user doc again after retry
+        userDoc = await firestoreAdapter.getUser(uid);
+        if (!userDoc) {
+          logger.error({ uid }, '❌ User document still not found after retry');
+          return reply.code(500).send({ 
+            error: 'User document creation failed after retry' 
+          });
+        }
+        
+        logger.info({ uid }, '✅ User document found after retry');
+      } else {
+        logger.info({ uid, hasEmail: !!userDoc.email, hasName: !!userDoc.name }, '✅ User document verified after onboarding');
       }
 
       // Convert timestamps for JSON response

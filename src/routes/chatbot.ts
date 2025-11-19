@@ -12,7 +12,7 @@ const chatbotRequestSchema = z.object({
  * Call Gemini API directly via HTTP (fallback if SDK not available)
  */
 async function callGeminiAPIHttp(apiKey: string, prompt: string): Promise<string> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
   
   const response = await axios.post(
     url,
@@ -106,10 +106,10 @@ export async function chatbotRoutes(fastify: FastifyInstance) {
         // Validate request body
         const body = chatbotRequestSchema.parse(requestBody);
         
-        // Use provided Gemini API key
-        const geminiApiKey = 'AIzaSyDTN-xavwahQuTo9jXHO2MzYhJS05sq7fA';
-        if (!geminiApiKey) {
-          logger.error({ uid: user.uid }, 'GEMINI_API_KEY not configured');
+        // Use Gemini API key from environment variable
+        const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+        if (!geminiApiKey || geminiApiKey.trim() === '') {
+          logger.error({ uid: user.uid, hasEnvKey: !!process.env.GEMINI_API_KEY }, 'GEMINI_API_KEY not configured');
           return reply.code(500).send({
             error: 'Chatbot service is not configured',
             reply: 'Sorry, the chatbot service is not configured. Please contact support.',
@@ -136,7 +136,7 @@ Be concise, friendly, and professional. If asked about specific trading strategi
           
           if (GoogleGenerativeAI) {
             const genAI = new GoogleGenerativeAI(geminiApiKey);
-            const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
+            const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
             
             logger.info({ uid: user.uid, messageLength: body.message.length }, 'Calling Gemini API via SDK');
             const result = await model.generateContent(fullPrompt);
@@ -155,6 +155,9 @@ Be concise, friendly, and professional. If asked about specific trading strategi
           // If SDK fails, use HTTP fallback
           logger.warn({ 
             err: sdkError?.message,
+            stack: sdkError?.stack,
+            code: sdkError?.code,
+            name: sdkError?.name,
             uid: user.uid 
           }, 'Gemini SDK not available, using HTTP fallback');
           
@@ -172,7 +175,7 @@ Be concise, friendly, and professional. If asked about specific trading strategi
               code: httpError?.code,
               status: httpError?.response?.status,
               statusText: httpError?.response?.statusText,
-              responseData: httpError?.response?.data ? JSON.stringify(httpError.response.data).substring(0, 200) : undefined,
+              responseData: httpError?.response?.data ? JSON.stringify(httpError.response.data).substring(0, 500) : undefined,
               uid: user.uid 
             }, 'Gemini API HTTP call failed');
             
@@ -186,12 +189,18 @@ Be concise, friendly, and professional. If asked about specific trading strategi
               errorMessage = 'Network error. Please check your connection and try again.';
             } else if (httpError?.response?.data?.error?.message) {
               errorMessage = `API error: ${httpError.response.data.error.message}`;
+            } else if (httpError?.message) {
+              errorMessage = `Error: ${httpError.message}`;
             }
             
             return reply.code(500).send({
               error: 'Failed to generate response',
               reply: errorMessage,
-              details: process.env.NODE_ENV === 'development' ? httpError?.message : undefined,
+              details: process.env.NODE_ENV === 'development' ? {
+                message: httpError?.message,
+                status: httpError?.response?.status,
+                responseData: httpError?.response?.data,
+              } : undefined,
             });
           }
         }

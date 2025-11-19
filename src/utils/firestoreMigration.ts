@@ -13,14 +13,9 @@ export async function migrateFirestoreDocuments(): Promise<void> {
     
     let migrationCount = 0;
 
-    // Migrate users collection - skip documents starting with "__"
+    // Migrate users collection
     const usersSnapshot = await db.collection('users').get();
     for (const doc of usersSnapshot.docs) {
-      // Skip documents starting with "__"
-      if (doc.id.startsWith('__')) {
-        continue;
-      }
-      
       const data = doc.data();
       const updates: any = {};
       
@@ -42,14 +37,9 @@ export async function migrateFirestoreDocuments(): Promise<void> {
       }
     }
 
-    // Migrate engineStatus collection - skip documents starting with "__"
+    // Migrate engineStatus collection
     const engineStatusSnapshot = await db.collection('engineStatus').get();
     for (const doc of engineStatusSnapshot.docs) {
-      // Skip documents starting with "__"
-      if (doc.id.startsWith('__')) {
-        continue;
-      }
-      
       const data = doc.data();
       const updates: any = {};
       

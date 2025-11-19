@@ -253,7 +253,6 @@ export class FirestoreAdapter {
   }
 
   async getResearchLogs(uid: string, limit: number = 100): Promise<ResearchLogDocument[]> {
-    // Get logs from both researchLogs collection (scheduled research) and old research collection
     const snapshot = await db()
       .collection('users')
       .doc(uid)
@@ -331,46 +330,96 @@ export class FirestoreAdapter {
     apiKey?: string; // plain text, will be encrypted
     secretKey?: string; // plain text, will be encrypted (only for Binance)
     apiType?: string; // For CoinAPI type
-  }): Promise<void> {
+  }): Promise<{ path: string; data: any }> {
     const docRef = db()
       .collection('users')
       .doc(uid)
       .collection('integrations')
       .doc(apiName);
 
-    // Check if document exists to determine if we should set createdAt
+    // Check if document exists for idempotency
     const existingDoc = await docRef.get();
     const now = admin.firestore.Timestamp.now();
 
-    const docData: IntegrationDocument = {
+    const docData: any = {
       enabled: data.enabled,
       updatedAt: now,
     };
 
-    // Add createdAt only if document doesn't exist
+    // Set createdAt only if document doesn't exist (required field)
     if (!existingDoc.exists) {
-      (docData as any).createdAt = now;
+      docData.createdAt = now;
     }
 
-    if (data.apiKey) {
-      docData.apiKey = encrypt(data.apiKey);
+    // Encrypt API keys safely
+    try {
+      if (data.apiKey) {
+        docData.apiKey = encrypt(data.apiKey);
+      }
+      if (data.secretKey) {
+        docData.secretKey = encrypt(data.secretKey);
+      }
+    } catch (error: any) {
+      logger.error({ error: error.message, uid, apiName }, 'Encryption failed during saveIntegration');
+      throw new Error(`Encryption failed: ${error.message}`);
     }
-    if (data.secretKey) {
-      docData.secretKey = encrypt(data.secretKey);
-    }
+
+    // Set apiType for CoinAPI integrations (required field)
     if (data.apiType) {
       docData.apiType = data.apiType;
+    } else if (apiName.startsWith('coinapi_')) {
+      // Extract apiType from docName if not provided (e.g., 'coinapi_market' -> 'market')
+      docData.apiType = apiName.replace('coinapi_', '');
     }
 
     await docRef.set(docData, { merge: true });
+    logger.info({ uid, apiName, enabled: data.enabled }, 'Saving integration');
+
+    // Post-save verification: read back the document and verify all required fields
+    const verification = await docRef.get();
+    if (!verification.exists) {
+      logger.error({ uid, apiName }, 'Post-save read failed - document missing');
+      throw new Error('Post-save verification failed: document not found');
+    }
+
+    const savedData = verification.data() || {};
+    
+    // Verify all required fields are present
+    const requiredFields = ['enabled', 'createdAt', 'updatedAt'];
+    const missingFields = requiredFields.filter(field => savedData[field] === undefined);
+    
+    // For CoinAPI, apiType is also required
+    if (apiName.startsWith('coinapi_') && !savedData.apiType) {
+      missingFields.push('apiType');
+    }
+    
+    if (missingFields.length > 0) {
+      logger.error({ uid, apiName, missingFields }, '❌ Integration missing required fields after save');
+      throw new Error(`Post-save verification failed: missing required fields: ${missingFields.join(', ')}`);
+    }
+
     logger.info({ 
       uid, 
-      apiName, 
-      enabled: data.enabled,
-      hasApiKey: !!data.apiKey,
-      hasSecretKey: !!data.secretKey,
-      hasCreatedAt: !existingDoc.exists 
-    }, 'Integration saved to Firestore');
+      path: `users/${uid}/integrations/${apiName}`,
+      hasEnabled: savedData.enabled !== undefined,
+      hasApiKey: savedData.apiKey !== undefined,
+      hasSecretKey: savedData.secretKey !== undefined,
+      hasApiType: savedData.apiType !== undefined,
+      hasCreatedAt: !!savedData.createdAt,
+      hasUpdatedAt: !!savedData.updatedAt,
+    }, '✅ Integration verified with all required fields');
+
+    return {
+      path: `users/${uid}/integrations/${apiName}`,
+      data: {
+        enabled: savedData.enabled || false,
+        hasKey: !!savedData.apiKey,
+        hasSecret: !!savedData.secretKey,
+        apiType: savedData.apiType || null,
+        updatedAt: savedData.updatedAt,
+        createdAt: savedData.createdAt,
+      },
+    };
   }
 
   async deleteIntegration(uid: string, apiName: string): Promise<void> {
@@ -390,9 +439,17 @@ export class FirestoreAdapter {
 
     for (const [apiName, integration] of Object.entries(allIntegrations)) {
       if (integration.enabled && integration.apiKey) {
+        const decryptedApiKey = decrypt(integration.apiKey);
+        
+        // Skip if decryption failed
+        if (!decryptedApiKey) {
+          logger.warn({ uid, apiName }, 'Failed to decrypt API key - skipping integration');
+          continue;
+        }
+        
         enabled[apiName] = {
-          apiKey: decrypt(integration.apiKey),
-          ...(integration.secretKey ? { secretKey: decrypt(integration.secretKey) } : {}),
+          apiKey: decryptedApiKey,
+          ...(integration.secretKey ? { secretKey: decrypt(integration.secretKey) || '' } : {}),
         };
       }
     }
@@ -455,15 +512,29 @@ export class FirestoreAdapter {
   }
 
   // Agent Management
-  async unlockAgent(uid: string, agentName: string): Promise<void> {
+  async unlockAgent(uid: string, agentName: string, agentId?: string, metadata?: any): Promise<void> {
     const docRef = db().collection('users').doc(uid).collection('agents').doc(agentName);
     
     await docRef.set({
       unlocked: true,
+      agentId: agentId || agentName,
+      agentName,
       unlockedAt: admin.firestore.Timestamp.now(),
+      status: 'active',
+      settings: {},
+      ...metadata,
     }, { merge: true });
 
-    logger.info({ uid, agentName }, 'Agent unlocked');
+    // Also update user's unlockedAgents array
+    const userData = await this.getUser(uid);
+    const currentUnlocked = userData?.unlockedAgents || [];
+    if (!currentUnlocked.includes(agentName)) {
+      await this.createOrUpdateUser(uid, {
+        unlockedAgents: [...currentUnlocked, agentName],
+      });
+    }
+
+    logger.info({ uid, agentName, agentId }, 'Agent unlocked');
   }
 
   async lockAgent(uid: string, agentName: string): Promise<void> {
@@ -471,10 +542,50 @@ export class FirestoreAdapter {
     
     await docRef.set({
       unlocked: false,
-      unlockedAt: admin.firestore.Timestamp.now(),
+      status: 'inactive',
+      lockedAt: admin.firestore.Timestamp.now(),
     }, { merge: true });
 
+    // Remove from user's unlockedAgents array
+    const userData = await this.getUser(uid);
+    const currentUnlocked = userData?.unlockedAgents || [];
+    const updatedUnlocked = currentUnlocked.filter((name: string) => name !== agentName);
+    await this.createOrUpdateUser(uid, {
+      unlockedAgents: updatedUnlocked,
+    });
+
     logger.info({ uid, agentName }, 'Agent locked');
+  }
+
+  async getUserUnlockedAgents(uid: string): Promise<Array<{ agentId: string; agentName: string; unlockedAt: admin.firestore.Timestamp; status: string; settings: any }>> {
+    try {
+      const snapshot = await db()
+        .collection('users')
+        .doc(uid)
+        .collection('agents')
+        .where('unlocked', '==', true)
+        .get();
+      
+      return snapshot.docs.map((doc) => ({
+        agentId: doc.data().agentId || doc.id,
+        agentName: doc.data().agentName || doc.id,
+        unlockedAt: doc.data().unlockedAt,
+        status: doc.data().status || 'active',
+        settings: doc.data().settings || {},
+      }));
+    } catch (err: any) {
+      logger.warn({ err: err.message }, 'getUserUnlockedAgents error');
+      return [];
+    }
+  }
+
+  async updateAgentSettings(uid: string, agentName: string, settings: any): Promise<void> {
+    const docRef = db().collection('users').doc(uid).collection('agents').doc(agentName);
+    await docRef.set({
+      settings,
+      updatedAt: admin.firestore.Timestamp.now(),
+    }, { merge: true });
+    logger.info({ uid, agentName }, 'Agent settings updated');
   }
 
   async getAgentStatus(uid: string, agentName: string): Promise<{ unlocked: boolean; unlockedAt?: admin.firestore.Timestamp } | null> {
@@ -648,6 +759,122 @@ export class FirestoreAdapter {
       .orderBy('createdAt', 'desc')
       .get();
     return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+  }
+
+  // ========== EXCHANGE CONFIG METHODS ==========
+  async saveExchangeConfig(uid: string, data: {
+    exchange: string;
+    apiKey: string;
+    secret: string;
+    passphrase?: string;
+    testnet?: boolean;
+  }): Promise<{ path: string; data: any }> {
+    const docRef = db()
+      .collection('users')
+      .doc(uid)
+      .collection('exchangeConfig')
+      .doc('current');
+
+    // Check if document exists for idempotency
+    const existingDoc = await docRef.get();
+    const now = admin.firestore.Timestamp.now();
+
+    // Encrypt credentials safely
+    let apiKeyEncrypted: string;
+    let secretEncrypted: string;
+    let passphraseEncrypted: string = '';
+
+    try {
+      apiKeyEncrypted = encrypt(data.apiKey);
+      secretEncrypted = encrypt(data.secret);
+      if (data.passphrase) {
+        passphraseEncrypted = encrypt(data.passphrase);
+      }
+    } catch (error: any) {
+      logger.error({ error: error.message, uid }, 'Encryption failed during saveExchangeConfig');
+      throw new Error(`Encryption failed: ${error.message}`);
+    }
+
+    const configData: any = {
+      exchange: data.exchange,
+      apiKeyEncrypted,
+      secretEncrypted,
+      passphraseEncrypted,
+      testnet: data.testnet || false,
+      enabled: true,
+      updatedAt: now,
+    };
+
+    // Set createdAt only if document doesn't exist
+    if (!existingDoc.exists) {
+      configData.createdAt = now;
+    }
+
+    await docRef.set(configData, { merge: true });
+    logger.info({ uid, exchange: data.exchange }, 'Saving exchange config');
+
+    // Post-save verification: read back the document and verify all required fields
+    const verification = await docRef.get();
+    if (!verification.exists) {
+      logger.error({ uid }, 'Post-save read failed - document missing');
+      throw new Error('Post-save verification failed: document not found');
+    }
+
+    const savedData = verification.data() || {};
+    
+    // Verify all required fields are present
+    const requiredFields = ['exchange', 'apiKeyEncrypted', 'secretEncrypted', 'passphraseEncrypted', 'testnet', 'enabled', 'createdAt', 'updatedAt'];
+    const missingFields = requiredFields.filter(field => savedData[field] === undefined);
+    
+    if (missingFields.length > 0) {
+      logger.error({ uid, missingFields }, '❌ Exchange config missing required fields after save');
+      throw new Error(`Post-save verification failed: missing required fields: ${missingFields.join(', ')}`);
+    }
+
+    logger.info({ 
+      uid, 
+      path: `users/${uid}/exchangeConfig/current`,
+      hasExchange: savedData.exchange !== undefined,
+      hasApiKeyEncrypted: savedData.apiKeyEncrypted !== undefined,
+      hasSecretEncrypted: savedData.secretEncrypted !== undefined,
+      hasPassphraseEncrypted: savedData.passphraseEncrypted !== undefined,
+      hasTestnet: savedData.testnet !== undefined,
+      hasEnabled: savedData.enabled !== undefined,
+      hasCreatedAt: !!savedData.createdAt,
+      hasUpdatedAt: !!savedData.updatedAt,
+    }, '✅ Exchange config verified with all required fields');
+
+    return {
+      path: `users/${uid}/exchangeConfig/current`,
+      data: {
+        exchange: savedData.exchange || '',
+        hasKey: !!savedData.apiKeyEncrypted,
+        hasSecret: !!savedData.secretEncrypted,
+        hasPassphrase: !!savedData.passphraseEncrypted,
+        testnet: savedData.testnet || false,
+        enabled: savedData.enabled || false,
+        updatedAt: savedData.updatedAt,
+        createdAt: savedData.createdAt,
+      },
+    };
+  }
+
+  // ========== ERROR LOGGING METHODS ==========
+  async logError(errorId: string, error: {
+    uid?: string;
+    path?: string;
+    message: string;
+    error: string;
+    stack?: string;
+    metadata?: any;
+  }): Promise<void> {
+    const errorRef = db().collection('admin').doc('errors').collection('errors').doc(errorId);
+    await errorRef.set({
+      ...error,
+      timestamp: admin.firestore.Timestamp.now(),
+      errorId,
+    });
+    logger.error({ errorId, ...error }, 'Error logged to admin/errors');
   }
 
   // ========== ACTIVITY LOGS COLLECTION METHODS ==========

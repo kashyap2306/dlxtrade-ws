@@ -30,9 +30,7 @@ import { globalStatsRoutes } from './routes/globalStats';
 import { engineStatusRoutes } from './routes/engineStatus';
 import { hftLogsRoutes } from './routes/hftLogs';
 import { autoTradeRoutes } from './routes/autoTrade';
-import { exchangeRoutes } from './routes/exchange';
-import { diagnosticsRoutes } from './routes/diagnostics';
-import { chatbotRoutes } from './routes/chatbot';
+import { exchangeConfigRoutes } from './routes/exchangeConfig';
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -99,6 +97,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   console.log('WS ROUTE READY');
 
   // Routes
+  // Debug: Verify routes are loaded
+  console.log('Loaded agentsRoutes:', typeof agentsRoutes, agentsRoutes ? 'OK' : 'UNDEFINED');
+  console.log('Loaded researchRoutes:', typeof researchRoutes, researchRoutes ? 'OK' : 'UNDEFINED');
+  
   await app.register(authRoutes, { prefix: '/api/auth' });
   await app.register(adminRoutes, { prefix: '/api/admin' });
   await app.register(ordersRoutes, { prefix: '/api' });
@@ -111,6 +113,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(hftRoutes, { prefix: '/api/hft' });
   await app.register(usersRoutes, { prefix: '/api/users' });
   await app.register(agentsRoutes, { prefix: '/api/agents' });
+  
+  console.log('✅ Routes registered - /api/agents/unlocked and /api/research/manual should be available');
   await app.register(activityLogsRoutes, { prefix: '/api/activity-logs' });
   await app.register(tradesRoutes, { prefix: '/api/trades' });
   await app.register(notificationsRoutes, { prefix: '/api/notifications' });
@@ -120,10 +124,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(engineStatusRoutes, { prefix: '/api/engine-status' });
   await app.register(hftLogsRoutes, { prefix: '/api/hft-logs' });
   await app.register(autoTradeRoutes, { prefix: '/api/auto-trade' });
-  await app.register(exchangeRoutes, { prefix: '/api' });
-  await app.register(diagnosticsRoutes, { prefix: '/api/diagnostics' });
-  await app.register(notificationsRoutes, { prefix: '/api' });
-  await app.register(chatbotRoutes, { prefix: '/api' });
+  await app.register(exchangeConfigRoutes, { prefix: '/api/exchange-config' });
 
   console.log('✅ All routes registered:');
   console.log('  - /api/auth/*');
@@ -144,12 +145,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   console.log('  - /api/ui-preferences/*');
   console.log('  - /api/global-stats/*');
   console.log('  - /api/engine-status/*');
-    console.log('  - /api/hft-logs/*');
-    console.log('  - /api/auto-trade/*');
-    console.log('  - /api/exchange/*');
-    console.log('  - /api/health');
+  console.log('  - /api/hft-logs/*');
+  console.log('  - /api/auto-trade/*');
+  console.log('  - /api/health');
   console.log('  - /api/metrics');
-  console.log('  - /api/chatbot');
   console.log('  - /ws (WebSocket)');
   console.log('  - /ws/admin (Admin WebSocket)');
   console.log('  - / (Root WebSocket - unauthenticated, for Render WS health)');
