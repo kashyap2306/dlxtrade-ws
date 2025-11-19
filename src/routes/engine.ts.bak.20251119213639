@@ -66,38 +66,26 @@ export async function engineRoutes(fastify: FastifyInstance) {
       }
 
       // Legacy flow for research-only mode
-      // Load enabled integrations
-      const integrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
-
-      let apiKey: string;
-      let apiSecret: string;
-      let testnet = true;
-
-      // Check for Binance integration (required for trading)
-      if (!integrations.binance || !integrations.binance.apiKey || !integrations.binance.secretKey) {
-        // Fallback to old API keys system for backward compatibility
-        const keys = await firestoreAdapter.getApiKeys(user.uid);
-        if (keys.length === 0) {
-          return reply.code(400).send({ error: 'No API keys configured. Please set up Binance integration.' });
-        }
-
-        const keyDoc = await firestoreAdapter.getLatestApiKey(user.uid, 'binance');
-        if (!keyDoc) {
-          return reply.code(400).send({ error: 'No Binance API key found. Please configure Binance integration.' });
-        }
-
-        apiKey = decrypt(keyDoc.apiKeyEncrypted);
-        apiSecret = decrypt(keyDoc.apiSecretEncrypted);
-        testnet = keyDoc.testnet;
-      } else {
-        // Use integration API keys
-        apiKey = integrations.binance.apiKey;
-        apiSecret = integrations.binance.secretKey!;
-        testnet = true; // Default to testnet - can be made configurable later
+      // Use exchangeResolver to get trading exchange credentials (reads from exchangeConfig/current)
+      const { resolveExchangeConnector } = await import('../services/exchangeResolver');
+      const resolved = await resolveExchangeConnector(user.uid);
+      
+      if (!resolved) {
+        return reply.code(400).send({ 
+          error: 'No exchange API keys configured. Please set up your exchange API credentials in Settings → API Integration.' 
+        });
       }
 
-      // Create or get user engine
-      await userEngineManager.createUserEngine(user.uid, apiKey, apiSecret, testnet);
+      // Create or get user engine using resolved credentials
+      await userEngineManager.createUserEngine(
+        user.uid, 
+        resolved.credentials.apiKey, 
+        resolved.credentials.secret, 
+        resolved.credentials.testnet
+      );
+      
+      // Load enabled integrations for research APIs (CryptoQuant, LunarCrush, CoinAPI)
+      const integrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
 
       // Store loaded integrations for other services (CryptoQuant, LunarCrush, CoinAPI)
       // These can be accessed by other services as needed
