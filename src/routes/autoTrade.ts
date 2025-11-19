@@ -21,10 +21,8 @@ const configSchema = z.object({
   maxDailyLossPct: z.number().min(0.5).max(50).optional(),
   stopLossPct: z.number().min(0.5).max(10).optional(),
   takeProfitPct: z.number().min(0.5).max(20).optional(),
-  trailingStop: z.boolean().optional(),
-  trailingPct: z.number().min(0.1).max(5).optional(),
   manualOverride: z.boolean().optional(),
-  mode: z.enum(['AUTO', 'MANUAL', 'SIMULATION']).optional(),
+  mode: z.enum(['AUTO', 'MANUAL']).optional(),
 });
 
 const queueSignalSchema = z.object({
@@ -80,8 +78,6 @@ export async function autoTradeRoutes(fastify: FastifyInstance) {
           maxDailyLossPct: config.maxDailyLossPct,
           stopLossPct: config.stopLossPct,
           takeProfitPct: config.takeProfitPct,
-          trailingStop: config.trailingStop,
-          trailingPct: config.trailingPct,
         },
         stats: config.stats,
       };
@@ -109,7 +105,7 @@ export async function autoTradeRoutes(fastify: FastifyInstance) {
 
         if (!isAdmin) {
           return reply.code(403).send({
-            error: 'Only admins can enable AUTO (live trading) mode. Use SIMULATION mode for testing.',
+            error: 'Only admins can enable AUTO (live trading) mode.',
           });
         }
       }
@@ -277,9 +273,7 @@ export async function autoTradeRoutes(fastify: FastifyInstance) {
       return {
         success: true,
         trade,
-        message: trade.mode === 'SIMULATION' 
-          ? 'Trade simulated successfully (SIMULATION mode)' 
-          : 'Trade executed successfully',
+        message: 'Trade executed successfully',
       };
     } catch (err: any) {
       if (err instanceof z.ZodError) {
@@ -290,55 +284,6 @@ export async function autoTradeRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // POST /api/auto-trade/simulate - Run in dry-run mode (no real orders)
-  fastify.post('/simulate', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest, reply: FastifyReply) => {
-    try {
-      const user = (request as any).user;
-      const body = queueSignalSchema.parse(request.body);
-
-      // Temporarily set mode to SIMULATION
-      const originalConfig = await autoTradeEngine.loadConfig(user.uid);
-      await autoTradeEngine.saveConfig(user.uid, { mode: 'SIMULATION' });
-
-      try {
-        const signal: TradeSignal = {
-          symbol: body.symbol,
-          signal: body.signal,
-          entryPrice: body.entryPrice,
-          accuracy: body.accuracy,
-          stopLoss: body.stopLoss || body.entryPrice * 0.985,
-          takeProfit: body.takeProfit || body.entryPrice * 1.03,
-          reasoning: body.reasoning || 'Simulation test',
-          requestId: body.requestId || `sim_${Date.now()}`,
-          timestamp: new Date(),
-        };
-
-        const trade = await autoTradeEngine.executeTrade(user.uid, signal);
-
-        // Restore original mode
-        await autoTradeEngine.saveConfig(user.uid, { mode: originalConfig.mode });
-
-        return {
-          success: true,
-          trade,
-          message: 'Trade simulated successfully (no real orders placed)',
-          simulation: true,
-        };
-      } catch (error: any) {
-        // Restore original mode on error
-        await autoTradeEngine.saveConfig(user.uid, { mode: originalConfig.mode });
-        throw error;
-      }
-    } catch (err: any) {
-      if (err instanceof z.ZodError) {
-        return reply.code(400).send({ error: 'Invalid signal data', details: err.errors });
-      }
-      logger.error({ err }, 'Error simulating trade');
-      return reply.code(500).send({ error: err.message || 'Error simulating trade' });
-    }
-  });
 
   // POST /api/auto-trade/toggle - Toggle auto-trade ON/OFF (legacy compatibility)
   fastify.post('/toggle', {

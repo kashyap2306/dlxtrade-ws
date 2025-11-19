@@ -54,20 +54,21 @@ export class CryptoQuantAdapter {
   private disabled: boolean;
 
   constructor(apiKey: string) {
-    // If apiKey is missing, empty, undefined, or null, disable the adapter
-    if (!apiKey || apiKey.trim() === '' || apiKey === 'undefined' || apiKey === 'null') {
+    // Validate API key - throw clear error if missing
+    if (!apiKey || typeof apiKey !== 'string' || apiKey.trim() === '' || apiKey === 'undefined' || apiKey === 'null') {
       this.disabled = true;
       this.apiKey = '';
-      // Create a dummy httpClient that will never be used
-      this.httpClient = axios.create({
-        baseURL: this.baseUrl,
-        timeout: 10000,
-      });
-      return;
+      const errorMsg = 'CryptoQuant API key missing or invalid';
+      logger.error({ apiKeyProvided: !!apiKey, apiKeyType: typeof apiKey }, errorMsg);
+      throw new Error(errorMsg);
     }
 
     this.disabled = false;
-    this.apiKey = apiKey;
+    this.apiKey = apiKey.trim();
+    
+    // Log API key status (for testing - shows if key is loaded, not the actual key)
+    logger.info({ apiKeyLoaded: true, apiKeyLength: this.apiKey.length }, 'CryptoQuant API key loaded');
+    
     this.httpClient = axios.create({
       baseURL: this.baseUrl,
       timeout: 10000,
@@ -75,6 +76,8 @@ export class CryptoQuantAdapter {
         'Authorization': `Bearer ${this.apiKey}`,
       },
     });
+    
+    logger.debug({ baseUrl: this.baseUrl, hasAuthHeader: true }, 'CryptoQuant HTTP client initialized');
   }
 
   // Get Exchange Reserve
@@ -189,7 +192,14 @@ export class CryptoQuantAdapter {
   async getExchangeFlow(symbol: string): Promise<CryptoQuantData> {
     // If adapter is disabled (no API key), return empty data immediately
     if (this.disabled) {
+      logger.warn('CryptoQuant adapter is disabled - cannot fetch exchange flow');
       return {};
+    }
+
+    // Verify API key is still valid before making request
+    if (!this.apiKey || this.apiKey.trim() === '') {
+      logger.error('CryptoQuant API key is missing during getExchangeFlow call');
+      throw new Error('CryptoQuant API key missing');
     }
 
     const coinSymbol = symbol.replace('USDT', '').replace('USD', '');
@@ -200,7 +210,9 @@ export class CryptoQuantAdapter {
         adapter: 'CryptoQuant', 
         method: 'getExchangeFlow', 
         url, 
-        symbol 
+        symbol,
+        hasApiKey: !!this.apiKey,
+        apiKeyLength: this.apiKey.length,
       }, 'CryptoQuant request: getExchangeFlow');
       
       const response = await this.httpClient.get(`/btc/network-data/exchange-netflow`, {
@@ -480,7 +492,14 @@ export class CryptoQuantAdapter {
 
   // Legacy method for backward compatibility
   async getOnChainMetrics(symbol: string): Promise<CryptoQuantData> {
+    // Verify API key is still valid before making request
+    if (this.disabled || !this.apiKey || this.apiKey.trim() === '') {
+      logger.error('CryptoQuant API key is missing during getOnChainMetrics call');
+      throw new Error('CryptoQuant API key missing');
+    }
+    
     try {
+      logger.debug({ symbol, hasApiKey: !!this.apiKey }, 'CryptoQuant getOnChainMetrics: calling getAllData');
       return await this.getAllData(symbol);
     } catch (error: any) {
       // If it's an AdapterError, rethrow it

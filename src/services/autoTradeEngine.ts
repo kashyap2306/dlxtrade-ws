@@ -12,10 +12,8 @@ export interface AutoTradeConfig {
   maxDailyLossPct: number; // stop trading if loss exceeds (default 5)
   stopLossPct: number; // default 1.5
   takeProfitPct: number; // default 3
-  trailingStop: boolean;
-  trailingPct: number;
   manualOverride: boolean; // when true, engine pauses for user actions
-  mode: 'AUTO' | 'MANUAL' | 'SIMULATION';
+  mode: 'AUTO' | 'MANUAL';
   lastRun?: Date;
   stats?: {
     totalTrades: number;
@@ -53,7 +51,7 @@ export interface TradeExecution {
   fillPrice?: number;
   pnl?: number;
   timestamp: Date;
-  mode: 'AUTO' | 'MANUAL' | 'SIMULATION';
+  mode: 'AUTO' | 'MANUAL';
 }
 
 const DEFAULT_CONFIG: AutoTradeConfig = {
@@ -63,10 +61,8 @@ const DEFAULT_CONFIG: AutoTradeConfig = {
   maxDailyLossPct: 5, // 5% max daily loss
   stopLossPct: 1.5, // 1.5% stop loss
   takeProfitPct: 3, // 3% take profit
-  trailingStop: false,
-  trailingPct: 0.5,
   manualOverride: false,
-  mode: 'SIMULATION', // Start in simulation mode for safety
+  mode: 'MANUAL', // Start in manual mode for safety
   stats: {
     totalTrades: 0,
     winningTrades: 0,
@@ -153,8 +149,6 @@ export class AutoTradeEngine {
         maxDailyLossPct: updatedConfig.maxDailyLossPct,
         stopLossPct: updatedConfig.stopLossPct,
         takeProfitPct: updatedConfig.takeProfitPct,
-        trailingStop: updatedConfig.trailingStop,
-        trailingPct: updatedConfig.trailingPct,
         manualOverride: updatedConfig.manualOverride,
         mode: updatedConfig.mode,
         stats: updatedConfig.stats || DEFAULT_CONFIG.stats,
@@ -296,7 +290,7 @@ export class AutoTradeEngine {
   }
 
   /**
-   * Execute trade (simulation or live)
+   * Execute trade
    */
   async executeTrade(uid: string, signal: TradeSignal): Promise<TradeExecution> {
     const requestId = signal.requestId || `exec_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -403,28 +397,7 @@ export class AutoTradeEngine {
     };
 
     // Execute based on mode
-    if (config.mode === 'SIMULATION') {
-      // Simulation mode - log but don't place real order
-      trade.status = 'FILLED';
-      trade.fillPrice = signal.entryPrice;
-      trade.orderId = `SIM_${tradeId}`;
-      
-      await this.logTradeEvent(uid, 'TRADE_SIMULATED', {
-        trade,
-        signal,
-        equity,
-        quantity,
-        requestId,
-        config: {
-          mode: config.mode,
-          perTradeRiskPct: config.perTradeRiskPct,
-          stopLossPct: config.stopLossPct,
-          takeProfitPct: config.takeProfitPct,
-        },
-      });
-      
-      logger.info({ uid, tradeId, symbol: signal.symbol, requestId, mode: 'SIMULATION' }, 'Trade simulated (SIMULATION mode)');
-    } else if (config.mode === 'AUTO' && !config.manualOverride) {
+    if (config.mode === 'AUTO' && !config.manualOverride) {
       // Live mode - place real order
       try {
         logger.info({ uid, symbol: signal.symbol, requestId }, 'Pre-trade validation: checking orderbook liquidity');
