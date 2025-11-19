@@ -25,13 +25,13 @@ export class OrderManager {
     const clientOrderId = `dlx_${uuidv4()}`;
 
     try {
-      const exchangeOrder = await this.adapter.placeOrder(
-        params.symbol,
-        params.side,
-        params.type,
-        params.quantity,
-        params.price
-      );
+      const exchangeOrder = await this.adapter.placeOrder({
+        symbol: params.symbol,
+        side: params.side,
+        type: params.type,
+        quantity: params.quantity,
+        price: params.price,
+      });
 
       // Get strategy from settings if available
       const { firestoreAdapter } = await import('./firestoreAdapter');
