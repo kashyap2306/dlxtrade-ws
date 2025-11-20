@@ -127,6 +127,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(activityLogsRoutes, { prefix: '/api/activity-logs' });
   await app.register(tradesRoutes, { prefix: '/api/trades' });
   await app.register(notificationsRoutes, { prefix: '/api/notifications' });
+  console.log('✅ Notifications routes registered: GET /api/notifications, POST /api/notifications/push, POST /api/notifications/mark-read');
   await app.register(systemLogsRoutes, { prefix: '/api/logs' });
   await app.register(uiPreferencesRoutes, { prefix: '/api/ui-preferences' });
   await app.register(globalStatsRoutes, { prefix: '/api/global-stats' });

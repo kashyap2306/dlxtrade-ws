@@ -62,6 +62,69 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // POST /api/notifications/push - Create a new notification
+  fastify.post('/push', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: { userId: string; title: string; message: string; type: string } }>, reply: FastifyReply) => {
+    try {
+      const { userId, title, message, type } = request.body;
+      
+      // Validate required fields
+      if (!userId || !title || !message || !type) {
+        throw new ValidationError('userId, title, message, and type are required');
+      }
+
+      // Validate userId is not empty
+      if (typeof userId !== 'string' || userId.trim() === '') {
+        throw new ValidationError('userId must be a non-empty string');
+      }
+
+      // Validate title is not empty
+      if (typeof title !== 'string' || title.trim() === '') {
+        throw new ValidationError('title must be a non-empty string');
+      }
+
+      // Validate message is not empty
+      if (typeof message !== 'string' || message.trim() === '') {
+        throw new ValidationError('message must be a non-empty string');
+      }
+
+      // Validate type is not empty
+      if (typeof type !== 'string' || type.trim() === '') {
+        throw new ValidationError('type must be a non-empty string');
+      }
+
+      // Save notification to Firestore (notifications collection)
+      const notificationId = await firestoreAdapter.createNotification(userId, {
+        title: title.trim(),
+        message: message.trim(),
+        type: type.trim(),
+      });
+      
+      logger.info({ userId, notificationId, title }, 'Notification created via push endpoint');
+      
+      // Return success response
+      reply.code(200).header('Content-Type', 'application/json').send({
+        success: true,
+      });
+      return; // Explicit return to prevent further execution
+    } catch (err: any) {
+      if (err instanceof ValidationError) {
+        reply.code(400).header('Content-Type', 'application/json').send({ 
+          success: false,
+          error: err.message 
+        });
+        return; // Explicit return to prevent further execution
+      }
+      logger.error({ err }, 'Error creating notification');
+      reply.code(500).header('Content-Type', 'application/json').send({ 
+        success: false,
+        error: err.message || 'Error creating notification' 
+      });
+      return; // Explicit return to prevent further execution
+    }
+  });
+
   // POST /api/notifications/mark-read - Mark notification as read
   fastify.post('/mark-read', {
     preHandler: [fastify.authenticate],

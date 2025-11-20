@@ -1,10 +1,10 @@
 import { logger } from '../utils/logger';
-import { BinanceAdapter } from './binanceAdapter';
 import { firestoreAdapter } from './firestoreAdapter';
 import { CryptoQuantAdapter } from './cryptoquantAdapter';
 import { LunarCrushAdapter } from './lunarcrushAdapter';
 import { CoinAPIAdapter } from './coinapiAdapter';
 import type { Orderbook, Trade } from '../types';
+import type { ExchangeConnector } from './exchangeConnector';
 
 export interface ResearchResult {
   symbol: string;
@@ -28,7 +28,7 @@ export class ResearchEngine {
   private depthHistory: Map<string, number[]> = new Map();
   private imbalanceHistory: Map<string, number[]> = new Map();
 
-  async runResearch(symbol: string, uid: string, adapter?: BinanceAdapter): Promise<ResearchResult> {
+  async runResearch(symbol: string, uid: string, adapter?: ExchangeConnector): Promise<ResearchResult> {
     try {
       // Orderbook data is optional - if adapter is available, use it; otherwise use defaults
       let imbalance = 0; // Neutral imbalance when no orderbook data
@@ -254,7 +254,7 @@ export class ResearchEngine {
     // Multi-source accuracy calculation using all available data sources
     let accuracy = 0.5; // Base accuracy
 
-    // 1. Orderbook imbalance strength (Binance data)
+    // 1. Orderbook imbalance strength (Exchange data if available)
     const imbalanceStrength = Math.abs(imbalance);
     if (imbalanceStrength > 0.3) {
       accuracy += 0.15;

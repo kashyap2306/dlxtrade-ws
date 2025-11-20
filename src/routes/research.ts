@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { firestoreAdapter } from '../services/firestoreAdapter';
 import { researchEngine } from '../services/researchEngine';
+import { resolveExchangeConnector } from '../services/exchangeResolver';
 import { z } from 'zod';
 import { logger } from '../utils/logger';
 
@@ -31,9 +32,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
 
   fastify.post('/run', {
     preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Body: { symbol: string } }>, reply: FastifyReply) => {
+  }, async (request: FastifyRequest<{ Body: { symbol?: string } }>, reply: FastifyReply) => {
     const user = (request as any).user;
-    let symbol = 'BTCUSDT'; // Default symbol
     
     // DEBUG: Log incoming request
     console.log('🔍 [RESEARCH/RUN] Incoming request:', {
@@ -48,30 +48,102 @@ export async function researchRoutes(fastify: FastifyInstance) {
       console.error('🔍 [RESEARCH/RUN] User not authenticated');
       reply.code(401).header('Content-Type', 'application/json').send({
         success: false,
-        error: 'Authentication required',
+        message: 'Authentication required',
         results: [],
       });
       return; // Explicit return to prevent further execution
     }
     
+    // Wrap entire logic in try/catch for comprehensive error handling
     try {
-      // Parse request body safely
-      try {
-        const body = z.object({ symbol: z.string().min(1) }).parse(request.body);
-        symbol = body.symbol;
-        console.log('🔍 [RESEARCH/RUN] Parsed symbol:', symbol);
-      } catch (parseErr: any) {
-        logger.warn({ err: parseErr, body: request.body }, 'Invalid request body, using default symbol');
-        console.log('🔍 [RESEARCH/RUN] Parse error, using default symbol:', symbol);
+      // Validate symbol is provided
+      let symbol = request.body?.symbol;
+      if (!symbol || typeof symbol !== 'string' || symbol.trim() === '') {
+        console.error('🔍 [RESEARCH/RUN] Symbol not provided');
+        reply.code(400).header('Content-Type', 'application/json').send({
+          success: false,
+          message: 'Symbol not provided',
+          results: [],
+        });
+        return;
       }
       
-      // Deep Research works without exchange adapters - uses only external APIs (CryptoQuant, LunarCrush, CoinAPI)
-      // Adapter is optional - if available, it enhances results with orderbook data
-      // If not available, research continues with external API data only
+      symbol = symbol.trim().toUpperCase();
+      console.log('🔍 [RESEARCH/RUN] Parsed symbol:', symbol);
+      
+      // Deep Research: Try to get user's exchange connector, but continue with fallback if not available
+      // NEVER fail research if exchange API is missing - use fallback engines (CryptoQuant, CoinAPI, etc.)
+      let exchangeAdapter = null;
+      let detectedExchangeName: string = 'Unknown';
+      let isFallback = true;
+      let exchangeError: string | null = null;
+      
+      try {
+        const resolved = await resolveExchangeConnector(user.uid);
+        if (resolved && resolved.connector) {
+          exchangeAdapter = resolved.connector;
+          const exchangeLower = resolved.exchange.toLowerCase();
+          
+          // Format exchange name properly (capitalize first letter, handle special cases)
+          switch (exchangeLower) {
+            case 'binance':
+              detectedExchangeName = 'Binance';
+              break;
+            case 'bitget':
+              detectedExchangeName = 'Bitget';
+              break;
+            case 'bingx':
+              detectedExchangeName = 'BingX';
+              break;
+            case 'weex':
+              detectedExchangeName = 'WEEX';
+              break;
+            case 'bybit':
+              detectedExchangeName = 'Bybit';
+              break;
+            case 'kucoin':
+              detectedExchangeName = 'KuCoin';
+              break;
+            case 'okx':
+              detectedExchangeName = 'OKX';
+              break;
+            default:
+              // Capitalize first letter for unknown exchange types
+              detectedExchangeName = exchangeLower.charAt(0).toUpperCase() + exchangeLower.slice(1);
+          }
+          
+          isFallback = false;
+          console.log('[DEEP-RESEARCH] Using exchange:', detectedExchangeName);
+        } else {
+          // No exchange API found - use fallback
+          detectedExchangeName = 'Fallback (No Exchange API)';
+          console.log('[DEEP-RESEARCH] No exchange API found, using fallback engines');
+        }
+      } catch (exchangeErr: any) {
+        // Log error but continue with fallback
+        exchangeError = exchangeErr.message || 'Exchange resolution failed';
+        logger.warn({ err: exchangeErr, uid: user.uid }, 'Error resolving exchange connector, using fallback');
+        console.log('[DEEP-RESEARCH] Exchange resolution failed, using fallback engines');
+        // If there's an error during extraction, mark as Unknown (extraction failed)
+        // This means we couldn't even check if exchange exists - extraction error
+        if (detectedExchangeName === 'Unknown') {
+          // Keep as Unknown since extraction actually failed
+          console.log('[DEEP-RESEARCH] Exchange extraction failed, marking as Unknown');
+        } else {
+          // This shouldn't happen, but if exchange was already set, keep it
+          // Otherwise, if we got here without setting exchange, it means extraction failed
+          detectedExchangeName = 'Unknown';
+        }
+      }
+      
+      console.log('[DEEP-RESEARCH] Fallback mode:', isFallback);
+      console.log('[DEEP-RESEARCH] Detected exchange:', detectedExchangeName);
+      
+      // Run research with or without exchange adapter
       let result;
       try {
-        console.log('🔍 [RESEARCH/RUN] Calling researchEngine.runResearch with:', { symbol, uid: user.uid });
-        result = await researchEngine.runResearch(symbol, user.uid, undefined);
+        console.log('🔍 [RESEARCH/RUN] Calling researchEngine.runResearch with:', { symbol, uid: user.uid, hasAdapter: !!exchangeAdapter });
+        result = await researchEngine.runResearch(symbol, user.uid, exchangeAdapter || undefined);
         console.log('🔍 [RESEARCH/RUN] researchEngine.runResearch returned - type:', typeof result);
         console.log('🔍 [RESEARCH/RUN] researchEngine.runResearch returned - keys:', result ? Object.keys(result) : 'null/undefined');
         console.log('🔍 [RESEARCH/RUN] researchEngine.runResearch returned - full:', JSON.stringify(result, null, 2));
@@ -113,57 +185,91 @@ export async function researchRoutes(fastify: FastifyInstance) {
         };
       }
       
-      // Add timestamp to result
-      const resultWithTimestamp = {
+      // Validate symbol exists in result
+      if (!result.symbol || result.symbol.trim() === '') {
+        console.error('🔍 [RESEARCH/RUN] Result missing symbol, using provided symbol');
+        result.symbol = symbol;
+      }
+      
+      // Add timestamp and exchange info to result
+      // Exchange name should always be set - either detected exchange, "Fallback (No Exchange API)", or "Unknown"
+      // "Unknown" only occurs when extraction fails (error during resolution)
+      // "Fallback (No Exchange API)" occurs when no exchange API is connected
+      const resultWithMetadata = {
         ...result,
         timestamp: new Date().toISOString(),
+        exchange: detectedExchangeName, // Always set - either exchange name, "Fallback (No Exchange API)", or "Unknown"
+        isFallback: isFallback,
+        exchangeError: exchangeError || undefined, // Include error if exchange resolution failed
       };
+      
+      console.log('[DEEP-RESEARCH] Final exchange name:', detectedExchangeName);
+      console.log('[DEEP-RESEARCH] Is fallback:', isFallback);
+      console.log('[DEEP-RESEARCH] Exchange error:', exchangeError || 'none');
       
       // Transform result into final response format - NO WRAPPERS
       const finalResponse = {
         success: true,
-        results: Array.isArray(resultWithTimestamp) ? resultWithTimestamp : [resultWithTimestamp],
+        results: Array.isArray(resultWithMetadata) ? resultWithMetadata : [resultWithMetadata],
       };
       
+      console.log('[DEEP-RESEARCH] Final Response:', JSON.stringify(finalResponse, null, 2));
       console.log('🔍 [RESEARCH/RUN] Final response before sending:', JSON.stringify(finalResponse, null, 2));
       console.log('🔍 [RESEARCH/RUN] Response has success?', 'success' in finalResponse);
       console.log('🔍 [RESEARCH/RUN] Response has results?', 'results' in finalResponse);
       console.log('🔍 [RESEARCH/RUN] Response has data?', 'data' in finalResponse);
       console.log('🔍 [RESEARCH/RUN] Response has result?', 'result' in finalResponse);
       
+      // Send notification (non-blocking - wrapped in try/catch so it doesn't block research)
+      try {
+        const { getFirebaseAdmin } = await import('../utils/firebase');
+        const admin = getFirebaseAdmin();
+        if (admin) {
+          await firestoreAdapter.createNotification(user.uid, {
+            title: 'Deep Research Completed',
+            message: `Analyzed ${symbol} - Signal: ${result.signal}, Accuracy: ${(result.accuracy * 100).toFixed(1)}%`,
+            type: result.signal === 'BUY' ? 'success' : result.signal === 'SELL' ? 'warning' : 'info',
+          });
+        }
+      } catch (notifErr: any) {
+        // Log but don't fail research if notification fails
+        logger.warn({ err: notifErr, uid: user.uid }, 'Failed to send notification (non-critical)');
+      }
+      
       // Send response - NO WRAPPERS, NO RETURN OBJECT
       reply.code(200).header('Content-Type', 'application/json').send(finalResponse);
       return; // Explicit return to prevent further execution
     } catch (error: any) {
-      logger.error({ error: error.message, uid: user.uid, symbol, stack: error.stack }, 'Error in research/run');
+      fastify.log.error({ error: error.message, uid: user?.uid, stack: error.stack }, 'Error in research/run');
+      logger.error({ error: error.message, uid: user?.uid, stack: error.stack }, 'Error in research/run');
       
-      // Check if it's a CryptoQuant API key error (401 or invalid key)
-      const errorMsg = error.message || '';
-      if (errorMsg.includes('CryptoQuant') && (
-        errorMsg.includes('401') || 
-        errorMsg.includes('authentication failed') || 
-        errorMsg.includes('invalid') ||
-        errorMsg.includes('Token does not exist')
-      )) {
-        reply.code(200).header('Content-Type', 'application/json').send({
-          success: false,
-          error: 'INVALID_CRYPTOQUANT_API_KEY',
-          results: [],
-        });
-        return; // Explicit return to prevent further execution
+      // Determine error type and status code
+      let statusCode = 500;
+      let errorMessage = error.message || 'Deep Research engine internal error';
+      
+      // Check for specific error types
+      if (error.response) {
+        // Axios error from external API
+        statusCode = error.response.status || 500;
+        errorMessage = error.response.data?.message || error.response.data?.error || errorMessage;
+      } else if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+        statusCode = 503;
+        errorMessage = 'Service temporarily unavailable - request timeout';
+      } else if (error.message?.includes('API key') || error.message?.includes('invalid key')) {
+        statusCode = 401;
+        errorMessage = 'API key invalid - check exchange credentials';
+      } else if (error.message?.includes('rate limit')) {
+        statusCode = 429;
+        errorMessage = 'Rate limit exceeded - please try again later';
       }
       
-      // For other errors, return 200 with error flag (never return 500)
-      // Always return valid JSON response structure in format expected by frontend
-      const errorResponse = {
+      // Return proper error response
+      reply.code(statusCode).header('Content-Type', 'application/json').send({
         success: false,
-        error: error.message || 'Research failed',
+        message: errorMessage,
         results: [],
-      };
-      console.error('🔍 [RESEARCH/RUN] Error response:', errorResponse);
-      logger.error({ error: error.message, response: errorResponse }, 'Research/run error response');
-      reply.code(200).header('Content-Type', 'application/json').send(errorResponse);
-      return; // Explicit return to prevent further execution
+      });
+      return;
     }
   });
 
@@ -178,8 +284,20 @@ export async function researchRoutes(fastify: FastifyInstance) {
     }).parse(request.body);
 
     try {
+      // Try to get user's exchange connector (optional - fallback if not available)
+      let exchangeAdapter = null;
+      try {
+        const resolved = await resolveExchangeConnector(user.uid);
+        if (resolved && resolved.connector) {
+          exchangeAdapter = resolved.connector;
+          console.log('[DEEP-RESEARCH] Using exchange for deep-run:', resolved.exchange);
+        }
+      } catch (exchangeErr: any) {
+        logger.warn({ err: exchangeErr, uid: user.uid }, 'Error resolving exchange connector for deep-run, using fallback');
+      }
+      
       // Deep Research works without exchange adapters - uses only external APIs
-      // Run research for each symbol without requiring adapter
+      // Run research for each symbol with optional exchange adapter
       const candidates: Array<{
         symbol: string;
         signal: 'BUY' | 'SELL' | 'HOLD';
@@ -193,8 +311,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
 
       for (const symbol of body.symbols) {
         try {
-          // Run research without adapter - uses only external APIs (CryptoQuant, LunarCrush, CoinAPI)
-          const research = await researchEngine.runResearch(symbol, user.uid, undefined);
+          // Run research with optional exchange adapter - uses external APIs (CryptoQuant, LunarCrush, CoinAPI) as fallback
+          const research = await researchEngine.runResearch(symbol, user.uid, exchangeAdapter || undefined);
           
           // Entry, size, stop-loss, take-profit are optional and only calculated if adapter is available
           // For now, we skip price calculations since they require orderbook data
