@@ -23,9 +23,9 @@ const REQUIRED_COLLECTIONS = [
 ] as const;
 
 /**
- * Initializer document ID - using a special prefix to avoid conflicts
+ * Initializer document ID - using a non-reserved ID (__initializer__ is reserved by Firestore)
  */
-const INITIALIZER_DOC_ID = '__initializer__';
+const INITIALIZER_DOC_ID = '_init';
 
 /**
  * Checks if a collection exists by attempting to read a document.

@@ -23,16 +23,38 @@ export async function autoTradeRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const user = (request as any).user;
+      const db = admin.firestore(getFirebaseAdmin());
       
       // Get engine status from Firestore
       const engineStatus = await firestoreAdapter.getEngineStatus(user.uid);
       const userData = await firestoreAdapter.getUser(user.uid);
       
+      // Check if user has exchange config (more reliable than userData.apiConnected)
+      const exchangeConfigDoc = await db
+        .collection('users')
+        .doc(user.uid)
+        .collection('exchangeConfig')
+        .doc('current')
+        .get();
+      
+      const hasExchangeConfig = exchangeConfigDoc.exists && 
+        exchangeConfigDoc.data()?.apiKeyEncrypted && 
+        exchangeConfigDoc.data()?.secretEncrypted;
+      
+      // Also check apiKeys collection for backward compatibility
+      const apiKeysDoc = await db.collection('apiKeys').doc(user.uid).get();
+      const hasApiKeys = apiKeysDoc.exists && 
+        apiKeysDoc.data()?.apiKeyEncrypted && 
+        apiKeysDoc.data()?.apiSecretEncrypted &&
+        apiKeysDoc.data()?.status === 'connected';
+      
+      const isApiConnected = hasExchangeConfig || hasApiKeys || userData?.apiConnected || false;
+      
       return {
         autoTradeEnabled: engineStatus?.autoTradeEnabled || false,
         engineRunning: engineStatus?.engineRunning || false,
-        isApiConnected: userData?.isApiConnected || false,
-        apiStatus: userData?.apiStatus || 'disconnected',
+        isApiConnected,
+        apiStatus: isApiConnected ? 'connected' : 'disconnected',
       };
     } catch (err: any) {
       logger.error({ err }, 'Error getting auto-trade status');
@@ -48,52 +70,72 @@ export async function autoTradeRoutes(fastify: FastifyInstance) {
       const user = (request as any).user;
       const body = toggleAutoTradeSchema.parse(request.body);
 
-      // PART 2: Verify user has connected API keys
-      const userData = await firestoreAdapter.getUser(user.uid);
-      if (!userData?.apiConnected) {
-        return reply.code(400).send({
-          error: 'Please connect your Binance API keys first in API Integrations',
-        });
-      }
-
-      // Get API keys from apiKeys collection
+      // PART 2: Verify user has connected API keys - check exchangeConfig first, then apiKeys collection
       const db = admin.firestore(getFirebaseAdmin());
-      const apiKeysDoc = await db.collection('apiKeys').doc(user.uid).get();
       
-      if (!apiKeysDoc.exists) {
+      // Check exchangeConfig collection (primary source)
+      const exchangeConfigDoc = await db
+        .collection('users')
+        .doc(user.uid)
+        .collection('exchangeConfig')
+        .doc('current')
+        .get();
+      
+      let apiKey: string | null = null;
+      let apiSecret: string | null = null;
+      let exchangeName: string | null = null;
+      let testnet: boolean = true;
+      
+      if (exchangeConfigDoc.exists) {
+        const exchangeConfig = exchangeConfigDoc.data();
+        if (exchangeConfig?.apiKeyEncrypted && exchangeConfig?.secretEncrypted) {
+          apiKey = decrypt(exchangeConfig.apiKeyEncrypted);
+          apiSecret = decrypt(exchangeConfig.secretEncrypted);
+          exchangeName = exchangeConfig.exchange || exchangeConfig.type || 'binance';
+          testnet = exchangeConfig.testnet ?? true;
+        }
+      }
+      
+      // Fallback to apiKeys collection if exchangeConfig not found
+      if (!apiKey || !apiSecret) {
+        const apiKeysDoc = await db.collection('apiKeys').doc(user.uid).get();
+        if (apiKeysDoc.exists) {
+          const apiKeysData = apiKeysDoc.data();
+          if (apiKeysData?.apiKeyEncrypted && apiKeysData?.apiSecretEncrypted && apiKeysData?.status === 'connected') {
+            apiKey = decrypt(apiKeysData.apiKeyEncrypted);
+            apiSecret = decrypt(apiKeysData.apiSecretEncrypted);
+            exchangeName = apiKeysData.exchange || 'binance';
+            testnet = apiKeysData.testnet ?? true;
+          }
+        }
+      }
+      
+      // If still no keys found, return error
+      if (!apiKey || !apiSecret) {
         return reply.code(400).send({
-          error: 'API keys not found. Please connect your Binance API keys first.',
+          error: 'Please connect your exchange API keys first in Settings > Exchange Accounts.',
         });
       }
-
-      const apiKeysData = apiKeysDoc.data();
-      if (!apiKeysData?.apiKeyEncrypted || !apiKeysData?.apiSecretEncrypted || apiKeysData?.status !== 'connected') {
-        return reply.code(400).send({
-          error: 'API keys not connected. Please connect your Binance API keys first.',
-        });
-      }
-
-      // Decrypt API keys
-      const apiKey = decrypt(apiKeysData.apiKeyEncrypted);
-      const apiSecret = decrypt(apiKeysData.apiSecretEncrypted);
 
       if (body.enabled) {
         // PART 3 & 4: Start auto-trade engine
         try {
-          // Validate API keys again
-          const testAdapter = new BinanceAdapter(apiKey, apiSecret, true);
-          const validation = await testAdapter.validateApiKey();
-          
-          if (!validation.valid || !validation.canTrade) {
-            return reply.code(400).send({
-              error: 'API key validation failed. Please check your API keys.',
-            });
+          // Validate API keys again (only for Binance)
+          if (exchangeName === 'binance' || !exchangeName) {
+            const testAdapter = new BinanceAdapter(apiKey, apiSecret, testnet);
+            const validation = await testAdapter.validateApiKey();
+            
+            if (!validation.valid || !validation.canTrade) {
+              return reply.code(400).send({
+                error: 'API key validation failed. Please check your API keys.',
+              });
+            }
           }
 
           // Get or create user engine
           let engine = userEngineManager.getUserEngine(user.uid);
           if (!engine) {
-            await userEngineManager.createUserEngine(user.uid, apiKey, apiSecret, true);
+            await userEngineManager.createUserEngine(user.uid, apiKey, apiSecret, testnet);
             engine = userEngineManager.getUserEngine(user.uid)!;
           }
 

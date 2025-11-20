@@ -83,12 +83,30 @@ export async function walletRoutes(fastify: FastifyInstance) {
 
       // Fetch account info
       if (!adapter.getAccount) {
-        return reply.code(501).send({
+        logger.warn({ exchange, uid: user.uid }, 'Exchange adapter does not support balance fetching');
+        return reply.code(200).send({
+          exchange,
+          connected: true,
+          balances: [],
+          totalUsdValue: 0,
           error: 'Exchange adapter does not support balance fetching',
         });
       }
 
-      const accountInfo = await adapter.getAccount();
+      let accountInfo;
+      try {
+        accountInfo = await adapter.getAccount();
+      } catch (adapterErr: any) {
+        logger.error({ err: adapterErr, exchange, uid: user.uid }, 'Error calling adapter.getAccount');
+        // Return empty balances instead of error to allow UI to show connected state
+        return reply.code(200).send({
+          exchange,
+          connected: true,
+          balances: [],
+          totalUsdValue: 0,
+          error: adapterErr.message || 'Failed to fetch account info',
+        });
+      }
 
       // Process balances based on exchange
       let balances: Balance[] = [];
@@ -151,9 +169,33 @@ export async function walletRoutes(fastify: FastifyInstance) {
           totalUsdValue = balances.reduce((sum, b) => sum + b.usdValue, 0);
         }
       } else {
-        // Generic handling for other exchanges
-        balances = [];
-        totalUsdValue = 0;
+        // Generic handling for other exchanges - try to extract balances from common formats
+        if (accountInfo && typeof accountInfo === 'object') {
+          // Try to find balances in common locations
+          const possibleBalances = accountInfo.balances || accountInfo.data?.balances || accountInfo.data?.normal || [];
+          if (Array.isArray(possibleBalances)) {
+            balances = possibleBalances
+              .filter((b: any) => {
+                const free = parseFloat(b.free || b.available || b.balance || '0');
+                const locked = parseFloat(b.locked || b.frozen || '0');
+                return free > 0 || locked > 0;
+              })
+              .map((b: any) => {
+                const free = parseFloat(b.free || b.available || b.balance || '0');
+                const locked = parseFloat(b.locked || b.frozen || '0');
+                const asset = b.asset || b.coin || b.currency || 'UNKNOWN';
+                // Simplified USD value calculation
+                const usdValue = (asset === 'USDT' || asset === 'BUSD' || asset === 'USDC') ? (free + locked) : 0;
+                return {
+                  asset,
+                  free,
+                  locked,
+                  usdValue,
+                };
+              });
+            totalUsdValue = balances.reduce((sum, b) => sum + b.usdValue, 0);
+          }
+        }
       }
 
       // Return sanitized balances (no keys, no secrets)
@@ -166,17 +208,24 @@ export async function walletRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       logger.error({ err, uid: (request as any).user?.uid }, 'Error fetching wallet balances');
       
-      // Don't expose internal errors
-      if (err.message?.includes('Invalid API-key') || err.message?.includes('authentication')) {
-        return reply.code(401).send({
-          error: 'Invalid exchange credentials',
+      // Don't expose internal errors - return 200 with error flag for better frontend handling
+      if (err.message?.includes('Invalid API-key') || err.message?.includes('authentication') || err.message?.includes('401')) {
+        return reply.code(200).send({
+          exchange: '',
           connected: false,
+          balances: [],
+          totalUsdValue: 0,
+          error: 'Invalid exchange credentials. Please reconnect your exchange.',
         });
       }
 
-      return reply.code(500).send({
-        error: 'Could not fetch balances',
+      // Return 200 with error instead of 500 for better frontend error handling
+      return reply.code(200).send({
+        exchange: '',
         connected: false,
+        balances: [],
+        totalUsdValue: 0,
+        error: err.message || 'Could not fetch balances',
       });
     }
   });

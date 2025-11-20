@@ -133,15 +133,35 @@ export class ResearchEngine {
       }
 
       logger.info({ symbol, signal, accuracy, hasAdapter: !!adapter }, 'Research completed');
+      
+      // DEBUG: Log the RAW result being returned - check for any wrappers
+      console.log('🔍 [RESEARCH_ENGINE] RUN RESEARCH RAW RETURN:', JSON.stringify(result, null, 2));
+      console.log('🔍 [RESEARCH_ENGINE] Result type:', typeof result);
+      console.log('🔍 [RESEARCH_ENGINE] Result keys:', Object.keys(result || {}));
+      console.log('🔍 [RESEARCH_ENGINE] Has data wrapper?', 'data' in (result as any));
+      console.log('🔍 [RESEARCH_ENGINE] Has result wrapper?', 'result' in (result as any));
+      console.log('🔍 [RESEARCH_ENGINE] Has analysis wrapper?', 'analysis' in (result as any));
 
-      return result;
+      // Ensure result is exactly the shape we need - no wrappers
+      const cleanResult: ResearchResult = {
+        symbol: result.symbol,
+        signal: result.signal,
+        accuracy: result.accuracy,
+        orderbookImbalance: result.orderbookImbalance,
+        recommendedAction: result.recommendedAction,
+        microSignals: result.microSignals,
+      };
+      
+      console.log('🔍 [RESEARCH_ENGINE] CLEAN RESULT RETURN:', JSON.stringify(cleanResult, null, 2));
+      
+      return cleanResult;
     } catch (error: any) {
       // Wrap entire research in try/catch to prevent any unhandled errors
       // NEVER throw - always return a valid result even on error
       logger.error({ error: error.message, symbol, uid, stack: error.stack }, 'Error in runResearch - returning fallback result');
       
-      // Return fallback result instead of throwing
-      return {
+      // Return fallback result instead of throwing - ensure clean shape
+      const fallbackResult: ResearchResult = {
         symbol,
         signal: 'HOLD' as const,
         accuracy: 0.5,
@@ -154,6 +174,10 @@ export class ResearchEngine {
           orderbookDepth: 0,
         },
       };
+      
+      console.log('🔍 [RESEARCH_ENGINE] FALLBACK RESULT RETURN:', JSON.stringify(fallbackResult, null, 2));
+      
+      return fallbackResult;
     }
   }
 

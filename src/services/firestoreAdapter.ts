@@ -844,6 +844,19 @@ export class FirestoreAdapter {
       hasUpdatedAt: !!savedData.updatedAt,
     }, '✅ Exchange config verified with all required fields');
 
+    // Update user document's apiConnected status
+    try {
+      await db().collection('users').doc(uid).set({
+        apiConnected: true,
+        apiStatus: 'connected',
+        connectedExchanges: admin.firestore.FieldValue.arrayUnion(data.exchange),
+        updatedAt: now,
+      }, { merge: true });
+      logger.info({ uid, exchange: data.exchange }, 'Updated user apiConnected status');
+    } catch (userUpdateErr: any) {
+      logger.warn({ err: userUpdateErr, uid }, 'Failed to update user apiConnected status (non-critical)');
+    }
+
     return {
       path: `users/${uid}/exchangeConfig/current`,
       data: {

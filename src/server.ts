@@ -59,6 +59,7 @@ async function start() {
     console.log('🔥 Server listening on:', address);
     console.log('🔥 API endpoints available at: http://localhost:' + PORT + '/api/*');
     console.log('🔥 WebSocket available at: ws://localhost:' + PORT + '/ws');
+    console.log('🔥 WS server started on ws://localhost:' + PORT + '/ws');
     logger.info({ port: PORT, address }, 'Server started and listening');
 
     // NOW initialize Firebase Admin IMMEDIATELY
@@ -98,15 +99,18 @@ async function start() {
           logger.error({ error: migrationError.message }, 'Firestore migration failed');
         }
 
-        // Seed Firestore with default data
+        // Seed Firestore with default data - DISABLED to prevent startup crashes
+        // Uncomment if you need to seed data manually
+        /*
         try {
           await seedFirestoreData();
         } catch (seedError: any) {
           console.error('❌ INIT ERROR (Data Seeding):', seedError.message);
           console.error('❌ SEED STACK:', seedError.stack);
           logger.error({ error: seedError.message, stack: seedError.stack }, 'Firestore data seeding failed');
-          // DO NOT throw - allow server to continue even if seeding fails
         }
+        */
+        console.log('ℹ️  Firestore data seeding is disabled (seedFirestoreData() commented out)');
 
         // Auto-promote the specified admin user unconditionally
         try {

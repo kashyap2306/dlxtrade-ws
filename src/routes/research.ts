@@ -35,13 +35,34 @@ export async function researchRoutes(fastify: FastifyInstance) {
     const user = (request as any).user;
     let symbol = 'BTCUSDT'; // Default symbol
     
+    // DEBUG: Log incoming request
+    console.log('🔍 [RESEARCH/RUN] Incoming request:', {
+      body: request.body,
+      uid: user?.uid,
+      hasUser: !!user,
+    });
+    logger.info({ body: request.body, uid: user?.uid }, 'Research/run request received');
+    
+    // Validate user is authenticated
+    if (!user || !user.uid) {
+      console.error('🔍 [RESEARCH/RUN] User not authenticated');
+      reply.code(401).header('Content-Type', 'application/json').send({
+        success: false,
+        error: 'Authentication required',
+        results: [],
+      });
+      return; // Explicit return to prevent further execution
+    }
+    
     try {
       // Parse request body safely
       try {
         const body = z.object({ symbol: z.string().min(1) }).parse(request.body);
         symbol = body.symbol;
+        console.log('🔍 [RESEARCH/RUN] Parsed symbol:', symbol);
       } catch (parseErr: any) {
         logger.warn({ err: parseErr, body: request.body }, 'Invalid request body, using default symbol');
+        console.log('🔍 [RESEARCH/RUN] Parse error, using default symbol:', symbol);
       }
       
       // Deep Research works without exchange adapters - uses only external APIs (CryptoQuant, LunarCrush, CoinAPI)
@@ -49,9 +70,14 @@ export async function researchRoutes(fastify: FastifyInstance) {
       // If not available, research continues with external API data only
       let result;
       try {
+        console.log('🔍 [RESEARCH/RUN] Calling researchEngine.runResearch with:', { symbol, uid: user.uid });
         result = await researchEngine.runResearch(symbol, user.uid, undefined);
+        console.log('🔍 [RESEARCH/RUN] researchEngine.runResearch returned - type:', typeof result);
+        console.log('🔍 [RESEARCH/RUN] researchEngine.runResearch returned - keys:', result ? Object.keys(result) : 'null/undefined');
+        console.log('🔍 [RESEARCH/RUN] researchEngine.runResearch returned - full:', JSON.stringify(result, null, 2));
       } catch (researchErr: any) {
         // If runResearch somehow still throws (shouldn't happen, but safety net)
+        console.error('🔍 [RESEARCH/RUN] runResearch threw error:', researchErr);
         logger.error({ err: researchErr, symbol, uid: user.uid }, 'runResearch threw error (unexpected)');
         result = {
           symbol,
@@ -68,8 +94,9 @@ export async function researchRoutes(fastify: FastifyInstance) {
         };
       }
       
-      // Ensure result is valid before spreading
+      // Ensure result is valid
       if (!result || typeof result !== 'object') {
+        console.error('🔍 [RESEARCH/RUN] Invalid result from runResearch:', result);
         logger.error({ result, symbol, uid: user.uid }, 'Invalid result from runResearch');
         result = {
           symbol,
@@ -86,29 +113,27 @@ export async function researchRoutes(fastify: FastifyInstance) {
         };
       }
       
-      try {
-        return {
-          ...result,
-          timestamp: new Date().toISOString(),
-        };
-      } catch (spreadErr: any) {
-        // If spread operator fails, return fallback
-        logger.error({ err: spreadErr, symbol, uid: user.uid }, 'Error spreading result');
-        return {
-          symbol: result.symbol || symbol,
-          signal: result.signal || 'HOLD',
-          accuracy: result.accuracy || 0.5,
-          orderbookImbalance: result.orderbookImbalance || 0,
-          recommendedAction: result.recommendedAction || 'Research encountered an error',
-          microSignals: result.microSignals || {
-            spread: 0,
-            volume: 0,
-            priceMomentum: 0,
-            orderbookDepth: 0,
-          },
-          timestamp: new Date().toISOString(),
-        };
-      }
+      // Add timestamp to result
+      const resultWithTimestamp = {
+        ...result,
+        timestamp: new Date().toISOString(),
+      };
+      
+      // Transform result into final response format - NO WRAPPERS
+      const finalResponse = {
+        success: true,
+        results: Array.isArray(resultWithTimestamp) ? resultWithTimestamp : [resultWithTimestamp],
+      };
+      
+      console.log('🔍 [RESEARCH/RUN] Final response before sending:', JSON.stringify(finalResponse, null, 2));
+      console.log('🔍 [RESEARCH/RUN] Response has success?', 'success' in finalResponse);
+      console.log('🔍 [RESEARCH/RUN] Response has results?', 'results' in finalResponse);
+      console.log('🔍 [RESEARCH/RUN] Response has data?', 'data' in finalResponse);
+      console.log('🔍 [RESEARCH/RUN] Response has result?', 'result' in finalResponse);
+      
+      // Send response - NO WRAPPERS, NO RETURN OBJECT
+      reply.code(200).header('Content-Type', 'application/json').send(finalResponse);
+      return; // Explicit return to prevent further execution
     } catch (error: any) {
       logger.error({ error: error.message, uid: user.uid, symbol, stack: error.stack }, 'Error in research/run');
       
@@ -120,33 +145,25 @@ export async function researchRoutes(fastify: FastifyInstance) {
         errorMsg.includes('invalid') ||
         errorMsg.includes('Token does not exist')
       )) {
-        return reply.code(200).send({
-          ok: false,
+        reply.code(200).header('Content-Type', 'application/json').send({
+          success: false,
           error: 'INVALID_CRYPTOQUANT_API_KEY',
-          symbol: symbol,
-          timestamp: new Date().toISOString(),
+          results: [],
         });
+        return; // Explicit return to prevent further execution
       }
       
       // For other errors, return 200 with error flag (never return 500)
-      // Always return valid JSON response structure
-      return reply.code(200).send({
-        ok: false,
+      // Always return valid JSON response structure in format expected by frontend
+      const errorResponse = {
+        success: false,
         error: error.message || 'Research failed',
-        symbol: symbol,
-        timestamp: new Date().toISOString(),
-        // Provide fallback data structure
-        signal: 'HOLD',
-        accuracy: 0.5,
-        orderbookImbalance: 0,
-        recommendedAction: 'Research encountered an error - please try again',
-        microSignals: {
-          spread: 0,
-          volume: 0,
-          priceMomentum: 0,
-          orderbookDepth: 0,
-        },
-      });
+        results: [],
+      };
+      console.error('🔍 [RESEARCH/RUN] Error response:', errorResponse);
+      logger.error({ error: error.message, response: errorResponse }, 'Research/run error response');
+      reply.code(200).header('Content-Type', 'application/json').send(errorResponse);
+      return; // Explicit return to prevent further execution
     }
   });
 
@@ -247,21 +264,26 @@ export async function researchRoutes(fastify: FastifyInstance) {
         }
       }
 
-      return {
-        candidates: topCandidates,
-        totalAnalyzed: body.symbols.length,
-        timestamp: new Date().toISOString(),
+      const deepRunResponse = {
+        success: true,
+        results: topCandidates,
       };
+      console.log('🔍 [RESEARCH/DEEP-RUN] Sending response:', {
+        success: deepRunResponse.success,
+        resultsCount: deepRunResponse.results.length,
+      });
+      reply.code(200).header('Content-Type', 'application/json').send(deepRunResponse);
+      return; // Explicit return to prevent further execution
     } catch (error: any) {
       logger.error({ error: error.message, uid: user.uid }, 'Error in deep research');
       // NEVER return 500 - always return 200 with error flag
-      return reply.code(200).send({
-        ok: false,
+      const deepRunErrorResponse = {
+        success: false,
         error: error.message || 'Deep research failed',
-        candidates: [],
-        totalAnalyzed: 0,
-        timestamp: new Date().toISOString(),
-      });
+        results: [],
+      };
+      reply.code(200).header('Content-Type', 'application/json').send(deepRunErrorResponse);
+      return; // Explicit return to prevent further execution
     }
   });
 
@@ -349,39 +371,44 @@ export async function researchRoutes(fastify: FastifyInstance) {
 
       if (!bestCandidate) {
         // Return 200 with error flag instead of 404
-        return reply.code(200).send({
-          ok: false,
+        const manualErrorResponse = {
+          success: false,
           error: 'No profitable trade opportunities found in top 100 coins',
-          totalAnalyzed: popularSymbols.length,
-          candidatesFound: 0,
-          timestamp: new Date().toISOString(),
-        });
+          results: [],
+        };
+        reply.code(200).header('Content-Type', 'application/json').send(manualErrorResponse);
+        return; // Explicit return to prevent further execution
       }
 
-      return {
-        ok: true,
-        bestCoin: bestCandidate.symbol,
-        accuracy: bestCandidate.accuracy,
-        entryPrice: bestCandidate.entry ?? null,
-        exitPrice: bestCandidate.exit ?? null,
-        takeProfit: bestCandidate.tp ?? null,
-        stopLoss: bestCandidate.sl ?? null,
-        trendDirection: bestCandidate.trendDirection ?? 'SIDEWAYS',
-        reason: bestCandidate.reason ?? 'No reason provided',
-        totalAnalyzed: popularSymbols.length,
-        candidatesFound: candidates.length,
-        timestamp: new Date().toISOString(),
+      const manualResponse = {
+        success: true,
+        results: [{
+          symbol: bestCandidate.symbol,
+          accuracy: bestCandidate.accuracy,
+          entryPrice: bestCandidate.entry ?? null,
+          exitPrice: bestCandidate.exit ?? null,
+          takeProfit: bestCandidate.tp ?? null,
+          stopLoss: bestCandidate.sl ?? null,
+          trendDirection: bestCandidate.trendDirection ?? 'SIDEWAYS',
+          reason: bestCandidate.reason ?? 'No reason provided',
+        }],
       };
+      console.log('🔍 [RESEARCH/MANUAL] Sending response:', {
+        success: manualResponse.success,
+        resultsCount: manualResponse.results.length,
+      });
+      reply.code(200).header('Content-Type', 'application/json').send(manualResponse);
+      return; // Explicit return to prevent further execution
     } catch (error: any) {
       logger.error({ error: error.message, uid: user.uid }, 'Error in manual deep research');
       // NEVER return 500 - always return 200 with error flag
-      return reply.code(200).send({
-        ok: false,
+      const manualErrorResponse = {
+        success: false,
         error: error.message || 'Manual deep research failed',
-        totalAnalyzed: 0,
-        candidatesFound: 0,
-        timestamp: new Date().toISOString(),
-      });
+        results: [],
+      };
+      reply.code(200).header('Content-Type', 'application/json').send(manualErrorResponse);
+      return; // Explicit return to prevent further execution
     }
   });
 }

@@ -46,12 +46,17 @@ export async function buildApp(): Promise<FastifyInstance> {
   // CORS - allow all origins in development, specific origin in production
   await app.register(fastifyCors, {
     origin: (origin, cb) => {
+      // Allow all origins for WebSocket compatibility
       const allowed = [
         'https://dlx-trading.web.app',
         'http://localhost:5173',
+        'http://localhost:3000',
+        'http://127.0.0.1:5173',
+        'http://127.0.0.1:3000',
         process.env.FRONTEND_URL || '',
       ].filter(Boolean);
-      if (!origin || allowed.includes(origin)) {
+      // Allow all origins in development, or if origin is in allowed list
+      if (!origin || allowed.includes(origin) || config.env === 'development') {
         cb(null, true);
       } else {
         cb(null, false);
@@ -241,6 +246,10 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   // WebSocket endpoint for real-time updates (user channel)
   app.get('/ws', { websocket: true }, async (connection, req) => {
+    console.log('WS client connected');
+    console.log('🔌 WebSocket connection attempt to /ws');
+    logger.info('WebSocket connection attempt to /ws');
+    
     // Allow unauthenticated connections for Render plain WS; if token provided, attach user
     let uid: string | null = null;
     const token = (req.query as any).token || req.headers.authorization?.replace('Bearer ', '');
@@ -250,11 +259,23 @@ export async function buildApp(): Promise<FastifyInstance> {
         const decoded = await verifyFirebaseToken(token);
         uid = decoded.uid;
         (req as any).user = { uid: decoded.uid, email: decoded.email };
+        console.log('✅ WebSocket authenticated for user:', uid);
+        logger.info({ uid }, 'WebSocket authenticated');
       } catch (err) {
+        console.warn('⚠️ WebSocket auth failed; continuing unauthenticated:', err);
         logger.warn({ err }, 'WebSocket auth failed; continuing unauthenticated');
       }
     } else {
+      console.log('ℹ️ WebSocket connection without token (unauthenticated)');
       logger.info('WebSocket connection without token (unauthenticated)');
+    }
+    
+    // Send welcome message
+    try {
+      connection.socket.send(JSON.stringify({ type: 'connected', message: 'WebSocket connected successfully' }));
+      console.log('✅ WebSocket welcome message sent');
+    } catch (err) {
+      console.error('❌ Error sending WebSocket welcome message:', err);
     }
 
     // Register WebSocket to user's engines if they exist
