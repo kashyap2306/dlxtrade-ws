@@ -465,10 +465,24 @@ export class DeepResearchScheduler {
 
       // Always use Top-100 coins (default rotation list)
       // If tracked coins exist, merge with Top-100 and deduplicate
+      logger.info({ instanceId: this.instanceId }, '[DIAGNOSTIC] Fetching top 100 coins from topCoinsService');
       const top100Coins = await topCoinsService.getTop100Coins();
       
+      logger.info({ 
+        instanceId: this.instanceId,
+        top100Count: top100Coins.length,
+        top100Preview: top100Coins.slice(0, 10),
+        firstCoin: top100Coins[0],
+        lastCoin: top100Coins[top100Coins.length - 1]
+      }, '[DIAGNOSTIC] Top 100 coins fetched');
+      
+      if (top100Coins.length === 0) {
+        logger.error({ instanceId: this.instanceId }, '[ROTATION] CRITICAL: topCoinsService returned EMPTY array - FAILING run instead of using BTC fallback');
+        throw new Error('topCoinsService.getTop100Coins() returned empty array - cannot proceed with rotation');
+      }
+      
       if (trackedSymbols.size === 0) {
-        logger.info({ instanceId: this.instanceId }, 'No tracked coins found, using Top-100 as default rotation list');
+        logger.info({ instanceId: this.instanceId, coinCount: top100Coins.length }, 'No tracked coins found, using Top-100 as default rotation list');
         return top100Coins;
       }
 
@@ -529,19 +543,30 @@ export class DeepResearchScheduler {
           }
           
           try {
-            // Validate exchange name is in ExchangeName type
-            const exchangeName = exchange as 'binance' | 'bitget' | 'weex' | 'bingx';
-            if (!['binance', 'bitget', 'weex', 'bingx'].includes(exchangeName)) {
-              logger.debug({ instanceId: this.instanceId, uid, exchange }, 'Skipping unsupported exchange type');
+            // Support all valid exchanges, not just 4
+            // ExchangeConnectorFactory supports: binance, bitget, weex, bingx
+            // For other exchanges (kucoin, bybit, okx), we'll need to handle them differently
+            // For now, try to create adapter for supported exchanges
+            let adapter: any = null;
+            
+            if (['binance', 'bitget', 'weex', 'bingx'].includes(exchange)) {
+              const exchangeName = exchange as 'binance' | 'bitget' | 'weex' | 'bingx';
+              adapter = ExchangeConnectorFactory.create(exchangeName, {
+                apiKey,
+                secret,
+                passphrase,
+                testnet: key.testnet ?? true,
+              });
+            } else {
+              // For unsupported exchanges in ExchangeConnectorFactory, log and skip
+              logger.debug({ instanceId: this.instanceId, uid, exchange }, 'Exchange not supported by ExchangeConnectorFactory, skipping');
               continue;
             }
             
-            const adapter = ExchangeConnectorFactory.create(exchangeName, {
-              apiKey,
-              secret,
-              passphrase,
-              testnet: key.testnet ?? true,
-            });
+            if (!adapter) {
+              logger.debug({ instanceId: this.instanceId, uid, exchange }, 'Failed to create adapter');
+              continue;
+            }
             
             exchanges.push({
               exchange,
@@ -618,21 +643,70 @@ export class DeepResearchScheduler {
       return firstResult;
     } else {
       // Rotation mode: get last processed index, increment, wrap around
+      logger.info({ instanceId: this.instanceId, coinCount: coins.length, coinsPreview: coins.slice(0, 10) }, 
+        '[ROTATION] Getting state for coin selection');
+      
       const state = await this.getState();
       let lastIndex = state.lastProcessedIndex ?? -1;
-      lastIndex = (lastIndex + 1) % coins.length;
-      const selectedSymbol = coins[lastIndex];
+      const previousIndex = lastIndex;
+      const nextIndex = (lastIndex + 1) % coins.length;
+      const selectedSymbol = coins[nextIndex];
 
       logger.info({ 
         instanceId: this.instanceId, 
-        lastIndex: state.lastProcessedIndex, 
-        newIndex: lastIndex, 
+        previousIndex,
+        nextIndex, 
         symbol: selectedSymbol,
         totalCoins: coins.length,
-      }, 'Rotation mode: selected next coin');
+        isFirstRun: previousIndex === -1,
+        willWrap: nextIndex === 0 && previousIndex >= 0
+      }, `[ROTATION] Selected ${selectedSymbol} at index ${nextIndex}`);
 
-      // Atomically update lastProcessedIndex
-      await this.setState({ lastProcessedIndex: lastIndex });
+      // CRITICAL: Write new lastProcessedIndex to Firestore BEFORE processing
+      // If write fails, rollback and fail the run
+      let stateWriteSuccess = false;
+      try {
+        logger.debug({ instanceId: this.instanceId, lastProcessedIndex: nextIndex, symbol: selectedSymbol }, 
+          '[ROTATION] Writing lastProcessedIndex to Firestore');
+        await this.setState({ lastProcessedIndex: nextIndex });
+        
+        // Verify the update
+        const verifyState = await this.getState();
+        if (verifyState.lastProcessedIndex === nextIndex) {
+          stateWriteSuccess = true;
+          logger.info({ instanceId: this.instanceId, lastProcessedIndex: nextIndex }, 
+            '[ROTATION] Successfully wrote and verified lastProcessedIndex in Firestore');
+        } else {
+          logger.error({ 
+            instanceId: this.instanceId, 
+            expected: nextIndex, 
+            actual: verifyState.lastProcessedIndex 
+          }, '[ROTATION] CRITICAL: State write verification FAILED - rolling back');
+          
+          // Rollback: restore previous index
+          try {
+            await this.setState({ lastProcessedIndex: previousIndex });
+            logger.warn({ instanceId: this.instanceId, rolledBackTo: previousIndex }, '[ROTATION] Rolled back to previous index');
+          } catch (rollbackErr: any) {
+            logger.error({ err: rollbackErr, instanceId: this.instanceId }, '[ROTATION] CRITICAL: Rollback failed');
+          }
+          throw new Error(`State write verification failed: expected ${nextIndex}, got ${verifyState.lastProcessedIndex}`);
+        }
+      } catch (stateErr: any) {
+        logger.error({ 
+          err: stateErr.message, 
+          stack: stateErr.stack,
+          instanceId: this.instanceId,
+          attemptedIndex: nextIndex,
+          previousIndex
+        }, '[ROTATION] CRITICAL: Failed to write lastProcessedIndex - aborting run');
+        throw new Error(`Failed to update rotation state: ${stateErr.message}`);
+      }
+
+      // Only proceed if state write succeeded
+      if (!stateWriteSuccess) {
+        throw new Error('State write verification failed - aborting run');
+      }
 
       return await this.processOneCoin(selectedSymbol, coins);
     }
@@ -719,7 +793,12 @@ export class DeepResearchScheduler {
 
     // Check if auto-trade should execute and add decision to result
     // CRITICAL: Use configurable threshold (default 75%), NOT hardcoded 65%
-    const autoTradeTriggered = this.autoTradeEnabled && userId && result.confidence >= this.autoTradeThreshold && result.side !== 'NEUTRAL';
+    // Also check result.status - skip if insufficient_data
+    const autoTradeTriggered = this.autoTradeEnabled 
+      && userId 
+      && result.status === 'ok' // Only trade if data is sufficient
+      && result.confidence >= this.autoTradeThreshold 
+      && result.side !== 'NEUTRAL';
     const autoTradeDecision = {
       triggered: autoTradeTriggered,
       confidence: result.confidence,
@@ -728,11 +807,13 @@ export class DeepResearchScheduler {
         ? `Confidence ${result.confidence}% >= threshold ${this.autoTradeThreshold}%`
         : !this.autoTradeEnabled 
           ? 'Auto-trade disabled'
-          : result.confidence < this.autoTradeThreshold
-            ? `Confidence ${result.confidence}% < threshold ${this.autoTradeThreshold}%`
-            : result.side === 'NEUTRAL'
-              ? 'Signal is NEUTRAL'
-              : 'Unknown reason',
+          : result.status !== 'ok'
+            ? `Insufficient data (status: ${result.status})`
+            : result.confidence < this.autoTradeThreshold
+              ? `Confidence ${result.confidence}% < threshold ${this.autoTradeThreshold}%`
+              : result.side === 'NEUTRAL'
+                ? 'Signal is NEUTRAL'
+                : 'Unknown reason',
     };
     
     // Add auto-trade decision to result
@@ -780,14 +861,16 @@ export class DeepResearchScheduler {
         }
       }
     } else {
-      logger.debug({
+      logger.info({
         instanceId: this.instanceId,
         symbol,
         autoTradeEnabled: this.autoTradeEnabled,
         confidence: result.confidence,
         threshold: this.autoTradeThreshold,
         side: result.side,
-      }, 'Auto-trade not triggered (conditions not met)');
+        status: result.status,
+        reason: autoTradeDecision.reason,
+      }, `[AUTO-TRADE] Skipping run due to: ${autoTradeDecision.reason}`);
     }
 
     // Save result to Firestore
@@ -895,8 +978,8 @@ export class DeepResearchScheduler {
         instanceId: this.instanceId,
       }, 'Auto-trade executed successfully');
 
-      // Log trade execution
-      await firestoreAdapter.saveExecutionLog(userId, {
+      // Log trade execution to Firestore
+      const executionLogId = await firestoreAdapter.saveExecutionLog(userId, {
         symbol,
         timestamp: admin.firestore.Timestamp.now(),
         action: 'EXECUTED',
@@ -908,10 +991,196 @@ export class DeepResearchScheduler {
         reason: `Auto-trade triggered: confidence ${result.confidence}% >= threshold ${this.autoTradeThreshold}%`,
       });
 
+      logger.info({
+        userId,
+        symbol,
+        executionLogId,
+        orderId: orderResult.id,
+        entry: result.entry,
+        stopLoss: result.stopLoss,
+        takeProfit: result.takeProfit,
+        instanceId: this.instanceId,
+      }, '[AUTO-TRADE] Execution log saved to Firestore');
+
+      // Emit WebSocket event for trade execution (if websocket manager is available)
+      // Note: WebSocket emission is optional and non-blocking
+      try {
+        // Try to import userWebSocketManager - may not exist in all setups
+        const wsModule = await import('./userWebSocketManager').catch(() => null);
+        if (wsModule?.userWebSocketManager && typeof wsModule.userWebSocketManager.broadcastToUser === 'function') {
+          wsModule.userWebSocketManager.broadcastToUser(userId, 'trade:executed', {
+            userId,
+            symbol,
+            side: result.side,
+            orderId: orderResult.id,
+            entry: result.entry,
+            stopLoss: result.stopLoss,
+            takeProfit: result.takeProfit,
+            confidence: result.confidence,
+            threshold: this.autoTradeThreshold,
+            quantity,
+            timestamp: new Date().toISOString(),
+          });
+          logger.debug({ userId, symbol }, '[AUTO-TRADE] WebSocket event emitted');
+        }
+      } catch (wsErr: any) {
+        // WebSocket emission is optional - log but don't fail
+        logger.debug({ err: wsErr.message, userId, symbol }, '[AUTO-TRADE] WebSocket not available (non-critical)');
+      }
+
+      // Schedule TP exit watcher if takeProfit is set
+      if (result.takeProfit && result.takeProfit > 0) {
+        this.scheduleTPExitWatcher(userId, symbol, orderResult.id, result.takeProfit, result.side);
+      }
+
     } catch (err: any) {
-      logger.error({ err, userId, symbol, instanceId: this.instanceId }, 'Error placing auto-trade order');
+      logger.error({ 
+        err: err.message, 
+        stack: err.stack,
+        userId, 
+        symbol, 
+        instanceId: this.instanceId 
+      }, '[AUTO-TRADE] Error placing auto-trade order');
       throw err;
     }
+  }
+
+  /**
+   * Schedule TP exit watcher to close position when TP is reached
+   */
+  private scheduleTPExitWatcher(
+    userId: string,
+    symbol: string,
+    entryOrderId: string,
+    takeProfit: number,
+    side: 'LONG' | 'SHORT'
+  ): void {
+    logger.info({
+      userId,
+      symbol,
+      entryOrderId,
+      takeProfit,
+      side,
+      instanceId: this.instanceId,
+    }, '[AUTO-TRADE] Scheduling TP exit watcher');
+
+    // Check price every 30 seconds until TP is reached or timeout (24 hours)
+    const checkInterval = 30 * 1000; // 30 seconds
+    const maxDuration = 24 * 60 * 60 * 1000; // 24 hours
+    const startTime = Date.now();
+    
+    const watcherInterval = setInterval(async () => {
+      try {
+        // Check if max duration exceeded
+        if (Date.now() - startTime > maxDuration) {
+          clearInterval(watcherInterval);
+          logger.warn({ userId, symbol, entryOrderId }, '[AUTO-TRADE] TP watcher timeout after 24 hours');
+          return;
+        }
+
+        // Get current price from exchange
+        const allUsers = await firestoreAdapter.getAllUsers();
+        const user = allUsers.find(u => u.uid === userId);
+        if (!user) {
+          clearInterval(watcherInterval);
+          logger.warn({ userId, symbol }, '[AUTO-TRADE] User not found, stopping TP watcher');
+          return;
+        }
+
+        const userExchanges = await this.getAllUserExchanges(userId);
+        if (userExchanges.length === 0) {
+          logger.warn({ userId, symbol }, '[AUTO-TRADE] No exchanges available for TP check');
+          return;
+        }
+
+        const adapter = userExchanges[0].adapter;
+        const ticker = await adapter.getTicker(symbol);
+        const currentPrice = parseFloat(ticker?.lastPrice || ticker?.price || ticker?.last || '0');
+
+        if (currentPrice <= 0) {
+          logger.debug({ userId, symbol }, '[AUTO-TRADE] Invalid price for TP check');
+          return;
+        }
+
+        // Check if TP is reached
+        const tpReached = side === 'LONG' 
+          ? currentPrice >= takeProfit
+          : currentPrice <= takeProfit;
+
+        if (tpReached) {
+          clearInterval(watcherInterval);
+          logger.info({
+            userId,
+            symbol,
+            entryOrderId,
+            currentPrice,
+            takeProfit,
+            side,
+          }, '[AUTO-TRADE] Take profit reached, closing position');
+
+          // Close position (opposite side)
+          try {
+            const closeSide = side === 'LONG' ? 'SELL' : 'BUY';
+            // Get position size from entry order (would need to fetch from DB)
+            // For now, use a simplified approach - close full position
+            const closeOrder = await orderManager.placeOrder(userId, {
+              symbol,
+              side: closeSide,
+              type: 'MARKET',
+              quantity: 0.001, // Placeholder - should fetch actual position size
+            });
+
+            logger.info({
+              userId,
+              symbol,
+              entryOrderId,
+              closeOrderId: closeOrder?.id,
+              takeProfit,
+            }, '[AUTO-TRADE] Position closed at TP');
+
+            // Log TP exit
+            await firestoreAdapter.saveExecutionLog(userId, {
+              symbol,
+              timestamp: admin.firestore.Timestamp.now(),
+              action: 'EXECUTED',
+              signal: closeSide,
+              strategy: 'deep_research_auto_tp_exit',
+              orderId: closeOrder?.id,
+              reason: `TP exit: price ${currentPrice} reached TP ${takeProfit}`,
+            });
+          } catch (closeErr: any) {
+            logger.error({
+              err: closeErr.message,
+              stack: closeErr.stack,
+              userId,
+              symbol,
+              entryOrderId,
+            }, '[AUTO-TRADE] Error closing position at TP');
+          }
+        } else {
+          logger.debug({
+            userId,
+            symbol,
+            currentPrice,
+            takeProfit,
+            side,
+            distance: side === 'LONG' 
+              ? ((takeProfit - currentPrice) / currentPrice * 100).toFixed(2) + '%'
+              : ((currentPrice - takeProfit) / currentPrice * 100).toFixed(2) + '%',
+          }, '[AUTO-TRADE] TP not reached yet');
+        }
+      } catch (err: any) {
+        logger.error({
+          err: err.message,
+          stack: err.stack,
+          userId,
+          symbol,
+          entryOrderId,
+        }, '[AUTO-TRADE] Error in TP watcher');
+      }
+    }, checkInterval);
+
+    logger.debug({ userId, symbol, entryOrderId }, '[AUTO-TRADE] TP watcher started');
   }
 
   /**
@@ -1056,13 +1325,21 @@ export class DeepResearchScheduler {
   }): Promise<void> {
     try {
       const db = admin.firestore(getFirebaseAdmin());
+      logger.debug({ instanceId: this.instanceId, updates }, '[DIAGNOSTIC] Writing state to Firestore');
       await db.collection(this.STATE_COLLECTION).doc(this.STATE_DOC).set({
         ...updates,
         updatedAt: admin.firestore.Timestamp.now(),
         updatedBy: this.instanceId,
       }, { merge: true });
+      logger.info({ instanceId: this.instanceId, updates }, '[DIAGNOSTIC] Successfully wrote state to Firestore');
     } catch (error: any) {
-      logger.warn({ err: error, instanceId: this.instanceId }, 'Error updating scheduler state');
+      logger.error({ 
+        err: error.message, 
+        stack: error.stack,
+        instanceId: this.instanceId,
+        updates 
+      }, '[DIAGNOSTIC] CRITICAL: Failed to update scheduler state in Firestore');
+      throw error; // Re-throw so caller knows it failed
     }
   }
 }

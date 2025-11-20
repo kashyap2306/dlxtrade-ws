@@ -28,6 +28,7 @@ export interface LiveAnalysis {
 
 export interface ResearchResult {
   symbol: string;
+  status: 'ok' | 'insufficient_data' | 'error'; // Status field for data quality
   signal: 'BUY' | 'SELL' | 'HOLD';
   accuracy: number;
   orderbookImbalance: number;
@@ -86,6 +87,18 @@ export interface ResearchResult {
     threshold: number;
     reason?: string;
   };
+  features?: {
+    rsi: number;
+    macd: { signal: number; histogram: number; trend: string };
+    volume: string;
+    orderbookImbalance: string;
+    fundingRate: string;
+    openInterest: string;
+    liquidations: string;
+    trendStrength: string;
+    volatility: string;
+    newsSentiment: string;
+  };
 }
 
 export class ResearchEngine {
@@ -133,17 +146,25 @@ export class ResearchEngine {
         apiUsageTracker.increment(exchangeName);
         apiCalls.push(`${exchangeName}: GET /orderbook`);
         
+        logger.debug({ symbol, exchange, exchangeName }, `Fetching orderbook from ${exchange}`);
         const orderbook = await adapter.getOrderbook(symbol, 20);
+        
+        if (!orderbook || !orderbook.bids || !orderbook.asks || orderbook.bids.length === 0 || orderbook.asks.length === 0) {
+          logger.warn({ symbol, exchange, hasOrderbook: !!orderbook, bidsCount: orderbook?.bids?.length || 0, asksCount: orderbook?.asks?.length || 0 }, 
+            `Empty or invalid orderbook from ${exchange}`);
+          return;
+        }
+        
         exchangeOrderbooks.set(exchange, orderbook);
         
         // Collect bids and asks for aggregation
         allBids.push(...orderbook.bids);
         allAsks.push(...orderbook.asks);
         
-        logger.debug({ symbol, exchange, bidsCount: orderbook.bids.length, asksCount: orderbook.asks.length }, 
-          `Orderbook fetched from ${exchange}`);
+        logger.info({ symbol, exchange, bidsCount: orderbook.bids.length, asksCount: orderbook.asks.length }, 
+          `Orderbook successfully fetched from ${exchange}`);
       } catch (err: any) {
-        logger.warn({ err, symbol, exchange }, `Failed to fetch orderbook from ${exchange}`);
+        logger.error({ err: err.message, stack: err.stack, symbol, exchange }, `Failed to fetch orderbook from ${exchange}`);
       }
     });
 
@@ -213,17 +234,25 @@ export class ResearchEngine {
         apiUsageTracker.increment(exchangeName);
         apiCalls.push(`${exchangeName}: GET /ticker`);
         
+        logger.debug({ symbol, exchange, exchangeName }, `Fetching ticker from ${exchange}`);
         const ticker = await adapter.getTicker(symbol);
+        
+        if (!ticker) {
+          logger.warn({ symbol, exchange }, `Empty ticker response from ${exchange}`);
+          return;
+        }
+        
         exchangeTickers.set(exchange, ticker);
         
         const price = parseFloat(ticker?.lastPrice || ticker?.price || ticker?.last || '0');
         if (price > 0) {
           prices.push(price);
+          logger.info({ symbol, exchange, price }, `Ticker successfully fetched from ${exchange}: $${price}`);
+        } else {
+          logger.warn({ symbol, exchange, ticker }, `Invalid price from ${exchange} ticker`);
         }
-        
-        logger.debug({ symbol, exchange, price }, `Ticker fetched from ${exchange}`);
       } catch (err: any) {
-        logger.warn({ err, symbol, exchange }, `Failed to fetch ticker from ${exchange}`);
+        logger.error({ err: err.message, stack: err.stack, symbol, exchange }, `Failed to fetch ticker from ${exchange}`);
       }
     });
 
@@ -293,11 +322,20 @@ export class ResearchEngine {
             // Get micro-signals from aggregated orderbook
             microSignals = this.calculateMicroSignals(symbol, aggregatedOrderbook);
 
-            // Persist snapshot for momentum/history-based features
+            // Persist snapshot for momentum/history-based features (CRITICAL for RSI/trend calculations)
             this.addOrderbook(symbol, aggregatedOrderbook);
             
-            logger.info({ symbol, exchangeCount: exchangesToUse.length, imbalance, volume: microSignals.volume }, 
-              `Aggregated orderbook from ${exchangesToUse.length} exchanges`);
+            logger.info({ 
+              symbol, 
+              exchangeCount: exchangesToUse.length, 
+              imbalance, 
+              volume: microSignals.volume,
+              spread: microSignals.spread,
+              depth: microSignals.orderbookDepth,
+              historySize: this.orderbookHistory.get(symbol)?.length || 0
+            }, `Aggregated orderbook from ${exchangesToUse.length} exchanges`);
+          } else {
+            logger.warn({ symbol, exchangeCount: exchangesToUse.length }, 'No aggregated orderbook data available - RSI/trend calculations will fail');
           }
         } catch (orderbookErr: any) {
           logger.warn({ err: orderbookErr, symbol }, 'Could not aggregate orderbooks, using defaults');
@@ -441,23 +479,50 @@ export class ResearchEngine {
             );
             
             // Get ML prediction
-            const isModelReady = await mlModelService.isModelReady();
-            if (isModelReady) {
-              mlPrediction = await mlModelService.predict(featureVector, symbol);
-              mlExplanations = mlPrediction.explanations || [];
-              
-              // Use ML probability as accuracy if higher
-              if (mlPrediction.probability > accuracy) {
-                accuracy = mlPrediction.probability;
-                logger.info({ symbol, signal: mlPrediction.signal, probability: mlPrediction.probability }, 'ML model prediction obtained');
+            try {
+              const isModelReady = await mlModelService.isModelReady();
+              if (isModelReady) {
+                logger.debug({ symbol }, 'ML model is ready, getting prediction');
+                mlPrediction = await mlModelService.predict(featureVector, symbol);
+                mlExplanations = mlPrediction.explanations || [];
+                
+                logger.info({ 
+                  symbol, 
+                  mlSignal: mlPrediction.signal, 
+                  mlProbability: mlPrediction.probability,
+                  currentAccuracy: accuracy,
+                  willUpdate: mlPrediction.probability > accuracy
+                }, 'ML model prediction obtained');
+                
+                // Use ML probability as accuracy if higher
+                if (mlPrediction.probability > accuracy) {
+                  const oldAccuracy = accuracy;
+                  accuracy = mlPrediction.probability;
+                  logger.info({ 
+                    symbol, 
+                    oldAccuracy: Math.round(oldAccuracy * 100), 
+                    newAccuracy: Math.round(accuracy * 100),
+                    mlProbability: Math.round(mlPrediction.probability * 100)
+                  }, 'ML model improved accuracy');
+                } else {
+                  logger.debug({ 
+                    symbol, 
+                    mlProbability: Math.round(mlPrediction.probability * 100),
+                    currentAccuracy: Math.round(accuracy * 100)
+                  }, 'ML model probability not higher than current accuracy');
+                }
+                
+                // Use ML signal if probability >= threshold
+                const mlThreshold = parseFloat(process.env.ML_PROBABILITY_THRESHOLD || '0.75');
+                if (mlPrediction.probability >= mlThreshold) {
+                  signal = mlPrediction.signal;
+                  logger.info({ symbol, signal, probability: mlPrediction.probability, threshold: mlThreshold }, 'Using ML model signal');
+                }
+              } else {
+                logger.debug({ symbol }, 'ML model is not ready, skipping ML prediction');
               }
-              
-              // Use ML signal if probability >= threshold
-              const mlThreshold = parseFloat(process.env.ML_PROBABILITY_THRESHOLD || '0.75');
-              if (mlPrediction.probability >= mlThreshold) {
-                signal = mlPrediction.signal;
-                logger.info({ symbol, signal, probability: mlPrediction.probability }, 'Using ML model signal');
-              }
+            } catch (mlCheckErr: any) {
+              logger.warn({ err: mlCheckErr, symbol }, 'ML model check/prediction failed, using rule-based logic');
             }
           } catch (mlErr: any) {
             logger.warn({ err: mlErr, symbol }, 'ML prediction failed, using rule-based logic');
@@ -703,10 +768,19 @@ export class ResearchEngine {
       const finalApiCalls = Array.isArray(apiCalls) ? apiCalls : [];
       
       // Calculate RSI for full details (if we have price history)
+      // IMPORTANT: RSI requires at least 14 price points, so we need orderbook history
+      // CRITICAL: If orderbookHistory is empty, RSI will be null (this is expected on first run)
       let rsi14: number | null = null;
       let rsi5: number | null = null;
       if (currentPrice > 0) {
         const history = this.orderbookHistory.get(symbol);
+        logger.debug({ 
+          symbol, 
+          historyLength: history?.length || 0, 
+          currentPrice,
+          hasHistory: !!history 
+        }, '[DIAGNOSTIC] RSI calculation check');
+        
         if (history && history.length >= 14) {
           try {
             const prices = history.slice(-14).map(ob => {
@@ -715,23 +789,50 @@ export class ResearchEngine {
               return (bid + ask) / 2;
             }).filter(p => p > 0);
             
+            logger.debug({ symbol, pricesLength: prices.length, required: 14 }, '[DIAGNOSTIC] RSI price extraction');
+            
             if (prices.length >= 14) {
               const { featureEngine } = await import('./featureEngine');
               rsi14 = featureEngine.calculateRSI(prices, 14);
+              logger.info({ symbol, rsi14, historyLength: history.length }, '[DIAGNOSTIC] RSI(14) calculated successfully');
+              
               if (prices.length >= 5) {
-                rsi5 = featureEngine.calculateRSI(prices, 5);
+                rsi5 = featureEngine.calculateRSI(prices.slice(-5), 5);
+                logger.info({ symbol, rsi5 }, '[DIAGNOSTIC] RSI(5) calculated successfully');
               }
+            } else {
+              logger.warn({ symbol, pricesLength: prices.length, historyLength: history.length, required: 14 }, 
+                '[DIAGNOSTIC] Not enough valid prices for RSI calculation');
             }
           } catch (rsiErr: any) {
-            logger.debug({ err: rsiErr, symbol }, 'RSI calculation failed');
+            logger.error({ err: rsiErr.message, stack: rsiErr.stack, symbol }, '[DIAGNOSTIC] RSI calculation FAILED');
           }
+        } else {
+          logger.warn({ 
+            symbol, 
+            historyLength: history?.length || 0, 
+            required: 14,
+            currentPrice 
+          }, '[DIAGNOSTIC] Not enough orderbook history for RSI (need at least 14 snapshots) - RSI will be null');
         }
+      } else {
+        logger.warn({ symbol, currentPrice }, '[DIAGNOSTIC] Cannot calculate RSI - currentPrice is 0');
       }
       
       // Get trend analysis (EMA/MA)
+      // IMPORTANT: EMA requires at least 26 price points
+      // CRITICAL: If orderbookHistory is empty, trendAnalysis will be null (this is expected on first run)
       let trendAnalysis: { ema12: number | null; ema26: number | null; trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL' } | null = null;
       if (currentPrice > 0) {
         const history = this.orderbookHistory.get(symbol);
+        logger.debug({ 
+          symbol, 
+          historyLength: history?.length || 0, 
+          currentPrice,
+          hasHistory: !!history,
+          required: 26
+        }, '[DIAGNOSTIC] Trend analysis check');
+        
         if (history && history.length >= 26) {
           try {
             const prices = history.slice(-26).map(ob => {
@@ -740,24 +841,45 @@ export class ResearchEngine {
               return (bid + ask) / 2;
             }).filter(p => p > 0);
             
+            logger.debug({ symbol, pricesLength: prices.length, required: 26 }, '[DIAGNOSTIC] Trend price extraction');
+            
             if (prices.length >= 26) {
               const { featureEngine } = await import('./featureEngine');
               const ema12 = featureEngine.calculateEMA(prices, 12);
               const ema26 = featureEngine.calculateEMA(prices, 26);
               
-              let trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
-              if (ema12 > ema26) {
-                trend = 'BULLISH';
-              } else if (ema12 < ema26) {
-                trend = 'BEARISH';
-              }
+              logger.debug({ symbol, ema12, ema26 }, '[DIAGNOSTIC] EMA values calculated');
               
-              trendAnalysis = { ema12, ema26, trend };
+              let trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
+              if (ema12 !== null && ema26 !== null) {
+                if (ema12 > ema26) {
+                  trend = 'BULLISH';
+                } else if (ema12 < ema26) {
+                  trend = 'BEARISH';
+                }
+                
+                trendAnalysis = { ema12, ema26, trend };
+                logger.info({ symbol, ema12, ema26, trend, historyLength: history.length }, '[DIAGNOSTIC] Trend analysis calculated successfully');
+              } else {
+                logger.warn({ symbol, ema12, ema26 }, '[DIAGNOSTIC] EMA calculation returned null values');
+              }
+            } else {
+              logger.warn({ symbol, pricesLength: prices.length, historyLength: history.length, required: 26 }, 
+                '[DIAGNOSTIC] Not enough valid prices for trend analysis');
             }
           } catch (trendErr: any) {
-            logger.debug({ err: trendErr, symbol }, 'Trend analysis failed');
+            logger.error({ err: trendErr.message, stack: trendErr.stack, symbol }, '[DIAGNOSTIC] Trend analysis FAILED');
           }
+        } else {
+          logger.warn({ 
+            symbol, 
+            historyLength: history?.length || 0, 
+            required: 26,
+            currentPrice 
+          }, '[DIAGNOSTIC] Not enough orderbook history for trend analysis (need at least 26 snapshots) - trendAnalysis will be null');
         }
+      } else {
+        logger.warn({ symbol, currentPrice }, '[DIAGNOSTIC] Cannot calculate trend - currentPrice is 0');
       }
       
       // Confidence breakdown
@@ -779,8 +901,34 @@ export class ResearchEngine {
         mlModel: mlPrediction && mlPrediction.probability > accuracy ? mlPrediction.probability - accuracy : 0,
       };
       
+      // Determine status based on data quality
+      // If key metrics are missing (spread=0, volume=0, depth=0), mark as insufficient_data
+      const hasValidData = microSignals.spread > 0 || microSignals.volume > 0 || microSignals.orderbookDepth > 0;
+      const status: 'ok' | 'insufficient_data' | 'error' = hasValidData ? 'ok' : 'insufficient_data';
+      
+      if (status === 'insufficient_data') {
+        logger.warn({ 
+          symbol,
+          spread: microSignals.spread,
+          volume: microSignals.volume,
+          depth: microSignals.orderbookDepth
+        }, '[RESEARCH] Marking result as insufficient_data - key metrics are zero');
+      }
+      
+      // Calculate Feature Breakdown
+      const features = await this.calculateFeatures(
+        symbol,
+        rsi14,
+        trendAnalysis,
+        microSignals,
+        imbalance,
+        currentPrice,
+        uid
+      );
+      
       const result: ResearchResult = {
         symbol,
+        status,
         signal,
         accuracy,
         orderbookImbalance: imbalance,
@@ -817,9 +965,30 @@ export class ResearchEngine {
         rsi5: rsi5 ?? null,
         trendAnalysis: trendAnalysis ?? null,
         confidenceBreakdown: confidenceBreakdown ?? undefined,
-        exchangeTickers: exchangeTickers.size > 0 ? Object.fromEntries(exchangeTickers) : undefined,
-        exchangeOrderbooks: exchangeOrderbooks.size > 0 ? Array.from(exchangeOrderbooks.entries()).map(([ex, ob]) => ({ exchange: ex, bidsCount: ob.bids.length, asksCount: ob.asks.length })) : undefined,
+        exchangeTickers: exchangeTickers.size > 0 ? Object.fromEntries(exchangeTickers) : (exchangesToUse.length > 0 ? {} : undefined), // Empty object if exchanges attempted but failed
+        exchangeOrderbooks: exchangeOrderbooks.size > 0 
+          ? Array.from(exchangeOrderbooks.entries()).map(([ex, ob]) => ({ exchange: ex, bidsCount: ob.bids.length, asksCount: ob.asks.length }))
+          : (exchangesToUse.length > 0 ? [] : undefined), // Empty array if exchanges attempted but failed
+        features: features,
       };
+      
+      // DIAGNOSTIC: Log final result structure
+      logger.info({
+        symbol,
+        hasRSI14: result.rsi14 !== null && result.rsi14 !== undefined,
+        hasRSI5: result.rsi5 !== null && result.rsi5 !== undefined,
+        hasTrendAnalysis: !!result.trendAnalysis,
+        exchangeTickersCount: result.exchangeTickers ? Object.keys(result.exchangeTickers).length : 0,
+        exchangeOrderbooksCount: result.exchangeOrderbooks ? result.exchangeOrderbooks.length : 0,
+        hasConfidenceBreakdown: !!result.confidenceBreakdown,
+        confidence: result.confidence,
+        accuracy: result.accuracy,
+        microSignals: {
+          spread: result.microSignals.spread,
+          volume: result.microSignals.volume,
+          depth: result.microSignals.orderbookDepth
+        }
+      }, '[DIAGNOSTIC] Final ResearchResult structure');
       
       logger.info({ 
         symbol, 
@@ -891,6 +1060,7 @@ export class ResearchEngine {
       // This is NOT a fallback - it's a complete result indicating an error state
       const errorResult: ResearchResult = {
         symbol,
+        status: 'error',
         signal: 'HOLD' as const,
         accuracy: 0.5,
         orderbookImbalance: 0,
@@ -967,6 +1137,174 @@ export class ResearchEngine {
     return (bidVolume - askVolume) / totalVolume;
   }
 
+  /**
+   * Calculate Feature Breakdown for UI display
+   */
+  private async calculateFeatures(
+    symbol: string,
+    rsi14: number | null,
+    trendAnalysis: { ema12: number | null; ema26: number | null; trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL' } | null,
+    microSignals: ResearchResult['microSignals'],
+    imbalance: number,
+    currentPrice: number,
+    uid?: string
+  ): Promise<ResearchResult['features']> {
+    const { featureEngine } = await import('./featureEngine');
+    
+    // 1. RSI
+    const rsiValue = rsi14 ?? 50;
+    const rsiDirection = rsiValue > 70 ? 'Overbought' : rsiValue < 30 ? 'Oversold' : rsiValue > 50 ? 'Bullish' : 'Bearish';
+    
+    // 2. MACD
+    let macdData = { signal: 0, histogram: 0, trend: 'NEUTRAL' as string };
+    try {
+      const history = this.orderbookHistory.get(symbol);
+      if (history && history.length >= 26 && currentPrice > 0) {
+        const prices = history.slice(-26).map(ob => {
+          const bid = parseFloat(ob.bids[0]?.price || '0');
+          const ask = parseFloat(ob.asks[0]?.price || '0');
+          return (bid + ask) / 2;
+        }).filter(p => p > 0);
+        
+        if (prices.length >= 26) {
+          const macd = featureEngine.calculateMACD(prices);
+          const macdTrend = macd.histogram > 0 
+            ? (macd.macd > macd.signal ? 'BULLISH' : 'NEUTRAL')
+            : (macd.macd < macd.signal ? 'BEARISH' : 'NEUTRAL');
+          macdData = {
+            signal: macd.signal,
+            histogram: macd.histogram,
+            trend: macdTrend,
+          };
+        }
+      }
+    } catch (err: any) {
+      logger.debug({ err, symbol }, 'MACD calculation failed for features');
+    }
+    
+    // 3. Volume Analysis
+    const volumeHistory = this.volumeHistory.get(symbol) || [];
+    let volumeAnalysis = 'Stable';
+    if (volumeHistory.length >= 2) {
+      const recent = volumeHistory.slice(-5);
+      const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
+      const current = microSignals.volume;
+      const change = ((current - avg) / avg) * 100;
+      if (change > 20) volumeAnalysis = 'Increasing';
+      else if (change < -20) volumeAnalysis = 'Decreasing';
+    }
+    
+    // 4. Orderbook Imbalance
+    const imbalancePct = Math.abs(imbalance) * 100;
+    const imbalanceDirection = imbalance > 0 ? 'Buy Pressure' : imbalance < 0 ? 'Sell Pressure' : 'Balanced';
+    const orderbookImbalanceStr = `${imbalanceDirection} (${imbalancePct.toFixed(1)}%)`;
+    
+    // 5. Liquidity Zones (based on orderbook depth)
+    const liquidityZonesStr = microSignals.orderbookDepth > 1000000 
+      ? 'Strong' 
+      : microSignals.orderbookDepth > 500000 
+        ? 'Moderate' 
+        : 'Weak';
+    
+    // 6. Funding Rate
+    let fundingRateStr = 'N/A';
+    try {
+      if (this.coinGlassConnector) {
+        const coinGlassData = await this.coinGlassConnector.getFundingRate(symbol).catch(() => null);
+        if (coinGlassData?.fundingRate !== undefined && coinGlassData.fundingRate !== null) {
+          const fr = coinGlassData.fundingRate * 100;
+          fundingRateStr = fr > 0 ? `Positive (${fr.toFixed(4)}%)` : `Negative (${fr.toFixed(4)}%)`;
+        }
+      }
+    } catch (err: any) {
+      logger.debug({ err, symbol }, 'Funding rate fetch failed');
+    }
+    
+    // 7. Open Interest
+    let openInterestStr = 'N/A';
+    try {
+      if (this.coinGlassConnector) {
+        const coinGlassData = await this.coinGlassConnector.getOpenInterest(symbol).catch(() => null);
+        if (coinGlassData?.openInterestChange24h !== undefined && coinGlassData.openInterestChange24h !== null) {
+          const change = coinGlassData.openInterestChange24h * 100;
+          openInterestStr = change > 0 ? `Increasing (+${change.toFixed(1)}%)` : `Decreasing (${change.toFixed(1)}%)`;
+        }
+      }
+    } catch (err: any) {
+      logger.debug({ err, symbol }, 'Open interest fetch failed');
+    }
+    
+    // 8. Liquidations
+    let liquidationsStr = 'N/A';
+    try {
+      if (this.coinGlassConnector) {
+        const coinGlassData = await this.coinGlassConnector.getLiquidations(symbol).catch(() => null);
+        if (coinGlassData) {
+          const longLiq = coinGlassData.longLiquidation24h || 0;
+          const shortLiq = coinGlassData.shortLiquidation24h || 0;
+          if (longLiq > 0 || shortLiq > 0) {
+            const total = longLiq + shortLiq;
+            const longPct = (longLiq / total) * 100;
+            liquidationsStr = `Long: ${longPct.toFixed(1)}% | Short: ${(100 - longPct).toFixed(1)}%`;
+          }
+        }
+      }
+    } catch (err: any) {
+      logger.debug({ err, symbol }, 'Liquidation data fetch failed');
+    }
+    
+    // 9. Trend Strength
+    let trendStrengthStr = 'Weak';
+    if (trendAnalysis) {
+      const emaDiff = trendAnalysis.ema12 && trendAnalysis.ema26 
+        ? Math.abs(trendAnalysis.ema12 - trendAnalysis.ema26) / trendAnalysis.ema26 * 100
+        : 0;
+      if (emaDiff > 2) trendStrengthStr = 'Strong';
+      else if (emaDiff > 0.5) trendStrengthStr = 'Medium';
+    }
+    
+    // 10. Volatility Score
+    const volatility = this.computeVolatility(symbol, 20);
+    const volatilityScore = volatility > 0.05 ? 'High' : volatility > 0.02 ? 'Medium' : 'Low';
+    
+    // 11. News Sentiment
+    let newsSentimentStr = 'Neutral';
+    try {
+      if (uid) {
+        const integrations: Record<string, { apiKey: string; secretKey?: string }> = await firestoreAdapter.getEnabledIntegrations(uid).catch(() => ({}));
+        const lc = integrations.lunarcrush ?? { apiKey: "" };
+        if (lc && lc.apiKey) {
+          const apiKey = lc.apiKey;
+          if (apiKey && typeof apiKey === 'string' && apiKey.trim().length >= 20) {
+            const { LunarCrushAdapter } = await import('./lunarcrushAdapter');
+            const lunarcrushAdapter = new LunarCrushAdapter(apiKey);
+            const sentimentData = await lunarcrushAdapter.getCoinData(symbol).catch(() => null);
+            if (sentimentData?.sentiment !== undefined) {
+              const sentiment = sentimentData.sentiment;
+              if (sentiment > 0.3) newsSentimentStr = 'Bullish';
+              else if (sentiment < -0.3) newsSentimentStr = 'Bearish';
+            }
+          }
+        }
+      }
+    } catch (err: any) {
+      logger.debug({ err, symbol }, 'News sentiment fetch failed');
+    }
+    
+    return {
+      rsi: rsiValue,
+      macd: macdData,
+      volume: volumeAnalysis,
+      orderbookImbalance: orderbookImbalanceStr,
+      fundingRate: fundingRateStr,
+      openInterest: openInterestStr,
+      liquidations: liquidationsStr,
+      trendStrength: trendStrengthStr,
+      volatility: volatilityScore,
+      newsSentiment: newsSentimentStr,
+    };
+  }
+
   private calculateMicroSignals(symbol: string, orderbook: Orderbook): ResearchResult['microSignals'] {
     const bestBid = parseFloat(orderbook.bids[0]?.price || '0');
     const bestAsk = parseFloat(orderbook.asks[0]?.price || '0');
@@ -1020,40 +1358,90 @@ export class ResearchEngine {
   ): Promise<number> {
     // Multi-source accuracy calculation using all available data sources
     let accuracy = 0.5; // Base accuracy
+    const contributions: Record<string, number> = { base: 0.5 };
 
     // 1. Orderbook imbalance strength (Exchange data if available)
     const imbalanceStrength = Math.abs(imbalance);
     if (imbalanceStrength > 0.3) {
       accuracy += 0.15;
+      contributions.imbalance = 0.15;
+      logger.debug({ symbol, imbalanceStrength, contribution: 0.15 }, 'Orderbook imbalance contribution: +15%');
     } else if (imbalanceStrength > 0.15) {
       accuracy += 0.1;
+      contributions.imbalance = 0.1;
+      logger.debug({ symbol, imbalanceStrength, contribution: 0.1 }, 'Orderbook imbalance contribution: +10%');
     } else if (imbalanceStrength > 0.05) {
       accuracy += 0.05;
+      contributions.imbalance = 0.05;
+      logger.debug({ symbol, imbalanceStrength, contribution: 0.05 }, 'Orderbook imbalance contribution: +5%');
+    } else {
+      contributions.imbalance = 0;
+      logger.debug({ symbol, imbalanceStrength }, 'Orderbook imbalance too weak, no contribution');
     }
 
     // 2. Spread analysis (tighter spread = higher confidence)
-    if (microSignals.spread < 0.05) {
+    // CRITICAL: Check if spread is actually calculated (not 0 due to missing data)
+    if (microSignals.spread > 0 && microSignals.spread < 0.05) {
       accuracy += 0.15; // Very tight spread
-    } else if (microSignals.spread < 0.1) {
+      contributions.spread = 0.15;
+      logger.debug({ symbol, spread: microSignals.spread, contribution: 0.15 }, 'Spread contribution: +15%');
+    } else if (microSignals.spread > 0 && microSignals.spread < 0.1) {
       accuracy += 0.1;
-    } else if (microSignals.spread < 0.2) {
+      contributions.spread = 0.1;
+      logger.debug({ symbol, spread: microSignals.spread, contribution: 0.1 }, 'Spread contribution: +10%');
+    } else if (microSignals.spread > 0 && microSignals.spread < 0.2) {
       accuracy += 0.05;
+      contributions.spread = 0.05;
+      logger.debug({ symbol, spread: microSignals.spread, contribution: 0.05 }, 'Spread contribution: +5%');
+    } else {
+      contributions.spread = 0;
+      if (microSignals.spread === 0) {
+        logger.warn({ symbol }, 'Spread is ZERO - orderbook data may be missing or invalid');
+      } else {
+        logger.debug({ symbol, spread: microSignals.spread }, 'Spread too wide, no contribution');
+      }
     }
 
     // 3. Volume depth analysis
+    // CRITICAL: Check if volume is actually calculated (not 0 due to missing data)
     if (microSignals.volume > 500000) {
       accuracy += 0.15; // Very high volume
+      contributions.volume = 0.15;
+      logger.debug({ symbol, volume: microSignals.volume, contribution: 0.15 }, 'Volume contribution: +15%');
     } else if (microSignals.volume > 100000) {
       accuracy += 0.1;
+      contributions.volume = 0.1;
+      logger.debug({ symbol, volume: microSignals.volume, contribution: 0.1 }, 'Volume contribution: +10%');
     } else if (microSignals.volume > 50000) {
       accuracy += 0.05;
+      contributions.volume = 0.05;
+      logger.debug({ symbol, volume: microSignals.volume, contribution: 0.05 }, 'Volume contribution: +5%');
+    } else {
+      contributions.volume = 0;
+      if (microSignals.volume === 0) {
+        logger.warn({ symbol }, 'Volume is ZERO - orderbook data may be missing or invalid');
+      } else {
+        logger.debug({ symbol, volume: microSignals.volume }, 'Volume too low, no contribution');
+      }
     }
 
     // 4. Orderbook depth analysis
+    // CRITICAL: Check if depth is actually calculated (not 0 due to missing data)
     if (microSignals.orderbookDepth > 1000000) {
       accuracy += 0.1;
+      contributions.depth = 0.1;
+      logger.debug({ symbol, depth: microSignals.orderbookDepth, contribution: 0.1 }, 'Orderbook depth contribution: +10%');
     } else if (microSignals.orderbookDepth > 500000) {
       accuracy += 0.05;
+      contributions.depth = 0.05;
+      logger.debug({ symbol, depth: microSignals.orderbookDepth, contribution: 0.05 }, 'Orderbook depth contribution: +5%');
+    } else {
+      contributions.depth = 0;
+      if (microSignals.orderbookDepth === 0) {
+        logger.warn({ symbol }, 'Orderbook depth is ZERO - orderbook data may be missing or invalid');
+      } else {
+        logger.debug({ symbol, depth: microSignals.orderbookDepth }, 'Orderbook depth too low, no contribution');
+      }
     }
 
     // 5. Fetch external data sources if integrations are available
@@ -1289,7 +1677,30 @@ export class ResearchEngine {
     }
 
     // Cap at 0.95 max (never 100% confidence)
-    return Math.min(0.95, Math.max(0.1, accuracy));
+    const finalAccuracy = Math.min(0.95, Math.max(0.1, accuracy));
+    
+    // DIAGNOSTIC: Log full breakdown
+    const contributionSummary = Object.entries(contributions)
+      .filter(([k, v]) => k !== 'base' && v > 0)
+      .map(([k, v]) => `${k}:+${Math.round(v * 100)}%`)
+      .join(', ') || 'NONE';
+    
+    logger.info({ 
+      symbol, 
+      finalAccuracy: Math.round(finalAccuracy * 100), 
+      baseAccuracy: 0.5,
+      contributions,
+      totalContributions: finalAccuracy - 0.5,
+      microSignals: {
+        spread: microSignals.spread,
+        volume: microSignals.volume,
+        depth: microSignals.orderbookDepth,
+        momentum: microSignals.priceMomentum
+      },
+      imbalance
+    }, `[ACCURACY] Breakdown: base 50% + ${contributionSummary} = ${Math.round(finalAccuracy * 100)}%`);
+    
+    return finalAccuracy;
   }
 
   private determineSignalDynamic(
