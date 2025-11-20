@@ -1,5 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import { logger } from '../utils/logger';
+import { apiUsageTracker } from './apiUsageTracker';
 
 export interface CryptoQuantData {
   exchangeFlow?: number; // Exchange net flow
@@ -64,6 +65,8 @@ export class CryptoQuantAdapter {
         },
       });
       
+      // Track API usage
+      apiUsageTracker.increment('cryptoquant');
       logger.debug({ status: response.status, symbol }, 'CryptoQuant getExchangeFlow success');
       
       return {

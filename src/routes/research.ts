@@ -3,6 +3,7 @@ import { firestoreAdapter } from '../services/firestoreAdapter';
 import { researchEngine } from '../services/researchEngine';
 import { resolveExchangeConnector } from '../services/exchangeResolver';
 import { liveAnalysisService } from '../services/liveAnalysisService';
+import { topCoinsService } from '../services/topCoinsService';
 import { z } from 'zod';
 import { logger } from '../utils/logger';
 
@@ -36,16 +37,18 @@ export async function researchRoutes(fastify: FastifyInstance) {
 
   fastify.post('/run', {
     preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Body: { symbol?: string } }>, reply: FastifyReply) => {
+  }, async (request: FastifyRequest<{ Body: { symbol?: string; symbols?: string[]; forceEngine?: boolean } }>, reply: FastifyReply) => {
     const user = (request as any).user;
+    const forceEngine = request.body?.forceEngine === true;
     
     // DEBUG: Log incoming request
     console.log('🔍 [RESEARCH/RUN] Incoming request:', {
       body: request.body,
       uid: user?.uid,
       hasUser: !!user,
+      forceEngine,
     });
-    logger.info({ body: request.body, uid: user?.uid }, 'Research/run request received');
+    logger.info({ body: request.body, uid: user?.uid, forceEngine }, 'Research/run request received');
     
     // Validate user is authenticated
     if (!user || !user.uid) {
@@ -60,20 +63,36 @@ export async function researchRoutes(fastify: FastifyInstance) {
     
     // Wrap entire logic in try/catch for comprehensive error handling
     try {
-      // Validate symbol is provided
+      // Handle symbol or multi-coin scanning
+      let symbols: string[] = [];
       let symbol = request.body?.symbol;
-      if (!symbol || typeof symbol !== 'string' || symbol.trim() === '') {
-        console.error('🔍 [RESEARCH/RUN] Symbol not provided');
+      
+      if (symbol && typeof symbol === 'string' && symbol.trim() !== '') {
+        // Single symbol provided
+        symbols = [symbol.trim().toUpperCase()];
+      } else if (request.body?.symbols && Array.isArray(request.body.symbols) && request.body.symbols.length > 0) {
+        // Multiple symbols provided
+        symbols = request.body.symbols.map((s: string) => s.trim().toUpperCase()).filter((s: string) => s.length > 0);
+      } else {
+        // No symbol provided - auto pick top 100 coins
+        logger.info({ uid: user.uid }, 'No symbol provided, fetching top 100 coins');
+        symbols = await topCoinsService.getTop100Coins();
+        logger.info({ uid: user.uid, count: symbols.length }, 'Fetched top 100 coins for multi-coin scanning');
+      }
+      
+      if (symbols.length === 0) {
+        console.error('🔍 [RESEARCH/RUN] No symbols available');
         reply.code(400).header('Content-Type', 'application/json').send({
           success: false,
-          message: 'Symbol not provided',
+          message: 'No symbols available for research',
           results: [],
         });
         return;
       }
       
-      symbol = symbol.trim().toUpperCase();
-      console.log('🔍 [RESEARCH/RUN] Parsed symbol:', symbol);
+      // Use first symbol for single research (backward compatibility)
+      symbol = symbols[0];
+      console.log('🔍 [RESEARCH/RUN] Processing symbol:', symbol, 'Total symbols:', symbols.length);
       
       // Deep Research: Try to get user's exchange connector, but continue with fallback if not available
       // NEVER fail research if exchange API is missing - use fallback engines (CryptoQuant, CoinAPI, etc.)
@@ -143,37 +162,68 @@ export async function researchRoutes(fastify: FastifyInstance) {
       console.log('[DEEP-RESEARCH] Fallback mode:', isFallback);
       console.log('[DEEP-RESEARCH] Detected exchange:', detectedExchangeName);
       
-      // Run research with or without exchange adapter
+      // ALWAYS call researchEngine.runResearch() once - no early returns
       let result;
       try {
-        console.log('🔍 [RESEARCH/RUN] Calling researchEngine.runResearch with:', { symbol, uid: user.uid, hasAdapter: !!exchangeAdapter });
-        result = await researchEngine.runResearch(symbol, user.uid, exchangeAdapter || undefined);
+        console.log('🔍 [RESEARCH/RUN] Calling researchEngine.runResearch with:', { 
+          symbol, 
+          uid: user.uid, 
+          hasAdapter: !!exchangeAdapter,
+          forceEngine 
+        });
+        // CRITICAL: Always call runResearch once, no early returns
+        result = await researchEngine.runResearch(symbol, user.uid, exchangeAdapter || undefined, forceEngine);
         console.log('🔍 [RESEARCH/RUN] researchEngine.runResearch returned - type:', typeof result);
         console.log('🔍 [RESEARCH/RUN] researchEngine.runResearch returned - keys:', result ? Object.keys(result) : 'null/undefined');
         console.log('🔍 [RESEARCH/RUN] researchEngine.runResearch returned - full:', JSON.stringify(result, null, 2));
       } catch (researchErr: any) {
-        // If runResearch somehow still throws (shouldn't happen, but safety net)
-        console.error('🔍 [RESEARCH/RUN] runResearch threw error:', researchErr);
-        logger.error({ err: researchErr, symbol, uid: user.uid }, 'runResearch threw error (unexpected)');
-        result = {
-          symbol,
-          signal: 'HOLD' as const,
-          accuracy: 0.5,
-          orderbookImbalance: 0,
-          recommendedAction: 'Research encountered an error - please try again',
-          microSignals: {
-            spread: 0,
-            volume: 0,
-            priceMomentum: 0,
-            orderbookDepth: 0,
-          },
-        };
+        // If runResearch somehow still throws, try one more time with fallback
+        console.error('🔍 [RESEARCH/RUN] runResearch threw error, retrying with fallback:', researchErr);
+        logger.error({ err: researchErr, symbol, uid: user.uid }, 'runResearch threw error, retrying');
+        try {
+          // Retry with undefined adapter (fallback mode)
+          result = await researchEngine.runResearch(symbol, user.uid, undefined, forceEngine);
+          console.log('🔍 [RESEARCH/RUN] Retry successful with fallback');
+        } catch (retryErr: any) {
+          // If retry also fails, create minimal fallback with all required fields
+          console.error('🔍 [RESEARCH/RUN] Retry also failed, using minimal fallback:', retryErr);
+          result = {
+            symbol,
+            signal: 'HOLD' as const,
+            accuracy: 0.5,
+            orderbookImbalance: 0,
+            recommendedAction: 'Research encountered an error - please try again',
+            microSignals: {
+              spread: 0,
+              volume: 0,
+              priceMomentum: 0,
+              orderbookDepth: 0,
+            },
+            // Extended fields - all required
+            entry: null,
+            exits: [],
+            stopLoss: null,
+            takeProfit: null,
+            side: 'NEUTRAL' as const,
+            confidence: 50,
+            timeframe: '5m',
+            signals: [],
+            liveAnalysis: {
+              isLive: false,
+              lastUpdated: new Date().toISOString(),
+              summary: 'Research engine encountered an error',
+              meta: {},
+            },
+            message: `Research error: ${researchErr.message || 'Unknown error'}`,
+          };
+        }
       }
       
-      // Ensure result is valid
+      // Ensure result is valid and has all required fields
       if (!result || typeof result !== 'object') {
         console.error('🔍 [RESEARCH/RUN] Invalid result from runResearch:', result);
         logger.error({ result, symbol, uid: user.uid }, 'Invalid result from runResearch');
+        // Create full fallback result with all required fields
         result = {
           symbol,
           signal: 'HOLD' as const,
@@ -186,6 +236,40 @@ export async function researchRoutes(fastify: FastifyInstance) {
             priceMomentum: 0,
             orderbookDepth: 0,
           },
+          // Extended fields - all required
+          entry: null,
+          exits: [],
+          stopLoss: null,
+          takeProfit: null,
+          side: 'NEUTRAL' as const,
+          confidence: 50,
+          timeframe: '5m',
+          signals: [],
+          liveAnalysis: {
+            isLive: false,
+            lastUpdated: new Date().toISOString(),
+            summary: 'Research engine returned invalid result',
+            meta: {},
+          },
+          message: 'Invalid result from research engine',
+        };
+      }
+      
+      // Ensure all extended fields exist (fill in missing ones)
+      if (!('entry' in result)) result.entry = null;
+      if (!('exits' in result)) result.exits = [];
+      if (!('stopLoss' in result)) result.stopLoss = null;
+      if (!('takeProfit' in result)) result.takeProfit = null;
+      if (!('side' in result)) result.side = 'NEUTRAL';
+      if (!('confidence' in result)) result.confidence = Math.round((result.accuracy || 0.5) * 100);
+      if (!('timeframe' in result)) result.timeframe = '5m';
+      if (!('signals' in result)) result.signals = [];
+      if (!('liveAnalysis' in result)) {
+        result.liveAnalysis = {
+          isLive: false,
+          lastUpdated: new Date().toISOString(),
+          summary: 'Live analysis not available',
+          meta: {},
         };
       }
       
@@ -211,10 +295,22 @@ export async function researchRoutes(fastify: FastifyInstance) {
       console.log('[DEEP-RESEARCH] Is fallback:', isFallback);
       console.log('[DEEP-RESEARCH] Exchange error:', exchangeError || 'none');
       
+      // Log the full result to verify all fields are present
+      console.log('[DEEP-RESEARCH] FULL RESULT:', JSON.stringify(resultWithMetadata, null, 2));
+      logger.info({ 
+        symbol, 
+        accuracy: result.accuracy, 
+        mode: result.mode, 
+        hasEntry: result.entry !== null,
+        hasSignals: result.signals.length > 0,
+        apiCallsCount: result.apiCalls?.length || 0,
+        forceEngine 
+      }, 'Deep Research completed');
+      
       // Transform result into final response format - NO WRAPPERS
       const finalResponse = {
         success: true,
-        results: Array.isArray(resultWithMetadata) ? resultWithMetadata : [resultWithMetadata],
+        results: [resultWithMetadata], // Always return as array with single result
       };
       
       console.log('[DEEP-RESEARCH] Final Response:', JSON.stringify(finalResponse, null, 2));

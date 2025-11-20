@@ -2,6 +2,7 @@ import axios, { AxiosInstance } from 'axios';
 import crypto from 'crypto';
 import { logger } from '../utils/logger';
 import { ExchangeError } from '../utils/errors';
+import { apiUsageTracker } from './apiUsageTracker';
 import type { Orderbook, Trade, Quote } from '../types';
 import type { ExchangeConnector, ExchangeName } from './exchangeConnector';
 
@@ -79,6 +80,8 @@ export class BitgetAdapter implements ExchangeConnector {
         data: method !== 'GET' ? body : undefined,
         headers,
       });
+      // Track API usage
+      apiUsageTracker.increment('bitget');
       return response.data;
     } catch (error: any) {
       logger.error({ error, endpoint, params }, 'Bitget API error');

@@ -1,5 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import { logger } from '../utils/logger';
+import { apiUsageTracker } from './apiUsageTracker';
 
 export interface LunarCrushData {
   socialScore?: number;
@@ -37,6 +38,9 @@ export class LunarCrushAdapter {
           data_points: 1,
         },
       });
+      
+      // Track API usage
+      apiUsageTracker.increment('lunarcrush');
       
       const data = response.data?.data?.[0];
       if (!data) {

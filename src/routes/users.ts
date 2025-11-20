@@ -360,5 +360,27 @@ export async function usersRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: err.message || 'Error updating user' });
     }
   });
+
+  // GET /api/users/api-status - Get API usage status for all services
+  fastify.get('/api-status', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { apiUsageTracker } = await import('../services/apiUsageTracker');
+      const status = apiUsageTracker.getStats();
+      
+      return reply.code(200).header('Content-Type', 'application/json').send(status);
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting API status');
+      return reply.code(500).header('Content-Type', 'application/json').send({
+        error: err.message || 'Error fetching API status',
+        binance: { used: 0, limit: 0 },
+        bitget: { used: 0, limit: 0 },
+        kucoin: { used: 0, limit: 0 },
+        cryptoquant: { used: 0, limit: 0 },
+        lunarcrush: { used: 0, limit: 0 },
+      });
+    }
+  });
 }
 

@@ -3,6 +3,8 @@ import { firestoreAdapter } from './firestoreAdapter';
 import { CryptoQuantAdapter } from './cryptoquantAdapter';
 import { LunarCrushAdapter } from './lunarcrushAdapter';
 import { CoinAPIAdapter } from './coinapiAdapter';
+import { apiUsageTracker } from './apiUsageTracker';
+import axios from 'axios';
 import type { Orderbook, Trade } from '../types';
 import type { ExchangeConnector } from './exchangeConnector';
 
@@ -24,7 +26,7 @@ export interface ResearchResult {
   signal: 'BUY' | 'SELL' | 'HOLD';
   accuracy: number;
   orderbookImbalance: number;
-  recommendedAction: string;
+  recommendedAction: string; // Text description
   microSignals: {
     spread: number;
     volume: number;
@@ -42,6 +44,13 @@ export interface ResearchResult {
   signals: ResearchSignal[];
   liveAnalysis?: LiveAnalysis;
   message?: string;
+  // Accuracy-based mode fields
+  currentPrice: number;
+  mode: 'LOW' | 'MID_BLUR' | 'NORMAL' | 'TRADE_SETUP';
+  recommendedTrade: 'LONG' | 'SHORT' | null; // Trade recommendation (LONG/SHORT) for TRADE_SETUP mode
+  blurFields: boolean;
+  // API call tracking
+  apiCalls: string[]; // Array of API endpoints called
 }
 
 export class ResearchEngine {
@@ -52,7 +61,12 @@ export class ResearchEngine {
   private depthHistory: Map<string, number[]> = new Map();
   private imbalanceHistory: Map<string, number[]> = new Map();
 
-  async runResearch(symbol: string, uid: string, adapter?: ExchangeConnector): Promise<ResearchResult> {
+  async runResearch(symbol: string, uid: string, adapter?: ExchangeConnector, forceEngine: boolean = false): Promise<ResearchResult> {
+    // Track all API calls
+    const apiCalls: string[] = [];
+    
+    logger.info({ symbol, uid, hasAdapter: !!adapter, forceEngine }, 'Starting research engine');
+    
     try {
       // Orderbook data is optional - if adapter is available, use it; otherwise use defaults
       let imbalance = 0; // Neutral imbalance when no orderbook data
@@ -68,6 +82,11 @@ export class ResearchEngine {
       // Try to get orderbook data if adapter is available (optional)
       if (adapter) {
         try {
+          // Detect exchange name for API tracking
+          const exchangeName = this.detectExchangeName(adapter);
+          apiUsageTracker.increment(exchangeName);
+          apiCalls.push(`${exchangeName}: GET /orderbook`);
+          
           const orderbook = await adapter.getOrderbook(symbol, 20);
           
           // Calculate orderbook imbalance
@@ -88,7 +107,7 @@ export class ResearchEngine {
       // This works without exchange adapter - uses CryptoQuant, LunarCrush, CoinAPI
       let accuracy = 0.5; // Default base accuracy
       try {
-        accuracy = await this.calculateAccuracy(symbol, imbalance, microSignals, uid);
+        accuracy = await this.calculateAccuracy(symbol, imbalance, microSignals, uid, apiCalls);
       } catch (accuracyErr: any) {
         // If accuracy calculation fails, use base accuracy
         logger.warn({ err: accuracyErr, symbol, uid }, 'Accuracy calculation failed, using base accuracy');
@@ -132,25 +151,66 @@ export class ResearchEngine {
       let timeframe: string = '5m'; // Default timeframe
       let signals: ResearchSignal[] = [];
       let message: string | undefined = undefined;
+      let currentPrice = 0; // Declare outside try block for scope
 
       try {
-        // Get current price from adapter or use default calculation
-        let currentPrice = 0;
+        // ALWAYS fetch current price - from adapter or Binance fallback
+        
         if (adapter) {
           try {
+            const exchangeName = this.detectExchangeName(adapter);
+            apiUsageTracker.increment(exchangeName);
+            apiCalls.push(`${exchangeName}: GET /ticker`);
+            
             const ticker = await adapter.getTicker(symbol);
-            currentPrice = parseFloat(ticker?.lastPrice || ticker?.price || '0');
+            currentPrice = parseFloat(ticker?.lastPrice || ticker?.price || ticker?.last || '0');
+            
+            if (currentPrice > 0) {
+              logger.debug({ symbol, currentPrice, exchange: exchangeName }, 'Current price fetched from exchange adapter');
+            }
           } catch (tickerErr: any) {
-            logger.debug({ err: tickerErr, symbol }, 'Could not fetch ticker, calculating from orderbook');
-            // Fallback: use mid price from orderbook if available
+            logger.debug({ err: tickerErr, symbol }, 'Could not fetch ticker from adapter, trying Binance fallback');
+          }
+        }
+        
+        // Fallback to Binance public API if adapter failed or not available
+        if (currentPrice === 0 || forceEngine) {
+          try {
+            apiCalls.push('Binance: GET /api/v3/ticker/24hr (public)');
+            const response = await axios.get(`https://api.binance.com/api/v3/ticker/24hr`, {
+              params: { symbol: symbol.toUpperCase() },
+              timeout: 5000,
+            });
+            const fetchedPrice = parseFloat(response.data?.lastPrice || response.data?.price || '0');
+            
+            if (fetchedPrice > 0) {
+              currentPrice = fetchedPrice;
+              logger.info({ symbol, currentPrice, forceEngine }, 'Current price fetched from Binance public API');
+            } else if (forceEngine && currentPrice === 0) {
+              // Force engine mode: retry once more
+              logger.warn({ symbol, forceEngine }, 'First Binance attempt failed, retrying...');
+              const retryResponse = await axios.get(`https://api.binance.com/api/v3/ticker/24hr`, {
+                params: { symbol: symbol.toUpperCase() },
+                timeout: 10000,
+              });
+              currentPrice = parseFloat(retryResponse.data?.lastPrice || retryResponse.data?.price || '0');
+              if (currentPrice > 0) {
+                logger.info({ symbol, currentPrice }, 'Current price fetched from Binance retry');
+              }
+            }
+          } catch (binanceErr: any) {
+            logger.warn({ err: binanceErr, symbol, forceEngine }, 'Could not fetch price from Binance fallback');
+            // Last resort: use mid price from orderbook if available
             if (microSignals.volume > 0) {
-              // Estimate price from orderbook depth
               const history = this.orderbookHistory.get(symbol);
               if (history && history.length > 0) {
                 const latest = history[history.length - 1];
                 const bestBid = parseFloat(latest.bids[0]?.price || '0');
                 const bestAsk = parseFloat(latest.asks[0]?.price || '0');
-                currentPrice = (bestBid + bestAsk) / 2;
+                if (bestBid > 0 && bestAsk > 0) {
+                  currentPrice = (bestBid + bestAsk) / 2;
+                  logger.debug({ symbol, currentPrice }, 'Current price estimated from orderbook');
+                }
               }
             }
           }
@@ -165,38 +225,53 @@ export class ResearchEngine {
           side = 'NEUTRAL';
         }
 
-        // Generate entry, stopLoss, takeProfit only if we have a valid signal and price
-        if (side !== 'NEUTRAL' && currentPrice > 0 && signal !== 'HOLD') {
+        // Generate entry, stopLoss, takeProfit if we have a valid signal and price
+        // FORCE: If accuracy >= 60, always generate signals even if signal is HOLD
+        const shouldGenerateSignals = (side !== 'NEUTRAL' && currentPrice > 0 && signal !== 'HOLD') || 
+                                      (forceEngine && accuracy >= 0.6 && currentPrice > 0);
+        
+        if (shouldGenerateSignals) {
           entry = currentPrice;
           
           // Calculate stop loss: 2% below entry for LONG, 2% above for SHORT
           const stopLossPercent = 0.02;
-          if (side === 'LONG') {
+          if (side === 'LONG' || (side === 'NEUTRAL' && forceEngine)) {
             stopLoss = currentPrice * (1 - stopLossPercent);
-          } else {
+          } else if (side === 'SHORT') {
             stopLoss = currentPrice * (1 + stopLossPercent);
+          } else {
+            stopLoss = currentPrice * (1 - stopLossPercent); // Default to LONG
           }
 
           // Calculate take profit: 3% above entry for LONG, 3% below for SHORT
           const takeProfitPercent = 0.03;
-          if (side === 'LONG') {
+          if (side === 'LONG' || (side === 'NEUTRAL' && forceEngine)) {
             takeProfit = currentPrice * (1 + takeProfitPercent);
-          } else {
+          } else if (side === 'SHORT') {
             takeProfit = currentPrice * (1 - takeProfitPercent);
+          } else {
+            takeProfit = currentPrice * (1 + takeProfitPercent); // Default to LONG
           }
 
           // Multiple exit targets (primary TP + 2 additional levels)
-          if (side === 'LONG') {
+          if (side === 'LONG' || (side === 'NEUTRAL' && forceEngine)) {
             exits = [
               takeProfit, // Primary TP
               currentPrice * (1 + takeProfitPercent * 1.5), // Secondary TP
               currentPrice * (1 + takeProfitPercent * 2), // Tertiary TP
             ];
-          } else {
+          } else if (side === 'SHORT') {
             exits = [
               takeProfit, // Primary TP
               currentPrice * (1 - takeProfitPercent * 1.5), // Secondary TP
               currentPrice * (1 - takeProfitPercent * 2), // Tertiary TP
+            ];
+          } else {
+            // Default to LONG exits
+            exits = [
+              takeProfit,
+              currentPrice * (1 + takeProfitPercent * 1.5),
+              currentPrice * (1 + takeProfitPercent * 2),
             ];
           }
 
@@ -233,15 +308,77 @@ export class ResearchEngine {
           timeframe = '5m'; // Default to 5-minute timeframe
         } else {
           // No valid signal or price - set message explaining why
-          if (currentPrice === 0) {
+          // BUT: If accuracy >= 60, force generate signals anyway
+          if (accuracy >= 0.6 && currentPrice > 0 && !forceEngine) {
+            // Retry signal generation with current price
+            entry = currentPrice;
+            const stopLossPercent = 0.02;
+            const takeProfitPercent = 0.03;
+            stopLoss = currentPrice * (1 - stopLossPercent);
+            takeProfit = currentPrice * (1 + takeProfitPercent);
+            exits = [
+              takeProfit,
+              currentPrice * (1 + takeProfitPercent * 1.5),
+              currentPrice * (1 + takeProfitPercent * 2),
+            ];
+            signals = [
+              { type: 'entry', price: entry, reason: `Entry signal with ${confidence}% confidence` },
+              { type: 'sl', price: stopLoss, reason: 'Stop loss set at 2% from entry' },
+              { type: 'tp', price: takeProfit, reason: 'Primary take profit target at 3% from entry' },
+            ];
+            exits.slice(1).forEach((exitPrice, idx) => {
+              signals.push({ type: 'exit', price: exitPrice, reason: idx === 0 ? 'Secondary exit target' : 'Tertiary exit target' });
+            });
+            timeframe = '5m';
+            logger.info({ symbol, accuracy, currentPrice }, 'Forced signal generation due to accuracy >= 60%');
+          } else if (currentPrice === 0) {
             message = 'Unable to determine entry price - exchange API unavailable or symbol not found';
-          } else if (signal === 'HOLD') {
+          } else if (signal === 'HOLD' && accuracy < 0.6) {
             message = 'Signal is HOLD - no entry/exit levels generated. Wait for better market conditions.';
           }
         }
       } catch (signalGenErr: any) {
         logger.warn({ err: signalGenErr, symbol }, 'Error generating full signals, using defaults');
         message = `Signal generation encountered an error: ${signalGenErr.message}`;
+      }
+
+      // Determine accuracy-based mode and recommended action
+      const accuracyPercent = Math.round(accuracy * 100);
+      let mode: 'LOW' | 'MID_BLUR' | 'NORMAL' | 'TRADE_SETUP' = 'NORMAL';
+      let finalRecommendedAction: 'LONG' | 'SHORT' | null = null;
+      let blurFields = false;
+      let finalMessage = message;
+
+      if (accuracyPercent < 50) {
+        mode = 'LOW';
+        // Hide entry/sl/tp/exits/signals for LOW mode
+        entry = null;
+        exits = [];
+        stopLoss = null;
+        takeProfit = null;
+        signals = [];
+        finalMessage = 'Accuracy below 50% — Avoid trading';
+      } else if (accuracyPercent >= 50 && accuracyPercent < 60) {
+        mode = 'MID_BLUR';
+        blurFields = true;
+        // Keep all fields but mark for blur
+      } else if (accuracyPercent >= 60 && accuracyPercent < 75) {
+        mode = 'NORMAL';
+        // Show all signals but don't recommend trade
+        finalRecommendedAction = null;
+      } else if (accuracyPercent >= 75) {
+        mode = 'TRADE_SETUP';
+        // Show all signals + add recommendedAction
+        if (side === 'LONG') {
+          finalRecommendedAction = 'LONG';
+        } else if (side === 'SHORT') {
+          finalRecommendedAction = 'SHORT';
+        }
+      }
+
+      // Ensure currentPrice is always set (use 0 if not available)
+      if (currentPrice === 0 && entry !== null) {
+        currentPrice = entry;
       }
 
       // Generate liveAnalysis
@@ -257,6 +394,7 @@ export class ResearchEngine {
             orderbookImbalance: imbalance,
             microSignals,
             timeframe,
+            mode,
           },
         };
       } catch (liveErr: any) {
@@ -269,12 +407,15 @@ export class ResearchEngine {
         };
       }
 
+      // Ensure apiCalls is always an array
+      const finalApiCalls = Array.isArray(apiCalls) ? apiCalls : [];
+      
       const result: ResearchResult = {
         symbol,
         signal,
         accuracy,
         orderbookImbalance: imbalance,
-        recommendedAction,
+        recommendedAction: finalRecommendedAction ? (finalRecommendedAction === 'LONG' ? 'Consider LONG trade' : 'Consider SHORT trade') : recommendedAction,
         microSignals,
         entry,
         exits,
@@ -285,8 +426,23 @@ export class ResearchEngine {
         timeframe,
         signals,
         liveAnalysis,
-        message,
+        message: finalMessage,
+        currentPrice,
+        mode,
+        recommendedTrade: finalRecommendedAction,
+        blurFields,
+        apiCalls: finalApiCalls, // Always include API call log
       };
+      
+      logger.info({ 
+        symbol, 
+        accuracy, 
+        mode, 
+        hasEntry: entry !== null,
+        signalsCount: signals.length,
+        apiCallsCount: finalApiCalls.length,
+        forceEngine 
+      }, 'Research result generated');
 
       // Save to Firestore (non-blocking - don't fail research if save fails)
       // Wrap in additional try/catch to ensure no errors escape
@@ -371,12 +527,32 @@ export class ResearchEngine {
           meta: {},
         },
         message: `Research error: ${error.message || 'Unknown error'}`,
+        currentPrice: 0,
+        mode: 'LOW' as const,
+        recommendedTrade: null,
+        blurFields: false,
+        apiCalls: apiCalls.length > 0 ? apiCalls : [], // Include any API calls made before error
       };
       
       console.log('🔍 [RESEARCH_ENGINE] FALLBACK RESULT RETURN:', JSON.stringify(fallbackResult, null, 2));
       
       return fallbackResult;
     }
+  }
+
+  /**
+   * Detect exchange name from adapter for API tracking
+   */
+  private detectExchangeName(adapter: ExchangeConnector): string {
+    const adapterName = adapter.constructor.name.toLowerCase();
+    if (adapterName.includes('binance')) return 'binance';
+    if (adapterName.includes('bitget')) return 'bitget';
+    if (adapterName.includes('kucoin')) return 'kucoin';
+    if (adapterName.includes('bingx')) return 'bingx';
+    if (adapterName.includes('weex')) return 'weex';
+    if (adapterName.includes('bybit')) return 'bybit';
+    if (adapterName.includes('okx')) return 'okx';
+    return 'unknown';
   }
 
   private calculateOrderbookImbalance(orderbook: Orderbook): number {
@@ -447,7 +623,8 @@ export class ResearchEngine {
     symbol: string,
     imbalance: number,
     microSignals: ResearchResult['microSignals'],
-    uid?: string
+    uid?: string,
+    apiCalls?: string[]
   ): Promise<number> {
     // Multi-source accuracy calculation using all available data sources
     let accuracy = 0.5; // Base accuracy
@@ -513,7 +690,13 @@ export class ResearchEngine {
                 
                 // Only proceed if adapter is not disabled
                 if (!cryptoquantAdapter.disabled) {
+                  apiUsageTracker.increment('cryptoquant');
+                  apiCalls.push('CryptoQuant: GET /market-metrics');
+                  
                   const onChainData = await cryptoquantAdapter.getOnChainMetrics(symbol);
+                  
+                  apiUsageTracker.increment('cryptoquant');
+                  apiCalls.push('CryptoQuant: GET /exchange-flow');
                   const flowData = await cryptoquantAdapter.getExchangeFlow(symbol);
                   
                   // Positive exchange flow (more inflow than outflow) is bullish
@@ -559,6 +742,8 @@ export class ResearchEngine {
             } else {
               try {
                 const lunarcrushAdapter = new LunarCrushAdapter(apiKey);
+                apiUsageTracker.increment('lunarcrush');
+                apiCalls.push('LunarCrush: GET /coin-data');
                 const sentimentData = await lunarcrushAdapter.getCoinData(symbol);
                 
                 // Positive sentiment boosts accuracy
@@ -601,6 +786,8 @@ export class ResearchEngine {
                 const apiKey = coinapiMarket.apiKey;
                 if (apiKey && typeof apiKey === 'string' && apiKey.trim().length >= 20) {
                   const marketAdapter = new CoinAPIAdapter(apiKey, 'market');
+                  apiUsageTracker.increment('coinapi');
+                  apiCalls.push('CoinAPI: GET /market-data');
                   const marketData = await marketAdapter.getMarketData(symbol);
                   
                   // Positive 24h price change is bullish
@@ -624,6 +811,8 @@ export class ResearchEngine {
                 const apiKey = coinapiFlatfile.apiKey;
                 if (apiKey && typeof apiKey === 'string' && apiKey.trim().length >= 20) {
                   const flatfileAdapter = new CoinAPIAdapter(apiKey, 'flatfile');
+                  apiUsageTracker.increment('coinapi');
+                  apiCalls.push('CoinAPI: GET /historical-data');
                   const historicalData = await flatfileAdapter.getHistoricalData(symbol, 7);
                   
                   // Analyze trend from historical data

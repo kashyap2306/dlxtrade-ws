@@ -4,6 +4,7 @@ import WebSocket from 'ws';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { ExchangeError } from '../utils/errors';
+import { apiUsageTracker } from './apiUsageTracker';
 import type { Order, Orderbook, Trade, Quote } from '../types';
 import type { ExchangeConnector, ExchangeName } from './exchangeConnector';
 
@@ -70,6 +71,8 @@ export class BinanceAdapter implements ExchangeConnector {
         params: method === 'GET' ? params : undefined,
         data: method !== 'GET' ? params : undefined,
       });
+      // Track API usage
+      apiUsageTracker.increment('binance');
       return response.data;
     } catch (error: any) {
       logger.error({ error, endpoint, params }, 'Binance API error');
