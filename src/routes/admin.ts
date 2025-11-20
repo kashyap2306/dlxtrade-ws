@@ -1,11 +1,14 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import * as admin from 'firebase-admin';
+import path from 'path';
+import { spawn } from 'child_process';
 import { firestoreAdapter } from '../services/firestoreAdapter';
 import { encrypt, decrypt, maskKey } from '../services/keyManager';
 import { userEngineManager } from '../services/userEngineManager';
 import { adminStatsService } from '../services/adminStatsService';
 import { adminAuthMiddleware } from '../middleware/adminAuth';
+import { mlModelService } from '../services/ml/mlModelService';
 import { logger } from '../utils/logger';
 import { ValidationError, NotFoundError } from '../utils/errors';
 import { getFirebaseAdmin } from '../utils/firebase';
@@ -24,6 +27,31 @@ const updateKeySchema = z.object({
   apiSecret: z.string().optional(),
   testnet: z.boolean().optional(),
 });
+
+type TrainingJobStatus = 'idle' | 'running' | 'success' | 'error';
+
+interface TrainingJob {
+  id: string;
+  status: TrainingJobStatus;
+  startedAt: number;
+  finishedAt?: number;
+  error?: string;
+  params: {
+    symbol: string;
+    timeframe: string;
+    horizon: string;
+    synthetic: boolean;
+  };
+}
+
+const retrainSchema = z.object({
+  symbol: z.string().min(3).default('BTCUSDT'),
+  timeframe: z.string().default('5m'),
+  horizon: z.string().default('15m'),
+  synthetic: z.boolean().default(false),
+});
+
+let currentTrainingJob: TrainingJob | null = null;
 
 export async function adminRoutes(fastify: FastifyInstance) {
   // Decorate with admin auth middleware
@@ -134,6 +162,75 @@ export async function adminRoutes(fastify: FastifyInstance) {
   });
 
   // ========== NEW ADMIN ROUTES ==========
+  fastify.get('/research-model/metrics', {
+    preHandler: [fastify.authenticate, fastify.adminAuth],
+  }, async (_request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const metrics = await mlModelService.getModelMetrics();
+      if (!metrics) {
+        return reply.code(503).send({ error: 'Model metrics unavailable' });
+      }
+      return metrics;
+    } catch (err: any) {
+      logger.error({ err }, 'Failed to fetch research model metrics');
+      return reply.code(500).send({ error: err.message || 'Unable to fetch metrics' });
+    }
+  });
+
+  fastify.get('/research-model/retrain', {
+    preHandler: [fastify.authenticate, fastify.adminAuth],
+  }, async (_request: FastifyRequest, _reply: FastifyReply) => {
+    return currentTrainingJob || { status: 'idle' };
+  });
+
+  fastify.post('/research-model/retrain', {
+    preHandler: [fastify.authenticate, fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Body: z.infer<typeof retrainSchema> }>, reply: FastifyReply) => {
+    if (currentTrainingJob?.status === 'running') {
+      return reply.code(409).send({ error: 'Training job already running', job: currentTrainingJob });
+    }
+
+    const params = retrainSchema.parse(request.body || {});
+    const jobId = `train_${Date.now()}`;
+    currentTrainingJob = {
+      id: jobId,
+      status: 'running',
+      startedAt: Date.now(),
+      params,
+    };
+
+    const repoRoot = path.resolve(__dirname, '..', '..');
+    const pythonBin = process.env.PYTHON_BIN || 'python';
+    const args = [
+      path.join('ml-service', 'train_model.py'),
+      '--symbol', params.symbol,
+      '--timeframe', params.timeframe,
+      '--horizon', params.horizon,
+    ];
+    if (params.synthetic) {
+      args.push('--synthetic');
+    }
+
+    const child = spawn(pythonBin, args, {
+      cwd: repoRoot,
+      env: process.env,
+      stdio: 'inherit',
+    });
+
+    child.on('close', (code) => {
+      if (!currentTrainingJob) return;
+      currentTrainingJob.status = code === 0 ? 'success' : 'error';
+      currentTrainingJob.finishedAt = Date.now();
+      if (code !== 0) {
+        currentTrainingJob.error = `Training exited with code ${code}`;
+        logger.error({ code }, 'Training job failed');
+      } else {
+        logger.info({ jobId }, 'Training job completed');
+      }
+    });
+
+    return reply.code(202).send({ jobId, status: 'running' });
+  });
   
   // Get all users with stats
   fastify.get('/users', {

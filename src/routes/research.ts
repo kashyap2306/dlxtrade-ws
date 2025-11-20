@@ -164,6 +164,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
           if (!('recommendedTrade' in result)) result.recommendedTrade = null;
           if (!('blurFields' in result)) result.blurFields = false;
           if (!('apiCalls' in result)) result.apiCalls = [];
+          if (!('explanations' in result)) result.explanations = [];
           if (!('liveAnalysis' in result)) {
             result.liveAnalysis = {
               isLive: false,
@@ -351,15 +352,16 @@ export async function researchRoutes(fastify: FastifyInstance) {
       if (!('mode' in fullResult)) fullResult.mode = 'LOW';
       if (!('recommendedTrade' in fullResult)) fullResult.recommendedTrade = null;
       if (!('blurFields' in fullResult)) fullResult.blurFields = false;
-      if (!('apiCalls' in fullResult)) fullResult.apiCalls = [];
-      if (!('liveAnalysis' in fullResult)) {
-        fullResult.liveAnalysis = {
-          isLive: false,
-          lastUpdated: new Date().toISOString(),
-          summary: 'Live analysis not available',
-          meta: {},
-        };
-      }
+          if (!('apiCalls' in fullResult)) fullResult.apiCalls = [];
+          if (!('explanations' in fullResult)) fullResult.explanations = [];
+          if (!('liveAnalysis' in fullResult)) {
+            fullResult.liveAnalysis = {
+              isLive: false,
+              lastUpdated: new Date().toISOString(),
+              summary: 'Live analysis not available',
+              meta: {},
+            };
+          }
       
       // Build complete response with all fields
       const resultWithMetadata = {

@@ -7,7 +7,11 @@
     "start": "node dist/server.js",
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "verify:ws": "node -e \"require('@fastify/websocket'); require('ws'); console.log('ws-ok')\"",
-    "postinstall": "npm run verify:ws"
+    "postinstall": "npm run verify:ws",
+    "test": "jest",
+    "collect:data": "node scripts/collect_historical.js",
+    "label:data": "node scripts/label_dataset.js",
+    "test:replay": "node scripts/run_replay_test.js"
   },
   "engines": {
     "node": ">=20"
@@ -19,6 +23,7 @@
     "@fastify/jwt": "^7.2.4",
     "@fastify/rate-limit": "^9.1.0",
     "@fastify/websocket": "^8.3.1",
+    "@google/generative-ai": "^0.21.0",
     "abbrev": "^1.1.1",
     "abort-controller": "^3.0.0",
     "abstract-logging": "^2.0.1",
@@ -111,6 +116,7 @@
     "d3-time-format": "^4.1.0",
     "d3-timer": "^3.0.1",
     "dateformat": "^4.6.3",
+    "dayjs": "^1.11.19",
     "debug": "^4.4.3",
     "decimal.js-light": "^2.5.1",
     "dedent": "^1.7.0",
@@ -382,6 +388,7 @@
     "p-try": "^2.2.0",
     "package-json-from-dist": "^1.0.1",
     "parent-module": "^1.0.1",
+    "parquetjs-lite": "^0.8.7",
     "parse-json": "^5.2.0",
     "path-exists": "^4.0.0",
     "path-is-absolute": "^1.0.1",
@@ -554,11 +561,11 @@
     "yargs-parser": "^21.1.1",
     "yn": "^3.1.1",
     "yocto-queue": "^0.1.0",
-    "zod": "^3.25.76",
-    "@google/generative-ai": "^0.21.0"
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",
+    "@types/jest": "^30.0.0",
     "@types/node": "^20.11.24",
     "@types/pg": "^8.10.9",
     "@types/uuid": "^9.0.7",

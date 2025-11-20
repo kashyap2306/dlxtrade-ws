@@ -4,6 +4,11 @@ import { CryptoQuantAdapter } from './cryptoquantAdapter';
 import { LunarCrushAdapter } from './lunarcrushAdapter';
 import { CoinAPIAdapter } from './coinapiAdapter';
 import { apiUsageTracker } from './apiUsageTracker';
+import { featureEngine } from './featureEngine';
+import { mlModelService } from './ml/mlModelService';
+import { CoinGlassConnector } from './dataConnectors/coinglassConnector';
+import { IntoTheBlockConnector } from './dataConnectors/intotheblockConnector';
+import { NewsApiConnector } from './dataConnectors/newsApiConnector';
 import axios from 'axios';
 import type { Orderbook, Trade } from '../types';
 import type { ExchangeConnector } from './exchangeConnector';
@@ -51,6 +56,9 @@ export interface ResearchResult {
   blurFields: boolean;
   // API call tracking
   apiCalls: string[]; // Array of API endpoints called
+  // ML Model explainability
+  explanations?: string[]; // SHAP-based explanations (max 6)
+  accuracyRange?: string; // e.g., "85-90%"
 }
 
 export class ResearchEngine {
@@ -60,6 +68,24 @@ export class ResearchEngine {
   private volumeHistory: Map<string, number[]> = new Map();
   private depthHistory: Map<string, number[]> = new Map();
   private imbalanceHistory: Map<string, number[]> = new Map();
+  
+  // ML Model connectors (optional - only if API keys provided)
+  private coinGlassConnector?: CoinGlassConnector;
+  private intoTheBlockConnector?: IntoTheBlockConnector;
+  private newsApiConnector?: NewsApiConnector;
+  
+  constructor() {
+    // Initialize connectors if API keys are available
+    if (process.env.COINGLASS_API_KEY) {
+      this.coinGlassConnector = new CoinGlassConnector(process.env.COINGLASS_API_KEY);
+    }
+    if (process.env.INTO_THE_BLOCK_API_KEY) {
+      this.intoTheBlockConnector = new IntoTheBlockConnector(process.env.INTO_THE_BLOCK_API_KEY);
+    }
+    if (process.env.NEWS_API_KEY) {
+      this.newsApiConnector = new NewsApiConnector(process.env.NEWS_API_KEY);
+    }
+  }
 
   async runResearch(symbol: string, uid: string, adapter?: ExchangeConnector, forceEngine: boolean = false): Promise<ResearchResult> {
     // Track all API calls
@@ -120,7 +146,7 @@ export class ResearchEngine {
         accuracy = Math.min(accuracy, 0.49);
       }
       
-      // Determine signal using dynamic thresholds
+      // Determine signal using dynamic thresholds (ML prediction will override if available)
       // If no orderbook data, signal will be HOLD (imbalance = 0)
       let signal: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
       try {
@@ -152,6 +178,8 @@ export class ResearchEngine {
       let signals: ResearchSignal[] = [];
       let message: string | undefined = undefined;
       let currentPrice = 0; // Declare outside try block for scope
+      let mlPrediction: { signal: 'BUY' | 'SELL' | 'HOLD'; probability: number; explanations: string[] } | null = null;
+      let explanations: string[] = [];
 
       try {
         // ALWAYS fetch current price - from adapter or Binance fallback
@@ -214,6 +242,73 @@ export class ResearchEngine {
               }
             }
           }
+        }
+
+        // ML Model Prediction (if model is available and we have price)
+        let mlPrediction: { signal: 'BUY' | 'SELL' | 'HOLD'; probability: number; explanations: string[] } | null = null;
+        let mlExplanations: string[] = [];
+        
+        if (currentPrice > 0) {
+          try {
+            // Compute feature vector for ML model
+            const orderbookForML = adapter ? await adapter.getOrderbook(symbol, 20).catch(() => null) : null;
+            const trades = this.recentTrades.get(symbol) || [];
+            const volume24h = microSignals.volume || 0;
+            
+            const featureVector = featureEngine.computeFeatureVector(
+              symbol,
+              currentPrice,
+              orderbookForML,
+              trades,
+              volume24h,
+              '5m'
+            );
+            
+            // Get ML prediction
+            const isModelReady = await mlModelService.isModelReady();
+            if (isModelReady) {
+              mlPrediction = await mlModelService.predict(featureVector, symbol);
+              mlExplanations = mlPrediction.explanations || [];
+              
+              // Use ML probability as accuracy if higher
+              if (mlPrediction.probability > accuracy) {
+                accuracy = mlPrediction.probability;
+                logger.info({ symbol, signal: mlPrediction.signal, probability: mlPrediction.probability }, 'ML model prediction obtained');
+              }
+              
+              // Use ML signal if probability >= threshold
+              const mlThreshold = parseFloat(process.env.ML_PROBABILITY_THRESHOLD || '0.75');
+              if (mlPrediction.probability >= mlThreshold) {
+                signal = mlPrediction.signal;
+                logger.info({ symbol, signal, probability: mlPrediction.probability }, 'Using ML model signal');
+              }
+            }
+          } catch (mlErr: any) {
+            logger.warn({ err: mlErr, symbol }, 'ML prediction failed, using rule-based logic');
+          }
+        }
+
+        // Generate comprehensive explanations from all available indicators
+        let explanations: string[] = [];
+        try {
+          explanations = await this.generateExplanations(
+            symbol,
+            currentPrice,
+            imbalance,
+            microSignals,
+            signal,
+            accuracy,
+            adapter,
+            uid,
+            apiCalls
+          );
+          // Merge ML explanations if available (they may be more sophisticated)
+          if (mlExplanations.length > 0) {
+            explanations = [...mlExplanations, ...explanations].slice(0, 12); // Max 12 explanations
+          }
+        } catch (explErr: any) {
+          logger.warn({ err: explErr, symbol }, 'Explanation generation failed, using ML or basic explanations');
+          explanations = mlExplanations.length > 0 ? mlExplanations : [];
         }
 
         // Determine side based on signal
@@ -453,6 +548,17 @@ export class ResearchEngine {
         recommendedTrade: finalRecommendedTrade,
         blurFields,
         apiCalls: finalApiCalls, // Always include API call log
+        explanations: explanations.length > 0 ? explanations : [], // Always include explanations array
+        accuracyRange: mlPrediction?.accuracyRange
+          || (accuracy >= 0.9
+            ? '90-95%'
+            : accuracy >= 0.85
+            ? '85-90%'
+            : accuracy >= 0.8
+            ? '80-85%'
+            : accuracy >= 0.75
+            ? '75-80%'
+            : undefined),
       };
       
       logger.info({ 
@@ -555,6 +661,7 @@ export class ResearchEngine {
         recommendedTrade: null,
         blurFields: false,
         apiCalls: apiCalls.length > 0 ? apiCalls : [], // Include any API calls made before error
+        explanations: [], // Always include explanations array
       };
       
       console.log('🔍 [RESEARCH_ENGINE] ERROR RESULT RETURN:', JSON.stringify(errorResult, null, 2));
@@ -1070,6 +1177,329 @@ export class ResearchEngine {
     const depthTooLow = dynamic.depthMedian > 0 ? micro.orderbookDepth < dynamic.depthMedian * 0.5 : false;
     const volumeTooLow = dynamic.volumeMedian > 0 ? micro.volume < dynamic.volumeMedian * 0.5 : false;
     return spreadTooWide || depthTooLow || volumeTooLow;
+  }
+
+  /**
+   * Generate comprehensive explanations from all available indicators
+   */
+  private async generateExplanations(
+    symbol: string,
+    currentPrice: number,
+    imbalance: number,
+    microSignals: ResearchResult['microSignals'],
+    signal: 'BUY' | 'SELL' | 'HOLD',
+    accuracy: number,
+    adapter?: ExchangeConnector,
+    uid?: string,
+    apiCalls?: string[]
+  ): Promise<string[]> {
+    const explanations: string[] = [];
+
+    // 1. RSI Analysis (simplified - would need historical price data for full RSI)
+    if (currentPrice > 0) {
+      const history = this.orderbookHistory.get(symbol);
+      if (history && history.length >= 14) {
+        try {
+          // Calculate simple RSI from price momentum
+          const prices = history.slice(-14).map(ob => {
+            const bid = parseFloat(ob.bids[0]?.price || '0');
+            const ask = parseFloat(ob.asks[0]?.price || '0');
+            return (bid + ask) / 2;
+          }).filter(p => p > 0);
+
+          if (prices.length >= 14) {
+            const gains: number[] = [];
+            const losses: number[] = [];
+            for (let i = 1; i < prices.length; i++) {
+              const change = prices[i] - prices[i - 1];
+              if (change > 0) gains.push(change);
+              else losses.push(Math.abs(change));
+            }
+            
+            const avgGain = gains.reduce((a, b) => a + b, 0) / 14;
+            const avgLoss = losses.reduce((a, b) => a + b, 0) / 14;
+            
+            if (avgLoss > 0) {
+              const rs = avgGain / avgLoss;
+              const rsi = 100 - (100 / (1 + rs));
+              
+              if (rsi < 30) {
+                explanations.push(`RSI(14) oversold at ${rsi.toFixed(1)} → long bias`);
+              } else if (rsi > 70) {
+                explanations.push(`RSI(14) overbought at ${rsi.toFixed(1)} → short bias`);
+              } else if (rsi > 50) {
+                explanations.push(`RSI(14) at ${rsi.toFixed(1)} → bullish momentum`);
+              } else {
+                explanations.push(`RSI(14) at ${rsi.toFixed(1)} → bearish momentum`);
+              }
+            }
+          }
+        } catch (rsiErr: any) {
+          logger.debug({ err: rsiErr, symbol }, 'RSI calculation failed');
+        }
+      }
+    }
+
+    // 2. MACD Crossover Detection (simplified - using EMA-like calculation)
+    if (currentPrice > 0) {
+      const history = this.orderbookHistory.get(symbol);
+      if (history && history.length >= 26) {
+        try {
+          const prices = history.slice(-26).map(ob => {
+            const bid = parseFloat(ob.bids[0]?.price || '0');
+            const ask = parseFloat(ob.asks[0]?.price || '0');
+            return (bid + ask) / 2;
+          }).filter(p => p > 0);
+
+          if (prices.length >= 26) {
+            // Simple EMA12 and EMA26
+            let ema12 = prices.slice(0, 12).reduce((a, b) => a + b, 0) / 12;
+            let ema26 = prices.slice(0, 26).reduce((a, b) => a + b, 0) / 26;
+            
+            const multiplier12 = 2 / (12 + 1);
+            const multiplier26 = 2 / (26 + 1);
+            
+            for (let i = 12; i < prices.length; i++) {
+              ema12 = (prices[i] * multiplier12) + (ema12 * (1 - multiplier12));
+            }
+            for (let i = 26; i < prices.length; i++) {
+              ema26 = (prices[i] * multiplier26) + (ema26 * (1 - multiplier26));
+            }
+            
+            const macd = ema12 - ema26;
+            const prevEma12 = prices.slice(0, 12).reduce((a, b) => a + b, 0) / 12;
+            const prevEma26 = prices.slice(0, 26).reduce((a, b) => a + b, 0) / 26;
+            const prevMacd = prevEma12 - prevEma26;
+            
+            if (macd > 0 && prevMacd <= 0) {
+              explanations.push('MACD bullish crossover detected');
+            } else if (macd < 0 && prevMacd >= 0) {
+              explanations.push('MACD bearish crossover detected');
+            } else if (macd > 0) {
+              explanations.push(`MACD positive at ${macd.toFixed(4)} → bullish trend`);
+            } else {
+              explanations.push(`MACD negative at ${macd.toFixed(4)} → bearish trend`);
+            }
+          }
+        } catch (macdErr: any) {
+          logger.debug({ err: macdErr, symbol }, 'MACD calculation failed');
+        }
+      }
+    }
+
+    // 3. Orderbook Imbalance
+    if (imbalance !== 0) {
+      const imbalancePct = Math.abs(imbalance * 100);
+      if (imbalance > 0) {
+        explanations.push(`Buy-side orderbook imbalance ${imbalancePct.toFixed(1)}%`);
+      } else {
+        explanations.push(`Sell-side orderbook imbalance ${imbalancePct.toFixed(1)}%`);
+      }
+    }
+
+    // 4. Volume Spike or Drop
+    if (microSignals.volume > 0) {
+      const volumeHistory = this.volumeHistory.get(symbol) || [];
+      if (volumeHistory.length > 0) {
+        const avgVolume = volumeHistory.reduce((a, b) => a + b, 0) / volumeHistory.length;
+        const volumeChange = ((microSignals.volume - avgVolume) / avgVolume) * 100;
+        
+        if (volumeChange > 50) {
+          explanations.push(`Volume spike ${volumeChange.toFixed(1)}% above average → increased activity`);
+        } else if (volumeChange < -50) {
+          explanations.push(`Volume drop ${Math.abs(volumeChange).toFixed(1)}% below average → decreased activity`);
+        } else if (volumeChange > 20) {
+          explanations.push(`Volume increased ${volumeChange.toFixed(1)}% → moderate activity`);
+        }
+      }
+    }
+
+    // 5. Funding Rate & Open Interest (if available from CoinGlass)
+    if (this.coinGlassConnector) {
+      try {
+        const coinGlassData = await this.coinGlassConnector.getFundingRate(symbol).catch(() => null);
+        if (coinGlassData) {
+          // Funding Rate
+          if (coinGlassData.fundingRate !== undefined && coinGlassData.fundingRate !== null) {
+            const fundingRate = coinGlassData.fundingRate;
+            if (fundingRate < 0) {
+              explanations.push(`Negative funding rate ${(fundingRate * 100).toFixed(4)}% supports long`);
+            } else if (fundingRate > 0.01) {
+              explanations.push(`High positive funding rate ${(fundingRate * 100).toFixed(4)}% supports short`);
+            } else if (fundingRate > 0) {
+              explanations.push(`Positive funding rate ${(fundingRate * 100).toFixed(4)}% → moderate long bias`);
+            }
+          }
+          
+          // Open Interest Change
+          if (coinGlassData.openInterestChange24h !== undefined && coinGlassData.openInterestChange24h !== null) {
+            const changePct = coinGlassData.openInterestChange24h * 100;
+            if (changePct > 5) {
+              explanations.push(`Open Interest increased ${changePct.toFixed(1)}% → strong bullish momentum`);
+            } else if (changePct < -5) {
+              explanations.push(`Open Interest decreased ${Math.abs(changePct).toFixed(1)}% → liquidation pressure`);
+            } else if (changePct > 2) {
+              explanations.push(`Open Interest increased ${changePct.toFixed(1)}% → moderate accumulation`);
+            }
+          }
+        }
+      } catch (coinGlassErr: any) {
+        logger.debug({ err: coinGlassErr, symbol }, 'CoinGlass data fetch failed');
+      }
+    }
+
+    // 7. Whale Activity (from CryptoQuant)
+    if (uid) {
+      try {
+        const integrations = await firestoreAdapter.getEnabledIntegrations(uid).catch(() => ({}));
+        if (integrations.cryptoquant) {
+          try {
+            const apiKey = integrations.cryptoquant.apiKey;
+            if (apiKey && typeof apiKey === 'string' && apiKey.trim().length >= 20) {
+              const cryptoquantAdapter = new CryptoQuantAdapter(apiKey);
+              if (!cryptoquantAdapter.disabled) {
+                const onChainData = await cryptoquantAdapter.getOnChainMetrics(symbol).catch(() => null);
+                if (onChainData && onChainData.whaleTransactions) {
+                  if (onChainData.whaleTransactions > 20) {
+                    explanations.push(`Whale accumulation detected (${onChainData.whaleTransactions} large transactions)`);
+                  } else if (onChainData.whaleTransactions > 10) {
+                    explanations.push(`Moderate whale activity (${onChainData.whaleTransactions} large transactions)`);
+                  }
+                }
+              }
+            }
+          } catch (whaleErr: any) {
+            logger.debug({ err: whaleErr, symbol }, 'Whale activity fetch failed');
+          }
+        }
+      } catch (whaleErr: any) {
+        logger.debug({ err: whaleErr, symbol }, 'Whale activity check failed');
+      }
+    }
+
+    // 8. Exchange Inflow/Outflow (from CryptoQuant)
+    if (uid) {
+      try {
+        const integrations = await firestoreAdapter.getEnabledIntegrations(uid).catch(() => ({}));
+        if (integrations.cryptoquant) {
+          try {
+            const apiKey = integrations.cryptoquant.apiKey;
+            if (apiKey && typeof apiKey === 'string' && apiKey.trim().length >= 20) {
+              const cryptoquantAdapter = new CryptoQuantAdapter(apiKey);
+              if (!cryptoquantAdapter.disabled) {
+                const flowData = await cryptoquantAdapter.getExchangeFlow(symbol).catch(() => null);
+                if (flowData && flowData.exchangeFlow !== undefined) {
+                  const flowPct = flowData.exchangeFlow * 100;
+                  if (flowPct > 0.1) {
+                    explanations.push(`Exchange inflow ${flowPct.toFixed(2)}% → accumulation phase`);
+                  } else if (flowPct < -0.1) {
+                    explanations.push(`Exchange outflow ${Math.abs(flowPct).toFixed(2)}% → distribution phase`);
+                  }
+                }
+              }
+            }
+          } catch (flowErr: any) {
+            logger.debug({ err: flowErr, symbol }, 'Exchange flow fetch failed');
+          }
+        }
+      } catch (flowErr: any) {
+        logger.debug({ err: flowErr, symbol }, 'Exchange flow check failed');
+      }
+    }
+
+    // 9. News & Social Sentiment (from LunarCrush)
+    if (uid) {
+      try {
+        const integrations = await firestoreAdapter.getEnabledIntegrations(uid).catch(() => ({}));
+        if (integrations.lunarcrush) {
+          try {
+            const apiKey = integrations.lunarcrush.apiKey;
+            if (apiKey && typeof apiKey === 'string' && apiKey.trim().length >= 20) {
+              const lunarcrushAdapter = new LunarCrushAdapter(apiKey);
+              const sentimentData = await lunarcrushAdapter.getCoinData(symbol).catch(() => null);
+              if (sentimentData) {
+                if (sentimentData.sentiment !== undefined) {
+                  const sentimentPct = sentimentData.sentiment * 100;
+                  if (sentimentPct > 5) {
+                    explanations.push(`News sentiment +${sentimentPct.toFixed(1)}% (bullish)`);
+                  } else if (sentimentPct < -5) {
+                    explanations.push(`News sentiment ${sentimentPct.toFixed(1)}% (bearish)`);
+                  }
+                }
+                if (sentimentData.bullishSentiment !== undefined) {
+                  const bullishPct = sentimentData.bullishSentiment * 100;
+                  if (bullishPct > 60) {
+                    explanations.push(`Social sentiment ${bullishPct.toFixed(0)}% bullish → strong community support`);
+                  }
+                }
+              }
+            }
+          } catch (sentimentErr: any) {
+            logger.debug({ err: sentimentErr, symbol }, 'Sentiment fetch failed');
+          }
+        }
+      } catch (sentimentErr: any) {
+        logger.debug({ err: sentimentErr, symbol }, 'Sentiment check failed');
+      }
+    }
+
+    // 10. Trend Strength (ADX/EMA slope)
+    if (currentPrice > 0 && microSignals.priceMomentum !== 0) {
+      const momentumPct = microSignals.priceMomentum * 100;
+      if (momentumPct > 1) {
+        explanations.push(`Strong uptrend detected (${momentumPct.toFixed(2)}% momentum)`);
+      } else if (momentumPct < -1) {
+        explanations.push(`Strong downtrend detected (${momentumPct.toFixed(2)}% momentum)`);
+      } else if (momentumPct > 0.5) {
+        explanations.push(`Moderate uptrend (${momentumPct.toFixed(2)}% momentum)`);
+      } else if (momentumPct < -0.5) {
+        explanations.push(`Moderate downtrend (${momentumPct.toFixed(2)}% momentum)`);
+      }
+    }
+
+    // 11. Pattern Match (simplified - detect basic patterns)
+    if (currentPrice > 0) {
+      const history = this.orderbookHistory.get(symbol);
+      if (history && history.length >= 5) {
+        try {
+          const prices = history.slice(-5).map(ob => {
+            const bid = parseFloat(ob.bids[0]?.price || '0');
+            const ask = parseFloat(ob.asks[0]?.price || '0');
+            return (bid + ask) / 2;
+          }).filter(p => p > 0);
+
+          if (prices.length >= 5) {
+            // Detect ascending/descending pattern
+            const isAscending = prices.every((p, i) => i === 0 || p >= prices[i - 1]);
+            const isDescending = prices.every((p, i) => i === 0 || p <= prices[i - 1]);
+            
+            if (isAscending && prices[prices.length - 1] > prices[0] * 1.01) {
+              explanations.push('Ascending price pattern detected → bullish formation');
+            } else if (isDescending && prices[prices.length - 1] < prices[0] * 0.99) {
+              explanations.push('Descending price pattern detected → bearish formation');
+            }
+          }
+        } catch (patternErr: any) {
+          logger.debug({ err: patternErr, symbol }, 'Pattern detection failed');
+        }
+      }
+    }
+
+    // 12. Market Conditions
+    if (imbalance > 0.15) {
+      explanations.push('Bullish pressure detected → buyers dominating orderbook');
+    } else if (imbalance < -0.15) {
+      explanations.push('Bearish pressure detected → sellers dominating orderbook');
+    }
+    
+    if (accuracy >= 0.8) {
+      explanations.push(`High confidence signal (${(accuracy * 100).toFixed(0)}%) → strong market alignment`);
+    } else if (accuracy < 0.6) {
+      explanations.push(`Low confidence signal (${(accuracy * 100).toFixed(0)}%) → wait for better conditions`);
+    }
+
+    // Return explanations (limit to 12 max for UI)
+    return explanations.slice(0, 12);
   }
 }
 

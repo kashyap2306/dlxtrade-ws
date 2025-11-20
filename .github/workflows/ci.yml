@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, ml-training ]
   pull_request:
     branches: [ main, develop ]
 
@@ -70,4 +70,33 @@ jobs:
       
       - name: Build
         run: pnpm build
+
+  ml-backtest:
+    if: github.ref == 'refs/heads/ml-training'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./dlxtrade-ws
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Install Node dependencies
+        run: npm install
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install --no-cache-dir -r ml-service/requirements.txt
+
+      - name: Run 7-day replay backtest
+        run: npm run test:replay -- --symbol BTCUSDT --days 7 --synthetic
 
