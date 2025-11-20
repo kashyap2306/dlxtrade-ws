@@ -112,6 +112,16 @@ async function start() {
         */
         console.log('ℹ️  Firestore data seeding is disabled (seedFirestoreData() commented out)');
 
+        // Start live analysis scheduler
+        try {
+          const { liveAnalysisService } = await import('./services/liveAnalysisService');
+          liveAnalysisService.start();
+          console.log('✅ Live analysis scheduler started (updates every 5 minutes)');
+        } catch (schedulerErr: any) {
+          console.error('❌ Failed to start live analysis scheduler:', schedulerErr.message);
+          logger.error({ error: schedulerErr.message }, 'Failed to start live analysis scheduler');
+        }
+
         // Auto-promote the specified admin user unconditionally
         try {
           const { getFirebaseAdmin } = await import('./utils/firebase');

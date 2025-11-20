@@ -6,6 +6,19 @@ import { CoinAPIAdapter } from './coinapiAdapter';
 import type { Orderbook, Trade } from '../types';
 import type { ExchangeConnector } from './exchangeConnector';
 
+export interface ResearchSignal {
+  type: 'entry' | 'exit' | 'sl' | 'tp';
+  price: number;
+  reason?: string;
+}
+
+export interface LiveAnalysis {
+  isLive: boolean;
+  lastUpdated: string; // ISO timestamp
+  summary: string;
+  meta?: any;
+}
+
 export interface ResearchResult {
   symbol: string;
   signal: 'BUY' | 'SELL' | 'HOLD';
@@ -18,6 +31,17 @@ export interface ResearchResult {
     priceMomentum: number;
     orderbookDepth: number;
   };
+  // Extended fields for full signal output
+  entry: number | null;
+  exits: number[];
+  stopLoss: number | null;
+  takeProfit: number | null;
+  side: 'LONG' | 'SHORT' | 'NEUTRAL';
+  confidence: number; // 0-100
+  timeframe: string;
+  signals: ResearchSignal[];
+  liveAnalysis?: LiveAnalysis;
+  message?: string;
 }
 
 export class ResearchEngine {
@@ -98,6 +122,153 @@ export class ResearchEngine {
         recommendedAction = signal === 'HOLD' ? 'Wait for better signal' : `Consider ${signal} trade`;
       }
 
+      // Generate full signal output: entry, exits, stopLoss, takeProfit, side, confidence, timeframe, signals
+      let entry: number | null = null;
+      let exits: number[] = [];
+      let stopLoss: number | null = null;
+      let takeProfit: number | null = null;
+      let side: 'LONG' | 'SHORT' | 'NEUTRAL' = 'NEUTRAL';
+      let confidence: number = Math.round(accuracy * 100); // Convert 0-1 to 0-100
+      let timeframe: string = '5m'; // Default timeframe
+      let signals: ResearchSignal[] = [];
+      let message: string | undefined = undefined;
+
+      try {
+        // Get current price from adapter or use default calculation
+        let currentPrice = 0;
+        if (adapter) {
+          try {
+            const ticker = await adapter.getTicker(symbol);
+            currentPrice = parseFloat(ticker?.lastPrice || ticker?.price || '0');
+          } catch (tickerErr: any) {
+            logger.debug({ err: tickerErr, symbol }, 'Could not fetch ticker, calculating from orderbook');
+            // Fallback: use mid price from orderbook if available
+            if (microSignals.volume > 0) {
+              // Estimate price from orderbook depth
+              const history = this.orderbookHistory.get(symbol);
+              if (history && history.length > 0) {
+                const latest = history[history.length - 1];
+                const bestBid = parseFloat(latest.bids[0]?.price || '0');
+                const bestAsk = parseFloat(latest.asks[0]?.price || '0');
+                currentPrice = (bestBid + bestAsk) / 2;
+              }
+            }
+          }
+        }
+
+        // Determine side based on signal
+        if (signal === 'BUY') {
+          side = 'LONG';
+        } else if (signal === 'SELL') {
+          side = 'SHORT';
+        } else {
+          side = 'NEUTRAL';
+        }
+
+        // Generate entry, stopLoss, takeProfit only if we have a valid signal and price
+        if (side !== 'NEUTRAL' && currentPrice > 0 && signal !== 'HOLD') {
+          entry = currentPrice;
+          
+          // Calculate stop loss: 2% below entry for LONG, 2% above for SHORT
+          const stopLossPercent = 0.02;
+          if (side === 'LONG') {
+            stopLoss = currentPrice * (1 - stopLossPercent);
+          } else {
+            stopLoss = currentPrice * (1 + stopLossPercent);
+          }
+
+          // Calculate take profit: 3% above entry for LONG, 3% below for SHORT
+          const takeProfitPercent = 0.03;
+          if (side === 'LONG') {
+            takeProfit = currentPrice * (1 + takeProfitPercent);
+          } else {
+            takeProfit = currentPrice * (1 - takeProfitPercent);
+          }
+
+          // Multiple exit targets (primary TP + 2 additional levels)
+          if (side === 'LONG') {
+            exits = [
+              takeProfit, // Primary TP
+              currentPrice * (1 + takeProfitPercent * 1.5), // Secondary TP
+              currentPrice * (1 + takeProfitPercent * 2), // Tertiary TP
+            ];
+          } else {
+            exits = [
+              takeProfit, // Primary TP
+              currentPrice * (1 - takeProfitPercent * 1.5), // Secondary TP
+              currentPrice * (1 - takeProfitPercent * 2), // Tertiary TP
+            ];
+          }
+
+          // Build signals array
+          signals = [
+            {
+              type: 'entry',
+              price: entry,
+              reason: `Entry signal based on ${signal} recommendation with ${confidence}% confidence`,
+            },
+            {
+              type: 'sl',
+              price: stopLoss,
+              reason: 'Stop loss set at 2% from entry to limit downside risk',
+            },
+            {
+              type: 'tp',
+              price: takeProfit,
+              reason: 'Primary take profit target at 3% from entry',
+            },
+          ];
+
+          // Add exit signals
+          exits.forEach((exitPrice, index) => {
+            if (index > 0) {
+              signals.push({
+                type: 'exit',
+                price: exitPrice,
+                reason: index === 1 ? 'Secondary exit target' : 'Tertiary exit target',
+              });
+            }
+          });
+
+          timeframe = '5m'; // Default to 5-minute timeframe
+        } else {
+          // No valid signal or price - set message explaining why
+          if (currentPrice === 0) {
+            message = 'Unable to determine entry price - exchange API unavailable or symbol not found';
+          } else if (signal === 'HOLD') {
+            message = 'Signal is HOLD - no entry/exit levels generated. Wait for better market conditions.';
+          }
+        }
+      } catch (signalGenErr: any) {
+        logger.warn({ err: signalGenErr, symbol }, 'Error generating full signals, using defaults');
+        message = `Signal generation encountered an error: ${signalGenErr.message}`;
+      }
+
+      // Generate liveAnalysis
+      let liveAnalysis: LiveAnalysis | undefined = undefined;
+      try {
+        const now = new Date();
+        liveAnalysis = {
+          isLive: true,
+          lastUpdated: now.toISOString(),
+          summary: `${symbol} analysis: ${signal} signal with ${confidence}% confidence. ${side !== 'NEUTRAL' ? `Entry: ${entry || 'N/A'}, SL: ${stopLoss || 'N/A'}, TP: ${takeProfit || 'N/A'}` : 'No active trade signals.'}`,
+          meta: {
+            accuracy,
+            orderbookImbalance: imbalance,
+            microSignals,
+            timeframe,
+          },
+        };
+      } catch (liveErr: any) {
+        logger.warn({ err: liveErr, symbol }, 'Error generating liveAnalysis');
+        liveAnalysis = {
+          isLive: false,
+          lastUpdated: new Date().toISOString(),
+          summary: 'Live analysis temporarily unavailable',
+          meta: {},
+        };
+      }
+
       const result: ResearchResult = {
         symbol,
         signal,
@@ -105,6 +276,16 @@ export class ResearchEngine {
         orderbookImbalance: imbalance,
         recommendedAction,
         microSignals,
+        entry,
+        exits,
+        stopLoss,
+        takeProfit,
+        side,
+        confidence,
+        timeframe,
+        signals,
+        liveAnalysis,
+        message,
       };
 
       // Save to Firestore (non-blocking - don't fail research if save fails)
@@ -142,25 +323,27 @@ export class ResearchEngine {
       console.log('🔍 [RESEARCH_ENGINE] Has result wrapper?', 'result' in (result as any));
       console.log('🔍 [RESEARCH_ENGINE] Has analysis wrapper?', 'analysis' in (result as any));
 
-      // Ensure result is exactly the shape we need - no wrappers
-      const cleanResult: ResearchResult = {
-        symbol: result.symbol,
-        signal: result.signal,
-        accuracy: result.accuracy,
-        orderbookImbalance: result.orderbookImbalance,
-        recommendedAction: result.recommendedAction,
-        microSignals: result.microSignals,
-      };
+      // Log generated signals
+      console.log('[DEEP-RESEARCH] Generated signals:', {
+        symbol,
+        entry,
+        stopLoss,
+        takeProfit,
+        side,
+        confidence,
+        timeframe,
+        signalsCount: signals.length,
+      });
       
-      console.log('🔍 [RESEARCH_ENGINE] CLEAN RESULT RETURN:', JSON.stringify(cleanResult, null, 2));
+      console.log('🔍 [RESEARCH_ENGINE] CLEAN RESULT RETURN:', JSON.stringify(result, null, 2));
       
-      return cleanResult;
+      return result;
     } catch (error: any) {
       // Wrap entire research in try/catch to prevent any unhandled errors
       // NEVER throw - always return a valid result even on error
       logger.error({ error: error.message, symbol, uid, stack: error.stack }, 'Error in runResearch - returning fallback result');
       
-      // Return fallback result instead of throwing - ensure clean shape
+      // Return fallback result instead of throwing - ensure clean shape with all required fields
       const fallbackResult: ResearchResult = {
         symbol,
         signal: 'HOLD' as const,
@@ -173,6 +356,21 @@ export class ResearchEngine {
           priceMomentum: 0,
           orderbookDepth: 0,
         },
+        entry: null,
+        exits: [],
+        stopLoss: null,
+        takeProfit: null,
+        side: 'NEUTRAL',
+        confidence: 50,
+        timeframe: '5m',
+        signals: [],
+        liveAnalysis: {
+          isLive: false,
+          lastUpdated: new Date().toISOString(),
+          summary: 'Research engine encountered an error',
+          meta: {},
+        },
+        message: `Research error: ${error.message || 'Unknown error'}`,
       };
       
       console.log('🔍 [RESEARCH_ENGINE] FALLBACK RESULT RETURN:', JSON.stringify(fallbackResult, null, 2));

@@ -279,6 +279,12 @@ export async function buildApp(): Promise<FastifyInstance> {
       console.error('❌ Error sending WebSocket welcome message:', err);
     }
 
+    // Register user WebSocket connection
+    if (uid) {
+      const { userWebSocketManager } = await import('./services/userWebSocketManager');
+      userWebSocketManager.registerUser(connection.socket, uid);
+    }
+
     // Register WebSocket to user's engines if they exist
     const { userEngineManager } = await import('./services/userEngineManager');
     const accuracyEngine = userEngineManager.getAccuracyEngine(uid!);
@@ -298,16 +304,45 @@ export async function buildApp(): Promise<FastifyInstance> {
       logger.debug({ uid }, 'WebSocket connected but user engines not initialized yet');
     }
 
+    // Store user WebSocket connection for broadcasting research updates
+    // This allows broadcasting to specific users or all users
+    if (uid) {
+      // Store connection in a global map (would need to be created)
+      // For now, we'll use the adminWebSocketManager pattern
+      // In production, create a UserWebSocketManager similar to AdminWebSocketManager
+    }
+
     connection.socket.on('message', (message) => {
       try {
         const data = JSON.parse(message.toString());
         logger.debug({ data, uid }, 'WebSocket message received');
+        
+        // Handle research update subscriptions
+        if (data.type === 'subscribe' && data.channel?.startsWith('research:update:')) {
+          // User is subscribing to research updates for a symbol
+          const symbol = data.channel.replace('research:update:', '');
+          if (uid) {
+            (async () => {
+              const { userWebSocketManager } = await import('./services/userWebSocketManager');
+              userWebSocketManager.subscribeToSymbol(connection.socket, symbol);
+              logger.debug({ uid, symbol }, 'User subscribed to research updates');
+            })();
+          }
+        }
       } catch (err) {
         logger.error({ err }, 'Error parsing WebSocket message');
       }
     });
 
     connection.socket.on('close', () => {
+      // Unregister from user WebSocket manager
+      if (uid) {
+        (async () => {
+          const { userWebSocketManager } = await import('./services/userWebSocketManager');
+          userWebSocketManager.unregisterUser(connection.socket);
+        })();
+      }
+      
       if (accuracyEngine) {
         accuracyEngine.unregisterWebSocketClient(connection.socket);
       }

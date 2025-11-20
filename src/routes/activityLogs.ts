@@ -19,8 +19,18 @@ export async function activityLogsRoutes(fastify: FastifyInstance) {
         return reply.code(403).send({ error: 'Access denied' });
       }
 
+      // Firestore requires manual composite index for this query:
+      // Collection: activityLogs
+      // Fields: (userId ASC, timestamp DESC)
+      // Create this index in Firebase Console if you see index errors
+      
       const limitNum = limit ? parseInt(limit, 10) : 100;
-      const logs = await firestoreAdapter.getActivityLogs(targetUid, limitNum);
+      
+      // Auto-correct limit to max 500 instead of throwing error
+      // This prevents Firestore index errors
+      const safeLimit = Math.min(Math.max(1, limitNum), 500);
+      
+      const logs = await firestoreAdapter.getActivityLogs(targetUid, safeLimit);
       
       return { logs };
     } catch (err: any) {

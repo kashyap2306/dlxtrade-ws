@@ -2,11 +2,15 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { firestoreAdapter } from '../services/firestoreAdapter';
 import { researchEngine } from '../services/researchEngine';
 import { resolveExchangeConnector } from '../services/exchangeResolver';
+import { liveAnalysisService } from '../services/liveAnalysisService';
 import { z } from 'zod';
 import { logger } from '../utils/logger';
 
+// Firestore requires manual composite indexes for queries with multiple fields
+// If you see index errors, create indexes in Firebase Console
 const researchQuerySchema = z.object({
-  limit: z.coerce.number().int().positive().max(500).optional().default(100),
+  // Auto-correct limit to max 500 instead of throwing ZodError
+  limit: z.coerce.number().int().positive().transform((val) => Math.min(val, 500)).optional().default(100),
 });
 
 export async function researchRoutes(fastify: FastifyInstance) {
@@ -234,6 +238,32 @@ export async function researchRoutes(fastify: FastifyInstance) {
       } catch (notifErr: any) {
         // Log but don't fail research if notification fails
         logger.warn({ err: notifErr, uid: user.uid }, 'Failed to send notification (non-critical)');
+      }
+      
+      // Register symbol for live analysis updates
+      liveAnalysisService.registerSymbol(symbol);
+      
+      // Broadcast WebSocket update to all users subscribed to this symbol
+      try {
+        const { userWebSocketManager } = await import('../services/userWebSocketManager');
+        userWebSocketManager.broadcastResearchUpdate(symbol, {
+          symbol,
+          result: resultWithMetadata,
+        });
+        console.log(`[DEEP-RESEARCH] WebSocket update broadcasted for ${symbol}`);
+      } catch (wsErr: any) {
+        logger.debug({ err: wsErr }, 'WebSocket broadcast failed (non-critical)');
+      }
+      
+      // Also notify admins
+      try {
+        const { adminWebSocketManager } = await import('../services/adminWebSocketManager');
+        adminWebSocketManager.notifyResearchUpdate(user.uid, {
+          symbol,
+          result: resultWithMetadata,
+        });
+      } catch (wsErr: any) {
+        logger.debug({ err: wsErr }, 'Admin WebSocket broadcast failed (non-critical)');
       }
       
       // Send response - NO WRAPPERS, NO RETURN OBJECT
@@ -527,6 +557,57 @@ export async function researchRoutes(fastify: FastifyInstance) {
       };
       reply.code(200).header('Content-Type', 'application/json').send(manualErrorResponse);
       return; // Explicit return to prevent further execution
+    }
+  });
+
+  // GET /api/research/live/:symbol - Get latest live analysis for a symbol
+  fastify.get('/live/:symbol', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { symbol: string } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      if (!user || !user.uid) {
+        return reply.code(401).header('Content-Type', 'application/json').send({
+          success: false,
+          message: 'Authentication required',
+          liveAnalysis: null,
+        });
+      }
+
+      const symbol = request.params.symbol.toUpperCase().trim();
+      
+      // Get latest live analysis
+      const liveAnalysis = await liveAnalysisService.getLiveAnalysis(symbol, user.uid);
+      
+      if (!liveAnalysis) {
+        return reply.code(200).header('Content-Type', 'application/json').send({
+          success: true,
+          liveAnalysis: null,
+          message: 'Live analysis not available for this symbol',
+        });
+      }
+
+      // Convert lastUpdated to IST
+      const lastUpdatedIST = new Date(liveAnalysis.lastUpdated).toLocaleString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        dateStyle: 'short',
+        timeStyle: 'medium',
+      });
+
+      return reply.code(200).header('Content-Type', 'application/json').send({
+        success: true,
+        liveAnalysis: {
+          ...liveAnalysis,
+          lastUpdatedIST,
+        },
+      });
+    } catch (error: any) {
+      logger.error({ error: error.message, symbol: request.params.symbol }, 'Error getting live analysis');
+      return reply.code(500).header('Content-Type', 'application/json').send({
+        success: false,
+        message: error.message || 'Error fetching live analysis',
+        liveAnalysis: null,
+      });
     }
   });
 }

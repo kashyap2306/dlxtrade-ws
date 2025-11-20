@@ -15,10 +15,16 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
         return reply.code(401).send({ error: 'Unauthorized', notifications: [], unreadCount: 0 });
       }
 
+      // Firestore requires manual composite index for this query:
+      // Collection: notifications
+      // Fields: (userId ASC, timestamp DESC)
+      // Create this index in Firebase Console if you see index errors
+      
       const limit = request.query.limit ? parseInt(request.query.limit, 10) : 50;
       
-      // Ensure limit is within bounds
-      const safeLimit = Math.min(Math.max(1, limit), 1000);
+      // Auto-correct limit to max 500 instead of throwing error
+      // This prevents ZodError and Firestore index errors
+      const safeLimit = Math.min(Math.max(1, limit), 500);
       
       let notifications: any[] = [];
       let unreadCount = 0;
@@ -65,18 +71,21 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
   // POST /api/notifications/push - Create a new notification
   fastify.post('/push', {
     preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Body: { userId: string; title: string; message: string; type: string } }>, reply: FastifyReply) => {
+  }, async (request: FastifyRequest<{ Body: { userId?: string; uid?: string; title: string; message: string; type: string } }>, reply: FastifyReply) => {
     try {
-      const { userId, title, message, type } = request.body;
+      const { userId, uid, title, message, type } = request.body;
+      
+      // Support both userId and uid (frontend sends uid)
+      const targetUserId = userId || uid;
       
       // Validate required fields
-      if (!userId || !title || !message || !type) {
-        throw new ValidationError('userId, title, message, and type are required');
+      if (!targetUserId || !title || !message || !type) {
+        throw new ValidationError('userId (or uid), title, message, and type are required');
       }
 
       // Validate userId is not empty
-      if (typeof userId !== 'string' || userId.trim() === '') {
-        throw new ValidationError('userId must be a non-empty string');
+      if (typeof targetUserId !== 'string' || targetUserId.trim() === '') {
+        throw new ValidationError('userId (or uid) must be a non-empty string');
       }
 
       // Validate title is not empty
@@ -95,13 +104,13 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
       }
 
       // Save notification to Firestore (notifications collection)
-      const notificationId = await firestoreAdapter.createNotification(userId, {
+      const notificationId = await firestoreAdapter.createNotification(targetUserId, {
         title: title.trim(),
         message: message.trim(),
         type: type.trim(),
       });
       
-      logger.info({ userId, notificationId, title }, 'Notification created via push endpoint');
+      logger.info({ userId: targetUserId, notificationId, title }, 'Notification created via push endpoint');
       
       // Return success response
       reply.code(200).header('Content-Type', 'application/json').send({

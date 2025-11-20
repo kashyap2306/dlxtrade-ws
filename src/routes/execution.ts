@@ -4,8 +4,12 @@ import { userEngineManager } from '../services/userEngineManager';
 import { z } from 'zod';
 import { logger } from '../utils/logger';
 
+// Firestore requires manual composite indexes for queries with multiple fields
+// If you see index errors, create indexes in Firebase Console:
+// - executionLogs: (userId ASC, timestamp DESC)
 const executionQuerySchema = z.object({
-  limit: z.coerce.number().int().positive().max(500).optional().default(100),
+  // Auto-correct limit to max 500 instead of throwing ZodError
+  limit: z.coerce.number().int().positive().transform((val) => Math.min(val, 500)).optional().default(100),
 });
 
 const closePositionSchema = z.object({
@@ -24,7 +28,8 @@ export async function executionRoutes(fastify: FastifyInstance) {
       }
 
       const query = executionQuerySchema.parse(request.query);
-      const safeLimit = Math.min(Math.max(1, query.limit), 1000);
+      // Limit is already clamped to 500 by Zod transform, but ensure it's at least 1
+      const safeLimit = Math.max(1, query.limit);
       
       let logs: any[] = [];
       try {

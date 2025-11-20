@@ -15,8 +15,12 @@ const hftSettingsSchema = z.object({
   enabled: z.boolean(),
 });
 
+// Firestore requires manual composite indexes for queries with multiple fields
+// If you see index errors, create indexes in Firebase Console:
+// - hftLogs: (userId ASC, timestamp DESC)
 const hftQuerySchema = z.object({
-  limit: z.coerce.number().int().positive().max(500).optional().default(100),
+  // Auto-correct limit to max 500 instead of throwing ZodError
+  limit: z.coerce.number().int().positive().transform((val) => Math.min(val, 500)).optional().default(100),
 });
 
 export async function hftRoutes(fastify: FastifyInstance) {
