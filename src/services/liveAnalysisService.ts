@@ -15,24 +15,14 @@ export class LiveAnalysisService {
 
   /**
    * Start the live analysis scheduler
+   * DEPRECATED: This is now handled by deepResearchScheduler
    * Updates every 5 minutes (300000 ms)
    */
   start(): void {
-    if (this.isRunning) {
-      logger.warn('Live analysis scheduler already running');
-      return;
-    }
-
-    this.isRunning = true;
-    logger.info('Starting live analysis scheduler (updates every 5 minutes)');
-
-    // Run immediately on start
-    this.updateAllActiveSymbols();
-
-    // Then run every 5 minutes
-    this.updateInterval = setInterval(() => {
-      this.updateAllActiveSymbols();
-    }, 5 * 60 * 1000); // 5 minutes
+    logger.warn('Live analysis scheduler start() called - this is now handled by deepResearchScheduler');
+    // Do not start the old scheduler - it's replaced by deepResearchScheduler
+    // This method is kept for backward compatibility but does nothing
+    return;
   }
 
   /**

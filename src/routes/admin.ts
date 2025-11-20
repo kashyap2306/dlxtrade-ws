@@ -45,10 +45,10 @@ interface TrainingJob {
 }
 
 const retrainSchema = z.object({
-  symbol: z.string().min(3).default('BTCUSDT'),
-  timeframe: z.string().default('5m'),
-  horizon: z.string().default('15m'),
-  synthetic: z.boolean().default(false),
+  symbol: z.string().min(3).optional().default('BTCUSDT'),
+  timeframe: z.string().optional().default('5m'),
+  horizon: z.string().optional().default('15m'),
+  synthetic: z.boolean().optional().default(false),
 });
 
 let currentTrainingJob: TrainingJob | null = null;
@@ -191,23 +191,31 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
 
     const params = retrainSchema.parse(request.body || {});
+    // Ensure defaults are applied
+    const finalParams = {
+      symbol: params.symbol ?? 'BTCUSDT',
+      timeframe: params.timeframe ?? '5m',
+      horizon: params.horizon ?? '15m',
+      synthetic: params.synthetic ?? false,
+    };
+    
     const jobId = `train_${Date.now()}`;
     currentTrainingJob = {
       id: jobId,
       status: 'running',
       startedAt: Date.now(),
-      params,
+      params: finalParams,
     };
 
     const repoRoot = path.resolve(__dirname, '..', '..');
     const pythonBin = process.env.PYTHON_BIN || 'python';
     const args = [
       path.join('ml-service', 'train_model.py'),
-      '--symbol', params.symbol,
-      '--timeframe', params.timeframe,
-      '--horizon', params.horizon,
+      '--symbol', finalParams.symbol,
+      '--timeframe', finalParams.timeframe,
+      '--horizon', finalParams.horizon,
     ];
-    if (params.synthetic) {
+    if (finalParams.synthetic) {
       args.push('--synthetic');
     }
 
@@ -973,6 +981,60 @@ export async function adminRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       logger.error({ err }, 'Error getting system health');
       return reply.code(500).send({ error: err.message || 'Error fetching system health' });
+    }
+  });
+
+  // Deep Research Scheduler Status
+  fastify.get('/scheduler/status', {
+    preHandler: [fastify.authenticate, fastify.adminAuth],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { deepResearchScheduler } = await import('../services/deepResearchScheduler');
+      const status = await deepResearchScheduler.getStatus();
+      return status;
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting scheduler status');
+      return reply.code(500).send({ error: err.message || 'Error fetching scheduler status' });
+    }
+  });
+
+  // Force run Deep Research for one coin
+  fastify.post('/scheduler/force-run', {
+    preHandler: [fastify.authenticate, fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Body: { symbol?: string; mode?: 'rotate' | 'bulk' } }>, reply: FastifyReply) => {
+    try {
+      const { deepResearchScheduler } = await import('../services/deepResearchScheduler');
+      const { symbol, mode } = request.body || {};
+      const result = await deepResearchScheduler.forceRun(symbol, mode);
+      return result;
+    } catch (err: any) {
+      logger.error({ err }, 'Error in force run');
+      return reply.code(500).send({ error: err.message || 'Error in force run' });
+    }
+  });
+
+  // Update scheduler configuration
+  fastify.post('/scheduler/config', {
+    preHandler: [fastify.authenticate, fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Body: { intervals?: number[]; mode?: 'rotate' | 'bulk'; topN?: number; autoTradeThreshold?: number; autoTradeEnabled?: boolean } }>, reply: FastifyReply) => {
+    try {
+      const { deepResearchScheduler } = await import('../services/deepResearchScheduler');
+      const config = request.body || {};
+      
+      // Validate intervals - only [5, 10, 15, 30, 60] minutes allowed
+      const allowedIntervals = [5, 10, 15, 30, 60];
+      if (config.intervals) {
+        const invalidIntervals = config.intervals.filter((i: number) => !allowedIntervals.includes(i));
+        if (invalidIntervals.length > 0) {
+          return reply.code(400).send({ error: `Invalid intervals: ${invalidIntervals.join(', ')}. Allowed: ${allowedIntervals.join(', ')}` });
+        }
+      }
+
+      await deepResearchScheduler.updateConfig(config);
+      return { success: true, message: 'Scheduler config updated' };
+    } catch (err: any) {
+      logger.error({ err }, 'Error updating scheduler config');
+      return reply.code(500).send({ error: err.message || 'Error updating scheduler config' });
     }
   });
 }

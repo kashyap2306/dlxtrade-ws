@@ -56,9 +56,36 @@ export interface ResearchResult {
   blurFields: boolean;
   // API call tracking
   apiCalls: string[]; // Array of API endpoints called
-  // ML Model explainability
-  explanations?: string[]; // SHAP-based explanations (max 6)
-  accuracyRange?: string; // e.g., "85-90%"
+  // ML Model explainability - always included
+  explanations: string[]; // SHAP-based explanations (max 12)
+  accuracyRange: string | undefined; // e.g., "85-90%"
+  // Extended fields for full details (manual research)
+  rsi5?: number | null;
+  rsi14?: number | null;
+  trendAnalysis?: {
+    ema12: number | null;
+    ema26: number | null;
+    trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  } | null;
+  confidenceBreakdown?: {
+    baseAccuracy: number;
+    orderbookImbalance: number;
+    spreadAnalysis: number;
+    volumeDepth: number;
+    orderbookDepth: number;
+    externalAPIs: number;
+    mlModel: number;
+  };
+  exchangeTickers?: Record<string, any>;
+  exchangeOrderbooks?: Array<{ exchange: string; bidsCount: number; asksCount: number }>;
+  exchangeCount?: number;
+  exchangesUsed?: string[];
+  autoTradeDecision?: {
+    triggered: boolean;
+    confidence: number;
+    threshold: number;
+    reason?: string;
+  };
 }
 
 export class ResearchEngine {
@@ -87,14 +114,158 @@ export class ResearchEngine {
     }
   }
 
-  async runResearch(symbol: string, uid: string, adapter?: ExchangeConnector, forceEngine: boolean = false): Promise<ResearchResult> {
+  /**
+   * Aggregate orderbook data from multiple exchanges
+   */
+  private async aggregateOrderbooks(
+    symbol: string,
+    adapters: Array<{ exchange: string; adapter: ExchangeConnector }>,
+    apiCalls: string[]
+  ): Promise<{ aggregatedOrderbook: Orderbook | null; exchangeOrderbooks: Map<string, Orderbook> }> {
+    const exchangeOrderbooks = new Map<string, Orderbook>();
+    const allBids: Array<{ price: string; quantity: string }> = [];
+    const allAsks: Array<{ price: string; quantity: string }> = [];
+
+    // Fetch orderbooks from all exchanges in parallel
+    const orderbookPromises = adapters.map(async ({ exchange, adapter }) => {
+      try {
+        const exchangeName = this.detectExchangeName(adapter);
+        apiUsageTracker.increment(exchangeName);
+        apiCalls.push(`${exchangeName}: GET /orderbook`);
+        
+        const orderbook = await adapter.getOrderbook(symbol, 20);
+        exchangeOrderbooks.set(exchange, orderbook);
+        
+        // Collect bids and asks for aggregation
+        allBids.push(...orderbook.bids);
+        allAsks.push(...orderbook.asks);
+        
+        logger.debug({ symbol, exchange, bidsCount: orderbook.bids.length, asksCount: orderbook.asks.length }, 
+          `Orderbook fetched from ${exchange}`);
+      } catch (err: any) {
+        logger.warn({ err, symbol, exchange }, `Failed to fetch orderbook from ${exchange}`);
+      }
+    });
+
+    await Promise.allSettled(orderbookPromises);
+
+    // Aggregate orderbooks: sort by price and merge quantities at same price
+    const aggregatedBids = this.mergeOrderbookLevels(allBids, 'desc');
+    const aggregatedAsks = this.mergeOrderbookLevels(allAsks, 'asc');
+
+    const aggregatedOrderbook: Orderbook | null = 
+      aggregatedBids.length > 0 && aggregatedAsks.length > 0
+        ? { 
+            symbol,
+            bids: aggregatedBids.slice(0, 20), 
+            asks: aggregatedAsks.slice(0, 20),
+            lastUpdateId: 0, // Aggregated orderbook doesn't have a single update ID
+          }
+        : null;
+
+    return { aggregatedOrderbook, exchangeOrderbooks };
+  }
+
+  /**
+   * Merge orderbook levels at same price
+   */
+  private mergeOrderbookLevels(
+    levels: Array<{ price: string; quantity: string }>,
+    direction: 'asc' | 'desc'
+  ): Array<{ price: string; quantity: string }> {
+    const priceMap = new Map<string, number>();
+    
+    for (const level of levels) {
+      const price = parseFloat(level.price);
+      if (isNaN(price) || price <= 0) continue;
+      
+      const priceKey = price.toFixed(8); // Normalize price precision
+      const existingQty = priceMap.get(priceKey) || 0;
+      priceMap.set(priceKey, existingQty + parseFloat(level.quantity));
+    }
+
+    // Convert back to array and sort
+    const merged = Array.from(priceMap.entries())
+      .map(([price, quantity]) => ({ price, quantity: quantity.toString() }))
+      .sort((a, b) => {
+        const diff = parseFloat(a.price) - parseFloat(b.price);
+        return direction === 'asc' ? diff : -diff;
+      });
+
+    return merged;
+  }
+
+  /**
+   * Aggregate ticker data from multiple exchanges
+   */
+  private async aggregateTickers(
+    symbol: string,
+    adapters: Array<{ exchange: string; adapter: ExchangeConnector }>,
+    apiCalls: string[]
+  ): Promise<{ aggregatedPrice: number; exchangeTickers: Map<string, any> }> {
+    const exchangeTickers = new Map<string, any>();
+    const prices: number[] = [];
+
+    // Fetch tickers from all exchanges in parallel
+    const tickerPromises = adapters.map(async ({ exchange, adapter }) => {
+      try {
+        const exchangeName = this.detectExchangeName(adapter);
+        apiUsageTracker.increment(exchangeName);
+        apiCalls.push(`${exchangeName}: GET /ticker`);
+        
+        const ticker = await adapter.getTicker(symbol);
+        exchangeTickers.set(exchange, ticker);
+        
+        const price = parseFloat(ticker?.lastPrice || ticker?.price || ticker?.last || '0');
+        if (price > 0) {
+          prices.push(price);
+        }
+        
+        logger.debug({ symbol, exchange, price }, `Ticker fetched from ${exchange}`);
+      } catch (err: any) {
+        logger.warn({ err, symbol, exchange }, `Failed to fetch ticker from ${exchange}`);
+      }
+    });
+
+    await Promise.allSettled(tickerPromises);
+
+    // Use median price as aggregated price (more robust than average)
+    const aggregatedPrice = prices.length > 0 
+      ? prices.sort((a, b) => a - b)[Math.floor(prices.length / 2)]
+      : 0;
+
+    return { aggregatedPrice, exchangeTickers };
+  }
+
+  async runResearch(
+    symbol: string, 
+    uid: string, 
+    adapter?: ExchangeConnector, 
+    forceEngine: boolean = false,
+    allExchanges?: Array<{ exchange: string; adapter: ExchangeConnector; credentials: any }>
+  ): Promise<ResearchResult> {
     // Track all API calls
     const apiCalls: string[] = [];
     
-    logger.info({ symbol, uid, hasAdapter: !!adapter, forceEngine }, 'Starting research engine');
+    logger.info({ symbol, uid, hasAdapter: !!adapter, exchangeCount: allExchanges?.length || 0, forceEngine }, 'Starting research engine');
     
     try {
-      // Orderbook data is optional - if adapter is available, use it; otherwise use defaults
+      // Get ALL connected exchanges for aggregation
+      const exchangesToUse: Array<{ exchange: string; adapter: ExchangeConnector }> = [];
+      
+      if (allExchanges && allExchanges.length > 0) {
+        // Use all provided exchanges
+        for (const ex of allExchanges) {
+          if (ex.adapter) {
+            exchangesToUse.push({ exchange: ex.exchange, adapter: ex.adapter });
+          }
+        }
+      } else if (adapter) {
+        // Fallback to single adapter if no list provided
+        exchangesToUse.push({ exchange: this.detectExchangeName(adapter), adapter });
+      }
+
+      // Aggregate orderbook data from ALL exchanges
       let imbalance = 0; // Neutral imbalance when no orderbook data
       let microSignals: ResearchResult['microSignals'] = {
         spread: 0,
@@ -104,28 +275,32 @@ export class ResearchEngine {
         // @ts-ignore: extend runtime shape
         volatility: 0,
       };
+      let aggregatedOrderbook: Orderbook | null = null;
+      let exchangeOrderbooks = new Map<string, Orderbook>();
 
-      // Try to get orderbook data if adapter is available (optional)
-      if (adapter) {
+      if (exchangesToUse.length > 0) {
         try {
-          // Detect exchange name for API tracking
-          const exchangeName = this.detectExchangeName(adapter);
-          apiUsageTracker.increment(exchangeName);
-          apiCalls.push(`${exchangeName}: GET /orderbook`);
+          const { aggregatedOrderbook: aggOb, exchangeOrderbooks: exOb } = 
+            await this.aggregateOrderbooks(symbol, exchangesToUse, apiCalls);
           
-          const orderbook = await adapter.getOrderbook(symbol, 20);
-          
-          // Calculate orderbook imbalance
-          imbalance = this.calculateOrderbookImbalance(orderbook);
-          
-          // Get micro-signals
-          microSignals = this.calculateMicroSignals(symbol, orderbook);
+          aggregatedOrderbook = aggOb;
+          exchangeOrderbooks = exOb;
 
-          // Persist snapshot for momentum/history-based features
-          this.addOrderbook(symbol, orderbook);
+          if (aggregatedOrderbook) {
+            // Calculate orderbook imbalance from aggregated data
+            imbalance = this.calculateOrderbookImbalance(aggregatedOrderbook);
+            
+            // Get micro-signals from aggregated orderbook
+            microSignals = this.calculateMicroSignals(symbol, aggregatedOrderbook);
+
+            // Persist snapshot for momentum/history-based features
+            this.addOrderbook(symbol, aggregatedOrderbook);
+            
+            logger.info({ symbol, exchangeCount: exchangesToUse.length, imbalance, volume: microSignals.volume }, 
+              `Aggregated orderbook from ${exchangesToUse.length} exchanges`);
+          }
         } catch (orderbookErr: any) {
-          // If orderbook fetch fails, continue with default values
-          logger.debug({ err: orderbookErr, symbol }, 'Could not fetch orderbook, using defaults');
+          logger.warn({ err: orderbookErr, symbol }, 'Could not aggregate orderbooks, using defaults');
         }
       }
       
@@ -180,28 +355,29 @@ export class ResearchEngine {
       let currentPrice = 0; // Declare outside try block for scope
       let mlPrediction: { signal: 'BUY' | 'SELL' | 'HOLD'; probability: number; explanations: string[] } | null = null;
       let explanations: string[] = [];
+      let exchangeTickers = new Map<string, any>(); // Declare at function level for scope
 
       try {
-        // ALWAYS fetch current price - from adapter or Binance fallback
+        // ALWAYS fetch current price - aggregate from ALL exchanges or Binance fallback
         
-        if (adapter) {
+        if (exchangesToUse.length > 0) {
           try {
-            const exchangeName = this.detectExchangeName(adapter);
-            apiUsageTracker.increment(exchangeName);
-            apiCalls.push(`${exchangeName}: GET /ticker`);
+            const { aggregatedPrice, exchangeTickers: exTickers } = 
+              await this.aggregateTickers(symbol, exchangesToUse, apiCalls);
             
-            const ticker = await adapter.getTicker(symbol);
-            currentPrice = parseFloat(ticker?.lastPrice || ticker?.price || ticker?.last || '0');
+            currentPrice = aggregatedPrice;
+            exchangeTickers = exTickers;
             
             if (currentPrice > 0) {
-              logger.debug({ symbol, currentPrice, exchange: exchangeName }, 'Current price fetched from exchange adapter');
+              logger.info({ symbol, currentPrice, exchangeCount: exchangesToUse.length }, 
+                `Aggregated price from ${exchangesToUse.length} exchanges`);
             }
           } catch (tickerErr: any) {
-            logger.debug({ err: tickerErr, symbol }, 'Could not fetch ticker from adapter, trying Binance fallback');
+            logger.warn({ err: tickerErr, symbol }, 'Could not aggregate tickers, trying fallback');
           }
         }
         
-        // Fallback to Binance public API if adapter failed or not available
+        // Fallback to Binance public API if aggregation failed or no exchanges available
         if (currentPrice === 0 || forceEngine) {
           try {
             apiCalls.push('Binance: GET /api/v3/ticker/24hr (public)');
@@ -245,7 +421,7 @@ export class ResearchEngine {
         }
 
         // ML Model Prediction (if model is available and we have price)
-        let mlPrediction: { signal: 'BUY' | 'SELL' | 'HOLD'; probability: number; explanations: string[] } | null = null;
+        let mlPrediction: { signal: 'BUY' | 'SELL' | 'HOLD'; probability: number; explanations: string[]; accuracyRange?: string } | null = null;
         let mlExplanations: string[] = [];
         
         if (currentPrice > 0) {
@@ -526,6 +702,83 @@ export class ResearchEngine {
       // Ensure apiCalls is always an array
       const finalApiCalls = Array.isArray(apiCalls) ? apiCalls : [];
       
+      // Calculate RSI for full details (if we have price history)
+      let rsi14: number | null = null;
+      let rsi5: number | null = null;
+      if (currentPrice > 0) {
+        const history = this.orderbookHistory.get(symbol);
+        if (history && history.length >= 14) {
+          try {
+            const prices = history.slice(-14).map(ob => {
+              const bid = parseFloat(ob.bids[0]?.price || '0');
+              const ask = parseFloat(ob.asks[0]?.price || '0');
+              return (bid + ask) / 2;
+            }).filter(p => p > 0);
+            
+            if (prices.length >= 14) {
+              const { featureEngine } = await import('./featureEngine');
+              rsi14 = featureEngine.calculateRSI(prices, 14);
+              if (prices.length >= 5) {
+                rsi5 = featureEngine.calculateRSI(prices, 5);
+              }
+            }
+          } catch (rsiErr: any) {
+            logger.debug({ err: rsiErr, symbol }, 'RSI calculation failed');
+          }
+        }
+      }
+      
+      // Get trend analysis (EMA/MA)
+      let trendAnalysis: { ema12: number | null; ema26: number | null; trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL' } | null = null;
+      if (currentPrice > 0) {
+        const history = this.orderbookHistory.get(symbol);
+        if (history && history.length >= 26) {
+          try {
+            const prices = history.slice(-26).map(ob => {
+              const bid = parseFloat(ob.bids[0]?.price || '0');
+              const ask = parseFloat(ob.asks[0]?.price || '0');
+              return (bid + ask) / 2;
+            }).filter(p => p > 0);
+            
+            if (prices.length >= 26) {
+              const { featureEngine } = await import('./featureEngine');
+              const ema12 = featureEngine.calculateEMA(prices, 12);
+              const ema26 = featureEngine.calculateEMA(prices, 26);
+              
+              let trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
+              if (ema12 > ema26) {
+                trend = 'BULLISH';
+              } else if (ema12 < ema26) {
+                trend = 'BEARISH';
+              }
+              
+              trendAnalysis = { ema12, ema26, trend };
+            }
+          } catch (trendErr: any) {
+            logger.debug({ err: trendErr, symbol }, 'Trend analysis failed');
+          }
+        }
+      }
+      
+      // Confidence breakdown
+      const imbalanceStrength = Math.abs(imbalance);
+      const orderbookImbalanceContrib = imbalanceStrength > 0.3 ? 0.15 : imbalanceStrength > 0.15 ? 0.1 : imbalanceStrength > 0.05 ? 0.05 : 0;
+      const spreadContrib = microSignals.spread < 0.05 ? 0.15 : microSignals.spread < 0.1 ? 0.1 : microSignals.spread < 0.2 ? 0.05 : 0;
+      const volumeContrib = microSignals.volume > 500000 ? 0.15 : microSignals.volume > 100000 ? 0.1 : microSignals.volume > 50000 ? 0.05 : 0;
+      const depthContrib = microSignals.orderbookDepth > 1000000 ? 0.1 : microSignals.orderbookDepth > 500000 ? 0.05 : 0;
+      const baseContrib = 0.5;
+      const externalAPIsContrib = Math.max(0, accuracy - baseContrib - orderbookImbalanceContrib - spreadContrib - volumeContrib - depthContrib);
+      
+      const confidenceBreakdown = {
+        baseAccuracy: baseContrib,
+        orderbookImbalance: orderbookImbalanceContrib,
+        spreadAnalysis: spreadContrib,
+        volumeDepth: volumeContrib,
+        orderbookDepth: depthContrib,
+        externalAPIs: externalAPIsContrib,
+        mlModel: mlPrediction && mlPrediction.probability > accuracy ? mlPrediction.probability - accuracy : 0,
+      };
+      
       const result: ResearchResult = {
         symbol,
         signal,
@@ -549,7 +802,7 @@ export class ResearchEngine {
         blurFields,
         apiCalls: finalApiCalls, // Always include API call log
         explanations: explanations.length > 0 ? explanations : [], // Always include explanations array
-        accuracyRange: mlPrediction?.accuracyRange
+        accuracyRange: ((mlPrediction && 'accuracyRange' in mlPrediction && typeof mlPrediction.accuracyRange === 'string') ? mlPrediction.accuracyRange as string : undefined)
           || (accuracy >= 0.9
             ? '90-95%'
             : accuracy >= 0.85
@@ -558,7 +811,14 @@ export class ResearchEngine {
             ? '80-85%'
             : accuracy >= 0.75
             ? '75-80%'
-            : undefined),
+            : undefined) || undefined, // Always include accuracyRange field (may be undefined)
+        // Extended fields for full details (manual research)
+        rsi14: rsi14 ?? null,
+        rsi5: rsi5 ?? null,
+        trendAnalysis: trendAnalysis ?? null,
+        confidenceBreakdown: confidenceBreakdown ?? undefined,
+        exchangeTickers: exchangeTickers.size > 0 ? Object.fromEntries(exchangeTickers) : undefined,
+        exchangeOrderbooks: exchangeOrderbooks.size > 0 ? Array.from(exchangeOrderbooks.entries()).map(([ex, ob]) => ({ exchange: ex, bidsCount: ob.bids.length, asksCount: ob.asks.length })) : undefined,
       };
       
       logger.info({ 
@@ -662,6 +922,7 @@ export class ResearchEngine {
         blurFields: false,
         apiCalls: apiCalls.length > 0 ? apiCalls : [], // Include any API calls made before error
         explanations: [], // Always include explanations array
+        accuracyRange: undefined, // Always include accuracyRange field
       };
       
       console.log('🔍 [RESEARCH_ENGINE] ERROR RESULT RETURN:', JSON.stringify(errorResult, null, 2));
@@ -807,11 +1068,12 @@ export class ResearchEngine {
           integrations = {};
         }
         
-        // CryptoQuant data (if available)
-        if (integrations.cryptoquant) {
+        // ALWAYS attempt to call CryptoQuant if API key is available
+        const cq = integrations.cryptoquant ?? { apiKey: "" };
+        if (cq && cq.apiKey) {
           try {
             // Validate API key before creating adapter
-            const apiKey = integrations.cryptoquant.apiKey;
+            const apiKey = cq.apiKey;
             if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length < 20) {
               logger.warn({ symbol, apiKeyLength: apiKey?.length || 0 }, 'CryptoQuant API key too short or invalid, skipping');
               // Skip CryptoQuant entirely if key is invalid
@@ -819,7 +1081,7 @@ export class ResearchEngine {
               try {
                 const cryptoquantAdapter = new CryptoQuantAdapter(apiKey);
                 
-                // Only proceed if adapter is not disabled
+                // ALWAYS attempt to call if adapter is not disabled
                 if (!cryptoquantAdapter.disabled) {
                   apiUsageTracker.increment('cryptoquant');
                   apiCalls.push('CryptoQuant: GET /market-metrics');
@@ -844,6 +1106,10 @@ export class ResearchEngine {
                   if (onChainData.activeAddresses && onChainData.activeAddresses > 100000) {
                     accuracy += 0.02;
                   }
+                  
+                  logger.debug({ symbol }, 'CryptoQuant data successfully fetched and integrated');
+                } else {
+                  logger.debug({ symbol }, 'CryptoQuant adapter is disabled, skipping');
                 }
               } catch (adapterErr: any) {
                 // Handle 401 errors specifically
@@ -862,12 +1128,15 @@ export class ResearchEngine {
             logger.debug({ err, symbol, errorMessage: err.message }, 'CryptoQuant error (non-critical, skipping)');
             // Don't throw - continue without CryptoQuant data
           }
+        } else {
+          logger.debug({ symbol }, 'CryptoQuant integration not configured, skipping');
         }
 
-        // LunarCrush sentiment data (if available)
-        if (integrations.lunarcrush) {
+        // ALWAYS attempt to call LunarCrush if API key is available
+        const lc = integrations.lunarcrush ?? { apiKey: "" };
+        if (lc && lc.apiKey) {
           try {
-            const apiKey = integrations.lunarcrush.apiKey;
+            const apiKey = lc.apiKey;
             if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length < 20) {
               logger.warn({ symbol }, 'LunarCrush API key too short or invalid, skipping');
             } else {
@@ -894,6 +1163,8 @@ export class ResearchEngine {
                 if (sentimentData.bullishSentiment && sentimentData.bullishSentiment > 0.6) {
                   accuracy += 0.02;
                 }
+                
+                logger.debug({ symbol }, 'LunarCrush data successfully fetched and integrated');
               } catch (adapterErr: any) {
                 logger.debug({ err: adapterErr, symbol }, 'LunarCrush fetch error (non-critical)');
               }
@@ -901,15 +1172,19 @@ export class ResearchEngine {
           } catch (err: any) {
             logger.debug({ err, symbol }, 'LunarCrush error (non-critical, skipping)');
           }
+        } else {
+          logger.debug({ symbol }, 'LunarCrush integration not configured, skipping');
         }
 
-        // CoinAPI historical data (if available)
+        // ALWAYS attempt to call CoinAPI if any sub-type is available
         // Check for all CoinAPI sub-types
         const coinapiMarket = integrations['coinapi_market'];
         const coinapiFlatfile = integrations['coinapi_flatfile'];
         const coinapiExchangerate = integrations['coinapi_exchangerate'];
         
         if (coinapiMarket || coinapiFlatfile || coinapiExchangerate) {
+          logger.debug({ symbol, hasMarket: !!coinapiMarket, hasFlatfile: !!coinapiFlatfile, hasExchangerate: !!coinapiExchangerate }, 
+            'CoinAPI integration(s) found, attempting to fetch data');
           try {
             // Try market data first
             if (coinapiMarket) {
@@ -1351,10 +1626,11 @@ export class ResearchEngine {
     // 7. Whale Activity (from CryptoQuant)
     if (uid) {
       try {
-        const integrations = await firestoreAdapter.getEnabledIntegrations(uid).catch(() => ({}));
-        if (integrations.cryptoquant) {
+        const integrations: Record<string, { apiKey: string; secretKey?: string }> = await firestoreAdapter.getEnabledIntegrations(uid).catch(() => ({}));
+        const cq = integrations.cryptoquant ?? { apiKey: "" };
+        if (cq && cq.apiKey) {
           try {
-            const apiKey = integrations.cryptoquant.apiKey;
+            const apiKey = cq.apiKey;
             if (apiKey && typeof apiKey === 'string' && apiKey.trim().length >= 20) {
               const cryptoquantAdapter = new CryptoQuantAdapter(apiKey);
               if (!cryptoquantAdapter.disabled) {
@@ -1380,10 +1656,11 @@ export class ResearchEngine {
     // 8. Exchange Inflow/Outflow (from CryptoQuant)
     if (uid) {
       try {
-        const integrations = await firestoreAdapter.getEnabledIntegrations(uid).catch(() => ({}));
-        if (integrations.cryptoquant) {
+        const integrations: Record<string, { apiKey: string; secretKey?: string }> = await firestoreAdapter.getEnabledIntegrations(uid).catch(() => ({}));
+        const cq = integrations.cryptoquant ?? { apiKey: "" };
+        if (cq && cq.apiKey) {
           try {
-            const apiKey = integrations.cryptoquant.apiKey;
+            const apiKey = cq.apiKey;
             if (apiKey && typeof apiKey === 'string' && apiKey.trim().length >= 20) {
               const cryptoquantAdapter = new CryptoQuantAdapter(apiKey);
               if (!cryptoquantAdapter.disabled) {
@@ -1410,10 +1687,11 @@ export class ResearchEngine {
     // 9. News & Social Sentiment (from LunarCrush)
     if (uid) {
       try {
-        const integrations = await firestoreAdapter.getEnabledIntegrations(uid).catch(() => ({}));
-        if (integrations.lunarcrush) {
+        const integrations: Record<string, { apiKey: string; secretKey?: string }> = await firestoreAdapter.getEnabledIntegrations(uid).catch(() => ({}));
+        const lc = integrations.lunarcrush ?? { apiKey: "" };
+        if (lc && lc.apiKey) {
           try {
-            const apiKey = integrations.lunarcrush.apiKey;
+            const apiKey = lc.apiKey;
             if (apiKey && typeof apiKey === 'string' && apiKey.trim().length >= 20) {
               const lunarcrushAdapter = new LunarCrushAdapter(apiKey);
               const sentimentData = await lunarcrushAdapter.getCoinData(symbol).catch(() => null);

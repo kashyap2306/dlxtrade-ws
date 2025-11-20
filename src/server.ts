@@ -112,14 +112,14 @@ async function start() {
         */
         console.log('ℹ️  Firestore data seeding is disabled (seedFirestoreData() commented out)');
 
-        // Start live analysis scheduler
+        // Start Deep Research scheduler (replaces old live analysis scheduler)
         try {
-          const { liveAnalysisService } = await import('./services/liveAnalysisService');
-          liveAnalysisService.start();
-          console.log('✅ Live analysis scheduler started (updates every 5 minutes)');
+          const { deepResearchScheduler } = await import('./services/deepResearchScheduler');
+          deepResearchScheduler.start();
+          console.log('✅ Deep Research scheduler started (runs every 5 minutes, one coin per run)');
         } catch (schedulerErr: any) {
-          console.error('❌ Failed to start live analysis scheduler:', schedulerErr.message);
-          logger.error({ error: schedulerErr.message }, 'Failed to start live analysis scheduler');
+          console.error('❌ Failed to start Deep Research scheduler:', schedulerErr.message);
+          logger.error({ error: schedulerErr.message }, 'Failed to start Deep Research scheduler');
         }
 
         // Auto-promote the specified admin user unconditionally

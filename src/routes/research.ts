@@ -2,7 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { firestoreAdapter } from '../services/firestoreAdapter';
 import { researchEngine } from '../services/researchEngine';
 import { resolveExchangeConnector } from '../services/exchangeResolver';
-import { liveAnalysisService } from '../services/liveAnalysisService';
+// Note: liveAnalysisService is deprecated - all analysis now comes from researchEngine.runResearch()
 import { topCoinsService } from '../services/topCoinsService';
 import { z } from 'zod';
 import { logger } from '../utils/logger';
@@ -90,51 +90,122 @@ export async function researchRoutes(fastify: FastifyInstance) {
         return;
       }
       
-      // Get exchange adapter once for all symbols
-      let exchangeAdapter = null;
+      // Get ALL connected exchanges for aggregation
+      let allExchanges: Array<{ exchange: string; adapter: any; credentials: any }> = [];
+      let exchangeAdapter = null; // Primary adapter for compatibility
       let detectedExchangeName: string = 'Unknown';
       let isFallback = true;
       let exchangeError: string | null = null;
       
       try {
-        const resolved = await resolveExchangeConnector(user.uid);
-        if (resolved && resolved.connector) {
-          exchangeAdapter = resolved.connector;
-          const exchangeLower = resolved.exchange.toLowerCase();
-          
-          switch (exchangeLower) {
-            case 'binance':
-              detectedExchangeName = 'Binance';
-              break;
-            case 'bitget':
-              detectedExchangeName = 'Bitget';
-              break;
-            case 'bingx':
-              detectedExchangeName = 'BingX';
-              break;
-            case 'weex':
-              detectedExchangeName = 'WEEX';
-              break;
-            case 'bybit':
-              detectedExchangeName = 'Bybit';
-              break;
-            case 'kucoin':
-              detectedExchangeName = 'KuCoin';
-              break;
-            case 'okx':
-              detectedExchangeName = 'OKX';
-              break;
-            default:
-              detectedExchangeName = exchangeLower.charAt(0).toUpperCase() + exchangeLower.slice(1);
+        // Get all API keys for user to find all connected exchanges
+        const apiKeys = await firestoreAdapter.getApiKeys(user.uid);
+        
+        for (const key of apiKeys) {
+          try {
+            const exchange = key.exchange.toLowerCase().trim();
+            const validExchanges = ['binance', 'bitget', 'bingx', 'weex', 'kucoin', 'bybit', 'okx'];
+            
+            if (!validExchanges.includes(exchange)) {
+              continue;
+            }
+            
+            const { decrypt } = await import('../services/keyManager');
+            const apiKey = decrypt(key.apiKeyEncrypted);
+            const secret = decrypt(key.apiSecretEncrypted);
+            const passphrase = (key as any).passphraseEncrypted ? decrypt((key as any).passphraseEncrypted) : undefined;
+            
+            if (!apiKey || !secret) {
+              continue;
+            }
+            
+            // Only create connectors for supported exchange types
+            if (['binance', 'bitget', 'weex', 'bingx'].includes(exchange)) {
+              const { ExchangeConnectorFactory } = await import('../services/exchangeConnector');
+              const exchangeName = exchange as 'binance' | 'bitget' | 'weex' | 'bingx';
+              
+              try {
+                const adapter = ExchangeConnectorFactory.create(exchangeName, {
+                  apiKey,
+                  secret,
+                  passphrase,
+                  testnet: key.testnet ?? true,
+                });
+                
+                allExchanges.push({
+                  exchange,
+                  adapter,
+                  credentials: { apiKey, secret, passphrase, testnet: key.testnet ?? true },
+                });
+                
+                // Use first exchange as primary adapter
+                if (!exchangeAdapter) {
+                  exchangeAdapter = adapter;
+                  switch (exchange) {
+                    case 'binance':
+                      detectedExchangeName = 'Binance';
+                      break;
+                    case 'bitget':
+                      detectedExchangeName = 'Bitget';
+                      break;
+                    case 'bingx':
+                      detectedExchangeName = 'BingX';
+                      break;
+                    case 'weex':
+                      detectedExchangeName = 'WEEX';
+                      break;
+                    default:
+                      detectedExchangeName = exchange.charAt(0).toUpperCase() + exchange.slice(1);
+                  }
+                  isFallback = false;
+                }
+              } catch (createErr: any) {
+                logger.warn({ err: createErr, uid: user.uid, exchange }, 'Failed to create exchange connector');
+              }
+            }
+          } catch (keyErr: any) {
+            logger.debug({ err: keyErr, exchange: key.exchange }, 'Error processing API key');
           }
-          
-          isFallback = false;
+        }
+        
+        // Fallback to single exchange resolver if no exchanges found
+        if (allExchanges.length === 0) {
+          const resolved = await resolveExchangeConnector(user.uid);
+          if (resolved && resolved.connector) {
+            exchangeAdapter = resolved.connector;
+            allExchanges.push({
+              exchange: resolved.exchange,
+              adapter: resolved.connector,
+              credentials: resolved.credentials,
+            });
+            const exchangeLower = resolved.exchange.toLowerCase();
+            switch (exchangeLower) {
+              case 'binance':
+                detectedExchangeName = 'Binance';
+                break;
+              case 'bitget':
+                detectedExchangeName = 'Bitget';
+                break;
+              case 'bingx':
+                detectedExchangeName = 'BingX';
+                break;
+              case 'weex':
+                detectedExchangeName = 'WEEX';
+                break;
+              default:
+                detectedExchangeName = exchangeLower.charAt(0).toUpperCase() + exchangeLower.slice(1);
+            }
+            isFallback = false;
+          } else {
+            detectedExchangeName = 'Fallback (No Exchange API)';
+          }
         } else {
-          detectedExchangeName = 'Fallback (No Exchange API)';
+          logger.info({ uid: user.uid, exchangeCount: allExchanges.length, exchanges: allExchanges.map(e => e.exchange) }, 
+            `Found ${allExchanges.length} connected exchanges for research`);
         }
       } catch (exchangeErr: any) {
         exchangeError = exchangeErr.message || 'Exchange resolution failed';
-        logger.warn({ err: exchangeErr, uid: user.uid }, 'Error resolving exchange connector, using fallback');
+        logger.warn({ err: exchangeErr, uid: user.uid }, 'Error resolving exchanges, using fallback');
         detectedExchangeName = 'Unknown';
       }
       
@@ -147,10 +218,17 @@ export async function researchRoutes(fastify: FastifyInstance) {
         console.log(`🔍 [RESEARCH/RUN] Processing symbol ${i + 1}/${maxSymbols}:`, currentSymbol);
         
         try {
-          // ALWAYS call researchEngine.runResearch() once per symbol
-          const result: any = await researchEngine.runResearch(currentSymbol, user.uid, exchangeAdapter || undefined, forceEngine);
+          // ALWAYS call researchEngine.runResearch() with ALL connected exchanges for aggregation
+          const result: any = await researchEngine.runResearch(
+            currentSymbol, 
+            user.uid, 
+            exchangeAdapter || undefined, 
+            forceEngine,
+            allExchanges // Pass ALL exchanges for aggregation
+          );
           
-          // Ensure all required fields exist
+          // researchEngine.runResearch() already returns all required fields including new ones
+          // Only set defaults for backward compatibility if fields are truly missing
           if (!('entry' in result)) result.entry = null;
           if (!('exits' in result)) result.exits = [];
           if (!('stopLoss' in result)) result.stopLoss = null;
@@ -158,11 +236,12 @@ export async function researchRoutes(fastify: FastifyInstance) {
           if (!('side' in result)) result.side = 'NEUTRAL';
           if (!('confidence' in result)) result.confidence = Math.round((result.accuracy || 0.5) * 100);
           if (!('timeframe' in result)) result.timeframe = '5m';
-          if (!('signals' in result)) result.signals = [];
           if (!('currentPrice' in result)) result.currentPrice = result.entry || 0;
           if (!('mode' in result)) result.mode = 'LOW';
           if (!('recommendedTrade' in result)) result.recommendedTrade = null;
           if (!('blurFields' in result)) result.blurFields = false;
+          // Deprecated fields - kept for backward compatibility only
+          if (!('signals' in result)) result.signals = [];
           if (!('apiCalls' in result)) result.apiCalls = [];
           if (!('explanations' in result)) result.explanations = [];
           if (!('liveAnalysis' in result)) {
@@ -173,23 +252,39 @@ export async function researchRoutes(fastify: FastifyInstance) {
               meta: {},
             };
           }
+          // Ensure new fields are present (researchEngine should already include them)
+          if (result.rsi5 === undefined) result.rsi5 = null;
+          if (result.rsi14 === undefined) result.rsi14 = null;
+          if (result.trendAnalysis === undefined) result.trendAnalysis = null;
+          if (result.confidenceBreakdown === undefined) result.confidenceBreakdown = undefined;
+          if (result.exchangeTickers === undefined) result.exchangeTickers = undefined;
+          if (result.exchangeOrderbooks === undefined) result.exchangeOrderbooks = undefined;
+          if (result.autoTradeDecision === undefined) result.autoTradeDecision = undefined;
           
-          // Add metadata
+          // Add metadata including exchange count and ensure all new fields are included
           const resultWithMetadata = {
             ...result,
             symbol: result.symbol || currentSymbol,
             timestamp: new Date().toISOString(),
             exchange: detectedExchangeName,
+            exchangeCount: allExchanges.length,
+            exchangesUsed: allExchanges.map(e => e.exchange),
             isFallback: isFallback,
             exchangeError: exchangeError || undefined,
+            // Ensure all new fields from researchEngine are included
+            rsi5: result.rsi5 ?? null,
+            rsi14: result.rsi14 ?? null,
+            trendAnalysis: result.trendAnalysis ?? null,
+            confidenceBreakdown: result.confidenceBreakdown ?? undefined,
+            exchangeTickers: result.exchangeTickers ?? undefined,
+            exchangeOrderbooks: result.exchangeOrderbooks ?? undefined,
+            autoTradeDecision: result.autoTradeDecision ?? undefined,
           };
           
           allResults.push(resultWithMetadata);
           
-          // Register symbol for live analysis (only first symbol for WebSocket)
-          if (i === 0) {
-            liveAnalysisService.registerSymbol(currentSymbol);
-          }
+          // Note: Live analysis is now handled by deepResearchScheduler
+          // No need to register symbols with liveAnalysisService
         } catch (symbolErr: any) {
           logger.error({ err: symbolErr, symbol: currentSymbol, uid: user.uid }, 'Error processing symbol in multi-coin scan');
           // Add error result for this symbol
@@ -256,14 +351,15 @@ export async function researchRoutes(fastify: FastifyInstance) {
         }
       }
       
-      // Return all results
+      // Return full results with all new fields (RSI, trend, exchange tickers, etc.)
+      // Do NOT sanitize - frontend needs all fields for DeepResearchCard
       const finalResponse = {
         success: true,
-        results: allResults,
+        results: allResults, // Return full results with all new fields
+        totalAnalyzed: allResults.length,
       };
       
       console.log(`🔍 [RESEARCH/RUN] Completed analysis of ${allResults.length} symbols`);
-      console.log('[ENGINE RESULT]', JSON.stringify(finalResponse, null, 2));
       logger.info({ 
         symbolCount: allResults.length,
         forceEngine 
@@ -322,24 +418,88 @@ export async function researchRoutes(fastify: FastifyInstance) {
 
       const symbol = request.params.symbol.toUpperCase().trim();
       
-      // Get exchange adapter if available
+      // Get ALL connected exchanges for aggregation
+      let allExchanges: Array<{ exchange: string; adapter: any; credentials: any }> = [];
       let exchangeAdapter = null;
+      
       try {
-        const resolved = await resolveExchangeConnector(user.uid);
-        if (resolved && resolved.connector) {
-          exchangeAdapter = resolved.connector;
+        // Get all API keys for user
+        const apiKeys = await firestoreAdapter.getApiKeys(user.uid);
+        
+        for (const key of apiKeys) {
+          try {
+            const exchange = key.exchange.toLowerCase().trim();
+            if (!['binance', 'bitget', 'bingx', 'weex', 'kucoin', 'bybit', 'okx'].includes(exchange)) {
+              continue;
+            }
+            
+            const { decrypt } = await import('../services/keyManager');
+            const apiKey = decrypt(key.apiKeyEncrypted);
+            const secret = decrypt(key.apiSecretEncrypted);
+            const passphrase = (key as any).passphraseEncrypted ? decrypt((key as any).passphraseEncrypted) : undefined;
+            
+            if (!apiKey || !secret) continue;
+            
+            if (['binance', 'bitget', 'weex', 'bingx'].includes(exchange)) {
+              const { ExchangeConnectorFactory } = await import('../services/exchangeConnector');
+              const exchangeName = exchange as 'binance' | 'bitget' | 'weex' | 'bingx';
+              
+              try {
+                const adapter = ExchangeConnectorFactory.create(exchangeName, {
+                  apiKey,
+                  secret,
+                  passphrase,
+                  testnet: key.testnet ?? true,
+                });
+                
+                allExchanges.push({
+                  exchange,
+                  adapter,
+                  credentials: { apiKey, secret, passphrase, testnet: key.testnet ?? true },
+                });
+                
+                if (!exchangeAdapter) {
+                  exchangeAdapter = adapter;
+                }
+              } catch (createErr: any) {
+                logger.debug({ err: createErr, exchange }, 'Failed to create connector');
+              }
+            }
+          } catch (keyErr: any) {
+            logger.debug({ err: keyErr }, 'Error processing API key');
+          }
+        }
+        
+        // Fallback to single exchange resolver
+        if (allExchanges.length === 0) {
+          const resolved = await resolveExchangeConnector(user.uid);
+          if (resolved && resolved.connector) {
+            exchangeAdapter = resolved.connector;
+            allExchanges.push({
+              exchange: resolved.exchange,
+              adapter: resolved.connector,
+              credentials: resolved.credentials,
+            });
+          }
         }
       } catch (exchangeErr: any) {
-        logger.debug({ err: exchangeErr, uid: user.uid }, 'No exchange connector for live endpoint');
+        logger.debug({ err: exchangeErr, uid: user.uid }, 'No exchange connectors for live endpoint');
       }
       
-      // Run full research to get complete structured data
-      const fullResult: any = await researchEngine.runResearch(symbol, user.uid, exchangeAdapter || undefined);
+      // Run full research to get complete structured data with ALL exchanges
+      // This is the ONLY source of truth - researchEngine.runResearch() returns all new fields
+      const fullResult: any = await researchEngine.runResearch(
+        symbol, 
+        user.uid, 
+        exchangeAdapter || undefined,
+        false,
+        allExchanges // Pass ALL exchanges for aggregation
+      );
       
-      // Get live analysis if available
-      const liveAnalysis = await liveAnalysisService.getLiveAnalysis(symbol, user.uid);
+      // Do NOT call liveAnalysisService.getLiveAnalysis() - it may return old cached data
+      // The fullResult from researchEngine already includes liveAnalysis with all new fields
       
-      // Ensure all required fields exist
+      // Ensure all required fields exist (backward compatibility)
       if (!('entry' in fullResult)) fullResult.entry = null;
       if (!('exits' in fullResult)) fullResult.exits = [];
       if (!('stopLoss' in fullResult)) fullResult.stopLoss = null;
@@ -347,34 +507,44 @@ export async function researchRoutes(fastify: FastifyInstance) {
       if (!('side' in fullResult)) fullResult.side = 'NEUTRAL';
       if (!('confidence' in fullResult)) fullResult.confidence = Math.round((fullResult.accuracy || 0.5) * 100);
       if (!('timeframe' in fullResult)) fullResult.timeframe = '5m';
-      if (!('signals' in fullResult)) fullResult.signals = [];
+      if (!('signals' in fullResult)) fullResult.signals = []; // Deprecated but kept for compatibility
       if (!('currentPrice' in fullResult)) fullResult.currentPrice = fullResult.entry || 0;
       if (!('mode' in fullResult)) fullResult.mode = 'LOW';
       if (!('recommendedTrade' in fullResult)) fullResult.recommendedTrade = null;
       if (!('blurFields' in fullResult)) fullResult.blurFields = false;
-          if (!('apiCalls' in fullResult)) fullResult.apiCalls = [];
-          if (!('explanations' in fullResult)) fullResult.explanations = [];
-          if (!('liveAnalysis' in fullResult)) {
-            fullResult.liveAnalysis = {
-              isLive: false,
-              lastUpdated: new Date().toISOString(),
-              summary: 'Live analysis not available',
-              meta: {},
-            };
-          }
+      if (!('apiCalls' in fullResult)) fullResult.apiCalls = []; // Deprecated but kept for compatibility
+      if (!('explanations' in fullResult)) fullResult.explanations = [];
+      if (!('liveAnalysis' in fullResult)) {
+        fullResult.liveAnalysis = {
+          isLive: false,
+          lastUpdated: new Date().toISOString(),
+          summary: 'Live analysis not available',
+          meta: {},
+        };
+      }
       
-      // Build complete response with all fields
-      const resultWithMetadata = {
+      // Return full result with all new fields (RSI, trend, exchange tickers, etc.)
+      // Do NOT sanitize - frontend needs all fields for DeepResearchCard
+      const fullResultWithMetadata = {
         ...fullResult,
         timestamp: new Date().toISOString(),
-        liveAnalysis: liveAnalysis || fullResult.liveAnalysis,
+        summary: fullResult.liveAnalysis?.summary || fullResult.recommendedAction || '',
+        // Ensure all new fields are included
+        rsi5: fullResult.rsi5 ?? null,
+        rsi14: fullResult.rsi14 ?? null,
+        trendAnalysis: fullResult.trendAnalysis ?? null,
+        confidenceBreakdown: fullResult.confidenceBreakdown ?? undefined,
+        exchangeTickers: fullResult.exchangeTickers ?? undefined,
+        exchangeOrderbooks: fullResult.exchangeOrderbooks ?? undefined,
+        exchangeCount: allExchanges.length,
+        exchangesUsed: allExchanges.map(e => e.exchange),
+        autoTradeDecision: fullResult.autoTradeDecision ?? undefined,
       };
-
-      console.log('[ENGINE RESULT]', JSON.stringify({ success: true, result: resultWithMetadata }, null, 2));
 
       return reply.code(200).header('Content-Type', 'application/json').send({
         success: true,
-        result: resultWithMetadata,
+        result: fullResultWithMetadata,
+        liveAnalysis: fullResult.liveAnalysis,
       });
     } catch (error: any) {
       logger.error({ error: error.message, symbol: request.params.symbol }, 'Error getting live analysis');

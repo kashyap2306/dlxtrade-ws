@@ -10,5 +10,18 @@
     "strict": false,
     "noImplicitAny": false
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*"],
+  "exclude": [
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "**/*.spec.tsx",
+    "**/*.test.ts.ignore",
+    "**/*.test.tsx.ignore",
+    "**/*.spec.ts.ignore",
+    "**/*.spec.tsx.ignore",
+    "**/__tests__/**",
+    "**/__mocks__/**",
+    "node_modules"
+  ]
 }
