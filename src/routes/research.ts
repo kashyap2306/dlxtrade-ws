@@ -333,10 +333,33 @@ export async function researchRoutes(fastify: FastifyInstance) {
       }
       
       // Run full research to get complete structured data
-      const fullResult = await researchEngine.runResearch(symbol, user.uid, exchangeAdapter || undefined);
+      const fullResult: any = await researchEngine.runResearch(symbol, user.uid, exchangeAdapter || undefined);
       
       // Get live analysis if available
       const liveAnalysis = await liveAnalysisService.getLiveAnalysis(symbol, user.uid);
+      
+      // Ensure all required fields exist
+      if (!('entry' in fullResult)) fullResult.entry = null;
+      if (!('exits' in fullResult)) fullResult.exits = [];
+      if (!('stopLoss' in fullResult)) fullResult.stopLoss = null;
+      if (!('takeProfit' in fullResult)) fullResult.takeProfit = null;
+      if (!('side' in fullResult)) fullResult.side = 'NEUTRAL';
+      if (!('confidence' in fullResult)) fullResult.confidence = Math.round((fullResult.accuracy || 0.5) * 100);
+      if (!('timeframe' in fullResult)) fullResult.timeframe = '5m';
+      if (!('signals' in fullResult)) fullResult.signals = [];
+      if (!('currentPrice' in fullResult)) fullResult.currentPrice = fullResult.entry || 0;
+      if (!('mode' in fullResult)) fullResult.mode = 'LOW';
+      if (!('recommendedTrade' in fullResult)) fullResult.recommendedTrade = null;
+      if (!('blurFields' in fullResult)) fullResult.blurFields = false;
+      if (!('apiCalls' in fullResult)) fullResult.apiCalls = [];
+      if (!('liveAnalysis' in fullResult)) {
+        fullResult.liveAnalysis = {
+          isLive: false,
+          lastUpdated: new Date().toISOString(),
+          summary: 'Live analysis not available',
+          meta: {},
+        };
+      }
       
       // Build complete response with all fields
       const resultWithMetadata = {
@@ -344,6 +367,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
         timestamp: new Date().toISOString(),
         liveAnalysis: liveAnalysis || fullResult.liveAnalysis,
       };
+
+      console.log('[ENGINE RESULT]', JSON.stringify({ success: true, result: resultWithMetadata }, null, 2));
 
       return reply.code(200).header('Content-Type', 'application/json').send({
         success: true,

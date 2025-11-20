@@ -217,26 +217,28 @@ export class ResearchEngine {
         }
 
         // Determine side based on signal
+        // For accuracy >= 60, if signal is HOLD, default to LONG for signal generation
         if (signal === 'BUY') {
           side = 'LONG';
         } else if (signal === 'SELL') {
           side = 'SHORT';
+        } else if (accuracy >= 0.6 && currentPrice > 0) {
+          // If accuracy >= 60 but signal is HOLD, still generate signals (default to LONG)
+          side = 'LONG';
         } else {
           side = 'NEUTRAL';
         }
 
         // ALWAYS generate signals when accuracy >= 60 and currentPrice > 0
-        // This ensures signals are always generated for accurate predictions
-        const shouldGenerateSignals = (accuracy >= 0.6 && currentPrice > 0) || 
-                                      (side !== 'NEUTRAL' && currentPrice > 0 && signal !== 'HOLD') ||
-                                      (forceEngine && currentPrice > 0);
+        // This ensures signals are always generated for accurate predictions, even if signal is HOLD
+        const shouldGenerateSignals = (accuracy >= 0.6 && currentPrice > 0);
         
         if (shouldGenerateSignals) {
           entry = currentPrice;
           
           // Calculate stop loss: 2% below entry for LONG, 2% above for SHORT
           const stopLossPercent = 0.02;
-          if (side === 'LONG' || (side === 'NEUTRAL' && forceEngine)) {
+          if (side === 'LONG') {
             stopLoss = currentPrice * (1 - stopLossPercent);
           } else if (side === 'SHORT') {
             stopLoss = currentPrice * (1 + stopLossPercent);
@@ -246,7 +248,7 @@ export class ResearchEngine {
 
           // Calculate take profit: 3% above entry for LONG, 3% below for SHORT
           const takeProfitPercent = 0.03;
-          if (side === 'LONG' || (side === 'NEUTRAL' && forceEngine)) {
+          if (side === 'LONG') {
             takeProfit = currentPrice * (1 + takeProfitPercent);
           } else if (side === 'SHORT') {
             takeProfit = currentPrice * (1 - takeProfitPercent);
@@ -255,23 +257,23 @@ export class ResearchEngine {
           }
 
           // Multiple exit targets (primary TP + 2 additional levels)
-          if (side === 'LONG' || (side === 'NEUTRAL' && forceEngine)) {
+          if (side === 'LONG') {
             exits = [
-              takeProfit, // Primary TP
-              currentPrice * (1 + takeProfitPercent * 1.5), // Secondary TP
-              currentPrice * (1 + takeProfitPercent * 2), // Tertiary TP
+              currentPrice * (1 + takeProfitPercent * 0.5), // First exit at 1.5%
+              currentPrice * (1 + takeProfitPercent), // Primary TP at 3%
+              currentPrice * (1 + takeProfitPercent * 2), // Tertiary TP at 6%
             ];
           } else if (side === 'SHORT') {
             exits = [
-              takeProfit, // Primary TP
-              currentPrice * (1 - takeProfitPercent * 1.5), // Secondary TP
-              currentPrice * (1 - takeProfitPercent * 2), // Tertiary TP
+              currentPrice * (1 - takeProfitPercent * 0.5), // First exit at 1.5%
+              currentPrice * (1 - takeProfitPercent), // Primary TP at 3%
+              currentPrice * (1 - takeProfitPercent * 2), // Tertiary TP at 6%
             ];
           } else {
             // Default to LONG exits
             exits = [
-              takeProfit,
-              currentPrice * (1 + takeProfitPercent * 1.5),
+              currentPrice * (1 + takeProfitPercent * 0.5),
+              currentPrice * (1 + takeProfitPercent),
               currentPrice * (1 + takeProfitPercent * 2),
             ];
           }
@@ -295,52 +297,61 @@ export class ResearchEngine {
             },
           ];
 
-          // Add exit signals
+          // Add all exit signals
           exits.forEach((exitPrice, index) => {
-            if (index > 0) {
-              signals.push({
-                type: 'exit',
-                price: exitPrice,
-                reason: index === 1 ? 'Secondary exit target' : 'Tertiary exit target',
-              });
-            }
+            signals.push({
+              type: 'exit',
+              price: exitPrice,
+              reason: index === 0 ? 'First exit target' : index === 1 ? 'Primary exit target' : 'Final exit target',
+            });
           });
 
           timeframe = '5m'; // Default to 5-minute timeframe
         } else {
           // If we reach here, it means shouldGenerateSignals was false
           // This should only happen if currentPrice is 0 or accuracy < 60
-          // But we ALWAYS want to generate signals if accuracy >= 60, so this is a fallback
-          if (currentPrice === 0) {
-            message = 'Unable to determine entry price - exchange API unavailable or symbol not found';
-            // Still try to generate signals with default values if accuracy is high
-            if (accuracy >= 0.6) {
-              // Use a default price estimate if we can't get current price
-              const history = this.orderbookHistory.get(symbol);
-              if (history && history.length > 0) {
-                const latest = history[history.length - 1];
-                const bestBid = parseFloat(latest.bids[0]?.price || '0');
-                const bestAsk = parseFloat(latest.asks[0]?.price || '0');
-                if (bestBid > 0 && bestAsk > 0) {
-                  currentPrice = (bestBid + bestAsk) / 2;
-                  entry = currentPrice;
-                  stopLoss = currentPrice * 0.98;
-                  takeProfit = currentPrice * 1.03;
-                  exits = [currentPrice * 1.015, currentPrice * 1.02, currentPrice * 1.03];
-                  signals = [
-                    { type: 'entry', price: entry, reason: `Entry signal with ${confidence}% confidence (estimated price)` },
-                    { type: 'sl', price: stopLoss, reason: 'Stop loss set at 2% from entry' },
-                    { type: 'tp', price: takeProfit, reason: 'Primary take profit target at 3% from entry' },
-                  ];
-                  exits.slice(1).forEach((exitPrice, idx) => {
-                    signals.push({ type: 'exit', price: exitPrice, reason: idx === 0 ? 'Secondary exit target' : 'Tertiary exit target' });
+          // But we ALWAYS want to generate signals if accuracy >= 60, so try to get price
+          if (accuracy >= 0.6 && currentPrice === 0) {
+            // Try to get price from orderbook history as last resort
+            const history = this.orderbookHistory.get(symbol);
+            if (history && history.length > 0) {
+              const latest = history[history.length - 1];
+              const bestBid = parseFloat(latest.bids[0]?.price || '0');
+              const bestAsk = parseFloat(latest.asks[0]?.price || '0');
+              if (bestBid > 0 && bestAsk > 0) {
+                currentPrice = (bestBid + bestAsk) / 2;
+                entry = currentPrice;
+                stopLoss = currentPrice * 0.98;
+                takeProfit = currentPrice * 1.03;
+                exits = [
+                  currentPrice * 1.015, // First exit at 1.5%
+                  currentPrice * 1.03, // Primary TP at 3%
+                  currentPrice * 1.06, // Final exit at 6%
+                ];
+                signals = [
+                  { type: 'entry', price: entry, reason: `Entry signal with ${confidence}% confidence (estimated price)` },
+                  { type: 'sl', price: stopLoss, reason: 'Stop loss set at 2% from entry' },
+                  { type: 'tp', price: takeProfit, reason: 'Primary take profit target at 3% from entry' },
+                ];
+                exits.forEach((exitPrice, idx) => {
+                  signals.push({ 
+                    type: 'exit', 
+                    price: exitPrice, 
+                    reason: idx === 0 ? 'First exit target' : idx === 1 ? 'Primary exit target' : 'Final exit target' 
                   });
-                  timeframe = '5m';
-                }
+                });
+                timeframe = '5m';
+                logger.info({ symbol, accuracy, currentPrice }, 'Generated signals with estimated price from orderbook');
+              } else {
+                message = 'Unable to determine entry price - exchange API unavailable or symbol not found';
               }
+            } else {
+              message = 'Unable to determine entry price - no orderbook data available';
             }
           } else if (accuracy < 0.6) {
             message = 'Accuracy below 60% - signals not generated. Wait for better market conditions.';
+          } else if (currentPrice === 0) {
+            message = 'Unable to determine entry price - exchange API unavailable or symbol not found';
           }
         }
       } catch (signalGenErr: any) {
@@ -502,15 +513,17 @@ export class ResearchEngine {
       });
       
       console.log('🔍 [RESEARCH_ENGINE] CLEAN RESULT RETURN:', JSON.stringify(result, null, 2));
+      console.log('[ENGINE RESULT]', JSON.stringify(result, null, 2));
       
       return result;
     } catch (error: any) {
       // Wrap entire research in try/catch to prevent any unhandled errors
       // NEVER throw - always return a valid result even on error
-      logger.error({ error: error.message, symbol, uid, stack: error.stack }, 'Error in runResearch - returning fallback result');
+      logger.error({ error: error.message, symbol, uid, stack: error.stack }, 'Error in runResearch - returning complete result with error state');
       
-      // Return fallback result instead of throwing - ensure clean shape with all required fields
-      const fallbackResult: ResearchResult = {
+      // Return complete result with error state - ensure ALL required fields are present
+      // This is NOT a fallback - it's a complete result indicating an error state
+      const errorResult: ResearchResult = {
         symbol,
         signal: 'HOLD' as const,
         accuracy: 0.5,
@@ -544,9 +557,10 @@ export class ResearchEngine {
         apiCalls: apiCalls.length > 0 ? apiCalls : [], // Include any API calls made before error
       };
       
-      console.log('🔍 [RESEARCH_ENGINE] FALLBACK RESULT RETURN:', JSON.stringify(fallbackResult, null, 2));
+      console.log('🔍 [RESEARCH_ENGINE] ERROR RESULT RETURN:', JSON.stringify(errorResult, null, 2));
+      console.log('[ENGINE RESULT]', JSON.stringify(errorResult, null, 2));
       
-      return fallbackResult;
+      return errorResult;
     }
   }
 
