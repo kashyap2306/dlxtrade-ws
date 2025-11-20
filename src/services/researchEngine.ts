@@ -225,10 +225,11 @@ export class ResearchEngine {
           side = 'NEUTRAL';
         }
 
-        // Generate entry, stopLoss, takeProfit if we have a valid signal and price
-        // FORCE: If accuracy >= 60, always generate signals even if signal is HOLD
-        const shouldGenerateSignals = (side !== 'NEUTRAL' && currentPrice > 0 && signal !== 'HOLD') || 
-                                      (forceEngine && accuracy >= 0.6 && currentPrice > 0);
+        // ALWAYS generate signals when accuracy >= 60 and currentPrice > 0
+        // This ensures signals are always generated for accurate predictions
+        const shouldGenerateSignals = (accuracy >= 0.6 && currentPrice > 0) || 
+                                      (side !== 'NEUTRAL' && currentPrice > 0 && signal !== 'HOLD') ||
+                                      (forceEngine && currentPrice > 0);
         
         if (shouldGenerateSignals) {
           entry = currentPrice;
@@ -307,34 +308,39 @@ export class ResearchEngine {
 
           timeframe = '5m'; // Default to 5-minute timeframe
         } else {
-          // No valid signal or price - set message explaining why
-          // BUT: If accuracy >= 60, force generate signals anyway
-          if (accuracy >= 0.6 && currentPrice > 0 && !forceEngine) {
-            // Retry signal generation with current price
-            entry = currentPrice;
-            const stopLossPercent = 0.02;
-            const takeProfitPercent = 0.03;
-            stopLoss = currentPrice * (1 - stopLossPercent);
-            takeProfit = currentPrice * (1 + takeProfitPercent);
-            exits = [
-              takeProfit,
-              currentPrice * (1 + takeProfitPercent * 1.5),
-              currentPrice * (1 + takeProfitPercent * 2),
-            ];
-            signals = [
-              { type: 'entry', price: entry, reason: `Entry signal with ${confidence}% confidence` },
-              { type: 'sl', price: stopLoss, reason: 'Stop loss set at 2% from entry' },
-              { type: 'tp', price: takeProfit, reason: 'Primary take profit target at 3% from entry' },
-            ];
-            exits.slice(1).forEach((exitPrice, idx) => {
-              signals.push({ type: 'exit', price: exitPrice, reason: idx === 0 ? 'Secondary exit target' : 'Tertiary exit target' });
-            });
-            timeframe = '5m';
-            logger.info({ symbol, accuracy, currentPrice }, 'Forced signal generation due to accuracy >= 60%');
-          } else if (currentPrice === 0) {
+          // If we reach here, it means shouldGenerateSignals was false
+          // This should only happen if currentPrice is 0 or accuracy < 60
+          // But we ALWAYS want to generate signals if accuracy >= 60, so this is a fallback
+          if (currentPrice === 0) {
             message = 'Unable to determine entry price - exchange API unavailable or symbol not found';
-          } else if (signal === 'HOLD' && accuracy < 0.6) {
-            message = 'Signal is HOLD - no entry/exit levels generated. Wait for better market conditions.';
+            // Still try to generate signals with default values if accuracy is high
+            if (accuracy >= 0.6) {
+              // Use a default price estimate if we can't get current price
+              const history = this.orderbookHistory.get(symbol);
+              if (history && history.length > 0) {
+                const latest = history[history.length - 1];
+                const bestBid = parseFloat(latest.bids[0]?.price || '0');
+                const bestAsk = parseFloat(latest.asks[0]?.price || '0');
+                if (bestBid > 0 && bestAsk > 0) {
+                  currentPrice = (bestBid + bestAsk) / 2;
+                  entry = currentPrice;
+                  stopLoss = currentPrice * 0.98;
+                  takeProfit = currentPrice * 1.03;
+                  exits = [currentPrice * 1.015, currentPrice * 1.02, currentPrice * 1.03];
+                  signals = [
+                    { type: 'entry', price: entry, reason: `Entry signal with ${confidence}% confidence (estimated price)` },
+                    { type: 'sl', price: stopLoss, reason: 'Stop loss set at 2% from entry' },
+                    { type: 'tp', price: takeProfit, reason: 'Primary take profit target at 3% from entry' },
+                  ];
+                  exits.slice(1).forEach((exitPrice, idx) => {
+                    signals.push({ type: 'exit', price: exitPrice, reason: idx === 0 ? 'Secondary exit target' : 'Tertiary exit target' });
+                  });
+                  timeframe = '5m';
+                }
+              }
+            }
+          } else if (accuracy < 0.6) {
+            message = 'Accuracy below 60% - signals not generated. Wait for better market conditions.';
           }
         }
       } catch (signalGenErr: any) {
@@ -345,7 +351,7 @@ export class ResearchEngine {
       // Determine accuracy-based mode and recommended action
       const accuracyPercent = Math.round(accuracy * 100);
       let mode: 'LOW' | 'MID_BLUR' | 'NORMAL' | 'TRADE_SETUP' = 'NORMAL';
-      let finalRecommendedAction: 'LONG' | 'SHORT' | null = null;
+      let finalRecommendedTrade: 'LONG' | 'SHORT' | null = null;
       let blurFields = false;
       let finalMessage = message;
 
@@ -357,22 +363,26 @@ export class ResearchEngine {
         stopLoss = null;
         takeProfit = null;
         signals = [];
+        finalRecommendedTrade = null;
         finalMessage = 'Accuracy below 50% — Avoid trading';
       } else if (accuracyPercent >= 50 && accuracyPercent < 60) {
         mode = 'MID_BLUR';
         blurFields = true;
         // Keep all fields but mark for blur
+        finalRecommendedTrade = null;
       } else if (accuracyPercent >= 60 && accuracyPercent < 75) {
         mode = 'NORMAL';
         // Show all signals but don't recommend trade
-        finalRecommendedAction = null;
+        finalRecommendedTrade = null;
       } else if (accuracyPercent >= 75) {
         mode = 'TRADE_SETUP';
-        // Show all signals + add recommendedAction
+        // Show all signals + add recommendedTrade
         if (side === 'LONG') {
-          finalRecommendedAction = 'LONG';
+          finalRecommendedTrade = 'LONG';
         } else if (side === 'SHORT') {
-          finalRecommendedAction = 'SHORT';
+          finalRecommendedTrade = 'SHORT';
+        } else {
+          finalRecommendedTrade = null;
         }
       }
 
@@ -415,7 +425,7 @@ export class ResearchEngine {
         signal,
         accuracy,
         orderbookImbalance: imbalance,
-        recommendedAction: finalRecommendedAction ? (finalRecommendedAction === 'LONG' ? 'Consider LONG trade' : 'Consider SHORT trade') : recommendedAction,
+        recommendedAction: finalRecommendedTrade ? (finalRecommendedTrade === 'LONG' ? 'Consider LONG trade' : 'Consider SHORT trade') : recommendedAction,
         microSignals,
         entry,
         exits,
@@ -429,7 +439,7 @@ export class ResearchEngine {
         message: finalMessage,
         currentPrice,
         mode,
-        recommendedTrade: finalRecommendedAction,
+        recommendedTrade: finalRecommendedTrade,
         blurFields,
         apiCalls: finalApiCalls, // Always include API call log
       };
