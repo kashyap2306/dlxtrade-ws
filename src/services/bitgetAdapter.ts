@@ -125,41 +125,107 @@ export class BitgetAdapter implements ExchangeConnector {
     }
   }
 
-  async getKlines(symbol: string, interval: string = '1m', limit: number = 100): Promise<any[]> {
-    // STEP 2 - DEBUG: Log inside adapter.getKlines()
-    const finalSymbol = symbol.toUpperCase();
-    const finalUrl = `${this.baseUrl}/api/mix/v1/market/candles?symbol=${finalSymbol}&granularity=${interval}&limit=${limit}`;
-    console.log('🔍 [DEBUG] [ADAPTER] [BITGET] getKlines() called');
-    console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Final URL/endpoint:', finalUrl);
-    console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Symbol:', finalSymbol);
-    console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Granularity (interval):', interval);
-    console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Limit:', limit);
+  /**
+   * Convert timeframe string to Bitget granularity (seconds)
+   * 1m → 60, 5m → 300, 15m → 900, 1h → 3600, etc.
+   */
+  private timeframeToGranularity(timeframe: string): number {
+    const tf = timeframe.toLowerCase().trim();
+    const mapping: Record<string, number> = {
+      '1m': 60,
+      '3m': 180,
+      '5m': 300,
+      '15m': 900,
+      '30m': 1800,
+      '1h': 3600,
+      '2h': 7200,
+      '4h': 14400,
+      '6h': 21600,
+      '8h': 28800,
+      '12h': 43200,
+      '1d': 86400,
+      '3d': 259200,
+      '1w': 604800,
+      '1M': 2592000,
+    };
     
-    try {
-      const data = await this.request('GET', '/api/mix/v1/market/candles', {
-        symbol: finalSymbol,
-        granularity: interval,
-        limit,
-      });
-      
-      const candles = data.data || [];
-      
-      // STEP 2 - DEBUG: Log response
-      console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Response status: SUCCESS');
-      console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Candle array length:', candles.length);
-      if (candles.length > 0) {
-        console.log('🔍 [DEBUG] [ADAPTER] [BITGET] First 3 candles:', JSON.stringify(candles.slice(0, 3), null, 2));
-        console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Last 3 candles:', JSON.stringify(candles.slice(-3), null, 2));
-      } else {
-        console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Response is empty or null');
+    if (mapping[tf]) {
+      return mapping[tf];
+    }
+    
+    // Try to parse if it's in format like "5m", "1h"
+    const match = tf.match(/^(\d+)([mhdwM])$/);
+    if (match) {
+      const value = parseInt(match[1]);
+      const unit = match[2];
+      const multipliers: Record<string, number> = {
+        'm': 60,
+        'h': 3600,
+        'd': 86400,
+        'w': 604800,
+        'M': 2592000,
+      };
+      if (multipliers[unit]) {
+        return value * multipliers[unit];
       }
-      
+    }
+    
+    // Default to 1 minute if unknown
+    logger.warn({ timeframe }, 'Unknown Bitget timeframe, defaulting to 60 seconds');
+    return 60;
+  }
+
+  async getKlines(symbol: string, interval: string = '1m', limit: number = 100): Promise<any[]> {
+    const logs: string[] = [];
+    logs.push('1) BITGET KLINES CALLED');
+    logs.push(`2) original timeframe: ${interval}`);
+    let granularity: number = 60;
+    const granularityMap: Record<string, number> = {
+      '1m': 60,
+      '5m': 300,
+      '15m': 900,
+      '30m': 1800,
+      '1h': 3600,
+      '4h': 14400,
+      '1d': 86400
+    };
+    if (granularityMap[interval]) {
+      granularity = granularityMap[interval];
+    }
+    logs.push(`3) final granularity sent: ${granularity}`);
+    
+    // Map symbol for spot: BTCUSDT -> BTCUSDT_SPBL
+    const finalSymbol = `${symbol.toUpperCase().replace('-', '')}_SPBL`;
+    const endpoint = '/api/spot/v1/market/candles';
+    const finalUrl = `${this.baseUrl}${endpoint}?symbol=${finalSymbol}&granularity=${granularity}&limit=${limit}`;
+    logs.push(`4) final URL sent: ${finalUrl}`);
+    let candles: any[] = [];
+    try {
+      const data = await this.request('GET', endpoint, {
+        symbol: finalSymbol,
+        granularity: granularity.toString(),
+        limit: limit.toString(),
+      });
+      const rawResponse = JSON.stringify(data);
+      logs.push(`5) raw response body: ${rawResponse}`);
+      if (Array.isArray(data.data)) {
+        candles = data.data.map((x: any[]) => ({
+          timestamp: parseInt(x[0]),
+          open: parseFloat(x[1]),
+          high: parseFloat(x[2]),
+          low: parseFloat(x[3]),
+          close: parseFloat(x[4]),
+          volume: parseFloat(x[5])
+        }));
+      }
+      logs.push(`7) candles.length after parsing: ${candles.length}`);
       return candles;
     } catch (error: any) {
-      console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Response status: ERROR');
-      console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Error message:', error.message);
-      console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Error response:', error.response?.data);
+      logs.push(`6) error (if any): ${error && error.message ? error.message : String(error)}`);
       throw error;
+    } finally {
+      // Only these 7 logs!
+      console.log(logs.join('\n'));
     }
   }
 
