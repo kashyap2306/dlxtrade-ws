@@ -27,6 +27,15 @@ export class LunarCrushAdapter {
     });
   }
 
+  /**
+   * Get sentiment data (alias for getCoinData for consistency)
+   */
+  async getSentiment(symbol: string, since?: number): Promise<LunarCrushData> {
+    // LunarCrush getCoinData already includes sentiment, so we can use it
+    // The 'since' parameter could be used for historical data if needed
+    return this.getCoinData(symbol);
+  }
+
   async getCoinData(symbol: string): Promise<LunarCrushData> {
     try {
       // Map symbol to LunarCrush format (e.g., BTCUSDT -> BTC)

@@ -8,6 +8,8 @@ import { orderManager } from './orderManager';
 import { userRiskManager } from './userRiskManager';
 import * as admin from 'firebase-admin';
 import { ExchangeConnectorFactory } from './exchangeConnector';
+import { loadFeatureConfig } from '../config/featureConfig';
+import { metricsService } from './metricsService';
 
 /**
  * Deep Research Scheduler - COMPREHENSIVE FIX
@@ -46,6 +48,7 @@ export class DeepResearchScheduler {
   private topN: number = 100; // Default: Top-100 coins (was undefined = all tracked coins)
   private autoTradeThreshold: number = 75; // Default: 75% accuracy (NOT 65%!) - minimum 75%
   private autoTradeEnabled: boolean = false;
+  private featureConfig = loadFeatureConfig(); // Load feature config for confluence checks
   
   // Cache for duplicate order prevention
   private recentTrades: Map<string, number> = new Map(); // symbol -> timestamp
@@ -794,17 +797,26 @@ export class DeepResearchScheduler {
     // Check if auto-trade should execute and add decision to result
     // CRITICAL: Use configurable threshold (default 75%), NOT hardcoded 65%
     // Also check result.status - skip if insufficient_data
+    // Require confluence if enabled
+    const hasConfluence = result.confluenceFlags?.hasConfluence !== false; // Default to true if not present (backward compat)
+    const volumeConfirmed = result.volumeConfirmed !== false; // Default to true if not present
+    const derivativesContradict = result.derivativesContradict === true;
+    
     const autoTradeTriggered = this.autoTradeEnabled 
       && userId 
       && result.status === 'ok' // Only trade if data is sufficient
       && result.confidence >= this.autoTradeThreshold 
-      && result.side !== 'NEUTRAL';
+      && result.side !== 'NEUTRAL'
+      && hasConfluence // Require confluence
+      && (!this.featureConfig?.volume?.requireVolumeConfirmation || volumeConfirmed) // Volume confirmation if required
+      && !derivativesContradict; // Don't trade if derivatives contradict
+    
     const autoTradeDecision = {
       triggered: autoTradeTriggered,
       confidence: result.confidence,
       threshold: this.autoTradeThreshold,
       reason: autoTradeTriggered 
-        ? `Confidence ${result.confidence}% >= threshold ${this.autoTradeThreshold}%`
+        ? `Confidence ${result.confidence}% >= threshold ${this.autoTradeThreshold}% with confluence`
         : !this.autoTradeEnabled 
           ? 'Auto-trade disabled'
           : result.status !== 'ok'
@@ -813,11 +825,22 @@ export class DeepResearchScheduler {
               ? `Confidence ${result.confidence}% < threshold ${this.autoTradeThreshold}%`
               : result.side === 'NEUTRAL'
                 ? 'Signal is NEUTRAL'
+                : !hasConfluence
+                  ? 'Confluence check failed'
+                  : !volumeConfirmed && this.featureConfig?.volume?.requireVolumeConfirmation
+                    ? 'Volume confirmation failed (RVOL < threshold)'
+                  : derivativesContradict
+                    ? 'Derivatives contradict price signal'
                 : 'Unknown reason',
     };
     
     // Add auto-trade decision to result
     (result as any).autoTradeDecision = autoTradeDecision;
+    
+    // Record research metrics
+    if (userId) {
+      metricsService.recordResearchRun(userId, result.status === 'ok', result.confidence);
+    }
     
     if (autoTradeTriggered) {
       // Check for duplicate trade (same symbol within window)
@@ -842,6 +865,11 @@ export class DeepResearchScheduler {
           }
           
           await this.executeAutoTrade(userId, symbol, result, tradeAdapter);
+          
+          // Record auto-trade metric
+          if (userId) {
+            metricsService.recordAutoTrade(userId);
+          }
           
           // Record trade time to prevent duplicates
           this.recentTrades.set(symbol, now);

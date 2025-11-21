@@ -162,12 +162,39 @@ export class BinanceAdapter implements ExchangeConnector {
   }
 
   async getKlines(symbol: string, interval: string = '1m', limit: number = 100): Promise<any[]> {
-    const data = await this.request('GET', '/api/v3/klines', {
-      symbol: symbol.toUpperCase(),
-      interval,
-      limit,
-    });
-    return data || [];
+    // STEP 2 - DEBUG: Log inside adapter.getKlines()
+    const finalSymbol = symbol.toUpperCase();
+    const finalUrl = `${this.baseUrl}/api/v3/klines?symbol=${finalSymbol}&interval=${interval}&limit=${limit}`;
+    console.log('🔍 [DEBUG] [ADAPTER] [BINANCE] getKlines() called');
+    console.log('🔍 [DEBUG] [ADAPTER] [BINANCE] Final URL/endpoint:', finalUrl);
+    console.log('🔍 [DEBUG] [ADAPTER] [BINANCE] Symbol:', finalSymbol);
+    console.log('🔍 [DEBUG] [ADAPTER] [BINANCE] Interval:', interval);
+    console.log('🔍 [DEBUG] [BINANCE] Limit:', limit);
+    
+    try {
+      const data = await this.request('GET', '/api/v3/klines', {
+        symbol: finalSymbol,
+        interval,
+        limit,
+      });
+      
+      // STEP 2 - DEBUG: Log response
+      console.log('🔍 [DEBUG] [ADAPTER] [BINANCE] Response status: SUCCESS');
+      console.log('🔍 [DEBUG] [ADAPTER] [BINANCE] Candle array length:', data?.length || 0);
+      if (data && data.length > 0) {
+        console.log('🔍 [DEBUG] [ADAPTER] [BINANCE] First 3 candles:', JSON.stringify(data.slice(0, 3), null, 2));
+        console.log('🔍 [DEBUG] [ADAPTER] [BINANCE] Last 3 candles:', JSON.stringify(data.slice(-3), null, 2));
+      } else {
+        console.log('🔍 [DEBUG] [ADAPTER] [BINANCE] Response is empty or null');
+      }
+      
+      return data || [];
+    } catch (error: any) {
+      console.log('🔍 [DEBUG] [ADAPTER] [BINANCE] Response status: ERROR');
+      console.log('🔍 [DEBUG] [ADAPTER] [BINANCE] Error message:', error.message);
+      console.log('🔍 [DEBUG] [ADAPTER] [BINANCE] Error response:', error.response?.data);
+      throw error;
+    }
   }
 
   async testConnection(): Promise<{ success: boolean; message: string }> {
@@ -292,6 +319,93 @@ export class BinanceAdapter implements ExchangeConnector {
       listenKey: this.listenKey,
     }, false);
     this.listenKey = null;
+  }
+
+  /**
+   * Get funding rate for futures symbol
+   */
+  async getFundingRate(symbol: string): Promise<{ fundingRate: number; nextFundingTime?: number } | null> {
+    try {
+      // Binance futures funding rate endpoint
+      const futuresSymbol = symbol.replace('USDT', 'USDT'); // Keep as is for futures
+      const data = await this.request('GET', '/fapi/v1/premiumIndex', {
+        symbol: futuresSymbol,
+      });
+      
+      return {
+        fundingRate: parseFloat(data.lastFundingRate || '0'),
+        nextFundingTime: data.nextFundingTime ? parseInt(data.nextFundingTime) : undefined,
+      };
+    } catch (error: any) {
+      logger.debug({ error, symbol }, 'Binance funding rate fetch failed (non-critical)');
+      return null;
+    }
+  }
+
+  /**
+   * Get open interest for futures symbol
+   */
+  async getOpenInterest(symbol: string): Promise<{ openInterest: number; openInterestValue: number } | null> {
+    try {
+      const futuresSymbol = symbol.replace('USDT', 'USDT');
+      const data = await this.request('GET', '/fapi/v1/openInterest', {
+        symbol: futuresSymbol,
+      });
+      
+      return {
+        openInterest: parseFloat(data.openInterest || '0'),
+        openInterestValue: parseFloat(data.openInterestValue || '0'),
+      };
+    } catch (error: any) {
+      logger.debug({ error, symbol }, 'Binance open interest fetch failed (non-critical)');
+      return null;
+    }
+  }
+
+  /**
+   * Get liquidations for futures symbol (24h)
+   */
+  async getLiquidations(symbol: string, since?: number): Promise<{ longLiquidation24h: number; shortLiquidation24h: number; totalLiquidation24h: number } | null> {
+    try {
+      // Binance doesn't have direct liquidation endpoint, use force orders as proxy
+      // This is a simplified approach - in production, you might use aggregated data
+      const futuresSymbol = symbol.replace('USDT', 'USDT');
+      const endTime = since ? since + (24 * 60 * 60 * 1000) : Date.now();
+      const startTime = since || (Date.now() - 24 * 60 * 60 * 1000);
+      
+      const data = await this.request('GET', '/fapi/v1/forceOrders', {
+        symbol: futuresSymbol,
+        startTime,
+        endTime,
+        limit: 1000,
+      });
+      
+      let longLiq = 0;
+      let shortLiq = 0;
+      
+      if (Array.isArray(data)) {
+        data.forEach((order: any) => {
+          const qty = parseFloat(order.executedQty || '0');
+          const price = parseFloat(order.price || '0');
+          const value = qty * price;
+          
+          if (order.side === 'SELL' && order.forceOrderType === 'LIQUIDATION') {
+            longLiq += value; // Long liquidation
+          } else if (order.side === 'BUY' && order.forceOrderType === 'LIQUIDATION') {
+            shortLiq += value; // Short liquidation
+          }
+        });
+      }
+      
+      return {
+        longLiquidation24h: longLiq,
+        shortLiquidation24h: shortLiq,
+        totalLiquidation24h: longLiq + shortLiq,
+      };
+    } catch (error: any) {
+      logger.debug({ error, symbol }, 'Binance liquidations fetch failed (non-critical)');
+      return null;
+    }
   }
 
   subscribeOrderbook(

@@ -126,12 +126,41 @@ export class BitgetAdapter implements ExchangeConnector {
   }
 
   async getKlines(symbol: string, interval: string = '1m', limit: number = 100): Promise<any[]> {
-    const data = await this.request('GET', '/api/mix/v1/market/candles', {
-      symbol: symbol.toUpperCase(),
-      granularity: interval,
-      limit,
-    });
-    return data.data || [];
+    // STEP 2 - DEBUG: Log inside adapter.getKlines()
+    const finalSymbol = symbol.toUpperCase();
+    const finalUrl = `${this.baseUrl}/api/mix/v1/market/candles?symbol=${finalSymbol}&granularity=${interval}&limit=${limit}`;
+    console.log('🔍 [DEBUG] [ADAPTER] [BITGET] getKlines() called');
+    console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Final URL/endpoint:', finalUrl);
+    console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Symbol:', finalSymbol);
+    console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Granularity (interval):', interval);
+    console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Limit:', limit);
+    
+    try {
+      const data = await this.request('GET', '/api/mix/v1/market/candles', {
+        symbol: finalSymbol,
+        granularity: interval,
+        limit,
+      });
+      
+      const candles = data.data || [];
+      
+      // STEP 2 - DEBUG: Log response
+      console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Response status: SUCCESS');
+      console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Candle array length:', candles.length);
+      if (candles.length > 0) {
+        console.log('🔍 [DEBUG] [ADAPTER] [BITGET] First 3 candles:', JSON.stringify(candles.slice(0, 3), null, 2));
+        console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Last 3 candles:', JSON.stringify(candles.slice(-3), null, 2));
+      } else {
+        console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Response is empty or null');
+      }
+      
+      return candles;
+    } catch (error: any) {
+      console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Response status: ERROR');
+      console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Error message:', error.message);
+      console.log('🔍 [DEBUG] [ADAPTER] [BITGET] Error response:', error.response?.data);
+      throw error;
+    }
   }
 
   async testConnection(): Promise<{ success: boolean; message: string }> {
@@ -160,6 +189,90 @@ export class BitgetAdapter implements ExchangeConnector {
     } catch (error: any) {
       logger.error({ error }, 'Error getting Bitget account');
       return { error: error.message || 'Failed to get account' };
+    }
+  }
+
+  /**
+   * Get funding rate for futures symbol
+   */
+  async getFundingRate(symbol: string): Promise<{ fundingRate: number; nextFundingTime?: number } | null> {
+    try {
+      const futuresSymbol = symbol.replace('USDT', 'USDT');
+      const data = await this.request('GET', '/api/mix/v1/market/current-fundRate', {
+        symbol: futuresSymbol,
+      });
+      
+      return {
+        fundingRate: parseFloat(data.data?.fundingRate || '0'),
+        nextFundingTime: data.data?.nextSettleTime ? parseInt(data.data.nextSettleTime) : undefined,
+      };
+    } catch (error: any) {
+      logger.debug({ error, symbol }, 'Bitget funding rate fetch failed (non-critical)');
+      return null;
+    }
+  }
+
+  /**
+   * Get open interest for futures symbol
+   */
+  async getOpenInterest(symbol: string): Promise<{ openInterest: number; openInterestValue: number } | null> {
+    try {
+      const futuresSymbol = symbol.replace('USDT', 'USDT');
+      const data = await this.request('GET', '/api/mix/v1/market/open-interest', {
+        symbol: futuresSymbol,
+      });
+      
+      return {
+        openInterest: parseFloat(data.data?.amount || '0'),
+        openInterestValue: parseFloat(data.data?.amount || '0') * parseFloat(data.data?.price || '0'),
+      };
+    } catch (error: any) {
+      logger.debug({ error, symbol }, 'Bitget open interest fetch failed (non-critical)');
+      return null;
+    }
+  }
+
+  /**
+   * Get liquidations for futures symbol (24h)
+   */
+  async getLiquidations(symbol: string, since?: number): Promise<{ longLiquidation24h: number; shortLiquidation24h: number; totalLiquidation24h: number } | null> {
+    try {
+      // Bitget liquidation endpoint
+      const futuresSymbol = symbol.replace('USDT', 'USDT');
+      const endTime = since ? since + (24 * 60 * 60 * 1000) : Date.now();
+      const startTime = since || (Date.now() - 24 * 60 * 60 * 1000);
+      
+      const data = await this.request('GET', '/api/mix/v1/market/liquidation', {
+        symbol: futuresSymbol,
+        startTime: startTime.toString(),
+        endTime: endTime.toString(),
+      });
+      
+      let longLiq = 0;
+      let shortLiq = 0;
+      
+      if (data.data && Array.isArray(data.data)) {
+        data.data.forEach((liq: any) => {
+          const qty = parseFloat(liq.size || '0');
+          const price = parseFloat(liq.price || '0');
+          const value = qty * price;
+          
+          if (liq.side === 'sell') {
+            longLiq += value;
+          } else if (liq.side === 'buy') {
+            shortLiq += value;
+          }
+        });
+      }
+      
+      return {
+        longLiquidation24h: longLiq,
+        shortLiquidation24h: shortLiq,
+        totalLiquidation24h: longLiq + shortLiq,
+      };
+    } catch (error: any) {
+      logger.debug({ error, symbol }, 'Bitget liquidations fetch failed (non-critical)');
+      return null;
     }
   }
 

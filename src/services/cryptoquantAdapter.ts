@@ -148,5 +148,53 @@ export class CryptoQuantAdapter {
       return {}; // Return empty data instead of throwing
     }
   }
+
+  /**
+   * Get exchange reserves for a symbol
+   */
+  async getReserves(symbol: string): Promise<{ exchangeReserves?: number; reserveChange24h?: number }> {
+    // Skip if disabled
+    if (this.disabled || !this.httpClient) {
+      logger.warn('CryptoQuant adapter is disabled - cannot fetch reserves');
+      return {};
+    }
+    
+    // Verify API key is still valid before making request
+    if (!this.apiKey || this.apiKey.trim() === '') {
+      logger.warn('CryptoQuant API key is missing during getReserves call, returning empty data');
+      return {};
+    }
+    
+    try {
+      const url = '/exchange-reserves';
+      logger.debug({ url, symbol, hasApiKey: !!this.apiKey }, 'CryptoQuant getReserves request');
+      
+      const response = await this.httpClient.get(url, {
+        params: {
+          market: symbol,
+          window: '1d',
+        },
+      });
+      
+      apiUsageTracker.increment('cryptoquant');
+      logger.debug({ status: response.status, symbol }, 'CryptoQuant getReserves success');
+      
+      return {
+        exchangeReserves: response.data?.reserves || 0,
+        reserveChange24h: response.data?.reserve_change_24h || 0,
+      };
+    } catch (error: any) {
+      const status = error.response?.status;
+      const errorMessage = error.response?.data?.message || error.message;
+      
+      if (status === 401) {
+        logger.warn({ status, errorMessage, symbol }, 'CryptoQuant 401 Unauthorized for reserves');
+        return {};
+      }
+      
+      logger.debug({ error: errorMessage, status, symbol }, 'CryptoQuant reserves API error (non-critical)');
+      return {};
+    }
+  }
 }
 

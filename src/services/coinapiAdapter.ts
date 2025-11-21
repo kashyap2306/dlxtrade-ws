@@ -118,5 +118,73 @@ export class CoinAPIAdapter {
       return {};
     }
   }
+
+  /**
+   * Get historical OHLCV data (for flatfile or market API)
+   */
+  async getHistoricalOHLCV(symbol: string, timeframe: string = '1DAY', limit: number = 100): Promise<Array<{ time: string; open: number; high: number; low: number; close: number; volume: number }>> {
+    if (this.apiType !== 'market' && this.apiType !== 'flatfile') {
+      return [];
+    }
+    
+    try {
+      const coinapiSymbol = `BINANCE_SPOT_${symbol.replace('USDT', '_USDT')}`;
+      const endTime = new Date().toISOString();
+      const startTime = new Date(Date.now() - limit * 24 * 60 * 60 * 1000).toISOString();
+      
+      const response = await this.httpClient.get(`/ohlcv/${coinapiSymbol}/history`, {
+        params: {
+          period_id: timeframe,
+          time_start: startTime,
+          time_end: endTime,
+          limit,
+        },
+      });
+      
+      return (response.data || []).map((item: any) => ({
+        time: item.time_period_start,
+        open: parseFloat(item.price_open || '0'),
+        high: parseFloat(item.price_high || '0'),
+        low: parseFloat(item.price_low || '0'),
+        close: parseFloat(item.price_close || '0'),
+        volume: parseFloat(item.volume_traded || '0'),
+      }));
+    } catch (error: any) {
+      logger.debug({ error, symbol, timeframe, apiType: this.apiType }, 'CoinAPI historical OHLCV error (non-critical)');
+      return [];
+    }
+  }
+
+  /**
+   * Get orderbook L2 data (for market API)
+   */
+  async getOrderbook(symbol: string, depth: number = 20): Promise<{ bids: Array<{ price: string; quantity: string }>; asks: Array<{ price: string; quantity: string }> } | null> {
+    if (this.apiType !== 'market') {
+      return null;
+    }
+    
+    try {
+      const coinapiSymbol = `BINANCE_SPOT_${symbol.replace('USDT', '_USDT')}`;
+      
+      const response = await this.httpClient.get(`/orderbooks/${coinapiSymbol}/current`, {
+        params: {
+          limit_levels: depth,
+        },
+      });
+      
+      const data = response.data?.[0];
+      if (!data) {
+        return null;
+      }
+      
+      return {
+        bids: (data.bids || []).map(([price, qty]: [string, string]) => ({ price, quantity: qty })),
+        asks: (data.asks || []).map(([price, qty]: [string, string]) => ({ price, quantity: qty })),
+      };
+    } catch (error: any) {
+      logger.debug({ error, symbol, apiType: this.apiType }, 'CoinAPI orderbook error (non-critical)');
+      return null;
+    }
+  }
 }
 

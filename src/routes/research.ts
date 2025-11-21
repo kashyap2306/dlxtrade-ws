@@ -37,7 +37,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
 
   fastify.post('/run', {
     preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Body: { symbol?: string; symbols?: string[]; forceEngine?: boolean } }>, reply: FastifyReply) => {
+  }, async (request: FastifyRequest<{ Body: { symbol?: string; symbols?: string[]; forceEngine?: boolean; timeframe?: string } }>, reply: FastifyReply) => {
     const user = (request as any).user;
     const forceEngine = request.body?.forceEngine === true;
     
@@ -218,13 +218,17 @@ export async function researchRoutes(fastify: FastifyInstance) {
         console.log(`🔍 [RESEARCH/RUN] Processing symbol ${i + 1}/${maxSymbols}:`, currentSymbol);
         
         try {
+          // Extract timeframe from request body, default to '5m'
+          const timeframe = request.body?.timeframe || '5m';
+          
           // ALWAYS call researchEngine.runResearch() with ALL connected exchanges for aggregation
           const result: any = await researchEngine.runResearch(
             currentSymbol, 
             user.uid, 
             exchangeAdapter || undefined, 
             forceEngine,
-            allExchanges // Pass ALL exchanges for aggregation
+            allExchanges, // Pass ALL exchanges for aggregation
+            timeframe // Pass timeframe parameter
           );
           
           // researchEngine.runResearch() already returns all required fields including new ones

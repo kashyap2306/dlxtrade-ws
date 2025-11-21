@@ -8,8 +8,18 @@ interface TradeMetrics {
   latencyCount: number;
 }
 
+interface ResearchMetrics {
+  researchRuns: number;
+  autoTradesExecuted: number;
+  researchFailures: number;
+  avgConfidence: number;
+  confidenceSum: number;
+  confidenceCount: number;
+}
+
 class MetricsService {
   private userMetrics: Map<string, Map<string, TradeMetrics>> = new Map(); // uid -> strategy -> metrics
+  private researchMetrics: Map<string, ResearchMetrics> = new Map(); // uid -> research metrics
 
   recordTrade(uid: string, strategy: string, success: boolean, latency?: number): void {
     if (!this.userMetrics.has(uid)) {
@@ -76,6 +86,70 @@ class MetricsService {
     return this.userMetrics;
   }
 
+  reset(uid?: string): void {
+    if (uid) {
+      this.userMetrics.delete(uid);
+      this.researchMetrics.delete(uid);
+    } else {
+      this.userMetrics.clear();
+      this.researchMetrics.clear();
+    }
+  }
+
+  // Research metrics
+  recordResearchRun(uid: string, success: boolean, confidence?: number): void {
+    if (!this.researchMetrics.has(uid)) {
+      this.researchMetrics.set(uid, {
+        researchRuns: 0,
+        autoTradesExecuted: 0,
+        researchFailures: 0,
+        avgConfidence: 0,
+        confidenceSum: 0,
+        confidenceCount: 0,
+      });
+    }
+    const metrics = this.researchMetrics.get(uid)!;
+    metrics.researchRuns++;
+    if (!success) {
+      metrics.researchFailures++;
+    }
+    if (confidence !== undefined) {
+      metrics.confidenceSum += confidence;
+      metrics.confidenceCount++;
+      metrics.avgConfidence = metrics.confidenceSum / metrics.confidenceCount;
+    }
+    logger.debug({ uid, success, confidence, researchRuns: metrics.researchRuns }, 'Research metric recorded');
+  }
+
+  recordAutoTrade(uid: string): void {
+    if (!this.researchMetrics.has(uid)) {
+      this.researchMetrics.set(uid, {
+        researchRuns: 0,
+        autoTradesExecuted: 0,
+        researchFailures: 0,
+        avgConfidence: 0,
+        confidenceSum: 0,
+        confidenceCount: 0,
+      });
+    }
+    const metrics = this.researchMetrics.get(uid)!;
+    metrics.autoTradesExecuted++;
+    logger.debug({ uid, autoTradesExecuted: metrics.autoTradesExecuted }, 'Auto-trade metric recorded');
+  }
+
+  getResearchMetrics(uid?: string): Map<string, ResearchMetrics> {
+    if (uid) {
+      const metrics = this.researchMetrics.get(uid);
+      if (metrics) {
+        const result = new Map<string, ResearchMetrics>();
+        result.set(uid, metrics);
+        return result;
+      }
+      return new Map();
+    }
+    return this.researchMetrics;
+  }
+
   getPrometheusMetrics(): string {
     const lines: string[] = [
       '# HELP dlxtrade_trades_executed_total Total number of trades executed',
@@ -86,6 +160,14 @@ class MetricsService {
       '# TYPE dlxtrade_cancels_total counter',
       '# HELP dlxtrade_avg_latency_ms Average execution latency in milliseconds',
       '# TYPE dlxtrade_avg_latency_ms gauge',
+      '# HELP dlxtrade_research_runs_total Total number of research runs',
+      '# TYPE dlxtrade_research_runs_total counter',
+      '# HELP dlxtrade_auto_trades_executed_total Total number of auto-trades executed',
+      '# TYPE dlxtrade_auto_trades_executed_total counter',
+      '# HELP dlxtrade_research_failures_total Total number of research failures',
+      '# TYPE dlxtrade_research_failures_total counter',
+      '# HELP dlxtrade_avg_confidence Average confidence score',
+      '# TYPE dlxtrade_avg_confidence gauge',
     ];
 
     for (const [uid, strategyMetrics] of this.userMetrics.entries()) {
@@ -101,15 +183,14 @@ class MetricsService {
       }
     }
 
-    return lines.join('\n');
-  }
-
-  reset(uid?: string): void {
-    if (uid) {
-      this.userMetrics.delete(uid);
-    } else {
-      this.userMetrics.clear();
+    for (const [uid, metrics] of this.researchMetrics.entries()) {
+      lines.push(`dlxtrade_research_runs_total{uid="${uid}"} ${metrics.researchRuns}`);
+      lines.push(`dlxtrade_auto_trades_executed_total{uid="${uid}"} ${metrics.autoTradesExecuted}`);
+      lines.push(`dlxtrade_research_failures_total{uid="${uid}"} ${metrics.researchFailures}`);
+      lines.push(`dlxtrade_avg_confidence{uid="${uid}"} ${metrics.avgConfidence.toFixed(2)}`);
     }
+
+    return lines.join('\n');
   }
 }
 

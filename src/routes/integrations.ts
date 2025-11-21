@@ -9,10 +9,12 @@ import { getFirebaseAdmin } from '../utils/firebase';
 
 // Validation schemas
 const integrationUpdateSchema = z.object({
-  apiName: z.enum(['binance', 'cryptoquant', 'lunarcrush', 'coinapi']),
+  apiName: z.enum(['binance', 'cryptoquant', 'lunarcrush', 'coinapi', 'bitget', 'bingx', 'kucoin', 'weex', 'bybit', 'okx']).optional(),
+  exchange: z.enum(['binance', 'bitget', 'bingx', 'kucoin', 'weex', 'bybit', 'okx']).optional(), // Support 'exchange' field for exchange APIs
   enabled: z.boolean(),
   apiKey: z.string().optional(),
   secretKey: z.string().optional(),
+  passphrase: z.string().optional(), // For exchanges that need passphrase (e.g., Bitget)
   // Allow legacy and namespaced CoinAPI types
   apiType: z.enum(['market', 'flatfile', 'exchangerate', 'coinapi_market', 'coinapi_flatfile', 'coinapi_exchangerate']).optional(),
 });
@@ -229,10 +231,23 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     try {
       body = integrationUpdateSchema.parse(request.body);
     } catch (err: any) {
-      logger.error({ err, uid }, 'Invalid payload in update integration');
+      logger.error({ err, uid, body: request.body }, 'Invalid payload in update integration');
       return reply.code(400).send({ 
         error: 'Invalid request data', 
         details: err.errors || err.message 
+      });
+    }
+
+    // Support both 'apiName' and 'exchange' fields - normalize to apiName
+    if (body.exchange && !body.apiName) {
+      body.apiName = body.exchange;
+    }
+
+    // Validate that we have either apiName or exchange
+    if (!body.apiName) {
+      logger.error({ body: request.body }, 'Missing apiName or exchange in update integration');
+      return reply.code(400).send({ 
+        error: 'Missing required field: apiName or exchange' 
       });
     }
 
@@ -245,10 +260,16 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     }
 
     // Validate required fields based on API type
-    if (body.apiName === 'binance') {
+    if (body.apiName === 'binance' || body.apiName === 'bitget') {
       if (body.enabled && (!body.apiKey || !body.secretKey)) {
         return reply.code(400).send({ 
-          error: 'Binance API requires both API key and secret key' 
+          error: `${body.apiName} API requires both API key and secret key` 
+        });
+      }
+      // Bitget also needs passphrase
+      if (body.apiName === 'bitget' && body.enabled && !body.passphrase) {
+        return reply.code(400).send({ 
+          error: 'Bitget API requires passphrase in addition to API key and secret key' 
         });
       }
     } else {
