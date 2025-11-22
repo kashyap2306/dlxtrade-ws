@@ -57,8 +57,7 @@ export const config = {
   },
 
   features: {
-    systemMarketApi: process.env.SYSTEM_MARKET_API === 'true', // Default: false (off in prod)
-    systemApiCacheTtl: parseInt(process.env.SYSTEM_API_CACHE_TTL || '300', 10), // 5 minutes default
+    // All APIs are user-provided - no system APIs
   },
 };
 

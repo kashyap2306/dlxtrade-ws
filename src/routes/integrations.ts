@@ -977,15 +977,21 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       const integrations = await firestoreAdapter.getAllIntegrations(uid);
       const statusResults: Record<string, any> = {};
 
-      // Process each integration
-      for (const [exchangeName, integration] of Object.entries(integrations)) {
-        if (!integration.enabled || !integration.apiKey) {
+      // Define which integrations are exchanges vs providers
+      const exchangeIntegrations = ['binance', 'bitget', 'bingx', 'weex', 'kucoin'];
+      const providerIntegrations = ['lunarcrush', 'cryptoquant'];
+
+      // Process exchange integrations
+      for (const exchangeName of exchangeIntegrations) {
+        const integration = integrations[exchangeName];
+        if (!integration || !integration.enabled || !integration.apiKey) {
           statusResults[exchangeName] = {
             isConnected: false,
-            exchangeName: integration.exchangeName || exchangeName,
+            exchangeName: integration?.exchangeName || exchangeName,
             apiKeyStatus: 'missing',
             connectionStatus: 'disconnected',
             message: 'API key not configured',
+            type: 'exchange'
           };
           continue;
         }
@@ -1003,6 +1009,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
               apiKeyStatus: 'invalid',
               connectionStatus: 'disconnected',
               message: 'API key decryption failed',
+              type: 'exchange'
             };
             continue;
           }
@@ -1025,6 +1032,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
               connectionStatus: 'connected',
               message: 'API connection successful',
               testnet: integration.testnet ?? false,
+              type: 'exchange'
             };
           } catch (connectionError: any) {
             statusResults[exchangeName] = {
@@ -1034,6 +1042,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
               connectionStatus: 'connection_failed',
               message: connectionError.message || 'Connection test failed',
               testnet: integration.testnet ?? false,
+              type: 'exchange'
             };
           }
 
@@ -1044,6 +1053,175 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
             apiKeyStatus: 'error',
             connectionStatus: 'error',
             message: error.message || 'Status check failed',
+            type: 'exchange'
+          };
+        }
+      }
+
+      // Process provider integrations
+      for (const providerName of providerIntegrations) {
+        const integration = integrations[providerName];
+        if (!integration || !integration.enabled || !integration.apiKey) {
+          statusResults[providerName] = {
+            isConnected: false,
+            exchangeName: integration?.exchangeName || providerName,
+            apiKeyStatus: 'missing',
+            connectionStatus: 'disconnected',
+            message: 'API key not configured',
+            type: 'provider'
+          };
+          continue;
+        }
+
+        try {
+          // Decrypt API key
+          const apiKey = decrypt(integration.apiKey);
+          if (!apiKey) {
+            statusResults[providerName] = {
+              isConnected: false,
+              exchangeName: integration.exchangeName || providerName,
+              apiKeyStatus: 'invalid',
+              connectionStatus: 'disconnected',
+              message: 'API key decryption failed',
+              type: 'provider'
+            };
+            continue;
+          }
+
+          // Test provider connection by making actual API call
+          try {
+            if (providerName === 'lunarcrush') {
+              // Test LunarCrush by calling getSentiment
+              const { LunarCrushAdapter } = await import('../services/lunarcrushAdapter');
+              const adapter = new LunarCrushAdapter(apiKey);
+              await adapter.getSentiment('BTC'); // Test with BTC
+              statusResults[providerName] = {
+                isConnected: true,
+                exchangeName: integration.exchangeName || providerName,
+                apiKeyStatus: 'valid',
+                connectionStatus: 'connected',
+                message: 'API connection successful',
+                type: 'provider'
+              };
+            } else if (providerName === 'cryptoquant') {
+              // Test CryptoQuant by calling getExchangeFlow
+              const { CryptoQuantAdapter } = await import('../services/cryptoquantAdapter');
+              const adapter = new CryptoQuantAdapter(apiKey);
+              if (!adapter.disabled) {
+                await adapter.getExchangeFlow('BTC');
+                statusResults[providerName] = {
+                  isConnected: true,
+                  exchangeName: integration.exchangeName || providerName,
+                  apiKeyStatus: 'valid',
+                  connectionStatus: 'connected',
+                  message: 'API connection successful',
+                  type: 'provider'
+                };
+              } else {
+                statusResults[providerName] = {
+                  isConnected: false,
+                  exchangeName: integration.exchangeName || providerName,
+                  apiKeyStatus: 'invalid',
+                  connectionStatus: 'disconnected',
+                  message: 'Invalid CryptoQuant API key',
+                  type: 'provider'
+                };
+              }
+            }
+          } catch (connectionError: any) {
+            statusResults[providerName] = {
+              isConnected: false,
+              exchangeName: integration.exchangeName || providerName,
+              apiKeyStatus: 'valid',
+              connectionStatus: 'connection_failed',
+              message: connectionError.message || 'Connection test failed',
+              type: 'provider'
+            };
+          }
+
+        } catch (error: any) {
+          statusResults[providerName] = {
+            isConnected: false,
+            exchangeName: integration.exchangeName || providerName,
+            apiKeyStatus: 'error',
+            connectionStatus: 'error',
+            message: error.message || 'Status check failed',
+            type: 'provider'
+          };
+        }
+      }
+
+      // Process CoinAPI integrations
+      const coinapiTypes = ['market', 'flatfile', 'exchangerate'];
+      for (const apiType of coinapiTypes) {
+        const integrationName = `coinapi_${apiType}`;
+        const integration = integrations[integrationName];
+        if (!integration || !integration.enabled || !integration.apiKey) {
+          statusResults[integrationName] = {
+            isConnected: false,
+            exchangeName: `CoinAPI ${apiType}`,
+            apiKeyStatus: 'missing',
+            connectionStatus: 'disconnected',
+            message: 'API key not configured',
+            type: 'coinapi'
+          };
+          continue;
+        }
+
+        try {
+          const apiKey = decrypt(integration.apiKey);
+          if (!apiKey) {
+            statusResults[integrationName] = {
+              isConnected: false,
+              exchangeName: `CoinAPI ${apiType}`,
+              apiKeyStatus: 'invalid',
+              connectionStatus: 'disconnected',
+              message: 'API key decryption failed',
+              type: 'coinapi'
+            };
+            continue;
+          }
+
+          // Test CoinAPI connection by making actual API call
+          try {
+            const { CoinAPIAdapter } = await import('../services/coinapiAdapter');
+            const adapter = new CoinAPIAdapter(apiKey, apiType as any);
+
+            if (apiType === 'market') {
+              await adapter.getMarketData('BTCUSDT');
+            } else if (apiType === 'exchangerate') {
+              await adapter.getExchangeRate('BTC', 'USDT');
+            } else if (apiType === 'flatfile') {
+              await adapter.getHistoricalData('BTCUSDT', 1);
+            }
+
+            statusResults[integrationName] = {
+              isConnected: true,
+              exchangeName: `CoinAPI ${apiType}`,
+              apiKeyStatus: 'valid',
+              connectionStatus: 'connected',
+              message: 'API connection successful',
+              type: 'coinapi'
+            };
+          } catch (connectionError: any) {
+            statusResults[integrationName] = {
+              isConnected: false,
+              exchangeName: `CoinAPI ${apiType}`,
+              apiKeyStatus: 'valid',
+              connectionStatus: 'connection_failed',
+              message: connectionError.message || 'Connection test failed',
+              type: 'coinapi'
+            };
+          }
+
+        } catch (error: any) {
+          statusResults[integrationName] = {
+            isConnected: false,
+            exchangeName: `CoinAPI ${apiType}`,
+            apiKeyStatus: 'error',
+            connectionStatus: 'error',
+            message: error.message || 'Status check failed',
+            type: 'coinapi'
           };
         }
       }

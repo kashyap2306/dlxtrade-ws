@@ -82,8 +82,16 @@ export class CoinAPIAdapter {
         priceChangePercent24h: data.price_change_percent_24h || 0,
       };
     } catch (error: any) {
-      logger.debug({ error, symbol, apiType: this.apiType }, 'CoinAPI market API error (non-critical)');
-      return {};
+      const status = error.response?.status;
+      const errorMessage = error.response?.data?.message || error.message;
+
+      if (status === 401 || status === 403) {
+        logger.warn({ status, errorMessage, symbol, apiType: this.apiType }, 'CoinAPI market API authentication failed');
+        throw new Error(`CoinAPI market API authentication failed: ${errorMessage}`);
+      }
+
+      logger.warn({ error: errorMessage, status, symbol, apiType: this.apiType }, 'CoinAPI market API error');
+      throw new Error(`CoinAPI market API error: ${errorMessage}`);
     }
   }
 
@@ -114,8 +122,16 @@ export class CoinAPIAdapter {
         historicalData,
       };
     } catch (error: any) {
-      logger.debug({ error, symbol, apiType: this.apiType }, 'CoinAPI historical API error (non-critical)');
-      return {};
+      const status = error.response?.status;
+      const errorMessage = error.response?.data?.message || error.message;
+
+      if (status === 401 || status === 403) {
+        logger.warn({ status, errorMessage, symbol, apiType: this.apiType }, 'CoinAPI historical API authentication failed');
+        throw new Error(`CoinAPI historical API authentication failed: ${errorMessage}`);
+      }
+
+      logger.warn({ error: errorMessage, status, symbol, apiType: this.apiType }, 'CoinAPI historical API error');
+      throw new Error(`CoinAPI historical API error: ${errorMessage}`);
     }
   }
 
@@ -131,8 +147,16 @@ export class CoinAPIAdapter {
         exchangeRate: response.data?.rate || 0,
       };
     } catch (error: any) {
-      logger.debug({ error, baseAsset, quoteAsset, apiType: this.apiType }, 'CoinAPI exchange rate API error (non-critical)');
-      return {};
+      const status = error.response?.status;
+      const errorMessage = error.response?.data?.message || error.message;
+
+      if (status === 401 || status === 403) {
+        logger.warn({ status, errorMessage, baseAsset, quoteAsset, apiType: this.apiType }, 'CoinAPI exchange rate API authentication failed');
+        throw new Error(`CoinAPI exchange rate API authentication failed: ${errorMessage}`);
+      }
+
+      logger.warn({ error: errorMessage, status, baseAsset, quoteAsset, apiType: this.apiType }, 'CoinAPI exchange rate API error');
+      throw new Error(`CoinAPI exchange rate API error: ${errorMessage}`);
     }
   }
 

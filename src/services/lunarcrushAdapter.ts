@@ -65,9 +65,16 @@ export class LunarCrushAdapter {
         bullishSentiment: data.bullish_sentiment || 0,
       };
     } catch (error: any) {
-      logger.debug({ error, symbol }, 'LunarCrush API error (non-critical)');
-      // Return empty data on error - don't block research
-      return {};
+      const status = error.response?.status;
+      const errorMessage = error.response?.data?.message || error.message;
+
+      if (status === 401 || status === 403) {
+        logger.warn({ status, errorMessage, symbol }, 'LunarCrush API authentication failed');
+        throw new Error(`LunarCrush API authentication failed: ${errorMessage}`);
+      }
+
+      logger.warn({ error: errorMessage, status, symbol }, 'LunarCrush API error');
+      throw new Error(`LunarCrush API error: ${errorMessage}`);
     }
   }
 }

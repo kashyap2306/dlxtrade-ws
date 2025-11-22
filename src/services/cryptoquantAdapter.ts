@@ -79,21 +79,21 @@ export class CryptoQuantAdapter {
       const statusText = error.response?.statusText;
       const errorMessage = error.response?.data?.message || error.message;
       
-      // Log 401 errors with details but don't throw - return empty data
+      // Throw errors for proper failure handling in research engine
       if (status === 401) {
-        logger.warn({ 
-          status, 
-          statusText, 
+        logger.warn({
+          status,
+          statusText,
           errorMessage,
           symbol,
           hasApiKey: !!this.apiKey,
           apiKeyLength: this.apiKey?.length || 0,
-        }, 'CryptoQuant 401 Unauthorized - Token does not exist or is invalid, returning empty data');
-        return {}; // Return empty data instead of throwing
+        }, 'CryptoQuant 401 Unauthorized - Token does not exist or is invalid');
+        throw new Error(`CryptoQuant API authentication failed: ${errorMessage}`);
       }
-      
-      logger.debug({ error: errorMessage, status, symbol }, 'CryptoQuant API error (non-critical, returning empty data)');
-      return {}; // Return empty data instead of throwing
+
+      logger.warn({ error: errorMessage, status, symbol }, 'CryptoQuant API error');
+      throw new Error(`CryptoQuant API error: ${errorMessage}`);
     }
   }
 
@@ -133,19 +133,19 @@ export class CryptoQuantAdapter {
       
       // Log 401 errors with details but don't throw - return empty data
       if (status === 401) {
-        logger.warn({ 
-          status, 
-          statusText, 
+        logger.warn({
+          status,
+          statusText,
           errorMessage,
           symbol,
           hasApiKey: !!this.apiKey,
           apiKeyLength: this.apiKey?.length || 0,
-        }, 'CryptoQuant 401 Unauthorized - Token does not exist or is invalid, returning empty data');
-        return {}; // Return empty data instead of throwing
+        }, 'CryptoQuant 401 Unauthorized - Token does not exist or is invalid');
+        throw new Error(`CryptoQuant API authentication failed: ${errorMessage}`);
       }
-      
-      logger.debug({ error: errorMessage, status, symbol }, 'CryptoQuant on-chain API error (non-critical, returning empty data)');
-      return {}; // Return empty data instead of throwing
+
+      logger.warn({ error: errorMessage, status, symbol }, 'CryptoQuant on-chain API error');
+      throw new Error(`CryptoQuant API error: ${errorMessage}`);
     }
   }
 
@@ -189,11 +189,11 @@ export class CryptoQuantAdapter {
       
       if (status === 401) {
         logger.warn({ status, errorMessage, symbol }, 'CryptoQuant 401 Unauthorized for reserves');
-        return {};
+        throw new Error(`CryptoQuant API authentication failed: ${errorMessage}`);
       }
-      
-      logger.debug({ error: errorMessage, status, symbol }, 'CryptoQuant reserves API error (non-critical)');
-      return {};
+
+      logger.warn({ error: errorMessage, status, symbol }, 'CryptoQuant reserves API error');
+      throw new Error(`CryptoQuant API error: ${errorMessage}`);
     }
   }
 }

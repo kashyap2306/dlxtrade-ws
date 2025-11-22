@@ -185,7 +185,7 @@ export interface ResearchResult {
     _atrValue?: number | null;
     _orderbookImbalanceValue?: number | null;
     _trendStrengthValue?: { ema20: number | null; ema50: number | null; trend: string } | null;
-    _apisUsed?: string[];
+    _apisUsed?: Record<string, boolean | string>;
   };
   indicators?: {
     rsi?: number | null;
@@ -200,7 +200,7 @@ export interface ResearchResult {
   entryPrice?: number | null;
   recommendation?: 'AUTO' | 'MANUAL' | null;
   perFeatureScore?: Record<string, number>;
-  apisUsed?: string[];
+  apisUsed?: Record<string, boolean | string>;
   rawConfidence?: number;
   smoothedConfidence?: number;
   confluenceFlags?: Record<string, boolean>;
@@ -293,18 +293,9 @@ export class ResearchEngine {
     // User has exchange API configured (context is guaranteed to be valid)
     const userExchangeAdapter = context.adapter;
 
-    const { lunarAdapter, cryptoAdapter, coinapiAdapter, missing: providerMissing } =
+    // ALL provider APIs are required - buildProviderAdapters throws if any are missing
+    const { lunarAdapter, cryptoAdapter, coinapiAdapters } =
       await this.buildProviderAdapters(uid);
-
-    // LunarCrush and CryptoQuant are required for sentiment and derivatives data
-    if (!lunarAdapter || !cryptoAdapter || providerMissing.length > 0) {
-      throw new ResearchEngineError(
-        'Missing required data providers',
-        this.createErrorId(),
-        422,
-        providerMissing.length ? providerMissing : undefined
-      );
-    }
 
     // Require exchange API for market data (should be guaranteed by getActiveExchangeForUser)
     if (!userExchangeAdapter) {
@@ -316,7 +307,15 @@ export class ResearchEngine {
       );
     }
 
-    const providersUsed = ['cryptoquant', 'lunarcrush', 'coinapi'];
+    // All adapters are guaranteed to exist - user must provide all API keys
+    const providersUsed = {
+      userExchange: context.name,
+      cryptoquant: true,
+      lunarcrush: true,
+      coinapi_market: true,
+      coinapi_flatfile: true,
+      coinapi_exchangerate: true,
+    };
 
     try {
       const candles = await runApiCall<NormalizedCandle[]>(
@@ -379,14 +378,12 @@ export class ResearchEngine {
       const microSignals = this.buildMicroSignals(liquidity, priceMomentum);
       recordApiCall({ apiName: 'Microstructure Module', status: 'SUCCESS' });
 
+      // ALL provider APIs are required and guaranteed to exist
       const cryptoQuantFlow = await runApiCall<CryptoQuantData>(
         'CryptoQuant Exchange Flow',
         () => cryptoAdapter.getExchangeFlow(normalizedSymbol),
         { provider: 'CryptoQuant' }
       );
-      if (!cryptoQuantFlow) {
-        throw new ResearchEngineError('CryptoQuant exchange flow unavailable', this.createErrorId(), 502);
-      }
 
       const cryptoQuantReserves = await runApiCall<{ exchangeReserves?: number; reserveChange24h?: number }>(
         'CryptoQuant Reserves',
@@ -394,7 +391,13 @@ export class ResearchEngine {
         { provider: 'CryptoQuant' }
       );
 
-      const derivativesData = this.buildDerivativesFromCryptoQuant(cryptoQuantFlow, cryptoQuantReserves || undefined);
+      const cryptoQuantOnChain = await runApiCall<CryptoQuantData>(
+        'CryptoQuant On-Chain Metrics',
+        () => cryptoAdapter.getOnChainMetrics(normalizedSymbol),
+        { provider: 'CryptoQuant' }
+      );
+
+      const derivativesData = this.buildDerivativesFromCryptoQuant(cryptoQuantFlow || undefined, cryptoQuantReserves || undefined, cryptoQuantOnChain || undefined);
       const derivatives = analyzeDerivatives(derivativesData);
 
       if (derivativesData.fundingRate) {
@@ -447,17 +450,26 @@ export class ResearchEngine {
         },
         { provider: 'LunarCrush' }
       );
-      if (!sentimentPayload) {
-        throw new ResearchEngineError('Failed to fetch LunarCrush sentiment', this.createErrorId(), 502);
-      }
       const sentiment = analyzeSentiment(sentimentPayload);
 
-      // Global Intelligence: CoinAPI market data (optional supplemental data)
-      const coinapiMarketData = coinapiAdapter ? await runApiCall<{ price?: number; volume24h?: number; priceChangePercent24h?: number }>(
+      // Global Intelligence: CoinAPI data (market, flatfile, exchangerate)
+      const coinapiMarketData = await runApiCall<{ price?: number; volume24h?: number; priceChangePercent24h?: number }>(
         'CoinAPI Global Market Data',
-        () => coinapiAdapter!.getMarketData(normalizedSymbol),
-        { optional: true, provider: 'CoinAPI' }
-      ) : null;
+        () => coinapiAdapters.market.getMarketData(normalizedSymbol),
+        { provider: 'CoinAPI' }
+      );
+
+      const coinapiExchangeRate = await runApiCall<{ exchangeRate?: number }>(
+        'CoinAPI Exchange Rate',
+        () => coinapiAdapters.exchangerate.getExchangeRate(normalizedSymbol.replace('USDT', ''), 'USDT'),
+        { provider: 'CoinAPI' }
+      );
+
+      const coinapiHistoricalData = await runApiCall<{ historicalData?: Array<{ time: string; price: number }> }>(
+        'CoinAPI Historical Data',
+        () => coinapiAdapters.flatfile.getHistoricalData(normalizedSymbol, 7),
+        { provider: 'CoinAPI' }
+      );
 
       const rsi = analyzeRSI(candles);
       const macd = analyzeMACD(candles);
@@ -556,7 +568,7 @@ export class ResearchEngine {
         trendStrength: trendStrength.trend,
         volatility: atr?.toFixed(6) ?? null,
         newsSentiment: sentiment.description,
-        onChainFlows: undefined,
+        onChainFlows: cryptoQuantOnChain?.activeAddresses ? `${cryptoQuantOnChain.activeAddresses.toLocaleString()} active addresses` : undefined,
         priceDivergence: undefined,
         globalMarketData: coinapiMarketData ? {
           price: coinapiMarketData.price,
@@ -695,46 +707,84 @@ export class ResearchEngine {
   }
 
   private async buildProviderAdapters(uid: string): Promise<{
-    lunarAdapter?: LunarCrushAdapter;
-    cryptoAdapter?: CryptoQuantAdapter;
-    coinapiAdapter?: CoinAPIAdapter;
-    missing: MissingDependency[];
+    lunarAdapter: LunarCrushAdapter;
+    cryptoAdapter: CryptoQuantAdapter;
+    coinapiAdapters: Record<string, CoinAPIAdapter>;
   }> {
     const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
-    const missing: MissingDependency[] = [];
+    const missing: string[] = [];
 
+    // REQUIRE all API keys - no fallbacks, no system keys
     const lunarKey = integrations['lunarcrush']?.apiKey;
     const cryptoKey = integrations['cryptoquant']?.apiKey;
-    const coinapiEntry = Object.entries(integrations).find(([name, integration]) => {
-      return name.startsWith('coinapi_') && !!integration.apiKey;
-    });
 
-    let lunarAdapter: LunarCrushAdapter | undefined;
-    if (lunarKey) {
-      lunarAdapter = new LunarCrushAdapter(lunarKey);
-    } else {
-      missing.push({ api: 'LunarCrush', missingKey: true, reason: 'LunarCrush API key not connected' });
+    if (!lunarKey) {
+      missing.push('LunarCrush API key');
+    }
+    if (!cryptoKey) {
+      missing.push('CryptoQuant API key');
     }
 
-    let cryptoAdapter: CryptoQuantAdapter | undefined;
-    if (cryptoKey) {
-      const adapter = new CryptoQuantAdapter(cryptoKey);
-      if (adapter.disabled) {
-        missing.push({ api: 'CryptoQuant', missingKey: true, reason: 'CryptoQuant key invalid' });
-      } else {
-        cryptoAdapter = adapter;
+    // Check for all required CoinAPI types
+    const requiredCoinAPITypes = ['market', 'flatfile', 'exchangerate'];
+    for (const apiType of requiredCoinAPITypes) {
+      const coinapiKey = integrations[`coinapi_${apiType}`]?.apiKey;
+      if (!coinapiKey) {
+        missing.push(`CoinAPI ${apiType} API key`);
       }
-    } else {
-      missing.push({ api: 'CryptoQuant', missingKey: true, reason: 'CryptoQuant API key not connected' });
     }
 
-    let coinapiAdapter: CoinAPIAdapter | undefined;
-    if (coinapiEntry?.[1].apiKey) {
-      coinapiAdapter = new CoinAPIAdapter(coinapiEntry[1].apiKey, 'market');
+    if (missing.length > 0) {
+      throw new ResearchEngineError(
+        `Missing required API keys: ${missing.join(', ')}. Please configure all provider API keys in your account settings.`,
+        this.createErrorId(),
+        422,
+        missing.map(api => ({ api, missingKey: true, reason: `${api} required for Deep Research` }))
+      );
     }
-    // CoinAPI is optional for global intelligence data
 
-    return { lunarAdapter, cryptoAdapter, coinapiAdapter, missing };
+    // Create adapters - all keys are validated above
+    let lunarAdapter: LunarCrushAdapter;
+    try {
+      lunarAdapter = new LunarCrushAdapter(lunarKey);
+    } catch (error: any) {
+      throw new ResearchEngineError(
+        `Failed to initialize LunarCrush adapter: ${error.message}`,
+        this.createErrorId(),
+        500
+      );
+    }
+
+    let cryptoAdapter: CryptoQuantAdapter;
+    try {
+      cryptoAdapter = new CryptoQuantAdapter(cryptoKey);
+      if (cryptoAdapter.disabled) {
+        throw new Error('CryptoQuant adapter disabled due to invalid key');
+      }
+    } catch (error: any) {
+      throw new ResearchEngineError(
+        `Failed to initialize CryptoQuant adapter: ${error.message}`,
+        this.createErrorId(),
+        500
+      );
+    }
+
+    // Create all required CoinAPI adapters
+    const coinapiAdapters: Record<string, CoinAPIAdapter> = {};
+    for (const apiType of requiredCoinAPITypes) {
+      const coinapiKey = integrations[`coinapi_${apiType}`]?.apiKey;
+      try {
+        coinapiAdapters[apiType] = new CoinAPIAdapter(coinapiKey, apiType as any);
+      } catch (error: any) {
+        throw new ResearchEngineError(
+          `Failed to initialize CoinAPI ${apiType} adapter: ${error.message}`,
+          this.createErrorId(),
+          500
+        );
+      }
+    }
+
+    return { lunarAdapter, cryptoAdapter, coinapiAdapters };
   }
 
   private async resolveContext(uid: string): Promise<ActiveExchangeContext> {
@@ -826,10 +876,10 @@ export class ResearchEngine {
     }
   }
 
-  private buildDerivativesFromCryptoQuant(flow: CryptoQuantData, reserves?: { exchangeReserves?: number; reserveChange24h?: number }): DerivativesData {
+  private buildDerivativesFromCryptoQuant(flow?: CryptoQuantData, reserves?: { exchangeReserves?: number; reserveChange24h?: number }, onChain?: CryptoQuantData): DerivativesData {
     const data: DerivativesData = { source: 'cryptoquant' };
 
-    if (flow.exchangeFlow !== undefined) {
+    if (flow?.exchangeFlow !== undefined) {
       data.openInterest = {
         openInterest: Math.abs(flow.exchangeFlow),
         change24h: ((flow.exchangeInflow || 0) - (flow.exchangeOutflow || 0)) / Math.max(Math.abs(flow.exchangeFlow) || 1, 1),
@@ -844,7 +894,7 @@ export class ResearchEngine {
       };
     }
 
-    if (flow.whaleTransactions !== undefined) {
+    if (flow?.whaleTransactions !== undefined) {
       data.liquidations = {
         longLiquidation24h: Math.max(flow.whaleTransactions, 0),
         shortLiquidation24h: Math.max((flow.whaleTransactions || 0) * 0.5, 0),

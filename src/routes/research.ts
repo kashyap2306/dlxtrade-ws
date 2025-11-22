@@ -272,6 +272,41 @@ export async function researchRoutes(fastify: FastifyInstance) {
   });
 
 
+  // TEST ROUTE: POST /api/research/test-run - Test research without authentication
+  fastify.post('/test-run', async (request: FastifyRequest<{ Body: { symbol?: string; uid?: string; timeframe?: string } }>, reply: FastifyReply) => {
+    try {
+      const symbol = request.body?.symbol || 'BTCUSDT';
+      const uid = request.body?.uid || 'test-user-123';
+      const timeframe = request.body?.timeframe || '5m';
+
+      console.log('🧪 [TEST RESEARCH] Starting test run for symbol:', symbol);
+
+      const activeContext = await firestoreAdapter.getActiveExchangeForUser(uid);
+      const results = await researchEngine.runResearch(
+        symbol,
+        uid,
+        undefined,
+        false,
+        undefined,
+        timeframe,
+        activeContext
+      );
+
+      reply.code(200).header('Content-Type', 'application/json').send({
+        success: true,
+        message: 'Test research completed',
+        results: [results],
+      });
+    } catch (error: any) {
+      console.error('🧪 [TEST RESEARCH] Error:', error);
+      reply.code(500).header('Content-Type', 'application/json').send({
+        success: false,
+        message: error.message || 'Test research failed',
+        results: [],
+      });
+    }
+  });
+
   // GET /api/research/live/:symbol - Get latest live analysis for a symbol with full structured data
   fastify.get('/live/:symbol', {
     preHandler: [fastify.authenticate],
