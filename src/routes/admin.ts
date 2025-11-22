@@ -271,6 +271,49 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
   });
 
+  fastify.get('/integrations/submissions', {
+    preHandler: [fastify.authenticate, fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Querystring: { uid?: string } }>, reply: FastifyReply) => {
+    const uid = request.query.uid;
+
+    if (!uid) {
+      return reply.code(400).send({
+        ok: false,
+        code: 'MISSING_UID',
+        message: 'Query parameter uid is required',
+      });
+    }
+
+    try {
+      const integrations = await firestoreAdapter.getAllIntegrations(uid);
+      const submissions = Object.entries(integrations).map(([id, integration]) => ({
+        id,
+        exchangeName: integration.exchangeName || id,
+        status: integration.status || (integration.enabled ? 'SAVED' : 'DISABLED'),
+        enabled: integration.enabled,
+        maskedApiKey: integration.apiKey ? maskKey(integration.apiKey) : null,
+        maskedSecretKey: integration.secretKey ? maskKey(integration.secretKey) : null,
+        updatedAt: integration.updatedAt?.toDate().toISOString(),
+        createdAt: integration.createdAt?.toDate().toISOString(),
+        meta: integration.meta || null,
+      }));
+
+      return {
+        ok: true,
+        uid,
+        count: submissions.length,
+        submissions,
+      };
+    } catch (err: any) {
+      logger.error({ err, uid }, 'Failed to list integration submissions');
+      return reply.code(500).send({
+        ok: false,
+        code: 'ADMIN_SUBMISSIONS_FAILED',
+        message: err.message || 'Failed to load submissions',
+      });
+    }
+  });
+
   // Get user details
   fastify.get('/user/:uid', {
     preHandler: [fastify.authenticate, fastify.adminAuth],

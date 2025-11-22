@@ -1,29 +1,207 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { firestoreAdapter } from '../services/firestoreAdapter';
+import { firestoreAdapter, type IntegrationDocument, type IntegrationStatus } from '../services/firestoreAdapter';
 import { z } from 'zod';
 import { maskKey, encrypt } from '../services/keyManager';
 import { BinanceAdapter } from '../services/binanceAdapter';
 import { logger } from '../utils/logger';
 import * as admin from 'firebase-admin';
 import { getFirebaseAdmin } from '../utils/firebase';
-import type { IntegrationDocument } from '../services/firestoreAdapter';
 
 // Validation schemas
+const exchangeNameSchema = z.string().min(2, 'Exchange name is required').max(64, 'Exchange name too long').trim();
+const credentialSchema = z.string().min(1, 'Field is required').max(512, 'Value too long').trim();
+
 const integrationUpdateSchema = z.object({
-  apiName: z.enum(['binance', 'cryptoquant', 'lunarcrush', 'coinapi', 'bitget', 'bingx', 'kucoin', 'weex', 'bybit', 'okx']).optional(),
-  exchange: z.enum(['binance', 'bitget', 'bingx', 'kucoin', 'weex', 'bybit', 'okx']).optional(), // Support 'exchange' field for exchange APIs
-  enabled: z.boolean(),
-  apiKey: z.string().optional(),
-  secretKey: z.string().optional(),
-  passphrase: z.string().optional(), // For exchanges that need passphrase (e.g., Bitget)
-  // Allow legacy and namespaced CoinAPI types
-  apiType: z.enum(['market', 'flatfile', 'exchangerate', 'coinapi_market', 'coinapi_flatfile', 'coinapi_exchangerate']).optional(),
+  apiName: exchangeNameSchema.optional(),
+  exchange: exchangeNameSchema.optional(), // Support both apiName/exchange for backward compatibility
+  exchangeName: exchangeNameSchema.optional(),
+  enabled: z.boolean().default(true),
+  apiKey: credentialSchema.optional(),
+  secretKey: credentialSchema.optional(),
+  apiSecret: credentialSchema.optional(),
+  passphrase: z.string().max(512, 'Passphrase too long').trim().optional(),
+  apiType: z.string().max(64, 'apiType too long').trim().optional(),
+  validate: z.boolean().optional(),
+  metadata: z.record(z.any()).optional(),
+  label: z.string().max(64).trim().optional(),
+  userId: z.string().trim().optional(),
 });
 
 const integrationDeleteSchema = z.object({
-  apiName: z.enum(['binance', 'cryptoquant', 'lunarcrush', 'coinapi']),
-  apiType: z.enum(['market', 'flatfile', 'exchangerate', 'coinapi_market', 'coinapi_flatfile', 'coinapi_exchangerate']).optional(),
+  apiName: exchangeNameSchema,
+  apiType: z.string().max(64).trim().optional(),
 });
+
+const integrationSubmitSchema = z.object({
+  exchangeName: exchangeNameSchema,
+  apiKey: credentialSchema,
+  apiSecret: credentialSchema.optional(),
+  secretKey: credentialSchema.optional(),
+  passphrase: z.string().max(512).trim().optional(),
+  label: z.string().max(64).trim().optional(),
+  validate: z.boolean().optional(),
+  metadata: z.record(z.any()).optional(),
+  userId: z.string().trim().optional(),
+});
+
+const normalizeExchangeId = (value: string): string => {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+  return normalized || 'exchange';
+};
+
+const resolveStatus = (integration: IntegrationDocument): IntegrationStatus =>
+  integration.status || (integration.enabled ? 'SAVED' : 'DISABLED');
+
+const buildIntegrationList = (integrations: Record<string, IntegrationDocument>) => {
+  return Object.entries(integrations).map(([docName, integration]) => ({
+    id: docName,
+    exchangeName: integration.exchangeName || docName,
+    status: resolveStatus(integration),
+    enabled: integration.enabled,
+    maskedApiKey: integration.apiKey ? maskKey(integration.apiKey) : null,
+    maskedSecretKey: integration.secretKey ? maskKey(integration.secretKey) : null,
+    updatedAt: integration.updatedAt?.toDate().toISOString(),
+    createdAt: integration.createdAt?.toDate().toISOString(),
+    meta: integration.meta || null,
+  }));
+};
+
+interface NormalizedCredentials {
+  apiKey: string;
+  apiSecret?: string;
+  passphrase?: string;
+}
+
+type CredentialValidator = {
+  name: string;
+  requiresSecret?: boolean;
+  requiresPassphrase?: boolean;
+  validate: (creds: NormalizedCredentials) => Promise<void>;
+};
+
+const credentialValidatorFactories: Record<string, () => Promise<CredentialValidator>> = {
+  binance: async () => ({
+    name: 'binance',
+    requiresSecret: true,
+    validate: async (creds: NormalizedCredentials) => {
+      const adapter = new BinanceAdapter(creds.apiKey, creds.apiSecret || '', false);
+      await adapter.getAccount();
+    },
+  }),
+  bitget: async () => {
+    const { BitgetAdapter } = await import('../services/bitgetAdapter');
+    return {
+      name: 'bitget',
+      requiresSecret: true,
+      requiresPassphrase: true,
+      validate: async (creds: NormalizedCredentials) => {
+        const adapter = new BitgetAdapter(creds.apiKey, creds.apiSecret || '', creds.passphrase || '', false);
+        await adapter.getAccount();
+      },
+    };
+  },
+  bingx: async () => {
+    const { BingXAdapter } = await import('../services/bingXAdapter');
+    return {
+      name: 'bingx',
+      requiresSecret: true,
+      validate: async (creds: NormalizedCredentials) => {
+        const adapter = new BingXAdapter(creds.apiKey, creds.apiSecret || '', false);
+        await adapter.getAccount();
+      },
+    };
+  },
+  weex: async () => {
+    const { WeexAdapter } = await import('../services/weexAdapter');
+    return {
+      name: 'weex',
+      requiresSecret: true,
+      requiresPassphrase: true,
+      validate: async (creds: NormalizedCredentials) => {
+        const adapter = new WeexAdapter(creds.apiKey, creds.apiSecret || '', creds.passphrase, false);
+        await adapter.getAccount();
+      },
+    };
+  },
+  kucoin: async () => {
+    const { KucoinAdapter } = await import('../services/kucoinAdapter');
+    return {
+      name: 'kucoin',
+      requiresSecret: true,
+      requiresPassphrase: true,
+      validate: async (creds: NormalizedCredentials) => {
+        const adapter = new KucoinAdapter(creds.apiKey, creds.apiSecret || '', creds.passphrase);
+        await adapter.getAccount();
+      },
+    };
+  },
+};
+
+type CredentialValidationResult = {
+  status: IntegrationStatus;
+  message?: string;
+  meta?: Record<string, any>;
+};
+
+const runCredentialValidation = async (
+  exchangeName: string,
+  creds: NormalizedCredentials,
+  shouldValidate?: boolean
+): Promise<CredentialValidationResult> => {
+  if (!shouldValidate) {
+    return { status: 'SAVED', message: 'Validation skipped' };
+  }
+
+  const key = exchangeName.trim().toLowerCase();
+  const factory = credentialValidatorFactories[key];
+
+  if (!factory) {
+    return {
+      status: 'UNVERIFIED',
+      message: 'Validation skipped: no adapter available',
+      meta: { reason: 'NO_ADAPTER' },
+    };
+  }
+
+  try {
+    const validator = await factory();
+
+    if (validator.requiresSecret && !creds.apiSecret) {
+      return {
+        status: 'UNVERIFIED',
+        message: 'Validation skipped: missing API secret',
+        meta: { reason: 'MISSING_SECRET', adapter: validator.name },
+      };
+    }
+
+    if (validator.requiresPassphrase && !creds.passphrase) {
+      return {
+        status: 'UNVERIFIED',
+        message: 'Validation skipped: missing passphrase',
+        meta: { reason: 'MISSING_PASSPHRASE', adapter: validator.name },
+      };
+    }
+
+    await validator.validate(creds);
+    return {
+      status: 'VERIFIED',
+      message: `${validator.name} credentials verified`,
+      meta: { adapter: validator.name },
+    };
+  } catch (error: any) {
+    logger.warn({ exchangeName, error: error.message }, 'Credential validation failed');
+    return {
+      status: 'UNVERIFIED',
+      message: error.message || 'Validation failed',
+      meta: { reason: 'VALIDATION_FAILED', adapter: key },
+    };
+  }
+};
 
 export async function integrationsRoutes(fastify: FastifyInstance) {
   const formatIntegrations = (integrations: Record<string, IntegrationDocument>): Record<string, any> => {
@@ -31,22 +209,26 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     const coinApiTypes: Record<string, any> = {};
 
     for (const [docName, integration] of Object.entries(integrations)) {
+      const basePayload = {
+        enabled: integration.enabled,
+        status: resolveStatus(integration),
+        exchangeName: integration.exchangeName || docName,
+        apiKey: integration.apiKey ? maskKey(integration.apiKey) : null,
+        secretKey: integration.secretKey ? maskKey(integration.secretKey) : null,
+        apiType: integration.apiType || null,
+        updatedAt: integration.updatedAt?.toDate().toISOString(),
+        createdAt: integration.createdAt?.toDate().toISOString(),
+        meta: integration.meta || null,
+      };
+
       if (docName.startsWith('coinapi_')) {
         const type = docName.replace('coinapi_', '');
         coinApiTypes[type] = {
-          enabled: integration.enabled,
-          apiKey: integration.apiKey ? maskKey(integration.apiKey) : null,
+          ...basePayload,
           apiType: type,
-          updatedAt: integration.updatedAt?.toDate().toISOString(),
         };
       } else {
-        result[docName] = {
-          enabled: integration.enabled,
-          apiKey: integration.apiKey ? maskKey(integration.apiKey) : null,
-          secretKey: integration.secretKey ? maskKey(integration.secretKey) : null,
-          apiType: integration.apiType || null,
-          updatedAt: integration.updatedAt?.toDate().toISOString(),
-        };
+        result[docName] = basePayload;
       }
     }
 
@@ -70,15 +252,145 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
   fastify.get('/fetch', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = (request as any).user;
-    const integrations = await firestoreAdapter.getAllIntegrations(user.uid);
-    const formatted = formatIntegrations(integrations);
-    const active = await firestoreAdapter.getActiveExchangeForUser(user.uid);
+    try {
+      const user = (request as any).user;
+      const integrations = await firestoreAdapter.getAllIntegrations(user.uid);
+      const formatted = formatIntegrations(integrations);
+      const list = buildIntegrationList(integrations);
+      const active = await firestoreAdapter.getActiveExchangeForUser(user.uid);
 
-    return {
-      activeExchange: active.name === 'fallback' ? null : active.name,
-      integrations: formatted,
+      return {
+        ok: true,
+        activeExchange: active.name === 'fallback' ? null : active.name,
+        integrations: formatted,
+        list,
+        count: list.length,
+      };
+    } catch (error: any) {
+      logger.error({ error: error.message, uid: (request as any).user?.uid }, 'Failed to fetch integrations');
+      return reply.code(500).send({
+        ok: false,
+        code: 'FETCH_FAILED',
+        message: error.message || 'Failed to fetch integrations',
+      });
+    }
+  });
+
+  fastify.post('/submit', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = (request as any).user;
+    const uid = user?.uid;
+
+    if (!uid || typeof uid !== 'string') {
+      return reply.code(401).send({
+        ok: false,
+        code: 'UNAUTHENTICATED',
+        message: 'Authentication required',
+      });
+    }
+
+    let body: z.infer<typeof integrationSubmitSchema>;
+    try {
+      body = integrationSubmitSchema.parse(request.body);
+    } catch (err: any) {
+      return reply.code(400).send({
+        ok: false,
+        code: 'INVALID_PAYLOAD',
+        message: 'Invalid request data',
+        details: err.errors || err.message,
+      });
+    }
+
+    if (body.userId && body.userId !== uid) {
+      return reply.code(403).send({
+        ok: false,
+        code: 'USER_MISMATCH',
+        message: 'You can only submit credentials for your own account',
+      });
+    }
+
+    const displayName = body.exchangeName.trim();
+    const docName = normalizeExchangeId(displayName);
+    const normalizedExchangeName = displayName.toLowerCase();
+    const secret = body.apiSecret || body.secretKey;
+    const shouldValidate = body.validate === true;
+
+    const validationResult = await runCredentialValidation(docName, {
+      apiKey: body.apiKey,
+      apiSecret: secret,
+      passphrase: body.passphrase,
+    }, shouldValidate);
+
+    const status = validationResult.status;
+    const label = body.label?.trim() || displayName;
+    const meta: Record<string, any> = {
+      label,
+      displayName,
+      validateRequested: shouldValidate,
+      submittedAt: new Date().toISOString(),
+      validation: {
+        status,
+        message: validationResult.message,
+        ...(validationResult.meta || {}),
+      },
     };
+
+    if (body.metadata) {
+      meta.extra = body.metadata;
+    }
+
+    try {
+      await firestoreAdapter.saveIntegration(uid, docName, {
+        enabled: true,
+        apiKey: body.apiKey,
+        secretKey: secret,
+        passphrase: body.passphrase,
+        status,
+        exchangeName: normalizedExchangeName,
+        meta,
+        userId: uid,
+      });
+
+      logger.info({
+        uid,
+        exchangeName: displayName,
+        normalizedExchange: docName,
+        status,
+        maskedKey: maskKey(body.apiKey),
+        result: status === 'VERIFIED' ? 'SUCCESS' : status,
+      }, 'Integration submission processed');
+
+      return reply.send({
+        ok: true,
+        id: docName,
+        status,
+        message: validationResult.message || 'API saved',
+        integration: {
+          id: docName,
+          exchangeName: displayName,
+          status,
+          enabled: true,
+        },
+      });
+    } catch (error: any) {
+      const errorId = `integration_submit_${Date.now()}`;
+      logger.error({
+        uid,
+        exchangeName: displayName,
+        normalizedExchange: docName,
+        error: error.message,
+        maskedKey: maskKey(body.apiKey),
+        errorId,
+      }, 'Failed to save integration via submit');
+
+      return reply.code(500).send({
+        ok: false,
+        code: 'INTEGRATION_SAVE_FAILED',
+        message: 'Failed to save API credentials',
+        errorId,
+      });
+    }
   });
 
   // Update or create an integration  
@@ -106,6 +418,8 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       });
     }
 
+    const secretKey = body.secretKey || body.apiSecret;
+
     // Handle CoinAPI sub-types
     let docName: string = body.apiName;
     if (body.apiName === 'coinapi' && body.apiType) {
@@ -116,7 +430,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
 
     // Validate required fields based on API type
     if (body.apiName === 'binance') {
-      if (body.enabled && (!body.apiKey || !body.secretKey)) {
+      if (body.enabled && (!body.apiKey || !secretKey)) {
         return reply.code(400).send({ 
           error: 'Binance API requires both API key and secret key' 
         });
@@ -155,8 +469,8 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     if (body.apiKey) {
       updateData.apiKey = body.apiKey;
     }
-    if (body.secretKey) {
-      updateData.secretKey = body.secretKey;
+    if (secretKey) {
+      updateData.secretKey = secretKey;
     }
     if (body.apiType) {
       updateData.apiType = body.apiType;
@@ -243,6 +557,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       return reply.code(400).send({ success: false, message: 'Invalid request data', details: err.errors || err.message });
     }
+    const secretKey = body.secretKey || body.apiSecret;
     if (body.exchange && !body.apiName) {
       body.apiName = body.exchange;
     }
@@ -254,8 +569,9 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       const t = body.apiType.startsWith('coinapi_') ? body.apiType : `coinapi_${body.apiType}`;
       docName = t;
     }
-    const exchangeApis = ['binance', 'bitget', 'bingx', 'weex', 'kucoin'];
-    const isExchangeApi = exchangeApis.includes(body.apiName);
+    const exchangeName = (body.apiName || '').toLowerCase();
+    const exchangeApis = new Set(Object.keys(credentialValidatorFactories));
+    const isExchangeApi = exchangeApis.has(exchangeName);
 
     if (!body.enabled) {
       const result = await firestoreAdapter.saveIntegration(uid, docName, {
@@ -271,7 +587,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     // --- Unified live validation logic ---
     try {
       if (isExchangeApi) {
-        if (!body.apiKey || !body.secretKey) {
+        if (!body.apiKey || !secretKey) {
           return reply.code(400).send({ success: false, message: `${body.apiName} API requires both API key and secret key` });
         }
         if ((body.apiName === 'bitget' || body.apiName === 'weex') && !body.passphrase) {
@@ -279,23 +595,23 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         }
         // Instantiate correct adapter and call its validation endpoint
         if (body.apiName === 'binance') {
-          const testAdapter = new BinanceAdapter(body.apiKey, body.secretKey, false); // use production, not testnet
+          const testAdapter = new BinanceAdapter(body.apiKey, secretKey, false); // use production, not testnet
           await testAdapter.getAccount();
         } else if (body.apiName === 'bitget') {
           const { BitgetAdapter } = await import('../services/bitgetAdapter');
-          const adapter = new BitgetAdapter(body.apiKey, body.secretKey, body.passphrase, false);
+          const adapter = new BitgetAdapter(body.apiKey, secretKey, body.passphrase, false);
           await adapter.getAccount(); // implement getAccount to use /api/spot/v1/account/assets
         } else if (body.apiName === 'bingx') {
           const { BingXAdapter } = await import('../services/bingXAdapter');
-          const adapter = new BingXAdapter(body.apiKey, body.secretKey, false);
+          const adapter = new BingXAdapter(body.apiKey, secretKey, false);
           await adapter.getAccount(); // implement getAccount to use /api/v1/user/getBalance
         } else if (body.apiName === 'weex') {
           const { WeexAdapter } = await import('../services/weexAdapter');
-          const adapter = new WeexAdapter(body.apiKey, body.secretKey, body.passphrase, false);
+          const adapter = new WeexAdapter(body.apiKey, secretKey, body.passphrase, false);
           await adapter.getAccount(); // implement getAccount to use /api/v1/private/account
         } else if (body.apiName === 'kucoin') {
           const { KucoinAdapter } = await import('../services/kucoinAdapter');
-          const adapter = new KucoinAdapter(body.apiKey, body.secretKey, body.passphrase);
+          const adapter = new KucoinAdapter(body.apiKey, secretKey, body.passphrase);
           await adapter.getAccount(); // implement getAccount to use /api/v1/accounts
         }
       } else if (!body.apiKey) {
@@ -304,7 +620,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       // If validation succeeds, save integration
       const updateData: { enabled: boolean; apiKey?: string; secretKey?: string; apiType?: string; passphrase?: string } = { enabled: true };
       if (body.apiKey) updateData.apiKey = body.apiKey;
-      if (body.secretKey) updateData.secretKey = body.secretKey;
+      if (secretKey) updateData.secretKey = secretKey;
       if (body.passphrase) updateData.passphrase = body.passphrase;
       if (isExchangeApi) {
         updateData.apiType = 'exchange';
@@ -348,6 +664,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = (request as any).user;
     const body = integrationUpdateSchema.parse(request.body);
+    const secretKey = body.secretKey || body.apiSecret;
 
     // Handle CoinAPI sub-types
     let docName: string = body.apiName;
@@ -358,7 +675,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
 
     // Validate required fields based on API type
     if (body.apiName === 'binance') {
-      if (body.enabled && (!body.apiKey || !body.secretKey)) {
+      if (body.enabled && (!body.apiKey || !secretKey)) {
         return reply.code(400).send({ 
           error: 'Binance API requires both API key and secret key' 
         });
@@ -387,8 +704,8 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     if (body.apiKey) {
       updateData.apiKey = body.apiKey;
     }
-    if (body.secretKey) {
-      updateData.secretKey = body.secretKey;
+    if (secretKey) {
+      updateData.secretKey = secretKey;
     }
     if (body.apiType) {
       updateData.apiType = body.apiType;
@@ -397,10 +714,10 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     await firestoreAdapter.saveIntegration(user.uid, docName, updateData);
 
     // PART 2: Also save to apiKeys collection if Binance with validation
-    if (body.apiName === 'binance' && body.apiKey && body.secretKey) {
+    if (body.apiName === 'binance' && body.apiKey && secretKey) {
       // PART 2: Validate Binance API keys via connectivity test
       try {
-        const testAdapter = new BinanceAdapter(body.apiKey, body.secretKey, true); // Test with testnet first
+        const testAdapter = new BinanceAdapter(body.apiKey, secretKey, true); // Test with testnet first
         const validation = await testAdapter.validateApiKey();
         
         if (!validation.valid) {
@@ -423,7 +740,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
           uid: user.uid,
           exchange: 'binance',
           apiKeyEncrypted: encrypt(body.apiKey),
-          apiSecretEncrypted: encrypt(body.secretKey),
+          apiSecretEncrypted: encrypt(secretKey),
           createdAt: admin.firestore.Timestamp.now(),
           updatedAt: admin.firestore.Timestamp.now(),
           status: 'connected',
@@ -432,7 +749,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         // Also save to integrations subcollection
         await firestoreAdapter.saveApiKeyToCollection(user.uid, {
           publicKey: body.apiKey,
-          secretKey: body.secretKey,
+          secretKey: secretKey,
           exchange: 'binance',
         });
         
@@ -477,6 +794,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = (request as any).user;
     const body = integrationUpdateSchema.parse(request.body);
+    const secretKey = body.secretKey || body.apiSecret;
 
     try {
       // Handle CoinAPI sub-types
@@ -488,7 +806,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
 
       // Validate based on API type
       if (body.apiName === 'binance') {
-        if (!body.apiKey || !body.secretKey) {
+        if (!body.apiKey || !secretKey) {
           return reply.code(400).send({
             error: 'Binance API requires both API key and secret key',
             valid: false,
@@ -496,7 +814,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         }
 
         try {
-          const testAdapter = new BinanceAdapter(body.apiKey, body.secretKey, true);
+          const testAdapter = new BinanceAdapter(body.apiKey, secretKey, true);
           const validation = await testAdapter.validateApiKey();
           
           return {

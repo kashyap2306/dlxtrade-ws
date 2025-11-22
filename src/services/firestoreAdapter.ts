@@ -67,13 +67,22 @@ export interface ExecutionLogDocument {
   createdAt: admin.firestore.Timestamp;
 }
 
+export type IntegrationStatus = 'SAVED' | 'UNVERIFIED' | 'VERIFIED' | 'ERROR' | 'DISABLED';
+
 export interface IntegrationDocument {
   enabled: boolean;
   apiKey?: string; // encrypted
   secretKey?: string; // encrypted (only for Binance)
+  passphrase?: string; // encrypted
   apiType?: string; // For CoinAPI: 'market' | 'flatfile' | 'exchangerate'
-  passphrase?: string;
   testnet?: boolean;
+  exchangeName?: string;
+  userId?: string;
+  status?: IntegrationStatus;
+  meta?: Record<string, any>;
+  validationDetails?: Record<string, any>;
+  lastValidatedAt?: admin.firestore.Timestamp;
+  createdAt?: admin.firestore.Timestamp;
   updatedAt: admin.firestore.Timestamp;
 }
 
@@ -344,6 +353,12 @@ export class FirestoreAdapter {
     secretKey?: string; // plain text, will be encrypted (only for Binance)
     passphrase?: string; // plain text, will be encrypted (for Bitget, Weex, etc.)
     apiType?: string; // For CoinAPI type
+    status?: IntegrationStatus;
+    exchangeName?: string;
+    meta?: Record<string, any>;
+    userId?: string;
+    lastValidatedAt?: admin.firestore.Timestamp;
+    validationDetails?: Record<string, any>;
   }): Promise<{ path: string; data: any }> {
     const docRef = db()
       .collection('users')
@@ -353,11 +368,15 @@ export class FirestoreAdapter {
 
     // Check if document exists for idempotency
     const existingDoc = await docRef.get();
+    const existingData = existingDoc.exists ? existingDoc.data() as IntegrationDocument : null;
     const now = admin.firestore.Timestamp.now();
 
     const docData: any = {
       enabled: data.enabled,
       updatedAt: now,
+      userId: data.userId || uid,
+      exchangeName: data.exchangeName || existingData?.exchangeName || apiName,
+      status: data.status || existingData?.status || (data.enabled ? 'SAVED' : 'DISABLED'),
     };
 
     // Set createdAt only if document doesn't exist (required field)
@@ -366,6 +385,18 @@ export class FirestoreAdapter {
     } else if (data.enabled === false && existingDoc.exists && !existingDoc.data().createdAt) {
       // Patch: ensure createdAt exists on disables for legacy docs
       docData.createdAt = now;
+    }
+
+    if (data.meta) {
+      docData.meta = data.meta;
+    }
+
+    if (data.validationDetails) {
+      docData.validationDetails = data.validationDetails;
+    }
+
+    if (data.lastValidatedAt) {
+      docData.lastValidatedAt = data.lastValidatedAt;
     }
 
     // Encrypt API keys safely
@@ -436,8 +467,10 @@ export class FirestoreAdapter {
         hasKey: !!savedData.apiKey,
         hasSecret: !!savedData.secretKey,
         apiType: savedData.apiType || null,
+        status: savedData.status || (savedData.enabled ? 'SAVED' : 'DISABLED'),
         updatedAt: savedData.updatedAt,
         createdAt: savedData.createdAt,
+        exchangeName: savedData.exchangeName || apiName,
       },
     };
   }
