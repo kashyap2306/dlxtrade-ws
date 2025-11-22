@@ -10,6 +10,23 @@ export interface CoinAPIData {
   exchangeRate?: number;
 }
 
+const PERIOD_ID_MAP: Record<string, string> = {
+  '1m': '1MIN',
+  '3m': '3MIN',
+  '5m': '5MIN',
+  '15m': '15MIN',
+  '30m': '30MIN',
+  '1h': '1HRS',
+  '2h': '2HRS',
+  '4h': '4HRS',
+  '6h': '6HRS',
+  '8h': '8HRS',
+  '12h': '12HRS',
+  '1d': '1DAY',
+  '3d': '3DAY',
+  '1w': '7DAY',
+};
+
 export class CoinAPIAdapter {
   private apiKey: string;
   private apiType: 'market' | 'flatfile' | 'exchangerate';
@@ -122,27 +139,27 @@ export class CoinAPIAdapter {
   /**
    * Get historical OHLCV data (for flatfile or market API)
    */
-  async getHistoricalOHLCV(symbol: string, timeframe: string = '1DAY', limit: number = 100): Promise<Array<{ time: string; open: number; high: number; low: number; close: number; volume: number }>> {
+  async getHistoricalOHLCV(
+    symbol: string,
+    periodId: string = '1DAY',
+    limit: number = 100
+  ): Promise<Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }>> {
     if (this.apiType !== 'market' && this.apiType !== 'flatfile') {
       return [];
     }
     
     try {
       const coinapiSymbol = `BINANCE_SPOT_${symbol.replace('USDT', '_USDT')}`;
-      const endTime = new Date().toISOString();
-      const startTime = new Date(Date.now() - limit * 24 * 60 * 60 * 1000).toISOString();
-      
       const response = await this.httpClient.get(`/ohlcv/${coinapiSymbol}/history`, {
         params: {
-          period_id: timeframe,
-          time_start: startTime,
-          time_end: endTime,
+          period_id: periodId,
           limit,
+          time_end: new Date().toISOString(),
         },
       });
       
       return (response.data || []).map((item: any) => ({
-        time: item.time_period_start,
+        time: new Date(item.time_period_end || item.time_period_start || Date.now()).getTime(),
         open: parseFloat(item.price_open || '0'),
         high: parseFloat(item.price_high || '0'),
         low: parseFloat(item.price_low || '0'),
@@ -150,9 +167,18 @@ export class CoinAPIAdapter {
         volume: parseFloat(item.volume_traded || '0'),
       }));
     } catch (error: any) {
-      logger.debug({ error, symbol, timeframe, apiType: this.apiType }, 'CoinAPI historical OHLCV error (non-critical)');
+      logger.debug({ error, symbol, periodId, apiType: this.apiType }, 'CoinAPI historical OHLCV error (non-critical)');
       return [];
     }
+  }
+
+  async getKlines(
+    symbol: string,
+    timeframe: string = '5m',
+    limit: number = 500
+  ): Promise<Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }>> {
+    const periodId = PERIOD_ID_MAP[timeframe.toLowerCase()] || PERIOD_ID_MAP['5m'];
+    return this.getHistoricalOHLCV(symbol, periodId, limit);
   }
 
   /**

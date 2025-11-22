@@ -10,6 +10,7 @@ import { getFirebaseAdmin } from '../utils/firebase';
 // Validation schemas
 const exchangeNameSchema = z.string().min(2, 'Exchange name is required').max(64, 'Exchange name too long').trim();
 const credentialSchema = z.string().min(1, 'Field is required').max(512, 'Value too long').trim();
+const SINGLE_EXCHANGE_NAMES = ['binance', 'bitget', 'bingx', 'weex', 'kucoin', 'bybit', 'okx'];
 
 const integrationUpdateSchema = z.object({
   apiName: exchangeNameSchema.optional(),
@@ -310,11 +311,30 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       });
     }
 
+    const existingIntegrations = await firestoreAdapter.getAllIntegrations(uid);
+
     const displayName = body.exchangeName.trim();
     const docName = normalizeExchangeId(displayName);
     const normalizedExchangeName = displayName.toLowerCase();
     const secret = body.apiSecret || body.secretKey;
     const shouldValidate = body.validate === true;
+
+    const existingActiveExchange = Object.entries(existingIntegrations).find(([storedName, integration]) => {
+      if (!integration.enabled) return false;
+      const normalized = (integration.exchangeName || storedName).toLowerCase();
+      return SINGLE_EXCHANGE_NAMES.includes(normalized);
+    });
+
+    if (existingActiveExchange) {
+      const activeName = (existingActiveExchange[1].exchangeName || existingActiveExchange[0]).toLowerCase();
+      if (activeName !== normalizedExchangeName) {
+        return reply.code(409).send({
+          ok: false,
+          code: 'ONLY_ONE_EXCHANGE_ALLOWED',
+          message: 'Only one exchange can be connected at a time. Disable the existing exchange before adding another.',
+        });
+      }
+    }
 
     const validationResult = await runCredentialValidation(docName, {
       apiKey: body.apiKey,

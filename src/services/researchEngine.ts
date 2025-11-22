@@ -2,12 +2,14 @@
 import { logger } from '../utils/logger';
 import { firestoreAdapter, type ActiveExchangeContext } from './firestoreAdapter';
 import { LunarCrushAdapter } from './lunarcrushAdapter';
+import { CryptoQuantAdapter, type CryptoQuantData } from './cryptoquantAdapter';
+import { CoinAPIAdapter } from './coinapiAdapter';
 import { analyzeRSI } from './strategies/rsiStrategy';
 import { analyzeMACD } from './strategies/macdStrategy';
 import { analyzeVolume } from './strategies/volumeStrategy';
 import { analyzeLiquidity } from './strategies/liquidityStrategy';
 import { analyzeSentiment, type SentimentData, type SentimentResult } from './strategies/sentimentStrategy';
-import { fetchDerivativesData, analyzeDerivatives, type DerivativesResult } from './strategies/derivativesStrategy';
+import { analyzeDerivatives, type DerivativesResult, type DerivativesData } from './strategies/derivativesStrategy';
 import { computeConfidence, computeFeatureScores, fuseSignals } from './confidenceEngine';
 import type { FeatureScoreState } from './confidenceEngine';
 import type { Orderbook } from '../types';
@@ -23,6 +25,22 @@ const TIMEFRAME_WEIGHTS: Record<MultiTimeframe, number> = {
   '15m': 1.2,
   '1h': 1.4,
 };
+
+type ApiCallStatus = 'SUCCESS' | 'FAILED' | 'SKIPPED';
+
+export interface ApiCallReportEntry {
+  apiName: string;
+  status: ApiCallStatus;
+  message?: string;
+  durationMs?: number;
+  provider?: string;
+}
+
+export interface MissingDependency {
+  api: string;
+  missingKey?: boolean;
+  reason?: string;
+}
 
 type TimeframeSignalOverview = {
   signal: BiasSignal;
@@ -183,10 +201,17 @@ export interface ResearchResult {
   confluenceFlags?: Record<string, boolean>;
   volumeConfirmed?: boolean;
   derivativesContradict?: boolean;
+  apiCallReport: ApiCallReportEntry[];
+  missingDependencies?: MissingDependency[];
 }
 
 class ResearchEngineError extends Error {
-  constructor(message: string, public readonly errorId: string, public readonly statusCode: number = 500) {
+  constructor(
+    message: string,
+    public readonly errorId: string,
+    public readonly statusCode: number = 500,
+    public readonly missingDependencies?: MissingDependency[]
+  ) {
     super(message);
     this.name = 'ResearchEngineError';
   }
@@ -202,14 +227,7 @@ type NormalizedCandle = {
 };
 
 export class ResearchEngine {
-  private lunarCrush?: LunarCrushAdapter;
-
-  constructor() {
-    const key = process.env.LUNARCRUSH_API_KEY || process.env.LUNARCRUSH_KEY;
-    if (key) {
-      this.lunarCrush = new LunarCrushAdapter(key);
-    }
-  }
+  constructor() {}
 
   async runResearch(
     symbol: string,
@@ -230,37 +248,201 @@ export class ResearchEngine {
     }
 
     const apiCalls: string[] = [];
+    const apiCallReport: ApiCallReportEntry[] = [];
+
+    const recordApiCall = (entry: ApiCallReportEntry) => {
+      apiCallReport.push(entry);
+    };
+
+    const runApiCall = async <T>(
+      apiName: string,
+      fn: () => Promise<T>,
+      options: { optional?: boolean; fallbackValue?: T | null; provider?: string } = {}
+    ): Promise<T | null> => {
+      const callStarted = Date.now();
+      try {
+        const result = await fn();
+        recordApiCall({
+          apiName,
+          status: 'SUCCESS',
+          durationMs: Date.now() - callStarted,
+          provider: options.provider,
+        });
+        return result;
+      } catch (err: any) {
+        const message = err?.message || 'Unknown error';
+        recordApiCall({
+          apiName,
+          status: options.optional ? 'SKIPPED' : 'FAILED',
+          message,
+          durationMs: Date.now() - callStarted,
+          provider: options.provider,
+        });
+        if (options.optional) {
+          return options.fallbackValue ?? null;
+        }
+        throw err;
+      }
+    };
+
+    const { lunarAdapter, cryptoAdapter, coinapiAdapter, missing: providerMissing } =
+      await this.buildProviderAdapters(uid);
+    if (!lunarAdapter || !cryptoAdapter || !coinapiAdapter || providerMissing.length > 0) {
+      throw new ResearchEngineError(
+        'Missing required data providers',
+        this.createErrorId(),
+        422,
+        providerMissing.length ? providerMissing : undefined
+      );
+    }
+    const providersUsed = ['coinapi', 'cryptoquant', 'lunarcrush'];
 
     try {
-      const candlesRaw = await this.fetchKlines(context, normalizedSymbol, normalizedTimeframe, apiCalls);
-      const candles = this.normalizeCandles(candlesRaw);
+      const candles = await runApiCall<NormalizedCandle[]>(
+        `CoinAPI Candles (${normalizedTimeframe})`,
+        () => this.fetchCoinapiCandles(coinapiAdapter, normalizedSymbol, normalizedTimeframe, 500, apiCalls),
+        { provider: 'CoinAPI' }
+      );
+      if (!candles || candles.length === 0) {
+        throw new ResearchEngineError('Failed to fetch primary candles from CoinAPI', this.createErrorId(), 502);
+      }
       this.ensureCandleCoverage(candles);
 
       const multiTimeframeCandles = await this.buildMultiTimeframeCandles({
-        context,
         symbol: normalizedSymbol,
         primaryTimeframe: normalizedTimeframe,
         primaryCandles: candles,
-        apiCalls,
+        fetchTimeframe: async (tf) => {
+          if (tf === normalizedTimeframe) {
+            return candles;
+          }
+          try {
+            return await this.fetchCoinapiCandles(coinapiAdapter, normalizedSymbol, tf, 500, apiCalls);
+          } catch (error: any) {
+            logger.warn({ symbol: normalizedSymbol, timeframe: tf, error: error.message }, 'CoinAPI timeframe fetch failed');
+            return null;
+          }
+        },
       });
 
       const currentPrice = candles[candles.length - 1].close;
       const priceMomentum = this.calculatePriceMomentum(candles);
 
-      const orderbook = await this.fetchOrderbook(context, normalizedSymbol, apiCalls);
+      const rawOrderbook = await runApiCall<{ bids: Orderbook['bids']; asks: Orderbook['asks'] }>(
+        'CoinAPI Orderbook',
+        async () => {
+          apiCalls.push('coinapi:orderbook');
+          const orderbookResponse = await coinapiAdapter.getOrderbook(normalizedSymbol, 20);
+          if (!orderbookResponse) {
+            throw new Error('CoinAPI returned empty orderbook');
+          }
+          return orderbookResponse;
+        },
+        { provider: 'CoinAPI' }
+      );
+      if (!rawOrderbook) {
+        throw new ResearchEngineError('Failed to fetch orderbook data from CoinAPI', this.createErrorId(), 502);
+      }
+      const orderbook: Orderbook = {
+        symbol: normalizedSymbol,
+        bids: rawOrderbook.bids,
+        asks: rawOrderbook.asks,
+        lastUpdateId: Date.now(),
+      };
+      const exchangeOrderbooks: Array<{ exchange: string; bidsCount: number; asksCount: number }> = [
+        { exchange: 'coinapi', bidsCount: orderbook.bids.length, asksCount: orderbook.asks.length },
+      ];
+
       const liquidity = analyzeLiquidity(orderbook, 5);
       const imbalance = this.calculateOrderbookImbalance(orderbook);
       const microSignals = this.buildMicroSignals(liquidity, priceMomentum);
+      recordApiCall({ apiName: 'Microstructure Module', status: 'SUCCESS' });
 
-      const derivatives = analyzeDerivatives(await fetchDerivativesData(normalizedSymbol, context.adapter));
-      const sentimentPayload = await this.fetchSentiment(normalizedSymbol, candles);
+      const cryptoQuantFlow = await runApiCall<CryptoQuantData>(
+        'CryptoQuant Exchange Flow',
+        () => cryptoAdapter.getExchangeFlow(normalizedSymbol),
+        { provider: 'CryptoQuant' }
+      );
+      if (!cryptoQuantFlow) {
+        throw new ResearchEngineError('CryptoQuant exchange flow unavailable', this.createErrorId(), 502);
+      }
+
+      const cryptoQuantReserves = await runApiCall<{ exchangeReserves?: number; reserveChange24h?: number }>(
+        'CryptoQuant Reserves',
+        () => cryptoAdapter.getReserves(normalizedSymbol),
+        { provider: 'CryptoQuant' }
+      );
+
+      const derivativesData = this.buildDerivativesFromCryptoQuant(cryptoQuantFlow, cryptoQuantReserves || undefined);
+      const derivatives = analyzeDerivatives(derivativesData);
+
+      if (derivativesData.fundingRate) {
+        recordApiCall({
+          apiName: 'Funding Rate API',
+          status: 'SUCCESS',
+          message: `Funding rate ${(derivativesData.fundingRate.fundingRate * 100).toFixed(4)}%`,
+        });
+      } else {
+        recordApiCall({
+          apiName: 'Funding Rate API',
+          status: 'FAILED',
+          message: 'No funding rate data returned',
+        });
+      }
+
+      if (derivativesData.openInterest) {
+        recordApiCall({
+          apiName: 'Open Interest API',
+          status: 'SUCCESS',
+          message: `Change ${(derivativesData.openInterest.change24h * 100).toFixed(2)}%`,
+        });
+      } else {
+        recordApiCall({
+          apiName: 'Open Interest API',
+          status: 'FAILED',
+          message: 'Open interest unavailable',
+        });
+      }
+
+      if (derivativesData.liquidations) {
+        recordApiCall({
+          apiName: 'Liquidations API',
+          status: 'SUCCESS',
+          message: `Total ${(derivativesData.liquidations.totalLiquidation24h || 0).toFixed(0)}`,
+        });
+      } else {
+        recordApiCall({
+          apiName: 'Liquidations API',
+          status: 'FAILED',
+          message: 'Liquidations data unavailable',
+        });
+      }
+
+      const sentimentPayload = await runApiCall<SentimentData>(
+        'LunarCrush Sentiment',
+        () => {
+          const baseSymbol = normalizedSymbol.replace(/USDT$/i, '').replace(/USD$/i, '');
+          return lunarAdapter.getSentiment(baseSymbol);
+        },
+        { provider: 'LunarCrush' }
+      );
+      if (!sentimentPayload) {
+        throw new ResearchEngineError('Failed to fetch LunarCrush sentiment', this.createErrorId(), 502);
+      }
       const sentiment = analyzeSentiment(sentimentPayload);
       const rsi = analyzeRSI(candles);
       const macd = analyzeMACD(candles);
       const volume = analyzeVolume(candles);
+      recordApiCall({
+        apiName: 'RVOL Calculation',
+        status: 'SUCCESS',
+        message: volume.relativeVolume ? `${volume.relativeVolume.toFixed(2)}x` : 'Volume normalized',
+      });
       const trendAnalysis = this.computeTrendAnalysis(candles);
+      recordApiCall({ apiName: 'Trend Module', status: 'SUCCESS' });
       const trendStrength = this.computeTrendStrength(candles);
       const atr = this.computeAtr(candles);
+      recordApiCall({ apiName: 'Volatility Module', status: 'SUCCESS' });
 
       const multiTimeframeContext = this.summarizeMultiTimeframes({
         symbol: normalizedSymbol,
@@ -272,6 +454,17 @@ export class ResearchEngine {
           microSignals,
           orderbookImbalance: imbalance,
         },
+      });
+      MULTI_TIMEFRAMES.forEach((tf) => {
+        if (multiTimeframeCandles[tf]) {
+          recordApiCall({ apiName: `MTF Indicator ${tf}`, status: 'SUCCESS' });
+        } else {
+          recordApiCall({
+            apiName: `MTF Indicator ${tf}`,
+            status: 'FAILED',
+            message: 'Insufficient candles',
+          });
+        }
       });
 
       const featureScores = computeFeatureScores({
@@ -340,7 +533,7 @@ export class ResearchEngine {
         _atrValue: atr,
         _orderbookImbalanceValue: imbalance,
         _trendStrengthValue: trendStrength,
-        _apisUsed: [context.name],
+        _apisUsed: providersUsed,
       };
 
       const indicators: ResearchResult['indicators'] = {
@@ -395,7 +588,7 @@ export class ResearchEngine {
         timeframe: normalizedTimeframe,
         signals: this.buildSignals(entry, stopLoss, takeProfit, exits),
         liveAnalysis: this.buildLiveAnalysis(normalizedSymbol, finalSignal, confidence, entry, stopLoss, takeProfit),
-        message: `Research completed using ${context.name === 'fallback' ? 'Binance public data' : context.name}.`,
+        message: 'Research completed using your private data providers.',
         currentPrice: entry ?? 0,
         mode,
         recommendedTrade,
@@ -407,12 +600,9 @@ export class ResearchEngine {
         rsi14: rsi.value,
         trendAnalysis,
         confidenceBreakdown: confidenceResult.confidenceBreakdown,
-        exchangeTickers: undefined,
-        exchangeOrderbooks: [
-          { exchange: context.name, bidsCount: orderbook.bids.length, asksCount: orderbook.asks.length },
-        ],
-        exchangeCount: 1,
-        exchangesUsed: [context.name],
+        exchangeOrderbooks,
+        exchangeCount: exchangeOrderbooks.length,
+        exchangesUsed: exchangeOrderbooks.map((entry) => entry.exchange),
         autoTradeDecision: {
           triggered: autoTradeEligible,
           confidence,
@@ -427,7 +617,7 @@ export class ResearchEngine {
         entryPrice: entry,
         recommendation: recommendedTrade ? 'AUTO' : 'MANUAL',
         perFeatureScore: confidenceResult.perFeatureScore,
-        apisUsed: [context.name],
+        apisUsed: providersUsed,
         rawConfidence: confidenceResult.rawConfidence,
         smoothedConfidence: confidence,
         confluenceFlags: confidenceResult.confluenceFlags,
@@ -441,16 +631,19 @@ export class ResearchEngine {
         perTimeframeBreakdown: multiTimeframeContext.breakdown,
         liquidityAcceptable,
         derivativesAligned,
+        apiCallReport,
       };
 
       logger.info({ uid, symbol: normalizedSymbol, exchange: context.name, confidence, durationMs: Date.now() - startedAt }, 'Deep research completed');
       return result;
     } catch (err: any) {
+      if (err instanceof ResearchEngineError) {
+        throw err;
+      }
       const errorId = this.createErrorId();
-      const statusCode = err instanceof ResearchEngineError ? err.statusCode : 500;
-      const message = err instanceof ResearchEngineError ? err.message : err.message || 'Research processing failed';
+      const message = err?.message || 'Research processing failed';
       logger.error({ uid, symbol: normalizedSymbol, error: message, errorId }, 'Research engine failed');
-      throw new ResearchEngineError(message, errorId, statusCode);
+      throw new ResearchEngineError(message, errorId, 500);
     }
   }
 
@@ -466,6 +659,50 @@ export class ResearchEngine {
     return '5m';
   }
 
+  private async buildProviderAdapters(uid: string): Promise<{
+    lunarAdapter?: LunarCrushAdapter;
+    cryptoAdapter?: CryptoQuantAdapter;
+    coinapiAdapter?: CoinAPIAdapter;
+    missing: MissingDependency[];
+  }> {
+    const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
+    const missing: MissingDependency[] = [];
+
+    const lunarKey = integrations['lunarcrush']?.apiKey;
+    const cryptoKey = integrations['cryptoquant']?.apiKey;
+    const coinapiEntry = Object.entries(integrations).find(([name, integration]) => {
+      return name.startsWith('coinapi_') && !!integration.apiKey;
+    });
+
+    let lunarAdapter: LunarCrushAdapter | undefined;
+    if (lunarKey) {
+      lunarAdapter = new LunarCrushAdapter(lunarKey);
+    } else {
+      missing.push({ api: 'LunarCrush', missingKey: true, reason: 'LunarCrush API key not connected' });
+    }
+
+    let cryptoAdapter: CryptoQuantAdapter | undefined;
+    if (cryptoKey) {
+      const adapter = new CryptoQuantAdapter(cryptoKey);
+      if (adapter.disabled) {
+        missing.push({ api: 'CryptoQuant', missingKey: true, reason: 'CryptoQuant key invalid' });
+      } else {
+        cryptoAdapter = adapter;
+      }
+    } else {
+      missing.push({ api: 'CryptoQuant', missingKey: true, reason: 'CryptoQuant API key not connected' });
+    }
+
+    let coinapiAdapter: CoinAPIAdapter | undefined;
+    if (coinapiEntry?.[1].apiKey) {
+      coinapiAdapter = new CoinAPIAdapter(coinapiEntry[1].apiKey, 'market');
+    } else {
+      missing.push({ api: 'CoinAPI', missingKey: true, reason: 'CoinAPI Market key not connected' });
+    }
+
+    return { lunarAdapter, cryptoAdapter, coinapiAdapter, missing };
+  }
+
   private async resolveContext(uid: string): Promise<ActiveExchangeContext> {
     const context = await firestoreAdapter.getActiveExchangeForUser(uid);
     if (!context) {
@@ -474,18 +711,48 @@ export class ResearchEngine {
     return context;
   }
 
-  private async fetchKlines(
-    context: ActiveExchangeContext,
+  private mapTimeframeToCoinapiPeriod(timeframe: string): string {
+    const map: Record<string, string> = {
+      '1m': '1MIN',
+      '3m': '3MIN',
+      '5m': '5MIN',
+      '15m': '15MIN',
+      '30m': '30MIN',
+      '1h': '1HRS',
+      '2h': '2HRS',
+      '4h': '4HRS',
+      '6h': '6HRS',
+      '8h': '8HRS',
+      '12h': '12HRS',
+      '1d': '1DAY',
+      '3d': '3DAY',
+      '1w': '7DAY',
+    };
+    return map[timeframe.toLowerCase()] || '5MIN';
+  }
+
+  private async fetchCoinapiCandles(
+    adapter: CoinAPIAdapter,
     symbol: string,
     timeframe: string,
+    limit: number,
     apiCalls: string[]
-  ): Promise<any[]> {
-    try {
-      apiCalls.push(`${context.name}:klines:${timeframe}`);
-      return await context.adapter.getKlines(symbol, timeframe, 200);
-    } catch (err: any) {
-      throw new ResearchEngineError(`Failed to fetch candles from ${context.name}: ${err.message}`, this.createErrorId(), 502);
+  ): Promise<NormalizedCandle[]> {
+    apiCalls.push(`coinapi:klines:${timeframe}`);
+    const candles = await adapter.getKlines(symbol, timeframe, limit);
+    if (!candles.length) {
+      throw new Error(`CoinAPI returned no candles for timeframe ${timeframe}`);
     }
+    return candles
+      .map((item) => ({
+        open: item.open,
+        high: item.high,
+        low: item.low,
+        close: item.close,
+        volume: item.volume,
+        timestamp: item.time,
+      }))
+      .sort((a, b) => a.timestamp - b.timestamp);
   }
 
   private normalizeCandles(raw: any[]): NormalizedCandle[] {
@@ -524,51 +791,34 @@ export class ResearchEngine {
     }
   }
 
-  private async fetchOrderbook(
-    context: ActiveExchangeContext,
-    symbol: string,
-    apiCalls: string[]
-  ): Promise<Orderbook> {
-    try {
-      apiCalls.push(`${context.name}:orderbook`);
-      const orderbook = await context.adapter.getOrderbook(symbol, 20);
-      if (!orderbook?.bids?.length || !orderbook?.asks?.length) {
-        throw new Error('Orderbook missing bids/asks');
-      }
-      return orderbook;
-    } catch (err: any) {
-      throw new ResearchEngineError(`Failed to fetch orderbook from ${context.name}: ${err.message}`, this.createErrorId(), 502);
-    }
-  }
+  private buildDerivativesFromCryptoQuant(flow: CryptoQuantData, reserves?: { exchangeReserves?: number; reserveChange24h?: number }): DerivativesData {
+    const data: DerivativesData = { source: 'cryptoquant' };
 
-  private async fetchSentiment(symbol: string, candles: NormalizedCandle[]): Promise<SentimentData> {
-    if (this.lunarCrush) {
-      const baseSymbol = symbol.replace(/USDT$/i, '').replace(/USD$/i, '');
-      const data = await this.lunarCrush.getSentiment(baseSymbol);
-      if (data && (data.sentiment !== undefined || data.bullishSentiment !== undefined)) {
-        return data;
-      }
-      logger.warn({ symbol }, 'LunarCrush returned empty sentiment, falling back to price-based sentiment');
+    if (flow.exchangeFlow !== undefined) {
+      data.openInterest = {
+        openInterest: Math.abs(flow.exchangeFlow),
+        change24h: ((flow.exchangeInflow || 0) - (flow.exchangeOutflow || 0)) / Math.max(Math.abs(flow.exchangeFlow) || 1, 1),
+        timestamp: Date.now(),
+      };
     }
-    return this.deriveSentimentFromPrice(candles);
-  }
 
-  private deriveSentimentFromPrice(candles: NormalizedCandle[]): SentimentData {
-    const lookback = candles.slice(-30);
-    if (lookback.length < 2) {
-      return { sentiment: 0, bullishSentiment: 0.5 };
+    if (reserves?.reserveChange24h !== undefined) {
+      data.fundingRate = {
+        fundingRate: reserves.reserveChange24h / 100,
+        timestamp: Date.now(),
+      };
     }
-    const firstClose = lookback[0].close;
-    const lastClose = lookback[lookback.length - 1].close;
-    const changePct = firstClose === 0 ? 0 : (lastClose - firstClose) / firstClose;
-    const sentiment = Math.max(-1, Math.min(1, changePct * 5));
-    const bullishSentiment = Math.max(0, Math.min(1, (sentiment + 1) / 2));
-    return {
-      sentiment,
-      bullishSentiment,
-      socialScore: Math.abs(changePct) * 100,
-      socialVolume: Math.abs(changePct) * 50,
-    };
+
+    if (flow.whaleTransactions !== undefined) {
+      data.liquidations = {
+        longLiquidation24h: Math.max(flow.whaleTransactions, 0),
+        shortLiquidation24h: Math.max((flow.whaleTransactions || 0) * 0.5, 0),
+        totalLiquidation24h: Math.max((flow.whaleTransactions || 0) * 1.5, 0),
+        timestamp: Date.now(),
+      };
+    }
+
+    return data;
   }
 
   private calculateOrderbookImbalance(orderbook: Orderbook): number {
@@ -708,11 +958,10 @@ export class ResearchEngine {
   }
 
   private async buildMultiTimeframeCandles(params: {
-    context: ActiveExchangeContext;
     symbol: string;
     primaryTimeframe: string;
     primaryCandles: NormalizedCandle[];
-    apiCalls: string[];
+    fetchTimeframe: (timeframe: MultiTimeframe) => Promise<NormalizedCandle[] | null>;
   }): Promise<Record<MultiTimeframe, NormalizedCandle[]>> {
     const map = {} as Record<MultiTimeframe, NormalizedCandle[]>;
     await Promise.all(
@@ -721,34 +970,13 @@ export class ResearchEngine {
           map[tf] = params.primaryCandles;
           return;
         }
-        const candles = await this.tryFetchAdditionalCandles(params.context, params.symbol, tf, params.apiCalls);
+        const candles = await params.fetchTimeframe(tf);
         if (candles) {
           map[tf] = candles;
         }
       })
     );
     return map;
-  }
-
-  private async tryFetchAdditionalCandles(
-    context: ActiveExchangeContext,
-    symbol: string,
-    timeframe: string,
-    apiCalls: string[]
-  ): Promise<NormalizedCandle[] | null> {
-    try {
-      apiCalls.push(`${context.name}:klines:${timeframe}`);
-      const raw = await context.adapter.getKlines(symbol, timeframe, 200);
-      const candles = this.normalizeCandles(raw);
-      if (candles.length < 40) {
-        logger.warn({ exchange: context.name, symbol, timeframe }, 'Insufficient candles for timeframe');
-        return null;
-      }
-      return candles;
-    } catch (error: any) {
-      logger.warn({ exchange: context.name, symbol, timeframe, error: error?.message }, 'Multi-timeframe fetch failed');
-      return null;
-    }
   }
 
   private summarizeMultiTimeframes(params: {

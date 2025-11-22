@@ -141,6 +141,9 @@ export async function researchRoutes(fastify: FastifyInstance) {
 
           allResults.push(enriched);
         } catch (symbolErr: any) {
+          if (symbolErr?.missingDependencies?.length) {
+            throw symbolErr;
+          }
           if (!isFallback) {
             throw symbolErr;
           }
@@ -168,6 +171,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
             recommendedTrade: null,
             blurFields: false,
             apiCalls: [],
+            apiCallReport: [],
+            missingDependencies: [],
             liveAnalysis: {
               isLive: false,
               lastUpdated: new Date().toISOString(),
@@ -257,6 +262,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
         success: false,
         message: errorMessage,
         results: [],
+        missingDependencies: error.missingDependencies || undefined,
       });
       return;
     }
