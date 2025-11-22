@@ -91,9 +91,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
       }
       
       const activeContext = await firestoreAdapter.getActiveExchangeForUser(user.uid);
-      const detectedExchangeName =
-        activeContext.name === 'fallback' ? 'Fallback (No Exchange API)' : activeContext.name;
-      const isFallback = activeContext.name === 'fallback';
+      const detectedExchangeName = activeContext.name;
+      const isFallback = false;
 
       const allResults: any[] = [];
       const maxSymbols = Math.min(symbols.length, 100);
@@ -240,9 +239,13 @@ export async function researchRoutes(fastify: FastifyInstance) {
       // Determine error type and status code
       let statusCode = 500;
       let errorMessage = error.message || 'Deep Research engine internal error';
-      
+
+      // Check for ResearchEngineError with custom status code
+      if (error.name === 'ResearchEngineError' && error.statusCode) {
+        statusCode = error.statusCode;
+      }
       // Check for specific error types
-      if (error.response) {
+      else if (error.response) {
         // Axios error from external API
         statusCode = error.response.status || 500;
         errorMessage = error.response.data?.message || error.response.data?.error || errorMessage;

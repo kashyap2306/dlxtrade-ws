@@ -1,8 +1,9 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { firestoreAdapter, type IntegrationDocument, type IntegrationStatus } from '../services/firestoreAdapter';
 import { z } from 'zod';
-import { maskKey, encrypt } from '../services/keyManager';
+import { maskKey, encrypt, decrypt } from '../services/keyManager';
 import { BinanceAdapter } from '../services/binanceAdapter';
+import { ExchangeConnectorFactory } from '../services/exchangeConnector';
 import { logger } from '../utils/logger';
 import * as admin from 'firebase-admin';
 import { getFirebaseAdmin } from '../utils/firebase';
@@ -55,8 +56,12 @@ const normalizeExchangeId = (value: string): string => {
   return normalized || 'exchange';
 };
 
-const resolveStatus = (integration: IntegrationDocument): IntegrationStatus =>
-  integration.status || (integration.enabled ? 'SAVED' : 'DISABLED');
+const resolveStatus = (integration: IntegrationDocument): IntegrationStatus => {
+  if (integration.status === 'VERIFIED' || integration.status === 'SAVED') {
+    return 'CONNECTED';
+  }
+  return integration.status || (integration.enabled ? 'CONNECTED' : 'DISABLED');
+};
 
 const buildIntegrationList = (integrations: Record<string, IntegrationDocument>) => {
   return Object.entries(integrations).map(([docName, integration]) => ({
@@ -262,7 +267,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
 
       return {
         ok: true,
-        activeExchange: active.name === 'fallback' ? null : active.name,
+        activeExchange: active.name,
         integrations: formatted,
         list,
         count: list.length,
@@ -950,6 +955,110 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({
         valid: false,
         error: error.message || 'Internal server error',
+      });
+    }
+  });
+
+  // GET /api/integrations/status - Get detailed status for all user integrations
+  fastify.get('/status', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const uid = user?.uid;
+
+      if (!uid) {
+        return reply.code(401).send({
+          ok: false,
+          message: 'Authentication required',
+        });
+      }
+
+      const integrations = await firestoreAdapter.getAllIntegrations(uid);
+      const statusResults: Record<string, any> = {};
+
+      // Process each integration
+      for (const [exchangeName, integration] of Object.entries(integrations)) {
+        if (!integration.enabled || !integration.apiKey) {
+          statusResults[exchangeName] = {
+            isConnected: false,
+            exchangeName: integration.exchangeName || exchangeName,
+            apiKeyStatus: 'missing',
+            connectionStatus: 'disconnected',
+            message: 'API key not configured',
+          };
+          continue;
+        }
+
+        try {
+          // Decrypt credentials
+          const apiKey = decrypt(integration.apiKey);
+          const secretKey = integration.secretKey ? decrypt(integration.secretKey) : undefined;
+          const passphrase = integration.passphrase ? decrypt(integration.passphrase) : undefined;
+
+          if (!apiKey) {
+            statusResults[exchangeName] = {
+              isConnected: false,
+              exchangeName: integration.exchangeName || exchangeName,
+              apiKeyStatus: 'invalid',
+              connectionStatus: 'disconnected',
+              message: 'API key decryption failed',
+            };
+            continue;
+          }
+
+          // Test connection by creating adapter and testing
+          const adapter = ExchangeConnectorFactory.create(exchangeName as any, {
+            apiKey,
+            secret: secretKey || '',
+            passphrase,
+            testnet: integration.testnet ?? false,
+          });
+
+          // Test connection (use getBalance as it's a good connectivity test)
+          try {
+            await adapter.getBalance();
+            statusResults[exchangeName] = {
+              isConnected: true,
+              exchangeName: integration.exchangeName || exchangeName,
+              apiKeyStatus: 'valid',
+              connectionStatus: 'connected',
+              message: 'API connection successful',
+              testnet: integration.testnet ?? false,
+            };
+          } catch (connectionError: any) {
+            statusResults[exchangeName] = {
+              isConnected: false,
+              exchangeName: integration.exchangeName || exchangeName,
+              apiKeyStatus: 'valid',
+              connectionStatus: 'connection_failed',
+              message: connectionError.message || 'Connection test failed',
+              testnet: integration.testnet ?? false,
+            };
+          }
+
+        } catch (error: any) {
+          statusResults[exchangeName] = {
+            isConnected: false,
+            exchangeName: integration.exchangeName || exchangeName,
+            apiKeyStatus: 'error',
+            connectionStatus: 'error',
+            message: error.message || 'Status check failed',
+          };
+        }
+      }
+
+      return {
+        ok: true,
+        status: statusResults,
+        timestamp: new Date().toISOString(),
+      };
+
+    } catch (error: any) {
+      logger.error({ error: error.message, uid: (request as any).user?.uid }, 'Failed to get integration status');
+      return reply.code(500).send({
+        ok: false,
+        message: error.message || 'Failed to get integration status',
       });
     }
   });

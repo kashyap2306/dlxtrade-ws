@@ -176,6 +176,11 @@ export interface ResearchResult {
     newsSentiment: string;
     onChainFlows?: string;
     priceDivergence?: string;
+    globalMarketData?: {
+      price?: number;
+      volume24h?: number;
+      priceChangePercent24h?: number;
+    };
     _volumeNumber?: number | null;
     _atrValue?: number | null;
     _orderbookImbalanceValue?: number | null;
@@ -285,9 +290,14 @@ export class ResearchEngine {
       }
     };
 
+    // User has exchange API configured (context is guaranteed to be valid)
+    const userExchangeAdapter = context.adapter;
+
     const { lunarAdapter, cryptoAdapter, coinapiAdapter, missing: providerMissing } =
       await this.buildProviderAdapters(uid);
-    if (!lunarAdapter || !cryptoAdapter || !coinapiAdapter || providerMissing.length > 0) {
+
+    // LunarCrush and CryptoQuant are required for sentiment and derivatives data
+    if (!lunarAdapter || !cryptoAdapter || providerMissing.length > 0) {
       throw new ResearchEngineError(
         'Missing required data providers',
         this.createErrorId(),
@@ -295,16 +305,27 @@ export class ResearchEngine {
         providerMissing.length ? providerMissing : undefined
       );
     }
-    const providersUsed = ['coinapi', 'cryptoquant', 'lunarcrush'];
+
+    // Require exchange API for market data (should be guaranteed by getActiveExchangeForUser)
+    if (!userExchangeAdapter) {
+      throw new ResearchEngineError(
+        'No exchange API configured. Please connect your exchange API keys to use Deep Research.',
+        this.createErrorId(),
+        422,
+        [{ api: 'Exchange', missingKey: true, reason: 'Exchange API key required for market data' }]
+      );
+    }
+
+    const providersUsed = ['cryptoquant', 'lunarcrush', 'coinapi'];
 
     try {
       const candles = await runApiCall<NormalizedCandle[]>(
-        `CoinAPI Candles (${normalizedTimeframe})`,
-        () => this.fetchCoinapiCandles(coinapiAdapter, normalizedSymbol, normalizedTimeframe, 500, apiCalls),
-        { provider: 'CoinAPI' }
+        `${context.name.toUpperCase()} Candles (${normalizedTimeframe})`,
+        () => this.fetchExchangeCandles(userExchangeAdapter!, normalizedSymbol, normalizedTimeframe, 500, apiCalls),
+        { provider: context.name }
       );
       if (!candles || candles.length === 0) {
-        throw new ResearchEngineError('Failed to fetch primary candles from CoinAPI', this.createErrorId(), 502);
+        throw new ResearchEngineError(`Failed to fetch primary candles from ${context.name}`, this.createErrorId(), 502);
       }
       this.ensureCandleCoverage(candles);
 
@@ -317,9 +338,9 @@ export class ResearchEngine {
             return candles;
           }
           try {
-            return await this.fetchCoinapiCandles(coinapiAdapter, normalizedSymbol, tf, 500, apiCalls);
+            return await this.fetchExchangeCandles(userExchangeAdapter!, normalizedSymbol, tf, 500, apiCalls);
           } catch (error: any) {
-            logger.warn({ symbol: normalizedSymbol, timeframe: tf, error: error.message }, 'CoinAPI timeframe fetch failed');
+            logger.warn({ symbol: normalizedSymbol, timeframe: tf, error: error.message }, `${context.name} timeframe fetch failed`);
             return null;
           }
         },
@@ -328,20 +349,20 @@ export class ResearchEngine {
       const currentPrice = candles[candles.length - 1].close;
       const priceMomentum = this.calculatePriceMomentum(candles);
 
-      const rawOrderbook = await runApiCall<{ bids: Orderbook['bids']; asks: Orderbook['asks'] }>(
-        'CoinAPI Orderbook',
+      const rawOrderbook = await runApiCall<Orderbook>(
+        `${context.name.toUpperCase()} Orderbook`,
         async () => {
-          apiCalls.push('coinapi:orderbook');
-          const orderbookResponse = await coinapiAdapter.getOrderbook(normalizedSymbol, 20);
+          apiCalls.push(`${context.name}:orderbook`);
+          const orderbookResponse = await userExchangeAdapter!.getOrderbook(normalizedSymbol, 20);
           if (!orderbookResponse) {
-            throw new Error('CoinAPI returned empty orderbook');
+            throw new Error(`${context.name} returned empty orderbook`);
           }
           return orderbookResponse;
         },
-        { provider: 'CoinAPI' }
+        { provider: context.name }
       );
       if (!rawOrderbook) {
-        throw new ResearchEngineError('Failed to fetch orderbook data from CoinAPI', this.createErrorId(), 502);
+        throw new ResearchEngineError(`Failed to fetch orderbook data from ${context.name}`, this.createErrorId(), 502);
       }
       const orderbook: Orderbook = {
         symbol: normalizedSymbol,
@@ -350,7 +371,7 @@ export class ResearchEngine {
         lastUpdateId: Date.now(),
       };
       const exchangeOrderbooks: Array<{ exchange: string; bidsCount: number; asksCount: number }> = [
-        { exchange: 'coinapi', bidsCount: orderbook.bids.length, asksCount: orderbook.asks.length },
+        { exchange: context.name, bidsCount: orderbook.bids.length, asksCount: orderbook.asks.length },
       ];
 
       const liquidity = analyzeLiquidity(orderbook, 5);
@@ -430,6 +451,14 @@ export class ResearchEngine {
         throw new ResearchEngineError('Failed to fetch LunarCrush sentiment', this.createErrorId(), 502);
       }
       const sentiment = analyzeSentiment(sentimentPayload);
+
+      // Global Intelligence: CoinAPI market data (optional supplemental data)
+      const coinapiMarketData = coinapiAdapter ? await runApiCall<{ price?: number; volume24h?: number; priceChangePercent24h?: number }>(
+        'CoinAPI Global Market Data',
+        () => coinapiAdapter!.getMarketData(normalizedSymbol),
+        { optional: true, provider: 'CoinAPI' }
+      ) : null;
+
       const rsi = analyzeRSI(candles);
       const macd = analyzeMACD(candles);
       const volume = analyzeVolume(candles);
@@ -529,6 +558,11 @@ export class ResearchEngine {
         newsSentiment: sentiment.description,
         onChainFlows: undefined,
         priceDivergence: undefined,
+        globalMarketData: coinapiMarketData ? {
+          price: coinapiMarketData.price,
+          volume24h: coinapiMarketData.volume24h,
+          priceChangePercent24h: coinapiMarketData.priceChangePercent24h
+        } : undefined,
         _volumeNumber: volume.relativeVolume ?? null,
         _atrValue: atr,
         _orderbookImbalanceValue: imbalance,
@@ -602,7 +636,7 @@ export class ResearchEngine {
         confidenceBreakdown: confidenceResult.confidenceBreakdown,
         exchangeOrderbooks,
         exchangeCount: exchangeOrderbooks.length,
-        exchangesUsed: exchangeOrderbooks.map((entry) => entry.exchange),
+        exchangesUsed: [context.name],
         autoTradeDecision: {
           triggered: autoTradeEligible,
           confidence,
@@ -632,6 +666,7 @@ export class ResearchEngine {
         liquidityAcceptable,
         derivativesAligned,
         apiCallReport,
+        missingDependencies: [],
       };
 
       logger.info({ uid, symbol: normalizedSymbol, exchange: context.name, confidence, durationMs: Date.now() - startedAt }, 'Deep research completed');
@@ -696,9 +731,8 @@ export class ResearchEngine {
     let coinapiAdapter: CoinAPIAdapter | undefined;
     if (coinapiEntry?.[1].apiKey) {
       coinapiAdapter = new CoinAPIAdapter(coinapiEntry[1].apiKey, 'market');
-    } else {
-      missing.push({ api: 'CoinAPI', missingKey: true, reason: 'CoinAPI Market key not connected' });
     }
+    // CoinAPI is optional for global intelligence data
 
     return { lunarAdapter, cryptoAdapter, coinapiAdapter, missing };
   }
@@ -731,26 +765,27 @@ export class ResearchEngine {
     return map[timeframe.toLowerCase()] || '5MIN';
   }
 
-  private async fetchCoinapiCandles(
-    adapter: CoinAPIAdapter,
+  private async fetchExchangeCandles(
+    adapter: ExchangeConnector,
     symbol: string,
     timeframe: string,
     limit: number,
     apiCalls: string[]
   ): Promise<NormalizedCandle[]> {
-    apiCalls.push(`coinapi:klines:${timeframe}`);
+    const exchangeName = adapter.getExchangeName();
+    apiCalls.push(`${exchangeName}:klines:${timeframe}`);
     const candles = await adapter.getKlines(symbol, timeframe, limit);
     if (!candles.length) {
-      throw new Error(`CoinAPI returned no candles for timeframe ${timeframe}`);
+      throw new Error(`${exchangeName} returned no candles for timeframe ${timeframe}`);
     }
     return candles
       .map((item) => ({
-        open: item.open,
-        high: item.high,
-        low: item.low,
-        close: item.close,
-        volume: item.volume,
-        timestamp: item.time,
+        open: parseFloat(item.open),
+        high: parseFloat(item.high),
+        low: parseFloat(item.low),
+        close: parseFloat(item.close),
+        volume: parseFloat(item.volume),
+        timestamp: typeof item.timestamp === 'number' ? item.timestamp : Date.parse(item.timestamp),
       }))
       .sort((a, b) => a.timestamp - b.timestamp);
   }

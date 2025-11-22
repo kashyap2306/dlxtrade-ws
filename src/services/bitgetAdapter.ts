@@ -29,9 +29,7 @@ export class BitgetAdapter implements ExchangeConnector {
     this.apiKey = apiKey;
     this.apiSecret = apiSecret;
     this.passphrase = passphrase;
-    this.baseUrl = testnet
-      ? 'https://api-demo.bitget.com'
-      : 'https://api.bitget.com';
+    this.baseUrl = 'https://api.bitget.com';
 
     this.httpClient = axios.create({
       baseURL: this.baseUrl,

@@ -79,7 +79,7 @@ class TradingEngine {
 
   private async requireContext(uid: string) {
     const context = await firestoreAdapter.getActiveExchangeForUser(uid);
-    if (!context || context.name === 'fallback' || !context.adapter) {
+    if (!context || !context.adapter) {
       throw new TradingEngineError('No active exchange integration configured');
     }
     return context;

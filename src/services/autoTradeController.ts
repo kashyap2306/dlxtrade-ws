@@ -133,7 +133,7 @@ class AutoTradeController {
 
     const risk = this.getUserRiskSettings(userSettings);
     const context = await firestoreAdapter.getActiveExchangeForUser(uid);
-    if (!context || context.name === 'fallback') {
+    if (!context) {
       decision.reason = 'No exchange adapter available';
       return decision;
     }

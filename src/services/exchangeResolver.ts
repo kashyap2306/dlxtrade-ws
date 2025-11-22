@@ -23,10 +23,11 @@ export interface ResolvedExchangeConnector {
 export async function resolveExchangeConnector(uid: string): Promise<ResolvedExchangeConnector | null> {
   try {
     const active: ActiveExchangeContext = await firestoreAdapter.getActiveExchangeForUser(uid);
-    if (active.name === 'fallback') {
-      logger.warn({ uid }, 'resolveExchangeConnector requested but user has no enabled integrations');
-      return null;
-    }
+  // ActiveExchangeContext no longer has fallback - this should not happen
+  if (!active.adapter) {
+    logger.warn({ uid }, 'resolveExchangeConnector requested but user has no exchange adapter');
+    return null;
+  }
 
     if (!active.apiKey || !active.secret) {
       logger.warn({ uid, exchange: active.name }, 'Active exchange missing credentials');

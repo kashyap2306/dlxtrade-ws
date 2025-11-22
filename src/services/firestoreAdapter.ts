@@ -3,7 +3,6 @@ import { getFirebaseAdmin } from '../utils/firebase';
 import { logger } from '../utils/logger';
 import { encrypt, decrypt, maskKey } from './keyManager';
 import { ExchangeConnectorFactory, type ExchangeConnector, type ExchangeName } from './exchangeConnector';
-import { BinancePublicAdapter } from './binancePublicAdapter';
 
 const db = () => admin.firestore(getFirebaseAdmin());
 
@@ -67,7 +66,7 @@ export interface ExecutionLogDocument {
   createdAt: admin.firestore.Timestamp;
 }
 
-export type IntegrationStatus = 'SAVED' | 'UNVERIFIED' | 'VERIFIED' | 'ERROR' | 'DISABLED';
+export type IntegrationStatus = 'CONNECTED' | 'SAVED' | 'UNVERIFIED' | 'VERIFIED' | 'ERROR' | 'DISABLED';
 
 export interface IntegrationDocument {
   enabled: boolean;
@@ -87,9 +86,9 @@ export interface IntegrationDocument {
 }
 
 export interface ActiveExchangeContext {
-  name: ExchangeName | 'fallback';
-  apiKey?: string;
-  secret?: string;
+  name: ExchangeName;
+  apiKey: string;
+  secret: string;
   passphrase?: string;
   testnet?: boolean;
   adapter: ExchangeConnector;
@@ -217,22 +216,48 @@ export class FirestoreAdapter {
   }
 
   async getLatestApiKey(uid: string, exchange: string): Promise<ApiKeyDocument | null> {
-    const snapshot = await db()
-      .collection('users')
-      .doc(uid)
-      .collection('apikeys')
-      .where('exchange', '==', exchange)
-      .orderBy('updatedAt', 'desc')
-      .limit(1)
-      .get();
+    try {
+      const snapshot = await db()
+        .collection('users')
+        .doc(uid)
+        .collection('apikeys')
+        .where('exchange', '==', exchange)
+        .orderBy('updatedAt', 'desc')
+        .limit(1)
+        .get();
 
-    if (snapshot.empty) return null;
+      if (snapshot.empty) return null;
 
-    const doc = snapshot.docs[0];
-    return {
-      id: doc.id,
-      ...doc.data(),
-    } as ApiKeyDocument;
+      const doc = snapshot.docs[0];
+      return {
+        id: doc.id,
+        ...doc.data(),
+      } as ApiKeyDocument;
+    } catch (error: any) {
+      // Handle composite index errors gracefully
+      if (error.message?.includes('index')) {
+        logger.warn({ uid, exchange, error: error.message }, 'Composite index error in getLatestApiKey, falling back to unordered query');
+        // Fallback: get all keys for this exchange and sort in memory
+        const fallbackSnapshot = await db()
+          .collection('users')
+          .doc(uid)
+          .collection('apikeys')
+          .where('exchange', '==', exchange)
+          .get();
+
+        if (fallbackSnapshot.empty) return null;
+
+        const docs = fallbackSnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data(),
+        } as ApiKeyDocument)).sort((a, b) =>
+          (b.updatedAt?.toMillis() || 0) - (a.updatedAt?.toMillis() || 0)
+        );
+
+        return docs[0] || null;
+      }
+      throw error;
+    }
   }
 
   // Settings
@@ -553,7 +578,7 @@ export class FirestoreAdapter {
       }
     }
 
-    return { name: 'fallback', adapter: new BinancePublicAdapter() };
+    throw new Error('No exchange integration configured. Please connect your exchange API keys to use trading features.');
   }
 
   // HFT Settings
@@ -852,12 +877,27 @@ export class FirestoreAdapter {
   }
 
   async getUserApiKeys(uid: string): Promise<any[]> {
-    const snapshot = await db()
-      .collection('apiKeys')
-      .where('uid', '==', uid)
-      .orderBy('createdAt', 'desc')
-      .get();
-    return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    try {
+      const snapshot = await db()
+        .collection('apiKeys')
+        .where('uid', '==', uid)
+        .orderBy('createdAt', 'desc')
+        .get();
+      return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    } catch (error: any) {
+      // Handle composite index errors gracefully
+      if (error.message?.includes('index')) {
+        logger.warn({ uid, error: error.message }, 'Composite index error in getUserApiKeys, falling back to unordered query');
+        // Fallback: get all keys for this user and sort in memory
+        const fallbackSnapshot = await db()
+          .collection('apiKeys')
+          .where('uid', '==', uid)
+          .get();
+        return fallbackSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as ApiKeyDocument))
+          .sort((a, b) => (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0));
+      }
+      throw error;
+    }
   }
 
   // ========== EXCHANGE CONFIG METHODS ==========
@@ -1069,22 +1109,44 @@ export class FirestoreAdapter {
   }
 
   async getHFTLogs(uid?: string, limit: number = 100): Promise<any[]> {
-    let query: admin.firestore.Query = db().collection('hftLogs');
-    
-    if (uid) {
-      query = query.where('uid', '==', uid);
+    try {
+      let query: admin.firestore.Query = db().collection('hftLogs');
+
+      if (uid) {
+        query = query.where('uid', '==', uid);
+      }
+
+      const snapshot = await query
+        .orderBy('timestamp', 'desc')
+        .limit(limit)
+        .get();
+
+      return snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+        timestamp: doc.data().timestamp?.toDate().toISOString(),
+      }));
+    } catch (error: any) {
+      // Handle composite index errors gracefully
+      if (error.message?.includes('index') && uid) {
+        logger.warn({ uid, error: error.message }, 'Composite index error in getHFTLogs, falling back to unordered query');
+        // Fallback: get all logs for this user and sort in memory
+        const fallbackSnapshot = await db()
+          .collection('hftLogs')
+          .where('uid', '==', uid)
+          .limit(limit * 2) // Get more to account for sorting
+          .get();
+
+        return fallbackSnapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+          timestamp: doc.data().timestamp?.toDate().toISOString(),
+        })).sort((a, b) =>
+          (b.timestamp?.toMillis() || 0) - (a.timestamp?.toMillis() || 0)
+        ).slice(0, limit);
+      }
+      throw error;
     }
-    
-    const snapshot = await query
-      .orderBy('timestamp', 'desc')
-      .limit(limit)
-      .get();
-    
-    return snapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-      timestamp: doc.data().timestamp?.toDate().toISOString(),
-    }));
   }
 
   // ========== TRADES COLLECTION METHODS ==========
@@ -1169,18 +1231,40 @@ export class FirestoreAdapter {
   }
 
   async getUserNotifications(uid: string, limit: number = 50): Promise<any[]> {
-    const snapshot = await db()
-      .collection('notifications')
-      .where('uid', '==', uid)
-      .orderBy('timestamp', 'desc')
-      .limit(limit)
-      .get();
-    
-    return snapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-      timestamp: doc.data().timestamp?.toDate().toISOString(),
-    }));
+    try {
+      const snapshot = await db()
+        .collection('notifications')
+        .where('uid', '==', uid)
+        .orderBy('timestamp', 'desc')
+        .limit(limit)
+        .get();
+
+      return snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+        timestamp: doc.data().timestamp?.toDate().toISOString(),
+      }));
+    } catch (error: any) {
+      // Handle composite index errors gracefully
+      if (error.message?.includes('index')) {
+        logger.warn({ uid, error: error.message }, 'Composite index error in getUserNotifications, falling back to unordered query');
+        // Fallback: get all notifications for this user and sort in memory
+        const fallbackSnapshot = await db()
+          .collection('notifications')
+          .where('uid', '==', uid)
+          .limit(limit * 2) // Get more to account for sorting
+          .get();
+
+        return fallbackSnapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+          timestamp: doc.data().timestamp?.toDate().toISOString(),
+        })).sort((a, b) =>
+          (b.timestamp?.toMillis() || 0) - (a.timestamp?.toMillis() || 0)
+        ).slice(0, limit);
+      }
+      throw error;
+    }
   }
 
   async markNotificationRead(notificationId: string): Promise<void> {

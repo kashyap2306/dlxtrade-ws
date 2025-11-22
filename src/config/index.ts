@@ -55,5 +55,10 @@ export const config = {
     projectId: process.env.FIREBASE_PROJECT_ID || 'dlx-trading',
     serviceAccountKey: process.env.FIREBASE_SERVICE_ACCOUNT_KEY,
   },
+
+  features: {
+    systemMarketApi: process.env.SYSTEM_MARKET_API === 'true', // Default: false (off in prod)
+    systemApiCacheTtl: parseInt(process.env.SYSTEM_API_CACHE_TTL || '300', 10), // 5 minutes default
+  },
 };
 
