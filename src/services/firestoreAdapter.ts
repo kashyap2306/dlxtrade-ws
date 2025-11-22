@@ -2,6 +2,8 @@ import * as admin from 'firebase-admin';
 import { getFirebaseAdmin } from '../utils/firebase';
 import { logger } from '../utils/logger';
 import { encrypt, decrypt, maskKey } from './keyManager';
+import { ExchangeConnectorFactory, type ExchangeConnector, type ExchangeName } from './exchangeConnector';
+import { BinancePublicAdapter } from './binancePublicAdapter';
 
 const db = () => admin.firestore(getFirebaseAdmin());
 
@@ -70,7 +72,18 @@ export interface IntegrationDocument {
   apiKey?: string; // encrypted
   secretKey?: string; // encrypted (only for Binance)
   apiType?: string; // For CoinAPI: 'market' | 'flatfile' | 'exchangerate'
+  passphrase?: string;
+  testnet?: boolean;
   updatedAt: admin.firestore.Timestamp;
+}
+
+export interface ActiveExchangeContext {
+  name: ExchangeName | 'fallback';
+  apiKey?: string;
+  secret?: string;
+  passphrase?: string;
+  testnet?: boolean;
+  adapter: ExchangeConnector;
 }
 
 export interface HFTSettingsDocument {
@@ -329,6 +342,7 @@ export class FirestoreAdapter {
     enabled: boolean;
     apiKey?: string; // plain text, will be encrypted
     secretKey?: string; // plain text, will be encrypted (only for Binance)
+    passphrase?: string; // plain text, will be encrypted (for Bitget, Weex, etc.)
     apiType?: string; // For CoinAPI type
   }): Promise<{ path: string; data: any }> {
     const docRef = db()
@@ -349,6 +363,9 @@ export class FirestoreAdapter {
     // Set createdAt only if document doesn't exist (required field)
     if (!existingDoc.exists) {
       docData.createdAt = now;
+    } else if (data.enabled === false && existingDoc.exists && !existingDoc.data().createdAt) {
+      // Patch: ensure createdAt exists on disables for legacy docs
+      docData.createdAt = now;
     }
 
     // Encrypt API keys safely
@@ -358,6 +375,9 @@ export class FirestoreAdapter {
       }
       if (data.secretKey) {
         docData.secretKey = encrypt(data.secretKey);
+      }
+      if (data.passphrase) {
+        docData.passphrase = encrypt(data.passphrase);
       }
     } catch (error: any) {
       logger.error({ error: error.message, uid, apiName }, 'Encryption failed during saveIntegration');
@@ -455,6 +475,52 @@ export class FirestoreAdapter {
     }
 
     return enabled;
+  }
+
+  /**
+   * Returns { exchange, credentials } for the highest-priority enabled exchange for a user.
+   * If none, returns { exchange: 'fallback' }
+   */
+  async getActiveExchangeForUser(uid: string): Promise<ActiveExchangeContext> {
+    const integrations = await this.getAllIntegrations(uid);
+    const priorities: ExchangeName[] = ['bitget', 'bingx', 'binance', 'weex', 'kucoin'];
+
+    for (const exchangeName of priorities) {
+      const config = integrations[exchangeName];
+      if (!config || !config.enabled) continue;
+
+      try {
+        const apiKey = config.apiKey ? decrypt(config.apiKey) : '';
+        const secretKey = config.secretKey ? decrypt(config.secretKey) : '';
+        const passphrase = config.passphrase ? decrypt(config.passphrase) : undefined;
+
+        if (!apiKey || !secretKey) {
+          logger.warn({ uid, exchangeName }, 'Active exchange missing decrypted credentials');
+          continue;
+        }
+
+        const adapter = ExchangeConnectorFactory.create(exchangeName, {
+          apiKey,
+          secret: secretKey,
+          passphrase,
+          testnet: config.testnet ?? false,
+        });
+
+        return { 
+          name: exchangeName, 
+          apiKey, 
+          secret: secretKey, 
+          passphrase, 
+          testnet: config.testnet ?? false,
+          adapter 
+        };
+      } catch (err: any) {
+        logger.error({ uid, exchangeName, error: err.message }, 'Failed to instantiate exchange adapter');
+        continue;
+      }
+    }
+
+    return { name: 'fallback', adapter: new BinancePublicAdapter() };
   }
 
   // HFT Settings

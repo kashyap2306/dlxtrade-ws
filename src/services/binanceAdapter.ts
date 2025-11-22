@@ -104,7 +104,42 @@ export class BinanceAdapter implements ExchangeConnector {
   }
 
   async getAccount(): Promise<any> {
-    return await this.request('GET', '/api/v3/account', {}, true);
+    try {
+      const response = await this.httpClient.request({
+        method: 'GET',
+        url: '/api/v3/account',
+        params: {
+          timestamp: Date.now(),
+          signature: this.sign({ timestamp: Date.now() }),
+        },
+      });
+      const data = response.data;
+      // Only accept if response has expected structure (for spot)
+      if (response.status === 200 && data && data.balances && data.accountType) {
+        return data;
+      }
+      // If 200, but missing expected properties:
+      throw new Error('Invalid API key or secret');
+    } catch (error: any) {
+      const resp = error.response;
+      const code = resp?.data?.code;
+      const msg = (resp?.data?.msg || error.message || '').toLowerCase();
+      if (
+        resp?.status === 400 ||
+        resp?.status === 401 ||
+        code === -2015 ||
+        code === -2014 ||
+        msg.includes('api-key') ||
+        msg.includes('invalid') ||
+        msg.includes('permission') ||
+        msg.includes('signature') ||
+        msg.includes('illegal')
+      ) {
+        throw new Error('Invalid API key or secret');
+      }
+      // Unhandled error
+      throw error;
+    }
   }
 
   async placeOrder(params: {

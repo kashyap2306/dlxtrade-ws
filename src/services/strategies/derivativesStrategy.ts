@@ -55,38 +55,65 @@ export async function fetchDerivativesData(
   // Try exchange APIs first (primary)
   if (exchangeAdapter) {
     try {
-      // Check if adapter has these methods
-      if (typeof (exchangeAdapter as any).getFundingRate === 'function') {
-        const fr = await (exchangeAdapter as any).getFundingRate(symbol);
-        if (fr) {
-          data.fundingRate = {
-            fundingRate: fr.fundingRate || 0,
-            timestamp: fr.nextFundingTime,
-          };
+      if (typeof (exchangeAdapter as any).getDerivativesSnapshot === 'function') {
+        const snapshot = await (exchangeAdapter as any).getDerivativesSnapshot(symbol);
+        if (snapshot?.available) {
+          if (snapshot.fundingRate) {
+            data.fundingRate = {
+              fundingRate: snapshot.fundingRate.fundingRate || 0,
+              timestamp: snapshot.fundingRate.nextFundingTime,
+            };
+          }
+          if (snapshot.openInterest) {
+            data.openInterest = {
+              openInterest: snapshot.openInterest.openInterest || 0,
+              change24h: 0,
+              timestamp: Date.now(),
+            };
+          }
+          if (snapshot.liquidationData) {
+            data.liquidations = {
+              longLiquidation24h: snapshot.liquidationData.longLiquidation24h || 0,
+              shortLiquidation24h: snapshot.liquidationData.shortLiquidation24h || 0,
+              totalLiquidation24h: snapshot.liquidationData.totalLiquidation24h || 0,
+              timestamp: Date.now(),
+            };
+          }
         }
-      }
-
-      if (typeof (exchangeAdapter as any).getOpenInterest === 'function') {
-        const oi = await (exchangeAdapter as any).getOpenInterest(symbol);
-        if (oi) {
-          // Calculate 24h change (would need historical data, simplified for now)
-          data.openInterest = {
-            openInterest: oi.openInterest || 0,
-            change24h: 0, // Would need historical comparison
-            timestamp: Date.now(),
-          };
+      } else {
+        // Check if adapter has these methods
+        if (typeof (exchangeAdapter as any).getFundingRate === 'function') {
+          const fr = await (exchangeAdapter as any).getFundingRate(symbol);
+          if (fr) {
+            data.fundingRate = {
+              fundingRate: fr.fundingRate || 0,
+              timestamp: fr.nextFundingTime,
+            };
+          }
         }
-      }
 
-      if (typeof (exchangeAdapter as any).getLiquidations === 'function') {
-        const liq = await (exchangeAdapter as any).getLiquidations(symbol);
-        if (liq) {
-          data.liquidations = {
-            longLiquidation24h: liq.longLiquidation24h || 0,
-            shortLiquidation24h: liq.shortLiquidation24h || 0,
-            totalLiquidation24h: liq.totalLiquidation24h || 0,
-            timestamp: Date.now(),
-          };
+        if (typeof (exchangeAdapter as any).getOpenInterest === 'function') {
+          const oi = await (exchangeAdapter as any).getOpenInterest(symbol);
+          if (oi) {
+            // Calculate 24h change (would need historical data, simplified for now)
+            data.openInterest = {
+              openInterest: oi.openInterest || 0,
+              change24h: 0, // Would need historical comparison
+              timestamp: Date.now(),
+            };
+          }
+        }
+
+        if (typeof (exchangeAdapter as any).getLiquidations === 'function') {
+          const liq = await (exchangeAdapter as any).getLiquidations(symbol);
+          if (liq) {
+            data.liquidations = {
+              longLiquidation24h: liq.longLiquidation24h || 0,
+              shortLiquidation24h: liq.shortLiquidation24h || 0,
+              totalLiquidation24h: liq.totalLiquidation24h || 0,
+              timestamp: Date.now(),
+            };
+          }
         }
       }
     } catch (err: any) {

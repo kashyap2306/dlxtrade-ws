@@ -6,6 +6,18 @@ import { apiUsageTracker } from './apiUsageTracker';
 import type { Orderbook, Trade, Quote } from '../types';
 import type { ExchangeConnector, ExchangeName } from './exchangeConnector';
 
+type BitgetDerivativesSnapshot = {
+  available: boolean;
+  fundingRate?: { fundingRate: number; nextFundingTime?: number };
+  openInterest?: { openInterest: number; openInterestValue: number };
+  liquidationData?: {
+    longLiquidation24h: number;
+    shortLiquidation24h: number;
+    totalLiquidation24h: number;
+  };
+  errorId?: string;
+};
+
 export class BitgetAdapter implements ExchangeConnector {
   private apiKey: string;
   private apiSecret: string;
@@ -93,21 +105,32 @@ export class BitgetAdapter implements ExchangeConnector {
   }
 
   async getOrderbook(symbol: string, limit: number = 20): Promise<Orderbook> {
-    const data = await this.request('GET', '/api/mix/v1/market/depth', {
-      symbol: symbol.toUpperCase(),
-      limit,
+    const finalSymbol = `${symbol.toUpperCase().replace('-', '')}_SPBL`;
+    const safeLimit = Math.min(Math.max(limit || 20, 1), 100);
+    const data = await this.request('GET', '/api/spot/v1/market/depth', {
+      symbol: finalSymbol,
+      limit: safeLimit.toString(),
+      type: 'step0',
+    });
+
+    const bids = (data.data?.bids || []).map((level: any) => {
+      if (Array.isArray(level)) {
+        return { price: level[0], quantity: level[1] };
+      }
+      return { price: level.price ?? level[0], quantity: level.size ?? level[1] };
+    });
+
+    const asks = (data.data?.asks || []).map((level: any) => {
+      if (Array.isArray(level)) {
+        return { price: level[0], quantity: level[1] };
+      }
+      return { price: level.price ?? level[0], quantity: level.size ?? level[1] };
     });
 
     return {
-      symbol: data.data?.symbol || symbol,
-      bids: (data.data?.bids || []).map(([price, qty]: [string, string]) => ({
-        price,
-        quantity: qty,
-      })),
-      asks: (data.data?.asks || []).map(([price, qty]: [string, string]) => ({
-        price,
-        quantity: qty,
-      })),
+      symbol: finalSymbol,
+      bids,
+      asks,
       lastUpdateId: data.data?.ts || Date.now(),
     };
   }
@@ -179,44 +202,54 @@ export class BitgetAdapter implements ExchangeConnector {
     const logs: string[] = [];
     logs.push('1) BITGET KLINES CALLED');
     logs.push(`2) original timeframe: ${interval}`);
-    let granularity: number = 60;
-    const granularityMap: Record<string, number> = {
-      '1m': 60,
-      '5m': 300,
-      '15m': 900,
-      '30m': 1800,
-      '1h': 3600,
-      '4h': 14400,
-      '1d': 86400
+    const periodMap: Record<string, string> = {
+      '1m': '1min',
+      '5m': '5min',
+      '15m': '15min',
+      '30m': '30min',
+      '1h': '1h',
+      '4h': '4h',
+      '1d': '1day',
     };
-    if (granularityMap[interval]) {
-      granularity = granularityMap[interval];
-    }
-    logs.push(`3) final granularity sent: ${granularity}`);
+    const period = periodMap[interval] || '1min';
+    logs.push(`3) final period sent: ${period}`);
     
     // Map symbol for spot: BTCUSDT -> BTCUSDT_SPBL
     const finalSymbol = `${symbol.toUpperCase().replace('-', '')}_SPBL`;
+    const safeLimit = Math.min(Math.max(limit || 100, 1), 100);
     const endpoint = '/api/spot/v1/market/candles';
-    const finalUrl = `${this.baseUrl}${endpoint}?symbol=${finalSymbol}&granularity=${granularity}&limit=${limit}`;
+    const finalUrl = `${this.baseUrl}${endpoint}?symbol=${finalSymbol}&period=${period}&limit=${safeLimit}`;
     logs.push(`4) final URL sent: ${finalUrl}`);
     let candles: any[] = [];
     try {
       const data = await this.request('GET', endpoint, {
         symbol: finalSymbol,
-        granularity: granularity.toString(),
-        limit: limit.toString(),
+        period,
+        limit: safeLimit.toString(),
       });
       const rawResponse = JSON.stringify(data);
       logs.push(`5) raw response body: ${rawResponse}`);
       if (Array.isArray(data.data)) {
-        candles = data.data.map((x: any[]) => ({
-          timestamp: parseInt(x[0]),
-          open: parseFloat(x[1]),
-          high: parseFloat(x[2]),
-          low: parseFloat(x[3]),
-          close: parseFloat(x[4]),
-          volume: parseFloat(x[5])
-        }));
+        candles = data.data.map((x: any) => {
+          if (Array.isArray(x)) {
+            return {
+              timestamp: parseInt(x[0]),
+              open: parseFloat(x[1]),
+              high: parseFloat(x[2]),
+              low: parseFloat(x[3]),
+              close: parseFloat(x[4]),
+              volume: parseFloat(x[5]),
+            };
+          }
+          return {
+            timestamp: parseInt(x.ts ?? x[0]),
+            open: parseFloat(x.open ?? x[1]),
+            high: parseFloat(x.high ?? x[2]),
+            low: parseFloat(x.low ?? x[3]),
+            close: parseFloat(x.close ?? x[4]),
+            volume: parseFloat(x.baseVol ?? x.volume ?? x[5] ?? '0'),
+          };
+        });
       }
       logs.push(`7) candles.length after parsing: ${candles.length}`);
       return candles;
@@ -258,12 +291,132 @@ export class BitgetAdapter implements ExchangeConnector {
     }
   }
 
+  async getBalance(): Promise<any> {
+    try {
+      const data = await this.request('GET', '/api/mix/v1/account/accounts', { productType: 'UMCBL' }, true);
+      return data.data || data;
+    } catch (error: any) {
+      logger.error({ error }, 'Error getting Bitget balance');
+      throw error;
+    }
+  }
+
+  async getPositions(symbol?: string): Promise<any[]> {
+    try {
+      const params: Record<string, string> = { productType: 'UMCBL' };
+      if (symbol) {
+        params.symbol = `${symbol.toUpperCase().replace('-', '')}_UMCBL`;
+      }
+      const data = await this.request('GET', '/api/mix/v1/position/list', params, true);
+      return data.data || [];
+    } catch (error: any) {
+      logger.error({ error }, 'Error getting Bitget positions');
+      throw error;
+    }
+  }
+
   /**
    * Get funding rate for futures symbol
    */
+  async getDerivativesSnapshot(symbol: string): Promise<BitgetDerivativesSnapshot> {
+    const futuresSymbol = `${symbol.toUpperCase().replace('-', '')}_UMCBL`;
+    const retryDelays = [200, 600, 1200];
+    const errorId = crypto.randomBytes(4).toString('hex');
+
+    const fetchEndpoint = async (endpoint: string, params: Record<string, any>) => {
+      try {
+        return await this.request('GET', endpoint, params);
+      } catch (error: any) {
+        (error as any).endpoint = endpoint;
+        throw error;
+      }
+    };
+
+    for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+      if (attempt > 0) {
+        await this.sleep(retryDelays[attempt - 1]);
+      }
+
+      try {
+        const now = Date.now();
+        const startTime = now - 24 * 60 * 60 * 1000;
+
+        const [fundingRaw, oiRaw, liqRaw] = await Promise.all([
+          fetchEndpoint('/api/mix/v1/market/current-fundRate', { symbol: futuresSymbol }),
+          fetchEndpoint('/api/mix/v1/market/open-interest', { symbol: futuresSymbol }),
+          fetchEndpoint('/api/mix/v1/market/liquidation', {
+            symbol: futuresSymbol,
+            startTime: startTime.toString(),
+            endTime: now.toString(),
+          }),
+        ]);
+
+        const fundingRate = {
+          fundingRate: parseFloat(fundingRaw.data?.fundingRate || '0'),
+          nextFundingTime: fundingRaw.data?.nextSettleTime ? parseInt(fundingRaw.data.nextSettleTime) : undefined,
+        };
+
+        const oiAmount = parseFloat(oiRaw.data?.amount || '0');
+        const oiPrice = parseFloat(oiRaw.data?.price || '0');
+        const openInterest = {
+          openInterest: Number.isFinite(oiAmount) ? oiAmount : 0,
+          openInterestValue: Number.isFinite(oiAmount * oiPrice) ? oiAmount * oiPrice : 0,
+        };
+
+        let longLiq = 0;
+        let shortLiq = 0;
+        if (Array.isArray(liqRaw.data)) {
+          liqRaw.data.forEach((liq: any) => {
+            const qty = parseFloat(liq.size || '0');
+            const price = parseFloat(liq.price || '0');
+            const value = (Number.isFinite(qty) ? qty : 0) * (Number.isFinite(price) ? price : 0);
+            if (liq.side === 'sell') {
+              longLiq += value;
+            } else if (liq.side === 'buy') {
+              shortLiq += value;
+            }
+          });
+        }
+        const liquidationData = {
+          longLiquidation24h: longLiq,
+          shortLiquidation24h: shortLiq,
+          totalLiquidation24h: longLiq + shortLiq,
+        };
+
+        return {
+          available: true,
+          fundingRate,
+          openInterest,
+          liquidationData,
+        };
+      } catch (error: any) {
+        const status = error?.statusCode || error?.response?.status;
+        const context = {
+          symbol: futuresSymbol,
+          errorId,
+          attempt: attempt + 1,
+          status,
+          endpoint: error?.endpoint,
+        };
+
+        if (status === 404) {
+          logger.warn(context, 'Bitget derivatives data unavailable (404)');
+          return { available: false, errorId };
+        }
+
+        logger.error({ ...context, message: error?.message }, 'Bitget derivatives snapshot fetch failed');
+        if (attempt === retryDelays.length) {
+          return { available: false, errorId };
+        }
+      }
+    }
+
+    return { available: false, errorId };
+  }
+
   async getFundingRate(symbol: string): Promise<{ fundingRate: number; nextFundingTime?: number } | null> {
     try {
-      const futuresSymbol = symbol.replace('USDT', 'USDT');
+      const futuresSymbol = `${symbol.toUpperCase().replace('-', '')}_UMCBL`;
       const data = await this.request('GET', '/api/mix/v1/market/current-fundRate', {
         symbol: futuresSymbol,
       });
@@ -283,7 +436,7 @@ export class BitgetAdapter implements ExchangeConnector {
    */
   async getOpenInterest(symbol: string): Promise<{ openInterest: number; openInterestValue: number } | null> {
     try {
-      const futuresSymbol = symbol.replace('USDT', 'USDT');
+      const futuresSymbol = `${symbol.toUpperCase().replace('-', '')}_UMCBL`;
       const data = await this.request('GET', '/api/mix/v1/market/open-interest', {
         symbol: futuresSymbol,
       });
@@ -303,8 +456,7 @@ export class BitgetAdapter implements ExchangeConnector {
    */
   async getLiquidations(symbol: string, since?: number): Promise<{ longLiquidation24h: number; shortLiquidation24h: number; totalLiquidation24h: number } | null> {
     try {
-      // Bitget liquidation endpoint
-      const futuresSymbol = symbol.replace('USDT', 'USDT');
+      const futuresSymbol = `${symbol.toUpperCase().replace('-', '')}_UMCBL`;
       const endTime = since ? since + (24 * 60 * 60 * 1000) : Date.now();
       const startTime = since || (Date.now() - 24 * 60 * 60 * 1000);
       
@@ -377,6 +529,13 @@ export class BitgetAdapter implements ExchangeConnector {
       logger.error({ error }, 'Error placing Bitget order');
       throw error;
     }
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    if (ms <= 0) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
 

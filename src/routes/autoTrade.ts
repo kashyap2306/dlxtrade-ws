@@ -7,9 +7,15 @@ import { decrypt } from '../services/keyManager';
 import { BinanceAdapter } from '../services/binanceAdapter';
 import * as admin from 'firebase-admin';
 import { getFirebaseAdmin } from '../utils/firebase';
+import { autoTradeController } from '../services/autoTradeController';
 
 const toggleAutoTradeSchema = z.object({
   enabled: z.boolean(),
+});
+
+const globalToggleSchema = z.object({
+  paused: z.boolean(),
+  maxOrdersPerMinute: z.number().min(1).max(60).optional(),
 });
 
 /**
@@ -239,6 +245,52 @@ export async function autoTradeRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       logger.error({ err }, 'Error toggling auto-trade');
       return reply.code(500).send({ error: err.message || 'Error toggling auto-trade' });
+    }
+  });
+
+  fastify.post('/manual/confirm', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const result = await autoTradeController.confirmPending(user.uid);
+      return {
+        success: true,
+        orderId: result.orderId,
+        price: result.price,
+        filledQty: result.filledQty,
+      };
+    } catch (err: any) {
+      logger.error({ err: err.message }, 'Manual auto-trade confirmation failed');
+      return reply.code(400).send({
+        success: false,
+        error: err.message || 'Unable to confirm auto-trade',
+      });
+    }
+  });
+
+  fastify.post('/admin/global-toggle', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      if (user.role !== 'admin') {
+        return reply.code(403).send({ error: 'Admin privileges required' });
+      }
+      const body = globalToggleSchema.parse(request.body);
+      await firestoreAdapter.updateGlobalSettings({
+        autoTradePaused: body.paused,
+        autoTradeMaxOrdersPerMinute: body.maxOrdersPerMinute,
+      });
+      logger.info({ adminUid: user.uid, paused: body.paused }, 'Global auto-trade toggle updated');
+      return {
+        success: true,
+        paused: body.paused,
+        maxOrdersPerMinute: body.maxOrdersPerMinute,
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Failed to update global auto-trade flag');
+      return reply.code(400).send({ error: err.message || 'Unable to update global toggle' });
     }
   });
 }

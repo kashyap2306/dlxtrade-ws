@@ -6,6 +6,7 @@ import { BinanceAdapter } from '../services/binanceAdapter';
 import { logger } from '../utils/logger';
 import * as admin from 'firebase-admin';
 import { getFirebaseAdmin } from '../utils/firebase';
+import type { IntegrationDocument } from '../services/firestoreAdapter';
 
 // Validation schemas
 const integrationUpdateSchema = z.object({
@@ -25,19 +26,10 @@ const integrationDeleteSchema = z.object({
 });
 
 export async function integrationsRoutes(fastify: FastifyInstance) {
-  // Load all integrations for the user
-  fastify.get('/load', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = (request as any).user;
-    const integrations = await firestoreAdapter.getAllIntegrations(user.uid);
-
-    // Return integrations with masked keys
+  const formatIntegrations = (integrations: Record<string, IntegrationDocument>): Record<string, any> => {
     const result: Record<string, any> = {};
-    
-    // Group CoinAPI sub-types
     const coinApiTypes: Record<string, any> = {};
-    
+
     for (const [docName, integration] of Object.entries(integrations)) {
       if (docName.startsWith('coinapi_')) {
         const type = docName.replace('coinapi_', '');
@@ -57,13 +49,36 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         };
       }
     }
-    
-    // Add CoinAPI grouped data
+
     if (Object.keys(coinApiTypes).length > 0) {
       result.coinapi = coinApiTypes;
     }
 
     return result;
+  };
+
+  // Load all integrations for the user
+  fastify.get('/load', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = (request as any).user;
+    const integrations = await firestoreAdapter.getAllIntegrations(user.uid);
+
+    return formatIntegrations(integrations);
+  });
+
+  fastify.get('/fetch', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = (request as any).user;
+    const integrations = await firestoreAdapter.getAllIntegrations(user.uid);
+    const formatted = formatIntegrations(integrations);
+    const active = await firestoreAdapter.getActiveExchangeForUser(user.uid);
+
+    return {
+      activeExchange: active.name === 'fallback' ? null : active.name,
+      integrations: formatted,
+    };
   });
 
   // Update or create an integration  
@@ -217,165 +232,94 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
   fastify.post('/update', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    // Reuse the same logic as /save endpoint
     const user = (request as any).user;
     const uid = user.uid;
-
-    // Validate UID from auth (server-side only)
     if (!uid || typeof uid !== 'string') {
-      logger.error({ uid }, 'Invalid UID in request');
-      return reply.code(400).send({ error: 'Invalid user authentication' });
+      return reply.code(400).send({ success: false, message: 'Invalid user authentication' });
     }
-
     let body: any;
     try {
       body = integrationUpdateSchema.parse(request.body);
     } catch (err: any) {
-      logger.error({ err, uid, body: request.body }, 'Invalid payload in update integration');
-      return reply.code(400).send({ 
-        error: 'Invalid request data', 
-        details: err.errors || err.message 
-      });
+      return reply.code(400).send({ success: false, message: 'Invalid request data', details: err.errors || err.message });
     }
-
-    // Support both 'apiName' and 'exchange' fields - normalize to apiName
     if (body.exchange && !body.apiName) {
       body.apiName = body.exchange;
     }
-
-    // Validate that we have either apiName or exchange
     if (!body.apiName) {
-      logger.error({ body: request.body }, 'Missing apiName or exchange in update integration');
-      return reply.code(400).send({ 
-        error: 'Missing required field: apiName or exchange' 
-      });
+      return reply.code(400).send({ success: false, message: 'Missing required field: apiName or exchange' });
     }
-
-    // Handle CoinAPI sub-types
     let docName: string = body.apiName;
     if (body.apiName === 'coinapi' && body.apiType) {
-      // Accept both 'market' and 'coinapi_market' - normalize to 'coinapi_market'
       const t = body.apiType.startsWith('coinapi_') ? body.apiType : `coinapi_${body.apiType}`;
       docName = t;
     }
+    const exchangeApis = ['binance', 'bitget', 'bingx', 'weex', 'kucoin'];
+    const isExchangeApi = exchangeApis.includes(body.apiName);
 
-    // Validate required fields based on API type
-    if (body.apiName === 'binance' || body.apiName === 'bitget') {
-      if (body.enabled && (!body.apiKey || !body.secretKey)) {
-        return reply.code(400).send({ 
-          error: `${body.apiName} API requires both API key and secret key` 
-        });
-      }
-      // Bitget also needs passphrase
-      if (body.apiName === 'bitget' && body.enabled && !body.passphrase) {
-        return reply.code(400).send({ 
-          error: 'Bitget API requires passphrase in addition to API key and secret key' 
-        });
-      }
-    } else {
-      if (body.enabled && !body.apiKey) {
-        return reply.code(400).send({ 
-          error: `${body.apiName} API requires an API key` 
-        });
-      }
-    }
-
-    // If disabling, just update enabled status
     if (!body.enabled) {
-      try {
-        const result = await firestoreAdapter.saveIntegration(uid, docName, {
-          enabled: false,
-        });
-        return { 
-          ok: true, 
-          doc: result 
-        };
-      } catch (error: any) {
-        logger.error({ error: error.message, uid, docName }, 'Failed to disable integration');
-        return reply.code(500).send({ 
-          error: `Failed to disable integration: ${error.message}` 
-        });
-      }
-    }
-
-    // If enabling, require keys
-    const updateData: { enabled: boolean; apiKey?: string; secretKey?: string; apiType?: string } = {
-      enabled: true,
-    };
-
-    if (body.apiKey) {
-      updateData.apiKey = body.apiKey;
-    }
-    if (body.secretKey) {
-      updateData.secretKey = body.secretKey;
-    }
-    if (body.apiType) {
-      updateData.apiType = body.apiType;
-    }
-
-    try {
-      logger.info({ uid, integration: docName }, 'Updating integration');
-      
-      // Encrypt and save with post-verification
-      const result = await firestoreAdapter.saveIntegration(uid, docName, updateData);
-      
-      logger.info({ uid, path: result.path }, 'Write success');
-      
-      return { 
-        ok: true, 
-        doc: result 
-      };
-    } catch (error: any) {
-      // Generate error ID for correlation
-      const errorId = `err_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      
-      // Log error to admin/errors collection
-      try {
-        await firestoreAdapter.logError(errorId, {
-          uid,
-          path: `users/${uid}/integrations/${docName}`,
-          message: 'Failed to update integration',
-          error: error.message,
-          stack: error.stack,
-          metadata: { docName, apiName: body.apiName },
-        });
-      } catch (logError: any) {
-        logger.error({ logError: logError.message }, 'Failed to log error to admin/errors');
-      }
-
-      logger.error({ error: error.message, uid, docName, errorId }, 'Post-save failed');
-
-      // Check if it's an encryption error
-      if (error.message.includes('Encryption failed')) {
-        return reply.code(500).send({ 
-          error: 'Failed to encrypt API key', 
-          errorId 
-        });
-      }
-
-      // Retry once if post-save verification failed
-      if (error.message.includes('Post-save verification failed')) {
-        try {
-          logger.info({ uid, docName }, 'Retrying save after verification failure');
-          const retryResult = await firestoreAdapter.saveIntegration(uid, docName, updateData);
-          logger.info({ uid, path: retryResult.path }, 'Retry write success');
-          return { 
-            ok: true, 
-            doc: retryResult 
-          };
-        } catch (retryError: any) {
-          logger.error({ error: retryError.message, uid, docName, errorId }, 'Retry failed');
-          return reply.code(500).send({ 
-            error: 'Failed to save integration after retry', 
-            errorId 
-          });
-        }
-      }
-
-      return reply.code(500).send({ 
-        error: `Failed to update integration: ${error.message}`, 
-        errorId 
+      const result = await firestoreAdapter.saveIntegration(uid, docName, {
+        enabled: false,
+        ...(isExchangeApi ? { apiType: 'exchange' } : {}),
       });
+      const verification = await firestoreAdapter.getIntegration(uid, docName);
+      if (!verification) {
+        return reply.code(500).send({ success: false, message: 'Integration verification failed after disable' });
+      }
+      return reply.send({ success: true, message: 'Integration disabled successfully', doc: result });
+    }
+    // --- Unified live validation logic ---
+    try {
+      if (isExchangeApi) {
+        if (!body.apiKey || !body.secretKey) {
+          return reply.code(400).send({ success: false, message: `${body.apiName} API requires both API key and secret key` });
+        }
+        if ((body.apiName === 'bitget' || body.apiName === 'weex') && !body.passphrase) {
+          return reply.code(400).send({ success: false, message: `${body.apiName} API requires passphrase in addition to API key and secret key` });
+        }
+        // Instantiate correct adapter and call its validation endpoint
+        if (body.apiName === 'binance') {
+          const testAdapter = new BinanceAdapter(body.apiKey, body.secretKey, false); // use production, not testnet
+          await testAdapter.getAccount();
+        } else if (body.apiName === 'bitget') {
+          const { BitgetAdapter } = await import('../services/bitgetAdapter');
+          const adapter = new BitgetAdapter(body.apiKey, body.secretKey, body.passphrase, false);
+          await adapter.getAccount(); // implement getAccount to use /api/spot/v1/account/assets
+        } else if (body.apiName === 'bingx') {
+          const { BingXAdapter } = await import('../services/bingXAdapter');
+          const adapter = new BingXAdapter(body.apiKey, body.secretKey, false);
+          await adapter.getAccount(); // implement getAccount to use /api/v1/user/getBalance
+        } else if (body.apiName === 'weex') {
+          const { WeexAdapter } = await import('../services/weexAdapter');
+          const adapter = new WeexAdapter(body.apiKey, body.secretKey, body.passphrase, false);
+          await adapter.getAccount(); // implement getAccount to use /api/v1/private/account
+        } else if (body.apiName === 'kucoin') {
+          const { KucoinAdapter } = await import('../services/kucoinAdapter');
+          const adapter = new KucoinAdapter(body.apiKey, body.secretKey, body.passphrase);
+          await adapter.getAccount(); // implement getAccount to use /api/v1/accounts
+        }
+      } else if (!body.apiKey) {
+        return reply.code(400).send({ success: false, message: `${body.apiName} API requires an API key` });
+      }
+      // If validation succeeds, save integration
+      const updateData: { enabled: boolean; apiKey?: string; secretKey?: string; apiType?: string; passphrase?: string } = { enabled: true };
+      if (body.apiKey) updateData.apiKey = body.apiKey;
+      if (body.secretKey) updateData.secretKey = body.secretKey;
+      if (body.passphrase) updateData.passphrase = body.passphrase;
+      if (isExchangeApi) {
+        updateData.apiType = 'exchange';
+      } else if (body.apiType) {
+        updateData.apiType = body.apiType;
+      }
+      if (body.passphrase) updateData.passphrase = body.passphrase;
+      const result = await firestoreAdapter.saveIntegration(uid, docName, updateData);
+      const verification = await firestoreAdapter.getIntegration(uid, docName);
+      if (!verification) {
+        return reply.code(500).send({ success: false, message: 'Integration verification failed after save' });
+      }
+      return reply.send({ success: true, message: 'Integration updated successfully', doc: result });
+    } catch (validationErr: any) {
+      return reply.code(400).send({ success: false, message: 'Invalid API key or secret' });
     }
   });
 

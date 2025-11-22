@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { firestoreAdapter } from '../services/firestoreAdapter';
+import type { ExchangeName } from '../services/exchangeConnector';
 import { logger } from '../utils/logger';
 import { z } from 'zod';
 
@@ -156,10 +157,10 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
 
         case 'exchange': {
           // Test exchange API (Binance/Bitget/BingX/Weex) - use provided credentials or fallback to stored
-          let exchangeName = (body.exchange || 'binance') as 'binance' | 'bitget' | 'bingx' | 'weex';
+          let exchangeName = (body.exchange || 'binance') as ExchangeName;
           
           // Validate exchange name
-          const validExchanges = ['binance', 'bitget', 'bingx', 'weex'];
+          const validExchanges: ExchangeName[] = ['binance', 'bitget', 'bingx', 'weex'];
           if (!validExchanges.includes(exchangeName)) {
             return reply.code(400).send({
               error: `Invalid exchange: ${exchangeName}. Must be one of: ${validExchanges.join(', ')}`,
