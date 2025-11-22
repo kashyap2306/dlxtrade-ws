@@ -279,7 +279,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
       const uid = request.body?.uid || 'test-user-123';
       const timeframe = request.body?.timeframe || '5m';
 
-      console.log('🧪 [TEST RESEARCH] Starting test run for symbol:', symbol);
+      console.log('🧪 [TEST RESEARCH] Starting test run for symbol:', symbol, 'uid:', uid);
 
       const activeContext = await firestoreAdapter.getActiveExchangeForUser(uid);
       const results = await researchEngine.runResearch(
@@ -306,6 +306,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
       });
     }
   });
+
 
   // GET /api/research/live/:symbol - Get latest live analysis for a symbol with full structured data
   fastify.get('/live/:symbol', {

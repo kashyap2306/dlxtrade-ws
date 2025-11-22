@@ -17,7 +17,14 @@ export class LunarCrushAdapter {
   private httpClient: AxiosInstance;
 
   constructor(apiKey: string) {
-    this.apiKey = apiKey;
+    if (!apiKey || typeof apiKey !== 'string' || apiKey.trim() === '') {
+      logger.error('LunarCrush API key is missing or invalid');
+      throw new Error('LunarCrush API key is required');
+    }
+
+    this.apiKey = apiKey.trim();
+    logger.info({ apiKeyLength: this.apiKey.length, source: 'user_api_key' }, 'LunarCrush adapter initialized with user\'s API key');
+
     this.httpClient = axios.create({
       baseURL: this.baseUrl,
       timeout: 10000,

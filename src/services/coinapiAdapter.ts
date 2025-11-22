@@ -34,9 +34,16 @@ export class CoinAPIAdapter {
   private httpClient: AxiosInstance;
 
   constructor(apiKey: string, apiType: 'market' | 'flatfile' | 'exchangerate') {
-    this.apiKey = apiKey;
+    if (!apiKey || typeof apiKey !== 'string' || apiKey.trim() === '') {
+      logger.error({ apiType }, 'CoinAPI key is missing or invalid');
+      throw new Error(`CoinAPI ${apiType} API key is required`);
+    }
+
+    this.apiKey = apiKey.trim();
     this.apiType = apiType;
-    
+
+    logger.info({ apiType, apiKeyLength: this.apiKey.length, source: 'user_api_key' }, `CoinAPI ${apiType} adapter initialized with user's API key`);
+
     // Base URLs for different CoinAPI types
     if (apiType === 'market') {
       this.baseUrl = 'https://rest.coinapi.io/v1';
@@ -45,7 +52,7 @@ export class CoinAPIAdapter {
     } else {
       this.baseUrl = 'https://rest.coinapi.io/v1';
     }
-    
+
     this.httpClient = axios.create({
       baseURL: this.baseUrl,
       timeout: 10000,

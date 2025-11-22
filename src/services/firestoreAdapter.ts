@@ -518,13 +518,13 @@ export class FirestoreAdapter {
     for (const [apiName, integration] of Object.entries(allIntegrations)) {
       if (integration.enabled && integration.apiKey) {
         const decryptedApiKey = decrypt(integration.apiKey);
-        
+
         // Skip if decryption failed
         if (!decryptedApiKey) {
           logger.warn({ uid, apiName }, 'Failed to decrypt API key - skipping integration');
           continue;
         }
-        
+
         enabled[apiName] = {
           apiKey: decryptedApiKey,
           ...(integration.secretKey ? { secretKey: decrypt(integration.secretKey) || '' } : {}),
@@ -534,6 +534,50 @@ export class FirestoreAdapter {
 
     return enabled;
   }
+
+  /**
+   * Get user's provider API keys from integrations collection
+   * Reads from users/{uid}/integrations documents for cryptoquant, lunarcrush, coinapi_*
+   */
+  async getUserProviderApiKeys(uid: string): Promise<Record<string, { apiKey: string }>> {
+    try {
+      const integrations = await this.getAllIntegrations(uid);
+      const providerKeys: Record<string, { apiKey: string }> = {};
+
+      // Map integration document names to provider keys
+      const providerMappings = {
+        'cryptoquant': 'cryptoquant',
+        'lunarcrush': 'lunarcrush',
+        'coinapi_market': 'coinapi_market',
+        'coinapi_exchangerate': 'coinapi_exchangerate',
+        'coinapi_flatfile': 'coinapi_flatfile'
+      };
+
+      for (const [integrationName, providerField] of Object.entries(providerMappings)) {
+        const integration = integrations[integrationName];
+
+        if (integration && integration.enabled && integration.apiKey) {
+          const encryptedKey = integration.apiKey;
+          const decryptedKey = decrypt(encryptedKey);
+
+          if (decryptedKey) {
+            providerKeys[providerField] = { apiKey: decryptedKey };
+            logger.info({ uid, provider: integrationName }, `Successfully retrieved ${integrationName} API key`);
+          } else {
+            logger.warn({ uid, provider: integrationName }, `Failed to decrypt ${integrationName} API key`);
+          }
+        }
+      }
+
+      logger.info({ uid, providersFound: Object.keys(providerKeys) }, 'Retrieved provider API keys from integrations collection');
+      return providerKeys;
+
+    } catch (error: any) {
+      logger.error({ uid, error: error.message }, 'Error retrieving provider API keys from integrations collection');
+      throw error;
+    }
+  }
+
 
   /**
    * Returns { exchange, credentials } for the highest-priority enabled exchange for a user.

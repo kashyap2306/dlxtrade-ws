@@ -24,12 +24,12 @@ export class CryptoQuantAdapter {
       logger.warn({ apiKeyProvided: !!apiKey, apiKeyType: typeof apiKey }, 'CryptoQuant API key missing or invalid - adapter disabled');
       return; // Don't throw - just disable adapter
     }
-    
+
     this.apiKey = apiKey.trim();
-    
-    // Log API key status (for testing - shows if key is loaded, not the actual key)
-    logger.info({ apiKeyLoaded: true, apiKeyLength: this.apiKey.length }, 'CryptoQuant API key loaded');
-    
+
+    // Log that we're using a user's API key
+    logger.info({ apiKeyLoaded: true, apiKeyLength: this.apiKey.length, source: 'user_api_key' }, 'CryptoQuant adapter initialized with user\'s API key');
+
     this.httpClient = axios.create({
       baseURL: this.baseUrl,
       timeout: 10000,
@@ -37,8 +37,8 @@ export class CryptoQuantAdapter {
         'Authorization': `Bearer ${this.apiKey}`,
       },
     });
-    
-    logger.debug({ baseUrl: this.baseUrl, hasAuthHeader: true }, 'CryptoQuant HTTP client initialized');
+
+    logger.debug({ baseUrl: this.baseUrl, hasAuthHeader: true }, 'CryptoQuant HTTP client initialized with user credentials');
   }
 
   async getExchangeFlow(symbol: string): Promise<CryptoQuantData> {

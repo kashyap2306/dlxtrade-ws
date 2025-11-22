@@ -46,6 +46,7 @@ const integrationSubmitSchema = z.object({
   userId: z.string().trim().optional(),
 });
 
+
 const normalizeExchangeId = (value: string): string => {
   const normalized = value
     .trim()
@@ -1240,5 +1241,6 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       });
     }
   });
+
 }
 

@@ -711,30 +711,35 @@ export class ResearchEngine {
     cryptoAdapter: CryptoQuantAdapter;
     coinapiAdapters: Record<string, CoinAPIAdapter>;
   }> {
-    const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
+    // Get provider API keys from user's integrations
+    const providerKeys = await firestoreAdapter.getUserProviderApiKeys(uid);
     const missing: string[] = [];
 
     // REQUIRE all API keys - no fallbacks, no system keys
-    const lunarKey = integrations['lunarcrush']?.apiKey;
-    const cryptoKey = integrations['cryptoquant']?.apiKey;
+    const lunarKey = providerKeys['lunarcrush']?.apiKey;
+    const cryptoKey = providerKeys['cryptoquant']?.apiKey;
 
     if (!lunarKey) {
       missing.push('LunarCrush API key');
+      logger.warn({ uid }, 'Missing LunarCrush API key in user\'s integrations');
     }
     if (!cryptoKey) {
       missing.push('CryptoQuant API key');
+      logger.warn({ uid }, 'Missing CryptoQuant API key in user\'s integrations');
     }
 
     // Check for all required CoinAPI types
     const requiredCoinAPITypes = ['market', 'flatfile', 'exchangerate'];
     for (const apiType of requiredCoinAPITypes) {
-      const coinapiKey = integrations[`coinapi_${apiType}`]?.apiKey;
+      const coinapiKey = providerKeys[`coinapi_${apiType}`]?.apiKey;
       if (!coinapiKey) {
         missing.push(`CoinAPI ${apiType} API key`);
+        logger.warn({ uid, apiType }, `Missing CoinAPI ${apiType} API key in user's integrations`);
       }
     }
 
     if (missing.length > 0) {
+      logger.error({ uid, missing }, 'User is missing required provider API keys');
       throw new ResearchEngineError(
         `Missing required API keys: ${missing.join(', ')}. Please configure all provider API keys in your account settings.`,
         this.createErrorId(),
@@ -743,11 +748,18 @@ export class ResearchEngine {
       );
     }
 
+    logger.info({ uid }, 'All required provider API keys found, initializing adapters');
+
+    // Log successful key retrieval for debugging
+    logger.info({ uid, providers: Object.keys(providerKeys) }, 'Provider API keys successfully retrieved from integrations');
+
     // Create adapters - all keys are validated above
     let lunarAdapter: LunarCrushAdapter;
     try {
+      logger.debug({ uid }, 'Initializing LunarCrush adapter with user API key');
       lunarAdapter = new LunarCrushAdapter(lunarKey);
     } catch (error: any) {
+      logger.error({ uid, error: error.message }, 'Failed to initialize LunarCrush adapter');
       throw new ResearchEngineError(
         `Failed to initialize LunarCrush adapter: ${error.message}`,
         this.createErrorId(),
@@ -757,11 +769,14 @@ export class ResearchEngine {
 
     let cryptoAdapter: CryptoQuantAdapter;
     try {
+      logger.debug({ uid }, 'Initializing CryptoQuant adapter with user API key');
       cryptoAdapter = new CryptoQuantAdapter(cryptoKey);
       if (cryptoAdapter.disabled) {
         throw new Error('CryptoQuant adapter disabled due to invalid key');
       }
+      logger.info({ uid }, 'CryptoQuant adapter initialized successfully with user key');
     } catch (error: any) {
+      logger.error({ uid, error: error.message }, 'Failed to initialize CryptoQuant adapter');
       throw new ResearchEngineError(
         `Failed to initialize CryptoQuant adapter: ${error.message}`,
         this.createErrorId(),
@@ -772,10 +787,13 @@ export class ResearchEngine {
     // Create all required CoinAPI adapters
     const coinapiAdapters: Record<string, CoinAPIAdapter> = {};
     for (const apiType of requiredCoinAPITypes) {
-      const coinapiKey = integrations[`coinapi_${apiType}`]?.apiKey;
+      const coinapiKey = providerKeys[`coinapi_${apiType}`]?.apiKey;
       try {
+        logger.debug({ uid, apiType }, `Initializing CoinAPI ${apiType} adapter with user API key`);
         coinapiAdapters[apiType] = new CoinAPIAdapter(coinapiKey, apiType as any);
+        logger.info({ uid, apiType }, `CoinAPI ${apiType} adapter initialized successfully with user key`);
       } catch (error: any) {
+        logger.error({ uid, apiType, error: error.message }, `Failed to initialize CoinAPI ${apiType} adapter`);
         throw new ResearchEngineError(
           `Failed to initialize CoinAPI ${apiType} adapter: ${error.message}`,
           this.createErrorId(),
@@ -784,6 +802,7 @@ export class ResearchEngine {
       }
     }
 
+    logger.info({ uid }, 'All provider adapters initialized successfully with user API keys');
     return { lunarAdapter, cryptoAdapter, coinapiAdapters };
   }
 
