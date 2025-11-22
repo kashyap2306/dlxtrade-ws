@@ -1,4 +1,4 @@
-﻿import crypto from 'crypto';
+import crypto from 'crypto';
 import { logger } from '../utils/logger';
 import { firestoreAdapter, type ActiveExchangeContext } from './firestoreAdapter';
 import { LunarCrushAdapter } from './lunarcrushAdapter';
