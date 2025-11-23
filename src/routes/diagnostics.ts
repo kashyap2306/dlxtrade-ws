@@ -11,7 +11,7 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest<{ Body: { api: string; apiKey?: string; secretKey?: string; passphrase?: string; exchange?: string } }>, reply: FastifyReply) => {
     const user = (request as any).user;
     const body = z.object({
-      api: z.enum(['binance', 'coingecko', 'googlefinance', 'lunarcrush', 'cryptoquant', 'exchange']),
+      api: z.enum(['binance', 'coingecko', 'googlefinance', 'marketaux', 'cryptoquant', 'exchange']),
       apiKey: z.string().optional(),
       secretKey: z.string().optional(),
       passphrase: z.string().optional(),
@@ -122,43 +122,45 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
           }
         }
 
-        case 'lunarcrush': {
-          const apiKey = body.apiKey || integrations['lunarcrush']?.apiKey;
+        case 'marketaux': {
+          const apiKey = body.apiKey || integrations['marketaux']?.apiKey;
           if (!apiKey) {
             return {
-              apiName: 'lunarcrush',
+              apiName: 'marketaux',
               success: false,
               reachable: false,
               credentialsValid: false,
-              error: 'LunarCrush API key not configured',
+              error: 'MarketAux API key not configured',
               latency: Date.now() - startTime,
             };
           }
 
           try {
-            const { LunarCrushAdapter } = await import('../services/lunarcrushAdapter');
-            const adapter = new LunarCrushAdapter(apiKey);
-            const testData = await adapter.getCoinData('BTCUSDT');
+            const { MarketAuxAdapter } = await import('../services/MarketAuxAdapter');
+            const adapter = new MarketAuxAdapter(apiKey);
+            const testData = await adapter.getNewsSentiment('BTC');
             const latency = Date.now() - startTime;
 
             return {
-              apiName: 'lunarcrush',
+              apiName: 'marketaux',
               success: true,
               reachable: true,
               credentialsValid: true,
               latency,
               details: {
-                socialScore: testData.socialScore,
                 sentiment: testData.sentiment,
+                hypeScore: testData.hypeScore,
+                trendScore: testData.trendScore,
+                totalArticles: testData.totalArticles,
               },
             };
           } catch (err: any) {
             return {
-              apiName: 'lunarcrush',
+              apiName: 'marketaux',
               success: false,
               reachable: err.response?.status !== 404 && err.response?.status !== 403,
               credentialsValid: err.response?.status !== 401 && err.response?.status !== 403,
-              error: err.message || 'LunarCrush test failed',
+              error: err.message || 'MarketAux test failed',
               latency: Date.now() - startTime,
             };
           }

@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { logger } from '../utils/logger';
 import { firestoreAdapter, type ActiveExchangeContext } from './firestoreAdapter';
-import { LunarCrushAdapter } from './lunarcrushAdapter';
+import { MarketAuxAdapter, MarketAuxData } from './MarketAuxAdapter';
 import { CryptoCompareAdapter, type CryptoCompareData } from './cryptoCompareAdapter';
 // NOTE: CoinAPI replaced with free APIs
 import { BinancePublicAdapter } from './binancePublicAdapter';
@@ -298,7 +298,7 @@ export class ResearchEngine {
 
     // ALL 5 provider APIs are MANDATORY - buildProviderAdapters throws if any are missing
     // NOTE: CoinAPI replaced with free APIs
-    const { lunarAdapter, cryptoAdapter, binanceAdapter, coingeckoAdapter, googleFinanceAdapter } =
+    const { marketAuxAdapter, cryptoAdapter, binanceAdapter, coingeckoAdapter, googleFinanceAdapter } =
       await this.buildProviderAdapters(uid);
 
     // NOTE: Exchange API is now OPTIONAL for Deep Research - only required for Auto-Trade
@@ -312,7 +312,7 @@ export class ResearchEngine {
     const providersUsed = {
       userExchange: exchangeName, // Exchange connection is optional for research
       cryptocompare: true, // Now mandatory
-      lunarcrush: true, // Now mandatory
+      marketaux: true, // Now mandatory
       binance: true, // Always available (free API)
       coingecko: true, // Always available (free API)
       googlefinance: true, // Always available (free API)
@@ -493,15 +493,24 @@ export class ResearchEngine {
         });
       }
 
-      // LunarCrush is MANDATORY - adapter is guaranteed to exist
-      const sentimentPayload = await runApiCall<SentimentData>(
-        'LunarCrush Sentiment',
+      // MarketAux is MANDATORY - adapter is guaranteed to exist
+      const marketAuxData = await runApiCall<MarketAuxData>(
+        'MarketAux Sentiment',
         () => {
           const baseSymbol = normalizedSymbol.replace(/USDT$/i, '').replace(/USD$/i, '');
-          return lunarAdapter.getSentiment(baseSymbol);
+          return marketAuxAdapter.getNewsSentiment(baseSymbol);
         },
-        { provider: 'LunarCrush' }
+        { provider: 'MarketAux' }
       );
+
+      // Convert MarketAuxData to SentimentData format
+      const sentimentPayload: SentimentData | undefined = marketAuxData ? {
+        sentiment: marketAuxData.sentiment,
+        socialScore: marketAuxData.hypeScore,
+        socialVolume: marketAuxData.totalArticles,
+        timestamp: Date.now(),
+      } : undefined;
+
       const sentiment = analyzeSentiment(sentimentPayload || undefined);
 
       // Global Intelligence: Free API data (Binance, CoinGecko, Google Finance)
@@ -767,7 +776,7 @@ export class ResearchEngine {
   }
 
   private async buildProviderAdapters(uid: string): Promise<{
-    lunarAdapter: LunarCrushAdapter;
+    marketAuxAdapter: MarketAuxAdapter;
     cryptoAdapter: CryptoCompareAdapter;
     // Free APIs - no API keys required
     binanceAdapter: any;
@@ -779,14 +788,14 @@ export class ResearchEngine {
     const missing: string[] = [];
 
     // MANDATORY API keys - Deep Research requires all 5 providers
-    const lunarKey = providerKeys['lunarcrush']?.apiKey;
+    const marketAuxKey = providerKeys['marketaux']?.apiKey;
     const cryptoKey = providerKeys['cryptocompare']?.apiKey;
 
     // Check for missing mandatory API keys
-    if (!lunarKey) {
-      logger.error({ uid }, 'LunarCrush API key required for Deep Research but not configured');
+    if (!marketAuxKey) {
+      logger.error({ uid }, 'MarketAux API key required for Deep Research but not configured');
       throw new ResearchEngineError(
-        'LunarCrush API key required for Deep Research.',
+        'MarketAux API key required for Deep Research.',
         this.createErrorId(),
         400
       );
@@ -807,16 +816,16 @@ export class ResearchEngine {
     // Log successful key retrieval for debugging
     logger.info({ uid, providers: Object.keys(providerKeys) }, 'Provider API keys successfully retrieved from integrations');
 
-    // Create adapters - LunarCrush and CryptoQuant are MANDATORY
-    let lunarAdapter: LunarCrushAdapter;
+    // Create adapters - MarketAux and CryptoQuant are MANDATORY
+    let marketAuxAdapter: MarketAuxAdapter;
     try {
-      logger.debug({ uid }, 'Initializing LunarCrush adapter with user API key');
-      lunarAdapter = new LunarCrushAdapter(lunarKey);
-      logger.info({ uid }, 'LunarCrush adapter initialized successfully');
+      logger.debug({ uid }, 'Initializing MarketAux adapter with user API key');
+      marketAuxAdapter = new MarketAuxAdapter(marketAuxKey);
+      logger.info({ uid }, 'MarketAux adapter initialized successfully');
     } catch (error: any) {
-      logger.error({ uid, error: error.message }, 'Failed to initialize LunarCrush adapter');
+      logger.error({ uid, error: error.message }, 'Failed to initialize MarketAux adapter');
       throw new ResearchEngineError(
-        'Failed to initialize LunarCrush adapter for Deep Research.',
+        'Failed to initialize MarketAux adapter for Deep Research.',
         this.createErrorId(),
         400
       );
@@ -881,7 +890,7 @@ export class ResearchEngine {
     }
 
     logger.info({ uid }, 'All provider adapters initialized successfully (including free APIs)');
-    return { lunarAdapter, cryptoAdapter, binanceAdapter, coingeckoAdapter, googleFinanceAdapter };
+    return { marketAuxAdapter, cryptoAdapter, binanceAdapter, coingeckoAdapter, googleFinanceAdapter };
   }
 
   private async resolveContext(uid: string): Promise<ActiveExchangeContext | null> {

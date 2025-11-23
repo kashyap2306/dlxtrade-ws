@@ -333,7 +333,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
 
       // Separate real exchanges from data providers
       const realExchanges = firestoreAdapter.getRealExchanges();
-      const dataProviders = ['binance', 'coingecko', 'googlefinance', 'lunarcrush', 'cryptoquant'];
+      const dataProviders = ['binance', 'coingecko', 'googlefinance', 'marketaux', 'cryptoquant'];
 
       // Data providers section: always show all 5 (defaults + stored configs)
       const providerIntegrations = Object.fromEntries(
@@ -968,30 +968,30 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
             apiName: 'cryptoquant',
           });
         }
-      } else if (body.apiName === 'lunarcrush') {
+      } else if (body.apiName === 'marketaux') {
         if (!body.apiKey) {
           return reply.code(400).send({
             valid: false,
-            error: 'LunarCrush API requires an API key',
-            apiName: 'lunarcrush',
+            error: 'MarketAux API requires an API key',
+            apiName: 'marketaux',
           });
         }
 
         try {
-          const { LunarCrushAdapter } = await import('../services/lunarcrushAdapter');
-          const adapter = new LunarCrushAdapter(body.apiKey);
+          const { MarketAuxAdapter } = await import('../services/MarketAuxAdapter');
+          const adapter = new MarketAuxAdapter(body.apiKey);
           // Test with a simple call
-          await adapter.getCoinData('BTCUSDT');
-          
+          await adapter.getNewsSentiment('BTC');
+
           return {
             valid: true,
-            apiName: 'lunarcrush',
+            apiName: 'marketaux',
           };
         } catch (error: any) {
           return reply.code(400).send({
             valid: false,
-            error: error.message || 'LunarCrush API validation failed',
-            apiName: 'lunarcrush',
+            error: error.message || 'MarketAux API validation failed',
+            apiName: 'marketaux',
           });
         }
       // NOTE: CoinAPI is no longer supported - replaced with free APIs
@@ -1085,7 +1085,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
 
       // Define which integrations are exchanges vs providers
       const exchangeIntegrations = ['binance', 'bitget', 'bingx', 'weex', 'kucoin'];
-      const providerIntegrations = ['lunarcrush', 'cryptoquant'];
+      const providerIntegrations = ['marketaux', 'cryptoquant'];
 
       // Process exchange integrations
       for (const exchangeName of exchangeIntegrations) {
@@ -1196,11 +1196,11 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
 
           // Test provider connection by making actual API call
           try {
-            if (providerName === 'lunarcrush') {
-              // Test LunarCrush by calling getSentiment
-              const { LunarCrushAdapter } = await import('../services/lunarcrushAdapter');
-              const adapter = new LunarCrushAdapter(apiKey);
-              await adapter.getSentiment('BTC'); // Test with BTC
+            if (providerName === 'marketaux') {
+              // Test MarketAux by calling getNewsSentiment
+              const { MarketAuxAdapter } = await import('../services/MarketAuxAdapter');
+              const adapter = new MarketAuxAdapter(apiKey);
+              await adapter.getNewsSentiment('BTC'); // Test with BTC
               statusResults[providerName] = {
                 isConnected: true,
                 exchangeName: integration.exchangeName || providerName,

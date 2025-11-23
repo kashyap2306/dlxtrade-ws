@@ -10,7 +10,7 @@ console.log('Testing all critical functionality in production environment\n');
 
 const testResults = {
   '1-valid-api-keys': { status: 'PENDING', details: [] },
-  '2-missing-lunarcrush': { status: 'PENDING', details: [] },
+  '2-missing-marketaux': { status: 'PENDING', details: [] },
   '3-missing-cryptoquant': { status: 'PENDING', details: [] },
   '4-no-500-errors': { status: 'PENDING', details: [] },
   '5-fallback-behavior': { status: 'PENDING', details: [] },
@@ -105,9 +105,9 @@ async function testValidApiKeys() {
   }
 }
 
-// Test 2: Missing LunarCrush key (should return 400)
-async function testMissingLunarCrush() {
-  console.log('🧪 Test 2: Missing LunarCrush API key');
+// Test 2: Missing MarketAux key (should return 400)
+async function testMissingMarketAux() {
+  console.log('🧪 Test 2: Missing MarketAux API key');
 
   try {
     const response = await makeRequest('/api/research/manual', 'POST', {
@@ -120,8 +120,8 @@ async function testMissingLunarCrush() {
       return { status: 'FAIL', details: [`Request error: ${response.error}`] };
     }
 
-    if (response.status === 400 && response.data?.message?.includes('LunarCrush')) {
-      console.log('✅ PASS: Clean 400 error for missing LunarCrush key');
+    if (response.status === 400 && response.data?.message?.includes('MarketAux')) {
+      console.log('✅ PASS: Clean 400 error for missing MarketAux key');
       return { status: 'PASS', details: [`Status: ${response.status}`, `Message: "${response.data.message}"`] };
     }
 
@@ -130,8 +130,8 @@ async function testMissingLunarCrush() {
       return { status: 'FAIL', details: [`Got 5xx error: ${response.status}`] };
     }
 
-    console.log('⚠️  INFO: Different response (may indicate LunarCrush key is configured)');
-    return { status: 'INFO', details: [`Status: ${response.status}`, 'May have LunarCrush key configured'] };
+    console.log('⚠️  INFO: Different response (may indicate MarketAux key is configured)');
+    return { status: 'INFO', details: [`Status: ${response.status}`, 'May have MarketAux key configured'] };
 
   } catch (error) {
     console.log('❌ FAIL: Test failed');
@@ -270,10 +270,10 @@ async function testFallbackBehavior() {
 
 // Test 6: DNS retry behavior verification
 async function testDnsRetryBehavior() {
-  console.log('🧪 Test 6: Verify DNS retry behavior for LunarCrush');
+  console.log('🧪 Test 6: Verify DNS retry behavior for MarketAux');
 
   const fs = require('fs');
-  const lunarcrushPath = './src/services/lunarcrushAdapter.ts';
+  const marketauxPath = './src/services/MarketAuxAdapter.ts';
 
   if (!fs.existsSync(lunarcrushPath)) {
     console.log('⚠️  INFO: Cannot verify DNS retry behavior (source not available)');
@@ -346,7 +346,7 @@ async function testProviderExecutionOrder() {
     'binanceAdapter.getTicker',           // 2. Binance market data
     'googleFinanceAdapter.getExchangeRate', // 3. Google Finance
     'coingeckoAdapter.getHistoricalData', // 4. CoinGecko
-    'lunarAdapter.getSentiment',          // 5. LunarCrush
+    'marketAuxAdapter.getNewsSentiment',  // 5. MarketAux
     'cryptoAdapter.getExchangeFlow',      // 6. CryptoQuant flow
     'cryptoAdapter.getReserves',          // 7. CryptoQuant reserves
     'cryptoAdapter.getOnChainMetrics',    // 8. CryptoQuant on-chain
@@ -373,7 +373,7 @@ async function runAllTests() {
 
   // Run all tests
   testResults['1-valid-api-keys'] = await testValidApiKeys();
-  testResults['2-missing-lunarcrush'] = await testMissingLunarCrush();
+  testResults['2-missing-marketaux'] = await testMissingMarketAux();
   testResults['3-missing-cryptoquant'] = await testMissingCryptoQuant();
   testResults['4-no-500-errors'] = await testNo500Errors();
   testResults['5-fallback-behavior'] = await testFallbackBehavior();
