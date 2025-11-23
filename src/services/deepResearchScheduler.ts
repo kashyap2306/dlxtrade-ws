@@ -173,13 +173,11 @@ export class DeepResearchScheduler {
 
     this.isRunning = true;
     
-    logger.info({ 
+    logger.info({
       instanceId: this.instanceId,
       intervals: this.intervals,
       mode: this.mode,
       topN: this.topN,
-      autoTradeThreshold: this.autoTradeThreshold,
-      autoTradeEnabled: this.autoTradeEnabled,
     }, 'Starting Deep Research scheduler with configured intervals');
     
     // Create intervals for each configured interval
@@ -634,11 +632,9 @@ export class DeepResearchScheduler {
       symbol,
       confidence: result.confidence,
       accuracy: result.accuracy,
-      threshold: this.autoTradeThreshold,
-      autoTradeEnabled: this.autoTradeEnabled,
       side: result.side,
-      willTriggerAutoTrade: this.autoTradeEnabled && result.confidence >= this.autoTradeThreshold && result.side !== 'NEUTRAL',
-    }, 'Research result obtained');
+      autoTradeDisabled: 'Auto-trade disabled for scheduled research',
+    }, 'Research result obtained (auto-trade disabled for scheduled research)');
 
     // Check if auto-trade should execute and add decision to result
     // CRITICAL: Use configurable threshold (default 75%), NOT hardcoded 65%
@@ -655,7 +651,7 @@ export class DeepResearchScheduler {
     const autoTradeDecision = {
       triggered: autoTradeTriggered,
       confidence: result.confidence,
-      threshold: this.autoTradeThreshold,
+      threshold: 75, // Minimum threshold (not used for scheduled research)
       reason: 'Auto-trade disabled for scheduled research (exchange API required)',
     };
     
@@ -671,9 +667,7 @@ export class DeepResearchScheduler {
     logger.info({
       instanceId: this.instanceId,
       symbol,
-      autoTradeEnabled: this.autoTradeEnabled,
       confidence: result.confidence,
-      threshold: this.autoTradeThreshold,
       side: result.side,
       status: result.status,
       reason: autoTradeDecision.reason,
@@ -687,7 +681,8 @@ export class DeepResearchScheduler {
         result,
         timestamp: admin.firestore.Timestamp.now(),
         instanceId: this.instanceId,
-        exchangesUsed: allExchanges.map(e => e.exchange),
+        // Scheduled research uses only free APIs (no exchanges)
+        apisUsed: ['binance', 'coingecko', 'googlefinance', 'lunarcrush', 'cryptoquant'],
       }, { merge: true });
       
       logger.debug({ instanceId: this.instanceId, symbol }, 'Research result saved to Firestore');

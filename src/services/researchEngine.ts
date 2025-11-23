@@ -4,7 +4,7 @@ import { firestoreAdapter, type ActiveExchangeContext } from './firestoreAdapter
 import { LunarCrushAdapter } from './lunarcrushAdapter';
 import { CryptoQuantAdapter, type CryptoQuantData } from './cryptoquantAdapter';
 // NOTE: CoinAPI replaced with free APIs
-import { BinanceAdapter } from './binanceAdapter';
+import { BinancePublicAdapter } from './binancePublicAdapter';
 import { CoinGeckoAdapter } from './coingeckoAdapter';
 import { GoogleFinanceAdapter } from './googleFinanceAdapter';
 import { analyzeRSI } from './strategies/rsiStrategy';
@@ -317,11 +317,32 @@ export class ResearchEngine {
     };
 
     try {
-      const candles = await runApiCall<NormalizedCandle[]>(
-        `${context.name.toUpperCase()} Candles (${normalizedTimeframe})`,
-        () => this.fetchExchangeCandles(userExchangeAdapter!, normalizedSymbol, normalizedTimeframe, 500, apiCalls),
-        { provider: context.name }
-      );
+      // Use exchange candles if available, otherwise fall back to Binance free API
+      let candles: NormalizedCandle[];
+      if (userExchangeAdapter && context) {
+        candles = await runApiCall<NormalizedCandle[]>(
+          `${context.name.toUpperCase()} Candles (${normalizedTimeframe})`,
+          () => this.fetchExchangeCandles(userExchangeAdapter!, normalizedSymbol, normalizedTimeframe, 500, apiCalls),
+          { provider: context.name }
+        );
+      } else {
+        // Use Binance free API for candles when no exchange API is configured
+        const binanceCandles = await runApiCall<Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }>>(
+          `Binance Candles (${normalizedTimeframe})`,
+          () => binanceAdapter.getKlines(normalizedSymbol, normalizedTimeframe, 500),
+          { provider: 'Binance' }
+        );
+
+        // Convert Binance format to NormalizedCandle format
+        candles = binanceCandles.map(candle => ({
+          timestamp: candle.time,
+          open: candle.open,
+          high: candle.high,
+          low: candle.low,
+          close: candle.close,
+          volume: candle.volume,
+        }));
+      }
       if (!candles || candles.length === 0) {
         throw new ResearchEngineError(`Failed to fetch primary candles from ${context.name}`, this.createErrorId(), 502);
       }
@@ -452,11 +473,18 @@ export class ResearchEngine {
       const sentiment = analyzeSentiment(sentimentPayload);
 
       // Global Intelligence: Free API data (Binance, CoinGecko, Google Finance)
-      const binanceMarketData = await runApiCall<{ price?: number; volume24h?: number; priceChangePercent24h?: number }>(
+      const binanceTickerData = await runApiCall<any>(
         'Binance Market Data',
-        () => binanceAdapter.getMarketData(normalizedSymbol),
+        () => binanceAdapter.getTicker(normalizedSymbol),
         { provider: 'Binance' }
       );
+
+      // Transform Binance ticker data to expected format
+      const binanceMarketData = binanceTickerData ? {
+        price: parseFloat(binanceTickerData.lastPrice || '0'),
+        volume24h: parseFloat(binanceTickerData.volume || '0'),
+        priceChangePercent24h: parseFloat(binanceTickerData.priceChangePercent || '0'),
+      } : {};
 
       const googleFinanceExchangeRate = await runApiCall<{ exchangeRate?: number }>(
         'Google Finance Exchange Rate',
@@ -709,9 +737,9 @@ export class ResearchEngine {
     lunarAdapter: LunarCrushAdapter;
     cryptoAdapter: CryptoQuantAdapter;
     // Free APIs - no API keys required
-    binanceAdapter: BinanceAdapter;
-    coingeckoAdapter: CoinGeckoAdapter;
-    googleFinanceAdapter: GoogleFinanceAdapter;
+    binanceAdapter: any;
+    coingeckoAdapter: any;
+    googleFinanceAdapter: any;
   }> {
     // Get provider API keys from user's integrations
     const providerKeys = await firestoreAdapter.getUserProviderApiKeys(uid);
@@ -779,14 +807,14 @@ export class ResearchEngine {
     }
 
     // Create free API adapters - no API keys required
-    let binanceAdapter: BinanceAdapter;
-    let coingeckoAdapter: CoinGeckoAdapter;
-    let googleFinanceAdapter: GoogleFinanceAdapter;
+    let binanceAdapter: BinancePublicAdapter;
+    let coingeckoAdapter: any;
+    let googleFinanceAdapter: any;
 
     try {
-      logger.debug({ uid }, 'Initializing Binance adapter (free API)');
-      binanceAdapter = new BinanceAdapter();
-      logger.info({ uid }, 'Binance adapter initialized successfully');
+      logger.debug({ uid }, 'Initializing Binance public adapter (free API)');
+      binanceAdapter = new BinancePublicAdapter();
+      logger.info({ uid }, 'Binance public adapter initialized successfully');
     } catch (error: any) {
       logger.error({ uid, error: error.message }, 'Failed to initialize Binance adapter');
       throw new ResearchEngineError(
@@ -798,7 +826,7 @@ export class ResearchEngine {
 
     try {
       logger.debug({ uid }, 'Initializing CoinGecko adapter (free API)');
-      coingeckoAdapter = new CoinGeckoAdapter();
+      coingeckoAdapter = CoinGeckoAdapter;
       logger.info({ uid }, 'CoinGecko adapter initialized successfully');
     } catch (error: any) {
       logger.error({ uid, error: error.message }, 'Failed to initialize CoinGecko adapter');
@@ -811,7 +839,7 @@ export class ResearchEngine {
 
     try {
       logger.debug({ uid }, 'Initializing Google Finance adapter (free API)');
-      googleFinanceAdapter = new GoogleFinanceAdapter();
+      googleFinanceAdapter = GoogleFinanceAdapter;
       logger.info({ uid }, 'Google Finance adapter initialized successfully');
     } catch (error: any) {
       logger.error({ uid, error: error.message }, 'Failed to initialize Google Finance adapter');
