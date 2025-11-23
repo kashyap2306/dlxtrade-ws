@@ -105,6 +105,15 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(fastifyWebsocket);
   console.log('WS ROUTE READY');
 
+  // HEALTH CHECK ENDPOINTS - MUST LOAD FIRST (before any scheduled jobs)
+  // API health endpoint with uptime (simple, no database checks)
+  app.get('/api/health', async (request, reply) => {
+    return {
+      status: 'ok',
+      uptime: process.uptime()
+    };
+  });
+
   // Routes
   // Debug: Verify routes are loaded
   console.log('Loaded agentsRoutes:', typeof agentsRoutes, agentsRoutes ? 'OK' : 'UNDEFINED');
@@ -141,6 +150,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(diagnosticsRoutes, { prefix: '/api/diagnostics' });
 
   console.log('✅ All routes registered:');
+  console.log('  - / (Root health check - returns "OK")');
+  console.log('  - /api/health (Health check with uptime)');
   console.log('  - /api/auth/*');
   console.log('  - /api/admin/*');
   console.log('  - /api/orders');
@@ -165,21 +176,21 @@ export async function buildApp(): Promise<FastifyInstance> {
   console.log('  - /api/wallet/*');
   console.log('  - /api/chatbot');
   console.log('  - /api/diagnostics/*');
-  console.log('  - /api/health');
-  console.log('  - /api/metrics');
+  console.log('  - /api/test (Legacy health check)');
   console.log('  - /ws (WebSocket)');
   console.log('  - /ws/admin (Admin WebSocket)');
-  console.log('  - / (Root WebSocket - unauthenticated, for Render WS health)');
+  console.log('  - /ws/health (Health WebSocket - unauthenticated, for Render WS health)');
+
+  // Root endpoint for basic health check (registered last to avoid conflicts)
+  app.get('/', async (request, reply) => {
+    return 'OK';
+  });
 
   // Test route to verify server is running (no auth required)
   app.get('/api/test', async (request, reply) => {
     return { status: 'ok', message: 'Backend is running', timestamp: new Date().toISOString() };
   });
 
-  // Health check route (no auth required)
-  app.get('/health', async (request, reply) => {
-    return { status: 'healthy', timestamp: new Date().toISOString() };
-  });
 
   // Admin WebSocket endpoint for real-time admin events
   app.get('/ws/admin', { websocket: true }, async (connection, req) => {
@@ -234,14 +245,14 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
 
   // Root WebSocket endpoint: allow plain connections without auth (Render compatibility/health)
-  app.get('/', { websocket: true }, async (connection, req) => {
-    logger.info('Root WebSocket client connected (no auth)');
+  app.get('/ws/health', { websocket: true }, async (connection, req) => {
+    logger.info('Health WebSocket client connected (no auth)');
     try {
       connection.socket.send(JSON.stringify({ type: 'welcome', data: 'ok' }));
     } catch {}
 
     connection.socket.on('close', () => {
-      logger.info('Root WebSocket client disconnected');
+      logger.info('Health WebSocket client disconnected');
     });
   });
 
