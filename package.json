@@ -200,6 +200,7 @@
     "find-up": "^5.0.0",
     "firebase": "^10.14.1",
     "firebase-admin": "^12.7.0",
+    "firebase-functions": "^7.0.0",
     "flat-cache": "^3.2.0",
     "flatted": "^3.3.3",
     "follow-redirects": "^1.15.11",

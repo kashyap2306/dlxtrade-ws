@@ -33,6 +33,7 @@ export interface ExchangeConnector {
     quantity: number;
     price?: number;
   }): Promise<any>;
+  cancelOrder?(symbol: string, orderId: string, clientOrderId?: string): Promise<any>;
 }
 
 export class ExchangeConnectorFactory {

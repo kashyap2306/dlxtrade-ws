@@ -993,8 +993,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         // Free API - no key required, just test connectivity
         try {
           const { CoinGeckoAdapter } = await import('../services/coingeckoAdapter');
-          const adapter = new CoinGeckoAdapter();
-          await adapter.getHistoricalData('BTCUSDT', 1);
+          await CoinGeckoAdapter.getHistoricalData('BTCUSDT', 1);
 
           return {
             valid: true,
@@ -1012,8 +1011,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         // Free API - no key required, just test connectivity
         try {
           const { GoogleFinanceAdapter } = await import('../services/googleFinanceAdapter');
-          const adapter = new GoogleFinanceAdapter();
-          await adapter.getExchangeRate('USD', 'INR');
+          await GoogleFinanceAdapter.getExchangeRate('USD', 'INR');
 
           return {
             valid: true,
