@@ -296,7 +296,7 @@ export class ResearchEngine {
     // NOTE: Exchange API is now optional for Deep Research
     const userExchangeAdapter = context?.adapter || null;
 
-    // ALL provider APIs are required - buildProviderAdapters throws if any are missing
+    // ALL 5 provider APIs are MANDATORY - buildProviderAdapters throws if any are missing
     // NOTE: CoinAPI replaced with free APIs
     const { lunarAdapter, cryptoAdapter, binanceAdapter, coingeckoAdapter, googleFinanceAdapter } =
       await this.buildProviderAdapters(uid);
@@ -305,11 +305,14 @@ export class ResearchEngine {
     // Deep Research works with LunarCrush + CryptoQuant + Free APIs (Binance, CoinGecko, Google Finance)
     // Exchange API is only needed for actual trading execution, not for research analysis
 
-    // Providers available - some are optional
+    // Safe exchange name handling
+    const exchangeName = context?.name ?? "no-exchange";
+
+    // All 5 providers are MANDATORY for Deep Research
     const providersUsed = {
-      userExchange: context?.name || 'none', // Exchange API is optional for Deep Research
-      cryptoquant: cryptoAdapter !== null,
-      lunarcrush: lunarAdapter !== null,
+      userExchange: exchangeName, // Exchange connection is optional for research
+      cryptoquant: true, // Now mandatory
+      lunarcrush: true, // Now mandatory
       binance: true, // Always available (free API)
       coingecko: true, // Always available (free API)
       googlefinance: true, // Always available (free API)
@@ -318,11 +321,12 @@ export class ResearchEngine {
     try {
       // Use exchange candles if available, otherwise fall back to Binance free API
       let candles: NormalizedCandle[];
+
       if (userExchangeAdapter && context) {
         candles = await runApiCall<NormalizedCandle[]>(
-          `${context.name.toUpperCase()} Candles (${normalizedTimeframe})`,
+          `${exchangeName.toUpperCase()} Candles (${normalizedTimeframe})`,
           () => this.fetchExchangeCandles(userExchangeAdapter!, normalizedSymbol, normalizedTimeframe, 500, apiCalls),
-          { provider: context.name }
+          { provider: exchangeName }
         );
       } else {
         // Use Binance free API for candles when no exchange API is configured
@@ -343,7 +347,7 @@ export class ResearchEngine {
         }));
       }
       if (!candles || candles.length === 0) {
-        throw new ResearchEngineError(`Failed to fetch primary candles from ${context.name}`, this.createErrorId(), 502);
+        throw new ResearchEngineError(`Failed to fetch primary candles from ${exchangeName}`, this.createErrorId(), 502);
       }
       this.ensureCandleCoverage(candles);
 
@@ -358,7 +362,7 @@ export class ResearchEngine {
           try {
             return await this.fetchExchangeCandles(userExchangeAdapter!, normalizedSymbol, tf, 500, apiCalls);
           } catch (error: any) {
-            logger.warn({ symbol: normalizedSymbol, timeframe: tf, error: error.message }, `${context.name} timeframe fetch failed`);
+            logger.warn({ symbol: normalizedSymbol, timeframe: tf, error: error.message }, `${exchangeName} timeframe fetch failed`);
             return null;
           }
         },
@@ -368,19 +372,19 @@ export class ResearchEngine {
       const priceMomentum = this.calculatePriceMomentum(candles);
 
       const rawOrderbook = await runApiCall<Orderbook>(
-        `${context.name.toUpperCase()} Orderbook`,
+        `${exchangeName.toUpperCase()} Orderbook`,
         async () => {
-          apiCalls.push(`${context.name}:orderbook`);
+          apiCalls.push(`${exchangeName}:orderbook`);
           const orderbookResponse = await userExchangeAdapter!.getOrderbook(normalizedSymbol, 20);
           if (!orderbookResponse) {
-            throw new Error(`${context.name} returned empty orderbook`);
+            throw new Error(`${exchangeName} returned empty orderbook`);
           }
           return orderbookResponse;
         },
-        { provider: context.name }
+        { provider: exchangeName }
       );
       if (!rawOrderbook) {
-        throw new ResearchEngineError(`Failed to fetch orderbook data from ${context.name}`, this.createErrorId(), 502);
+        throw new ResearchEngineError(`Failed to fetch orderbook data from ${exchangeName}`, this.createErrorId(), 502);
       }
       const orderbook: Orderbook = {
         symbol: normalizedSymbol,
@@ -389,7 +393,7 @@ export class ResearchEngine {
         lastUpdateId: Date.now(),
       };
       const exchangeOrderbooks: Array<{ exchange: string; bidsCount: number; asksCount: number }> = [
-        { exchange: context.name, bidsCount: orderbook.bids.length, asksCount: orderbook.asks.length },
+        { exchange: exchangeName, bidsCount: orderbook.bids.length, asksCount: orderbook.asks.length },
       ];
 
       const liquidity = analyzeLiquidity(orderbook, 5);
@@ -397,30 +401,24 @@ export class ResearchEngine {
       const microSignals = this.buildMicroSignals(liquidity, priceMomentum);
       recordApiCall({ apiName: 'Microstructure Module', status: 'SUCCESS' });
 
-      // CryptoQuant is optional - only call if adapter exists
-      let cryptoQuantFlow: CryptoQuantData | null = null;
-      let cryptoQuantReserves: { exchangeReserves?: number; reserveChange24h?: number } | null = null;
-      let cryptoQuantOnChain: CryptoQuantData | null = null;
+      // CryptoQuant is MANDATORY - all adapters are guaranteed to exist
+      const cryptoQuantFlow = await runApiCall<CryptoQuantData>(
+        'CryptoQuant Exchange Flow',
+        () => cryptoAdapter.getExchangeFlow(normalizedSymbol),
+        { provider: 'CryptoQuant' }
+      );
 
-      if (cryptoAdapter) {
-        cryptoQuantFlow = await runApiCall<CryptoQuantData>(
-          'CryptoQuant Exchange Flow',
-          () => cryptoAdapter.getExchangeFlow(normalizedSymbol),
-          { provider: 'CryptoQuant' }
-        );
+      const cryptoQuantReserves = await runApiCall<{ exchangeReserves?: number; reserveChange24h?: number }>(
+        'CryptoQuant Reserves',
+        () => cryptoAdapter.getReserves(normalizedSymbol),
+        { provider: 'CryptoQuant' }
+      );
 
-        cryptoQuantReserves = await runApiCall<{ exchangeReserves?: number; reserveChange24h?: number }>(
-          'CryptoQuant Reserves',
-          () => cryptoAdapter.getReserves(normalizedSymbol),
-          { provider: 'CryptoQuant' }
-        );
-
-        cryptoQuantOnChain = await runApiCall<CryptoQuantData>(
-          'CryptoQuant On-Chain Metrics',
-          () => cryptoAdapter.getOnChainMetrics(normalizedSymbol),
-          { provider: 'CryptoQuant' }
-        );
-      }
+      const cryptoQuantOnChain = await runApiCall<CryptoQuantData>(
+        'CryptoQuant On-Chain Metrics',
+        () => cryptoAdapter.getOnChainMetrics(normalizedSymbol),
+        { provider: 'CryptoQuant' }
+      );
 
       const derivativesData = this.buildDerivativesFromCryptoQuant(cryptoQuantFlow || undefined, cryptoQuantReserves || undefined, cryptoQuantOnChain || undefined);
       const derivatives = analyzeDerivatives(derivativesData);
@@ -467,18 +465,15 @@ export class ResearchEngine {
         });
       }
 
-      // LunarCrush is optional - only call if adapter exists
-      let sentimentPayload: SentimentData | null = null;
-      if (lunarAdapter) {
-        sentimentPayload = await runApiCall<SentimentData>(
-          'LunarCrush Sentiment',
-          () => {
-            const baseSymbol = normalizedSymbol.replace(/USDT$/i, '').replace(/USD$/i, '');
-            return lunarAdapter.getSentiment(baseSymbol);
-          },
-          { provider: 'LunarCrush' }
-        );
-      }
+      // LunarCrush is MANDATORY - adapter is guaranteed to exist
+      const sentimentPayload = await runApiCall<SentimentData>(
+        'LunarCrush Sentiment',
+        () => {
+          const baseSymbol = normalizedSymbol.replace(/USDT$/i, '').replace(/USD$/i, '');
+          return lunarAdapter.getSentiment(baseSymbol);
+        },
+        { provider: 'LunarCrush' }
+      );
       const sentiment = analyzeSentiment(sentimentPayload || undefined);
 
       // Global Intelligence: Free API data (Binance, CoinGecko, Google Finance)
@@ -659,7 +654,7 @@ export class ResearchEngine {
         signal: finalSignal,
         accuracy: confidence / 100,
         orderbookImbalance: imbalance,
-        recommendedAction: this.buildRecommendation(finalSignal, context.name),
+        recommendedAction: this.buildRecommendation(finalSignal, exchangeName),
         microSignals,
         entry,
         exits,
@@ -684,7 +679,7 @@ export class ResearchEngine {
         confidenceBreakdown: confidenceResult.confidenceBreakdown,
         exchangeOrderbooks,
         exchangeCount: exchangeOrderbooks.length,
-        exchangesUsed: [context.name],
+        exchangesUsed: [exchangeName],
         autoTradeDecision: {
           triggered: autoTradeEligible,
           confidence,
@@ -717,7 +712,7 @@ export class ResearchEngine {
         missingDependencies: [],
       };
 
-      logger.info({ uid, symbol: normalizedSymbol, exchange: context.name, confidence, durationMs: Date.now() - startedAt }, 'Deep research completed');
+      logger.info({ uid, symbol: normalizedSymbol, exchange: exchangeName, confidence, durationMs: Date.now() - startedAt }, 'Deep research completed');
       return result;
     } catch (err: any) {
       if (err instanceof ResearchEngineError) {
@@ -754,56 +749,65 @@ export class ResearchEngine {
     const providerKeys = await firestoreAdapter.getUserProviderApiKeys(uid);
     const missing: string[] = [];
 
-    // OPTIONAL API keys - Deep Research works without them
+    // MANDATORY API keys - Deep Research requires all 5 providers
     const lunarKey = providerKeys['lunarcrush']?.apiKey;
     const cryptoKey = providerKeys['cryptoquant']?.apiKey;
 
+    // Check for missing mandatory API keys
     if (!lunarKey) {
-      logger.info({ uid }, 'LunarCrush API key not configured - will skip LunarCrush data in research');
+      logger.error({ uid }, 'LunarCrush API key required for Deep Research but not configured');
+      throw new ResearchEngineError(
+        'LunarCrush API key required for Deep Research.',
+        this.createErrorId(),
+        400
+      );
     }
     if (!cryptoKey) {
-      logger.info({ uid }, 'CryptoQuant API key not configured - will skip CryptoQuant data in research');
+      logger.error({ uid }, 'CryptoQuant API key required for Deep Research but not configured');
+      throw new ResearchEngineError(
+        'CryptoQuant API key required for Deep Research.',
+        this.createErrorId(),
+        400
+      );
     }
 
-    // NOTE: LunarCrush and CryptoQuant are now OPTIONAL for Deep Research
+    // NOTE: LunarCrush and CryptoQuant are now MANDATORY for Deep Research
 
     logger.info({ uid }, 'All required provider API keys found, initializing adapters');
 
     // Log successful key retrieval for debugging
     logger.info({ uid, providers: Object.keys(providerKeys) }, 'Provider API keys successfully retrieved from integrations');
 
-    // Create adapters - LunarCrush and CryptoQuant are optional
+    // Create adapters - LunarCrush and CryptoQuant are MANDATORY
     let lunarAdapter: LunarCrushAdapter;
-    if (lunarKey) {
-      try {
-        logger.debug({ uid }, 'Initializing LunarCrush adapter with user API key');
-        lunarAdapter = new LunarCrushAdapter(lunarKey);
-        logger.info({ uid }, 'LunarCrush adapter initialized successfully');
-      } catch (error: any) {
-        logger.warn({ uid, error: error.message }, 'Failed to initialize LunarCrush adapter - will skip LunarCrush data');
-        lunarAdapter = null as any; // Will be handled gracefully in research logic
-      }
-    } else {
-      logger.info({ uid }, 'No LunarCrush API key - adapter will be disabled');
-      lunarAdapter = null as any;
+    try {
+      logger.debug({ uid }, 'Initializing LunarCrush adapter with user API key');
+      lunarAdapter = new LunarCrushAdapter(lunarKey);
+      logger.info({ uid }, 'LunarCrush adapter initialized successfully');
+    } catch (error: any) {
+      logger.error({ uid, error: error.message }, 'Failed to initialize LunarCrush adapter');
+      throw new ResearchEngineError(
+        'Failed to initialize LunarCrush adapter for Deep Research.',
+        this.createErrorId(),
+        500
+      );
     }
 
     let cryptoAdapter: CryptoQuantAdapter;
-    if (cryptoKey) {
-      try {
-        logger.debug({ uid }, 'Initializing CryptoQuant adapter with user API key');
-        cryptoAdapter = new CryptoQuantAdapter(cryptoKey);
-        if (cryptoAdapter.disabled) {
-          throw new Error('CryptoQuant adapter disabled due to invalid key');
-        }
-        logger.info({ uid }, 'CryptoQuant adapter initialized successfully');
-      } catch (error: any) {
-        logger.warn({ uid, error: error.message }, 'Failed to initialize CryptoQuant adapter - will skip CryptoQuant data');
-        cryptoAdapter = null as any; // Will be handled gracefully in research logic
+    try {
+      logger.debug({ uid }, 'Initializing CryptoQuant adapter with user API key');
+      cryptoAdapter = new CryptoQuantAdapter(cryptoKey);
+      if (cryptoAdapter.disabled) {
+        throw new Error('CryptoQuant adapter disabled due to invalid key');
       }
-    } else {
-      logger.info({ uid }, 'No CryptoQuant API key - adapter will be disabled');
-      cryptoAdapter = null as any;
+      logger.info({ uid }, 'CryptoQuant adapter initialized successfully');
+    } catch (error: any) {
+      logger.error({ uid, error: error.message }, 'Failed to initialize CryptoQuant adapter');
+      throw new ResearchEngineError(
+        'Failed to initialize CryptoQuant adapter for Deep Research.',
+        this.createErrorId(),
+        500
+      );
     }
 
     // Create free API adapters - no API keys required

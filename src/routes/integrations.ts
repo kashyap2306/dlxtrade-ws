@@ -11,7 +11,7 @@ import { getFirebaseAdmin } from '../utils/firebase';
 // Validation schemas
 const exchangeNameSchema = z.string().min(2, 'Exchange name is required').max(64, 'Exchange name too long').trim();
 const credentialSchema = z.string().min(1, 'Field is required').max(512, 'Value too long').trim();
-const SINGLE_EXCHANGE_NAMES = ['binance', 'bybit', 'mexc', 'kucoin', 'bingx', 'okx', 'weex', 'bitget'];
+const SINGLE_EXCHANGE_NAMES = ['bybit', 'mexc', 'kucoin', 'bingx', 'okx', 'weex', 'bitget'];
 
 const integrationUpdateSchema = z.object({
   apiName: exchangeNameSchema.optional(),

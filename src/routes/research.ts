@@ -312,24 +312,43 @@ export async function researchRoutes(fastify: FastifyInstance) {
         logger.info({ uid: user.uid }, 'Manual research: exchange integration not configured');
       }
 
-      // Run research (handles missing exchange gracefully)
-      const result = await researchEngine.runResearch(
-        symbol,
-        user.uid,
-        undefined,
-        false,
-        undefined,
-        timeframe,
-        contextForResearch || undefined
-      );
+      // Run research - will throw 400 if mandatory providers missing
+      try {
+        const result = await researchEngine.runResearch(
+          symbol,
+          user.uid,
+          undefined,
+          false,
+          undefined,
+          timeframe,
+          contextForResearch || undefined
+        );
 
-      // Return successful response
-      reply.code(200).header('Content-Type', 'application/json').send({
-        success: true,
-        message: 'Manual research completed',
-        results: [result],
-        exchangeConfigured: !(activeContext && typeof activeContext === 'object' && 'exchangeConfigured' in activeContext && activeContext.exchangeConfigured === false),
-      });
+        // Return successful response
+        reply.code(200).header('Content-Type', 'application/json').send({
+          success: true,
+          message: 'Manual research completed',
+          results: [result],
+          exchangeConfigured: !(activeContext && typeof activeContext === 'object' && 'exchangeConfigured' in activeContext && activeContext.exchangeConfigured === false),
+        });
+      } catch (researchError: any) {
+        // Handle mandatory provider errors (400) vs other errors (500)
+        if (researchError.statusCode === 400) {
+          // Missing mandatory provider
+          reply.code(400).header('Content-Type', 'application/json').send({
+            success: false,
+            message: researchError.message,
+            results: [],
+          });
+        } else {
+          // Other research error
+          reply.code(500).header('Content-Type', 'application/json').send({
+            success: false,
+            message: researchError.message || 'Research engine error',
+            results: [],
+          });
+        }
+      }
 
     } catch (error: any) {
       logger.error({ error: error.message, uid: user?.uid }, 'Manual research failed');

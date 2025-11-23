@@ -387,7 +387,7 @@ export class FirestoreAdapter {
    * Get real exchanges that can be connected (stored in Firestore)
    */
   getRealExchanges(): string[] {
-    return ['binance', 'bybit', 'mexc', 'kucoin', 'bingx', 'okx', 'weex', 'bitget'];
+    return ['bybit', 'mexc', 'kucoin', 'bingx', 'okx', 'weex', 'bitget'];
   }
 
   async ensureDefaultIntegrations(uid: string): Promise<void> {
@@ -668,8 +668,8 @@ export class FirestoreAdapter {
    */
   async getActiveExchangeForUser(uid: string): Promise<ActiveExchangeContext | { exchangeConfigured: false; error: string }> {
     const integrations = await this.getAllIntegrations(uid);
-    // Only real exchanges that can be connected for auto-trade
-    const priorities: ExchangeName[] = ['bitget', 'bingx', 'binance', 'bybit', 'mexc', 'kucoin', 'okx', 'weex'];
+    // Only real exchanges that can be connected for auto-trade (no default binance)
+    const priorities: ExchangeName[] = ['bitget', 'bingx', 'bybit', 'mexc', 'kucoin', 'okx', 'weex'];
 
     for (const exchangeName of priorities) {
       const config = integrations[exchangeName];
