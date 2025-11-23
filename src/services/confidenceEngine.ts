@@ -14,6 +14,7 @@ const FEATURE_WEIGHTS = {
   sentiment: 1.1,
   derivatives: 1.2,
   priceMomentum: 0.8,
+  onChainScore: 1.0,
 } as const;
 
 type WeightedFeatureKey = keyof typeof FEATURE_WEIGHTS;
@@ -30,6 +31,7 @@ const FEATURE_KEYS: FeatureScoreKey[] = [
   'sentiment',
   'derivatives',
   'priceMomentum',
+  'onChainScore',
   'microStructure',
 ];
 
@@ -61,6 +63,7 @@ export interface ConfidenceFeatureInputs {
   sentiment?: SentimentResult | null;
   derivatives?: DerivativesResult | null;
   priceMomentum?: number | null;
+  onChainScore?: number | null;
   microSignals?:
     | {
         spread?: number | null;
@@ -262,6 +265,13 @@ export function computeFeatureScores(features: ConfidenceFeatureInputs): Feature
       clamp: 2,
     });
     availability.priceMomentum = true;
+  }
+
+  if (isFiniteNumber(features.onChainScore)) {
+    // onChainScore is already 0-100, convert to -1 to +1 scale
+    const normalizedScore = ((features.onChainScore as number) / 50) - 1;
+    perFeatureScore.onChainScore = Math.max(-1, Math.min(1, normalizedScore));
+    availability.onChainScore = true;
   }
 
   const microScores: Array<number | null> = [];

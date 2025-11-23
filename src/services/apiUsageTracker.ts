@@ -30,7 +30,7 @@ class ApiUsageTracker {
     });
 
     // External APIs - reset daily (24 hours)
-    const externalApis = ['cryptoquant', 'lunarcrush', 'coinapi'];
+    const externalApis = ['cryptocompare', 'lunarcrush', 'coinapi'];
     externalApis.forEach(api => {
       this.counters.set(api, {
         used: 0,
@@ -49,7 +49,7 @@ class ApiUsageTracker {
       weex: 1000,
       bybit: 1000,
       okx: 1000,
-      cryptoquant: 100,
+      cryptocompare: 1000,
       lunarcrush: 1000,
       coinapi: 1000,
     };

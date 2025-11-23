@@ -403,7 +403,7 @@ export class FirestoreAdapter {
     const defaultIntegrations = [
       // Required APIs (disabled by default, require API keys)
       { name: 'lunarcrush', enabled: false, displayName: 'LunarCrush API', free: false },
-      { name: 'cryptoquant', enabled: false, displayName: 'CryptoQuant API', free: false },
+      { name: 'cryptocompare', enabled: false, displayName: 'CryptoCompare API', free: false },
     ];
 
     const now = admin.firestore.Timestamp.now();
@@ -629,7 +629,7 @@ export class FirestoreAdapter {
 
       // Map integration document names to provider keys
       const providerMappings = {
-        'cryptoquant': 'cryptoquant',
+        'cryptocompare': 'cryptocompare',
         'lunarcrush': 'lunarcrush',
         'coinapi_market': 'coinapi_market',
         'coinapi_exchangerate': 'coinapi_exchangerate',

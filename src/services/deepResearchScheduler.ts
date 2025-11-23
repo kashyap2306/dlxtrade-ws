@@ -682,7 +682,7 @@ export class DeepResearchScheduler {
         timestamp: admin.firestore.Timestamp.now(),
         instanceId: this.instanceId,
         // Scheduled research uses only free APIs (no exchanges)
-        apisUsed: ['binance', 'coingecko', 'googlefinance', 'lunarcrush', 'cryptoquant'],
+        apisUsed: ['binance', 'coingecko', 'googlefinance', 'lunarcrush', 'cryptocompare'],
       }, { merge: true });
       
       logger.debug({ instanceId: this.instanceId, symbol }, 'Research result saved to Firestore');

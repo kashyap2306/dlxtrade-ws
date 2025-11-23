@@ -952,10 +952,10 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         }
 
         try {
-          const { CryptoQuantAdapter } = await import('../services/cryptoquantAdapter');
-          const adapter = new CryptoQuantAdapter(body.apiKey);
+          const { CryptoCompareAdapter } = await import('../services/cryptoCompareAdapter');
+          const adapter = new CryptoCompareAdapter(body.apiKey);
           // Test with a simple call
-          await adapter.getExchangeFlow('BTCUSDT');
+          await adapter.getAllMetrics('BTCUSDT');
           
           return {
             valid: true,
@@ -1209,30 +1209,19 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
                 message: 'API connection successful',
                 type: 'provider'
               };
-            } else if (providerName === 'cryptoquant') {
-              // Test CryptoQuant by calling getExchangeFlow
-              const { CryptoQuantAdapter } = await import('../services/cryptoquantAdapter');
-              const adapter = new CryptoQuantAdapter(apiKey);
-              if (!adapter.disabled) {
-                await adapter.getExchangeFlow('BTC');
-                statusResults[providerName] = {
-                  isConnected: true,
-                  exchangeName: integration.exchangeName || providerName,
-                  apiKeyStatus: 'valid',
-                  connectionStatus: 'connected',
-                  message: 'API connection successful',
-                  type: 'provider'
-                };
-              } else {
-                statusResults[providerName] = {
-                  isConnected: false,
-                  exchangeName: integration.exchangeName || providerName,
-                  apiKeyStatus: 'invalid',
-                  connectionStatus: 'disconnected',
-                  message: 'Invalid CryptoQuant API key',
-                  type: 'provider'
-                };
-              }
+            } else if (providerName === 'cryptocompare') {
+              // Test CryptoCompare by calling getAllMetrics
+              const { CryptoCompareAdapter } = await import('../services/cryptoCompareAdapter');
+              const adapter = new CryptoCompareAdapter(apiKey);
+              await adapter.getAllMetrics('BTC');
+              statusResults[providerName] = {
+                isConnected: true,
+                exchangeName: integration.exchangeName || providerName,
+                apiKeyStatus: 'valid',
+                connectionStatus: 'connected',
+                message: 'API connection successful',
+                type: 'provider'
+              };
             }
           } catch (connectionError: any) {
             statusResults[providerName] = {

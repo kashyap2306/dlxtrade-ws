@@ -126,7 +126,7 @@ export class AdminStatsService {
     const apiStatus: Record<string, { connected: boolean; hasKey: boolean }> = {};
     try {
       const integrations = await firestoreAdapter.getAllIntegrations(uid);
-      const apiNames = ['binance', 'cryptoquant', 'lunarcrush', 'coinapi'];
+      const apiNames = ['binance', 'cryptocompare', 'lunarcrush', 'coinapi'];
       for (const apiName of apiNames) {
         const integration = integrations[apiName];
         apiStatus[apiName] = {

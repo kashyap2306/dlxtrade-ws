@@ -5,14 +5,14 @@
  */
 
 import type { ExchangeConnector } from '../exchangeConnector';
-import { CryptoQuantAdapter } from '../cryptoquantAdapter';
+import { CryptoCompareAdapter } from '../cryptoCompareAdapter';
 import { analyzeFundingRate, analyzeOpenInterest, analyzeLiquidations, type FundingRateData, type OpenInterestData, type LiquidationsData } from './fundingOiStrategy';
 
 export interface DerivativesData {
   fundingRate?: FundingRateData;
   openInterest?: OpenInterestData;
   liquidations?: LiquidationsData;
-  source: 'exchange' | 'cryptoquant' | 'both';
+  source: 'exchange' | 'cryptocompare' | 'both';
 }
 
 export interface DerivativesResult {
@@ -46,7 +46,7 @@ export interface DerivativesResult {
 export async function fetchDerivativesData(
   symbol: string,
   exchangeAdapter?: ExchangeConnector,
-  cryptoquantAdapter?: CryptoQuantAdapter
+  cryptoCompareAdapter?: CryptoCompareAdapter
 ): Promise<DerivativesData> {
   const data: DerivativesData = {
     source: 'exchange',
@@ -121,14 +121,42 @@ export async function fetchDerivativesData(
     }
   }
 
-  // Supplement with CryptoQuant if available
-  if (cryptoquantAdapter && !cryptoquantAdapter.disabled) {
+  // Supplement with CryptoCompare if available
+  if (cryptoCompareAdapter) {
     try {
-      // CryptoQuant may have aggregated derivatives data
-      // For now, we'll use exchange data as primary
-      data.source = data.fundingRate || data.openInterest || data.liquidations ? 'both' : 'cryptoquant';
+      // Get all metrics from CryptoCompare
+      const cryptoData = await cryptoCompareAdapter.getAllMetrics(symbol);
+
+      // Add funding rate data if not already present
+      if (!data.fundingRate && cryptoData.fundingRate !== undefined) {
+        data.fundingRate = {
+          fundingRate: cryptoData.fundingRate / 100, // Convert from percentage
+          timestamp: Date.now(),
+        };
+      }
+
+      // Add liquidation data if not already present
+      if (!data.liquidations && cryptoData.liquidations !== undefined) {
+        data.liquidations = {
+          longLiquidation24h: cryptoData.liquidations * 0.6,
+          shortLiquidation24h: cryptoData.liquidations * 0.4,
+          totalLiquidation24h: cryptoData.liquidations,
+          timestamp: Date.now(),
+        };
+      }
+
+      // Use reserve change as proxy for open interest if not already present
+      if (!data.openInterest && cryptoData.reserveChange !== undefined) {
+        data.openInterest = {
+          openInterest: Math.abs(cryptoData.reserveChange) * 1000000,
+          change24h: cryptoData.reserveChange / 100,
+          timestamp: Date.now(),
+        };
+      }
+
+      data.source = data.fundingRate || data.openInterest || data.liquidations ? 'both' : 'cryptocompare';
     } catch (err: any) {
-      // CryptoQuant failed, use exchange data only
+      // CryptoCompare failed, use exchange data only
     }
   }
 

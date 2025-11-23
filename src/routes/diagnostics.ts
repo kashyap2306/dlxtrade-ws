@@ -11,7 +11,7 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest<{ Body: { api: string; apiKey?: string; secretKey?: string; passphrase?: string; exchange?: string } }>, reply: FastifyReply) => {
     const user = (request as any).user;
     const body = z.object({
-      api: z.enum(['coinapi', 'lunarcrush', 'cryptoquant', 'exchange']),
+      api: z.enum(['binance', 'coingecko', 'googlefinance', 'lunarcrush', 'cryptoquant', 'exchange']),
       apiKey: z.string().optional(),
       secretKey: z.string().optional(),
       passphrase: z.string().optional(),
@@ -28,32 +28,20 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
       const { decrypt } = await import('../services/keyManager');
 
       switch (apiName) {
-        case 'coinapi': {
-          // Test CoinAPI market API - use provided API key or fallback to stored
-          const apiKey = body.apiKey || integrations['coinapi_market']?.apiKey;
-          if (!apiKey) {
-            return {
-              apiName: 'coinapi',
-              success: false,
-              reachable: false,
-              credentialsValid: false,
-              error: 'CoinAPI market API key not configured',
-              latency: Date.now() - startTime,
-            };
-          }
-
+        case 'binance': {
+          // Test Binance public API - no API key required
           try {
-            const { CoinAPIAdapter } = await import('../services/coinapiAdapter');
-            const adapter = new CoinAPIAdapter(apiKey, 'market');
+            const { BinanceAdapter } = await import('../services/binanceAdapter');
+            const adapter = new BinanceAdapter();
             const testData = await adapter.getMarketData('BTCUSDT');
             const latency = Date.now() - startTime;
 
             return {
-              apiName: 'coinapi',
+              apiName: 'binance',
               success: true,
               reachable: true,
-              credentialsValid: true,
-              rateLimitRemaining: undefined, // CoinAPI doesn't expose rate limits in response
+              credentialsValid: true, // No credentials needed
+              rateLimitRemaining: undefined,
               latency,
               details: {
                 price: testData.price,
@@ -62,11 +50,73 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
             };
           } catch (err: any) {
             return {
-              apiName: 'coinapi',
+              apiName: 'binance',
               success: false,
               reachable: err.response?.status !== 404 && err.response?.status !== 403,
-              credentialsValid: err.response?.status !== 401 && err.response?.status !== 403,
-              error: err.message || 'CoinAPI test failed',
+              credentialsValid: true, // No credentials needed
+              error: err.message || 'Binance API test failed',
+              latency: Date.now() - startTime,
+            };
+          }
+        }
+
+        case 'coingecko': {
+          // Test CoinGecko API - no API key required
+          try {
+            const { CoinGeckoAdapter } = await import('../services/coingeckoAdapter');
+            const adapter = CoinGeckoAdapter;
+            const testData = await adapter.getHistoricalData('BTCUSDT', 1);
+            const latency = Date.now() - startTime;
+
+            return {
+              apiName: 'coingecko',
+              success: true,
+              reachable: true,
+              credentialsValid: true, // No credentials needed
+              rateLimitRemaining: undefined,
+              latency,
+              details: {
+                historicalDataPoints: testData.historicalData?.length || 0,
+              },
+            };
+          } catch (err: any) {
+            return {
+              apiName: 'coingecko',
+              success: false,
+              reachable: err.response?.status !== 404 && err.response?.status !== 403,
+              credentialsValid: true, // No credentials needed
+              error: err.message || 'CoinGecko API test failed',
+              latency: Date.now() - startTime,
+            };
+          }
+        }
+
+        case 'googlefinance': {
+          // Test Google Finance - no API key required
+          try {
+            const { GoogleFinanceAdapter } = await import('../services/googleFinanceAdapter');
+            const adapter = GoogleFinanceAdapter;
+            const testData = await adapter.getExchangeRate('USD', 'INR');
+            const latency = Date.now() - startTime;
+
+            return {
+              apiName: 'googlefinance',
+              success: true,
+              reachable: true,
+              credentialsValid: true, // No credentials needed
+              rateLimitRemaining: undefined,
+              latency,
+              details: {
+                exchangeRate: testData.exchangeRate,
+              },
+            };
+          } catch (err: any) {
+            return {
+              apiName: 'googlefinance',
+              success: false,
+              reachable: err.response?.status !== 404 && err.response?.status !== 403,
+              credentialsValid: true, // No credentials needed
+              error: err.message || 'Google Finance test failed',
               latency: Date.now() - startTime,
             };
           }
@@ -128,24 +178,28 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
           }
 
           try {
-            const { CryptoQuantAdapter } = await import('../services/cryptoquantAdapter');
-            const adapter = new CryptoQuantAdapter(apiKey);
-            const testData = await adapter.getExchangeFlow('BTCUSDT');
+            const { CryptoCompareAdapter } = await import('../services/cryptoCompareAdapter');
+            const adapter = new CryptoCompareAdapter(apiKey);
+            const testData = await adapter.getAllMetrics('BTCUSDT');
             const latency = Date.now() - startTime;
 
             return {
-              apiName: 'cryptoquant',
+              apiName: 'cryptocompare',
               success: true,
               reachable: true,
               credentialsValid: true,
               latency,
               details: {
-                exchangeFlow: testData.exchangeFlow,
+                whaleScore: testData.whaleScore,
+                reserveChange: testData.reserveChange,
+                minerOutflow: testData.minerOutflow,
+                fundingRate: testData.fundingRate,
+                liquidations: testData.liquidations,
               },
             };
           } catch (err: any) {
             return {
-              apiName: 'cryptoquant',
+              apiName: 'cryptocompare',
               success: false,
               reachable: err.response?.status !== 404 && err.response?.status !== 403,
               credentialsValid: err.response?.status !== 401 && err.response?.status !== 403,
@@ -289,87 +343,6 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
           }
         }
 
-        case 'flatfile': {
-          const apiKey = body.apiKey || integrations['coinapi_flatfile']?.apiKey;
-          if (!apiKey) {
-            return {
-              apiName: 'flatfile',
-              success: false,
-              reachable: false,
-              credentialsValid: false,
-              error: 'CoinAPI Flat File API key not configured',
-              latency: Date.now() - startTime,
-            };
-          }
-
-          try {
-            const { CoinAPIAdapter } = await import('../services/coinapiAdapter');
-            const adapter = new CoinAPIAdapter(apiKey, 'flatfile');
-            const testData = await adapter.getHistoricalData('BTCUSDT', 7);
-            const latency = Date.now() - startTime;
-
-            return {
-              apiName: 'flatfile',
-              success: true,
-              reachable: true,
-              credentialsValid: true,
-              latency,
-              details: {
-                historicalDataPoints: testData.historicalData?.length || 0,
-              },
-            };
-          } catch (err: any) {
-            return {
-              apiName: 'flatfile',
-              success: false,
-              reachable: err.response?.status !== 404 && err.response?.status !== 403,
-              credentialsValid: err.response?.status !== 401 && err.response?.status !== 403,
-              error: err.message || 'CoinAPI Flat File test failed',
-              latency: Date.now() - startTime,
-            };
-          }
-        }
-
-        case 'exchangerate': {
-          const apiKey = body.apiKey || integrations['coinapi_exchangerate']?.apiKey;
-          if (!apiKey) {
-            return {
-              apiName: 'exchangerate',
-              success: false,
-              reachable: false,
-              credentialsValid: false,
-              error: 'CoinAPI Exchange Rate API key not configured',
-              latency: Date.now() - startTime,
-            };
-          }
-
-          try {
-            const { CoinAPIAdapter } = await import('../services/coinapiAdapter');
-            const adapter = new CoinAPIAdapter(apiKey, 'exchangerate');
-            const testData = await adapter.getExchangeRate('BTC', 'USD');
-            const latency = Date.now() - startTime;
-
-            return {
-              apiName: 'exchangerate',
-              success: true,
-              reachable: true,
-              credentialsValid: true,
-              latency,
-              details: {
-                exchangeRate: testData.exchangeRate,
-              },
-            };
-          } catch (err: any) {
-            return {
-              apiName: 'exchangerate',
-              success: false,
-              reachable: err.response?.status !== 404 && err.response?.status !== 403,
-              credentialsValid: err.response?.status !== 401 && err.response?.status !== 403,
-              error: err.message || 'CoinAPI Exchange Rate test failed',
-              latency: Date.now() - startTime,
-            };
-          }
-        }
 
         default:
           return reply.code(400).send({

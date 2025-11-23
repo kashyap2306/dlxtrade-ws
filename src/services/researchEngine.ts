@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { logger } from '../utils/logger';
 import { firestoreAdapter, type ActiveExchangeContext } from './firestoreAdapter';
 import { LunarCrushAdapter } from './lunarcrushAdapter';
-import { CryptoQuantAdapter, type CryptoQuantData } from './cryptoquantAdapter';
+import { CryptoCompareAdapter, type CryptoCompareData } from './cryptoCompareAdapter';
 // NOTE: CoinAPI replaced with free APIs
 import { BinancePublicAdapter } from './binancePublicAdapter';
 import { CoinGeckoAdapter } from './coingeckoAdapter';
@@ -311,7 +311,7 @@ export class ResearchEngine {
     // All 5 providers are MANDATORY for Deep Research
     const providersUsed = {
       userExchange: exchangeName, // Exchange connection is optional for research
-      cryptoquant: true, // Now mandatory
+      cryptocompare: true, // Now mandatory
       lunarcrush: true, // Now mandatory
       binance: true, // Always available (free API)
       coingecko: true, // Always available (free API)
@@ -438,27 +438,18 @@ export class ResearchEngine {
       const microSignals = this.buildMicroSignals(liquidity, priceMomentum);
       recordApiCall({ apiName: 'Microstructure Module', status: 'SUCCESS' });
 
-      // CryptoQuant is MANDATORY - all adapters are guaranteed to exist
-      const cryptoQuantFlow = await runApiCall<CryptoQuantData>(
-        'CryptoQuant Exchange Flow',
-        () => cryptoAdapter.getExchangeFlow(normalizedSymbol),
-        { provider: 'CryptoQuant' }
+      // CryptoCompare is MANDATORY - all adapters are guaranteed to exist
+      const cryptoCompareData = await runApiCall<CryptoCompareData>(
+        'CryptoCompare On-Chain Metrics',
+        () => cryptoAdapter.getAllMetrics(normalizedSymbol),
+        { provider: 'CryptoCompare' }
       );
 
-      const cryptoQuantReserves = await runApiCall<{ exchangeReserves?: number; reserveChange24h?: number }>(
-        'CryptoQuant Reserves',
-        () => cryptoAdapter.getReserves(normalizedSymbol),
-        { provider: 'CryptoQuant' }
-      );
-
-      const cryptoQuantOnChain = await runApiCall<CryptoQuantData>(
-        'CryptoQuant On-Chain Metrics',
-        () => cryptoAdapter.getOnChainMetrics(normalizedSymbol),
-        { provider: 'CryptoQuant' }
-      );
-
-      const derivativesData = this.buildDerivativesFromCryptoQuant(cryptoQuantFlow || undefined, cryptoQuantReserves || undefined, cryptoQuantOnChain || undefined);
+      const derivativesData = this.buildDerivativesFromCryptoCompare(cryptoCompareData || undefined);
       const derivatives = analyzeDerivatives(derivativesData);
+
+      // Calculate onChainScore from CryptoCompare metrics
+      const onChainScore = this.calculateOnChainScore(cryptoCompareData);
 
       if (derivativesData.fundingRate) {
         recordApiCall({
@@ -594,6 +585,7 @@ export class ResearchEngine {
         sentiment,
         derivatives,
         priceMomentum,
+        onChainScore,
         microSignals,
       });
       const confidenceResult = computeConfidence(featureScores);
@@ -636,7 +628,7 @@ export class ResearchEngine {
         trendStrength: trendStrength.trend,
         volatility: atr?.toFixed(6) ?? null,
         newsSentiment: sentiment.description,
-        onChainFlows: cryptoQuantOnChain?.activeAddresses ? `${cryptoQuantOnChain.activeAddresses.toLocaleString()} active addresses` : undefined,
+        onChainFlows: cryptoCompareData?.whaleScore ? `Whale activity score: ${cryptoCompareData.whaleScore.toFixed(1)}/100` : undefined,
         priceDivergence: undefined,
         globalMarketData: binanceMarketData ? {
           price: binanceMarketData.price,
@@ -776,7 +768,7 @@ export class ResearchEngine {
 
   private async buildProviderAdapters(uid: string): Promise<{
     lunarAdapter: LunarCrushAdapter;
-    cryptoAdapter: CryptoQuantAdapter;
+    cryptoAdapter: CryptoCompareAdapter;
     // Free APIs - no API keys required
     binanceAdapter: any;
     coingeckoAdapter: any;
@@ -788,7 +780,7 @@ export class ResearchEngine {
 
     // MANDATORY API keys - Deep Research requires all 5 providers
     const lunarKey = providerKeys['lunarcrush']?.apiKey;
-    const cryptoKey = providerKeys['cryptoquant']?.apiKey;
+    const cryptoKey = providerKeys['cryptocompare']?.apiKey;
 
     // Check for missing mandatory API keys
     if (!lunarKey) {
@@ -800,9 +792,9 @@ export class ResearchEngine {
       );
     }
     if (!cryptoKey) {
-      logger.error({ uid }, 'CryptoQuant API key required for Deep Research but not configured');
+      logger.error({ uid }, 'CryptoCompare API key required for Deep Research but not configured');
       throw new ResearchEngineError(
-        'CryptoQuant API key required for Deep Research.',
+        'CryptoCompare API key required for Deep Research.',
         this.createErrorId(),
         400
       );
@@ -830,18 +822,15 @@ export class ResearchEngine {
       );
     }
 
-    let cryptoAdapter: CryptoQuantAdapter;
+    let cryptoAdapter: CryptoCompareAdapter;
     try {
-      logger.debug({ uid }, 'Initializing CryptoQuant adapter with user API key');
-      cryptoAdapter = new CryptoQuantAdapter(cryptoKey);
-      if (cryptoAdapter.disabled) {
-        throw new Error('CryptoQuant adapter disabled due to invalid key');
-      }
-      logger.info({ uid }, 'CryptoQuant adapter initialized successfully');
+      logger.debug({ uid }, 'Initializing CryptoCompare adapter with user API key');
+      cryptoAdapter = new CryptoCompareAdapter(cryptoKey);
+      logger.info({ uid }, 'CryptoCompare adapter initialized successfully');
     } catch (error: any) {
-      logger.error({ uid, error: error.message }, 'Failed to initialize CryptoQuant adapter');
+      logger.error({ uid, error: error.message }, 'Failed to initialize CryptoCompare adapter');
       throw new ResearchEngineError(
-        'Failed to initialize CryptoQuant adapter for Deep Research.',
+        'Failed to initialize CryptoCompare adapter for Deep Research.',
         this.createErrorId(),
         400
       );
@@ -1000,34 +989,60 @@ export class ResearchEngine {
     }
   }
 
-  private buildDerivativesFromCryptoQuant(flow?: CryptoQuantData, reserves?: { exchangeReserves?: number; reserveChange24h?: number }, onChain?: CryptoQuantData): DerivativesData {
-    const data: DerivativesData = { source: 'cryptoquant' };
+  private buildDerivativesFromCryptoCompare(cryptoCompareData?: CryptoCompareData): DerivativesData {
+    const data: DerivativesData = { source: 'cryptocompare' };
 
-    if (flow?.exchangeFlow !== undefined) {
-      data.openInterest = {
-        openInterest: Math.abs(flow.exchangeFlow),
-        change24h: ((flow.exchangeInflow || 0) - (flow.exchangeOutflow || 0)) / Math.max(Math.abs(flow.exchangeFlow) || 1, 1),
-        timestamp: Date.now(),
-      };
-    }
-
-    if (reserves?.reserveChange24h !== undefined) {
+    if (cryptoCompareData?.fundingRate !== undefined) {
       data.fundingRate = {
-        fundingRate: reserves.reserveChange24h / 100,
+        fundingRate: cryptoCompareData.fundingRate / 100, // Convert from percentage
         timestamp: Date.now(),
       };
     }
 
-    if (flow?.whaleTransactions !== undefined) {
+    if (cryptoCompareData?.liquidations !== undefined) {
       data.liquidations = {
-        longLiquidation24h: Math.max(flow.whaleTransactions, 0),
-        shortLiquidation24h: Math.max((flow.whaleTransactions || 0) * 0.5, 0),
-        totalLiquidation24h: Math.max((flow.whaleTransactions || 0) * 1.5, 0),
+        longLiquidation24h: cryptoCompareData.liquidations * 0.6, // Estimate long liquidations
+        shortLiquidation24h: cryptoCompareData.liquidations * 0.4, // Estimate short liquidations
+        totalLiquidation24h: cryptoCompareData.liquidations,
+        timestamp: Date.now(),
+      };
+    }
+
+    // Use reserve change as proxy for open interest
+    if (cryptoCompareData?.reserveChange !== undefined) {
+      data.openInterest = {
+        openInterest: Math.abs(cryptoCompareData.reserveChange) * 1000000, // Scale up
+        change24h: cryptoCompareData.reserveChange / 100, // Convert to decimal
         timestamp: Date.now(),
       };
     }
 
     return data;
+  }
+
+  private calculateOnChainScore(cryptoCompareData?: CryptoCompareData): number {
+    if (!cryptoCompareData) {
+      return 0;
+    }
+
+    // Calculate weighted average of on-chain metrics (0-100 scale)
+    const weights = {
+      whaleScore: 0.3,      // Whale activity
+      reserveChange: 0.2,   // Exchange reserves
+      minerOutflow: 0.2,    // Mining activity
+      fundingRate: 0.15,    // Funding rate
+      liquidations: 0.15,   // Liquidations
+    };
+
+    const score = (
+      (cryptoCompareData.whaleScore || 0) * weights.whaleScore +
+      (Math.abs(cryptoCompareData.reserveChange || 0) * 20) * weights.reserveChange + // Scale reserve change
+      (cryptoCompareData.minerOutflow || 0) * weights.minerOutflow +
+      (Math.abs(cryptoCompareData.fundingRate || 0) * 10) * weights.fundingRate + // Scale funding rate
+      (cryptoCompareData.liquidations || 0) * weights.liquidations
+    );
+
+    return Math.min(100, Math.max(0, score));
   }
 
   private calculateOrderbookImbalance(orderbook: Orderbook): number {
