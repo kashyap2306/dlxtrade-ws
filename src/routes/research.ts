@@ -1,5 +1,5 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { firestoreAdapter } from '../services/firestoreAdapter';
+import { firestoreAdapter, type ActiveExchangeContext } from '../services/firestoreAdapter';
 import { researchEngine } from '../services/researchEngine';
 import { autoTradeController } from '../services/autoTradeController';
 // Note: liveAnalysisService is deprecated - all analysis now comes from researchEngine.runResearch()
@@ -91,7 +91,9 @@ export async function researchRoutes(fastify: FastifyInstance) {
       }
       
       const activeContext = await firestoreAdapter.getActiveExchangeForUser(user.uid);
-      const detectedExchangeName = activeContext.name;
+      const detectedExchangeName = (activeContext && typeof activeContext === 'object' && 'exchangeConfigured' in activeContext && activeContext.exchangeConfigured === false)
+        ? 'none'
+        : (activeContext && 'name' in activeContext ? activeContext.name : 'none');
       const isFallback = false;
 
       const allResults: any[] = [];
@@ -101,6 +103,11 @@ export async function researchRoutes(fastify: FastifyInstance) {
         const currentSymbol = symbols[i];
         try {
           const timeframe = request.body?.timeframe || '5m';
+          // Handle fallback object - pass null to runResearch if exchange not configured
+          const contextForResearch: ActiveExchangeContext | null = (activeContext && typeof activeContext === 'object' && 'exchangeConfigured' in activeContext && activeContext.exchangeConfigured === false)
+            ? null
+            : activeContext as ActiveExchangeContext | null;
+
           const result = await researchEngine.runResearch(
             currentSymbol,
             user.uid,
@@ -108,7 +115,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
             false,
             undefined,
             timeframe,
-            activeContext
+            contextForResearch || undefined
           );
 
           try {
@@ -126,7 +133,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
             timestamp: new Date().toISOString(),
             exchange: detectedExchangeName,
             exchangeCount: 1,
-            exchangesUsed: [activeContext.name],
+            exchangesUsed: [detectedExchangeName],
             isFallback,
             exchangeError: undefined,
             rsi5: result.rsi5 ?? null,
@@ -271,6 +278,71 @@ export async function researchRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // MANUAL RESEARCH ROUTE: POST /api/research/manual - Trigger manual research (always returns response)
+  fastify.post('/manual', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: { symbol?: string; timeframe?: string } }>, reply: FastifyReply) => {
+    const user = (request as any).user;
+    logger.info({ uid: user?.uid }, 'Manual Research triggered');
+
+    // Validate user is authenticated
+    if (!user || !user.uid) {
+      logger.warn('Manual research: user not authenticated');
+      reply.code(401).header('Content-Type', 'application/json').send({
+        success: false,
+        message: 'Authentication required',
+        results: [],
+      });
+      return;
+    }
+
+    try {
+      const symbol = request.body?.symbol || 'BTCUSDT';
+      const timeframe = request.body?.timeframe || '5m';
+
+      // Get exchange context (will return safe fallback if not configured)
+      const activeContext = await firestoreAdapter.getActiveExchangeForUser(user.uid);
+
+      // Handle fallback object - pass null to runResearch if exchange not configured
+      const contextForResearch: ActiveExchangeContext | null = (activeContext && typeof activeContext === 'object' && 'exchangeConfigured' in activeContext && activeContext.exchangeConfigured === false)
+        ? null
+        : activeContext as ActiveExchangeContext | null;
+
+      if (!contextForResearch) {
+        logger.info({ uid: user.uid }, 'Manual research: exchange integration not configured');
+      }
+
+      // Run research (handles missing exchange gracefully)
+      const result = await researchEngine.runResearch(
+        symbol,
+        user.uid,
+        undefined,
+        false,
+        undefined,
+        timeframe,
+        contextForResearch || undefined
+      );
+
+      // Return successful response
+      reply.code(200).header('Content-Type', 'application/json').send({
+        success: true,
+        message: 'Manual research completed',
+        results: [result],
+        exchangeConfigured: !(activeContext && typeof activeContext === 'object' && 'exchangeConfigured' in activeContext && activeContext.exchangeConfigured === false),
+      });
+
+    } catch (error: any) {
+      logger.error({ error: error.message, uid: user?.uid }, 'Manual research failed');
+
+      // Always return a valid response, never crash
+      reply.code(500).header('Content-Type', 'application/json').send({
+        success: false,
+        message: error.message || 'Manual research failed',
+        results: [],
+        exchangeConfigured: false,
+      });
+    }
+  });
 
   // TEST ROUTE: POST /api/research/test-run - Test research without authentication
   fastify.post('/test-run', async (request: FastifyRequest<{ Body: { symbol?: string; uid?: string; timeframe?: string } }>, reply: FastifyReply) => {
@@ -282,6 +354,11 @@ export async function researchRoutes(fastify: FastifyInstance) {
       console.log('🧪 [TEST RESEARCH] Starting test run for symbol:', symbol, 'uid:', uid);
 
       const activeContext = await firestoreAdapter.getActiveExchangeForUser(uid);
+      // Handle fallback object - pass null to runResearch if exchange not configured
+      const contextForResearch: ActiveExchangeContext | null = (activeContext && typeof activeContext === 'object' && 'exchangeConfigured' in activeContext && activeContext.exchangeConfigured === false)
+        ? null
+        : activeContext as ActiveExchangeContext | null;
+
       const results = await researchEngine.runResearch(
         symbol,
         uid,
@@ -289,7 +366,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
         false,
         undefined,
         timeframe,
-        activeContext
+        contextForResearch || undefined
       );
 
       reply.code(200).header('Content-Type', 'application/json').send({
@@ -325,6 +402,11 @@ export async function researchRoutes(fastify: FastifyInstance) {
       const symbol = request.params.symbol.toUpperCase().trim();
       
       const activeContext = await firestoreAdapter.getActiveExchangeForUser(user.uid);
+      // Handle fallback object - pass null to runResearch if exchange not configured
+      const contextForResearch: ActiveExchangeContext | null = (activeContext && typeof activeContext === 'object' && 'exchangeConfigured' in activeContext && activeContext.exchangeConfigured === false)
+        ? null
+        : activeContext as ActiveExchangeContext | null;
+
       const fullResult: any = await researchEngine.runResearch(
         symbol,
         user.uid,
@@ -332,7 +414,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
         false,
         undefined,
         '5m',
-        activeContext
+        contextForResearch || undefined
       );
       
       // Do NOT call liveAnalysisService.getLiveAnalysis() - it may return old cached data
@@ -376,7 +458,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
         exchangeTickers: fullResult.exchangeTickers ?? undefined,
         exchangeOrderbooks: fullResult.exchangeOrderbooks ?? undefined,
         exchangeCount: 1,
-        exchangesUsed: [activeContext.name],
+        exchangesUsed: [contextForResearch?.name || 'none'],
         autoTradeDecision: fullResult.autoTradeDecision ?? undefined,
       };
 

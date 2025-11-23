@@ -305,15 +305,14 @@ export class ResearchEngine {
     // Deep Research works with LunarCrush + CryptoQuant + Free APIs (Binance, CoinGecko, Google Finance)
     // Exchange API is only needed for actual trading execution, not for research analysis
 
-    // All adapters are guaranteed to exist - user must provide all API keys
-    // NOTE: CoinAPI replaced with free APIs, exchange API is optional
+    // Providers available - some are optional
     const providersUsed = {
       userExchange: context?.name || 'none', // Exchange API is optional for Deep Research
-      cryptoquant: true,
-      lunarcrush: true,
-      binance: true, // Free market data API
-      coingecko: true, // Free historical data API
-      googlefinance: true, // Free exchange rate API
+      cryptoquant: cryptoAdapter !== null,
+      lunarcrush: lunarAdapter !== null,
+      binance: true, // Always available (free API)
+      coingecko: true, // Always available (free API)
+      googlefinance: true, // Always available (free API)
     };
 
     try {
@@ -398,24 +397,30 @@ export class ResearchEngine {
       const microSignals = this.buildMicroSignals(liquidity, priceMomentum);
       recordApiCall({ apiName: 'Microstructure Module', status: 'SUCCESS' });
 
-      // ALL provider APIs are required and guaranteed to exist
-      const cryptoQuantFlow = await runApiCall<CryptoQuantData>(
-        'CryptoQuant Exchange Flow',
-        () => cryptoAdapter.getExchangeFlow(normalizedSymbol),
-        { provider: 'CryptoQuant' }
-      );
+      // CryptoQuant is optional - only call if adapter exists
+      let cryptoQuantFlow: CryptoQuantData | null = null;
+      let cryptoQuantReserves: { exchangeReserves?: number; reserveChange24h?: number } | null = null;
+      let cryptoQuantOnChain: CryptoQuantData | null = null;
 
-      const cryptoQuantReserves = await runApiCall<{ exchangeReserves?: number; reserveChange24h?: number }>(
-        'CryptoQuant Reserves',
-        () => cryptoAdapter.getReserves(normalizedSymbol),
-        { provider: 'CryptoQuant' }
-      );
+      if (cryptoAdapter) {
+        cryptoQuantFlow = await runApiCall<CryptoQuantData>(
+          'CryptoQuant Exchange Flow',
+          () => cryptoAdapter.getExchangeFlow(normalizedSymbol),
+          { provider: 'CryptoQuant' }
+        );
 
-      const cryptoQuantOnChain = await runApiCall<CryptoQuantData>(
-        'CryptoQuant On-Chain Metrics',
-        () => cryptoAdapter.getOnChainMetrics(normalizedSymbol),
-        { provider: 'CryptoQuant' }
-      );
+        cryptoQuantReserves = await runApiCall<{ exchangeReserves?: number; reserveChange24h?: number }>(
+          'CryptoQuant Reserves',
+          () => cryptoAdapter.getReserves(normalizedSymbol),
+          { provider: 'CryptoQuant' }
+        );
+
+        cryptoQuantOnChain = await runApiCall<CryptoQuantData>(
+          'CryptoQuant On-Chain Metrics',
+          () => cryptoAdapter.getOnChainMetrics(normalizedSymbol),
+          { provider: 'CryptoQuant' }
+        );
+      }
 
       const derivativesData = this.buildDerivativesFromCryptoQuant(cryptoQuantFlow || undefined, cryptoQuantReserves || undefined, cryptoQuantOnChain || undefined);
       const derivatives = analyzeDerivatives(derivativesData);
@@ -462,15 +467,19 @@ export class ResearchEngine {
         });
       }
 
-      const sentimentPayload = await runApiCall<SentimentData>(
-        'LunarCrush Sentiment',
-        () => {
-          const baseSymbol = normalizedSymbol.replace(/USDT$/i, '').replace(/USD$/i, '');
-          return lunarAdapter.getSentiment(baseSymbol);
-        },
-        { provider: 'LunarCrush' }
-      );
-      const sentiment = analyzeSentiment(sentimentPayload);
+      // LunarCrush is optional - only call if adapter exists
+      let sentimentPayload: SentimentData | null = null;
+      if (lunarAdapter) {
+        sentimentPayload = await runApiCall<SentimentData>(
+          'LunarCrush Sentiment',
+          () => {
+            const baseSymbol = normalizedSymbol.replace(/USDT$/i, '').replace(/USD$/i, '');
+            return lunarAdapter.getSentiment(baseSymbol);
+          },
+          { provider: 'LunarCrush' }
+        );
+      }
+      const sentiment = analyzeSentiment(sentimentPayload || undefined);
 
       // Global Intelligence: Free API data (Binance, CoinGecko, Google Finance)
       const binanceTickerData = await runApiCall<any>(
@@ -745,65 +754,56 @@ export class ResearchEngine {
     const providerKeys = await firestoreAdapter.getUserProviderApiKeys(uid);
     const missing: string[] = [];
 
-    // REQUIRE all API keys - no fallbacks, no system keys
+    // OPTIONAL API keys - Deep Research works without them
     const lunarKey = providerKeys['lunarcrush']?.apiKey;
     const cryptoKey = providerKeys['cryptoquant']?.apiKey;
 
     if (!lunarKey) {
-      missing.push('LunarCrush API key');
-      logger.warn({ uid }, 'Missing LunarCrush API key in user\'s integrations');
+      logger.info({ uid }, 'LunarCrush API key not configured - will skip LunarCrush data in research');
     }
     if (!cryptoKey) {
-      missing.push('CryptoQuant API key');
-      logger.warn({ uid }, 'Missing CryptoQuant API key in user\'s integrations');
+      logger.info({ uid }, 'CryptoQuant API key not configured - will skip CryptoQuant data in research');
     }
 
-    // NOTE: CoinAPI is no longer required - using free APIs instead
-
-    if (missing.length > 0) {
-      logger.error({ uid, missing }, 'User is missing required provider API keys');
-      throw new ResearchEngineError(
-        `Missing required API keys: ${missing.join(', ')}. Please configure all provider API keys in your account settings.`,
-        this.createErrorId(),
-        422,
-        missing.map(api => ({ api, missingKey: true, reason: `${api} required for Deep Research` }))
-      );
-    }
+    // NOTE: LunarCrush and CryptoQuant are now OPTIONAL for Deep Research
 
     logger.info({ uid }, 'All required provider API keys found, initializing adapters');
 
     // Log successful key retrieval for debugging
     logger.info({ uid, providers: Object.keys(providerKeys) }, 'Provider API keys successfully retrieved from integrations');
 
-    // Create adapters - all keys are validated above
+    // Create adapters - LunarCrush and CryptoQuant are optional
     let lunarAdapter: LunarCrushAdapter;
-    try {
-      logger.debug({ uid }, 'Initializing LunarCrush adapter with user API key');
-      lunarAdapter = new LunarCrushAdapter(lunarKey);
-    } catch (error: any) {
-      logger.error({ uid, error: error.message }, 'Failed to initialize LunarCrush adapter');
-      throw new ResearchEngineError(
-        `Failed to initialize LunarCrush adapter: ${error.message}`,
-        this.createErrorId(),
-        500
-      );
+    if (lunarKey) {
+      try {
+        logger.debug({ uid }, 'Initializing LunarCrush adapter with user API key');
+        lunarAdapter = new LunarCrushAdapter(lunarKey);
+        logger.info({ uid }, 'LunarCrush adapter initialized successfully');
+      } catch (error: any) {
+        logger.warn({ uid, error: error.message }, 'Failed to initialize LunarCrush adapter - will skip LunarCrush data');
+        lunarAdapter = null as any; // Will be handled gracefully in research logic
+      }
+    } else {
+      logger.info({ uid }, 'No LunarCrush API key - adapter will be disabled');
+      lunarAdapter = null as any;
     }
 
     let cryptoAdapter: CryptoQuantAdapter;
-    try {
-      logger.debug({ uid }, 'Initializing CryptoQuant adapter with user API key');
-      cryptoAdapter = new CryptoQuantAdapter(cryptoKey);
-      if (cryptoAdapter.disabled) {
-        throw new Error('CryptoQuant adapter disabled due to invalid key');
+    if (cryptoKey) {
+      try {
+        logger.debug({ uid }, 'Initializing CryptoQuant adapter with user API key');
+        cryptoAdapter = new CryptoQuantAdapter(cryptoKey);
+        if (cryptoAdapter.disabled) {
+          throw new Error('CryptoQuant adapter disabled due to invalid key');
+        }
+        logger.info({ uid }, 'CryptoQuant adapter initialized successfully');
+      } catch (error: any) {
+        logger.warn({ uid, error: error.message }, 'Failed to initialize CryptoQuant adapter - will skip CryptoQuant data');
+        cryptoAdapter = null as any; // Will be handled gracefully in research logic
       }
-      logger.info({ uid }, 'CryptoQuant adapter initialized successfully with user key');
-    } catch (error: any) {
-      logger.error({ uid, error: error.message }, 'Failed to initialize CryptoQuant adapter');
-      throw new ResearchEngineError(
-        `Failed to initialize CryptoQuant adapter: ${error.message}`,
-        this.createErrorId(),
-        500
-      );
+    } else {
+      logger.info({ uid }, 'No CryptoQuant API key - adapter will be disabled');
+      cryptoAdapter = null as any;
     }
 
     // Create free API adapters - no API keys required
@@ -863,9 +863,14 @@ export class ResearchEngine {
 
     try {
       const context = await firestoreAdapter.getActiveExchangeForUser(uid);
-      // NOTE: Exchange API is now optional for Deep Research - return null if not configured
+      // Handle fallback object when no exchange is configured
+      if (context && typeof context === 'object' && 'exchangeConfigured' in context && context.exchangeConfigured === false) {
+        logger.debug({ uid }, 'Exchange integration not configured, using null context for research');
+        return null;
+      }
+      // NOTE: Exchange API is now optional for Deep Research - return context if configured, null if not
       // This allows Deep Research to work without exchange API keys
-      return context || null;
+      return (context && typeof context === 'object' && 'name' in context) ? context : null;
     } catch (error: any) {
       // If exchange lookup fails, return null (exchange is optional for Deep Research)
       logger.debug({ uid, error: error.message }, 'Exchange context lookup failed, using null context');

@@ -372,6 +372,24 @@ export class FirestoreAdapter {
     return integrations;
   }
 
+  /**
+   * Get default data providers that are always available (not stored in Firestore)
+   */
+  getDefaultProviders(): Record<string, { enabled: boolean; displayName: string; free: boolean }> {
+    return {
+      'binance': { enabled: true, displayName: 'Binance Public API', free: true },
+      'coingecko': { enabled: true, displayName: 'CoinGecko API', free: true },
+      'googlefinance': { enabled: true, displayName: 'Google Finance', free: true },
+    };
+  }
+
+  /**
+   * Get real exchanges that can be connected (stored in Firestore)
+   */
+  getRealExchanges(): string[] {
+    return ['binance', 'bybit', 'mexc', 'kucoin', 'bingx', 'okx', 'weex', 'bitget'];
+  }
+
   async ensureDefaultIntegrations(uid: string): Promise<void> {
     const integrationsRef = db()
       .collection('users')
@@ -381,12 +399,8 @@ export class FirestoreAdapter {
     const snapshot = await integrationsRef.get();
     const existingIntegrations = new Set(snapshot.docs.map(doc => doc.id));
 
-    // Default integrations configuration - ONLY 5 APIs for Deep Research
+    // Only create optional research providers - default providers are not stored in Firestore
     const defaultIntegrations = [
-      // Free APIs (always enabled - cannot be toggled off)
-      { name: 'binance', enabled: true, displayName: 'Binance Public API', free: true },
-      { name: 'coingecko', enabled: true, displayName: 'CoinGecko API', free: true },
-      { name: 'googlefinance', enabled: true, displayName: 'Google Finance', free: true },
       // Required APIs (disabled by default, require API keys)
       { name: 'lunarcrush', enabled: false, displayName: 'LunarCrush API', free: false },
       { name: 'cryptoquant', enabled: false, displayName: 'CryptoQuant API', free: false },
@@ -652,9 +666,10 @@ export class FirestoreAdapter {
    * Returns { exchange, credentials } for the highest-priority enabled exchange for a user.
    * If none, returns { exchange: 'fallback' }
    */
-  async getActiveExchangeForUser(uid: string): Promise<ActiveExchangeContext> {
+  async getActiveExchangeForUser(uid: string): Promise<ActiveExchangeContext | { exchangeConfigured: false; error: string }> {
     const integrations = await this.getAllIntegrations(uid);
-    const priorities: ExchangeName[] = ['bitget', 'bingx', 'binance', 'weex', 'kucoin'];
+    // Only real exchanges that can be connected for auto-trade
+    const priorities: ExchangeName[] = ['bitget', 'bingx', 'binance', 'bybit', 'mexc', 'kucoin', 'okx', 'weex'];
 
     for (const exchangeName of priorities) {
       const config = integrations[exchangeName];
@@ -691,7 +706,12 @@ export class FirestoreAdapter {
       }
     }
 
-    throw new Error('No exchange integration configured. Please connect your exchange API keys to use trading features.');
+    // Return safe fallback instead of throwing error for Deep Research compatibility
+    logger.debug({ uid }, 'No exchange integration configured, returning safe fallback');
+    return {
+      exchangeConfigured: false,
+      error: "No exchange integration connected"
+    } as any;
   }
 
   // HFT Settings

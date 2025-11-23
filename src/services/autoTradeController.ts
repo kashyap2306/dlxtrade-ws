@@ -133,13 +133,23 @@ class AutoTradeController {
 
     const risk = this.getUserRiskSettings(userSettings);
     const context = await firestoreAdapter.getActiveExchangeForUser(uid);
-    if (!context) {
+
+    // Handle fallback object when no exchange is configured
+    if (context && typeof context === 'object' && 'exchangeConfigured' in context && context.exchangeConfigured === false) {
+      decision.reason = 'No exchange integration configured';
+      return decision;
+    }
+
+    // Type assertion since we've handled the fallback case
+    const activeContext = context as any;
+
+    if (!activeContext) {
       decision.reason = 'No exchange adapter available';
       return decision;
     }
 
     // Orderbook spread check
-    const orderbook = await context.adapter.getOrderbook(report.symbol, 5);
+    const orderbook = await activeContext.adapter.getOrderbook(report.symbol, 5);
     const bestBid = parseFloat(orderbook.bids?.[0]?.price || '0');
     const bestAsk = parseFloat(orderbook.asks?.[0]?.price || '0');
     if (!bestBid || !bestAsk) {

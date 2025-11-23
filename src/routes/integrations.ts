@@ -11,7 +11,7 @@ import { getFirebaseAdmin } from '../utils/firebase';
 // Validation schemas
 const exchangeNameSchema = z.string().min(2, 'Exchange name is required').max(64, 'Exchange name too long').trim();
 const credentialSchema = z.string().min(1, 'Field is required').max(512, 'Value too long').trim();
-const SINGLE_EXCHANGE_NAMES = ['binance', 'bitget', 'bingx', 'weex', 'kucoin', 'bybit', 'okx'];
+const SINGLE_EXCHANGE_NAMES = ['binance', 'bybit', 'mexc', 'kucoin', 'bingx', 'okx', 'weex', 'bitget'];
 
 const integrationUpdateSchema = z.object({
   apiName: exchangeNameSchema.optional(),
@@ -322,10 +322,35 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       const list = buildIntegrationList(integrations);
       const active = await firestoreAdapter.getActiveExchangeForUser(user.uid);
 
+      // Handle fallback object when no exchange is configured
+      const activeExchangeName = (active && typeof active === 'object' && 'exchangeConfigured' in active && active.exchangeConfigured === false)
+        ? null
+        : (active && 'name' in active ? active.name : null);
+
+      // Add default providers that are always available
+      const defaultProviders = firestoreAdapter.getDefaultProviders();
+      const allProviders = { ...defaultProviders, ...formatted };
+
+      // Separate real exchanges from data providers
+      const realExchanges = firestoreAdapter.getRealExchanges();
+      const dataProviders = ['binance', 'coingecko', 'googlefinance', 'lunarcrush', 'cryptoquant'];
+
+      // Data providers section: always show all 5 (defaults + stored configs)
+      const providerIntegrations = Object.fromEntries(
+        Object.entries(allProviders).filter(([key]) => dataProviders.includes(key))
+      );
+
+      // Real exchanges section: only show actual trading exchanges from Firestore (not defaults)
+      const exchangeIntegrations = Object.fromEntries(
+        Object.entries(formatted).filter(([key]) => realExchanges.includes(key))
+      );
+
       return {
         ok: true,
-        activeExchange: active.name,
-        integrations: formatted,
+        activeExchange: activeExchangeName,
+        dataProviders: providerIntegrations,
+        realExchanges: exchangeIntegrations,
+        integrations: allProviders, // Keep for backward compatibility
         list,
         count: list.length,
       };

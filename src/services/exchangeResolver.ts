@@ -22,26 +22,35 @@ export interface ResolvedExchangeConnector {
  */
 export async function resolveExchangeConnector(uid: string): Promise<ResolvedExchangeConnector | null> {
   try {
-    const active: ActiveExchangeContext = await firestoreAdapter.getActiveExchangeForUser(uid);
-  // ActiveExchangeContext no longer has fallback - this should not happen
-  if (!active.adapter) {
-    logger.warn({ uid }, 'resolveExchangeConnector requested but user has no exchange adapter');
-    return null;
-  }
+    const active = await firestoreAdapter.getActiveExchangeForUser(uid);
 
-    if (!active.apiKey || !active.secret) {
-      logger.warn({ uid, exchange: active.name }, 'Active exchange missing credentials');
+    // Handle fallback object when no exchange is configured
+    if (active && typeof active === 'object' && 'exchangeConfigured' in active && active.exchangeConfigured === false) {
+      logger.debug({ uid }, 'Exchange integration not configured');
+      return null;
+    }
+
+    // Type assertion since we've handled the fallback case
+    const activeContext = active as any;
+    // ActiveExchangeContext should be valid at this point
+    if (!activeContext.adapter) {
+      logger.warn({ uid }, 'resolveExchangeConnector requested but user has no exchange adapter');
+      return null;
+    }
+
+    if (!activeContext.apiKey || !activeContext.secret) {
+      logger.warn({ uid, exchange: activeContext.name }, 'Active exchange missing credentials');
       return null;
     }
 
     return {
-      exchange: active.name as ExchangeName,
-      connector: active.adapter,
+      exchange: activeContext.name as ExchangeName,
+      connector: activeContext.adapter,
       credentials: {
-        apiKey: active.apiKey,
-        secret: active.secret,
-        passphrase: active.passphrase,
-        testnet: active.testnet ?? false,
+        apiKey: activeContext.apiKey,
+        secret: activeContext.secret,
+        passphrase: activeContext.passphrase,
+        testnet: activeContext.testnet ?? false,
       },
     };
   } catch (err: any) {

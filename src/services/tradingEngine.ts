@@ -1,4 +1,4 @@
-import { firestoreAdapter } from './firestoreAdapter';
+import { firestoreAdapter, type ActiveExchangeContext } from './firestoreAdapter';
 import type { ExchangeConnector } from './exchangeConnector';
 
 class TradingEngineError extends Error {
@@ -77,12 +77,21 @@ class TradingEngine {
     bucket.tokens -= 1;
   }
 
-  private async requireContext(uid: string) {
+  private async requireContext(uid: string): Promise<ActiveExchangeContext> {
     const context = await firestoreAdapter.getActiveExchangeForUser(uid);
-    if (!context || !context.adapter) {
+
+    // Handle fallback object when no exchange is configured
+    if (context && typeof context === 'object' && 'exchangeConfigured' in context && context.exchangeConfigured === false) {
       throw new TradingEngineError('No active exchange integration configured');
     }
-    return context;
+
+    // Type assertion since we've handled the fallback case
+    const activeContext = context as ActiveExchangeContext;
+
+    if (!activeContext || !activeContext.adapter) {
+      throw new TradingEngineError('No active exchange integration configured');
+    }
+    return activeContext;
   }
 
   private normalizeBalance(raw: any): TradingBalanceSummary {
