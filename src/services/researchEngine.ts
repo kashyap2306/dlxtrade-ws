@@ -3,7 +3,10 @@ import { logger } from '../utils/logger';
 import { firestoreAdapter, type ActiveExchangeContext } from './firestoreAdapter';
 import { LunarCrushAdapter } from './lunarcrushAdapter';
 import { CryptoQuantAdapter, type CryptoQuantData } from './cryptoquantAdapter';
-import { CoinAPIAdapter } from './coinapiAdapter';
+// NOTE: CoinAPI replaced with free APIs
+import { BinanceAdapter } from './binanceAdapter';
+import { CoinGeckoAdapter } from './coingeckoAdapter';
+import { GoogleFinanceAdapter } from './googleFinanceAdapter';
 import { analyzeRSI } from './strategies/rsiStrategy';
 import { analyzeMACD } from './strategies/macdStrategy';
 import { analyzeVolume } from './strategies/volumeStrategy';
@@ -290,31 +293,27 @@ export class ResearchEngine {
       }
     };
 
-    // User has exchange API configured (context is guaranteed to be valid)
-    const userExchangeAdapter = context.adapter;
+    // NOTE: Exchange API is now optional for Deep Research
+    const userExchangeAdapter = context?.adapter || null;
 
     // ALL provider APIs are required - buildProviderAdapters throws if any are missing
-    const { lunarAdapter, cryptoAdapter, coinapiAdapters } =
+    // NOTE: CoinAPI replaced with free APIs
+    const { lunarAdapter, cryptoAdapter, binanceAdapter, coingeckoAdapter, googleFinanceAdapter } =
       await this.buildProviderAdapters(uid);
 
-    // Require exchange API for market data (should be guaranteed by getActiveExchangeForUser)
-    if (!userExchangeAdapter) {
-      throw new ResearchEngineError(
-        'No exchange API configured. Please connect your exchange API keys to use Deep Research.',
-        this.createErrorId(),
-        422,
-        [{ api: 'Exchange', missingKey: true, reason: 'Exchange API key required for market data' }]
-      );
-    }
+    // NOTE: Exchange API is now OPTIONAL for Deep Research - only required for Auto-Trade
+    // Deep Research works with LunarCrush + CryptoQuant + Free APIs (Binance, CoinGecko, Google Finance)
+    // Exchange API is only needed for actual trading execution, not for research analysis
 
     // All adapters are guaranteed to exist - user must provide all API keys
+    // NOTE: CoinAPI replaced with free APIs, exchange API is optional
     const providersUsed = {
-      userExchange: context.name,
+      userExchange: context?.name || 'none', // Exchange API is optional for Deep Research
       cryptoquant: true,
       lunarcrush: true,
-      coinapi_market: true,
-      coinapi_flatfile: true,
-      coinapi_exchangerate: true,
+      binance: true, // Free market data API
+      coingecko: true, // Free historical data API
+      googlefinance: true, // Free exchange rate API
     };
 
     try {
@@ -452,23 +451,23 @@ export class ResearchEngine {
       );
       const sentiment = analyzeSentiment(sentimentPayload);
 
-      // Global Intelligence: CoinAPI data (market, flatfile, exchangerate)
-      const coinapiMarketData = await runApiCall<{ price?: number; volume24h?: number; priceChangePercent24h?: number }>(
-        'CoinAPI Global Market Data',
-        () => coinapiAdapters.market.getMarketData(normalizedSymbol),
-        { provider: 'CoinAPI' }
+      // Global Intelligence: Free API data (Binance, CoinGecko, Google Finance)
+      const binanceMarketData = await runApiCall<{ price?: number; volume24h?: number; priceChangePercent24h?: number }>(
+        'Binance Market Data',
+        () => binanceAdapter.getMarketData(normalizedSymbol),
+        { provider: 'Binance' }
       );
 
-      const coinapiExchangeRate = await runApiCall<{ exchangeRate?: number }>(
-        'CoinAPI Exchange Rate',
-        () => coinapiAdapters.exchangerate.getExchangeRate(normalizedSymbol.replace('USDT', ''), 'USDT'),
-        { provider: 'CoinAPI' }
+      const googleFinanceExchangeRate = await runApiCall<{ exchangeRate?: number }>(
+        'Google Finance Exchange Rate',
+        () => googleFinanceAdapter.getExchangeRate('USD', 'INR'),
+        { provider: 'Google Finance' }
       );
 
-      const coinapiHistoricalData = await runApiCall<{ historicalData?: Array<{ time: string; price: number }> }>(
-        'CoinAPI Historical Data',
-        () => coinapiAdapters.flatfile.getHistoricalData(normalizedSymbol, 7),
-        { provider: 'CoinAPI' }
+      const coingeckoHistoricalData = await runApiCall<{ historicalData?: Array<{ time: string; price: number }> }>(
+        'CoinGecko Historical Data',
+        () => coingeckoAdapter.getHistoricalData(normalizedSymbol, 90), // 90 days for better analysis
+        { provider: 'CoinGecko' }
       );
 
       const rsi = analyzeRSI(candles);
@@ -570,10 +569,10 @@ export class ResearchEngine {
         newsSentiment: sentiment.description,
         onChainFlows: cryptoQuantOnChain?.activeAddresses ? `${cryptoQuantOnChain.activeAddresses.toLocaleString()} active addresses` : undefined,
         priceDivergence: undefined,
-        globalMarketData: coinapiMarketData ? {
-          price: coinapiMarketData.price,
-          volume24h: coinapiMarketData.volume24h,
-          priceChangePercent24h: coinapiMarketData.priceChangePercent24h
+        globalMarketData: binanceMarketData ? {
+          price: binanceMarketData.price,
+          volume24h: binanceMarketData.volume24h,
+          priceChangePercent24h: binanceMarketData.priceChangePercent24h
         } : undefined,
         _volumeNumber: volume.relativeVolume ?? null,
         _atrValue: atr,
@@ -709,7 +708,10 @@ export class ResearchEngine {
   private async buildProviderAdapters(uid: string): Promise<{
     lunarAdapter: LunarCrushAdapter;
     cryptoAdapter: CryptoQuantAdapter;
-    coinapiAdapters: Record<string, CoinAPIAdapter>;
+    // Free APIs - no API keys required
+    binanceAdapter: BinanceAdapter;
+    coingeckoAdapter: CoinGeckoAdapter;
+    googleFinanceAdapter: GoogleFinanceAdapter;
   }> {
     // Get provider API keys from user's integrations
     const providerKeys = await firestoreAdapter.getUserProviderApiKeys(uid);
@@ -728,15 +730,7 @@ export class ResearchEngine {
       logger.warn({ uid }, 'Missing CryptoQuant API key in user\'s integrations');
     }
 
-    // Check for all required CoinAPI types
-    const requiredCoinAPITypes = ['market', 'flatfile', 'exchangerate'];
-    for (const apiType of requiredCoinAPITypes) {
-      const coinapiKey = providerKeys[`coinapi_${apiType}`]?.apiKey;
-      if (!coinapiKey) {
-        missing.push(`CoinAPI ${apiType} API key`);
-        logger.warn({ uid, apiType }, `Missing CoinAPI ${apiType} API key in user's integrations`);
-      }
-    }
+    // NOTE: CoinAPI is no longer required - using free APIs instead
 
     if (missing.length > 0) {
       logger.error({ uid, missing }, 'User is missing required provider API keys');
@@ -784,34 +778,59 @@ export class ResearchEngine {
       );
     }
 
-    // Create all required CoinAPI adapters
-    const coinapiAdapters: Record<string, CoinAPIAdapter> = {};
-    for (const apiType of requiredCoinAPITypes) {
-      const coinapiKey = providerKeys[`coinapi_${apiType}`]?.apiKey;
-      try {
-        logger.debug({ uid, apiType }, `Initializing CoinAPI ${apiType} adapter with user API key`);
-        coinapiAdapters[apiType] = new CoinAPIAdapter(coinapiKey, apiType as any);
-        logger.info({ uid, apiType }, `CoinAPI ${apiType} adapter initialized successfully with user key`);
-      } catch (error: any) {
-        logger.error({ uid, apiType, error: error.message }, `Failed to initialize CoinAPI ${apiType} adapter`);
-        throw new ResearchEngineError(
-          `Failed to initialize CoinAPI ${apiType} adapter: ${error.message}`,
-          this.createErrorId(),
-          500
-        );
-      }
+    // Create free API adapters - no API keys required
+    let binanceAdapter: BinanceAdapter;
+    let coingeckoAdapter: CoinGeckoAdapter;
+    let googleFinanceAdapter: GoogleFinanceAdapter;
+
+    try {
+      logger.debug({ uid }, 'Initializing Binance adapter (free API)');
+      binanceAdapter = new BinanceAdapter();
+      logger.info({ uid }, 'Binance adapter initialized successfully');
+    } catch (error: any) {
+      logger.error({ uid, error: error.message }, 'Failed to initialize Binance adapter');
+      throw new ResearchEngineError(
+        `Failed to initialize Binance adapter: ${error.message}`,
+        this.createErrorId(),
+        500
+      );
     }
 
-    logger.info({ uid }, 'All provider adapters initialized successfully with user API keys');
-    return { lunarAdapter, cryptoAdapter, coinapiAdapters };
+    try {
+      logger.debug({ uid }, 'Initializing CoinGecko adapter (free API)');
+      coingeckoAdapter = new CoinGeckoAdapter();
+      logger.info({ uid }, 'CoinGecko adapter initialized successfully');
+    } catch (error: any) {
+      logger.error({ uid, error: error.message }, 'Failed to initialize CoinGecko adapter');
+      throw new ResearchEngineError(
+        `Failed to initialize CoinGecko adapter: ${error.message}`,
+        this.createErrorId(),
+        500
+      );
+    }
+
+    try {
+      logger.debug({ uid }, 'Initializing Google Finance adapter (free API)');
+      googleFinanceAdapter = new GoogleFinanceAdapter();
+      logger.info({ uid }, 'Google Finance adapter initialized successfully');
+    } catch (error: any) {
+      logger.error({ uid, error: error.message }, 'Failed to initialize Google Finance adapter');
+      throw new ResearchEngineError(
+        `Failed to initialize Google Finance adapter: ${error.message}`,
+        this.createErrorId(),
+        500
+      );
+    }
+
+    logger.info({ uid }, 'All provider adapters initialized successfully (including free APIs)');
+    return { lunarAdapter, cryptoAdapter, binanceAdapter, coingeckoAdapter, googleFinanceAdapter };
   }
 
-  private async resolveContext(uid: string): Promise<ActiveExchangeContext> {
+  private async resolveContext(uid: string): Promise<ActiveExchangeContext | null> {
     const context = await firestoreAdapter.getActiveExchangeForUser(uid);
-    if (!context) {
-      throw new ResearchEngineError('No exchange integration configured', this.createErrorId(), 400);
-    }
-    return context;
+    // NOTE: Exchange API is now optional for Deep Research - return null if not configured
+    // This allows Deep Research to work without exchange API keys
+    return context || null;
   }
 
   private mapTimeframeToCoinapiPeriod(timeframe: string): string {
