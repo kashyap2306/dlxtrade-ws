@@ -11,6 +11,72 @@ const afterSignInSchema = z.object({
 });
 
 /**
+ * Auto-migrate CoinAPI integrations to free APIs
+ * This runs on every login to catch any users who still have old CoinAPI keys
+ */
+async function autoMigrateCoinAPIToFreeAPIs(uid: string) {
+  // Import db function directly
+  const { getFirebaseAdmin } = await import('../utils/firebase');
+  const admin = await import('firebase-admin');
+  const integrationsRef = admin.firestore(getFirebaseAdmin())
+    .collection('users')
+    .doc(uid)
+    .collection('integrations');
+
+  // Check for CoinAPI integrations
+  const coinAPIDocs = [];
+  const snapshot = await integrationsRef.get();
+
+  snapshot.docs.forEach(doc => {
+    if (doc.id.startsWith('coinapi_')) {
+      coinAPIDocs.push(doc);
+    }
+  });
+
+  if (coinAPIDocs.length > 0) {
+    logger.info({ uid, coinAPICount: coinAPIDocs.length }, 'Found CoinAPI integrations during login, auto-migrating');
+
+    // Delete CoinAPI integrations
+    for (const doc of coinAPIDocs) {
+      await doc.ref.delete();
+      logger.info({ uid, apiName: doc.id }, 'Deleted CoinAPI integration during login migration');
+    }
+  }
+
+  // Ensure free APIs are enabled
+  const freeAPIs = ['binance', 'coingecko', 'googlefinance'];
+
+  for (const apiName of freeAPIs) {
+    const docRef = integrationsRef.doc(apiName);
+    const doc = await docRef.get();
+
+    if (!doc.exists) {
+      // Create new free API integration
+      await docRef.set({
+        enabled: true,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      });
+      logger.info({ uid, apiName }, 'Enabled free API during login migration');
+    } else {
+      // Ensure it's enabled
+      const data = doc.data();
+      if (!data?.enabled) {
+        await docRef.update({
+          enabled: true,
+          updatedAt: new Date()
+        });
+        logger.info({ uid, apiName }, 'Re-enabled free API during login migration');
+      }
+    }
+  }
+
+  if (coinAPIDocs.length > 0) {
+    logger.info({ uid }, 'CoinAPI to free APIs migration completed during login');
+  }
+}
+
+/**
  * Auth routes - handles user signup/login onboarding
  * All user document creation happens on backend only
  */
@@ -110,6 +176,21 @@ export async function authRoutes(fastify: FastifyInstance) {
         logger.info({ uid }, '✅ User document found after retry');
       } else {
         logger.info({ uid, hasEmail: !!userDoc.email, hasName: !!userDoc.name }, '✅ User document verified after onboarding');
+      }
+
+      // Auto-fix: Migrate any remaining CoinAPI integrations to free APIs
+      logger.info({ uid }, 'Checking for CoinAPI integrations to auto-migrate');
+      try {
+        await autoMigrateCoinAPIToFreeAPIs(uid);
+      } catch (error: any) {
+        logger.warn({ uid, error: error.message }, 'CoinAPI auto-migration failed, continuing with login');
+      }
+
+      // Ensure default integrations exist for new users
+      try {
+        await firestoreAdapter.ensureDefaultIntegrations(uid);
+      } catch (error: any) {
+        logger.warn({ uid, error: error.message }, 'Default integrations creation failed, continuing with login');
       }
 
       // Convert timestamps for JSON response

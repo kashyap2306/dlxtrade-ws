@@ -251,7 +251,7 @@ export class ResearchEngine {
     const startedAt = Date.now();
     const context = activeContext ?? await this.resolveContext(uid);
 
-    if (adapterOverride && !activeContext) {
+    if (adapterOverride && !activeContext && uid !== 'system') {
       logger.warn({ uid, symbol: normalizedSymbol }, 'Adapter override ignored — active exchange determined via Firestore');
     }
 
@@ -855,10 +855,22 @@ export class ResearchEngine {
   }
 
   private async resolveContext(uid: string): Promise<ActiveExchangeContext | null> {
-    const context = await firestoreAdapter.getActiveExchangeForUser(uid);
-    // NOTE: Exchange API is now optional for Deep Research - return null if not configured
-    // This allows Deep Research to work without exchange API keys
-    return context || null;
+    // For scheduled research (system user), completely disable exchange context resolution
+    if (uid === 'system') {
+      logger.debug('Scheduled research: exchange context disabled');
+      return null;
+    }
+
+    try {
+      const context = await firestoreAdapter.getActiveExchangeForUser(uid);
+      // NOTE: Exchange API is now optional for Deep Research - return null if not configured
+      // This allows Deep Research to work without exchange API keys
+      return context || null;
+    } catch (error: any) {
+      // If exchange lookup fails, return null (exchange is optional for Deep Research)
+      logger.debug({ uid, error: error.message }, 'Exchange context lookup failed, using null context');
+      return null;
+    }
   }
 
   private mapTimeframeToCoinapiPeriod(timeframe: string): string {

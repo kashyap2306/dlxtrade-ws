@@ -372,6 +372,75 @@ export class FirestoreAdapter {
     return integrations;
   }
 
+  async ensureDefaultIntegrations(uid: string): Promise<void> {
+    const integrationsRef = db()
+      .collection('users')
+      .doc(uid)
+      .collection('integrations');
+
+    const snapshot = await integrationsRef.get();
+    const existingIntegrations = new Set(snapshot.docs.map(doc => doc.id));
+
+    // Default integrations configuration - ONLY 5 APIs for Deep Research
+    const defaultIntegrations = [
+      // Free APIs (always enabled - cannot be toggled off)
+      { name: 'binance', enabled: true, displayName: 'Binance Public API', free: true },
+      { name: 'coingecko', enabled: true, displayName: 'CoinGecko API', free: true },
+      { name: 'googlefinance', enabled: true, displayName: 'Google Finance', free: true },
+      // Required APIs (disabled by default, require API keys)
+      { name: 'lunarcrush', enabled: false, displayName: 'LunarCrush API', free: false },
+      { name: 'cryptoquant', enabled: false, displayName: 'CryptoQuant API', free: false },
+    ];
+
+    const now = admin.firestore.Timestamp.now();
+    const createdIntegrations: string[] = [];
+
+    for (const integration of defaultIntegrations) {
+      const docRef = integrationsRef.doc(integration.name);
+
+      if (!existingIntegrations.has(integration.name)) {
+        // Create new integration document
+        await docRef.set({
+          enabled: integration.enabled,
+          exchangeName: integration.displayName,
+          free: integration.free || false,
+          createdAt: now,
+          updatedAt: now,
+          // Free APIs don't need API keys
+          apiKey: integration.free ? null : undefined,
+          secretKey: integration.free ? null : undefined,
+          passphrase: integration.free ? null : undefined,
+          status: integration.free ? 'VERIFIED' : 'SAVED',
+        });
+
+        createdIntegrations.push(integration.name);
+        logger.info({ uid, apiName: integration.name }, `Created default integration: ${integration.displayName}`);
+      } else {
+        // Update existing integration if it's a free API to ensure it's always enabled
+        if (integration.free) {
+          const existingDoc = await docRef.get();
+          const existingData = existingDoc.data();
+
+          if (!existingData?.enabled) {
+            await docRef.update({
+              enabled: true,
+              free: true,
+              updatedAt: now,
+              status: 'VERIFIED',
+            });
+            logger.info({ uid, apiName: integration.name }, `Re-enabled free API: ${integration.displayName}`);
+          }
+        }
+      }
+    }
+
+    if (createdIntegrations.length > 0) {
+      logger.info({ uid, createdIntegrations }, 'Default integrations created for new user');
+    } else {
+      logger.debug({ uid }, 'Default integrations already exist');
+    }
+  }
+
   async saveIntegration(uid: string, apiName: string, data: {
     enabled: boolean;
     apiKey?: string; // plain text, will be encrypted

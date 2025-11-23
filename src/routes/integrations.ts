@@ -155,6 +155,51 @@ type CredentialValidationResult = {
   meta?: Record<string, any>;
 };
 
+/**
+ * Ensure free APIs are enabled for a user
+ * This auto-enables Binance, CoinGecko, and Google Finance for all users
+ */
+async function ensureFreeAPIsEnabled(uid: string) {
+  // Import db function directly
+  const { getFirebaseAdmin } = await import('../utils/firebase');
+  const admin = await import('firebase-admin');
+  const integrationsRef = admin.firestore(getFirebaseAdmin())
+    .collection('users')
+    .doc(uid)
+    .collection('integrations');
+
+  const freeAPIs = [
+    { name: 'binance', displayName: 'Binance Public API' },
+    { name: 'coingecko', displayName: 'CoinGecko API' },
+    { name: 'googlefinance', displayName: 'Google Finance' }
+  ];
+
+  for (const api of freeAPIs) {
+    const docRef = integrationsRef.doc(api.name);
+    const doc = await docRef.get();
+
+    if (!doc.exists) {
+      // Create new free API integration
+      await docRef.set({
+        enabled: true,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      });
+      logger.info({ uid, apiName: api.name }, `Auto-enabled free API: ${api.displayName}`);
+    } else {
+      // Ensure it's enabled
+      const data = doc.data();
+      if (!data?.enabled) {
+        await docRef.update({
+          enabled: true,
+          updatedAt: new Date()
+        });
+        logger.info({ uid, apiName: api.name }, `Auto-re-enabled free API: ${api.displayName}`);
+      }
+    }
+  }
+}
+
 const runCredentialValidation = async (
   exchangeName: string,
   creds: NormalizedCredentials,
@@ -251,6 +296,10 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = (request as any).user;
+
+    // Ensure all default integrations exist for the user
+    await firestoreAdapter.ensureDefaultIntegrations(user.uid);
+
     const integrations = await firestoreAdapter.getAllIntegrations(user.uid);
 
     return formatIntegrations(integrations);
@@ -261,7 +310,14 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const user = (request as any).user;
-      const integrations = await firestoreAdapter.getAllIntegrations(user.uid);
+      let integrations = await firestoreAdapter.getAllIntegrations(user.uid);
+
+      // If no integrations exist, ensure default integrations are created
+      if (Object.keys(integrations).length === 0) {
+        await firestoreAdapter.ensureDefaultIntegrations(user.uid);
+        integrations = await firestoreAdapter.getAllIntegrations(user.uid);
+      }
+
       const formatted = formatIntegrations(integrations);
       const list = buildIntegrationList(integrations);
       const active = await firestoreAdapter.getActiveExchangeForUser(user.uid);
@@ -455,16 +511,20 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     }
 
     // Validate required fields based on API type
-    if (body.apiName === 'binance') {
+    // Free APIs don't require API keys
+    const freeAPIs = ['binance', 'coingecko', 'googlefinance'];
+    const isFreeAPI = freeAPIs.includes(body.apiName);
+
+    if (!isFreeAPI && body.apiName === 'binance') {
       if (body.enabled && (!body.apiKey || !secretKey)) {
-        return reply.code(400).send({ 
-          error: 'Binance API requires both API key and secret key' 
+        return reply.code(400).send({
+          error: 'Binance API requires both API key and secret key'
         });
       }
-    } else {
+    } else if (!isFreeAPI) {
       if (body.enabled && !body.apiKey) {
-        return reply.code(400).send({ 
-          error: `${body.apiName} API requires an API key` 
+        return reply.code(400).send({
+          error: `${body.apiName} API requires an API key`
         });
       }
     }
@@ -909,40 +969,62 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
             apiName: 'lunarcrush',
           });
         }
-      } else if (body.apiName === 'coinapi') {
-        if (!body.apiKey || !body.apiType) {
-          return reply.code(400).send({
-            valid: false,
-            error: 'CoinAPI requires both API key and apiType',
-            apiName: 'coinapi',
-          });
-        }
-
+      // NOTE: CoinAPI is no longer supported - replaced with free APIs
+      } else if (body.apiName === 'binance') {
+        // Free API - no key required, just test connectivity
         try {
-          const { CoinAPIAdapter } = await import('../services/coinapiAdapter');
-          const apiTypePlain = (body.apiType.startsWith('coinapi_') ? body.apiType.replace('coinapi_', '') : body.apiType) as 'market' | 'flatfile' | 'exchangerate';
-          const adapter = new CoinAPIAdapter(body.apiKey, apiTypePlain);
-          
-          // Test based on type
-          if (body.apiType === 'market' || body.apiType === 'coinapi_market') {
-            await adapter.getMarketData('BTCUSDT');
-          } else if (body.apiType === 'flatfile' || body.apiType === 'coinapi_flatfile') {
-            await adapter.getHistoricalData('BTCUSDT', 1);
-          } else if (body.apiType === 'exchangerate' || body.apiType === 'coinapi_exchangerate') {
-            await adapter.getExchangeRate('BTC', 'USD');
-          }
-          
+          const { BinanceAdapter } = await import('../services/binanceAdapter');
+          const adapter = new BinanceAdapter();
+          await adapter.getMarketData('BTCUSDT');
+
           return {
             valid: true,
-            apiName: 'coinapi',
-            apiType: body.apiType,
+            apiName: 'binance',
+            message: 'Binance public API accessible',
           };
         } catch (error: any) {
           return reply.code(400).send({
             valid: false,
-            error: error.message || 'CoinAPI validation failed',
-            apiName: 'coinapi',
-            apiType: body.apiType,
+            error: error.message || 'Binance API test failed',
+            apiName: 'binance',
+          });
+        }
+      } else if (body.apiName === 'coingecko') {
+        // Free API - no key required, just test connectivity
+        try {
+          const { CoinGeckoAdapter } = await import('../services/coingeckoAdapter');
+          const adapter = new CoinGeckoAdapter();
+          await adapter.getHistoricalData('BTCUSDT', 1);
+
+          return {
+            valid: true,
+            apiName: 'coingecko',
+            message: 'CoinGecko API accessible',
+          };
+        } catch (error: any) {
+          return reply.code(400).send({
+            valid: false,
+            error: error.message || 'CoinGecko API test failed',
+            apiName: 'coingecko',
+          });
+        }
+      } else if (body.apiName === 'googlefinance') {
+        // Free API - no key required, just test connectivity
+        try {
+          const { GoogleFinanceAdapter } = await import('../services/googleFinanceAdapter');
+          const adapter = new GoogleFinanceAdapter();
+          await adapter.getExchangeRate('USD', 'INR');
+
+          return {
+            valid: true,
+            apiName: 'googlefinance',
+            message: 'Google Finance accessible',
+          };
+        } catch (error: any) {
+          return reply.code(400).send({
+            valid: false,
+            error: error.message || 'Google Finance test failed',
+            apiName: 'googlefinance',
           });
         }
       }
@@ -1152,79 +1234,40 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         }
       }
 
-      // Process CoinAPI integrations
-      const coinapiTypes = ['market', 'flatfile', 'exchangerate'];
-      for (const apiType of coinapiTypes) {
-        const integrationName = `coinapi_${apiType}`;
-        const integration = integrations[integrationName];
-        if (!integration || !integration.enabled || !integration.apiKey) {
+      // Process Free APIs (no API keys required)
+      for (const [integrationName, integration] of Object.entries(integrations)) {
+        if (!['binance', 'coingecko', 'googlefinance'].includes(integrationName)) continue;
+
+        const displayNames = {
+          binance: 'Binance Public API',
+          coingecko: 'CoinGecko API',
+          googlefinance: 'Google Finance'
+        };
+
+        // Free APIs are always "enabled" since they don't require keys
+        const isEnabled = integration ? integration.enabled !== false : true;
+
+        if (!isEnabled) {
           statusResults[integrationName] = {
             isConnected: false,
-            exchangeName: `CoinAPI ${apiType}`,
-            apiKeyStatus: 'missing',
-            connectionStatus: 'disconnected',
-            message: 'API key not configured',
-            type: 'coinapi'
+            exchangeName: displayNames[integrationName as keyof typeof displayNames],
+            apiKeyStatus: 'not_required',
+            connectionStatus: 'disabled',
+            message: 'API disabled',
+            type: 'free'
           };
           continue;
         }
 
-        try {
-          const apiKey = decrypt(integration.apiKey);
-          if (!apiKey) {
-            statusResults[integrationName] = {
-              isConnected: false,
-              exchangeName: `CoinAPI ${apiType}`,
-              apiKeyStatus: 'invalid',
-              connectionStatus: 'disconnected',
-              message: 'API key decryption failed',
-              type: 'coinapi'
-            };
-            continue;
-          }
-
-          // Test CoinAPI connection by making actual API call
-          try {
-            const { CoinAPIAdapter } = await import('../services/coinapiAdapter');
-            const adapter = new CoinAPIAdapter(apiKey, apiType as any);
-
-            if (apiType === 'market') {
-              await adapter.getMarketData('BTCUSDT');
-            } else if (apiType === 'exchangerate') {
-              await adapter.getExchangeRate('BTC', 'USDT');
-            } else if (apiType === 'flatfile') {
-              await adapter.getHistoricalData('BTCUSDT', 1);
-            }
-
-            statusResults[integrationName] = {
-              isConnected: true,
-              exchangeName: `CoinAPI ${apiType}`,
-              apiKeyStatus: 'valid',
-              connectionStatus: 'connected',
-              message: 'API connection successful',
-              type: 'coinapi'
-            };
-          } catch (connectionError: any) {
-            statusResults[integrationName] = {
-              isConnected: false,
-              exchangeName: `CoinAPI ${apiType}`,
-              apiKeyStatus: 'valid',
-              connectionStatus: 'connection_failed',
-              message: connectionError.message || 'Connection test failed',
-              type: 'coinapi'
-            };
-          }
-
-        } catch (error: any) {
-          statusResults[integrationName] = {
-            isConnected: false,
-            exchangeName: `CoinAPI ${apiType}`,
-            apiKeyStatus: 'error',
-            connectionStatus: 'error',
-            message: error.message || 'Status check failed',
-            type: 'coinapi'
-          };
-        }
+        // For free APIs, we assume they are accessible since they don't require API keys
+        statusResults[integrationName] = {
+          isConnected: true,
+          exchangeName: displayNames[integrationName as keyof typeof displayNames],
+          apiKeyStatus: 'not_required',
+          connectionStatus: 'connected',
+          message: 'Free API accessible',
+          type: 'free'
+        };
       }
 
       return {
