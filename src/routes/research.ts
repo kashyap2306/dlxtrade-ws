@@ -41,14 +41,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
     const user = (request as any).user;
     const forceEngine = request.body?.forceEngine === true;
     
-    // DEBUG: Log incoming request
-    console.log('🔍 [RESEARCH/RUN] Incoming request:', {
-      body: request.body,
-      uid: user?.uid,
-      hasUser: !!user,
-      forceEngine,
-    });
-    logger.info({ body: request.body, uid: user?.uid, forceEngine }, 'Research/run request received');
+    logger.info({ uid: user?.uid, forceEngine }, 'Research/run request received');
     
     // Validate user is authenticated
     if (!user || !user.uid) {
@@ -230,11 +223,10 @@ export async function researchRoutes(fastify: FastifyInstance) {
         results: allResults, // Return full results with all new fields
         totalAnalyzed: allResults.length,
       };
-      
-      console.log(`🔍 [RESEARCH/RUN] Completed analysis of ${allResults.length} symbols`);
-      logger.info({ 
+
+      logger.info({
         symbolCount: allResults.length,
-        forceEngine 
+        forceEngine
       }, 'Multi-coin Deep Research completed');
       
       reply.code(200).header('Content-Type', 'application/json').send(finalResponse);
@@ -244,8 +236,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
       logger.error({ error: error.message, uid: user?.uid, stack: error.stack }, 'Error in research/run');
       
       // Determine error type and status code
-      let statusCode = 500;
-      let errorMessage = error.message || 'Deep Research engine internal error';
+      let statusCode = 400;
+      let errorMessage = error.message || 'Deep Research engine error';
 
       // Check for ResearchEngineError with custom status code
       if (error.name === 'ResearchEngineError' && error.statusCode) {
@@ -332,22 +324,12 @@ export async function researchRoutes(fastify: FastifyInstance) {
           exchangeConfigured: !(activeContext && typeof activeContext === 'object' && 'exchangeConfigured' in activeContext && activeContext.exchangeConfigured === false),
         });
       } catch (researchError: any) {
-        // Handle mandatory provider errors (400) vs other errors (500)
-        if (researchError.statusCode === 400) {
-          // Missing mandatory provider
-          reply.code(400).header('Content-Type', 'application/json').send({
-            success: false,
-            message: researchError.message,
-            results: [],
-          });
-        } else {
-          // Other research error
-          reply.code(500).header('Content-Type', 'application/json').send({
-            success: false,
-            message: researchError.message || 'Research engine error',
-            results: [],
-          });
-        }
+        // Manual Research API must NEVER return 500 - convert ALL errors to 400
+        reply.code(400).header('Content-Type', 'application/json').send({
+          success: false,
+          message: researchError.message || 'Research failed',
+          results: [],
+        });
       }
 
     } catch (error: any) {
@@ -369,8 +351,6 @@ export async function researchRoutes(fastify: FastifyInstance) {
       const symbol = request.body?.symbol || 'BTCUSDT';
       const uid = request.body?.uid || 'test-user-123';
       const timeframe = request.body?.timeframe || '5m';
-
-      console.log('🧪 [TEST RESEARCH] Starting test run for symbol:', symbol, 'uid:', uid);
 
       const activeContext = await firestoreAdapter.getActiveExchangeForUser(uid);
       // Handle fallback object - pass null to runResearch if exchange not configured
@@ -395,7 +375,17 @@ export async function researchRoutes(fastify: FastifyInstance) {
       });
     } catch (error: any) {
       console.error('🧪 [TEST RESEARCH] Error:', error);
-      reply.code(500).header('Content-Type', 'application/json').send({
+
+      // Test route must NEVER return 500 - convert ResearchEngineError to 400
+      let statusCode = 500;
+      if (error.name === 'ResearchEngineError' && error.statusCode) {
+        statusCode = error.statusCode;
+      } else {
+        // For non-ResearchEngineError, still return 400 to prevent 500
+        statusCode = 400;
+      }
+
+      reply.code(statusCode).header('Content-Type', 'application/json').send({
         success: false,
         message: error.message || 'Test research failed',
         results: [],

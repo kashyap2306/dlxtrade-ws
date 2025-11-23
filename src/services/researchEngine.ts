@@ -347,7 +347,7 @@ export class ResearchEngine {
         }));
       }
       if (!candles || candles.length === 0) {
-        throw new ResearchEngineError(`Failed to fetch primary candles from ${exchangeName}`, this.createErrorId(), 502);
+        throw new ResearchEngineError(`Failed to fetch primary candles from ${exchangeName}`, this.createErrorId(), 400);
       }
       this.ensureCandleCoverage(candles);
 
@@ -360,9 +360,23 @@ export class ResearchEngine {
             return candles;
           }
           try {
-            return await this.fetchExchangeCandles(userExchangeAdapter!, normalizedSymbol, tf, 500, apiCalls);
+            // Use exchange adapter if available, otherwise fall back to Binance
+            if (userExchangeAdapter && context) {
+              return await this.fetchExchangeCandles(userExchangeAdapter, normalizedSymbol, tf, 500, apiCalls);
+            } else {
+              // Fall back to Binance free API for multi-timeframe data
+              const binanceCandles = await binanceAdapter.getKlines(normalizedSymbol, tf, 500);
+              return binanceCandles.map(candle => ({
+                timestamp: candle.time,
+                open: candle.open,
+                high: candle.high,
+                low: candle.low,
+                close: candle.close,
+                volume: candle.volume,
+              }));
+            }
           } catch (error: any) {
-            logger.warn({ symbol: normalizedSymbol, timeframe: tf, error: error.message }, `${exchangeName} timeframe fetch failed`);
+            logger.warn({ symbol: normalizedSymbol, timeframe: tf, error: error.message }, `Timeframe fetch failed for ${tf}`);
             return null;
           }
         },
@@ -371,20 +385,43 @@ export class ResearchEngine {
       const currentPrice = candles[candles.length - 1].close;
       const priceMomentum = this.calculatePriceMomentum(candles);
 
-      const rawOrderbook = await runApiCall<Orderbook>(
-        `${exchangeName.toUpperCase()} Orderbook`,
-        async () => {
-          apiCalls.push(`${exchangeName}:orderbook`);
-          const orderbookResponse = await userExchangeAdapter!.getOrderbook(normalizedSymbol, 20);
-          if (!orderbookResponse) {
-            throw new Error(`${exchangeName} returned empty orderbook`);
-          }
-          return orderbookResponse;
-        },
-        { provider: exchangeName }
-      );
+      let rawOrderbook: Orderbook;
+      let orderbookProvider: string;
+
+      if (userExchangeAdapter && context) {
+        // Use exchange orderbook if available
+        rawOrderbook = await runApiCall<Orderbook>(
+          `${exchangeName.toUpperCase()} Orderbook`,
+          async () => {
+            apiCalls.push(`${exchangeName}:orderbook`);
+            const orderbookResponse = await userExchangeAdapter!.getOrderbook(normalizedSymbol, 20);
+            if (!orderbookResponse) {
+              throw new Error(`${exchangeName} returned empty orderbook`);
+            }
+            return orderbookResponse;
+          },
+          { provider: exchangeName }
+        );
+        orderbookProvider = exchangeName;
+      } else {
+        // Fall back to Binance orderbook (depth = 20 for compatibility)
+        rawOrderbook = await runApiCall<Orderbook>(
+          'Binance Orderbook (Fallback)',
+          async () => {
+            apiCalls.push('binance:orderbook');
+            const orderbookResponse = await binanceAdapter.getOrderbook(normalizedSymbol, 20);
+            if (!orderbookResponse) {
+              throw new Error('Binance returned empty orderbook');
+            }
+            return orderbookResponse;
+          },
+          { provider: 'Binance' }
+        );
+        orderbookProvider = 'Binance';
+      }
+
       if (!rawOrderbook) {
-        throw new ResearchEngineError(`Failed to fetch orderbook data from ${exchangeName}`, this.createErrorId(), 502);
+        throw new ResearchEngineError(`Failed to fetch orderbook data from ${orderbookProvider}`, this.createErrorId(), 400);
       }
       const orderbook: Orderbook = {
         symbol: normalizedSymbol,
@@ -393,7 +430,7 @@ export class ResearchEngine {
         lastUpdateId: Date.now(),
       };
       const exchangeOrderbooks: Array<{ exchange: string; bidsCount: number; asksCount: number }> = [
-        { exchange: exchangeName, bidsCount: orderbook.bids.length, asksCount: orderbook.asks.length },
+        { exchange: orderbookProvider, bidsCount: orderbook.bids.length, asksCount: orderbook.asks.length },
       ];
 
       const liquidity = analyzeLiquidity(orderbook, 5);
@@ -721,7 +758,7 @@ export class ResearchEngine {
       const errorId = this.createErrorId();
       const message = err?.message || 'Research processing failed';
       logger.error({ uid, symbol: normalizedSymbol, error: message, errorId }, 'Research engine failed');
-      throw new ResearchEngineError(message, errorId, 500);
+      throw new ResearchEngineError(message, errorId, 400);
     }
   }
 
@@ -789,7 +826,7 @@ export class ResearchEngine {
       throw new ResearchEngineError(
         'Failed to initialize LunarCrush adapter for Deep Research.',
         this.createErrorId(),
-        500
+        400
       );
     }
 
@@ -806,7 +843,7 @@ export class ResearchEngine {
       throw new ResearchEngineError(
         'Failed to initialize CryptoQuant adapter for Deep Research.',
         this.createErrorId(),
-        500
+        400
       );
     }
 
@@ -824,7 +861,7 @@ export class ResearchEngine {
       throw new ResearchEngineError(
         `Failed to initialize Binance adapter: ${error.message}`,
         this.createErrorId(),
-        500
+        400
       );
     }
 
@@ -837,7 +874,7 @@ export class ResearchEngine {
       throw new ResearchEngineError(
         `Failed to initialize CoinGecko adapter: ${error.message}`,
         this.createErrorId(),
-        500
+        400
       );
     }
 
@@ -850,7 +887,7 @@ export class ResearchEngine {
       throw new ResearchEngineError(
         `Failed to initialize Google Finance adapter: ${error.message}`,
         this.createErrorId(),
-        500
+        400
       );
     }
 
