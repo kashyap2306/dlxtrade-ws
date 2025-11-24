@@ -11,7 +11,7 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest<{ Body: { api: string; apiKey?: string; secretKey?: string; passphrase?: string; exchange?: string } }>, reply: FastifyReply) => {
     const user = (request as any).user;
     const body = z.object({
-      api: z.enum(['binance', 'coingecko', 'googlefinance', 'marketaux', 'cryptoquant', 'exchange']),
+      api: z.enum(['binance', 'coingecko', 'googlefinance', 'marketaux', 'cryptocompare', 'exchange']),
       apiKey: z.string().optional(),
       secretKey: z.string().optional(),
       passphrase: z.string().optional(),
@@ -166,15 +166,15 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
           }
         }
 
-        case 'cryptoquant': {
-          const apiKey = body.apiKey || integrations['cryptoquant']?.apiKey;
+        case 'cryptocompare': {
+          const apiKey = body.apiKey || integrations['cryptocompare']?.apiKey;
           if (!apiKey) {
             return {
-              apiName: 'cryptoquant',
+              apiName: 'cryptocompare',
               success: false,
               reachable: false,
               credentialsValid: false,
-              error: 'CryptoQuant API key not configured',
+              error: 'CryptoCompare API key not configured',
               latency: Date.now() - startTime,
             };
           }
@@ -192,11 +192,10 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
               credentialsValid: true,
               latency,
               details: {
-                whaleScore: testData.whaleScore,
-                reserveChange: testData.reserveChange,
-                minerOutflow: testData.minerOutflow,
-                fundingRate: testData.fundingRate,
-                liquidations: testData.liquidations,
+                ohlcCount: testData.ohlc?.length || 0,
+                indicators: testData.indicators ? Object.keys(testData.indicators) : [],
+                marketData: testData.market ? Object.keys(testData.market) : [],
+                volumeData: testData.volume ? Object.keys(testData.volume) : [],
               },
             };
           } catch (err: any) {

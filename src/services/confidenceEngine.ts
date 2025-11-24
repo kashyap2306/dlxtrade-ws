@@ -267,12 +267,7 @@ export function computeFeatureScores(features: ConfidenceFeatureInputs): Feature
     availability.priceMomentum = true;
   }
 
-  if (isFiniteNumber(features.onChainScore)) {
-    // onChainScore is already 0-100, convert to -1 to +1 scale
-    const normalizedScore = ((features.onChainScore as number) / 50) - 1;
-    perFeatureScore.onChainScore = Math.max(-1, Math.min(1, normalizedScore));
-    availability.onChainScore = true;
-  }
+  // Removed onChainScore since CryptoCompare no longer provides on-chain metrics
 
   const microScores: Array<number | null> = [];
   if (isFiniteNumber(features.microSignals?.spread)) {

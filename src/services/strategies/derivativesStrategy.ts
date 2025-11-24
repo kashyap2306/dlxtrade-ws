@@ -121,44 +121,8 @@ export async function fetchDerivativesData(
     }
   }
 
-  // Supplement with CryptoCompare if available
-  if (cryptoCompareAdapter) {
-    try {
-      // Get all metrics from CryptoCompare
-      const cryptoData = await cryptoCompareAdapter.getAllMetrics(symbol);
-
-      // Add funding rate data if not already present
-      if (!data.fundingRate && cryptoData.fundingRate !== undefined) {
-        data.fundingRate = {
-          fundingRate: cryptoData.fundingRate / 100, // Convert from percentage
-          timestamp: Date.now(),
-        };
-      }
-
-      // Add liquidation data if not already present
-      if (!data.liquidations && cryptoData.liquidations !== undefined) {
-        data.liquidations = {
-          longLiquidation24h: cryptoData.liquidations * 0.6,
-          shortLiquidation24h: cryptoData.liquidations * 0.4,
-          totalLiquidation24h: cryptoData.liquidations,
-          timestamp: Date.now(),
-        };
-      }
-
-      // Use reserve change as proxy for open interest if not already present
-      if (!data.openInterest && cryptoData.reserveChange !== undefined) {
-        data.openInterest = {
-          openInterest: Math.abs(cryptoData.reserveChange) * 1000000,
-          change24h: cryptoData.reserveChange / 100,
-          timestamp: Date.now(),
-        };
-      }
-
-      data.source = data.fundingRate || data.openInterest || data.liquidations ? 'both' : 'cryptocompare';
-    } catch (err: any) {
-      // CryptoCompare failed, use exchange data only
-    }
-  }
+  // Removed CryptoCompare derivatives supplementation since CryptoCompare no longer provides these metrics
+  // Derivatives data should come from dedicated derivatives exchanges (Binance Futures, etc.)
 
   return data;
 }

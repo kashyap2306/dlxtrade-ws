@@ -333,7 +333,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
 
       // Separate real exchanges from data providers
       const realExchanges = firestoreAdapter.getRealExchanges();
-      const dataProviders = ['binance', 'coingecko', 'googlefinance', 'marketaux', 'cryptoquant'];
+      const dataProviders = ['binance', 'coingecko', 'googlefinance', 'marketaux', 'cryptocompare'];
 
       // Data providers section: always show all 5 (defaults + stored configs)
       const providerIntegrations = Object.fromEntries(
@@ -942,12 +942,12 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
             apiName: 'binance',
           });
         }
-      } else if (body.apiName === 'cryptoquant') {
+      } else if (body.apiName === 'cryptocompare') {
         if (!body.apiKey) {
           return reply.code(400).send({
             valid: false,
-            error: 'CryptoQuant API requires an API key',
-            apiName: 'cryptoquant',
+            error: 'CryptoCompare API requires an API key',
+            apiName: 'cryptocompare',
           });
         }
 
@@ -959,13 +959,13 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
           
           return {
             valid: true,
-            apiName: 'cryptoquant',
+            apiName: 'cryptocompare',
           };
         } catch (error: any) {
           return reply.code(400).send({
             valid: false,
-            error: error.message || 'CryptoQuant API validation failed',
-            apiName: 'cryptoquant',
+            error: error.message || 'CryptoCompare API validation failed',
+            apiName: 'cryptocompare',
           });
         }
       } else if (body.apiName === 'marketaux') {
@@ -1085,7 +1085,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
 
       // Define which integrations are exchanges vs providers
       const exchangeIntegrations = ['binance', 'bitget', 'bingx', 'weex', 'kucoin'];
-      const providerIntegrations = ['marketaux', 'cryptoquant'];
+      const providerIntegrations = ['marketaux', 'cryptocompare'];
 
       // Process exchange integrations
       for (const exchangeName of exchangeIntegrations) {

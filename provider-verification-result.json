@@ -1,0 +1,197 @@
+{
+  "providers": {
+    "marketaux": {
+      "provider": "marketaux",
+      "ok": false,
+      "called": true,
+      "statusCode": 401,
+      "elapsedMs": 2089,
+      "dataPreview": [],
+      "validation": {
+        "sentimentFinite": false,
+        "articlesArray": false,
+        "articlesHaveRequiredFields": false
+      },
+      "errors": [
+        "HTTP 401: Request failed with status code 401"
+      ]
+    },
+    "cryptocompare": {
+      "provider": "cryptocompare",
+      "ok": false,
+      "called": true,
+      "statusCode": "NO_API_KEY",
+      "elapsedMs": 0,
+      "ohlcCounts": {
+        "5m": 0,
+        "15m": 0,
+        "1h": 0
+      },
+      "indicatorsSample": {},
+      "validation": {
+        "ohlc5mSufficient": false,
+        "ohlc15mSufficient": false,
+        "ohlc1hSufficient": false,
+        "rsiFinite": false,
+        "macdFinite": false
+      },
+      "errors": [
+        "CryptoCompare API key not provided"
+      ]
+    },
+    "binance": {
+      "provider": "binance",
+      "ok": true,
+      "called": true,
+      "statusCode": 200,
+      "elapsedMs": 938,
+      "depth": {
+        "bidsCount": 20,
+        "asksCount": 20,
+        "totalBid": 1.2499699999999996,
+        "totalAsk": 3.0191200000000005,
+        "imbalance": -0.4144091597975214
+      },
+      "spreadPercent": 0.000011420912249149058,
+      "volume24h": 20001.34294,
+      "volatility": 0.02901744666203696,
+      "validation": {
+        "orderbookValid": true,
+        "spreadFinite": true,
+        "volumeFinite": true,
+        "volatilityFinite": true,
+        "imbalanceValid": true
+      },
+      "errors": []
+    },
+    "coingecko": {
+      "provider": "coingecko",
+      "ok": true,
+      "called": true,
+      "statusCode": 200,
+      "elapsedMs": 963,
+      "historicalPoints": 169,
+      "metadataPreview": {
+        "id": "bitcoin",
+        "symbol": "btc",
+        "market_cap_rank": 1
+      },
+      "validation": {
+        "historicalSufficient": true,
+        "metadataValid": true,
+        "priceDataValid": true
+      },
+      "errors": []
+    },
+    "googlefinance": {
+      "provider": "googlefinance",
+      "ok": true,
+      "called": true,
+      "statusCode": 200,
+      "elapsedMs": 1260,
+      "rateSample": 89.63,
+      "validation": {
+        "rateFinite": true,
+        "endpointReachable": true
+      },
+      "errors": []
+    }
+  },
+  "aggregatedFeatures": {
+    "rsi": {
+      "sources": [
+        "cryptocompare"
+      ],
+      "pass": false
+    },
+    "macd": {
+      "sources": [
+        "cryptocompare"
+      ],
+      "pass": false
+    },
+    "volume": {
+      "sources": [
+        "binance"
+      ],
+      "sampleValue": 20001.34294,
+      "pass": true
+    },
+    "orderbookImbalance": {
+      "sources": [
+        "binance"
+      ],
+      "sampleValue": -0.4144091597975214,
+      "pass": true
+    },
+    "liquidity": {
+      "sources": [
+        "binance"
+      ],
+      "sampleValue": 0.000011420912249149058,
+      "pass": true
+    },
+    "volatility": {
+      "sources": [
+        "binance"
+      ],
+      "sampleValue": 0.02901744666203696,
+      "pass": true
+    },
+    "sentiment": {
+      "sources": [
+        "marketaux"
+      ],
+      "pass": false
+    },
+    "news": {
+      "sources": [
+        "marketaux"
+      ],
+      "pass": false
+    }
+  },
+  "deepResearch": {
+    "ok": false,
+    "statusCode": "SERVER_NOT_AVAILABLE",
+    "elapsedMs": 0,
+    "result": null,
+    "reasons": [
+      "Backend server not available for testing"
+    ],
+    "verification": "SKIP: Backend server not configured/available"
+  },
+  "remediationActions": [
+    {
+      "provider": "marketaux",
+      "issue": "Authentication failed",
+      "action": "Verified API key format and length",
+      "result": "Key appears valid, may be expired or invalid"
+    }
+  ],
+  "summary": {
+    "fullyHealthyProviders": [
+      "binance",
+      "coingecko",
+      "googlefinance"
+    ],
+    "partiallyHealthyProviders": [
+      {
+        "name": "marketaux",
+        "issues": "HTTP 401: Request failed with status code 401"
+      },
+      {
+        "name": "cryptocompare",
+        "issues": "CryptoCompare API key not provided"
+      }
+    ],
+    "criticalFeatureFailures": [
+      "rsi",
+      "macd",
+      "sentiment",
+      "news"
+    ],
+    "deepResearchStatus": "SKIP: Backend server not configured/available",
+    "remediationActions": 1
+  }
+}

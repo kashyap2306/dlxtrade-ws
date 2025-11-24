@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { logger } from '../utils/logger';
 import { firestoreAdapter, type ActiveExchangeContext } from './firestoreAdapter';
 import { MarketAuxAdapter, MarketAuxData } from './MarketAuxAdapter';
-import { CryptoCompareAdapter, type CryptoCompareData } from './cryptoCompareAdapter';
+import { CryptoCompareAdapter, type CryptoCompareData, type MTFIndicators, type MTFConfluenceResult } from './cryptoCompareAdapter';
 // NOTE: CoinAPI replaced with free APIs
 import { BinancePublicAdapter } from './binancePublicAdapter';
 import { CoinGeckoAdapter } from './coingeckoAdapter';
@@ -164,6 +164,13 @@ export interface ResearchResult {
   perTimeframeBreakdown?: Record<string, TimeframeBreakdown>;
   liquidityAcceptable?: boolean;
   derivativesAligned?: boolean;
+  mtf?: {
+    "5m": MTFIndicators;
+    "15m": MTFIndicators;
+    "1h": MTFIndicators;
+    score: string;
+    boost: string;
+  };
   features?: {
     rsi: number | null;
     rsiSignal: string | null;
@@ -211,6 +218,7 @@ export interface ResearchResult {
   derivativesContradict?: boolean;
   apiCallReport: ApiCallReportEntry[];
   missingDependencies?: MissingDependency[];
+  _providerDebug?: Record<string, any>; // Debug info for provider calls
 }
 
 class ResearchEngineError extends Error {
@@ -245,7 +253,7 @@ export class ResearchEngine {
     _legacy?: Array<{ exchange: string; adapter: ExchangeConnector; credentials: any }>,
     timeframe: string = '5m',
     activeContext?: ActiveExchangeContext,
-    overrideKeys?: { marketauxApiKey?: string; cryptoquantApiKey?: string }
+    overrideKeys?: { marketauxApiKey?: string; cryptocompareApiKey?: string }
   ): Promise<ResearchResult> {
     const normalizedSymbol = this.normalizeSymbol(symbol);
     const normalizedTimeframe = this.normalizeTimeframe(timeframe);
@@ -258,9 +266,50 @@ export class ResearchEngine {
 
     const apiCalls: string[] = [];
     const apiCallReport: ApiCallReportEntry[] = [];
+    const providerDebug: Record<string, any> = {};
+
+    // Declare variables that are used before their initialization
+    let binanceSpreadPercent: number | null = null;
+    let binanceTickerResult: { success: boolean; data?: any; error?: any; duration: number; httpStatus?: number };
+    let binanceBookTickerResult: { success: boolean; data?: any; error?: any; duration: number; httpStatus?: number };
+    let binanceVolatilityResult: { success: boolean; data?: any; error?: any; duration: number; httpStatus?: number };
+    let binanceMarketData: any = {};
+    let binanceVolumeTrend: string = 'Stable';
+    let binanceTickerData: any = null;
 
     const recordApiCall = (entry: ApiCallReportEntry) => {
       apiCallReport.push(entry);
+    };
+
+    const logProviderCall = async <T>(
+      providerName: string,
+      fn: () => Promise<T>
+    ): Promise<{ success: boolean; data?: T; error?: any; duration: number; httpStatus?: number }> => {
+      const startTime = Date.now();
+      try {
+        const result = await fn();
+        const duration = Date.now() - startTime;
+        providerDebug[providerName] = {
+          called: true,
+          status: 'SUCCESS',
+          durationMs: duration,
+          dataPreview: result ? Object.keys(result) : null,
+        };
+        logger.info({ provider: providerName, status: 'SUCCESS', durationMs: duration, dataKeys: result ? Object.keys(result) : null }, `Provider ${providerName} call completed`);
+        return { success: true, data: result, duration };
+      } catch (err: any) {
+        const duration = Date.now() - startTime;
+        const httpStatus = err.response?.status;
+        providerDebug[providerName] = {
+          called: true,
+          status: 'ERROR',
+          durationMs: duration,
+          httpStatus,
+          error: err.message,
+        };
+        logger.error({ provider: providerName, status: 'ERROR', durationMs: duration, httpStatus, error: err.message }, `Provider ${providerName} call failed`);
+        return { success: false, error: err, duration, httpStatus };
+      }
     };
 
     const runApiCall = async <T>(
@@ -434,75 +483,111 @@ export class ResearchEngine {
         { exchange: orderbookProvider, bidsCount: orderbook.bids.length, asksCount: orderbook.asks.length },
       ];
 
-      const liquidity = analyzeLiquidity(orderbook, 5);
+      // Use Binance book ticker data for more accurate spread calculation
+      let enhancedLiquidity = analyzeLiquidity(orderbook, 5);
+
+      // Override spread calculation if we have book ticker data
+      if (binanceSpreadPercent !== null && Number.isFinite(binanceSpreadPercent)) {
+        // Determine signal based on spread thresholds (updated from user's requirements)
+        let spreadSignal: 'High' | 'Medium' | 'Low';
+        if (binanceSpreadPercent < 0.02) {
+          spreadSignal = 'High';
+        } else if (binanceSpreadPercent >= 0.02 && binanceSpreadPercent <= 0.1) {
+          spreadSignal = 'Medium';
+        } else {
+          spreadSignal = 'Low';
+        }
+
+        // Create enhanced liquidity object with accurate spread
+        enhancedLiquidity = {
+          ...enhancedLiquidity,
+          spread: binanceSpreadPercent * (currentPrice / 100), // Convert percentage to absolute spread
+          spreadPercent: binanceSpreadPercent,
+          signal: spreadSignal,
+        };
+      }
+
+      const liquidity = enhancedLiquidity;
       const imbalance = this.calculateOrderbookImbalance(orderbook);
       const microSignals = this.buildMicroSignals(liquidity, priceMomentum);
       recordApiCall({ apiName: 'Microstructure Module', status: 'SUCCESS' });
 
       // CryptoCompare is MANDATORY - all adapters are guaranteed to exist
-      const cryptoCompareData = await runApiCall<CryptoCompareData>(
-        'CryptoCompare On-Chain Metrics',
-        () => cryptoAdapter.getAllMetrics(normalizedSymbol),
-        { provider: 'CryptoCompare' }
+      const cryptoCompareResult = await logProviderCall(
+        'cryptocompare',
+        async () => await cryptoAdapter.getAllMetrics(normalizedSymbol)
       );
 
-      const derivativesData = this.buildDerivativesFromCryptoCompare(cryptoCompareData || undefined);
+      // Update debug preview for cryptocompare
+      if (cryptoCompareResult.success && cryptoCompareResult.data) {
+        providerDebug.cryptocompare.dataPreview = Object.keys(cryptoCompareResult.data);
+      }
+
+
+      const cryptoCompareData = cryptoCompareResult.success ? cryptoCompareResult.data : null;
+
+      // MTF Indicator Pipeline - fetch indicators for all timeframes
+      const mtfIndicators: Record<"5m" | "15m" | "1h", MTFIndicators> = {
+        "5m": { timeframe: "5m", rsi: null, macd: null, ema12: null, ema26: null, sma20: null },
+        "15m": { timeframe: "15m", rsi: null, macd: null, ema12: null, ema26: null, sma20: null },
+        "1h": { timeframe: "1h", rsi: null, macd: null, ema12: null, ema26: null, sma20: null },
+      };
+
+      // Fetch MTF indicators for each timeframe
+      const mtfPromises = (["5m", "15m", "1h"] as const).map(async (timeframe) => {
+        try {
+          const result = await logProviderCall(
+            `mtf_${timeframe}`,
+            async () => await cryptoAdapter.getMTFIndicators(normalizedSymbol, timeframe)
+          );
+          if (result.success && result.data) {
+            mtfIndicators[timeframe] = result.data;
+          }
+        } catch (error: any) {
+          logger.warn({ symbol: normalizedSymbol, timeframe, error: error.message }, `MTF ${timeframe} indicators failed`);
+        }
+      });
+
+      await Promise.all(mtfPromises);
+
+      // Calculate MTF confluence
+      const mtfConfluence = cryptoAdapter.calculateMTFConfluence(mtfIndicators);
+
+      // Add MTF debug info
+      providerDebug.mtf = {
+        indicators: mtfIndicators,
+        confluence: mtfConfluence,
+      };
+
+      // Extract indicators from CryptoCompare data (if available)
+      const rsiFromCryptoCompare = cryptoCompareData?.indicators?.rsi ? {
+        value: cryptoCompareData.indicators.rsi,
+        signal: cryptoCompareData.indicators.rsi > 70 ? 'OVERBOUGHT' : cryptoCompareData.indicators.rsi < 30 ? 'OVERSOLD' : 'NEUTRAL'
+      } : { value: null, signal: 'NEUTRAL' };
+
+      const macdFromCryptoCompare = cryptoCompareData?.indicators?.macd ? {
+        signal: cryptoCompareData.indicators.macd.value,
+        histogram: cryptoCompareData.indicators.macd.histogram,
+        trend: cryptoCompareData.indicators.macd.histogram > 0 ? 'BULLISH' : 'BEARISH'
+      } : { signal: 0, histogram: 0, trend: 'NEUTRAL' };
+
+      // Derivatives data will come from separate sources (not CryptoCompare)
+      const derivativesData: DerivativesData = { source: 'exchange' };
       const derivatives = analyzeDerivatives(derivativesData);
 
-      // Calculate onChainScore from CryptoCompare metrics
-      const onChainScore = this.calculateOnChainScore(cryptoCompareData);
-
-      if (derivativesData.fundingRate) {
-        recordApiCall({
-          apiName: 'Funding Rate API',
-          status: 'SUCCESS',
-          message: `Funding rate ${(derivativesData.fundingRate.fundingRate * 100).toFixed(4)}%`,
-        });
-      } else {
-        recordApiCall({
-          apiName: 'Funding Rate API',
-          status: 'FAILED',
-          message: 'No funding rate data returned',
-        });
-      }
-
-      if (derivativesData.openInterest) {
-        recordApiCall({
-          apiName: 'Open Interest API',
-          status: 'SUCCESS',
-          message: `Change ${(derivativesData.openInterest.change24h * 100).toFixed(2)}%`,
-        });
-      } else {
-        recordApiCall({
-          apiName: 'Open Interest API',
-          status: 'FAILED',
-          message: 'Open interest unavailable',
-        });
-      }
-
-      if (derivativesData.liquidations) {
-        recordApiCall({
-          apiName: 'Liquidations API',
-          status: 'SUCCESS',
-          message: `Total ${(derivativesData.liquidations.totalLiquidation24h || 0).toFixed(0)}`,
-        });
-      } else {
-        recordApiCall({
-          apiName: 'Liquidations API',
-          status: 'FAILED',
-          message: 'Liquidations data unavailable',
-        });
-      }
+      // Remove on-chain score since CryptoCompare no longer provides it
+      const onChainScore = 0;
 
       // MarketAux is MANDATORY - adapter is guaranteed to exist
-      const marketAuxData = await runApiCall<MarketAuxData>(
-        'MarketAux Sentiment',
-        () => {
+      const marketAuxResult = await logProviderCall(
+        'marketaux',
+        async () => {
           const baseSymbol = normalizedSymbol.replace(/USDT$/i, '').replace(/USD$/i, '');
-          return marketAuxAdapter.getNewsSentiment(baseSymbol);
-        },
-        { provider: 'MarketAux' }
+          return await marketAuxAdapter.getNewsSentiment(baseSymbol);
+        }
       );
+
+      const marketAuxData = marketAuxResult.success ? marketAuxResult.data : null;
 
       // Convert MarketAuxData to SentimentData format
       const sentimentPayload: SentimentData | undefined = marketAuxData ? {
@@ -515,11 +600,28 @@ export class ResearchEngine {
       const sentiment = analyzeSentiment(sentimentPayload || undefined);
 
       // Global Intelligence: Free API data (Binance, CoinGecko, Google Finance)
-      const binanceTickerData = await runApiCall<any>(
-        'Binance Market Data',
-        () => binanceAdapter.getTicker(normalizedSymbol),
-        { provider: 'Binance' }
+      const binanceTickerResult = await logProviderCall(
+        'binance',
+        async () => await binanceAdapter.getTicker(normalizedSymbol)
       );
+
+      const binanceTickerData = binanceTickerResult.success ? binanceTickerResult.data : null;
+
+      // Get book ticker for accurate bid-ask spread
+      const binanceBookTickerResult = await logProviderCall(
+        'binance_bookTicker',
+        async () => await binanceAdapter.getBookTicker(normalizedSymbol)
+      );
+
+      const binanceBookTickerData = binanceBookTickerResult.success ? binanceBookTickerResult.data : null;
+
+      // Get volatility from 5m candles
+      const binanceVolatilityResult = await logProviderCall(
+        'binance_volatility',
+        async () => await binanceAdapter.getVolatility(normalizedSymbol)
+      );
+
+      const binanceVolatility = binanceVolatilityResult.success ? binanceVolatilityResult.data : null;
 
       // Transform Binance ticker data to expected format
       const binanceMarketData = binanceTickerData ? {
@@ -528,17 +630,66 @@ export class ResearchEngine {
         priceChangePercent24h: parseFloat(binanceTickerData.priceChangePercent || '0'),
       } : {};
 
-      const googleFinanceExchangeRate = await runApiCall<{ exchangeRate?: number }>(
-        'Google Finance Exchange Rate',
-        () => googleFinanceAdapter.getExchangeRate('USD', 'INR'),
-        { provider: 'Google Finance' }
+      // Calculate bid-ask spread percentage for liquidity
+      if (binanceBookTickerData) {
+        const bidPrice = parseFloat(binanceBookTickerData.bidPrice || '0');
+        const askPrice = parseFloat(binanceBookTickerData.askPrice || '0');
+        if (bidPrice > 0 && askPrice > 0 && askPrice > bidPrice) {
+          binanceSpreadPercent = ((askPrice - bidPrice) / bidPrice) * 100;
+        }
+      }
+
+      // Enhanced volume analysis with trend comparison
+      if (binanceTickerData) {
+        const currentVolume = parseFloat(binanceTickerData.volume || '0');
+        const quoteVolume = parseFloat(binanceTickerData.quoteVolume || '0');
+
+        // Use quote volume if available (more accurate for BTC pairs)
+        const volume = quoteVolume > 0 ? quoteVolume : currentVolume;
+
+        if (volume > 0) {
+          // Compare with previous day's volume if available
+          const prevDayVolume = parseFloat(binanceTickerData.prevClosePrice || '0'); // This isn't the right field, but we can use a simple heuristic
+          // For now, just classify based on volume levels - this is a simplified approach
+          // In production, you'd want to fetch historical volume data
+          binanceVolumeTrend = volume > 1000000 ? 'High' : volume > 100000 ? 'Medium' : 'Low';
+        }
+      }
+
+      // Update debug preview for binance with detailed metrics
+      if (binanceTickerResult.success || binanceBookTickerResult.success || binanceVolatilityResult.success) {
+        providerDebug.binance = {
+          ...providerDebug.binance,
+          depthParseSummary: {
+            bidsCount: rawOrderbook?.bids?.length || 0,
+            asksCount: rawOrderbook?.asks?.length || 0,
+            totalBidVolume: rawOrderbook ? rawOrderbook.bids.slice(0, 10).reduce((sum, bid) => sum + parseFloat(bid.quantity || '0'), 0) : 0,
+            totalAskVolume: rawOrderbook ? rawOrderbook.asks.slice(0, 10).reduce((sum, ask) => sum + parseFloat(ask.quantity || '0'), 0) : 0,
+            imbalance: imbalance,
+          },
+          volumeSummary: {
+            volume24h: binanceMarketData?.volume24h || null,
+            trend: binanceVolumeTrend,
+            quoteVolume: binanceTickerData ? parseFloat(binanceTickerData.quoteVolume || '0') : null,
+          },
+          spreadPercentage: binanceSpreadPercent,
+          volatilityNumber: binanceVolatility,
+        };
+      }
+
+      const googleFinanceResult = await logProviderCall(
+        'googlefinance',
+        async () => await googleFinanceAdapter.getExchangeRate('USD', 'INR')
       );
 
-      const coingeckoHistoricalData = await runApiCall<{ historicalData?: Array<{ time: string; price: number }> }>(
-        'CoinGecko Historical Data',
-        () => coingeckoAdapter.getHistoricalData(normalizedSymbol, 90), // 90 days for better analysis
-        { provider: 'CoinGecko' }
+      const googleFinanceExchangeRate = googleFinanceResult.success ? googleFinanceResult.data : null;
+
+      const coingeckoResult = await logProviderCall(
+        'coingecko',
+        async () => await coingeckoAdapter.getHistoricalData(normalizedSymbol, 90) // 90 days for better analysis
       );
+
+      const coingeckoHistoricalData = coingeckoResult.success ? coingeckoResult.data : null;
 
       const rsi = analyzeRSI(candles);
       const macd = analyzeMACD(candles);
@@ -603,7 +754,14 @@ export class ResearchEngine {
         confidenceResult.smoothedConfidence,
         multiTimeframeContext
       );
-      const confidence = confidenceAdjustment.confidence;
+      // Apply MTF confidence boost
+      const mtfBoost = (mtfConfluence.score / 3) * 15; // Max 15% boost for perfect 3/3 score
+      const confidenceBeforeMTF = confidenceAdjustment.confidence;
+      const confidence = Math.min(95, confidenceAdjustment.confidence + mtfBoost); // Cap at 95%
+
+      // Update explanations with MTF boost info
+      const mtfBoostExplanation = mtfBoost > 0 ? ` | MTF confluence ${mtfConfluence.label} (+${mtfBoost.toFixed(1)}%)` : '';
+
       const accuracyRange = this.buildAccuracyRangeFromConfidence(confidence);
       const finalSignal = confidenceResult.signal;
       const side: 'LONG' | 'SHORT' | 'NEUTRAL' =
@@ -629,16 +787,16 @@ export class ResearchEngine {
         rsi: rsi.value,
         rsiSignal: rsi.signal,
         macd: { signal: macd.signal, histogram: macd.histogram, trend: macd.trend },
-        volume: `${volume.signal}${volume.relativeVolume ? ` (${volume.relativeVolume.toFixed(2)}x)` : ''}`,
-        orderbookImbalance: `${(imbalance * 100).toFixed(2)}% ${imbalance >= 0 ? 'Buy' : 'Sell'} pressure`,
+        volume: binanceVolumeTrend !== 'Stable' ? binanceVolumeTrend : `${volume.signal}${volume.relativeVolume ? ` (${volume.relativeVolume.toFixed(2)}x)` : ''}`,
+        orderbookImbalance: imbalance !== null ? `${(imbalance * 100).toFixed(2)}% ${imbalance >= 0 ? 'Buy' : 'Sell'} pressure` : 'Insufficient depth',
         liquidity: `${liquidity.signal} (${liquidity.spreadPercent.toFixed(3)}% spread)`,
         fundingRate: derivatives.fundingRate.description,
         openInterest: derivatives.openInterest.description,
         liquidations: derivatives.liquidations.description,
         trendStrength: trendStrength.trend,
-        volatility: atr?.toFixed(6) ?? null,
+        volatility: binanceVolatility !== null ? (binanceVolatility * 100).toFixed(2) + '%' : (atr ? atr.toFixed(6) : null),
         newsSentiment: sentiment.description,
-        onChainFlows: cryptoCompareData?.whaleScore ? `Whale activity score: ${cryptoCompareData.whaleScore.toFixed(1)}/100` : undefined,
+        onChainFlows: undefined, // Removed - no longer available from CryptoCompare
         priceDivergence: undefined,
         globalMarketData: binanceMarketData ? {
           price: binanceMarketData.price,
@@ -672,10 +830,13 @@ export class ResearchEngine {
         `Liquidity ${liquidity.signal} (${liquidity.spreadPercent.toFixed(3)}%)`,
         `Derivatives ${derivatives.overallSignal} (${(derivatives.overallScore * 100).toFixed(1)}%)`,
         `Sentiment ${sentiment.signal} (${sentiment.sentiment.toFixed(2)})`,
-        `MTF confluence ${mtfConfluenceCount} (${mtfDescription || 'insufficient data'})`,
+        `MTF confluence ${mtfConfluence.label} (${mtfConfluence.details["5m"]} | ${mtfConfluence.details["15m"]} | ${mtfConfluence.details["1h"]})`,
       ];
       if (confidenceAdjustment.reason) {
         explanations.push(confidenceAdjustment.reason);
+      }
+      if (mtfBoost > 0) {
+        explanations.push(`MTF boost: ${mtfConfluence.label} (+${mtfBoost.toFixed(1)}% confidence)`);
       }
 
       const autoTradeEligible =
@@ -749,6 +910,14 @@ export class ResearchEngine {
         derivativesAligned,
         apiCallReport,
         missingDependencies: [],
+        mtf: {
+          "5m": mtfIndicators["5m"],
+          "15m": mtfIndicators["15m"],
+          "1h": mtfIndicators["1h"],
+          score: mtfConfluence.label,
+          boost: mtfBoost > 0 ? `+${mtfBoost.toFixed(1)}%` : '0%',
+        },
+        _providerDebug: providerDebug, // Debug info for provider calls
       };
 
       logger.info({ uid, symbol: normalizedSymbol, exchange: exchangeName, confidence, durationMs: Date.now() - startedAt }, 'Deep research completed');
@@ -776,7 +945,7 @@ export class ResearchEngine {
     return '5m';
   }
 
-  private async buildProviderAdapters(uid: string, overrideKeys?: { marketauxApiKey?: string; cryptoquantApiKey?: string }): Promise<{
+  private async buildProviderAdapters(uid: string, overrideKeys?: { marketauxApiKey?: string; cryptocompareApiKey?: string }): Promise<{
     marketAuxAdapter: MarketAuxAdapter;
     cryptoAdapter: CryptoCompareAdapter;
     // Free APIs - no API keys required
@@ -791,7 +960,16 @@ export class ResearchEngine {
     // MANDATORY API keys - Deep Research requires all 5 providers
     // Use override keys if provided, otherwise load from Firestore
     const marketAuxKey = overrideKeys?.marketauxApiKey || providerKeys['marketaux']?.apiKey;
-    const cryptoKey = overrideKeys?.cryptoquantApiKey || providerKeys['cryptocompare']?.apiKey;
+    const cryptocompareKey = overrideKeys?.cryptocompareApiKey || providerKeys['cryptocompare']?.apiKey;
+
+    // Log key sources for debugging
+    logger.info({
+      uid,
+      marketAuxKeySource: overrideKeys?.marketauxApiKey ? 'request_body' : 'firestore',
+      cryptocompareKeySource: overrideKeys?.cryptocompareApiKey ? 'request_body' : 'firestore',
+      marketAuxKeyPresent: !!marketAuxKey,
+      cryptocompareKeyPresent: !!cryptocompareKey,
+    }, 'API key sources resolved');
 
     // Check for missing mandatory API keys
     if (!marketAuxKey) {
@@ -802,7 +980,7 @@ export class ResearchEngine {
         400
       );
     }
-    if (!cryptoKey) {
+    if (!cryptocompareKey) {
       logger.error({ uid }, 'CryptoCompare API key required for Deep Research but not configured');
       throw new ResearchEngineError(
         'CryptoCompare API key required for Deep Research.',
@@ -818,7 +996,7 @@ export class ResearchEngine {
     // Log successful key retrieval for debugging
     logger.info({ uid, providers: Object.keys(providerKeys) }, 'Provider API keys successfully retrieved from integrations');
 
-    // Create adapters - MarketAux and CryptoQuant are MANDATORY
+    // Create adapters - MarketAux and CryptoCompare are MANDATORY
     let marketAuxAdapter: MarketAuxAdapter;
     try {
       logger.debug({ uid }, 'Initializing MarketAux adapter with user API key');
@@ -836,7 +1014,7 @@ export class ResearchEngine {
     let cryptoAdapter: CryptoCompareAdapter;
     try {
       logger.debug({ uid }, 'Initializing CryptoCompare adapter with user API key');
-      cryptoAdapter = new CryptoCompareAdapter(cryptoKey);
+      cryptoAdapter = new CryptoCompareAdapter(cryptocompareKey);
       logger.info({ uid }, 'CryptoCompare adapter initialized successfully');
     } catch (error: any) {
       logger.error({ uid, error: error.message }, 'Failed to initialize CryptoCompare adapter');
@@ -1000,70 +1178,29 @@ export class ResearchEngine {
     }
   }
 
-  private buildDerivativesFromCryptoCompare(cryptoCompareData?: CryptoCompareData): DerivativesData {
-    const data: DerivativesData = { source: 'cryptocompare' };
 
-    if (cryptoCompareData?.fundingRate !== undefined) {
-      data.fundingRate = {
-        fundingRate: cryptoCompareData.fundingRate / 100, // Convert from percentage
-        timestamp: Date.now(),
-      };
+  private calculateOrderbookImbalance(orderbook: Orderbook): number | null {
+    if (!orderbook.bids || !orderbook.asks || orderbook.bids.length === 0 || orderbook.asks.length === 0) {
+      return null;
     }
 
-    if (cryptoCompareData?.liquidations !== undefined) {
-      data.liquidations = {
-        longLiquidation24h: cryptoCompareData.liquidations * 0.6, // Estimate long liquidations
-        shortLiquidation24h: cryptoCompareData.liquidations * 0.4, // Estimate short liquidations
-        totalLiquidation24h: cryptoCompareData.liquidations,
-        timestamp: Date.now(),
-      };
-    }
-
-    // Use reserve change as proxy for open interest
-    if (cryptoCompareData?.reserveChange !== undefined) {
-      data.openInterest = {
-        openInterest: Math.abs(cryptoCompareData.reserveChange) * 1000000, // Scale up
-        change24h: cryptoCompareData.reserveChange / 100, // Convert to decimal
-        timestamp: Date.now(),
-      };
-    }
-
-    return data;
-  }
-
-  private calculateOnChainScore(cryptoCompareData?: CryptoCompareData): number {
-    if (!cryptoCompareData) {
-      return 0;
-    }
-
-    // Calculate weighted average of on-chain metrics (0-100 scale)
-    const weights = {
-      whaleScore: 0.3,      // Whale activity
-      reserveChange: 0.2,   // Exchange reserves
-      minerOutflow: 0.2,    // Mining activity
-      fundingRate: 0.15,    // Funding rate
-      liquidations: 0.15,   // Liquidations
-    };
-
-    const score = (
-      (cryptoCompareData.whaleScore || 0) * weights.whaleScore +
-      (Math.abs(cryptoCompareData.reserveChange || 0) * 20) * weights.reserveChange + // Scale reserve change
-      (cryptoCompareData.minerOutflow || 0) * weights.minerOutflow +
-      (Math.abs(cryptoCompareData.fundingRate || 0) * 10) * weights.fundingRate + // Scale funding rate
-      (cryptoCompareData.liquidations || 0) * weights.liquidations
-    );
-
-    return Math.min(100, Math.max(0, score));
-  }
-
-  private calculateOrderbookImbalance(orderbook: Orderbook): number {
-    const bidVolume = orderbook.bids.slice(0, 10).reduce((sum, bid) => sum + parseFloat(bid.quantity), 0);
-    const askVolume = orderbook.asks.slice(0, 10).reduce((sum, ask) => sum + parseFloat(ask.quantity), 0);
+    const bidVolume = orderbook.bids.slice(0, 10).reduce((sum, bid) => {
+      const qty = parseFloat(bid.quantity);
+      return sum + (Number.isFinite(qty) ? qty : 0);
+    }, 0);
+    const askVolume = orderbook.asks.slice(0, 10).reduce((sum, ask) => {
+      const qty = parseFloat(ask.quantity);
+      return sum + (Number.isFinite(qty) ? qty : 0);
+    }, 0);
     const total = bidVolume + askVolume;
-    if (total === 0) {
-      return 0;
+
+    // If total volume is 0, do NOT compute ratio (return null)
+    if (total === 0 || !Number.isFinite(total)) {
+      return null;
     }
-    return (bidVolume - askVolume) / total;
+
+    const imbalance = (bidVolume - askVolume) / total;
+    return Number.isFinite(imbalance) ? imbalance : null;
   }
 
   private buildMicroSignals(liquidity: ReturnType<typeof analyzeLiquidity>, priceMomentum: number): ResearchResult['microSignals'] {

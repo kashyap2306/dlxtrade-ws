@@ -3,11 +3,54 @@ import { logger } from '../utils/logger';
 import { apiUsageTracker } from './apiUsageTracker';
 
 export interface CryptoCompareData {
-  whaleScore: number;
-  reserveChange: number;
-  minerOutflow: number;
-  fundingRate: number;
-  liquidations: number;
+  ohlc?: Array<{
+    time: number;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+  }>;
+  indicators?: {
+    rsi?: number;
+    macd?: {
+      value: number;
+      signal: number;
+      histogram: number;
+    };
+    ema12?: number;
+    ema26?: number;
+    sma20?: number;
+  };
+  volume?: {
+    volume24h?: number;
+    volumeChange24h?: number;
+  };
+  market?: {
+    marketCap?: number;
+    priceChange24h?: number;
+    priceChangePercent24h?: number;
+  };
+}
+
+export interface MTFIndicators {
+  timeframe: "5m" | "15m" | "1h";
+  rsi: number | null;
+  macd: { value: number; signal: number; histogram: number } | null;
+  ema12: number | null;
+  ema26: number | null;
+  sma20: number | null;
+}
+
+export interface MTFConfluenceResult {
+  score: number;
+  maxScore: number;
+  label: string;
+  details: {
+    "5m": string;
+    "15m": string;
+    "1h": string;
+  };
 }
 
 export class CryptoCompareAdapter {
@@ -399,35 +442,342 @@ export class CryptoCompareAdapter {
   }
 
   /**
-   * Get all metrics combined
+   * Get OHLC data and calculate indicators
    */
   async getAllMetrics(symbol: string): Promise<CryptoCompareData> {
     try {
-      const [whaleScore, reserveChange, minerOutflow, fundingRate, liquidations] = await Promise.all([
-        this.getWhaleActivity(symbol),
-        this.getExchangeReserves(symbol),
-        this.getOnChainMetrics(symbol),
-        this.getFundingRate(symbol),
-        this.getLiquidationData(symbol),
-      ]);
+      // Get OHLC data for the last 100 periods (5m intervals = ~8 hours)
+      const ohlc = await this.getOHLC(symbol, '5m', 100);
+
+      // Calculate indicators
+      const indicators = this.calculateIndicators(ohlc);
+
+      // Get market data
+      const market = await this.getMarketData(symbol);
 
       return {
-        whaleScore,
-        reserveChange,
-        minerOutflow,
-        fundingRate,
-        liquidations,
+        ohlc,
+        indicators,
+        market,
       };
     } catch (error: any) {
-      // Return default values if any metric fails
-      logger.warn({ error: error.message, symbol }, 'Some CryptoCompare metrics failed, using defaults');
+      // Return empty data if request fails
+      logger.warn({ error: error.message, symbol }, 'CryptoCompare data fetch failed, returning empty data');
       return {
-        whaleScore: 0,
-        reserveChange: 0,
-        minerOutflow: 0,
-        fundingRate: 0,
-        liquidations: 0,
+        ohlc: [],
+        indicators: {},
+        market: {},
       };
     }
+  }
+
+  /**
+   * Get OHLC data from CryptoCompare for specific timeframes
+   */
+  async getOHLC(symbol: string, timeframe: "5m" | "15m" | "1h", limit: number = 200): Promise<Array<{
+    time: number;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+  }>> {
+    try {
+      // Map timeframe to CryptoCompare aggregate values
+      const aggregateMap: Record<typeof timeframe, number> = {
+        '5m': 5,
+        '15m': 15,
+        '1h': 60,
+      };
+
+      const response = await this.httpClient.get('/data/histominute', {
+        params: {
+          fsym: symbol.replace('USDT', '').replace('USD', ''),
+          tsym: 'USD',
+          limit,
+          aggregate: aggregateMap[timeframe],
+        },
+      });
+
+      apiUsageTracker.increment('cryptocompare');
+
+      const data = response.data?.Data || [];
+      return data.map((item: any) => ({
+        time: item.time,
+        open: parseFloat(item.open) || 0,
+        high: parseFloat(item.high) || 0,
+        low: parseFloat(item.low) || 0,
+        close: parseFloat(item.close) || 0,
+        volume: parseFloat(item.volumeto) || 0,
+      }));
+    } catch (error: any) {
+      logger.warn({ symbol, timeframe, error: error.message }, 'Failed to get OHLC data from CryptoCompare');
+      return [];
+    }
+  }
+
+  /**
+   * Get MTF indicators for a specific timeframe
+   */
+  async getMTFIndicators(symbol: string, timeframe: "5m" | "15m" | "1h"): Promise<MTFIndicators> {
+    try {
+      const ohlc = await this.getOHLC(symbol, timeframe, 200);
+
+      if (ohlc.length < 26) { // Need at least 26 periods for MACD
+        return {
+          timeframe,
+          rsi: null,
+          macd: null,
+          ema12: null,
+          ema26: null,
+          sma20: null,
+        };
+      }
+
+      const closes = ohlc.map(c => c.close).filter(Number.isFinite);
+
+      const rsi = this.calculateRSI(closes, 14);
+      const macd = this.calculateMACD(closes, 12, 26, 9);
+      const ema12 = this.calculateEMA(closes, 12);
+      const ema26 = this.calculateEMA(closes, 26);
+      const sma20 = this.calculateSMA(closes, 20);
+
+      return {
+        timeframe,
+        rsi: rsi || null,
+        macd: macd || null,
+        ema12: ema12 || null,
+        ema26: ema26 || null,
+        sma20: sma20 || null,
+      };
+    } catch (error: any) {
+      logger.warn({ symbol, timeframe, error: error.message }, 'Failed to get MTF indicators from CryptoCompare');
+      return {
+        timeframe,
+        rsi: null,
+        macd: null,
+        ema12: null,
+        ema26: null,
+        sma20: null,
+      };
+    }
+  }
+
+  /**
+   * Calculate MTF confluence score
+   */
+  calculateMTFConfluence(mtfData: Record<"5m" | "15m" | "1h", MTFIndicators>): MTFConfluenceResult {
+    let points = 0;
+    const details: Record<"5m" | "15m" | "1h", string> = {
+      "5m": "No data",
+      "15m": "No data",
+      "1h": "No data",
+    };
+
+    // 5m RSI > 55
+    if (mtfData["5m"].rsi && mtfData["5m"].rsi > 55) {
+      points += 1;
+      details["5m"] = `RSI ${mtfData["5m"].rsi?.toFixed(1)} > 55`;
+    } else if (mtfData["5m"].rsi) {
+      details["5m"] = `RSI ${mtfData["5m"].rsi?.toFixed(1)} ≤ 55`;
+    }
+
+    // 15m MACD histogram > 0
+    if (mtfData["15m"].macd && mtfData["15m"].macd.histogram > 0) {
+      points += 1;
+      details["15m"] = `MACD hist ${mtfData["15m"].macd.histogram.toFixed(4)} > 0`;
+    } else if (mtfData["15m"].macd) {
+      details["15m"] = `MACD hist ${mtfData["15m"].macd?.histogram.toFixed(4)} ≤ 0`;
+    }
+
+    // 1h EMA12 > EMA26
+    if (mtfData["1h"].ema12 && mtfData["1h"].ema26 && mtfData["1h"].ema12 > mtfData["1h"].ema26) {
+      points += 1;
+      details["1h"] = `EMA12 ${mtfData["1h"].ema12?.toFixed(2)} > EMA26 ${mtfData["1h"].ema26?.toFixed(2)}`;
+    } else if (mtfData["1h"].ema12 && mtfData["1h"].ema26) {
+      details["1h"] = `EMA12 ${mtfData["1h"].ema12?.toFixed(2)} ≤ EMA26 ${mtfData["1h"].ema26?.toFixed(2)}`;
+    }
+
+    return {
+      score: points,
+      maxScore: 3,
+      label: `${points}/3`,
+      details,
+    };
+  }
+
+  /**
+   * Calculate technical indicators from OHLC data
+   */
+  calculateIndicators(ohlc: Array<{
+    time: number;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+  }>): CryptoCompareData['indicators'] {
+    if (!ohlc || ohlc.length < 14) {
+      return {};
+    }
+
+    const closes = ohlc.map(c => c.close).filter(Number.isFinite);
+    const volumes = ohlc.map(c => c.volume).filter(Number.isFinite);
+
+    if (closes.length < 14) {
+      return {};
+    }
+
+    const indicators: CryptoCompareData['indicators'] = {};
+
+    try {
+      // RSI (14 period)
+      indicators.rsi = this.calculateRSI(closes, 14);
+
+      // MACD (12, 26, 9)
+      indicators.macd = this.calculateMACD(closes, 12, 26, 9);
+
+      // EMA12
+      indicators.ema12 = this.calculateEMA(closes, 12);
+
+      // EMA26
+      indicators.ema26 = this.calculateEMA(closes, 26);
+
+      // SMA20
+      indicators.sma20 = this.calculateSMA(closes, 20);
+
+    } catch (error: any) {
+      logger.warn({ error: error.message }, 'Failed to calculate indicators');
+    }
+
+    return indicators;
+  }
+
+  /**
+   * Get market data from CryptoCompare
+   */
+  async getMarketData(symbol: string): Promise<CryptoCompareData['market']> {
+    try {
+      const response = await this.httpClient.get('/data/pricemultifull', {
+        params: {
+          fsyms: symbol.replace('USDT', '').replace('USD', ''),
+          tsyms: 'USD',
+        },
+      });
+
+      apiUsageTracker.increment('cryptocompare');
+
+      const data = response.data?.RAW?.[symbol.replace('USDT', '').replace('USD', '')]?.USD;
+      if (!data) {
+        return {};
+      }
+
+      return {
+        marketCap: parseFloat(data.MKTCAP) || undefined,
+        priceChange24h: parseFloat(data.CHANGE24HOUR) || undefined,
+        priceChangePercent24h: parseFloat(data.CHANGEPCT24HOUR) || undefined,
+      };
+    } catch (error: any) {
+      logger.warn({ symbol, error: error.message }, 'Failed to get market data from CryptoCompare');
+      return {};
+    }
+  }
+
+  /**
+   * Calculate RSI
+   */
+  private calculateRSI(prices: number[], period: number = 14): number | undefined {
+    if (prices.length < period + 1) return undefined;
+
+    const gains: number[] = [];
+    const losses: number[] = [];
+
+    for (let i = 1; i < prices.length; i++) {
+      const change = prices[i] - prices[i - 1];
+      gains.push(Math.max(change, 0));
+      losses.push(Math.max(-change, 0));
+    }
+
+    // Calculate initial averages
+    let avgGain = gains.slice(0, period).reduce((sum, gain) => sum + gain, 0) / period;
+    let avgLoss = losses.slice(0, period).reduce((sum, loss) => sum + loss, 0) / period;
+
+    // Smooth the averages
+    for (let i = period; i < gains.length; i++) {
+      avgGain = (avgGain * (period - 1) + gains[i]) / period;
+      avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
+    }
+
+    if (avgLoss === 0) return 100;
+
+    const rs = avgGain / avgLoss;
+    const rsi = 100 - (100 / (1 + rs));
+
+    return Number.isFinite(rsi) ? rsi : undefined;
+  }
+
+  /**
+   * Calculate MACD
+   */
+  private calculateMACD(prices: number[], fastPeriod: number = 12, slowPeriod: number = 26, signalPeriod: number = 9): { value: number; signal: number; histogram: number } | undefined {
+    if (prices.length < slowPeriod + signalPeriod) return undefined;
+
+    const ema12 = this.calculateEMA(prices, fastPeriod);
+    const ema26 = this.calculateEMA(prices, slowPeriod);
+
+    if (!ema12 || !ema26) return undefined;
+
+    const macd = ema12 - ema26;
+
+    // Calculate signal line (EMA9 of MACD)
+    const macdValues: number[] = [];
+    for (let i = slowPeriod - 1; i < prices.length; i++) {
+      const fastEMA = this.calculateEMA(prices.slice(0, i + 1), fastPeriod);
+      const slowEMA = this.calculateEMA(prices.slice(0, i + 1), slowPeriod);
+      if (fastEMA && slowEMA) {
+        macdValues.push(fastEMA - slowEMA);
+      }
+    }
+
+    if (macdValues.length < signalPeriod) return undefined;
+
+    const signal = this.calculateEMA(macdValues, signalPeriod);
+    if (!signal) return undefined;
+
+    const histogram = macd - signal;
+
+    return {
+      value: macd,
+      signal,
+      histogram,
+    };
+  }
+
+  /**
+   * Calculate EMA
+   */
+  private calculateEMA(prices: number[], period: number): number | undefined {
+    if (prices.length < period) return undefined;
+
+    const multiplier = 2 / (period + 1);
+    let ema = prices.slice(0, period).reduce((sum, price) => sum + price, 0) / period;
+
+    for (let i = period; i < prices.length; i++) {
+      ema = (prices[i] - ema) * multiplier + ema;
+    }
+
+    return Number.isFinite(ema) ? ema : undefined;
+  }
+
+  /**
+   * Calculate SMA
+   */
+  private calculateSMA(prices: number[], period: number): number | undefined {
+    if (prices.length < period) return undefined;
+
+    const sum = prices.slice(-period).reduce((acc, price) => acc + price, 0);
+    const sma = sum / period;
+
+    return Number.isFinite(sma) ? sma : undefined;
   }
 }

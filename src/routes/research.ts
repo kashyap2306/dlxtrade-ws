@@ -277,7 +277,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
     symbol?: string;
     timeframe?: string;
     marketauxApiKey?: string;
-    cryptoquantApiKey?: string;
+    cryptocompareApiKey?: string;
     query?: string;
   } }>, reply: FastifyReply) => {
     const user = (request as any).user;
@@ -301,7 +301,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
       // Extract API keys from request body (optional fallback)
       const overrideKeys = {
         marketauxApiKey: request.body?.marketauxApiKey,
-        cryptoquantApiKey: request.body?.cryptoquantApiKey,
+        cryptocompareApiKey: request.body?.cryptocompareApiKey,
       };
 
       // Get exchange context (will return safe fallback if not configured)
