@@ -1,7 +1,8 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { firestoreAdapter } from '../services/firestoreAdapter';
-import { CoinAPIAdapter } from '../services/coinapiAdapter';
+import { BinanceAdapter } from '../services/binanceAdapter';
 import { logger } from '../utils/logger';
+import { getValidSymbols } from '../scripts/fetchValidBinanceSymbols';
 
 /**
  * Market Routes
@@ -16,41 +17,19 @@ export async function marketRoutes(fastify: FastifyInstance) {
       const user = (request as any).user;
       const limit = request.query.limit ? parseInt(request.query.limit, 10) : 100;
       
-      // Get user's CoinAPI integration
-      const integrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
-      const coinapiMarket = integrations['coinapi_market'];
-      
-      if (!coinapiMarket?.apiKey) {
-        // Return default popular coins if no CoinAPI integration
-        const popularCoins = [
-          { symbol: 'BTCUSDT', name: 'Bitcoin', price: 0, change24h: 0, volume24h: 0 },
-          { symbol: 'ETHUSDT', name: 'Ethereum', price: 0, change24h: 0, volume24h: 0 },
-          { symbol: 'BNBUSDT', name: 'BNB', price: 0, change24h: 0, volume24h: 0 },
-          { symbol: 'SOLUSDT', name: 'Solana', price: 0, change24h: 0, volume24h: 0 },
-          { symbol: 'ADAUSDT', name: 'Cardano', price: 0, change24h: 0, volume24h: 0 },
-        ];
-        return reply.code(200).send({
-          ok: false,
-          error: 'CoinAPI Market integration not configured',
-          coins: popularCoins.slice(0, limit),
-          total: popularCoins.length,
-        });
-      }
-      
-      // Use CoinAPI to fetch top coins
+      // Use Binance public API (free, no setup required)
       try {
-        const coinapiAdapter = new CoinAPIAdapter(coinapiMarket.apiKey, 'market');
+        const binanceAdapter = new BinanceAdapter();
         
-        // Popular symbols to fetch
-        const popularSymbols = [
-          'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'ADAUSDT', 'XRPUSDT', 'DOTUSDT', 'DOGEUSDT',
-          'AVAXUSDT', 'SHIBUSDT', 'MATICUSDT', 'LTCUSDT', 'UNIUSDT', 'LINKUSDT', 'ATOMUSDT', 'ETCUSDT',
-        ].slice(0, limit);
+        // Get valid symbols from cache and use top ones
+        const validSymbols = await getValidSymbols();
+        const usdtSymbols = validSymbols.filter(symbol => symbol.endsWith('USDT'));
+        const popularSymbols = usdtSymbols.slice(0, limit);
         
         const coins = [];
         for (const symbol of popularSymbols) {
           try {
-            const marketData = await coinapiAdapter.getMarketData(symbol);
+            const marketData = await binanceAdapter.getMarketData(symbol);
             if (marketData.price && marketData.price > 0) {
               coins.push({
                 symbol,
@@ -74,7 +53,7 @@ export async function marketRoutes(fastify: FastifyInstance) {
           total: coins.length,
         };
       } catch (err: any) {
-        logger.error({ err }, 'Error fetching top coins from CoinAPI');
+        logger.error({ err }, 'Error fetching top coins from Binance');
         // Return default coins on error
         const popularCoins = [
           { symbol: 'BTCUSDT', name: 'Bitcoin', price: 0, change24h: 0, volume24h: 0 },

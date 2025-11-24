@@ -6,6 +6,7 @@ import { getFirebaseAdmin } from '../utils/firebase';
 import * as admin from 'firebase-admin';
 import { loadFeatureConfig } from '../config/featureConfig';
 import { metricsService } from './metricsService';
+import { getValidSymbols } from '../scripts/fetchValidBinanceSymbols';
 
 /**
  * Deep Research Scheduler - AUTO-SELECTION BASED
@@ -392,11 +393,16 @@ export class DeepResearchScheduler {
 
   /**
    * Get tracked coins for users (all coins that users have requested research for)
+   * Only returns VALID Binance symbols from the cache
    */
   private async getTrackedCoins(): Promise<string[]> {
     try {
       logger.debug({ instanceId: this.instanceId }, 'Getting tracked coins from user research logs');
-      
+
+      // Load valid symbols from cache
+      const validSymbols = await getValidSymbols();
+      const validSymbolsSet = new Set(validSymbols);
+
       // Get all users' tracked symbols from Firestore
       const allUsers = await firestoreAdapter.getAllUsers();
       const trackedSymbols = new Set<string>();
@@ -407,7 +413,17 @@ export class DeepResearchScheduler {
           const researchLogs = await firestoreAdapter.getResearchLogs(user.uid, 100);
           researchLogs.forEach((log: any) => {
             if (log.symbol) {
-              trackedSymbols.add(log.symbol.toUpperCase());
+              const symbol = log.symbol.toUpperCase();
+              // Only add if it's a valid Binance symbol
+              if (validSymbolsSet.has(symbol)) {
+                trackedSymbols.add(symbol);
+              } else {
+                logger.debug({
+                  instanceId: this.instanceId,
+                  uid: user.uid,
+                  invalidSymbol: symbol
+                }, 'Filtering out invalid symbol from tracked coins');
+              }
             }
           });
         } catch (err: any) {
@@ -419,20 +435,20 @@ export class DeepResearchScheduler {
       // If tracked coins exist, merge with Top-100 and deduplicate
       logger.info({ instanceId: this.instanceId }, '[DIAGNOSTIC] Fetching top 100 coins from topCoinsService');
       const top100Coins = await topCoinsService.getTop100Coins();
-      
-      logger.info({ 
+
+      logger.info({
         instanceId: this.instanceId,
         top100Count: top100Coins.length,
         top100Preview: top100Coins.slice(0, 10),
         firstCoin: top100Coins[0],
         lastCoin: top100Coins[top100Coins.length - 1]
       }, '[DIAGNOSTIC] Top 100 coins fetched');
-      
+
       if (top100Coins.length === 0) {
         logger.error({ instanceId: this.instanceId }, '[AUTO-SELECTION] CRITICAL: topCoinsService returned EMPTY array - cannot auto-select');
         throw new Error('topCoinsService.getTop100Coins() returned empty array - cannot auto-select');
       }
-      
+
       if (trackedSymbols.size === 0) {
         logger.info({ instanceId: this.instanceId, coinCount: top100Coins.length }, 'No tracked coins found, using Top-100 as default rotation list');
         return top100Coins;
@@ -441,16 +457,21 @@ export class DeepResearchScheduler {
       // Merge tracked coins with Top-100, prioritize Top-100 order
       const trackedArray = Array.from(trackedSymbols);
       const merged = [...top100Coins];
-      
-      // Add tracked coins that aren't in Top-100
+
+      // Add tracked coins that aren't in Top-100 (but are valid)
       for (const coin of trackedArray) {
-        if (!merged.includes(coin)) {
+        if (!merged.includes(coin) && validSymbolsSet.has(coin)) {
           merged.push(coin);
         }
       }
-      
-      logger.info({ instanceId: this.instanceId, trackedCount: trackedArray.length, top100Count: top100Coins.length, mergedCount: merged.length }, 
-        `Merged ${trackedArray.length} tracked coins with Top-100, total: ${merged.length}`);
+
+      logger.info({
+        instanceId: this.instanceId,
+        trackedCount: trackedArray.length,
+        top100Count: top100Coins.length,
+        mergedCount: merged.length,
+        validSymbolsCount: validSymbols.length
+      }, `Merged ${trackedArray.length} valid tracked coins with Top-100, total: ${merged.length}`);
       return merged;
     } catch (error: any) {
       logger.warn({ err: error, instanceId: this.instanceId }, 'Error getting tracked coins, using Top-100 fallback');

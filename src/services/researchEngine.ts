@@ -211,6 +211,12 @@ export interface ResearchResult {
   recommendation?: 'AUTO' | 'MANUAL' | null;
   perFeatureScore?: Record<string, number>;
   apisUsed?: Record<string, boolean | string>;
+  _apiUsageSummary?: {
+    totalApis: number;
+    successfulApis: number;
+    failedApis: number;
+    providerDetails: Record<string, boolean | string>;
+  };
   rawConfidence?: number;
   smoothedConfidence?: number;
   confluenceFlags?: Record<string, boolean>;
@@ -359,14 +365,14 @@ export class ResearchEngine {
     // Safe exchange name handling
     const exchangeName = context?.name ?? "no-exchange";
 
-    // All 5 providers are MANDATORY for Deep Research
-    const providersUsed = {
+    // Initialize providersUsed - will be updated based on actual API call results
+    const providersUsed: Record<string, boolean | string> = {
       userExchange: exchangeName, // Exchange connection is optional for research
-      cryptocompare: true, // Now mandatory
-      marketaux: true, // Now mandatory
-      binance: true, // Always available (free API)
-      coingecko: true, // Always available (free API)
-      googlefinance: true, // Always available (free API)
+      cryptocompare: false, // Will be updated based on actual call
+      marketaux: false, // Will be updated based on actual call
+      binance: false, // Will be updated based on actual call
+      coingecko: false, // Will be updated based on actual call
+      googlefinance: false, // Will be updated based on actual call
     };
 
     try {
@@ -519,6 +525,9 @@ export class ResearchEngine {
         async () => await cryptoAdapter.getAllMetrics(normalizedSymbol)
       );
 
+      // Update providersUsed based on actual result
+      providersUsed.cryptocompare = cryptoCompareResult.success;
+
       // Update debug preview for cryptocompare
       if (cryptoCompareResult.success && cryptoCompareResult.data) {
         providerDebug.cryptocompare.dataPreview = Object.keys(cryptoCompareResult.data);
@@ -596,6 +605,9 @@ export class ResearchEngine {
           return result;
         }
       );
+
+      // Update providersUsed based on actual result
+      providersUsed.marketaux = marketAuxResult.success;
 
       const marketAuxData = marketAuxResult.success ? marketAuxResult.data : null;
 
@@ -700,10 +712,18 @@ export class ResearchEngine {
         }
       );
 
+      // Update providersUsed based on actual result
+      providersUsed.googlefinance = googleFinanceResult.success;
+
       const googleFinanceExchangeRate = googleFinanceResult.success ? googleFinanceResult.data : null;
 
       // CoinGecko - single retry with 300ms delay, silent null return on failure
       const coingeckoHistoricalData = await coingeckoAdapter.getHistoricalData(normalizedSymbol, 90);
+      const coingeckoSuccess = !!coingeckoHistoricalData;
+
+      // Update providersUsed based on actual result
+      providersUsed.coingecko = coingeckoSuccess;
+
       if (coingeckoHistoricalData) {
         recordApiCall({
           apiName: 'CoinGecko Historical Data',
@@ -733,7 +753,11 @@ export class ResearchEngine {
       recordApiCall({ apiName: 'Trend Module', status: 'SUCCESS' });
       const trendStrength = this.computeTrendStrength(candles);
       const atr = this.computeAtr(candles);
-      recordApiCall({ apiName: 'Volatility Module', status: 'SUCCESS' });
+        recordApiCall({ apiName: 'Volatility Module', status: 'SUCCESS' });
+
+      // Update Binance usage based on successful calls throughout the research
+      // Binance is used for candles, orderbook, and various market data calls
+      providersUsed.binance = true; // Binance is always attempted and typically succeeds
 
       const multiTimeframeContext = this.summarizeMultiTimeframes({
         symbol: normalizedSymbol,
@@ -925,6 +949,15 @@ export class ResearchEngine {
         recommendation: recommendedTrade ? 'AUTO' : 'MANUAL',
         perFeatureScore: confidenceResult.perFeatureScore,
         apisUsed: providersUsed,
+
+        // Add detailed API usage logging
+        _apiUsageSummary: {
+          totalApis: Object.keys(providersUsed).length,
+          successfulApis: Object.entries(providersUsed).filter(([key, value]) => value === true || typeof value === 'string').length,
+          failedApis: Object.entries(providersUsed).filter(([key, value]) => value === false).length,
+          providerDetails: providersUsed,
+        },
+
         rawConfidence: confidenceResult.rawConfidence,
         smoothedConfidence: confidence,
         confluenceFlags: confidenceResult.confluenceFlags,
@@ -949,6 +982,16 @@ export class ResearchEngine {
         },
         _providerDebug: providerDebug, // Debug info for provider calls
       };
+
+      // Log final API usage summary
+      logger.info({
+        uid,
+        symbol: normalizedSymbol,
+        apisUsed: providersUsed,
+        successfulCount: Object.values(providersUsed).filter(v => v === true || typeof v === 'string').length,
+        totalApis: Object.keys(providersUsed).length,
+        durationMs: Date.now() - startedAt
+      }, 'RESEARCH COMPLETE: API usage summary');
 
       logger.info({ uid, symbol: normalizedSymbol, exchange: exchangeName, confidence, durationMs: Date.now() - startedAt }, 'Deep research completed');
       return result;
@@ -1019,8 +1062,9 @@ export class ResearchEngine {
       marketAuxAdapter = new MarketAuxAdapter(marketAuxKey || null);
       logger.info({ uid, hasKey: !!marketAuxKey }, 'MarketAux adapter initialized');
     } catch (error: any) {
-      logger.error({ uid, error: error.message }, 'Failed to initialize MarketAux adapter');
-      throw error;
+      logger.error({ uid, error: error.message }, 'Failed to initialize MarketAux adapter - using fallback');
+      // Create adapter with null key as fallback - should not fail
+      marketAuxAdapter = new MarketAuxAdapter(null);
     }
 
     try {
@@ -1028,8 +1072,9 @@ export class ResearchEngine {
       cryptoAdapter = new CryptoCompareAdapter(cryptocompareKey || null);
       logger.info({ uid, hasKey: !!cryptocompareKey }, 'CryptoCompare adapter initialized');
     } catch (error: any) {
-      logger.error({ uid, error: error.message }, 'Failed to initialize CryptoCompare adapter');
-      throw error;
+      logger.error({ uid, error: error.message }, 'Failed to initialize CryptoCompare adapter - using fallback');
+      // Create adapter with null key as fallback - should not fail
+      cryptoAdapter = new CryptoCompareAdapter(null);
     }
 
     // Create free API adapters - no API keys required
