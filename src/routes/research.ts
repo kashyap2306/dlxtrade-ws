@@ -62,9 +62,16 @@ export async function researchRoutes(fastify: FastifyInstance) {
   fastify.get('/logs', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Querystring: any }>, reply: FastifyReply) => {
-    const user = (request as any).user;
+    const uid = extractUserUid(request);
+    if (!uid) {
+      return reply.code(401).header('Content-Type', 'application/json').send({
+        success: false,
+        message: 'Authentication required - no valid user ID found',
+        results: [],
+      });
+    }
     const query = researchQuerySchema.parse(request.query);
-    const logs = await firestoreAdapter.getResearchLogs(user.uid, query.limit);
+    const logs = await firestoreAdapter.getResearchLogs(uid, query.limit);
     
     return logs.map((log) => ({
       id: log.id,
@@ -159,7 +166,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
               result.autoTradeDecision = autoDecision;
             }
           } catch (autoErr: any) {
-            logger.warn({ error: autoErr.message, uid: user.uid, symbol: currentSymbol }, 'Auto-trade evaluation failed');
+            logger.warn({ error: autoErr.message, uid: uid, symbol: currentSymbol }, 'Auto-trade evaluation failed');
           }
 
           const enriched = {
@@ -243,7 +250,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
             });
           }
         } catch (notifErr: any) {
-          logger.warn({ err: notifErr, uid: user.uid }, 'Failed to send notification (non-critical)');
+          logger.warn({ err: notifErr, uid: uid }, 'Failed to send notification (non-critical)');
         }
         
         // Broadcast WebSocket update for first symbol
@@ -325,7 +332,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
   } }>, reply: FastifyReply) => {
     // Extract UID using priority order - DO NOT use "system" or any hardcoded UID
     const uid = extractUserUid(request);
-    logger.info({ uid }, 'Manual Research triggered');
+    logger.info({ uid: uid }, 'Manual Research triggered');
 
     // Validate UID is available
     if (!uid) {
@@ -369,7 +376,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
         : activeContext as ActiveExchangeContext | null;
 
       if (!contextForResearch) {
-        logger.info({ uid }, 'Manual research: exchange integration not configured');
+        logger.info({ uid: uid }, 'Manual research: exchange integration not configured');
       }
 
       // Run research - will fetch API keys from Firestore, NO override keys
@@ -513,16 +520,17 @@ export async function researchRoutes(fastify: FastifyInstance) {
   fastify.get('/live/:symbol', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { symbol: string } }>, reply: FastifyReply) => {
+    // Extract UID using priority order
+    const uid = extractUserUid(request);
+    if (!uid) {
+      return reply.code(401).header('Content-Type', 'application/json').send({
+        success: false,
+        message: 'Authentication required - no valid user ID found',
+        result: null,
+      });
+    }
+
     try {
-      // Extract UID using priority order
-      const uid = extractUserUid(request);
-      if (!uid) {
-        return reply.code(401).header('Content-Type', 'application/json').send({
-          success: false,
-          message: 'Authentication required - no valid user ID found',
-          result: null,
-        });
-      }
 
       const symbol = request.params.symbol.toUpperCase().trim();
 

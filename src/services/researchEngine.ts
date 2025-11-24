@@ -259,6 +259,8 @@ export class ResearchEngine {
     const startedAt = Date.now();
     const context = activeContext ?? await this.resolveContext(uid);
 
+    logger.info({ uid, symbol: normalizedSymbol, timeframe: normalizedTimeframe }, 'FINAL SYMBOL USED in research engine');
+
     if (adapterOverride && !activeContext && uid !== 'system') {
       logger.warn({ uid, symbol: normalizedSymbol }, 'Adapter override ignored — active exchange determined via Firestore');
     }

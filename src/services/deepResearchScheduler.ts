@@ -8,23 +8,19 @@ import { loadFeatureConfig } from '../config/featureConfig';
 import { metricsService } from './metricsService';
 
 /**
- * Deep Research Scheduler - COMPREHENSIVE FIX
- * 
+ * Deep Research Scheduler - AUTO-SELECTION BASED
+ *
  * Runs on configurable intervals [5,10,15,30,60] minutes (NOT per-second).
- * Processes one coin per run (rotation mode) or multiple coins (bulk mode).
+ * Auto-selects the BEST coin from top 100 for ALL users with API keys.
  * Uses distributed locking (Firestore) to prevent overlapping runs across instances.
- * Supports auto-trade execution when confidence >= configured threshold (minimum 75%).
- * 
- * KEY FIXES:
- * - Uses ALL connected exchanges (Binance, Bitget, BingX, Kucoin, Weex, etc.)
- * - Aggregates orderbook and ticker data from ALL exchanges for better accuracy
- * - Always calls ALL connected integrations (CryptoQuant, MarketAux, CoinAPI)
- * - Rotation through Top-100 coins by default (not just BTC or tracked coins)
- * - Configurable auto-trade threshold (minimum 75%, configurable via Firestore)
+ *
+ * KEY FEATURES:
+ * - Auto-selects highest-confidence coin from top 100 using quickScan
+ * - Runs full research for ALL users with required API keys (marketaux + cryptocompare)
+ * - Each user gets personalized research using their own Firestore API keys
  * - Proper Firestore distributed locking (only ONE scheduler instance runs)
- * - Comprehensive logging
- * - No per-second loops - only runs at configured intervals
- * - Risk checks, balance checks, and duplicate order prevention
+ * - Comprehensive logging with auto-selection results
+ * - No rotation or fallback logic - ALWAYS uses auto-selection
  */
 export class DeepResearchScheduler {
   private updateIntervals: NodeJS.Timeout[] = [];
@@ -40,7 +36,7 @@ export class DeepResearchScheduler {
   
   // Configurable settings
   private intervals: number[] = [5]; // Default: 5 minutes (supported: [5,10,15,30,60])
-  private mode: 'rotate' | 'bulk' = 'rotate';
+  private mode: 'auto-select' = 'auto-select';
   private topN: number = 100; // Default: Top-100 coins (was undefined = all tracked coins)
 
   // NOTE: Auto-trade disabled for scheduled research (exchange API required)
@@ -103,7 +99,7 @@ export class DeepResearchScheduler {
    */
   async updateConfig(config: {
     intervals?: number[];
-    mode?: 'rotate' | 'bulk';
+    mode?: 'auto-select';
     topN?: number;
   }): Promise<void> {
     const allowedIntervals = [5, 10, 15, 30, 60]; // Only these intervals allowed
@@ -246,7 +242,7 @@ export class DeepResearchScheduler {
     isRunning: boolean;
     isProcessing: boolean;
     intervals: number[];
-    mode: 'rotate' | 'bulk';
+    mode: 'auto-select';
     topN?: number;
     lastRunTimestamp?: string;
     lastSymbol?: string;
@@ -295,25 +291,24 @@ export class DeepResearchScheduler {
    * @param symbol - Optional symbol to force
    * @param mode - Optional mode override ('rotate' or 'bulk')
    */
-  async forceRun(symbol?: string, mode?: 'rotate' | 'bulk'): Promise<{ success: boolean; symbol: string; result?: any; error?: string }> {
+  async forceRun(): Promise<{ success: boolean; symbol: string; result?: any; error?: string }> {
     if (this.isProcessing) {
-      return { success: false, symbol: symbol || '', error: 'Scheduler is already processing' };
+      return { success: false, symbol: '', error: 'Scheduler is already processing' };
     }
 
-    logger.info({ instanceId: this.instanceId, symbol, mode }, 'Force run requested');
+    logger.info({ instanceId: this.instanceId }, 'Force run requested (auto-selection mode)');
 
     const lockAcquired = await this.tryAcquireLock(this.LOCK_KEY, true); // Force flag
     if (!lockAcquired) {
-      return { success: false, symbol: symbol || '', error: 'Could not acquire lock' };
+      return { success: false, symbol: '', error: 'Could not acquire lock' };
     }
 
     try {
-      const runMode = mode || this.mode;
-      const result = await this.processCoins(symbol, runMode);
+      const result = await this.processCoins();
       return { success: true, symbol: result.symbol, result: result.result };
     } catch (error: any) {
       logger.error({ err: error, instanceId: this.instanceId }, 'Error in force run');
-      return { success: false, symbol: symbol || '', error: error.message };
+      return { success: false, symbol: '', error: error.message };
     } finally {
       await this.releaseLock(this.LOCK_KEY);
     }
@@ -346,8 +341,8 @@ export class DeepResearchScheduler {
         startTime: new Date(startTime).toISOString() 
       }, 'Starting scheduled research run');
 
-      // Process coins based on mode
-      const result = await this.processCoins(undefined, this.mode);
+      // Process coins using auto-selection
+      const result = await this.processCoins();
 
       const duration = Date.now() - startTime;
       logger.info({
@@ -434,8 +429,8 @@ export class DeepResearchScheduler {
       }, '[DIAGNOSTIC] Top 100 coins fetched');
       
       if (top100Coins.length === 0) {
-        logger.error({ instanceId: this.instanceId }, '[ROTATION] CRITICAL: topCoinsService returned EMPTY array - FAILING run instead of using BTC fallback');
-        throw new Error('topCoinsService.getTop100Coins() returned empty array - cannot proceed with rotation');
+        logger.error({ instanceId: this.instanceId }, '[AUTO-SELECTION] CRITICAL: topCoinsService returned EMPTY array - cannot auto-select');
+        throw new Error('topCoinsService.getTop100Coins() returned empty array - cannot auto-select');
       }
       
       if (trackedSymbols.size === 0) {
@@ -467,34 +462,44 @@ export class DeepResearchScheduler {
   /**
    * Process coins - ALWAYS auto-select the best symbol from top 100
    */
-  private async processCoins(forcedSymbol?: string, mode?: 'rotate' | 'bulk'): Promise<{ symbol: string; result: any }> {
-    logger.info({ instanceId: this.instanceId, forcedSymbol }, 'Processing coins with auto-selection');
+  private async processCoins(): Promise<{ symbol: string; result: any }> {
+    logger.info({ instanceId: this.instanceId }, 'Processing coins with auto-selection');
 
-    if (forcedSymbol) {
-      // Use forced symbol if provided (for admin/testing)
-      const allCoins = await this.getTrackedCoins();
-      return await this.processOneCoin(forcedSymbol.toUpperCase(), allCoins);
-    }
-
-    // ALWAYS auto-select the best symbol from top 100
+    // ALWAYS auto-select the best symbol from top 100 for EACH USER
     // This replaces the old rotation/bulk logic
-    const { selectBestSymbolFromTop100 } = await import('./researchEngine');
+    const usersWithAPIs = await firestoreAdapter.getAllUsersWithAPIs();
 
-    // Use 'system' for scheduler auto-selection (since it's not user-specific)
-    const selectionResult = await selectBestSymbolFromTop100('system');
+    if (usersWithAPIs.length === 0) {
+      throw new Error('No users found with required API keys (marketaux + cryptocompare)');
+    }
 
     logger.info({
       instanceId: this.instanceId,
-      selectedSymbol: selectionResult.selectedSymbol,
-      confidence: selectionResult.confidence,
-      topCandidates: selectionResult.topCandidates,
-      reason: selectionResult.reason,
-      totalScanTimeMs: selectionResult.totalScanTimeMs
-    }, 'Scheduler auto-selected best symbol from top 100');
+      userCount: usersWithAPIs.length
+    }, 'SCHEDULER: Starting auto-selection for all users with APIs');
 
-    // Process the selected symbol for all users with APIs
-    const allCoins = await this.getTrackedCoins();
-    return await this.processOneCoin(selectionResult.selectedSymbol, allCoins);
+    // For each user, auto-select the best symbol and run research
+    const results = [];
+    for (const user of usersWithAPIs) {
+      const { selectBestSymbolFromTop100 } = await import('./researchEngine');
+      const selectionResult = await selectBestSymbolFromTop100(user.uid);
+
+      logger.info({
+        instanceId: this.instanceId,
+        uid: user.uid,
+        selectedSymbol: selectionResult.selectedSymbol,
+        confidence: selectionResult.confidence,
+        reason: selectionResult.reason,
+        topCandidates: selectionResult.topCandidates.slice(0, 3) // Log top 3
+      }, 'SCHEDULER SELECTED SYMBOL for user');
+
+      // Process the selected symbol for this user
+      const result = await this.processOneCoin(selectionResult.selectedSymbol, []);
+      results.push(result);
+    }
+
+    // Return the first result for backward compatibility
+    return results[0];
   }
 
   /**
@@ -724,7 +729,6 @@ export class DeepResearchScheduler {
    * Get scheduler state from Firestore
    */
   private async getState(): Promise<{
-    lastProcessedIndex?: number;
     lastRunTimestamp?: string;
     lastSymbol?: string;
     lastDuration?: number;
@@ -733,14 +737,13 @@ export class DeepResearchScheduler {
     try {
       const db = admin.firestore(getFirebaseAdmin());
       const stateDoc = await db.collection(this.STATE_COLLECTION).doc(this.STATE_DOC).get();
-      
+
       if (!stateDoc.exists) {
         return {};
       }
 
       const data = stateDoc.data()!;
       return {
-        lastProcessedIndex: data.lastProcessedIndex,
         lastRunTimestamp: data.lastRunTimestamp,
         lastSymbol: data.lastSymbol,
         lastDuration: data.lastDuration,
@@ -756,7 +759,6 @@ export class DeepResearchScheduler {
    * Update scheduler state in Firestore
    */
   private async setState(updates: {
-    lastProcessedIndex?: number;
     lastRunTimestamp?: string;
     lastSymbol?: string;
     lastDuration?: number;

@@ -1044,11 +1044,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
   // Force run Deep Research for one coin
   fastify.post('/scheduler/force-run', {
     preHandler: [fastify.authenticate, fastify.adminAuth],
-  }, async (request: FastifyRequest<{ Body: { symbol?: string; mode?: 'rotate' | 'bulk' } }>, reply: FastifyReply) => {
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const { deepResearchScheduler } = await import('../services/deepResearchScheduler');
-      const { symbol, mode } = request.body || {};
-      const result = await deepResearchScheduler.forceRun(symbol, mode);
+      const result = await deepResearchScheduler.forceRun();
       return result;
     } catch (err: any) {
       logger.error({ err }, 'Error in force run');
@@ -1059,7 +1058,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
   // Update scheduler configuration
   fastify.post('/scheduler/config', {
     preHandler: [fastify.authenticate, fastify.adminAuth],
-  }, async (request: FastifyRequest<{ Body: { intervals?: number[]; mode?: 'rotate' | 'bulk'; topN?: number; autoTradeThreshold?: number; autoTradeEnabled?: boolean } }>, reply: FastifyReply) => {
+  }, async (request: FastifyRequest<{ Body: { intervals?: number[]; mode?: 'auto-select'; topN?: number } }>, reply: FastifyReply) => {
     try {
       const { deepResearchScheduler } = await import('../services/deepResearchScheduler');
       const config = request.body || {};
