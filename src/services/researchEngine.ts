@@ -572,9 +572,16 @@ export class ResearchEngine {
         trend: cryptoCompareData.indicators.macd.histogram > 0 ? 'BULLISH' : 'BEARISH'
       } : { signal: 0, histogram: 0, trend: 'NEUTRAL' };
 
-      // Derivatives data will come from separate sources (not CryptoCompare)
-      const derivativesData: DerivativesData = { source: 'exchange' };
-      const derivatives = analyzeDerivatives(derivativesData);
+      // Derivatives data will come from user's providers (CryptoCompare, CoinAPI, etc.)
+      const derivativesData = await runApiCall<DerivativesData>(
+        'Derivatives Data Fetch',
+        async () => {
+          const { fetchDerivativesData } = await import('./strategies/derivativesStrategy');
+          return await fetchDerivativesData(normalizedSymbol, userExchangeAdapter, cryptoAdapter);
+        },
+        { optional: true, provider: 'Multiple' }
+      );
+      const derivatives = analyzeDerivatives(derivativesData || { source: 'exchange' });
 
       // Remove on-chain score since CryptoCompare no longer provides it
       const onChainScore = 0;
@@ -695,17 +702,24 @@ export class ResearchEngine {
 
       const googleFinanceExchangeRate = googleFinanceResult.success ? googleFinanceResult.data : null;
 
-      const coingeckoResult = await logProviderCall(
-        'coingecko',
-        async () => {
-          const result = await coingeckoAdapter.getHistoricalData(normalizedSymbol, 90); // 90 days for better analysis
-          const dataPoints = result.historicalData?.length || 0;
-          logger.info({ symbol: normalizedSymbol, dataPoints }, 'CoinGecko: Called → OK');
-          return result;
-        }
-      );
-
-      const coingeckoHistoricalData = coingeckoResult.success ? coingeckoResult.data : null;
+      // CoinGecko - single retry with 300ms delay, silent null return on failure
+      const coingeckoHistoricalData = await coingeckoAdapter.getHistoricalData(normalizedSymbol, 90);
+      if (coingeckoHistoricalData) {
+        recordApiCall({
+          apiName: 'CoinGecko Historical Data',
+          status: 'SUCCESS',
+          durationMs: 0, // We don't track duration for CoinGecko anymore
+          provider: 'CoinGecko'
+        });
+      } else {
+        recordApiCall({
+          apiName: 'CoinGecko Historical Data',
+          status: 'SKIPPED',
+          message: 'Rate limited or unavailable',
+          durationMs: 0,
+          provider: 'CoinGecko'
+        });
+      }
 
       const rsi = analyzeRSI(candles);
       const macd = analyzeMACD(candles);

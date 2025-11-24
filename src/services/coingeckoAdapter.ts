@@ -31,71 +31,75 @@ const coinGeckoAdapter = {
       return this.generateFallbackHistoricalData(symbol, days);
     }
 
-    // Retry logic for rate limiting
-    let lastError: any = null;
-    const maxRetries = 3;
-
-    for (let retryCount = 0; retryCount < maxRetries; retryCount++) {
-      try {
-        const response = await this.httpClient!.get(`/coins/${coinId}/market_chart`, {
-          params: {
-            vs_currency: 'usd',
-            days: Math.min(days, 365), // CoinGecko limits to 365 days
-            interval: days > 90 ? 'daily' : 'hourly' // Use hourly for recent data, daily for longer periods
-          }
-        });
-
-        const data = response.data;
-        if (!data?.prices) {
-          logger.warn({ symbol, coinId }, 'CoinGecko returned empty data, using fallback');
-          return this.generateFallbackHistoricalData(symbol, days);
+    try {
+      const response = await this.httpClient!.get(`/coins/${coinId}/market_chart`, {
+        params: {
+          vs_currency: 'usd',
+          days: Math.min(days, 365), // CoinGecko limits to 365 days
+          interval: days > 90 ? 'daily' : 'hourly' // Use hourly for recent data, daily for longer periods
         }
+      });
 
-        // CoinGecko returns separate arrays for prices and volumes
-        const historicalData = data.prices.map((pricePoint: [number, number], index: number) => {
-          const volumePoint = data.total_volumes?.[index];
-          return {
-            time: new Date(pricePoint[0]).toISOString(),
-            price: pricePoint[1],
-            volume: volumePoint ? volumePoint[1] : 0
-          };
-        });
-
-        logger.debug({ symbol, coinId, count: historicalData.length }, 'CoinGecko historical data retrieved successfully');
-        return { historicalData };
-
-      } catch (error: any) {
-        lastError = error;
-        const status = error.response?.status;
-
-        if (status === 429) {
-          // Rate limited - wait before retry
-          const waitTime = Math.pow(2, retryCount) * 1000; // Exponential backoff
-          logger.warn({
-            symbol,
-            coinId,
-            retryCount,
-            waitTime,
-            error: error.message
-          }, 'CoinGecko rate limited, retrying');
-          await new Promise(resolve => setTimeout(resolve, waitTime));
-          continue;
-        }
-
-        // Other errors - break and use fallback
-        break;
+      const data = response.data;
+      if (!data?.prices) {
+        // Return null silently for empty data
+        return null;
       }
+
+      // CoinGecko returns separate arrays for prices and volumes
+      const historicalData = data.prices.map((pricePoint: [number, number], index: number) => {
+        const volumePoint = data.total_volumes?.[index];
+        return {
+          time: new Date(pricePoint[0]).toISOString(),
+          price: pricePoint[1],
+          volume: volumePoint ? volumePoint[1] : 0
+        };
+      });
+
+      logger.debug({ symbol, coinId, count: historicalData.length }, 'CoinGecko historical data retrieved successfully');
+      return { historicalData };
+
+    } catch (error: any) {
+      const status = error.response?.status;
+
+      if (status === 429) {
+        // Rate limited - single retry with 300ms delay
+        try {
+          await new Promise(resolve => setTimeout(resolve, 300));
+          const retryResponse = await this.httpClient!.get(`/coins/${coinId}/market_chart`, {
+            params: {
+              vs_currency: 'usd',
+              days: Math.min(days, 365),
+              interval: days > 90 ? 'daily' : 'hourly'
+            }
+          });
+
+          const retryData = retryResponse.data;
+          if (!retryData?.prices) {
+            // Return null silently after retry
+            return null;
+          }
+
+          const historicalData = retryData.prices.map((pricePoint: [number, number], index: number) => {
+            const volumePoint = retryData.total_volumes?.[index];
+            return {
+              time: new Date(pricePoint[0]).toISOString(),
+              price: pricePoint[1],
+              volume: volumePoint ? volumePoint[1] : 0
+            };
+          });
+
+          return { historicalData };
+
+        } catch (retryError: any) {
+          // Return null silently after retry fails
+          return null;
+        }
+      }
+
+      // Other errors - return null silently
+      return null;
     }
-
-    // All retries failed, use fallback data
-    logger.warn({
-      symbol,
-      coinId,
-      error: lastError?.message,
-      status: lastError?.response?.status
-    }, 'CoinGecko historical data failed, using fallback data');
-
-    return this.generateFallbackHistoricalData(symbol, days);
   },
 
   /**

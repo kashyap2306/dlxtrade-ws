@@ -467,6 +467,21 @@ export class CryptoCompareAdapter {
       // Get OHLC data for the last 100 periods (5m intervals = ~8 hours)
       const ohlc = await this.getOHLC(symbol, '5m', 100);
 
+      // If OHLC data is null (invalid format), return neutral defaults
+      if (!ohlc) {
+        return {
+          ohlc: [],
+          indicators: {
+            rsi: 50, // Neutral RSI
+            macd: { value: 0, signal: 0, histogram: 0 }, // Neutral MACD
+            ema12: null,
+            ema26: null,
+            sma20: null,
+          },
+          market: {},
+        };
+      }
+
       // Calculate indicators
       const indicators = this.calculateIndicators(ohlc);
 
@@ -524,8 +539,8 @@ export class CryptoCompareAdapter {
       // Try multiple possible data paths
       let raw = response.data?.Data?.Data?.Candles || response.data?.Data?.Data || response.data?.Data || [];
       if (!Array.isArray(raw)) {
-        logger.warn({ symbol, timeframe }, 'CryptoCompare OHLC data not in expected array format, using fallback');
-        return this.getFallbackOHLC(symbol, timeframe, limit);
+        // Silently return null - let fallback handle gracefully without logging
+        return null;
       }
 
       const result = raw.map((item: any) => ({
@@ -605,7 +620,7 @@ export class CryptoCompareAdapter {
     try {
       const ohlc = await this.getOHLC(symbol, timeframe, 200);
 
-      if (ohlc.length < 26) { // Need at least 26 periods for MACD
+      if (!ohlc || ohlc.length < 26) { // Need at least 26 periods for MACD
         return {
           timeframe,
           rsi: null,

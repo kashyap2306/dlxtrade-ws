@@ -30,7 +30,7 @@ class ApiUsageTracker {
     });
 
     // External APIs - reset daily (24 hours)
-    const externalApis = ['cryptocompare', 'lunarcrush', 'coinapi'];
+    const externalApis = ['cryptocompare', 'marketaux', 'coinapi', 'coingecko'];
     externalApis.forEach(api => {
       this.counters.set(api, {
         used: 0,
@@ -50,7 +50,7 @@ class ApiUsageTracker {
       bybit: 1000,
       okx: 1000,
       cryptocompare: 1000,
-      lunarcrush: 1000,
+      marketaux: 1000,
       coinapi: 1000,
     };
     return limits[api.toLowerCase()] || 1000;
@@ -67,7 +67,7 @@ class ApiUsageTracker {
     });
 
     // External APIs - reset daily
-    const externalApis = ['cryptoquant', 'lunarcrush', 'coinapi'];
+    const externalApis = ['cryptoquant', 'coinapi', 'coingecko'];
     externalApis.forEach(api => {
       const interval = setInterval(() => {
         this.resetCounter(api, 24 * 60 * 60 * 1000); // Reset with 24 hour window

@@ -121,8 +121,34 @@ export async function fetchDerivativesData(
     }
   }
 
-  // Removed CryptoCompare derivatives supplementation since CryptoCompare no longer provides these metrics
-  // Derivatives data should come from dedicated derivatives exchanges (Binance Futures, etc.)
+  // Try CryptoCompare for derivatives data if user has API key
+  if (cryptoCompareAdapter) {
+    try {
+      // Get funding rate from CryptoCompare
+      const fundingRate = await cryptoCompareAdapter.getFundingRate(symbol);
+      if (fundingRate !== 0) { // Only use if we got a real value
+        data.fundingRate = {
+          fundingRate: fundingRate,
+          timestamp: Date.now(),
+        };
+        data.source = data.source === 'exchange' ? 'both' : 'cryptocompare';
+      }
+
+      // Get liquidations from CryptoCompare
+      const liquidations = await cryptoCompareAdapter.getLiquidationData(symbol);
+      if (liquidations > 0) { // Only use if we got a real value
+        data.liquidations = {
+          longLiquidation24h: 0, // CryptoCompare gives total, not split
+          shortLiquidation24h: 0,
+          totalLiquidation24h: liquidations,
+          timestamp: Date.now(),
+        };
+        data.source = data.source === 'exchange' ? 'both' : 'cryptocompare';
+      }
+    } catch (error: any) {
+      // CryptoCompare derivatives failed, continue with exchange data only
+    }
+  }
 
   return data;
 }

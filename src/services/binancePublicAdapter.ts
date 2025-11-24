@@ -10,12 +10,57 @@ import type { ExchangeConnector, ExchangeName } from './exchangeConnector';
  */
 export class BinancePublicAdapter implements ExchangeConnector {
   private readonly httpClient: AxiosInstance;
+  private binanceSymbols: Set<string> = new Set();
+  private symbolMapping: Record<string, string> = {};
 
   constructor(baseUrl: string = 'https://api.binance.com') {
     this.httpClient = axios.create({
       baseURL: baseUrl,
       timeout: 10000,
     });
+    this.initializeSymbolData();
+  }
+
+  private async initializeSymbolData() {
+    try {
+      // Initialize symbol mapping for common incorrect symbols
+      this.symbolMapping = {
+        'PYUSD': 'PYTHUSDT',
+        'SUSDS': 'SUSDT',
+        'FIGR_HELOC': 'FIGRUSDT',
+        // Add more mappings as needed
+      };
+
+      // Fetch valid symbols from Binance
+      const response = await this.httpClient.get('/api/v3/exchangeInfo');
+      const symbols = response.data.symbols.map((s: any) => s.symbol.toUpperCase());
+      this.binanceSymbols = new Set(symbols);
+      logger.debug({ symbolCount: symbols.length }, 'Binance symbols loaded successfully');
+    } catch (error: any) {
+      logger.warn({ error: error.message }, 'Failed to load Binance symbols, will proceed without validation');
+      // Continue without validation rather than failing
+    }
+  }
+
+  private normalizeSymbol(symbol: string): string {
+    const normalized = symbol.replace('-', '').toUpperCase();
+
+    // Apply symbol mapping if needed
+    if (this.symbolMapping[normalized]) {
+      return this.symbolMapping[normalized];
+    }
+
+    return normalized;
+  }
+
+  private isValidSymbol(symbol: string): boolean {
+    if (this.binanceSymbols.size === 0) {
+      // If we couldn't load symbols, allow all requests (backward compatibility)
+      return true;
+    }
+
+    const normalized = this.normalizeSymbol(symbol);
+    return this.binanceSymbols.has(normalized);
   }
 
   getExchangeName(): ExchangeName {
@@ -23,7 +68,13 @@ export class BinancePublicAdapter implements ExchangeConnector {
   }
 
   async getOrderbook(symbol: string, limit: number = 20): Promise<Orderbook> {
-    const finalSymbol = symbol.replace('-', '').toUpperCase();
+    const finalSymbol = this.normalizeSymbol(symbol);
+
+    if (!this.isValidSymbol(finalSymbol)) {
+      logger.debug({ symbol, finalSymbol }, '[BinancePublicAdapter] Skipping invalid symbol for orderbook');
+      throw new Error(`Invalid symbol: ${finalSymbol}`);
+    }
+
     const params = { symbol: finalSymbol, limit: Math.min(Math.max(limit, 5), 1000) };
     try {
       const response = await this.httpClient.get('/api/v3/depth', { params });
@@ -36,38 +87,69 @@ export class BinancePublicAdapter implements ExchangeConnector {
         lastUpdateId: data.lastUpdateId || Date.now(),
       };
     } catch (error: any) {
-      logger.warn({ symbol, error: error.message }, '[BinancePublicAdapter] getOrderbook failed');
+      logger.warn({ symbol, finalSymbol, error: error.message }, '[BinancePublicAdapter] getOrderbook failed');
       throw error;
     }
   }
 
   async getTicker(symbol?: string): Promise<any> {
+    if (symbol) {
+      const finalSymbol = this.normalizeSymbol(symbol);
+      if (!this.isValidSymbol(finalSymbol)) {
+        logger.debug({ symbol, finalSymbol }, '[BinancePublicAdapter] Skipping invalid symbol for ticker');
+        throw new Error(`Invalid symbol: ${finalSymbol}`);
+      }
+      try {
+        const params = { symbol: finalSymbol };
+        const response = await this.httpClient.get('/api/v3/ticker/24hr', { params });
+        apiUsageTracker.increment('binance');
+        return response.data;
+      } catch (error: any) {
+        logger.warn({ symbol, finalSymbol, error: error.message }, '[BinancePublicAdapter] getTicker failed');
+        throw error;
+      }
+    }
+
+    // If no symbol provided, get all tickers
     try {
-      const params = symbol ? { symbol: symbol.replace('-', '').toUpperCase() } : undefined;
-      const response = await this.httpClient.get('/api/v3/ticker/24hr', { params });
+      const response = await this.httpClient.get('/api/v3/ticker/24hr');
       apiUsageTracker.increment('binance');
       return response.data;
     } catch (error: any) {
-      logger.warn({ symbol, error: error.message }, '[BinancePublicAdapter] getTicker failed');
+      logger.warn({ error: error.message }, '[BinancePublicAdapter] getAllTickers failed');
       throw error;
     }
   }
 
   async getBookTicker(symbol: string): Promise<any> {
+    const finalSymbol = this.normalizeSymbol(symbol);
+
+    if (!this.isValidSymbol(finalSymbol)) {
+      logger.debug({ symbol, finalSymbol }, '[BinancePublicAdapter] Skipping invalid symbol for book ticker');
+      throw new Error(`Invalid symbol: ${finalSymbol}`);
+    }
+
     try {
-      const params = { symbol: symbol.replace('-', '').toUpperCase() };
+      const params = { symbol: finalSymbol };
       const response = await this.httpClient.get('/api/v3/ticker/bookTicker', { params });
       apiUsageTracker.increment('binance');
       return response.data;
     } catch (error: any) {
-      logger.warn({ symbol, error: error.message }, '[BinancePublicAdapter] getBookTicker failed');
+      logger.warn({ symbol, finalSymbol, error: error.message }, '[BinancePublicAdapter] getBookTicker failed');
       throw error;
     }
   }
 
   async getKlines(symbol: string, interval: string = '1m', limit: number = 100): Promise<any[]> {
+    const finalSymbol = this.normalizeSymbol(symbol);
+
+    if (!this.isValidSymbol(finalSymbol)) {
+      logger.debug({ symbol, finalSymbol }, '[BinancePublicAdapter] Skipping invalid symbol for klines');
+      throw new Error(`Invalid symbol: ${finalSymbol}`);
+    }
+
     const params = {
-      symbol: symbol.replace('-', '').toUpperCase(),
+      symbol: finalSymbol,
       interval,
       limit: Math.min(Math.max(limit, 1), 1000),
     };
@@ -76,12 +158,19 @@ export class BinancePublicAdapter implements ExchangeConnector {
       apiUsageTracker.increment('binance');
       return response.data || [];
     } catch (error: any) {
-      logger.warn({ symbol, error: error.message }, '[BinancePublicAdapter] getKlines failed');
+      logger.warn({ symbol, finalSymbol, error: error.message }, '[BinancePublicAdapter] getKlines failed');
       throw error;
     }
   }
 
   async getVolatility(symbol: string): Promise<number | null> {
+    const finalSymbol = this.normalizeSymbol(symbol);
+
+    if (!this.isValidSymbol(finalSymbol)) {
+      logger.debug({ symbol, finalSymbol }, '[BinancePublicAdapter] Skipping invalid symbol for volatility');
+      return null;
+    }
+
     try {
       // Fetch 5m candles for last 100 periods (about 8.3 hours)
       const candles = await this.getKlines(symbol, '5m', 100);
