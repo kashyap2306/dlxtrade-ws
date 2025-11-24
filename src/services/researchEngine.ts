@@ -260,6 +260,24 @@ export class ResearchEngine {
     timeframe: string = '5m',
     activeContext?: ActiveExchangeContext
   ): Promise<ResearchResult> {
+    // Add global 3-second timeout to prevent hanging
+    return Promise.race([
+      this.runResearchInternal(symbol, uid, adapterOverride, _forceEngine, _legacy, timeframe, activeContext),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Research timeout: exceeded 3 seconds')), 3000)
+      )
+    ]);
+  }
+
+  private async runResearchInternal(
+    symbol: string,
+    uid: string,
+    adapterOverride?: ExchangeConnector,
+    _forceEngine: boolean = false,
+    _legacy?: Array<{ exchange: string; adapter: ExchangeConnector; credentials: any }>,
+    timeframe: string = '5m',
+    activeContext?: ActiveExchangeContext
+  ): Promise<ResearchResult> {
     const normalizedSymbol = this.normalizeSymbol(symbol);
     const normalizedTimeframe = this.normalizeTimeframe(timeframe);
     const startedAt = Date.now();
@@ -389,7 +407,13 @@ export class ResearchEngine {
         // Use Binance free API for candles when no exchange API is configured
         const binanceCandles = await runApiCall<Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }>>(
           `Binance Candles (${normalizedTimeframe})`,
-          () => binanceAdapter.getKlines(normalizedSymbol, normalizedTimeframe, 500),
+          async () => {
+            const timeout = new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('Binance candles timeout')), 1200)
+            );
+            const apiCall = binanceAdapter.getKlines(normalizedSymbol, normalizedTimeframe, 500);
+            return Promise.race([apiCall, timeout]);
+          },
           { provider: 'Binance' }
         );
 
@@ -419,10 +443,18 @@ export class ResearchEngine {
           try {
             // Use exchange adapter if available, otherwise fall back to Binance
             if (userExchangeAdapter && context) {
-              return await this.fetchExchangeCandles(userExchangeAdapter, normalizedSymbol, tf, 500, apiCalls);
+              const timeout = new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error(`Exchange ${tf} candles timeout`)), 1200)
+              );
+              const apiCall = this.fetchExchangeCandles(userExchangeAdapter, normalizedSymbol, tf, 500, apiCalls);
+              return Promise.race([apiCall, timeout]);
             } else {
               // Fall back to Binance free API for multi-timeframe data
-              const binanceCandles = await binanceAdapter.getKlines(normalizedSymbol, tf, 500);
+              const timeout = new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error(`Binance ${tf} candles timeout`)), 1200)
+              );
+              const apiCall = binanceAdapter.getKlines(normalizedSymbol, tf, 500);
+              const binanceCandles = await Promise.race([apiCall, timeout]);
               return binanceCandles.map(candle => ({
                 timestamp: candle.time,
                 open: candle.open,
@@ -450,12 +482,18 @@ export class ResearchEngine {
         rawOrderbook = await runApiCall<Orderbook>(
           `${exchangeName.toUpperCase()} Orderbook`,
           async () => {
-            apiCalls.push(`${exchangeName}:orderbook`);
-            const orderbookResponse = await userExchangeAdapter!.getOrderbook(normalizedSymbol, 20);
-            if (!orderbookResponse) {
-              throw new Error(`${exchangeName} returned empty orderbook`);
-            }
-            return orderbookResponse;
+            const timeout = new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error(`${exchangeName} orderbook timeout`)), 1200)
+            );
+            const apiCall = async () => {
+              apiCalls.push(`${exchangeName}:orderbook`);
+              const orderbookResponse = await userExchangeAdapter!.getOrderbook(normalizedSymbol, 20);
+              if (!orderbookResponse) {
+                throw new Error(`${exchangeName} returned empty orderbook`);
+              }
+              return orderbookResponse;
+            };
+            return Promise.race([apiCall(), timeout]);
           },
           { provider: exchangeName }
         );
@@ -465,12 +503,18 @@ export class ResearchEngine {
         rawOrderbook = await runApiCall<Orderbook>(
           'Binance Orderbook (Fallback)',
           async () => {
-            apiCalls.push('binance:orderbook');
-            const orderbookResponse = await binanceAdapter.getOrderbook(normalizedSymbol, 20);
-            if (!orderbookResponse) {
-              throw new Error('Binance returned empty orderbook');
-            }
-            return orderbookResponse;
+            const timeout = new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('Binance orderbook timeout')), 1200)
+            );
+            const apiCall = async () => {
+              apiCalls.push('binance:orderbook');
+              const orderbookResponse = await binanceAdapter.getOrderbook(normalizedSymbol, 20);
+              if (!orderbookResponse) {
+                throw new Error('Binance returned empty orderbook');
+              }
+              return orderbookResponse;
+            };
+            return Promise.race([apiCall(), timeout]);
           },
           { provider: 'Binance' }
         );
@@ -522,7 +566,13 @@ export class ResearchEngine {
       // CryptoCompare always available - returns neutral data if no API key
       const cryptoCompareResult = await logProviderCall(
         'cryptocompare',
-        async () => await cryptoAdapter.getAllMetrics(normalizedSymbol)
+        async () => {
+          const timeout = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('CryptoCompare timeout')), 300)
+          );
+          const apiCall = cryptoAdapter.getAllMetrics(normalizedSymbol);
+          return Promise.race([apiCall, timeout]);
+        }
       );
 
       // Update providersUsed based on actual result
@@ -548,7 +598,13 @@ export class ResearchEngine {
         try {
           const result = await logProviderCall(
             `mtf_${timeframe}`,
-            async () => await cryptoAdapter.getMTFIndicators(normalizedSymbol, timeframe)
+            async () => {
+              const timeout = new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error(`MTF ${timeframe} timeout`)), 300)
+              );
+              const apiCall = cryptoAdapter.getMTFIndicators(normalizedSymbol, timeframe);
+              return Promise.race([apiCall, timeout]);
+            }
           );
           if (result.success && result.data) {
             mtfIndicators[timeframe] = result.data;
@@ -599,10 +655,16 @@ export class ResearchEngine {
       const marketAuxResult = await logProviderCall(
         'marketaux',
         async () => {
-          const baseSymbol = normalizedSymbol.replace(/USDT$/i, '').replace(/USD$/i, '');
-          const result = await marketAuxAdapter.getNewsSentiment(baseSymbol);
-          logger.info({ symbol: normalizedSymbol, sentiment: result.sentiment, articles: result.totalArticles }, 'MarketAux: Called → OK');
-          return result;
+          const timeout = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('MarketAux timeout')), 500)
+          );
+          const apiCall = async () => {
+            const baseSymbol = normalizedSymbol.replace(/USDT$/i, '').replace(/USD$/i, '');
+            const result = await marketAuxAdapter.getNewsSentiment(baseSymbol);
+            logger.info({ symbol: normalizedSymbol, sentiment: result.sentiment, articles: result.totalArticles }, 'MarketAux: Called → OK');
+            return result;
+          };
+          return Promise.race([apiCall(), timeout]);
         }
       );
 
@@ -625,9 +687,15 @@ export class ResearchEngine {
       const binanceTickerResult = await logProviderCall(
         'binance',
         async () => {
-          const result = await binanceAdapter.getTicker(normalizedSymbol);
-          logger.info({ symbol: normalizedSymbol, price: result.lastPrice, volume: result.volume }, 'Binance: Called → OK');
-          return result;
+          const timeout = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Binance ticker timeout')), 1200)
+          );
+          const apiCall = async () => {
+            const result = await binanceAdapter.getTicker(normalizedSymbol);
+            logger.info({ symbol: normalizedSymbol, price: result.lastPrice, volume: result.volume }, 'Binance: Called → OK');
+            return result;
+          };
+          return Promise.race([apiCall(), timeout]);
         }
       );
 
@@ -636,7 +704,13 @@ export class ResearchEngine {
       // Get book ticker for accurate bid-ask spread
       const binanceBookTickerResult = await logProviderCall(
         'binance_bookTicker',
-        async () => await binanceAdapter.getBookTicker(normalizedSymbol)
+        async () => {
+          const timeout = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Binance book ticker timeout')), 1200)
+          );
+          const apiCall = binanceAdapter.getBookTicker(normalizedSymbol);
+          return Promise.race([apiCall, timeout]);
+        }
       );
 
       const binanceBookTickerData = binanceBookTickerResult.success ? binanceBookTickerResult.data : null;
@@ -644,7 +718,13 @@ export class ResearchEngine {
       // Get volatility from 5m candles
       const binanceVolatilityResult = await logProviderCall(
         'binance_volatility',
-        async () => await binanceAdapter.getVolatility(normalizedSymbol)
+        async () => {
+          const timeout = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Binance volatility timeout')), 1200)
+          );
+          const apiCall = binanceAdapter.getVolatility(normalizedSymbol);
+          return Promise.race([apiCall, timeout]);
+        }
       );
 
       const binanceVolatility = binanceVolatilityResult.success ? binanceVolatilityResult.data : null;
@@ -706,9 +786,15 @@ export class ResearchEngine {
       const googleFinanceResult = await logProviderCall(
         'googlefinance',
         async () => {
-          const result = await googleFinanceAdapter.getExchangeRate('USD', 'INR');
-          logger.info({ symbol: normalizedSymbol, rate: result.exchangeRate }, 'GoogleFinance: Called → OK');
-          return result;
+          const timeout = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('GoogleFinance timeout')), 1200)
+          );
+          const apiCall = async () => {
+            const result = await googleFinanceAdapter.getExchangeRate('USD', 'INR');
+            logger.info({ symbol: normalizedSymbol, rate: result.exchangeRate }, 'GoogleFinance: Called → OK');
+            return result;
+          };
+          return Promise.race([apiCall(), timeout]);
         }
       );
 
@@ -717,12 +803,16 @@ export class ResearchEngine {
 
       const googleFinanceExchangeRate = googleFinanceResult.success ? googleFinanceResult.data : null;
 
-      // CoinGecko - single retry with 300ms delay, silent null return on failure
-      const coingeckoHistoricalData = await coingeckoAdapter.getHistoricalData(normalizedSymbol, 90);
-      const coingeckoSuccess = !!coingeckoHistoricalData;
+      // CoinGecko - free API, always available (may return null data but API is accessible)
+      // Add 300ms timeout to prevent slowdown
+      const coingeckoTimeout = new Promise<null>((_, reject) =>
+        setTimeout(() => reject(new Error('CoinGecko timeout')), 300)
+      );
+      const coingeckoPromise = coingeckoAdapter.getHistoricalData(normalizedSymbol, 90);
+      const coingeckoHistoricalData = await Promise.race([coingeckoPromise, coingeckoTimeout]).catch(() => null);
 
-      // Update providersUsed based on actual result
-      providersUsed.coingecko = coingeckoSuccess;
+      // CoinGecko is always considered successful since it's a free API
+      providersUsed.coingecko = true;
 
       if (coingeckoHistoricalData) {
         recordApiCall({

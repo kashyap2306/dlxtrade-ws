@@ -11,8 +11,13 @@ export class TopCoinsService {
    */
   async getTop100Coins(): Promise<string[]> {
     try {
-      // Load valid symbols from cache
-      const validSymbols = await getValidSymbols();
+      // Load valid symbols from cache (with timeout to prevent blocking)
+      const timeoutPromise = new Promise<string[]>((_, reject) =>
+        setTimeout(() => reject(new Error('Symbol cache timeout')), 1000)
+      );
+
+      const validSymbolsPromise = getValidSymbols();
+      const validSymbols = await Promise.race([validSymbolsPromise, timeoutPromise]);
 
       // Filter to only USDT pairs (should all be USDT but being safe)
       const usdtSymbols = validSymbols.filter(symbol => symbol.endsWith('USDT'));

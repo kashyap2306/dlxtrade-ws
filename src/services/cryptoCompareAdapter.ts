@@ -402,7 +402,8 @@ export class CryptoCompareAdapter {
         if (data.length === 0) return 0;
 
         const latestData = data[0];
-        const totalLiquidations = latestData.total || 0;
+        // Safely extract total liquidations with fallback
+        const totalLiquidations = latestData?.total || 0;
 
         // Normalize to 0-100 scale based on liquidation volume
         const liquidations = Math.min(100, Math.max(0, totalLiquidations / 1000000));
