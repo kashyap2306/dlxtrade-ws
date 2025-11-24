@@ -71,8 +71,13 @@ export class BinancePublicAdapter implements ExchangeConnector {
     const finalSymbol = this.normalizeSymbol(symbol);
 
     if (!this.isValidSymbol(finalSymbol)) {
-      logger.debug({ symbol, finalSymbol }, '[BinancePublicAdapter] Skipping invalid symbol for orderbook');
-      throw new Error(`Invalid symbol: ${finalSymbol}`);
+      logger.debug({ symbol, finalSymbol }, '[BinancePublicAdapter] Skipping invalid symbol for orderbook, using fallback');
+      return {
+        symbol: finalSymbol,
+        bids: [],
+        asks: [],
+        lastUpdateId: 0,
+      };
     }
 
     const params = { symbol: finalSymbol, limit: Math.min(Math.max(limit, 5), 1000) };
@@ -87,8 +92,13 @@ export class BinancePublicAdapter implements ExchangeConnector {
         lastUpdateId: data.lastUpdateId || Date.now(),
       };
     } catch (error: any) {
-      logger.warn({ symbol, finalSymbol, error: error.message }, '[BinancePublicAdapter] getOrderbook failed');
-      throw error;
+      logger.warn({ symbol, finalSymbol, error: error.message }, '[BinancePublicAdapter] getOrderbook failed, using fallback');
+      return {
+        symbol: finalSymbol,
+        bids: [],
+        asks: [],
+        lastUpdateId: 0,
+      };
     }
   }
 
@@ -96,8 +106,13 @@ export class BinancePublicAdapter implements ExchangeConnector {
     if (symbol) {
       const finalSymbol = this.normalizeSymbol(symbol);
       if (!this.isValidSymbol(finalSymbol)) {
-        logger.debug({ symbol, finalSymbol }, '[BinancePublicAdapter] Skipping invalid symbol for ticker');
-        throw new Error(`Invalid symbol: ${finalSymbol}`);
+        logger.debug({ symbol, finalSymbol }, '[BinancePublicAdapter] Skipping invalid symbol for ticker, using fallback');
+        return {
+          lastPrice: 0,
+          priceChangePercent: 0,
+          volume: 0,
+          fallback: true
+        };
       }
       try {
         const params = { symbol: finalSymbol };
@@ -105,8 +120,13 @@ export class BinancePublicAdapter implements ExchangeConnector {
         apiUsageTracker.increment('binance');
         return response.data;
       } catch (error: any) {
-        logger.warn({ symbol, finalSymbol, error: error.message }, '[BinancePublicAdapter] getTicker failed');
-        throw error;
+        logger.warn({ symbol, finalSymbol, error: error.message }, '[BinancePublicAdapter] getTicker failed, using fallback');
+        return {
+          lastPrice: 0,
+          priceChangePercent: 0,
+          volume: 0,
+          fallback: true
+        };
       }
     }
 
@@ -116,8 +136,8 @@ export class BinancePublicAdapter implements ExchangeConnector {
       apiUsageTracker.increment('binance');
       return response.data;
     } catch (error: any) {
-      logger.warn({ error: error.message }, '[BinancePublicAdapter] getAllTickers failed');
-      throw error;
+      logger.warn({ error: error.message }, '[BinancePublicAdapter] getAllTickers failed, using fallback');
+      return [];
     }
   }
 
@@ -125,8 +145,13 @@ export class BinancePublicAdapter implements ExchangeConnector {
     const finalSymbol = this.normalizeSymbol(symbol);
 
     if (!this.isValidSymbol(finalSymbol)) {
-      logger.debug({ symbol, finalSymbol }, '[BinancePublicAdapter] Skipping invalid symbol for book ticker');
-      throw new Error(`Invalid symbol: ${finalSymbol}`);
+      logger.debug({ symbol, finalSymbol }, '[BinancePublicAdapter] Skipping invalid symbol for book ticker, using fallback');
+      return {
+        symbol: finalSymbol,
+        bidPrice: 0,
+        askPrice: 0,
+        fallback: true
+      };
     }
 
     try {
@@ -135,8 +160,13 @@ export class BinancePublicAdapter implements ExchangeConnector {
       apiUsageTracker.increment('binance');
       return response.data;
     } catch (error: any) {
-      logger.warn({ symbol, finalSymbol, error: error.message }, '[BinancePublicAdapter] getBookTicker failed');
-      throw error;
+      logger.warn({ symbol, finalSymbol, error: error.message }, '[BinancePublicAdapter] getBookTicker failed, using fallback');
+      return {
+        symbol: finalSymbol,
+        bidPrice: 0,
+        askPrice: 0,
+        fallback: true
+      };
     }
   }
 
@@ -144,8 +174,17 @@ export class BinancePublicAdapter implements ExchangeConnector {
     const finalSymbol = this.normalizeSymbol(symbol);
 
     if (!this.isValidSymbol(finalSymbol)) {
-      logger.debug({ symbol, finalSymbol }, '[BinancePublicAdapter] Skipping invalid symbol for klines');
-      throw new Error(`Invalid symbol: ${finalSymbol}`);
+      logger.debug({ symbol, finalSymbol }, '[BinancePublicAdapter] Skipping invalid symbol for klines, using fallback');
+      return [{
+        time: Date.now(),
+        open: 0,
+        high: 0,
+        low: 0,
+        close: 0,
+        volume: 0,
+        fallback: true,
+        error: "invalid_symbol"
+      }];
     }
 
     const params = {
@@ -158,8 +197,17 @@ export class BinancePublicAdapter implements ExchangeConnector {
       apiUsageTracker.increment('binance');
       return response.data || [];
     } catch (error: any) {
-      logger.warn({ symbol, finalSymbol, error: error.message }, '[BinancePublicAdapter] getKlines failed');
-      throw error;
+      logger.warn({ symbol, finalSymbol, error: error.message }, '[BinancePublicAdapter] getKlines failed, using fallback');
+      return [{
+        time: Date.now(),
+        open: 0,
+        high: 0,
+        low: 0,
+        close: 0,
+        volume: 0,
+        fallback: true,
+        error: "timeout"
+      }];
     }
   }
 
