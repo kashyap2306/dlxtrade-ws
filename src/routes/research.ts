@@ -369,15 +369,11 @@ export async function researchRoutes(fastify: FastifyInstance) {
       }, 'AUTO-SELECTED SYMBOL for manual research');
 
       // Validate that the selected symbol is a valid Binance trading pair
+      // Note: This validation is now permissive and will allow research to proceed
       const isValid = await isValidBinanceSymbol(symbol);
       if (!isValid) {
-        logger.warn({ uid, symbol }, 'Invalid symbol provided for manual research');
-        reply.code(400).header('Content-Type', 'application/json').send({
-          success: false,
-          message: 'Research failed',
-          error: `Invalid trading pair: ${symbol}. Not listed on Binance.`
-        });
-        return;
+        logger.warn({ uid, symbol }, 'Symbol validation failed, but allowing research to proceed');
+        // Don't reject - allow research to continue with fallback data
       }
 
       // Get exchange context (will return safe fallback if not configured)
