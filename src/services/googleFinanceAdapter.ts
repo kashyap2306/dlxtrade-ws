@@ -42,16 +42,16 @@ const googleFinanceAdapter = {
 
       // Parse the exchange rate from HTML
       // Look for the rate in the page content
-      const rate = this.parseExchangeRateFromHTML(html);
+      const rate = await this.parseExchangeRateFromHTML(html);
 
       if (rate && rate > 0) {
         this.lastKnownRate = rate;
         this.lastFetchTime = now;
-        logger.info({ rate, baseCurrency, quoteCurrency }, 'Successfully fetched USD/INR rate from Google Finance');
+        logger.info({ rate, baseCurrency, quoteCurrency }, 'Successfully fetched USD/INR rate');
         return { exchangeRate: rate };
       } else {
         // Fallback to last known rate
-        logger.warn({ baseCurrency, quoteCurrency }, 'Failed to parse rate from Google Finance, using cached rate');
+        logger.warn({ baseCurrency, quoteCurrency }, 'Failed to get exchange rate, using cached rate');
         return { exchangeRate: this.lastKnownRate };
       }
     } catch (error: any) {
@@ -68,20 +68,47 @@ const googleFinanceAdapter = {
   },
 
   /**
-   * Parse exchange rate from Google Finance HTML
+   * Parse exchange rate from Google Finance HTML with multiple fallback strategies
    */
   parseExchangeRateFromHTML: function(html: string): number | null {
     try {
-      // Look for the rate in various possible patterns in the HTML
-      // Google Finance typically shows the rate in a span or div with specific classes
+      // Strategy 1: Look for JSON data in script tags (most reliable)
+      const jsonMatches = html.match(/\{[^}]*"rate"[^}]*\}/g);
+      if (jsonMatches) {
+        for (const jsonStr of jsonMatches) {
+          try {
+            const data = JSON.parse(jsonStr);
+            if (data.rate && typeof data.rate === 'number') {
+              if (data.rate > 10 && data.rate < 200) {
+                return data.rate;
+              }
+            }
+          } catch (e) {
+            // Continue to next match
+          }
+        }
+      }
 
-      // Try to find patterns like "83.25" or "83.25 USD"
+      // Strategy 2: Look for rate in data attributes
+      const dataValueMatches = html.match(/data-value="([0-9.]+)"/g);
+      if (dataValueMatches) {
+        for (const match of dataValueMatches) {
+          const rateMatch = match.match(/data-value="([0-9.]+)"/);
+          if (rateMatch) {
+            const rate = parseFloat(rateMatch[1]);
+            if (rate > 10 && rate < 200) {
+              return rate;
+            }
+          }
+        }
+      }
+
+      // Strategy 3: Regex patterns for visible text
       const ratePatterns = [
-        /"rate":\s*"([0-9.]+)"/,  // JSON-like pattern
         /([0-9]{2}\.[0-9]{2,4})\s*INR/,  // Rate followed by INR
         /([0-9]{2}\.[0-9]{2,4})\s*USD/,  // Rate followed by USD
-        /data-value="([0-9.]+)"/,  // Data attribute
-        /class="[^"]*rate[^"]*"[^>]*>([0-9.]+)/,  // Rate class
+        /([0-9]{2}\.[0-9]{2,4})\s*Indian Rupee/,  // Rate followed by currency name
+        />?\s*([0-9]{2}\.[0-9]{2,4})\s*</,  // Rate in HTML tags
       ];
 
       for (const pattern of ratePatterns) {
@@ -94,23 +121,37 @@ const googleFinanceAdapter = {
         }
       }
 
-      // Try a more direct approach - look for the main rate display
-      // Google Finance often has the rate in a specific div
-      const rateDivMatch = html.match(/<div[^>]*class="[^"]*rate[^"]*"[^>]*>([^<]+)</);
-      if (rateDivMatch) {
-        const rateText = rateDivMatch[1].replace(/[^0-9.]/g, '');
-        const rate = parseFloat(rateText);
-        if (rate > 10 && rate < 200) {
-          return rate;
-        }
-      }
+      // Strategy 4: Try alternative API endpoint (exchangerate-api.com as backup)
+      logger.warn('Primary Google Finance parsing failed, attempting fallback API');
+      return this.getFallbackExchangeRate();
 
-      logger.warn('Could not parse exchange rate from Google Finance HTML');
-      return null;
     } catch (error: any) {
       logger.warn({ error: error.message }, 'Error parsing Google Finance HTML');
-      return null;
+      return this.getFallbackExchangeRate();
     }
+  },
+
+  /**
+   * Get exchange rate from fallback API when Google Finance fails
+   */
+  getFallbackExchangeRate: async function(): Promise<number | null> {
+    try {
+      const response = await axios.get('https://api.exchangerate-api.com/v4/latest/USD', {
+        timeout: 5000
+      });
+
+      const rate = response.data?.rates?.INR;
+      if (rate && rate > 10 && rate < 200) {
+        logger.info({ rate }, 'Successfully fetched fallback exchange rate');
+        return rate;
+      }
+    } catch (error: any) {
+      logger.warn({ error: error.message }, 'Fallback exchange rate API also failed');
+    }
+
+    // Ultimate fallback - return cached rate
+    logger.warn({ cachedRate: this.lastKnownRate }, 'Using cached exchange rate as final fallback');
+    return this.lastKnownRate;
   },
 
   /**

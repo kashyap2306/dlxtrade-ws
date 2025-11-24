@@ -7,6 +7,50 @@ import { topCoinsService } from '../services/topCoinsService';
 import { z } from 'zod';
 import { logger } from '../utils/logger';
 
+/**
+ * Extract user UID with priority order:
+ * 1. request.body.userId
+ * 2. request.user?.uid
+ * 3. request.query.userId
+ * 4. request.headers['x-user-id']
+ */
+function extractUserUid(request: FastifyRequest): string | null {
+  // Priority 1: request.body.userId
+  if (request.body && typeof request.body === 'object' && 'userId' in request.body && request.body.userId) {
+    const userId = (request.body as any).userId;
+    if (typeof userId === 'string' && userId.trim()) {
+      logger.debug({ uid: userId, source: 'request.body.userId' }, 'Extracted UID from request body');
+      return userId.trim();
+    }
+  }
+
+  // Priority 2: request.user?.uid (from Firebase auth)
+  const user = (request as any).user;
+  if (user && user.uid) {
+    logger.debug({ uid: user.uid, source: 'request.user.uid' }, 'Extracted UID from Firebase auth');
+    return user.uid;
+  }
+
+  // Priority 3: request.query.userId
+  if (request.query && typeof request.query === 'object' && 'userId' in request.query && request.query.userId) {
+    const userId = (request.query as any).userId;
+    if (typeof userId === 'string' && userId.trim()) {
+      logger.debug({ uid: userId, source: 'request.query.userId' }, 'Extracted UID from query params');
+      return userId.trim();
+    }
+  }
+
+  // Priority 4: request.headers['x-user-id']
+  const headerUid = request.headers['x-user-id'];
+  if (headerUid && typeof headerUid === 'string' && headerUid.trim()) {
+    logger.debug({ uid: headerUid, source: 'x-user-id header' }, 'Extracted UID from header');
+    return headerUid.trim();
+  }
+
+  logger.warn('No valid UID found in any source');
+  return null;
+}
+
 // Firestore requires manual composite indexes for queries with multiple fields
 // If you see index errors, create indexes in Firebase Console
 const researchQuerySchema = z.object({
@@ -37,18 +81,19 @@ export async function researchRoutes(fastify: FastifyInstance) {
 
   fastify.post('/run', {
     preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Body: { symbol?: string; symbols?: string[]; forceEngine?: boolean; timeframe?: string } }>, reply: FastifyReply) => {
-    const user = (request as any).user;
+  }, async (request: FastifyRequest<{ Body: { symbol?: string; symbols?: string[]; forceEngine?: boolean; timeframe?: string; userId?: string } }>, reply: FastifyReply) => {
+    // Extract UID using priority order - DO NOT use "system" or any hardcoded UID
+    const uid = extractUserUid(request);
     const forceEngine = request.body?.forceEngine === true;
-    
-    logger.info({ uid: user?.uid, forceEngine }, 'Research/run request received');
-    
-    // Validate user is authenticated
-    if (!user || !user.uid) {
-      console.error('🔍 [RESEARCH/RUN] User not authenticated');
+
+    logger.info({ uid, forceEngine }, 'Research/run request received');
+
+    // Validate UID is available
+    if (!uid) {
+      console.error('🔍 [RESEARCH/RUN] No valid UID found');
       reply.code(401).header('Content-Type', 'application/json').send({
         success: false,
-        message: 'Authentication required',
+        message: 'Authentication required - no valid user ID found',
         results: [],
       });
       return; // Explicit return to prevent further execution
@@ -56,22 +101,19 @@ export async function researchRoutes(fastify: FastifyInstance) {
     
     // Wrap entire logic in try/catch for comprehensive error handling
     try {
-      // Handle symbol or multi-coin scanning
-      let symbols: string[] = [];
-      let symbol = request.body?.symbol;
-      
-      if (symbol && typeof symbol === 'string' && symbol.trim() !== '') {
-        // Single symbol provided
-        symbols = [symbol.trim().toUpperCase()];
-      } else if (request.body?.symbols && Array.isArray(request.body.symbols) && request.body.symbols.length > 0) {
-        // Multiple symbols provided
-        symbols = request.body.symbols.map((s: string) => s.trim().toUpperCase()).filter((s: string) => s.length > 0);
-      } else {
-        // No symbol provided - auto pick top 100 coins
-        logger.info({ uid: user.uid }, 'No symbol provided, fetching top 100 coins');
-        symbols = await topCoinsService.getTop100Coins();
-        logger.info({ uid: user.uid, count: symbols.length }, 'Fetched top 100 coins for multi-coin scanning');
-      }
+      // ALWAYS auto-select BEST coin from top 100 (ignore any provided symbols)
+      logger.info({ uid, providedSymbol: request.body?.symbol }, 'AUTO-SELECTION: Starting for research/run');
+      const { selectBestSymbolFromTop100 } = await import('../services/researchEngine');
+      const selectionResult = await selectBestSymbolFromTop100(uid);
+      const symbols = [selectionResult.selectedSymbol];
+
+      logger.info({
+        uid,
+        selectedSymbol: selectionResult.selectedSymbol,
+        confidence: selectionResult.confidence,
+        reason: selectionResult.reason,
+        topCandidates: selectionResult.topCandidates.slice(0, 3) // Log top 3
+      }, 'AUTO-SELECTED SYMBOL for research/run');
       
       if (symbols.length === 0) {
         console.error('🔍 [RESEARCH/RUN] No symbols available');
@@ -82,8 +124,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
         });
         return;
       }
-      
-      const activeContext = await firestoreAdapter.getActiveExchangeForUser(user.uid);
+
+      const activeContext = await firestoreAdapter.getActiveExchangeForUser(uid);
       const detectedExchangeName = (activeContext && typeof activeContext === 'object' && 'exchangeConfigured' in activeContext && activeContext.exchangeConfigured === false)
         ? 'none'
         : (activeContext && 'name' in activeContext ? activeContext.name : 'none');
@@ -103,7 +145,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
 
           const result = await researchEngine.runResearch(
             currentSymbol,
-            user.uid,
+            uid,
             undefined,
             false,
             undefined,
@@ -112,7 +154,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
           );
 
           try {
-            const autoDecision = await autoTradeController.processResearch(user.uid, result);
+            const autoDecision = await autoTradeController.processResearch(uid, result);
             if (autoDecision && (autoDecision.eligible || autoDecision.requiresConfirmation)) {
               result.autoTradeDecision = autoDecision;
             }
@@ -147,7 +189,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
             throw symbolErr;
           }
 
-          logger.error({ err: symbolErr, symbol: currentSymbol, uid: user.uid }, 'Fallback research error');
+          logger.error({ err: symbolErr, symbol: currentSymbol, uid }, 'Fallback research error');
           const errorMessage = symbolErr?.message || 'Research error';
           allResults.push({
             symbol: currentSymbol,
@@ -194,7 +236,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
           const { getFirebaseAdmin } = await import('../utils/firebase');
           const admin = getFirebaseAdmin();
           if (admin) {
-            await firestoreAdapter.createNotification(user.uid, {
+            await firestoreAdapter.createNotification(uid, {
               title: 'Deep Research Completed',
               message: `Analyzed ${allResults.length} coin${allResults.length > 1 ? 's' : ''} - Top: ${firstResult.symbol} (${(firstResult.accuracy * 100).toFixed(1)}%)`,
               type: firstResult.signal === 'BUY' ? 'success' : firstResult.signal === 'SELL' ? 'warning' : 'info',
@@ -232,8 +274,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
       reply.code(200).header('Content-Type', 'application/json').send(finalResponse);
       return;
     } catch (error: any) {
-      fastify.log.error({ error: error.message, uid: user?.uid, stack: error.stack }, 'Error in research/run');
-      logger.error({ error: error.message, uid: user?.uid, stack: error.stack }, 'Error in research/run');
+      fastify.log.error({ error: error.message, uid, stack: error.stack }, 'Error in research/run');
+      logger.error({ error: error.message, uid, stack: error.stack }, 'Error in research/run');
       
       // Determine error type and status code
       let statusCode = 400;
@@ -276,36 +318,50 @@ export async function researchRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest<{ Body: {
     symbol?: string;
     timeframe?: string;
-    marketauxApiKey?: string;
-    cryptocompareApiKey?: string;
+    userId?: string;
     query?: string;
+    debug?: boolean;
+    forceRefresh?: boolean;
   } }>, reply: FastifyReply) => {
-    const user = (request as any).user;
-    logger.info({ uid: user?.uid }, 'Manual Research triggered');
+    // Extract UID using priority order - DO NOT use "system" or any hardcoded UID
+    const uid = extractUserUid(request);
+    logger.info({ uid }, 'Manual Research triggered');
 
-    // Validate user is authenticated
-    if (!user || !user.uid) {
-      logger.warn('Manual research: user not authenticated');
+    // Validate UID is available
+    if (!uid) {
+      logger.warn('Manual research: no valid UID found');
       reply.code(401).header('Content-Type', 'application/json').send({
         success: false,
-        message: 'Authentication required',
+        message: 'Authentication required - no valid user ID found',
         results: [],
       });
       return;
     }
 
     try {
-      const symbol = request.body?.symbol || 'BTCUSDT';
+      let symbol = request.body?.symbol; // May be undefined - will auto-pick if not provided
       const timeframe = request.body?.timeframe || '5m';
+      const debug = request.body?.debug === true;
+      const forceRefresh = request.body?.forceRefresh === true;
 
-      // Extract API keys from request body (optional fallback)
-      const overrideKeys = {
-        marketauxApiKey: request.body?.marketauxApiKey,
-        cryptocompareApiKey: request.body?.cryptocompareApiKey,
-      };
+      let selectionResult: any = null;
+
+      // ALWAYS auto-select best symbol from top 100 (ignore any provided symbol)
+      logger.info({ uid, providedSymbol: request.body?.symbol }, 'AUTO-SELECTION: Starting for manual research');
+      const { selectBestSymbolFromTop100 } = await import('../services/researchEngine');
+      selectionResult = await selectBestSymbolFromTop100(uid);
+      symbol = selectionResult.selectedSymbol;
+
+      logger.info({
+        uid,
+        selectedSymbol: symbol,
+        confidence: selectionResult.confidence,
+        reason: selectionResult.reason,
+        topCandidates: selectionResult.topCandidates.slice(0, 3) // Log top 3
+      }, 'AUTO-SELECTED SYMBOL for manual research');
 
       // Get exchange context (will return safe fallback if not configured)
-      const activeContext = await firestoreAdapter.getActiveExchangeForUser(user.uid);
+      const activeContext = await firestoreAdapter.getActiveExchangeForUser(uid);
 
       // Handle fallback object - pass null to runResearch if exchange not configured
       const contextForResearch: ActiveExchangeContext | null = (activeContext && typeof activeContext === 'object' && 'exchangeConfigured' in activeContext && activeContext.exchangeConfigured === false)
@@ -313,29 +369,44 @@ export async function researchRoutes(fastify: FastifyInstance) {
         : activeContext as ActiveExchangeContext | null;
 
       if (!contextForResearch) {
-        logger.info({ uid: user.uid }, 'Manual research: exchange integration not configured');
+        logger.info({ uid }, 'Manual research: exchange integration not configured');
       }
 
-      // Run research - will throw 400 if mandatory providers missing
+      // Run research - will fetch API keys from Firestore, NO override keys
       try {
         const result = await researchEngine.runResearch(
           symbol,
-          user.uid,
+          uid, // Use extracted UID
           undefined,
           false,
           undefined,
           timeframe,
-          contextForResearch || undefined,
-          overrideKeys
+          contextForResearch || undefined
+          // NO overrideKeys - always use Firestore keys
         );
 
-        // Return successful response
-        reply.code(200).header('Content-Type', 'application/json').send({
+        // Prepare response
+        const response: any = {
           success: true,
           message: 'Manual research completed',
           results: [result],
           exchangeConfigured: !(activeContext && typeof activeContext === 'object' && 'exchangeConfigured' in activeContext && activeContext.exchangeConfigured === false),
-        });
+        };
+
+        // Add debug information if requested
+        if (debug) {
+          response.debug = {
+            uid,
+            symbol,
+            timeframe,
+            selectionResult,
+            providerDebug: result._providerDebug || {},
+            apiCallReport: result.apiCallReport || [],
+            apiCalls: result.apiCalls || [],
+          };
+        }
+
+        reply.code(200).header('Content-Type', 'application/json').send(response);
       } catch (researchError: any) {
         // Manual Research API must NEVER return 500 - convert ALL errors to 400
         reply.code(400).header('Content-Type', 'application/json').send({
@@ -346,7 +417,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
       }
 
     } catch (error: any) {
-      logger.error({ error: error.message, uid: user?.uid }, 'Manual research failed');
+      logger.error({ error: error.message, uid }, 'Manual research failed');
 
       // Always return a valid response, never crash
       reply.code(500).header('Content-Type', 'application/json').send({
@@ -359,11 +430,26 @@ export async function researchRoutes(fastify: FastifyInstance) {
   });
 
   // TEST ROUTE: POST /api/research/test-run - Test research without authentication
-  fastify.post('/test-run', async (request: FastifyRequest<{ Body: { symbol?: string; uid?: string; timeframe?: string } }>, reply: FastifyReply) => {
+  fastify.post('/test-run', async (request: FastifyRequest<{ Body: { symbol?: string; uid?: string; timeframe?: string; debug?: boolean; forceRefresh?: boolean } }>, reply: FastifyReply) => {
     try {
-      const symbol = request.body?.symbol || 'BTCUSDT';
       const uid = request.body?.uid || 'test-user-123';
       const timeframe = request.body?.timeframe || '5m';
+      const debug = request.body?.debug === true;
+      const forceRefresh = request.body?.forceRefresh === true;
+
+      // ALWAYS auto-select best symbol (ignore any provided symbol)
+      logger.info({ uid, providedSymbol: request.body?.symbol }, 'AUTO-SELECTION: Starting for test-run');
+      const { selectBestSymbolFromTop100 } = await import('../services/researchEngine');
+      const selectionResult = await selectBestSymbolFromTop100(uid);
+      const symbol = selectionResult.selectedSymbol;
+
+      logger.info({
+        uid,
+        selectedSymbol: symbol,
+        confidence: selectionResult.confidence,
+        reason: selectionResult.reason,
+        topCandidates: selectionResult.topCandidates.slice(0, 3) // Log top 3
+      }, 'AUTO-SELECTED SYMBOL for test-run');
 
       const activeContext = await firestoreAdapter.getActiveExchangeForUser(uid);
       // Handle fallback object - pass null to runResearch if exchange not configured
@@ -381,11 +467,27 @@ export async function researchRoutes(fastify: FastifyInstance) {
         contextForResearch || undefined
       );
 
-      reply.code(200).header('Content-Type', 'application/json').send({
+      // Prepare response
+      const response: any = {
         success: true,
         message: 'Test research completed',
         results: [results],
-      });
+      };
+
+      // Add debug information if requested
+      if (debug) {
+        response.debug = {
+          uid,
+          symbol,
+          timeframe,
+          selectionResult,
+          providerDebug: results._providerDebug || {},
+          apiCallReport: results.apiCallReport || [],
+          apiCalls: results.apiCalls || [],
+        };
+      }
+
+      reply.code(200).header('Content-Type', 'application/json').send(response);
     } catch (error: any) {
       console.error('🧪 [TEST RESEARCH] Error:', error);
 
@@ -412,18 +514,19 @@ export async function researchRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { symbol: string } }>, reply: FastifyReply) => {
     try {
-      const user = (request as any).user;
-      if (!user || !user.uid) {
+      // Extract UID using priority order
+      const uid = extractUserUid(request);
+      if (!uid) {
         return reply.code(401).header('Content-Type', 'application/json').send({
           success: false,
-          message: 'Authentication required',
+          message: 'Authentication required - no valid user ID found',
           result: null,
         });
       }
 
       const symbol = request.params.symbol.toUpperCase().trim();
-      
-      const activeContext = await firestoreAdapter.getActiveExchangeForUser(user.uid);
+
+      const activeContext = await firestoreAdapter.getActiveExchangeForUser(uid);
       // Handle fallback object - pass null to runResearch if exchange not configured
       const contextForResearch: ActiveExchangeContext | null = (activeContext && typeof activeContext === 'object' && 'exchangeConfigured' in activeContext && activeContext.exchangeConfigured === false)
         ? null
@@ -431,7 +534,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
 
       const fullResult: any = await researchEngine.runResearch(
         symbol,
-        user.uid,
+        uid,
         undefined,
         false,
         undefined,
@@ -490,7 +593,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
         liveAnalysis: fullResult.liveAnalysis,
       });
     } catch (error: any) {
-      logger.error({ error: error.message, symbol: request.params.symbol }, 'Error getting live analysis');
+      logger.error({ error: error.message, symbol: request.params.symbol, uid }, 'Error getting live analysis');
       return reply.code(500).header('Content-Type', 'application/json').send({
         success: false,
         message: error.message || 'Error fetching live analysis',

@@ -892,7 +892,7 @@ export class FirestoreAdapter {
 
   async getAllUsers(): Promise<Array<{ uid: string; email?: string; role?: string; createdAt?: admin.firestore.Timestamp }>> {
     const snapshot = await db().collection('users').get();
-    
+
     return snapshot.docs.map((doc) => {
       const data = doc.data();
       const profile = data?.profile || {};
@@ -903,6 +903,31 @@ export class FirestoreAdapter {
         createdAt: data?.createdAt || profile.createdAt,
       };
     });
+  }
+
+  /**
+   * Get all users who have the required API keys for Deep Research (marketaux + cryptocompare)
+   */
+  async getAllUsersWithAPIs(): Promise<Array<{ uid: string; email?: string; role?: string; createdAt?: admin.firestore.Timestamp }>> {
+    const allUsers = await this.getAllUsers();
+    const usersWithAPIs: Array<{ uid: string; email?: string; role?: string; createdAt?: admin.firestore.Timestamp }> = [];
+
+    for (const user of allUsers) {
+      try {
+        const providerKeys = await this.getUserProviderApiKeys(user.uid);
+        const hasMarketaux = !!providerKeys['marketaux']?.apiKey;
+        const hasCryptocompare = !!providerKeys['cryptocompare']?.apiKey;
+
+        if (hasMarketaux && hasCryptocompare) {
+          usersWithAPIs.push(user);
+        }
+      } catch (error: any) {
+        // Skip users with errors (likely no integrations collection)
+        continue;
+      }
+    }
+
+    return usersWithAPIs;
   }
 
   // ========== USERS COLLECTION METHODS ==========

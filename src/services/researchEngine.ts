@@ -252,8 +252,7 @@ export class ResearchEngine {
     _forceEngine: boolean = false,
     _legacy?: Array<{ exchange: string; adapter: ExchangeConnector; credentials: any }>,
     timeframe: string = '5m',
-    activeContext?: ActiveExchangeContext,
-    overrideKeys?: { marketauxApiKey?: string; cryptocompareApiKey?: string }
+    activeContext?: ActiveExchangeContext
   ): Promise<ResearchResult> {
     const normalizedSymbol = this.normalizeSymbol(symbol);
     const normalizedTimeframe = this.normalizeTimeframe(timeframe);
@@ -349,7 +348,7 @@ export class ResearchEngine {
     // ALL 5 provider APIs are MANDATORY - buildProviderAdapters throws if any are missing
     // NOTE: CoinAPI replaced with free APIs
     const { marketAuxAdapter, cryptoAdapter, binanceAdapter, coingeckoAdapter, googleFinanceAdapter } =
-      await this.buildProviderAdapters(uid, overrideKeys);
+      await this.buildProviderAdapters(uid);
 
     // NOTE: Exchange API is now OPTIONAL for Deep Research - only required for Auto-Trade
     // Deep Research works with LunarCrush + CryptoQuant + Free APIs (Binance, CoinGecko, Google Finance)
@@ -512,11 +511,11 @@ export class ResearchEngine {
       const microSignals = this.buildMicroSignals(liquidity, priceMomentum);
       recordApiCall({ apiName: 'Microstructure Module', status: 'SUCCESS' });
 
-      // CryptoCompare is OPTIONAL - skip if no adapter available
-      const cryptoCompareResult = cryptoAdapter ? await logProviderCall(
+      // CryptoCompare always available - returns neutral data if no API key
+      const cryptoCompareResult = await logProviderCall(
         'cryptocompare',
         async () => await cryptoAdapter.getAllMetrics(normalizedSymbol)
-      ) : { success: false, data: null, error: 'CryptoCompare adapter not available', duration: 0 };
+      );
 
       // Update debug preview for cryptocompare
       if (cryptoCompareResult.success && cryptoCompareResult.data) {
@@ -533,32 +532,25 @@ export class ResearchEngine {
         "1h": { timeframe: "1h", rsi: null, macd: null, ema12: null, ema26: null, sma20: null },
       };
 
-      // Fetch MTF indicators for each timeframe (only if CryptoCompare available)
-      if (cryptoAdapter) {
-        const mtfPromises = (["5m", "15m", "1h"] as const).map(async (timeframe) => {
-          try {
-            const result = await logProviderCall(
-              `mtf_${timeframe}`,
-              async () => await cryptoAdapter!.getMTFIndicators(normalizedSymbol, timeframe)
-            );
-            if (result.success && result.data) {
-              mtfIndicators[timeframe] = result.data;
-            }
-          } catch (error: any) {
-            logger.warn({ symbol: normalizedSymbol, timeframe, error: error.message }, `MTF ${timeframe} indicators failed`);
+      // Fetch MTF indicators for each timeframe (always runs with neutral data fallback)
+      const mtfPromises = (["5m", "15m", "1h"] as const).map(async (timeframe) => {
+        try {
+          const result = await logProviderCall(
+            `mtf_${timeframe}`,
+            async () => await cryptoAdapter.getMTFIndicators(normalizedSymbol, timeframe)
+          );
+          if (result.success && result.data) {
+            mtfIndicators[timeframe] = result.data;
           }
-        });
+        } catch (error: any) {
+          logger.warn({ symbol: normalizedSymbol, timeframe, error: error.message }, `MTF ${timeframe} indicators failed`);
+        }
+      });
 
-        await Promise.all(mtfPromises);
-      }
+      await Promise.all(mtfPromises);
 
-      // Calculate MTF confluence (only if CryptoCompare available)
-      const mtfConfluence = cryptoAdapter ? cryptoAdapter.calculateMTFConfluence(mtfIndicators) : {
-        score: 0,
-        maxScore: 3,
-        label: '0/3',
-        details: { '5m': 'No data', '15m': 'No data', '1h': 'No data' }
-      };
+      // Calculate MTF confluence (always runs with available data)
+      const mtfConfluence = cryptoAdapter.calculateMTFConfluence(mtfIndicators);
 
       // Add MTF debug info
       providerDebug.mtf = {
@@ -585,14 +577,16 @@ export class ResearchEngine {
       // Remove on-chain score since CryptoCompare no longer provides it
       const onChainScore = 0;
 
-      // MarketAux is OPTIONAL - skip if no adapter available
-      const marketAuxResult = marketAuxAdapter ? await logProviderCall(
+      // MarketAux always available - returns neutral data if no API key
+      const marketAuxResult = await logProviderCall(
         'marketaux',
         async () => {
           const baseSymbol = normalizedSymbol.replace(/USDT$/i, '').replace(/USD$/i, '');
-          return await marketAuxAdapter!.getNewsSentiment(baseSymbol);
+          const result = await marketAuxAdapter.getNewsSentiment(baseSymbol);
+          logger.info({ symbol: normalizedSymbol, sentiment: result.sentiment, articles: result.totalArticles }, 'MarketAux: Called → OK');
+          return result;
         }
-      ) : { success: false, data: null, error: 'MarketAux adapter not available', duration: 0 };
+      );
 
       const marketAuxData = marketAuxResult.success ? marketAuxResult.data : null;
 
@@ -609,7 +603,11 @@ export class ResearchEngine {
       // Global Intelligence: Free API data (Binance, CoinGecko, Google Finance)
       const binanceTickerResult = await logProviderCall(
         'binance',
-        async () => await binanceAdapter.getTicker(normalizedSymbol)
+        async () => {
+          const result = await binanceAdapter.getTicker(normalizedSymbol);
+          logger.info({ symbol: normalizedSymbol, price: result.lastPrice, volume: result.volume }, 'Binance: Called → OK');
+          return result;
+        }
       );
 
       const binanceTickerData = binanceTickerResult.success ? binanceTickerResult.data : null;
@@ -686,14 +684,23 @@ export class ResearchEngine {
 
       const googleFinanceResult = await logProviderCall(
         'googlefinance',
-        async () => await googleFinanceAdapter.getExchangeRate('USD', 'INR')
+        async () => {
+          const result = await googleFinanceAdapter.getExchangeRate('USD', 'INR');
+          logger.info({ symbol: normalizedSymbol, rate: result.exchangeRate }, 'GoogleFinance: Called → OK');
+          return result;
+        }
       );
 
       const googleFinanceExchangeRate = googleFinanceResult.success ? googleFinanceResult.data : null;
 
       const coingeckoResult = await logProviderCall(
         'coingecko',
-        async () => await coingeckoAdapter.getHistoricalData(normalizedSymbol, 90) // 90 days for better analysis
+        async () => {
+          const result = await coingeckoAdapter.getHistoricalData(normalizedSymbol, 90); // 90 days for better analysis
+          const dataPoints = result.historicalData?.length || 0;
+          logger.info({ symbol: normalizedSymbol, dataPoints }, 'CoinGecko: Called → OK');
+          return result;
+        }
       );
 
       const coingeckoHistoricalData = coingeckoResult.success ? coingeckoResult.data : null;
@@ -952,74 +959,61 @@ export class ResearchEngine {
     return '5m';
   }
 
-  private async buildProviderAdapters(uid: string, overrideKeys?: { marketauxApiKey?: string; cryptocompareApiKey?: string }): Promise<{
-    marketAuxAdapter: MarketAuxAdapter | null;
-    cryptoAdapter: CryptoCompareAdapter | null;
+  private async buildProviderAdapters(uid: string): Promise<{
+    marketAuxAdapter: MarketAuxAdapter;
+    cryptoAdapter: CryptoCompareAdapter;
     // Free APIs - no API keys required
     binanceAdapter: any;
     coingeckoAdapter: any;
     googleFinanceAdapter: any;
   }> {
-    // Get provider API keys from user's integrations
-    const providerKeys = await firestoreAdapter.getUserProviderApiKeys(uid);
-    const missing: string[] = [];
+    // ALWAYS fetch API keys from Firestore - NO override keys allowed
+    const userKeys = await firestoreAdapter.getUserProviderApiKeys(uid);
 
     // MANDATORY API keys - Deep Research requires all 5 providers
-    // Use override keys if provided, otherwise load from Firestore
-    const marketAuxKey = overrideKeys?.marketauxApiKey || providerKeys['marketaux']?.apiKey;
-    const cryptocompareKey = overrideKeys?.cryptocompareApiKey || providerKeys['cryptocompare']?.apiKey;
+    // ALWAYS use Firestore keys - never fallback to null when user has keys
+    const marketAuxKey = userKeys['marketaux']?.apiKey;
+    const cryptocompareKey = userKeys['cryptocompare']?.apiKey;
 
-    // Log key sources for debugging
+    // Log key sources for debugging - always from Firestore now
     logger.info({
       uid,
-      marketAuxKeySource: overrideKeys?.marketauxApiKey ? 'request_body' : 'firestore',
-      cryptocompareKeySource: overrideKeys?.cryptocompareApiKey ? 'request_body' : 'firestore',
+      marketAuxKeySource: 'firestore',
+      cryptocompareKeySource: 'firestore',
       marketAuxKeyPresent: !!marketAuxKey,
       cryptocompareKeyPresent: !!cryptocompareKey,
-    }, 'API key sources resolved');
+    }, 'API key sources resolved - ALWAYS from Firestore');
 
-    // OPTIONAL API keys - log warnings but don't block Deep Research
-    if (!marketAuxKey) {
-      logger.warn({ uid }, 'MarketAux key missing — skipping sentiment/news');
-    }
-    if (!cryptocompareKey) {
-      logger.warn({ uid }, 'CryptoCompare key missing — using Binance-only indicators');
-    }
+    // API keys - use null if missing (adapters handle gracefully)
+    logger.info({
+      uid,
+      marketAuxKeyPresent: !!marketAuxKey,
+      cryptocompareKeyPresent: !!cryptocompareKey,
+    }, 'API key availability check');
 
-    // NOTE: MarketAux and CryptoCompare are now OPTIONAL for Deep Research
+    // Always initialize ALL adapters - they handle missing keys internally
+    logger.info({ uid }, 'Initializing ALL provider adapters (with fallback handling for missing keys)');
 
-    logger.info({ uid }, 'Initializing adapters (optional providers will be skipped if keys missing)');
+    // Create ALL adapters - they handle missing keys with neutral defaults
+    let marketAuxAdapter: MarketAuxAdapter;
+    let cryptoAdapter: CryptoCompareAdapter;
 
-    // Log successful key retrieval for debugging
-    logger.info({ uid, providers: Object.keys(providerKeys) }, 'Provider API keys successfully retrieved from integrations');
-
-    // Create adapters - MarketAux is now OPTIONAL
-    let marketAuxAdapter: MarketAuxAdapter | null = null;
-    if (marketAuxKey) {
-      try {
-        logger.debug({ uid }, 'Initializing MarketAux adapter with user API key');
-        marketAuxAdapter = new MarketAuxAdapter(marketAuxKey);
-        logger.info({ uid }, 'MarketAux adapter initialized successfully');
-      } catch (error: any) {
-        logger.error({ uid, error: error.message }, 'Failed to initialize MarketAux adapter');
-        marketAuxAdapter = null;
-      }
-    } else {
-      logger.info({ uid }, 'MarketAux adapter skipped (no API key)');
+    try {
+      logger.debug({ uid }, 'Initializing MarketAux adapter (with key fallback)');
+      marketAuxAdapter = new MarketAuxAdapter(marketAuxKey || null);
+      logger.info({ uid }, 'MarketAux adapter initialized');
+    } catch (error: any) {
+      logger.error({ uid, error: error.message }, 'Failed to initialize MarketAux adapter');
+      throw error;
     }
 
-    let cryptoAdapter: CryptoCompareAdapter | null = null;
-    if (cryptocompareKey) {
-      try {
-        logger.debug({ uid }, 'Initializing CryptoCompare adapter with user API key');
-        cryptoAdapter = new CryptoCompareAdapter(cryptocompareKey);
-        logger.info({ uid }, 'CryptoCompare adapter initialized successfully');
-      } catch (error: any) {
-        logger.error({ uid, error: error.message }, 'Failed to initialize CryptoCompare adapter');
-        cryptoAdapter = null;
-      }
-    } else {
-      logger.info({ uid }, 'CryptoCompare adapter skipped (no API key)');
+    try {
+      logger.debug({ uid }, 'Initializing CryptoCompare adapter (with key fallback)');
+      cryptoAdapter = new CryptoCompareAdapter(cryptocompareKey || null);
+      logger.info({ uid }, 'CryptoCompare adapter initialized');
+    } catch (error: any) {
+      logger.error({ uid, error: error.message }, 'Failed to initialize CryptoCompare adapter');
+      throw error;
     }
 
     // Create free API adapters - no API keys required
@@ -1636,4 +1630,189 @@ const runResearch = ({
 }: RunResearchOptions) =>
   researchEngine.runResearch(symbol, uid, adapterOverride, false, legacyAdapters, timeframe, activeContext);
 
-export { runResearch };
+/**
+ * Quick scan result for lightweight analysis
+ */
+interface QuickScanResult {
+  symbol: string;
+  confidence: number;
+  priceChange24h: number;
+  volume24h: number;
+  rsi?: number;
+  macdSignal?: number;
+  scanTimeMs: number;
+}
+
+/**
+ * Quick scan a symbol for lightweight analysis (<300ms)
+ * Only uses basic price/volume data and fallback RSI/MACD
+ */
+async function quickScan(symbol: string, binanceAdapter: any): Promise<QuickScanResult> {
+  const startTime = Date.now();
+  const normalizedSymbol = symbol.toUpperCase();
+
+  try {
+    // Get basic ticker data from Binance (fast)
+    const tickerData = await binanceAdapter.getTicker(normalizedSymbol);
+    const priceChange24h = parseFloat(tickerData.priceChangePercent || '0');
+    const volume24h = parseFloat(tickerData.volume || '0');
+
+    // Quick RSI/MACD fallback calculation (simplified)
+    let rsi = 50; // Neutral fallback
+    let macdSignal = 0; // Neutral fallback
+
+    try {
+      // Try to get recent klines for basic RSI calculation (fast)
+      const klines = await binanceAdapter.getKlines(normalizedSymbol, '5m', 50);
+      if (klines && klines.length > 14) {
+        const closes = klines.slice(-14).map((k: any) => parseFloat(k.close));
+        rsi = calculateSimpleRSI(closes);
+      }
+    } catch (error) {
+      // Keep fallback values
+    }
+
+    // Compute rough confidence score based on price momentum and volume
+    const priceMomentum = Math.abs(priceChange24h); // 0-100 range
+    const volumeScore = Math.min(volume24h / 1000000, 10); // Cap at 10 for very high volume
+    const rsiScore = rsi > 70 ? 8 : rsi < 30 ? 8 : 5; // Extreme RSI = high confidence
+    const macdScore = Math.abs(macdSignal) > 0.001 ? 6 : 3; // MACD divergence = moderate confidence
+
+    const confidence = Math.min(100,
+      (priceMomentum * 2) + // Price change weight
+      (volumeScore * 3) +   // Volume weight
+      rsiScore +           // RSI weight
+      macdScore            // MACD weight
+    );
+
+    return {
+      symbol: normalizedSymbol,
+      confidence,
+      priceChange24h,
+      volume24h,
+      rsi,
+      macdSignal,
+      scanTimeMs: Date.now() - startTime
+    };
+
+  } catch (error: any) {
+    // Return minimal result on error
+    return {
+      symbol: normalizedSymbol,
+      confidence: 0,
+      priceChange24h: 0,
+      volume24h: 0,
+      rsi: 50,
+      macdSignal: 0,
+      scanTimeMs: Date.now() - startTime
+    };
+  }
+}
+
+/**
+ * Simple RSI calculation for quick scan
+ */
+function calculateSimpleRSI(closes: number[]): number {
+  if (closes.length < 14) return 50;
+
+  let gains = 0;
+  let losses = 0;
+
+  for (let i = 1; i < closes.length; i++) {
+    const change = closes[i] - closes[i - 1];
+    if (change > 0) gains += change;
+    else losses += Math.abs(change);
+  }
+
+  const avgGain = gains / 13; // 14 periods - 1
+  const avgLoss = losses / 13;
+
+  if (avgLoss === 0) return 100;
+
+  const rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
+}
+
+/**
+ * Get top 100 symbols from CoinGecko/Binance
+ */
+async function getTop100Symbols(): Promise<string[]> {
+  const { topCoinsService } = await import('./topCoinsService');
+  return await topCoinsService.getTop100Coins();
+}
+
+/**
+ * Select the best symbol from top 100 by running quick scans
+ */
+async function selectBestSymbolFromTop100(uid: string): Promise<{
+  selectedSymbol: string;
+  confidence: number;
+  topCandidates: Array<{ symbol: string; confidence: number; priceChange24h: number; volume24h: number }>;
+  totalScanTimeMs: number;
+  reason: string;
+}> {
+  const startTime = Date.now();
+  const { BinancePublicAdapter } = await import('./binancePublicAdapter');
+
+  // Get top 100 symbols
+  const topSymbols = await getTop100Symbols();
+  if (topSymbols.length === 0) {
+    throw new Error('No symbols available from top coins service');
+  }
+
+  // Limit to first 50 for performance (top coins are most important)
+  const symbolsToScan = topSymbols.slice(0, 50);
+  const binanceAdapter = new BinancePublicAdapter();
+
+  logger.info({ uid, symbolCount: symbolsToScan.length }, 'Starting quick scan of top symbols for auto-selection');
+
+  // Run quick scans in parallel (with concurrency limit)
+  const scanPromises: Promise<QuickScanResult>[] = [];
+  const concurrencyLimit = 10; // Limit concurrent requests
+
+  for (let i = 0; i < symbolsToScan.length; i += concurrencyLimit) {
+    const batch = symbolsToScan.slice(i, i + concurrencyLimit);
+    const batchPromises = batch.map(symbol => quickScan(symbol, binanceAdapter));
+    scanPromises.push(...batchPromises);
+
+    // Small delay between batches to avoid rate limiting
+    if (i + concurrencyLimit < symbolsToScan.length) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
+  const scanResults = await Promise.all(scanPromises);
+
+  // Sort by confidence (highest first)
+  scanResults.sort((a, b) => b.confidence - a.confidence);
+
+  const selectedResult = scanResults[0];
+  const totalScanTimeMs = Date.now() - startTime;
+
+  // Get top 5 candidates for logging
+  const topCandidates = scanResults.slice(0, 5).map(result => ({
+    symbol: result.symbol,
+    confidence: result.confidence,
+    priceChange24h: result.priceChange24h,
+    volume24h: result.volume24h
+  }));
+
+  logger.info({
+    uid,
+    selectedSymbol: selectedResult.symbol,
+    confidence: selectedResult.confidence,
+    topCandidates,
+    totalScanTimeMs,
+    symbolsScanned: scanResults.length
+  }, 'Auto-selected best symbol from top 100 coins');
+
+  return {
+    selectedSymbol: selectedResult.symbol,
+    confidence: selectedResult.confidence,
+    topCandidates,
+    totalScanTimeMs,
+    reason: `Highest confidence (${selectedResult.confidence.toFixed(1)}%) from quick scan of ${scanResults.length} top symbols`
+  };
+}
+
+export { runResearch, quickScan, getTop100Symbols, selectBestSymbolFromTop100 };

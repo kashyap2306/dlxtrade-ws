@@ -18,7 +18,7 @@ import { metricsService } from './metricsService';
  * KEY FIXES:
  * - Uses ALL connected exchanges (Binance, Bitget, BingX, Kucoin, Weex, etc.)
  * - Aggregates orderbook and ticker data from ALL exchanges for better accuracy
- * - Always calls ALL connected integrations (CryptoQuant, LunarCrush, CoinAPI)
+ * - Always calls ALL connected integrations (CryptoQuant, MarketAux, CoinAPI)
  * - Rotation through Top-100 coins by default (not just BTC or tracked coins)
  * - Configurable auto-trade threshold (minimum 75%, configurable via Firestore)
  * - Proper Firestore distributed locking (only ONE scheduler instance runs)
@@ -359,7 +359,7 @@ export class DeepResearchScheduler {
         accuracy: result.result?.accuracy,
         explanationsCount: result.result?.explanations?.length || 0,
         interval: intervalMinutes,
-        apisUsed: 'Binance, CoinGecko, Google Finance, LunarCrush, CryptoQuant (free APIs only)',
+        apisUsed: 'Binance, CoinGecko, Google Finance, MarketAux, CryptoQuant (free APIs only)',
       }, 'Scheduled research run completed using FREE APIs only');
 
       // Update state
@@ -465,128 +465,41 @@ export class DeepResearchScheduler {
 
 
   /**
-   * Process coins based on mode
+   * Process coins - ALWAYS auto-select the best symbol from top 100
    */
   private async processCoins(forcedSymbol?: string, mode?: 'rotate' | 'bulk'): Promise<{ symbol: string; result: any }> {
-    const runMode = mode || this.mode;
-    
-    logger.info({ instanceId: this.instanceId, mode: runMode, forcedSymbol }, 'Processing coins');
-    
-    // Get tracked coins (or Top-100 as fallback)
-    const allCoins = await this.getTrackedCoins();
-    if (allCoins.length === 0) {
-      throw new Error('No coins available');
-    }
-
-    // Apply topN filter (defaults to 100)
-    const coins = allCoins.slice(0, this.topN);
-    
-    logger.info({ instanceId: this.instanceId, totalCoins: allCoins.length, filteredCoins: coins.length, topN: this.topN }, 
-      'Coins selected for processing');
+    logger.info({ instanceId: this.instanceId, forcedSymbol }, 'Processing coins with auto-selection');
 
     if (forcedSymbol) {
-      // Use forced symbol if provided
-      return await this.processOneCoin(forcedSymbol.toUpperCase(), coins);
+      // Use forced symbol if provided (for admin/testing)
+      const allCoins = await this.getTrackedCoins();
+      return await this.processOneCoin(forcedSymbol.toUpperCase(), allCoins);
     }
 
-    if (runMode === 'bulk') {
-      // Process all coins in bulk (but only log first one)
-      let firstResult: { symbol: string; result: any } | null = null;
-      let processedCount = 0;
-      
-      for (const symbol of coins) {
-        try {
-          const result = await this.processOneCoin(symbol, coins);
-          processedCount++;
-          if (!firstResult) {
-            firstResult = result;
-          }
-          logger.debug({ instanceId: this.instanceId, symbol, processedCount, total: coins.length }, 'Coin processed in bulk mode');
-        } catch (err: any) {
-          logger.warn({ err, symbol, instanceId: this.instanceId }, 'Error processing coin in bulk mode');
-        }
-      }
-      
-      if (!firstResult) {
-        throw new Error('No coins processed successfully');
-      }
-      
-      logger.info({ instanceId: this.instanceId, processedCount, total: coins.length }, 'Bulk processing completed');
-      return firstResult;
-    } else {
-      // Rotation mode: get last processed index, increment, wrap around
-      logger.info({ instanceId: this.instanceId, coinCount: coins.length, coinsPreview: coins.slice(0, 10) }, 
-        '[ROTATION] Getting state for coin selection');
-      
-      const state = await this.getState();
-      let lastIndex = state.lastProcessedIndex ?? -1;
-      const previousIndex = lastIndex;
-      const nextIndex = (lastIndex + 1) % coins.length;
-      const selectedSymbol = coins[nextIndex];
+    // ALWAYS auto-select the best symbol from top 100
+    // This replaces the old rotation/bulk logic
+    const { selectBestSymbolFromTop100 } = await import('./researchEngine');
 
-      logger.info({ 
-        instanceId: this.instanceId, 
-        previousIndex,
-        nextIndex, 
-        symbol: selectedSymbol,
-        totalCoins: coins.length,
-        isFirstRun: previousIndex === -1,
-        willWrap: nextIndex === 0 && previousIndex >= 0
-      }, `[ROTATION] Selected ${selectedSymbol} at index ${nextIndex}`);
+    // Use 'system' for scheduler auto-selection (since it's not user-specific)
+    const selectionResult = await selectBestSymbolFromTop100('system');
 
-      // CRITICAL: Write new lastProcessedIndex to Firestore BEFORE processing
-      // If write fails, rollback and fail the run
-      let stateWriteSuccess = false;
-      try {
-        logger.debug({ instanceId: this.instanceId, lastProcessedIndex: nextIndex, symbol: selectedSymbol }, 
-          '[ROTATION] Writing lastProcessedIndex to Firestore');
-        await this.setState({ lastProcessedIndex: nextIndex });
-        
-        // Verify the update
-        const verifyState = await this.getState();
-        if (verifyState.lastProcessedIndex === nextIndex) {
-          stateWriteSuccess = true;
-          logger.info({ instanceId: this.instanceId, lastProcessedIndex: nextIndex }, 
-            '[ROTATION] Successfully wrote and verified lastProcessedIndex in Firestore');
-        } else {
-          logger.error({ 
-            instanceId: this.instanceId, 
-            expected: nextIndex, 
-            actual: verifyState.lastProcessedIndex 
-          }, '[ROTATION] CRITICAL: State write verification FAILED - rolling back');
-          
-          // Rollback: restore previous index
-          try {
-            await this.setState({ lastProcessedIndex: previousIndex });
-            logger.warn({ instanceId: this.instanceId, rolledBackTo: previousIndex }, '[ROTATION] Rolled back to previous index');
-          } catch (rollbackErr: any) {
-            logger.error({ err: rollbackErr, instanceId: this.instanceId }, '[ROTATION] CRITICAL: Rollback failed');
-          }
-          throw new Error(`State write verification failed: expected ${nextIndex}, got ${verifyState.lastProcessedIndex}`);
-        }
-      } catch (stateErr: any) {
-        logger.error({ 
-          err: stateErr.message, 
-          stack: stateErr.stack,
-          instanceId: this.instanceId,
-          attemptedIndex: nextIndex,
-          previousIndex
-        }, '[ROTATION] CRITICAL: Failed to write lastProcessedIndex - aborting run');
-        throw new Error(`Failed to update rotation state: ${stateErr.message}`);
-      }
+    logger.info({
+      instanceId: this.instanceId,
+      selectedSymbol: selectionResult.selectedSymbol,
+      confidence: selectionResult.confidence,
+      topCandidates: selectionResult.topCandidates,
+      reason: selectionResult.reason,
+      totalScanTimeMs: selectionResult.totalScanTimeMs
+    }, 'Scheduler auto-selected best symbol from top 100');
 
-      // Only proceed if state write succeeded
-      if (!stateWriteSuccess) {
-        throw new Error('State write verification failed - aborting run');
-      }
-
-      return await this.processOneCoin(selectedSymbol, coins);
-    }
+    // Process the selected symbol for all users with APIs
+    const allCoins = await this.getTrackedCoins();
+    return await this.processOneCoin(selectionResult.selectedSymbol, allCoins);
   }
 
   /**
-   * Process exactly one coin
-   * Uses FREE APIs only (Binance, CoinGecko, Google Finance) - no exchange API required
+   * Process exactly one coin for ALL users with required APIs
+   * Each user's research uses THEIR OWN API keys from Firestore
    */
   private async processOneCoin(symbol: string, allCoins: string[]): Promise<{ symbol: string; result: any }> {
     logger.info({
@@ -594,103 +507,118 @@ export class DeepResearchScheduler {
       symbol,
       index: allCoins.indexOf(symbol),
       totalCoins: allCoins.length,
-    }, 'Processing coin from tracked list using FREE APIs only');
+    }, 'Processing coin for ALL users with API keys');
 
-    // Use 'system' as user ID for scheduled research (no specific user context needed)
-    const userId = 'system';
+    // Get all users who have the required API keys (marketaux + cryptocompare)
+    const usersWithAPIs = await firestoreAdapter.getAllUsersWithAPIs();
 
-    // NOTE: Scheduled research does NOT require exchange APIs
-    // It uses FREE APIs: Binance (market data), CoinGecko (historical), Google Finance (exchange rates)
-    // LunarCrush and CryptoQuant are handled internally by the research engine
-
-    logger.info({
-      instanceId: this.instanceId,
-      symbol,
-      userId,
-    }, 'Running scheduled research with FREE APIs only (no exchange API required)');
-
-    // Run research with timeout
-    // Research engine uses FREE APIs only: Binance, CoinGecko, Google Finance, LunarCrush, CryptoQuant
-    const researchPromise = researchEngine.runResearch(
-      symbol,
-      userId,
-      undefined, // No exchange adapter needed
-      false, // forceEngine
-      [], // No exchange adapters needed
-      '5m', // Default timeframe
-      undefined // No active context needed
-    );
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Research timeout after 4 minutes')), this.TIMEOUT_MS);
-    });
-
-    const result: any = await Promise.race([researchPromise, timeoutPromise]);
-
-    // Log confidence and accuracy for debugging
-    logger.info({
-      instanceId: this.instanceId,
-      symbol,
-      confidence: result.confidence,
-      accuracy: result.accuracy,
-      side: result.side,
-      autoTradeDisabled: 'Auto-trade disabled for scheduled research',
-    }, 'Research result obtained (auto-trade disabled for scheduled research)');
-
-    // Check if auto-trade should execute and add decision to result
-    // CRITICAL: Use configurable threshold (default 75%), NOT hardcoded 65%
-    // Also check result.status - skip if insufficient_data
-    // Require confluence if enabled
-    const hasConfluence = result.confluenceFlags?.hasConfluence !== false; // Default to true if not present (backward compat)
-    const volumeConfirmed = result.volumeConfirmed !== false; // Default to true if not present
-    const derivativesContradict = result.derivativesContradict === true;
-
-    // Auto-trade is disabled for scheduled research (no exchange APIs available)
-    // Auto-trade only works for manual research where users have exchange APIs configured
-    const autoTradeTriggered = false;
-    
-    const autoTradeDecision = {
-      triggered: autoTradeTriggered,
-      confidence: result.confidence,
-      threshold: 75, // Minimum threshold (not used for scheduled research)
-      reason: 'Auto-trade disabled for scheduled research (exchange API required)',
-    };
-    
-    // Add auto-trade decision to result (disabled for scheduled research)
-    (result as any).autoTradeDecision = autoTradeDecision;
-
-    // Record research metrics
-    if (userId) {
-      metricsService.recordResearchRun(userId, result.status === 'ok', result.confidence);
+    if (usersWithAPIs.length === 0) {
+      throw new Error('No users found with required API keys (marketaux + cryptocompare)');
     }
 
-    // Auto-trade is disabled for scheduled research (no exchange APIs available)
     logger.info({
       instanceId: this.instanceId,
       symbol,
-      confidence: result.confidence,
-      side: result.side,
-      status: result.status,
-      reason: autoTradeDecision.reason,
-    }, `[SCHEDULED-RESEARCH] Auto-trade disabled for scheduled runs (exchange API required)`);
+      userCount: usersWithAPIs.length,
+      users: usersWithAPIs.map(u => u.uid).slice(0, 5), // Log first 5 UIDs
+    }, `Running scheduled research for ${usersWithAPIs.length} users with API keys`);
 
-    // Save result to Firestore
-    try {
-      const db = admin.firestore(getFirebaseAdmin());
-      await db.collection('deepResearchResults').doc(symbol).set({
-        symbol,
-        result,
-        timestamp: admin.firestore.Timestamp.now(),
-        instanceId: this.instanceId,
-        // Scheduled research uses only free APIs (no exchanges)
-        apisUsed: ['binance', 'coingecko', 'googlefinance', 'lunarcrush', 'cryptocompare'],
-      }, { merge: true });
-      
-      logger.debug({ instanceId: this.instanceId, symbol }, 'Research result saved to Firestore');
-    } catch (storeErr: any) {
-      logger.warn({ err: storeErr, symbol, instanceId: this.instanceId }, 'Failed to store research result (non-critical)');
+    let lastResult: any = null;
+    let processedCount = 0;
+
+    // Run research for EACH user with their OWN API keys
+    for (const user of usersWithAPIs) {
+      try {
+        logger.debug({
+          instanceId: this.instanceId,
+          symbol,
+          uid: user.uid,
+        }, `Running research for user ${user.uid}`);
+
+        // Run research with timeout for this user
+        const researchPromise = researchEngine.runResearch(
+          symbol,
+          user.uid, // Use REAL user UID - their keys will be fetched from Firestore
+          undefined, // No exchange adapter needed
+          false, // forceEngine
+          [], // No exchange adapters needed
+          '5m', // Default timeframe
+          undefined // No active context needed
+        );
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Research timeout after 4 minutes')), this.TIMEOUT_MS);
+        });
+
+        const result: any = await Promise.race([researchPromise, timeoutPromise]);
+        lastResult = result; // Keep the last result for return value
+        processedCount++;
+
+        // Log confidence and accuracy for debugging
+        logger.info({
+          instanceId: this.instanceId,
+          symbol,
+          uid: user.uid,
+          confidence: result.confidence,
+          accuracy: result.accuracy,
+          side: result.side,
+        }, `Research completed for user ${user.uid}`);
+
+        // Auto-trade is disabled for scheduled research (no exchange APIs available)
+        const autoTradeDecision = {
+          triggered: false,
+          confidence: result.confidence,
+          threshold: 75,
+          reason: 'Auto-trade disabled for scheduled research (exchange API required)',
+        };
+
+        // Add auto-trade decision to result (disabled for scheduled research)
+        (result as any).autoTradeDecision = autoTradeDecision;
+
+        // Record research metrics for this user
+        metricsService.recordResearchRun(user.uid, result.status === 'ok', result.confidence);
+
+        // Save result to Firestore with user-specific document
+        try {
+          const db = admin.firestore(getFirebaseAdmin());
+          const docId = `${symbol}_${user.uid}`;
+          await db.collection('deepResearchResults').doc(docId).set({
+            symbol,
+            userId: user.uid,
+            result,
+            timestamp: admin.firestore.Timestamp.now(),
+            instanceId: this.instanceId,
+            // Each user uses their own APIs
+            apisUsed: ['binance', 'coingecko', 'googlefinance', 'marketaux', 'cryptocompare'],
+          }, { merge: true });
+
+          logger.debug({ instanceId: this.instanceId, symbol, uid: user.uid }, `Research result saved for user ${user.uid}`);
+        } catch (storeErr: any) {
+          logger.warn({ err: storeErr, symbol, uid: user.uid, instanceId: this.instanceId }, `Failed to store research result for user ${user.uid} (non-critical)`);
+        }
+
+      } catch (userErr: any) {
+        logger.error({
+          err: userErr,
+          symbol,
+          uid: user.uid,
+          instanceId: this.instanceId,
+        }, `Failed to process research for user ${user.uid}`);
+        // Continue processing other users
+      }
     }
 
-    return { symbol, result };
+    if (processedCount === 0) {
+      throw new Error(`Failed to process research for any users`);
+    }
+
+    logger.info({
+      instanceId: this.instanceId,
+      symbol,
+      processedUsers: processedCount,
+      totalUsers: usersWithAPIs.length,
+    }, `Scheduled research completed for ${processedCount}/${usersWithAPIs.length} users`);
+
+    return { symbol, result: lastResult };
   }
 
 
