@@ -227,8 +227,9 @@ export class BinancePublicAdapter implements ExchangeConnector {
         logger.warn({ symbol: finalSymbol, status: fundingResponse.status, response: fundingResponse.data }, 'Binance futures funding rate API returned non-200');
       }
 
-      const fundingRate = fundingResponse.data && fundingResponse.data.length > 0 ?
-        parseFloat(fundingResponse.data[0].lastFundingRate) : undefined;
+      // Binance API returns object, not array for premiumIndex
+      const fundingRate = fundingResponse.data?.lastFundingRate ?
+        parseFloat(fundingResponse.data.lastFundingRate) : undefined;
 
       // Get open interest
       const oiResponse = await this.futuresHttpClient.get('/fapi/v1/openInterest', {

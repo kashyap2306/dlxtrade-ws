@@ -902,7 +902,7 @@ export class ResearchEngine {
         'cryptocompare',
         async () => {
           const timeout = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('CryptoCompare timeout')), 1500)
+            setTimeout(() => reject(new Error('CryptoCompare timeout')), 1000)
           );
           const apiCall = cryptoAdapter.getAllMetrics(normalizedSymbol);
           return Promise.race([apiCall, timeout]);
@@ -933,7 +933,7 @@ export class ResearchEngine {
           const result = await runApiCall(
             `CryptoCompare MTF ${timeframe}`,
             () => cryptoAdapter.getMTFIndicators(normalizedSymbol, timeframe),
-            12000, // 12s timeout for CryptoCompare (increased)
+            3000, // Reduced timeout for CryptoCompare MTF
             {
               timeframe,
               rsi: 50,
@@ -1108,14 +1108,20 @@ export class ResearchEngine {
         runApiCall(
           'coingecko',
           async () => {
-            const coingeckoId = await this.getCoinGeckoId(normalizedSymbol, uid);
+            // Add timeout around getCoinGeckoId to prevent blocking
+            const mappingTimeout = new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('CoinGecko mapping timeout')), 2000)
+            );
+            const mappingPromise = this.getCoinGeckoId(normalizedSymbol, uid);
+            const coingeckoId = await Promise.race([mappingPromise, mappingTimeout]);
+
             if (!coingeckoId) {
               throw new Error('Could not map symbol to CoinGecko ID');
             }
             const coingeckoHistoricalData = await coingeckoAdapter.getHistoricalData(coingeckoId, 90);
             return coingeckoHistoricalData;
           },
-          6000, // Higher timeout for mapping + API call
+          4000, // Reduced timeout
           null,
           'coingecko',
           {

@@ -224,5 +224,5 @@ const googleFinanceAdapter = {
 };
 
 // Export the methods directly for easier importing
-export const getExchangeRates = googleFinanceAdapter.getExchangeRates.bind(googleFinanceAdapter);
+export const getExchangeRates = googleFinanceAdapter.getExchangeRates;
 export const GoogleFinanceAdapter = googleFinanceAdapter;

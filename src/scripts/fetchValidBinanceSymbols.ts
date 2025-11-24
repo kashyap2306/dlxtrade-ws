@@ -23,7 +23,8 @@ async function fetchValidBinanceSymbols(): Promise<void> {
     logger.info({ count: validSymbols.length }, 'Fetched valid Binance USDT symbols');
 
     // Write to cache file (wrapped in try/catch to prevent crashes)
-    const cacheDir = path.join(__dirname, '../cache');
+    // Always use root-level cache directory (writable in production)
+    const cacheDir = path.join(process.cwd(), 'cache');
     const cacheFile = path.join(cacheDir, 'validSymbols.json');
 
     const cacheData = {
@@ -83,9 +84,8 @@ async function fetchValidBinanceSymbols(): Promise<void> {
  */
 export function loadValidSymbols(): string[] {
   try {
-    // In development, look in src/cache, in production look in dist/cache
-    const isCompiled = __dirname.includes('dist');
-    const cacheDir = isCompiled ? path.join(__dirname, '../cache') : path.join(__dirname, '../../src/cache');
+    // Always use root-level cache directory (consistent between dev and production)
+    const cacheDir = path.join(process.cwd(), 'cache');
     const cacheFile = path.join(cacheDir, 'validSymbols.json');
 
     if (!fs.existsSync(cacheFile)) {
