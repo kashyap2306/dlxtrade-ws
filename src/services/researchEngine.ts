@@ -977,14 +977,14 @@ export class ResearchEngine {
     const marketAuxKey = userKeys['marketaux']?.apiKey;
     const cryptocompareKey = userKeys['cryptocompare']?.apiKey;
 
-    // Log key sources for debugging - always from Firestore now
+    // Add debug log next to adapter creation
     logger.info({
       uid,
-      marketAuxKeySource: 'firestore',
-      cryptocompareKeySource: 'firestore',
-      marketAuxKeyPresent: !!marketAuxKey,
-      cryptocompareKeyPresent: !!cryptocompareKey,
-    }, 'API key sources resolved - ALWAYS from Firestore');
+      marketAuxKey: marketAuxKey ? 'PRESENT' : 'MISSING',
+      cryptocompareKey: cryptocompareKey ? 'PRESENT' : 'MISSING',
+      marketAuxKeyLength: marketAuxKey?.length,
+      cryptocompareKeyLength: cryptocompareKey?.length
+    }, 'Loaded user API keys for research');
 
     // API keys - use null if missing (adapters handle gracefully)
     logger.info({
@@ -1001,18 +1001,18 @@ export class ResearchEngine {
     let cryptoAdapter: CryptoCompareAdapter;
 
     try {
-      logger.debug({ uid }, 'Initializing MarketAux adapter (with key fallback)');
+      logger.debug({ uid, keyLength: marketAuxKey?.length }, 'Initializing MarketAux adapter');
       marketAuxAdapter = new MarketAuxAdapter(marketAuxKey || null);
-      logger.info({ uid }, 'MarketAux adapter initialized');
+      logger.info({ uid, hasKey: !!marketAuxKey }, 'MarketAux adapter initialized');
     } catch (error: any) {
       logger.error({ uid, error: error.message }, 'Failed to initialize MarketAux adapter');
       throw error;
     }
 
     try {
-      logger.debug({ uid }, 'Initializing CryptoCompare adapter (with key fallback)');
+      logger.debug({ uid, keyLength: cryptocompareKey?.length }, 'Initializing CryptoCompare adapter');
       cryptoAdapter = new CryptoCompareAdapter(cryptocompareKey || null);
-      logger.info({ uid }, 'CryptoCompare adapter initialized');
+      logger.info({ uid, hasKey: !!cryptocompareKey }, 'CryptoCompare adapter initialized');
     } catch (error: any) {
       logger.error({ uid, error: error.message }, 'Failed to initialize CryptoCompare adapter');
       throw error;

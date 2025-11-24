@@ -479,13 +479,9 @@ export class CryptoCompareAdapter {
         market,
       };
     } catch (error: any) {
-      // Return empty data if request fails
-      logger.warn({ error: error.message, symbol }, 'CryptoCompare data fetch failed, returning empty data');
-      return {
-        ohlc: [],
-        indicators: {},
-        market: {},
-      };
+      // Since we have an API key, we should not fall back to empty data - throw error instead
+      logger.warn({ error: error.message, symbol }, 'CryptoCompare data fetch failed');
+      throw new Error(`CryptoCompare data fetch failed: ${error.message}`);
     }
   }
 
@@ -545,8 +541,9 @@ export class CryptoCompareAdapter {
       return result;
 
     } catch (error: any) {
-      logger.warn({ symbol, timeframe, error: error.message }, 'Failed to get OHLC data from CryptoCompare, using fallback');
-      return this.getFallbackOHLC(symbol, timeframe, limit);
+      logger.warn({ symbol, timeframe, error: error.message }, 'Failed to get OHLC data from CryptoCompare');
+      // Since we have an API key, we should not fall back to synthetic data - throw error instead
+      throw new Error(`CryptoCompare OHLC data fetch failed: ${error.message}`);
     }
   }
 
@@ -637,14 +634,8 @@ export class CryptoCompareAdapter {
       };
     } catch (error: any) {
       logger.warn({ symbol, timeframe, error: error.message }, 'Failed to get MTF indicators from CryptoCompare');
-      return {
-        timeframe,
-        rsi: null,
-        macd: null,
-        ema12: null,
-        ema26: null,
-        sma20: null,
-      };
+      // Since we have an API key, we should not fall back to defaults - throw error instead
+      throw new Error(`CryptoCompare MTF indicators failed: ${error.message}`);
     }
   }
 
