@@ -162,6 +162,59 @@ const googleFinanceAdapter = {
   },
 
   /**
+   * Get exchange rates for multiple currencies (required by research engine)
+   */
+  getExchangeRates: async function(): Promise<{ base: string; rates: Record<string, number>; timestamp: number }> {
+    this.initialize();
+    try {
+      // Get USD/INR rate as primary
+      const usdInrResult = await this.getExchangeRate('USD', 'INR');
+      const usdInrRate = usdInrResult.exchangeRate || this.lastKnownRate;
+
+      // Calculate other rates based on USD/INR and approximate cross rates
+      const rates: Record<string, number> = {
+        'USD': 1.0,
+        'INR': usdInrRate,
+        'EUR': usdInrRate / 90, // Approximate EUR/INR
+        'GBP': usdInrRate / 105, // Approximate GBP/INR
+        'JPY': usdInrRate * 100 / 1.45, // Approximate JPY/INR
+        'CAD': usdInrRate / 61, // Approximate CAD/INR
+        'AUD': usdInrRate / 56, // Approximate AUD/INR
+        'CHF': usdInrRate / 84, // Approximate CHF/INR
+        'CNY': usdInrRate / 11.5, // Approximate CNY/INR
+        'KRW': usdInrRate * 1000 / 0.063, // Approximate KRW/INR
+      };
+
+      return {
+        base: 'USD',
+        rates,
+        timestamp: Date.now()
+      };
+
+    } catch (error: any) {
+      logger.warn({ error: error.message }, 'Google Finance getExchangeRates failed, using fallback rates');
+
+      // Fallback rates
+      return {
+        base: 'USD',
+        rates: {
+          'USD': 1.0,
+          'INR': this.lastKnownRate,
+          'EUR': 0.85,
+          'GBP': 0.73,
+          'JPY': 110.0,
+          'CAD': 1.25,
+          'AUD': 1.35,
+          'CHF': 0.92,
+          'CNY': 6.45,
+          'KRW': 1180.0
+        },
+        timestamp: Date.now()
+      };
+    }
+  },
+
+  /**
    * Force refresh the exchange rate
    */
   refreshRate: async function(): Promise<number> {

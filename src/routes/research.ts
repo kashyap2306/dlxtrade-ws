@@ -618,5 +618,65 @@ export async function researchRoutes(fastify: FastifyInstance) {
       });
     }
   });
+
+  // Health check endpoint for provider status
+  fastify.get('/health', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { getCircuitBreaker } = await import('../utils/circuitBreaker');
+      const { cryptocompareCache, coingeckoCache } = await import('../utils/lruCache');
+
+      // Check provider circuit breaker status
+      const providers = {
+        binance: { status: getCircuitBreaker('binance').isOpen() ? 'circuit_open' : 'healthy' },
+        cryptocompare: { status: getCircuitBreaker('cryptocompare').isOpen() ? 'circuit_open' : 'healthy' },
+        marketaux: { status: getCircuitBreaker('marketaux').isOpen() ? 'circuit_open' : 'healthy' },
+        coingecko: { status: getCircuitBreaker('coingecko').isOpen() ? 'circuit_open' : 'healthy' },
+        googlefinance: { status: getCircuitBreaker('googlefinance').isOpen() ? 'circuit_open' : 'healthy' }
+      };
+
+      // Check cache status
+      const caches = {
+        cryptocompare: {
+          size: cryptocompareCache.size(),
+          maxSize: 200
+        },
+        coingecko: {
+          size: coingeckoCache.size(),
+          maxSize: 100
+        }
+      };
+
+      // Check symbol validation cache
+      const fs = await import('fs');
+      const path = await import('path');
+      let symbolCacheStatus = 'missing';
+      try {
+        const cachePath = path.join(__dirname, '../cache/validSymbols.json');
+        if (fs.existsSync(cachePath)) {
+          const stats = fs.statSync(cachePath);
+          symbolCacheStatus = `healthy (${Math.round((Date.now() - stats.mtime.getTime()) / 1000 / 60)} minutes old)`;
+        }
+      } catch (error) {
+        symbolCacheStatus = 'error';
+      }
+
+      return reply.code(200).header('Content-Type', 'application/json').send({
+        success: true,
+        timestamp: new Date().toISOString(),
+        version: '2.0.0',
+        providers,
+        caches,
+        symbolCache: symbolCacheStatus,
+        overall: Object.values(providers).every(p => p.status === 'healthy') ? 'healthy' : 'degraded'
+      });
+    } catch (error: any) {
+      logger.error({ error: error.message }, 'Health check failed');
+      return reply.code(500).header('Content-Type', 'application/json').send({
+        success: false,
+        message: 'Health check failed',
+        error: error.message
+      });
+    }
+  });
 }
 

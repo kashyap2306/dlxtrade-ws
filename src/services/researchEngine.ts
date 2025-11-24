@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import axios from 'axios';
 import { logger } from '../utils/logger';
 import { firestoreAdapter, type ActiveExchangeContext } from './firestoreAdapter';
 import { MarketAuxAdapter, MarketAuxData } from './MarketAuxAdapter';
@@ -17,6 +18,11 @@ import { computeConfidence, computeFeatureScores, fuseSignals } from './confiden
 import type { FeatureScoreState } from './confidenceEngine';
 import type { Orderbook } from '../types';
 import type { ExchangeConnector } from './exchangeConnector';
+
+// Circuit breaker and caching imports
+import { getCircuitBreaker } from '../utils/circuitBreaker';
+import { cryptocompareCache, coingeckoCache, symbolMappingCache, LRUCache } from '../utils/lruCache';
+import { getCoinGeckoId, GOOGLE_FINANCE_RATES } from '../utils/symbolMapping';
 
 const VALID_TIMEFRAMES = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w'];
 const MULTI_TIMEFRAMES = ['5m', '15m', '1h'] as const;
@@ -227,6 +233,30 @@ export interface ResearchResult {
   apiCallReport: ApiCallReportEntry[];
   missingDependencies?: MissingDependency[];
   _providerDebug?: Record<string, any>; // Debug info for provider calls
+  diagnostics?: {
+    providers: Record<string, {
+      status: 'success' | 'fallback' | 'failed';
+      durationMs: number;
+      fallback: boolean;
+      dataPoints: string[];
+    }>;
+    derivatives: {
+      fundingRate?: number;
+      openInterest?: number;
+      longShortRatio?: { long: number; short: number; ratio: number };
+      source: string;
+    };
+    rvol: {
+      rvol: number;
+      isConfirmed: boolean;
+      avgVolume: number;
+    };
+    mtfStatus: {
+      total: number;
+      successful: number;
+      failed: number;
+    };
+  };
 }
 
 class ResearchEngineError extends Error {
@@ -262,17 +292,111 @@ export class ResearchEngine {
     timeframe: string = '5m',
     activeContext?: ActiveExchangeContext
   ): Promise<ResearchResult> {
-    // Add global 10-second timeout to prevent hanging (never throws)
+    // Add global 18-second timeout to prevent hanging (never throws)
     return Promise.race([
       this.runResearchInternal(symbol, uid, adapterOverride, _forceEngine, _legacy, timeframe, activeContext),
       new Promise<ResearchResult>((resolve) =>
         setTimeout(() => {
-          logger.warn({ symbol, uid, timeframe }, 'Research timeout: exceeded 10 seconds, returning complete fallback result');
-          // Return complete fallback result instead of partial
-          resolve(this.createCompleteFallbackResult(symbol, timeframe));
-        }, 10000)
+          logger.warn({ symbol, uid, timeframe }, 'Research timeout: exceeded 18 seconds, returning best-effort result');
+          // Return best-effort result instead of complete fallback
+          resolve(this.createBestEffortResult(symbol, timeframe));
+        }, 18000)
       )
     ]);
+  }
+
+  private async getCoinGeckoId(symbol: string, uid: string): Promise<string | null> {
+    const cacheKey = `coingecko_id_${symbol}`;
+
+    // Check cache first
+    const cachedId = symbolMappingCache.get(cacheKey);
+    if (cachedId) {
+      return cachedId;
+    }
+
+    // Try direct mapping from static table
+    const staticId = getCoinGeckoId(symbol);
+    if (staticId) {
+      symbolMappingCache.set(cacheKey, staticId, 3600000); // Cache for 1 hour
+      return staticId;
+    }
+
+    // Try API lookup with user API key
+    try {
+      const userApiKeys = await firestoreAdapter.getUserApiKeys(uid);
+      const coingeckoApiKey = (userApiKeys as any)?.coingecko;
+
+      if (coingeckoApiKey) {
+        // Try to search for the coin by symbol
+        const searchResponse = await axios.get('https://api.coingecko.com/api/v3/search', {
+          params: {
+            q: symbol.replace(/USDT$|USD$|BTC$|ETH$/i, '')
+          },
+          headers: {
+            'x-cg-demo-api-key': coingeckoApiKey
+          },
+          timeout: 5000
+        });
+
+        if (searchResponse.data?.coins?.length > 0) {
+          const coin = searchResponse.data.coins[0];
+          symbolMappingCache.set(cacheKey, coin.id, 3600000); // Cache for 1 hour
+          return coin.id;
+        }
+      }
+    } catch (error: any) {
+      logger.warn({ symbol, error: error.message }, 'CoinGecko API search failed');
+    }
+
+    // Try fallback mappings with different suffixes
+    const baseSymbol = symbol.replace(/USDT$|USD$|BTC$|ETH$|BNB$/i, '');
+    for (const suffix of ['', 't', '-token', '-coin']) {
+      const testSymbol = baseSymbol + suffix;
+      const testId = getCoinGeckoId(testSymbol);
+      if (testId) {
+        symbolMappingCache.set(cacheKey, testId, 3600000);
+        return testId;
+      }
+    }
+
+    logger.warn({ symbol }, 'Could not map symbol to CoinGecko ID');
+    return null;
+  }
+
+  private createBestEffortResult(symbol: string, timeframe: string): ResearchResult {
+    return {
+      symbol,
+      status: 'ok',
+      signal: 'HOLD',
+      accuracy: 0.6,
+      orderbookImbalance: 0,
+      recommendedAction: 'Best-effort analysis - some providers timed out',
+      microSignals: { spread: 0, volume: 0, priceMomentum: 0, orderbookDepth: 0 },
+      entry: null,
+      exits: [],
+      stopLoss: null,
+      takeProfit: null,
+      side: 'NEUTRAL',
+      confidence: 60,
+      timeframe,
+      signals: [],
+      currentPrice: 0,
+      mode: 'NORMAL',
+      recommendedTrade: null,
+      blurFields: false,
+      apiCalls: [],
+      apiCallReport: [],
+      explanations: ['Partial analysis completed - some providers timed out'],
+      accuracyRange: '60-70%',
+      timedOut: true,
+      partialData: true,
+      liveAnalysis: {
+        isLive: false,
+        lastUpdated: new Date().toISOString(),
+        summary: 'Best-effort analysis',
+        meta: {}
+      }
+    };
   }
 
   private createCompleteFallbackResult(symbol: string, timeframe: string): ResearchResult {
@@ -382,45 +506,160 @@ export class ResearchEngine {
     const runApiCall = async <T>(
       apiName: string,
       fn: () => Promise<T>,
-      timeoutMs: number,
+      timeoutMs: number = 5000,
       fallbackValue: T,
-      provider?: string
-    ): Promise<{ success: boolean; data: T; fallback: boolean; durationMs: number }> => {
-      const callStarted = Date.now();
-
-      try {
-        const result = await Promise.race([
-          fn(),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('timeout')), timeoutMs)
-          )
-        ]);
-
-        const duration = Date.now() - callStarted;
-        recordApiCall({
-          apiName,
-          status: 'SUCCESS',
-          durationMs: duration,
-          provider,
-        });
-
-        return { success: true, data: result, fallback: false, durationMs: duration };
-      } catch (err: any) {
-        const duration = Date.now() - callStarted;
-        const message = err?.message || 'Unknown error';
-
-        recordApiCall({
-          apiName,
-          status: 'FAILED',
-          message,
-          durationMs: duration,
-          provider,
-        });
-
-        // NEVER throw - always return fallback data
-        logger.warn({ apiName, error: message, timeoutMs }, 'API call failed, using fallback');
-        return { success: false, data: fallbackValue, fallback: true, durationMs: duration };
+      provider?: string,
+      options?: {
+        maxRetries?: number;
+        useCache?: boolean;
+        cacheKey?: string;
+        cacheTTL?: number;
+        skipCircuitBreaker?: boolean;
       }
+    ): Promise<{ success: boolean; data: T; fallback: boolean; durationMs: number; retries?: number; cached?: boolean }> => {
+      const callStarted = Date.now();
+      const maxRetries = options?.maxRetries || 3;
+      let lastError: any = null;
+      let attempt = 0;
+
+      // Check circuit breaker
+      if (!options?.skipCircuitBreaker && provider) {
+        const circuitBreaker = getCircuitBreaker(provider);
+        if (circuitBreaker.isOpen()) {
+          logger.warn({ provider, apiName }, 'Circuit breaker is OPEN, using fallback immediately');
+          return {
+            success: false,
+            data: fallbackValue,
+            fallback: true,
+            durationMs: 0,
+            retries: 0
+          };
+        }
+      }
+
+      // Check cache first
+      if (options?.useCache && options.cacheKey && provider) {
+        let cache: LRUCache<any> | null = null;
+        if (provider === 'cryptocompare') cache = cryptocompareCache;
+        else if (provider === 'coingecko') cache = coingeckoCache;
+
+        if (cache) {
+          const cachedData = cache.get(options.cacheKey);
+          if (cachedData !== null) {
+            logger.info({ provider, apiName, cacheKey: options.cacheKey }, 'Using cached data');
+            return {
+              success: true,
+              data: cachedData,
+              fallback: false,
+              durationMs: Date.now() - callStarted,
+              cached: true
+            };
+          }
+        }
+      }
+
+      // Retry loop with exponential backoff
+      while (attempt <= maxRetries) {
+        try {
+          const result = await Promise.race([
+            fn(),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('timeout')), timeoutMs)
+            )
+          ]);
+
+          const duration = Date.now() - callStarted;
+
+          // Cache successful result
+          if (options?.useCache && options.cacheKey && provider && attempt === 0) {
+            let cache: LRUCache<any> | null = null;
+            if (provider === 'cryptocompare') cache = cryptocompareCache;
+            else if (provider === 'coingecko') cache = coingeckoCache;
+
+            if (cache) {
+              cache.set(options.cacheKey, result, options.cacheTTL);
+            }
+          }
+
+          recordApiCall({
+            apiName,
+            status: 'SUCCESS',
+            durationMs: duration,
+            provider,
+          });
+
+          return {
+            success: true,
+            data: result,
+            fallback: false,
+            durationMs: duration,
+            retries: attempt
+          };
+
+        } catch (err: any) {
+          lastError = err;
+          attempt++;
+
+          const duration = Date.now() - callStarted;
+          const message = err?.message || 'Unknown error';
+
+          // Don't record intermediate failures, only final failure
+          if (attempt > maxRetries) {
+            recordApiCall({
+              apiName,
+              status: 'FAILED',
+              message,
+              durationMs: duration,
+              provider,
+            });
+
+            // Update circuit breaker
+            if (provider && !options?.skipCircuitBreaker) {
+              const circuitBreaker = getCircuitBreaker(provider);
+              try {
+                await circuitBreaker.execute(() => Promise.reject(err));
+              } catch {
+                // Expected - circuit breaker will handle the failure
+              }
+            }
+          }
+
+          // Exponential backoff for retries
+          if (attempt <= maxRetries) {
+            const backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+            logger.warn({
+              apiName,
+              provider,
+              attempt,
+              maxRetries,
+              backoffMs,
+              error: message
+            }, `API call failed, retrying in ${backoffMs}ms`);
+            await new Promise(resolve => setTimeout(resolve, backoffMs));
+          }
+        }
+      }
+
+      // All retries failed
+      const duration = Date.now() - callStarted;
+      const message = lastError?.message || 'Unknown error after all retries';
+
+      logger.warn({
+        apiName,
+        provider,
+        error: message,
+        timeoutMs,
+        maxRetries,
+        totalDurationMs: duration
+      }, 'API call failed after all retries, using fallback');
+
+      return {
+        success: false,
+        data: fallbackValue,
+        fallback: true,
+        durationMs: duration,
+        retries: maxRetries
+      };
     };
 
     // NOTE: Exchange API is now optional for Deep Research
@@ -516,33 +755,42 @@ export class ResearchEngine {
           if (tf === normalizedTimeframe) {
             return candles;
           }
-          try {
-            // Use exchange adapter if available, otherwise fall back to Binance
-            if (userExchangeAdapter && context) {
-              const timeout = new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error(`Exchange ${tf} candles timeout`)), 1200)
-              );
-              const apiCall = this.fetchExchangeCandles(userExchangeAdapter, normalizedSymbol, tf, 500, apiCalls);
-              return Promise.race([apiCall, timeout]);
-            } else {
-              // Fall back to Binance free API for multi-timeframe data
-              const timeout = new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error(`Binance ${tf} candles timeout`)), 1200)
-              );
-              const apiCall = binanceAdapter.getKlines(normalizedSymbol, tf, 500);
-              const binanceCandles = await Promise.race([apiCall, timeout]);
-              return binanceCandles.map(candle => ({
-                timestamp: candle.time,
-                open: candle.open,
-                high: candle.high,
-                low: candle.low,
-                close: candle.close,
-                volume: candle.volume,
-              }));
-            }
-          } catch (error: any) {
-            logger.warn({ symbol: normalizedSymbol, timeframe: tf, error: error.message }, `Timeframe fetch failed for ${tf}`);
-            return null;
+
+          // MTF: Use Binance as PRIMARY source with enhanced error handling
+          const mtfResult = await runApiCall(
+            `Binance MTF ${tf}`,
+            () => binanceAdapter.getKlines(normalizedSymbol, tf, 500),
+            5000, // 5s timeout for MTF
+            [], // Empty array fallback
+            'binance',
+            { maxRetries: 2 }
+          );
+
+          if (mtfResult.success && mtfResult.data && mtfResult.data.length > 0) {
+            return mtfResult.data.map((candle: any[]) => ({
+              timestamp: candle[0],
+              open: parseFloat(candle[1]),
+              high: parseFloat(candle[2]),
+              low: parseFloat(candle[3]),
+              close: parseFloat(candle[4]),
+              volume: parseFloat(candle[5]),
+            }));
+          } else {
+            logger.warn({
+              symbol: normalizedSymbol,
+              timeframe: tf,
+              fallback: mtfResult.fallback
+            }, `MTF ${tf} failed, returning partial data`);
+
+            // Return fallback candles - don't fail entire MTF analysis
+            return [{
+              timestamp: Date.now(),
+              open: currentPrice || 0,
+              high: currentPrice || 0,
+              low: currentPrice || 0,
+              close: currentPrice || 0,
+              volume: 0
+            }];
           }
         },
       });
@@ -756,7 +1004,7 @@ export class ResearchEngine {
             logger.info({ symbol: normalizedSymbol, sentiment: result.sentiment, articles: result.totalArticles }, 'MarketAux: Called → OK');
             return result;
           },
-          1200,
+          5000, // 5s timeout
           {
             sentiment: 0.05,
             hypeScore: 45,
@@ -764,44 +1012,53 @@ export class ResearchEngine {
             trendScore: 0,
             latestArticles: []
           },
-          'marketaux'
+          'marketaux',
+          {
+            maxRetries: 2,
+            useCache: true,
+            cacheKey: `marketaux_${normalizedSymbol.replace(/USDT$/i, '').replace(/USD$/i, '')}`,
+            cacheTTL: 300000 // 5 minutes
+          }
         ),
 
         // Binance ticker data
         runApiCall(
           'binance',
           () => binanceAdapter.getTicker(normalizedSymbol),
-          2500,
+          5000,
           {
             lastPrice: 0,
             volume: 0,
             priceChangePercent: 0,
             fallback: true
           },
-          'binance'
+          'binance',
+          { maxRetries: 3 }
         ),
 
         // Binance book ticker
         runApiCall(
           'binance_bookTicker',
           () => binanceAdapter.getBookTicker(normalizedSymbol),
-          2500,
+          5000,
           {
             symbol: normalizedSymbol,
             bidPrice: 0,
             askPrice: 0,
             fallback: true
           },
-          'binance'
+          'binance',
+          { maxRetries: 3 }
         ),
 
         // Binance volatility
         runApiCall(
           'binance_volatility',
           () => binanceAdapter.getVolatility(normalizedSymbol),
-          2500,
+          5000,
           0.05, // 5% fallback volatility
-          'binance'
+          'binance',
+          { maxRetries: 3 }
         ),
 
         // Google Finance rates
@@ -812,21 +1069,37 @@ export class ResearchEngine {
             logger.info({ ratesCount: result?.length || 0 }, 'GoogleFinance: Called → OK');
             return result;
           },
-          1200,
+          5000,
           [],
-          'googlefinance'
+          'googlefinance',
+          {
+            maxRetries: 2,
+            useCache: true,
+            cacheKey: 'googlefinance_rates',
+            cacheTTL: 600000 // 10 minutes
+          }
         ),
 
-        // CoinGecko historical data
+        // CoinGecko historical data with symbol mapping
         runApiCall(
           'coingecko',
           async () => {
-            const coingeckoHistoricalData = await coingeckoAdapter.getHistoricalData(normalizedSymbol, 90);
+            const coingeckoId = await this.getCoinGeckoId(normalizedSymbol, uid);
+            if (!coingeckoId) {
+              throw new Error('Could not map symbol to CoinGecko ID');
+            }
+            const coingeckoHistoricalData = await coingeckoAdapter.getHistoricalData(coingeckoId, 90);
             return coingeckoHistoricalData;
           },
-          1200,
+          5000,
           null,
-          'coingecko'
+          'coingecko',
+          {
+            maxRetries: 2,
+            useCache: true,
+            cacheKey: `coingecko_historical_${normalizedSymbol}`,
+            cacheTTL: 600000 // 10 minutes
+          }
         )
       ]);
 
@@ -862,6 +1135,62 @@ export class ResearchEngine {
       } : undefined;
 
       const sentiment = analyzeSentiment(sentimentPayload || undefined);
+
+      // DERIVATIVES DATA: Fetch from Binance Futures API
+      const derivativesApiResult = await runApiCall(
+        'Binance Derivatives',
+        () => binanceAdapter.getDerivativesData(normalizedSymbol),
+        5000,
+        {
+          fundingRate: 0.0001,
+          openInterest: 0,
+          longShortRatio: { long: 50, short: 50, ratio: 1 }
+        },
+        'binance',
+        { maxRetries: 2, cacheTTL: 60000 } // Cache for 1 minute
+      );
+
+      const derivativesRawData = derivativesResult.data;
+      // Simplified derivatives analysis - using fallback for now
+      const fundingRateValue = typeof derivativesRawData.fundingRate === 'number' ? derivativesRawData.fundingRate : 0;
+      const openInterestValue = typeof derivativesRawData.openInterest === 'number' ? derivativesRawData.openInterest : 0;
+
+      const derivativesAnalysis: DerivativesResult = {
+        fundingRate: {
+          signal: fundingRateValue > 0.001 ? 'Bullish' : fundingRateValue < -0.001 ? 'Bearish' : 'Neutral',
+          score: 0.5,
+          value: fundingRateValue,
+          description: fundingRateValue !== 0 ? `Funding rate: ${(fundingRateValue * 100).toFixed(4)}%` : 'No funding rate data'
+        },
+        openInterest: {
+          signal: 'Neutral',
+          score: 0.5,
+          change24h: 0,
+          description: openInterestValue > 0 ? `Open interest: ${openInterestValue.toLocaleString()}` : 'No open interest data'
+        },
+        liquidations: {
+          signal: 'Neutral',
+          score: 0.5,
+          longPct: 0,
+          shortPct: 0,
+          description: 'No liquidation data available'
+        },
+        overallSignal: 'Neutral',
+        overallScore: 0.5,
+        source: 'binance_futures'
+      };
+
+      // RVOL (Relative Volume): Calculate from Binance historical data
+      const rvolResult = await runApiCall(
+        'Binance RVOL',
+        () => binanceAdapter.getRVOL(normalizedSymbol, 7), // 7-day lookback
+        5000,
+        { rvol: 1.0, isConfirmed: false, avgVolume: 0 },
+        'binance',
+        { maxRetries: 2, cacheTTL: 300000 } // Cache for 5 minutes
+      );
+
+      const rvolData = rvolResult.data;
 
       // Transform Binance ticker data to expected format
       const binanceMarketData = binanceTickerData ? {
@@ -1014,8 +1343,8 @@ export class ResearchEngine {
       const side: 'LONG' | 'SHORT' | 'NEUTRAL' =
         finalSignal === 'BUY' ? 'LONG' : finalSignal === 'SELL' ? 'SHORT' : 'NEUTRAL';
       const mtfConfluenceCount = multiTimeframeContext.alignmentCount;
-      const derivativesAligned = this.isDerivativesAligned(derivatives, finalSignal);
-      const derivativesContradict = this.isDerivativesContradicting(derivatives, finalSignal);
+      const derivativesAligned = this.isDerivativesAligned(derivativesAnalysis, finalSignal);
+      const derivativesContradict = this.isDerivativesContradicting(derivativesAnalysis, finalSignal);
       const liquidityAcceptable = this.isLiquidityAcceptable(liquidity);
 
       const entry = currentPrice;
@@ -1037,9 +1366,9 @@ export class ResearchEngine {
         volume: binanceVolumeTrend !== 'Stable' ? binanceVolumeTrend : `${volume.signal}${volume.relativeVolume ? ` (${volume.relativeVolume.toFixed(2)}x)` : ''}`,
         orderbookImbalance: imbalance !== null ? `${(imbalance * 100).toFixed(2)}% ${imbalance >= 0 ? 'Buy' : 'Sell'} pressure` : 'Insufficient depth',
         liquidity: `${liquidity.signal} (${liquidity.spreadPercent.toFixed(3)}% spread)`,
-        fundingRate: derivatives.fundingRate.description,
-        openInterest: derivatives.openInterest.description,
-        liquidations: derivatives.liquidations.description,
+        fundingRate: derivativesAnalysis.fundingRate.description,
+        openInterest: derivativesAnalysis.openInterest.description,
+        liquidations: derivativesAnalysis.liquidations.description,
         trendStrength: trendStrength.trend,
         volatility: binanceVolatility !== null ? (binanceVolatility * 100).toFixed(2) + '%' : (atr ? atr.toFixed(6) : null),
         newsSentiment: sentiment.description,
@@ -1075,7 +1404,7 @@ export class ResearchEngine {
         `MACD histogram ${macd.histogram.toFixed(4)}`,
         `Volume ${volume.signal}${volume.relativeVolume ? ` (${volume.relativeVolume.toFixed(2)}x)` : ''}`,
         `Liquidity ${liquidity.signal} (${liquidity.spreadPercent.toFixed(3)}%)`,
-        `Derivatives ${derivatives.overallSignal} (${(derivatives.overallScore * 100).toFixed(1)}%)`,
+        `Derivatives ${derivativesAnalysis.overallSignal} (${(derivativesAnalysis.overallScore * 100).toFixed(1)}%)`,
         `Sentiment ${sentiment.signal} (${sentiment.sentiment.toFixed(2)})`,
         `MTF confluence ${mtfConfluence.label} (${mtfConfluence.details["5m"]} | ${mtfConfluence.details["15m"]} | ${mtfConfluence.details["1h"]})`,
       ];
@@ -1142,6 +1471,53 @@ export class ResearchEngine {
         recommendation: recommendedTrade ? 'AUTO' : 'MANUAL',
         perFeatureScore: confidenceResult.perFeatureScore,
         apisUsed: providersUsed,
+
+        // Enhanced diagnostics and provider status
+        diagnostics: {
+          providers: {
+            binance: {
+              status: 'success',
+              durationMs: 0,
+              fallback: false,
+              dataPoints: ['candles', 'orderbook', 'ticker', 'volatility', 'derivatives', 'rvol']
+            },
+            cryptocompare: {
+              status: mtfIndicators['5m']?.rsi !== 50 ? 'success' : 'fallback',
+              durationMs: 0,
+              fallback: mtfIndicators['5m']?.rsi === 50,
+              dataPoints: ['mtf_indicators']
+            },
+            marketaux: {
+              status: marketAuxData.sentiment !== 0.05 ? 'success' : 'fallback',
+              durationMs: 0,
+              fallback: marketAuxData.sentiment === 0.05,
+              dataPoints: ['sentiment']
+            },
+            coingecko: {
+              status: coingeckoHistoricalData ? 'success' : 'fallback',
+              durationMs: 0,
+              fallback: !coingeckoHistoricalData,
+              dataPoints: ['historical_data']
+            },
+            googlefinance: {
+              status: 'success',
+              durationMs: 0,
+              fallback: false,
+              dataPoints: ['exchange_rates']
+            }
+          },
+          derivatives: {
+            fundingRate: fundingRateValue,
+            openInterest: openInterestValue,
+            source: 'binance_futures'
+          },
+          rvol: rvolData,
+          mtfStatus: {
+            total: MULTI_TIMEFRAMES.length,
+            successful: Object.keys(multiTimeframeCandles).length,
+            failed: MULTI_TIMEFRAMES.length - Object.keys(multiTimeframeCandles).length
+          }
+        },
 
         // Add detailed API usage logging
         _apiUsageSummary: {

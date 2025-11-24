@@ -202,6 +202,100 @@ export class BinancePublicAdapter implements ExchangeConnector {
     }
   }
 
+  async getDerivativesData(symbol: string): Promise<{
+    fundingRate?: number;
+    openInterest?: number;
+    longShortRatio?: { long: number; short: number; ratio: number };
+    liquidationData?: { longLiquidations: number; shortLiquidations: number };
+  }> {
+    const finalSymbol = this.normalizeSymbol(symbol);
+
+    try {
+      // Get funding rate from futures API
+      const fundingResponse = await this.httpClient.get('/fapi/v1/premiumIndex', {
+        params: { symbol: finalSymbol }
+      });
+      apiUsageTracker.increment('binance_futures');
+
+      const fundingRate = fundingResponse.data ? parseFloat(fundingResponse.data.lastFundingRate) : undefined;
+
+      // Get open interest
+      const oiResponse = await this.httpClient.get('/fapi/v1/openInterest', {
+        params: { symbol: finalSymbol }
+      });
+      apiUsageTracker.increment('binance_futures');
+
+      const openInterest = oiResponse.data ? parseFloat(oiResponse.data.openInterest) : undefined;
+
+      // Get long/short ratio (top accounts)
+      const lsrResponse = await this.httpClient.get('/futures/data/topLongShortAccountRatio', {
+        params: { symbol: finalSymbol, period: '1d', limit: 1 }
+      });
+      apiUsageTracker.increment('binance_futures');
+
+      let longShortRatio;
+      if (lsrResponse.data && lsrResponse.data.length > 0) {
+        const ratio = lsrResponse.data[0];
+        longShortRatio = {
+          long: parseFloat(ratio.longShortRatio),
+          short: 100 - parseFloat(ratio.longShortRatio),
+          ratio: parseFloat(ratio.longShortRatio)
+        };
+      }
+
+      return {
+        fundingRate,
+        openInterest,
+        longShortRatio
+      };
+
+    } catch (error: any) {
+      logger.warn({ symbol, finalSymbol, error: error.message }, '[BinancePublicAdapter] getDerivativesData failed, using fallback');
+      return {
+        fundingRate: 0.0001, // Typical funding rate
+        openInterest: 0,
+        longShortRatio: { long: 50, short: 50, ratio: 1 }
+      };
+    }
+  }
+
+  async getRVOL(symbol: string, lookbackDays: number = 7): Promise<{ rvol: number; isConfirmed: boolean; avgVolume: number }> {
+    const finalSymbol = this.normalizeSymbol(symbol);
+
+    try {
+      // Get daily klines for the lookback period
+      const dailyCandles = await this.getKlines(symbol, '1d', lookbackDays + 1);
+
+      if (!dailyCandles || dailyCandles.length < 2) {
+        return { rvol: 1.0, isConfirmed: false, avgVolume: 0 };
+      }
+
+      // Calculate volumes (skip the current incomplete day)
+      const volumes = dailyCandles.slice(0, -1).map(candle => parseFloat(candle[5])); // volume is index 5
+      const currentVolume = parseFloat(dailyCandles[dailyCandles.length - 1][5]);
+
+      if (volumes.length === 0) {
+        return { rvol: 1.0, isConfirmed: false, avgVolume: 0 };
+      }
+
+      // Calculate average volume
+      const avgVolume = volumes.reduce((sum, vol) => sum + vol, 0) / volumes.length;
+
+      // Calculate RVOL
+      const rvol = avgVolume > 0 ? currentVolume / avgVolume : 1.0;
+
+      return {
+        rvol: Number.isFinite(rvol) ? rvol : 1.0,
+        isConfirmed: volumes.length >= 5, // Need at least 5 days of data
+        avgVolume
+      };
+
+    } catch (error: any) {
+      logger.warn({ symbol, finalSymbol, error: error.message }, '[BinancePublicAdapter] getRVOL failed, using fallback');
+      return { rvol: 1.0, isConfirmed: false, avgVolume: 0 };
+    }
+  }
+
   async testConnection(): Promise<{ success: boolean; message: string }> {
     try {
       await this.httpClient.get('/api/v3/ping');
