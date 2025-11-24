@@ -34,10 +34,16 @@ async function fetchValidBinanceSymbols(): Promise<void> {
     };
 
     try {
+      // Ensure cache directory exists
+      if (!fs.existsSync(cacheDir)) {
+        fs.mkdirSync(cacheDir, { recursive: true });
+        logger.info({ cacheDir }, 'Created cache directory');
+      }
+
       fs.writeFileSync(cacheFile, JSON.stringify(cacheData, null, 2));
       logger.info({ cacheFile, count: validSymbols.length }, 'Valid symbols cached successfully');
     } catch (writeError: any) {
-      logger.warn({ error: writeError.message, cacheFile }, 'Failed to write cache file (non-critical)');
+      logger.error({ error: writeError.message, cacheFile, cacheDir }, 'Failed to write cache file');
       // Don't throw - cache write failure shouldn't break functionality
     }
 

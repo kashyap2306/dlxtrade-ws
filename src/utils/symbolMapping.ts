@@ -1,7 +1,47 @@
 // Symbol to CoinGecko ID mapping utility
 // This provides fallback mappings when the API lookup fails
 
-export const COINGECKO_SYMBOL_MAPPINGS: Record<string, string> = {
+import * as fs from 'fs';
+import * as path from 'path';
+
+let COINGECKO_SYMBOL_MAPPINGS: Record<string, string> = {};
+
+// Load mappings from config file
+function loadCoinMappings(): void {
+  try {
+    const configPath = path.join(__dirname, '../config/coinMappings.json');
+    if (fs.existsSync(configPath)) {
+      const configData = fs.readFileSync(configPath, 'utf-8');
+      COINGECKO_SYMBOL_MAPPINGS = JSON.parse(configData);
+    } else {
+      // Fallback to minimal hardcoded mappings if config file doesn't exist
+      COINGECKO_SYMBOL_MAPPINGS = {
+        'XRPUSDT': 'ripple',
+        'XRP': 'ripple',
+        'BTCUSDT': 'bitcoin',
+        'BTC': 'bitcoin',
+        'ETHUSDT': 'ethereum',
+        'ETH': 'ethereum'
+      };
+    }
+  } catch (error) {
+    console.warn('Failed to load coin mappings, using minimal fallback');
+    COINGECKO_SYMBOL_MAPPINGS = {
+      'XRPUSDT': 'ripple',
+      'XRP': 'ripple',
+      'BTCUSDT': 'bitcoin',
+      'BTC': 'bitcoin',
+      'ETHUSDT': 'ethereum',
+      'ETH': 'ethereum'
+    };
+  }
+}
+
+// Initialize mappings on module load
+loadCoinMappings();
+
+// Legacy hardcoded mappings (kept for backward compatibility)
+const LEGACY_MAPPINGS: Record<string, string> = {
   // Major cryptocurrencies
   'BTC': 'bitcoin',
   'BTCUSDT': 'bitcoin',

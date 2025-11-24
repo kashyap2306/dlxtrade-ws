@@ -217,6 +217,10 @@ export class BinancePublicAdapter implements ExchangeConnector {
       });
       apiUsageTracker.increment('binance_futures');
 
+      if (fundingResponse.status !== 200) {
+        logger.warn({ symbol: finalSymbol, status: fundingResponse.status, response: fundingResponse.data }, 'Binance futures funding rate API returned non-200');
+      }
+
       const fundingRate = fundingResponse.data ? parseFloat(fundingResponse.data.lastFundingRate) : undefined;
 
       // Get open interest
@@ -225,22 +229,32 @@ export class BinancePublicAdapter implements ExchangeConnector {
       });
       apiUsageTracker.increment('binance_futures');
 
+      if (oiResponse.status !== 200) {
+        logger.warn({ symbol: finalSymbol, status: oiResponse.status, response: oiResponse.data }, 'Binance futures open interest API returned non-200');
+      }
+
       const openInterest = oiResponse.data ? parseFloat(oiResponse.data.openInterest) : undefined;
 
-      // Get long/short ratio (top accounts)
-      const lsrResponse = await this.httpClient.get('/futures/data/topLongShortAccountRatio', {
-        params: { symbol: finalSymbol, period: '1d', limit: 1 }
-      });
-      apiUsageTracker.increment('binance_futures');
-
+      // Get long/short ratio (top accounts) - this endpoint might not be available for all symbols
       let longShortRatio;
-      if (lsrResponse.data && lsrResponse.data.length > 0) {
-        const ratio = lsrResponse.data[0];
-        longShortRatio = {
-          long: parseFloat(ratio.longShortRatio),
-          short: 100 - parseFloat(ratio.longShortRatio),
-          ratio: parseFloat(ratio.longShortRatio)
-        };
+      try {
+        const lsrResponse = await this.httpClient.get('/futures/data/topLongShortAccountRatio', {
+          params: { symbol: finalSymbol, period: '1d', limit: 1 }
+        });
+        apiUsageTracker.increment('binance_futures');
+
+        if (lsrResponse.status !== 200) {
+          logger.warn({ symbol: finalSymbol, status: lsrResponse.status, response: lsrResponse.data }, 'Binance futures long/short ratio API returned non-200');
+        } else if (lsrResponse.data && lsrResponse.data.length > 0) {
+          const ratio = lsrResponse.data[0];
+          longShortRatio = {
+            long: parseFloat(ratio.longShortRatio),
+            short: 100 - parseFloat(ratio.longShortRatio),
+            ratio: parseFloat(ratio.longShortRatio)
+          };
+        }
+      } catch (lsrError: any) {
+        logger.warn({ symbol: finalSymbol, error: lsrError.message }, 'Binance futures long/short ratio API failed (endpoint may not be available)');
       }
 
       return {
@@ -250,11 +264,18 @@ export class BinancePublicAdapter implements ExchangeConnector {
       };
 
     } catch (error: any) {
-      logger.warn({ symbol, finalSymbol, error: error.message }, '[BinancePublicAdapter] getDerivativesData failed, using fallback');
+      logger.warn({
+        symbol,
+        finalSymbol,
+        error: error.message,
+        status: error.response?.status,
+        response: error.response?.data
+      }, '[BinancePublicAdapter] getDerivativesData failed, using fallback');
+
       return {
-        fundingRate: 0.0001, // Typical funding rate
-        openInterest: 0,
-        longShortRatio: { long: 50, short: 50, ratio: 1 }
+        fundingRate: undefined, // Mark as unavailable rather than fake value
+        openInterest: undefined,
+        longShortRatio: undefined
       };
     }
   }

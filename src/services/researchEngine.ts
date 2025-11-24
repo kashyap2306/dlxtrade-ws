@@ -233,30 +233,43 @@ export interface ResearchResult {
   apiCallReport: ApiCallReportEntry[];
   missingDependencies?: MissingDependency[];
   _providerDebug?: Record<string, any>; // Debug info for provider calls
-  diagnostics?: {
-    providers: Record<string, {
-      status: 'success' | 'fallback' | 'failed';
-      durationMs: number;
-      fallback: boolean;
-      dataPoints: string[];
-    }>;
-    derivatives: {
-      fundingRate?: number;
-      openInterest?: number;
-      longShortRatio?: { long: number; short: number; ratio: number };
-      source: string;
-    };
-    rvol: {
-      rvol: number;
-      isConfirmed: boolean;
-      avgVolume: number;
-    };
-    mtfStatus: {
-      total: number;
-      successful: number;
-      failed: number;
-    };
-  };
+        diagnostics?: {
+          providers: Record<string, {
+            status: 'success' | 'fallback' | 'failed';
+            durationMs: number;
+            fallback: boolean;
+            dataPoints: string[];
+            error?: string;
+          }>;
+          derivatives: {
+            fundingRate?: number;
+            openInterest?: number;
+            longShortRatio?: { long: number; short: number; ratio: number };
+            source: string;
+            available?: boolean;
+          };
+          rvol: {
+            rvol: number;
+            isConfirmed: boolean;
+            avgVolume: number;
+          };
+          mtfStatus: {
+            total: number;
+            successful: number;
+            failed: number;
+            timeframes?: Array<{
+              timeframe: string;
+              candleCount: number;
+              hasData: boolean;
+            }>;
+          };
+          overall?: {
+            timeout: boolean;
+            providersAttempted: number;
+            providersSuccessful: number;
+            dataCompleteness: string;
+          };
+        };
 }
 
 class ResearchEngineError extends Error {
@@ -917,14 +930,24 @@ export class ResearchEngine {
       // Fetch MTF indicators for each timeframe (always runs with neutral data fallback)
       const mtfPromises = (["5m", "15m", "1h"] as const).map(async (timeframe) => {
         try {
-          const result = await logProviderCall(
-            `mtf_${timeframe}`,
-            async () => {
-              const timeout = new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error(`MTF ${timeframe} timeout`)), 1500)
-              );
-              const apiCall = cryptoAdapter.getMTFIndicators(normalizedSymbol, timeframe);
-              return Promise.race([apiCall, timeout]);
+          const result = await runApiCall(
+            `CryptoCompare MTF ${timeframe}`,
+            () => cryptoAdapter.getMTFIndicators(normalizedSymbol, timeframe),
+            8000, // 8s timeout for CryptoCompare
+            {
+              timeframe,
+              rsi: 50,
+              macd: { value: 0, signal: 0, histogram: 0 },
+              ema12: null,
+              ema26: null,
+              sma20: null
+            },
+            'cryptocompare',
+            {
+              maxRetries: 3,
+              useCache: true,
+              cacheKey: `cryptocompare_mtf_${normalizedSymbol}_${timeframe}`,
+              cacheTTL: 180000 // 3 minutes
             }
           );
           if (result.success && result.data) {
@@ -1476,46 +1499,63 @@ export class ResearchEngine {
         diagnostics: {
           providers: {
             binance: {
-              status: 'success',
-              durationMs: 0,
-              fallback: false,
-              dataPoints: ['candles', 'orderbook', 'ticker', 'volatility', 'derivatives', 'rvol']
+              status: binanceTickerResult.success ? 'success' : 'failed',
+              durationMs: binanceTickerResult.durationMs,
+              fallback: binanceTickerResult.fallback,
+              dataPoints: ['candles', 'orderbook', 'ticker', 'volatility', 'derivatives', 'rvol'],
+              error: binanceTickerResult.success ? undefined : 'Ticker data unavailable'
             },
             cryptocompare: {
-              status: mtfIndicators['5m']?.rsi !== 50 ? 'success' : 'fallback',
-              durationMs: 0,
-              fallback: mtfIndicators['5m']?.rsi === 50,
-              dataPoints: ['mtf_indicators']
+              status: Object.values(mtfIndicators).some(ind => ind.rsi !== 50) ? 'success' : 'fallback',
+              durationMs: 0, // Individual timing not tracked
+              fallback: Object.values(mtfIndicators).every(ind => ind.rsi === 50),
+              dataPoints: ['mtf_indicators'],
+              error: Object.values(mtfIndicators).every(ind => ind.rsi === 50) ? 'All MTF data used fallback values' : undefined
             },
             marketaux: {
-              status: marketAuxData.sentiment !== 0.05 ? 'success' : 'fallback',
-              durationMs: 0,
-              fallback: marketAuxData.sentiment === 0.05,
-              dataPoints: ['sentiment']
+              status: marketAuxResult.success ? 'success' : 'failed',
+              durationMs: marketAuxResult.durationMs,
+              fallback: marketAuxResult.fallback,
+              dataPoints: ['sentiment'],
+              error: marketAuxResult.fallback ? 'Sentiment data used fallback' : undefined
             },
             coingecko: {
-              status: coingeckoHistoricalData ? 'success' : 'fallback',
-              durationMs: 0,
-              fallback: !coingeckoHistoricalData,
-              dataPoints: ['historical_data']
+              status: coingeckoResult.success ? 'success' : 'failed',
+              durationMs: coingeckoResult.durationMs,
+              fallback: coingeckoResult.fallback,
+              dataPoints: ['historical_data'],
+              error: coingeckoResult.fallback ? 'Historical data unavailable' : undefined
             },
             googlefinance: {
-              status: 'success',
-              durationMs: 0,
-              fallback: false,
-              dataPoints: ['exchange_rates']
+              status: googleFinanceResult.success ? 'success' : 'failed',
+              durationMs: googleFinanceResult.durationMs,
+              fallback: googleFinanceResult.fallback,
+              dataPoints: ['exchange_rates'],
+              error: googleFinanceResult.fallback ? 'Exchange rates used fallback' : undefined
             }
           },
           derivatives: {
             fundingRate: fundingRateValue,
             openInterest: openInterestValue,
-            source: 'binance_futures'
+            source: 'binance_futures',
+            available: fundingRateValue !== 0 || openInterestValue !== 0
           },
           rvol: rvolData,
           mtfStatus: {
             total: MULTI_TIMEFRAMES.length,
-            successful: Object.keys(multiTimeframeCandles).length,
-            failed: MULTI_TIMEFRAMES.length - Object.keys(multiTimeframeCandles).length
+            successful: Object.keys(multiTimeframeCandles).filter(tf => multiTimeframeCandles[tf].length > 1).length,
+            failed: MULTI_TIMEFRAMES.length - Object.keys(multiTimeframeCandles).filter(tf => multiTimeframeCandles[tf].length > 1).length,
+            timeframes: Object.keys(multiTimeframeCandles).map(tf => ({
+              timeframe: tf,
+              candleCount: multiTimeframeCandles[tf].length,
+              hasData: multiTimeframeCandles[tf].length > 1
+            }))
+          },
+          overall: {
+            timeout: false,
+            providersAttempted: 5,
+            providersSuccessful: [binanceTickerResult, marketAuxResult, coingeckoResult, googleFinanceResult].filter(r => r.success).length,
+            dataCompleteness: 'partial' // Will be updated based on actual data availability
           }
         },
 
