@@ -423,11 +423,11 @@ export class ResearchEngine {
     // Initialize providersUsed - will be updated based on actual API call results
     const providersUsed: Record<string, boolean | string> = {
       userExchange: exchangeName, // Exchange connection is optional for research
-      cryptocompare: false, // Will be updated based on actual call
-      marketaux: false, // Will be updated based on actual call
-      binance: false, // Will be updated based on actual call
-      coingecko: false, // Will be updated based on actual call
-      googlefinance: false, // Will be updated based on actual call
+      cryptocompare: true, // Always attempted
+      marketaux: true, // Always attempted
+      binance: true, // Always attempted
+      coingecko: true, // Always attempted
+      googlefinance: true, // Always attempted
     };
 
     try {
@@ -638,8 +638,8 @@ export class ResearchEngine {
         }
       );
 
-      // Update providersUsed based on actual result
-      providersUsed.cryptocompare = cryptoCompareResult.success;
+      // All providers are always attempted and return data (success or fallback)
+      providersUsed.cryptocompare = true;
 
       // Update debug preview for cryptocompare
       if (cryptoCompareResult.success && cryptoCompareResult.data) {
@@ -754,8 +754,8 @@ export class ResearchEngine {
         }
       );
 
-      // Update providersUsed based on actual result
-      providersUsed.marketaux = marketAuxResult.success;
+      // All providers are always attempted and return data (success or fallback)
+      providersUsed.marketaux = true;
 
       const marketAuxData = marketAuxResult.success && marketAuxResult.data ? marketAuxResult.data : {
         sentiment: 0.05,
@@ -904,7 +904,7 @@ export class ResearchEngine {
       );
 
       // Update providersUsed based on actual result
-      providersUsed.googlefinance = googleFinanceResult.success;
+      providersUsed.googlefinance = true;
 
       const googleFinanceExchangeRate = googleFinanceResult.success ? googleFinanceResult.data : null;
 

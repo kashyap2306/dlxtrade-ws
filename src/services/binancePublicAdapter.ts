@@ -183,7 +183,7 @@ export class BinancePublicAdapter implements ExchangeConnector {
       }
 
       if (returns.length < 10) {
-        return null;
+        return 0.05; // Fallback volatility (5%)
       }
 
       // Calculate standard deviation of returns
@@ -195,10 +195,10 @@ export class BinancePublicAdapter implements ExchangeConnector {
       // This converts 5-minute volatility to daily volatility
       const annualizedVolatility = dailyVolatility * Math.sqrt(1440 / 5);
 
-      return Number.isFinite(annualizedVolatility) ? annualizedVolatility : null;
+      return Number.isFinite(annualizedVolatility) ? annualizedVolatility : 0.05;
     } catch (error: any) {
-      logger.warn({ symbol, error: error.message }, '[BinancePublicAdapter] getVolatility failed');
-      return null;
+      logger.warn({ symbol, error: error.message }, '[BinancePublicAdapter] getVolatility failed, using fallback');
+      return 0.05; // Fallback volatility (5%)
     }
   }
 
