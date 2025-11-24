@@ -7,7 +7,7 @@ import { CryptoCompareAdapter, type CryptoCompareData, type MTFIndicators, type 
 // NOTE: CoinAPI replaced with free APIs
 import { BinancePublicAdapter } from './binancePublicAdapter';
 import { CoinGeckoAdapter } from './coingeckoAdapter';
-import { GoogleFinanceAdapter } from './googleFinanceAdapter';
+import { getExchangeRates } from './googleFinanceAdapter';
 import { analyzeRSI } from './strategies/rsiStrategy';
 import { analyzeMACD } from './strategies/macdStrategy';
 import { analyzeVolume } from './strategies/volumeStrategy';
@@ -933,7 +933,7 @@ export class ResearchEngine {
           const result = await runApiCall(
             `CryptoCompare MTF ${timeframe}`,
             () => cryptoAdapter.getMTFIndicators(normalizedSymbol, timeframe),
-            8000, // 8s timeout for CryptoCompare
+            12000, // 12s timeout for CryptoCompare (increased)
             {
               timeframe,
               rsi: 50,
@@ -944,10 +944,10 @@ export class ResearchEngine {
             },
             'cryptocompare',
             {
-              maxRetries: 3,
+              maxRetries: 2, // Reduced retries to avoid timeout cascade
               useCache: true,
               cacheKey: `cryptocompare_mtf_${normalizedSymbol}_${timeframe}`,
-              cacheTTL: 180000 // 3 minutes
+              cacheTTL: 300000 // 5 minutes cache
             }
           );
           if (result.success && result.data) {
@@ -1017,8 +1017,9 @@ export class ResearchEngine {
       const onChainScore = 0;
 
       // PARALLEL EXECUTION: Run all provider calls simultaneously
+      // PARALLEL EXECUTION: Run all provider calls simultaneously with optimized timeouts and caching
       const providerResults = await Promise.all([
-        // MarketAux sentiment analysis
+        // MarketAux sentiment analysis - reduced timeout and retries to prevent blocking
         runApiCall(
           'marketaux',
           async () => {
@@ -1027,7 +1028,7 @@ export class ResearchEngine {
             logger.info({ symbol: normalizedSymbol, sentiment: result.sentiment, articles: result.totalArticles }, 'MarketAux: Called → OK');
             return result;
           },
-          5000, // 5s timeout
+          4000, // Reduced timeout
           {
             sentiment: 0.05,
             hypeScore: 45,
@@ -1037,18 +1038,18 @@ export class ResearchEngine {
           },
           'marketaux',
           {
-            maxRetries: 2,
+            maxRetries: 1, // Reduced retries to prevent timeout cascade
             useCache: true,
             cacheKey: `marketaux_${normalizedSymbol.replace(/USDT$/i, '').replace(/USD$/i, '')}`,
             cacheTTL: 300000 // 5 minutes
           }
         ),
 
-        // Binance ticker data
+        // Binance ticker data - fast and reliable
         runApiCall(
           'binance',
           () => binanceAdapter.getTicker(normalizedSymbol),
-          5000,
+          3000, // Fast timeout for reliable API
           {
             lastPrice: 0,
             volume: 0,
@@ -1056,14 +1057,14 @@ export class ResearchEngine {
             fallback: true
           },
           'binance',
-          { maxRetries: 3 }
+          { maxRetries: 2 }
         ),
 
-        // Binance book ticker
+        // Binance book ticker - fast and reliable
         runApiCall(
           'binance_bookTicker',
           () => binanceAdapter.getBookTicker(normalizedSymbol),
-          5000,
+          3000,
           {
             symbol: normalizedSymbol,
             bidPrice: 0,
@@ -1071,39 +1072,39 @@ export class ResearchEngine {
             fallback: true
           },
           'binance',
-          { maxRetries: 3 }
+          { maxRetries: 2 }
         ),
 
-        // Binance volatility
+        // Binance volatility - moderately fast
         runApiCall(
           'binance_volatility',
           () => binanceAdapter.getVolatility(normalizedSymbol),
-          5000,
+          4000,
           0.05, // 5% fallback volatility
           'binance',
-          { maxRetries: 3 }
+          { maxRetries: 2 }
         ),
 
-        // Google Finance rates
+        // Google Finance rates - can be slower
         runApiCall(
           'googlefinance',
           async () => {
-            const result = await googleFinanceAdapter.getExchangeRates();
-            logger.info({ ratesCount: result?.length || 0 }, 'GoogleFinance: Called → OK');
+            const result = await getExchangeRates();
+            logger.info({ ratesCount: Object.keys(result.rates || {}).length }, 'GoogleFinance: Called → OK');
             return result;
           },
           5000,
-          [],
+          { base: 'USD', rates: { USD: 1, INR: 83 }, timestamp: Date.now() },
           'googlefinance',
           {
-            maxRetries: 2,
+            maxRetries: 1, // Reduced retries
             useCache: true,
             cacheKey: 'googlefinance_rates',
             cacheTTL: 600000 // 10 minutes
           }
         ),
 
-        // CoinGecko historical data with symbol mapping
+        // CoinGecko historical data with symbol mapping - can be slower due to mapping
         runApiCall(
           'coingecko',
           async () => {
@@ -1114,11 +1115,11 @@ export class ResearchEngine {
             const coingeckoHistoricalData = await coingeckoAdapter.getHistoricalData(coingeckoId, 90);
             return coingeckoHistoricalData;
           },
-          5000,
+          6000, // Higher timeout for mapping + API call
           null,
           'coingecko',
           {
-            maxRetries: 2,
+            maxRetries: 1, // Reduced retries
             useCache: true,
             cacheKey: `coingecko_historical_${normalizedSymbol}`,
             cacheTTL: 600000 // 10 minutes
@@ -1719,7 +1720,7 @@ export class ResearchEngine {
 
     try {
       logger.debug({ uid }, 'Initializing Google Finance adapter (free API)');
-      googleFinanceAdapter = GoogleFinanceAdapter;
+      // Google Finance adapter is now imported directly
       logger.info({ uid }, 'Google Finance adapter initialized successfully');
     } catch (error: any) {
       logger.error({ uid, error: error.message }, 'Failed to initialize Google Finance adapter');

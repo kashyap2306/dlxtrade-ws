@@ -10,12 +10,18 @@ import type { ExchangeConnector, ExchangeName } from './exchangeConnector';
  */
 export class BinancePublicAdapter implements ExchangeConnector {
   private readonly httpClient: AxiosInstance;
+  private readonly futuresHttpClient: AxiosInstance;
   private binanceSymbols: Set<string> = new Set();
   private symbolMapping: Record<string, string> = {};
 
   constructor(baseUrl: string = 'https://api.binance.com') {
     this.httpClient = axios.create({
       baseURL: baseUrl,
+      timeout: 10000,
+    });
+    // Separate futures API client
+    this.futuresHttpClient = axios.create({
+      baseURL: 'https://fapi.binance.com',
       timeout: 10000,
     });
     this.initializeSymbolData();
@@ -212,7 +218,7 @@ export class BinancePublicAdapter implements ExchangeConnector {
 
     try {
       // Get funding rate from futures API
-      const fundingResponse = await this.httpClient.get('/fapi/v1/premiumIndex', {
+      const fundingResponse = await this.futuresHttpClient.get('/fapi/v1/premiumIndex', {
         params: { symbol: finalSymbol }
       });
       apiUsageTracker.increment('binance_futures');
@@ -221,10 +227,11 @@ export class BinancePublicAdapter implements ExchangeConnector {
         logger.warn({ symbol: finalSymbol, status: fundingResponse.status, response: fundingResponse.data }, 'Binance futures funding rate API returned non-200');
       }
 
-      const fundingRate = fundingResponse.data ? parseFloat(fundingResponse.data.lastFundingRate) : undefined;
+      const fundingRate = fundingResponse.data && fundingResponse.data.length > 0 ?
+        parseFloat(fundingResponse.data[0].lastFundingRate) : undefined;
 
       // Get open interest
-      const oiResponse = await this.httpClient.get('/fapi/v1/openInterest', {
+      const oiResponse = await this.futuresHttpClient.get('/fapi/v1/openInterest', {
         params: { symbol: finalSymbol }
       });
       apiUsageTracker.increment('binance_futures');
@@ -238,7 +245,7 @@ export class BinancePublicAdapter implements ExchangeConnector {
       // Get long/short ratio (top accounts) - this endpoint might not be available for all symbols
       let longShortRatio;
       try {
-        const lsrResponse = await this.httpClient.get('/futures/data/topLongShortAccountRatio', {
+        const lsrResponse = await this.futuresHttpClient.get('/futures/data/topLongShortAccountRatio', {
           params: { symbol: finalSymbol, period: '1d', limit: 1 }
         });
         apiUsageTracker.increment('binance_futures');

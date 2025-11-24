@@ -9,11 +9,28 @@ let COINGECKO_SYMBOL_MAPPINGS: Record<string, string> = {};
 // Load mappings from config file
 function loadCoinMappings(): void {
   try {
-    const configPath = path.join(__dirname, '../config/coinMappings.json');
-    if (fs.existsSync(configPath)) {
+    // Try multiple possible paths for the config file
+    const possiblePaths = [
+      path.join(__dirname, '../config/coinMappings.json'),
+      path.join(__dirname, '../../config/coinMappings.json'),
+      path.join(process.cwd(), 'src/config/coinMappings.json'),
+      path.join(process.cwd(), 'config/coinMappings.json')
+    ];
+
+    let configPath: string | null = null;
+    for (const testPath of possiblePaths) {
+      if (fs.existsSync(testPath)) {
+        configPath = testPath;
+        break;
+      }
+    }
+
+    if (configPath) {
       const configData = fs.readFileSync(configPath, 'utf-8');
       COINGECKO_SYMBOL_MAPPINGS = JSON.parse(configData);
+      console.log(`Loaded ${Object.keys(COINGECKO_SYMBOL_MAPPINGS).length} coin mappings from ${configPath}`);
     } else {
+      console.warn('coinMappings.json not found, using hardcoded mappings');
       // Fallback to minimal hardcoded mappings if config file doesn't exist
       COINGECKO_SYMBOL_MAPPINGS = {
         'XRPUSDT': 'ripple',
@@ -21,11 +38,17 @@ function loadCoinMappings(): void {
         'BTCUSDT': 'bitcoin',
         'BTC': 'bitcoin',
         'ETHUSDT': 'ethereum',
-        'ETH': 'ethereum'
+        'ETH': 'ethereum',
+        'BNBUSDT': 'binancecoin',
+        'BNB': 'binancecoin',
+        'ADAUSDT': 'cardano',
+        'ADA': 'cardano',
+        'SOLUSDT': 'solana',
+        'SOL': 'solana'
       };
     }
   } catch (error) {
-    console.warn('Failed to load coin mappings, using minimal fallback');
+    console.warn('Failed to load coin mappings, using minimal fallback:', error);
     COINGECKO_SYMBOL_MAPPINGS = {
       'XRPUSDT': 'ripple',
       'XRP': 'ripple',
@@ -150,22 +173,49 @@ const LEGACY_MAPPINGS: Record<string, string> = {
 };
 
 export function getCoinGeckoId(symbol: string): string | null {
+  // Normalize the input symbol
+  const normalizedSymbol = symbol.toUpperCase().trim();
+
   // Try direct mapping first
-  if (COINGECKO_SYMBOL_MAPPINGS[symbol]) {
-    return COINGECKO_SYMBOL_MAPPINGS[symbol];
+  if (COINGECKO_SYMBOL_MAPPINGS[normalizedSymbol]) {
+    return COINGECKO_SYMBOL_MAPPINGS[normalizedSymbol];
   }
 
-  // Try stripping common suffixes
-  const baseSymbol = symbol.replace(/USDT$|USD$|BTC$|ETH$|BNB$/i, '');
+  // Try stripping common suffixes in order of specificity
+  const suffixes = ['USDT', 'USD', 'BTC', 'ETH', 'BNB', 'BUSD', 'USDC', 'TUSD'];
+  for (const suffix of suffixes) {
+    if (normalizedSymbol.endsWith(suffix)) {
+      const baseSymbol = normalizedSymbol.replace(new RegExp(suffix + '$'), '');
+      if (COINGECKO_SYMBOL_MAPPINGS[baseSymbol]) {
+        return COINGECKO_SYMBOL_MAPPINGS[baseSymbol];
+      }
+      // Also try with the suffix-stripped symbol directly
+      if (COINGECKO_SYMBOL_MAPPINGS[normalizedSymbol.replace(new RegExp(suffix + '$'), '')]) {
+        return COINGECKO_SYMBOL_MAPPINGS[normalizedSymbol.replace(new RegExp(suffix + '$'), '')];
+      }
+    }
+  }
 
-  if (COINGECKO_SYMBOL_MAPPINGS[baseSymbol]) {
+  // Try with just the base symbol (first 3-5 characters, common for crypto)
+  const baseSymbol = normalizedSymbol.replace(/USDT$|USD$|BTC$|ETH$|BNB$|BUSD$|USDC$|TUSD$/i, '');
+  if (baseSymbol.length >= 3 && COINGECKO_SYMBOL_MAPPINGS[baseSymbol]) {
     return COINGECKO_SYMBOL_MAPPINGS[baseSymbol];
   }
 
-  // Try uppercase version
-  const upperSymbol = baseSymbol.toUpperCase();
-  if (COINGECKO_SYMBOL_MAPPINGS[upperSymbol]) {
-    return COINGECKO_SYMBOL_MAPPINGS[upperSymbol];
+  // Special handling for common symbols that might have different formats
+  const specialMappings: Record<string, string> = {
+    'XRP': 'ripple',
+    'BTC': 'bitcoin',
+    'ETH': 'ethereum',
+    'BNB': 'binancecoin',
+    'ADA': 'cardano',
+    'SOL': 'solana',
+    'DOT': 'polkadot',
+    'AVAX': 'avalanche-2'
+  };
+
+  if (specialMappings[baseSymbol]) {
+    return specialMappings[baseSymbol];
   }
 
   return null;

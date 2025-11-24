@@ -34,10 +34,28 @@ async function fetchValidBinanceSymbols(): Promise<void> {
     };
 
     try {
-      // Ensure cache directory exists
-      if (!fs.existsSync(cacheDir)) {
-        fs.mkdirSync(cacheDir, { recursive: true });
-        logger.info({ cacheDir }, 'Created cache directory');
+      // Ensure cache directory exists with better error handling
+      try {
+        if (!fs.existsSync(cacheDir)) {
+          fs.mkdirSync(cacheDir, { recursive: true });
+          logger.info({ cacheDir }, 'Created cache directory');
+        }
+      } catch (dirError: any) {
+        logger.error({ error: dirError.message, cacheDir }, 'Failed to create cache directory');
+        // Try alternative cache location
+        const altCacheDir = path.join(process.cwd(), 'cache');
+        try {
+          if (!fs.existsSync(altCacheDir)) {
+            fs.mkdirSync(altCacheDir, { recursive: true });
+          }
+          const altCacheFile = path.join(altCacheDir, 'validSymbols.json');
+          fs.writeFileSync(altCacheFile, JSON.stringify(cacheData, null, 2));
+          logger.info({ cacheFile: altCacheFile, count: validSymbols.length }, 'Valid symbols cached successfully (alternative location)');
+          return;
+        } catch (altError: any) {
+          logger.error({ error: altError.message, altCacheDir }, 'Failed to write to alternative cache location');
+        }
+        return;
       }
 
       fs.writeFileSync(cacheFile, JSON.stringify(cacheData, null, 2));
