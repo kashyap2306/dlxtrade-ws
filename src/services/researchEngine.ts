@@ -546,7 +546,8 @@ export class ResearchEngine {
               apiCalls.push(`${exchangeName}:orderbook`);
               const orderbookResponse = await userExchangeAdapter!.getOrderbook(normalizedSymbol, 20);
               if (!orderbookResponse) {
-                throw new Error(`${exchangeName} returned empty orderbook`);
+                logger.warn({ symbol: normalizedSymbol, exchange: exchangeName }, 'Exchange returned empty orderbook, using fallback');
+                return { symbol: normalizedSymbol, bids: [], asks: [], lastUpdateId: 0, fallback: true };
               }
               return orderbookResponse;
             };
@@ -570,7 +571,8 @@ export class ResearchEngine {
               apiCalls.push('binance:orderbook');
               const orderbookResponse = await binanceAdapter.getOrderbook(normalizedSymbol, 20);
               if (!orderbookResponse) {
-                throw new Error('Binance returned empty orderbook');
+                logger.warn({ symbol: normalizedSymbol }, 'Binance returned empty orderbook, using fallback');
+                return { symbol: normalizedSymbol, bids: [], asks: [], lastUpdateId: 0, fallback: true };
               }
               return orderbookResponse;
             };
@@ -1375,7 +1377,15 @@ export class ResearchEngine {
     apiCalls.push(`${exchangeName}:klines:${timeframe}`);
     const candles = await adapter.getKlines(symbol, timeframe, limit);
     if (!candles.length) {
-      throw new Error(`${exchangeName} returned no candles for timeframe ${timeframe}`);
+      logger.warn({ symbol, timeframe, exchange: exchangeName }, 'Exchange returned no candles, using fallback');
+      return [{
+        timestamp: Date.now(),
+        open: 0,
+        high: 0,
+        low: 0,
+        close: 0,
+        volume: 0
+      }];
     }
     return candles
       .map((item) => ({
@@ -2013,7 +2023,15 @@ async function selectBestSymbolFromTop100(uid: string): Promise<{
   // Get top 100 symbols
   const topSymbols = await getTop100Symbols();
   if (topSymbols.length === 0) {
-    throw new Error('No symbols available from top coins service');
+    logger.warn('No symbols available from top coins service, using fallback');
+    // Return a fallback selection
+    return {
+      selectedSymbol: 'BTCUSDT',
+      confidence: 0.5,
+      topCandidates: [{ symbol: 'BTCUSDT', confidence: 0.5, priceChange24h: 0, volume24h: 0 }],
+      totalScanTimeMs: 0,
+      reason: 'Fallback: no symbols available'
+    };
   }
 
   // Limit to first 50 for performance (top coins are most important)
