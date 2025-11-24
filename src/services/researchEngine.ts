@@ -1721,6 +1721,7 @@ export class ResearchEngine {
     try {
       logger.debug({ uid }, 'Initializing Google Finance adapter (free API)');
       // Google Finance adapter is now imported directly
+      googleFinanceAdapter = getExchangeRates; // Assign the imported function
       logger.info({ uid }, 'Google Finance adapter initialized successfully');
     } catch (error: any) {
       logger.error({ uid, error: error.message }, 'Failed to initialize Google Finance adapter');
