@@ -1,0 +1,303 @@
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.autoTradeRoutes = autoTradeRoutes;
+const zod_1 = require("zod");
+const firestoreAdapter_1 = require("../services/firestoreAdapter");
+const userEngineManager_1 = require("../services/userEngineManager");
+const logger_1 = require("../utils/logger");
+const keyManager_1 = require("../services/keyManager");
+const binanceAdapter_1 = require("../services/binanceAdapter");
+const admin = __importStar(require("firebase-admin"));
+const firebase_1 = require("../utils/firebase");
+const autoTradeController_1 = require("../services/autoTradeController");
+const toggleAutoTradeSchema = zod_1.z.object({
+    enabled: zod_1.z.boolean(),
+});
+const globalToggleSchema = zod_1.z.object({
+    paused: zod_1.z.boolean(),
+    maxOrdersPerMinute: zod_1.z.number().min(1).max(60).optional(),
+});
+/**
+ * PART 3 & 4: Auto-Trade Routes
+ * Handles starting/stopping per-user auto-trade engine
+ */
+async function autoTradeRoutes(fastify) {
+    // GET /api/auto-trade/status - Get auto-trade status
+    fastify.get('/status', {
+        preHandler: [fastify.authenticate],
+    }, async (request, reply) => {
+        try {
+            const user = request.user;
+            const db = admin.firestore((0, firebase_1.getFirebaseAdmin)());
+            // Get engine status from Firestore
+            const engineStatus = await firestoreAdapter_1.firestoreAdapter.getEngineStatus(user.uid);
+            const userData = await firestoreAdapter_1.firestoreAdapter.getUser(user.uid);
+            // Check if user has exchange config (more reliable than userData.apiConnected)
+            const exchangeConfigDoc = await db
+                .collection('users')
+                .doc(user.uid)
+                .collection('exchangeConfig')
+                .doc('current')
+                .get();
+            const hasExchangeConfig = exchangeConfigDoc.exists &&
+                exchangeConfigDoc.data()?.apiKeyEncrypted &&
+                exchangeConfigDoc.data()?.secretEncrypted;
+            // Also check apiKeys collection for backward compatibility
+            const apiKeysDoc = await db.collection('apiKeys').doc(user.uid).get();
+            const hasApiKeys = apiKeysDoc.exists &&
+                apiKeysDoc.data()?.apiKeyEncrypted &&
+                apiKeysDoc.data()?.apiSecretEncrypted &&
+                apiKeysDoc.data()?.status === 'connected';
+            const isApiConnected = hasExchangeConfig || hasApiKeys || userData?.apiConnected || false;
+            return {
+                autoTradeEnabled: engineStatus?.autoTradeEnabled || false,
+                engineRunning: engineStatus?.engineRunning || false,
+                isApiConnected,
+                apiStatus: isApiConnected ? 'connected' : 'disconnected',
+            };
+        }
+        catch (err) {
+            logger_1.logger.error({ err }, 'Error getting auto-trade status');
+            return reply.code(500).send({ error: err.message || 'Error fetching auto-trade status' });
+        }
+    });
+    // POST /api/auto-trade/toggle - Toggle auto-trade ON/OFF
+    fastify.post('/toggle', {
+        preHandler: [fastify.authenticate],
+    }, async (request, reply) => {
+        try {
+            const user = request.user;
+            const body = toggleAutoTradeSchema.parse(request.body);
+            // PART 2: Verify user has connected API keys - check exchangeConfig first, then apiKeys collection
+            const db = admin.firestore((0, firebase_1.getFirebaseAdmin)());
+            // Check exchangeConfig collection (primary source)
+            const exchangeConfigDoc = await db
+                .collection('users')
+                .doc(user.uid)
+                .collection('exchangeConfig')
+                .doc('current')
+                .get();
+            let apiKey = null;
+            let apiSecret = null;
+            let exchangeName = null;
+            let testnet = true;
+            if (exchangeConfigDoc.exists) {
+                const exchangeConfig = exchangeConfigDoc.data();
+                if (exchangeConfig?.apiKeyEncrypted && exchangeConfig?.secretEncrypted) {
+                    apiKey = (0, keyManager_1.decrypt)(exchangeConfig.apiKeyEncrypted);
+                    apiSecret = (0, keyManager_1.decrypt)(exchangeConfig.secretEncrypted);
+                    exchangeName = exchangeConfig.exchange || exchangeConfig.type || 'binance';
+                    testnet = exchangeConfig.testnet ?? true;
+                }
+            }
+            // Fallback to apiKeys collection if exchangeConfig not found
+            if (!apiKey || !apiSecret) {
+                const apiKeysDoc = await db.collection('apiKeys').doc(user.uid).get();
+                if (apiKeysDoc.exists) {
+                    const apiKeysData = apiKeysDoc.data();
+                    if (apiKeysData?.apiKeyEncrypted && apiKeysData?.apiSecretEncrypted && apiKeysData?.status === 'connected') {
+                        apiKey = (0, keyManager_1.decrypt)(apiKeysData.apiKeyEncrypted);
+                        apiSecret = (0, keyManager_1.decrypt)(apiKeysData.apiSecretEncrypted);
+                        exchangeName = apiKeysData.exchange || 'binance';
+                        testnet = apiKeysData.testnet ?? true;
+                    }
+                }
+            }
+            // If still no keys found, return error
+            if (!apiKey || !apiSecret) {
+                return reply.code(400).send({
+                    error: 'Please connect your exchange API keys first in Settings > Exchange Accounts.',
+                });
+            }
+            if (body.enabled) {
+                // PART 3 & 4: Start auto-trade engine
+                try {
+                    // Validate API keys again (only for Binance)
+                    if (exchangeName === 'binance' || !exchangeName) {
+                        const testAdapter = new binanceAdapter_1.BinanceAdapter(apiKey, apiSecret, testnet);
+                        const validation = await testAdapter.validateApiKey();
+                        if (!validation.valid || !validation.canTrade) {
+                            return reply.code(400).send({
+                                error: 'API key validation failed. Please check your API keys.',
+                            });
+                        }
+                    }
+                    // Get or create user engine
+                    let engine = userEngineManager_1.userEngineManager.getUserEngine(user.uid);
+                    if (!engine) {
+                        await userEngineManager_1.userEngineManager.createUserEngine(user.uid, apiKey, apiSecret, testnet);
+                        engine = userEngineManager_1.userEngineManager.getUserEngine(user.uid);
+                    }
+                    // Get settings to determine symbol
+                    const settings = await firestoreAdapter_1.firestoreAdapter.getSettings(user.uid);
+                    const symbol = settings?.symbol || 'BTCUSDT';
+                    // Start the auto-trade engine
+                    await userEngineManager_1.userEngineManager.startAutoTrade(user.uid);
+                    // Update engineStatus in Firestore
+                    const engineStatusRef = db.collection('engineStatus').doc(user.uid);
+                    await engineStatusRef.set({
+                        uid: user.uid,
+                        engineRunning: true,
+                        autoTradeEnabled: true,
+                        lastStarted: admin.firestore.Timestamp.now(),
+                        updatedAt: admin.firestore.Timestamp.now(),
+                    }, { merge: true });
+                    // Update user document
+                    await firestoreAdapter_1.firestoreAdapter.createOrUpdateUser(user.uid, {
+                        autoTradeEnabled: true,
+                        engineStatus: 'running',
+                    });
+                    // Update settings
+                    await firestoreAdapter_1.firestoreAdapter.saveSettings(user.uid, {
+                        ...settings,
+                        autoTradeEnabled: true,
+                    });
+                    // PART 6: Log activity
+                    await firestoreAdapter_1.firestoreAdapter.logActivity(user.uid, 'AUTO_TRADE_ENABLED', {
+                        message: 'Auto-trade engine started',
+                        symbol,
+                    });
+                    logger_1.logger.info({ uid: user.uid, symbol }, 'Auto-trade enabled');
+                    return {
+                        message: 'Auto-trade enabled successfully',
+                        enabled: true,
+                        status: 'running',
+                    };
+                }
+                catch (error) {
+                    logger_1.logger.error({ error: error.message, uid: user.uid }, 'Error starting auto-trade');
+                    return reply.code(500).send({
+                        error: `Failed to start auto-trade: ${error.message}`,
+                    });
+                }
+            }
+            else {
+                // PART 3 & 4: Stop auto-trade engine
+                try {
+                    await userEngineManager_1.userEngineManager.stopAutoTrade(user.uid);
+                    // Update engineStatus in Firestore
+                    const engineStatusRef = db.collection('engineStatus').doc(user.uid);
+                    await engineStatusRef.set({
+                        uid: user.uid,
+                        engineRunning: false,
+                        autoTradeEnabled: false,
+                        lastStopped: admin.firestore.Timestamp.now(),
+                        updatedAt: admin.firestore.Timestamp.now(),
+                    }, { merge: true });
+                    // Update user document
+                    await firestoreAdapter_1.firestoreAdapter.createOrUpdateUser(user.uid, {
+                        autoTradeEnabled: false,
+                        engineStatus: 'stopped',
+                    });
+                    // Update settings
+                    const settings = await firestoreAdapter_1.firestoreAdapter.getSettings(user.uid);
+                    if (settings) {
+                        await firestoreAdapter_1.firestoreAdapter.saveSettings(user.uid, {
+                            ...settings,
+                            autoTradeEnabled: false,
+                        });
+                    }
+                    // PART 6: Log activity
+                    await firestoreAdapter_1.firestoreAdapter.logActivity(user.uid, 'AUTO_TRADE_DISABLED', {
+                        message: 'Auto-trade engine stopped',
+                    });
+                    logger_1.logger.info({ uid: user.uid }, 'Auto-trade disabled');
+                    return {
+                        message: 'Auto-trade disabled successfully',
+                        enabled: false,
+                        status: 'stopped',
+                    };
+                }
+                catch (error) {
+                    logger_1.logger.error({ error: error.message, uid: user.uid }, 'Error stopping auto-trade');
+                    return reply.code(500).send({
+                        error: `Failed to stop auto-trade: ${error.message}`,
+                    });
+                }
+            }
+        }
+        catch (err) {
+            logger_1.logger.error({ err }, 'Error toggling auto-trade');
+            return reply.code(500).send({ error: err.message || 'Error toggling auto-trade' });
+        }
+    });
+    fastify.post('/manual/confirm', {
+        preHandler: [fastify.authenticate],
+    }, async (request, reply) => {
+        try {
+            const user = request.user;
+            const result = await autoTradeController_1.autoTradeController.confirmPending(user.uid);
+            return {
+                success: true,
+                orderId: result.orderId,
+                price: result.price,
+                filledQty: result.filledQty,
+            };
+        }
+        catch (err) {
+            logger_1.logger.error({ err: err.message }, 'Manual auto-trade confirmation failed');
+            return reply.code(400).send({
+                success: false,
+                error: err.message || 'Unable to confirm auto-trade',
+            });
+        }
+    });
+    fastify.post('/admin/global-toggle', {
+        preHandler: [fastify.authenticate],
+    }, async (request, reply) => {
+        try {
+            const user = request.user;
+            if (user.role !== 'admin') {
+                return reply.code(403).send({ error: 'Admin privileges required' });
+            }
+            const body = globalToggleSchema.parse(request.body);
+            await firestoreAdapter_1.firestoreAdapter.updateGlobalSettings({
+                autoTradePaused: body.paused,
+                autoTradeMaxOrdersPerMinute: body.maxOrdersPerMinute,
+            });
+            logger_1.logger.info({ adminUid: user.uid, paused: body.paused }, 'Global auto-trade toggle updated');
+            return {
+                success: true,
+                paused: body.paused,
+                maxOrdersPerMinute: body.maxOrdersPerMinute,
+            };
+        }
+        catch (err) {
+            logger_1.logger.error({ err }, 'Failed to update global auto-trade flag');
+            return reply.code(400).send({ error: err.message || 'Unable to update global toggle' });
+        }
+    });
+}

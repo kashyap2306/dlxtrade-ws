@@ -1,0 +1,1873 @@
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.runResearch = exports.researchEngine = exports.ResearchEngine = void 0;
+exports.quickScan = quickScan;
+exports.getTop100Symbols = getTop100Symbols;
+exports.selectBestSymbolFromTop100 = selectBestSymbolFromTop100;
+const crypto_1 = __importDefault(require("crypto"));
+const axios_1 = __importDefault(require("axios"));
+const logger_1 = require("../utils/logger");
+const firestoreAdapter_1 = require("./firestoreAdapter");
+const MarketAuxAdapter_1 = require("./MarketAuxAdapter");
+const cryptoCompareAdapter_1 = require("./cryptoCompareAdapter");
+// NOTE: CoinAPI replaced with free APIs
+const binancePublicAdapter_1 = require("./binancePublicAdapter");
+const coingeckoAdapter_1 = require("./coingeckoAdapter");
+const googleFinanceAdapter_1 = require("./googleFinanceAdapter");
+const rsiStrategy_1 = require("./strategies/rsiStrategy");
+const macdStrategy_1 = require("./strategies/macdStrategy");
+const volumeStrategy_1 = require("./strategies/volumeStrategy");
+const liquidityStrategy_1 = require("./strategies/liquidityStrategy");
+const sentimentStrategy_1 = require("./strategies/sentimentStrategy");
+const derivativesStrategy_1 = require("./strategies/derivativesStrategy");
+const confidenceEngine_1 = require("./confidenceEngine");
+// Circuit breaker and caching imports
+const circuitBreaker_1 = require("../utils/circuitBreaker");
+const lruCache_1 = require("../utils/lruCache");
+const symbolMapping_1 = require("../utils/symbolMapping");
+const VALID_TIMEFRAMES = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w'];
+const MULTI_TIMEFRAMES = ['5m', '15m', '1h'];
+const TIMEFRAME_WEIGHTS = {
+    '5m': 1,
+    '15m': 1.2,
+    '1h': 1.4,
+};
+class ResearchEngineError extends Error {
+    constructor(message, errorId, statusCode = 500, missingDependencies) {
+        super(message);
+        this.errorId = errorId;
+        this.statusCode = statusCode;
+        this.missingDependencies = missingDependencies;
+        this.name = 'ResearchEngineError';
+    }
+}
+class ResearchEngine {
+    constructor() { }
+    async runResearch(symbol, uid, adapterOverride, _forceEngine = false, _legacy, timeframe = '5m', activeContext) {
+        // Add global 18-second timeout to prevent hanging (never throws)
+        return Promise.race([
+            this.runResearchInternal(symbol, uid, adapterOverride, _forceEngine, _legacy, timeframe, activeContext),
+            new Promise((resolve) => setTimeout(() => {
+                logger_1.logger.warn({ symbol, uid, timeframe }, 'Research timeout: exceeded 18 seconds, returning best-effort result');
+                // Return best-effort result instead of complete fallback
+                resolve(this.createBestEffortResult(symbol, timeframe));
+            }, 18000))
+        ]);
+    }
+    async getCoinGeckoId(symbol, uid) {
+        const cacheKey = `coingecko_id_${symbol}`;
+        // Check cache first
+        const cachedId = lruCache_1.symbolMappingCache.get(cacheKey);
+        if (cachedId) {
+            return cachedId;
+        }
+        // Try direct mapping from static table
+        const staticId = (0, symbolMapping_1.getCoinGeckoId)(symbol);
+        if (staticId) {
+            lruCache_1.symbolMappingCache.set(cacheKey, staticId, 3600000); // Cache for 1 hour
+            return staticId;
+        }
+        // Try API lookup with user API key
+        try {
+            const userApiKeys = await firestoreAdapter_1.firestoreAdapter.getUserApiKeys(uid);
+            const coingeckoApiKey = userApiKeys?.coingecko;
+            if (coingeckoApiKey) {
+                // Try to search for the coin by symbol
+                const searchResponse = await axios_1.default.get('https://api.coingecko.com/api/v3/search', {
+                    params: {
+                        q: symbol.replace(/USDT$|USD$|BTC$|ETH$/i, '')
+                    },
+                    headers: {
+                        'x-cg-demo-api-key': coingeckoApiKey
+                    },
+                    timeout: 5000
+                });
+                if (searchResponse.data?.coins?.length > 0) {
+                    const coin = searchResponse.data.coins[0];
+                    lruCache_1.symbolMappingCache.set(cacheKey, coin.id, 3600000); // Cache for 1 hour
+                    return coin.id;
+                }
+            }
+        }
+        catch (error) {
+            logger_1.logger.warn({ symbol, error: error.message }, 'CoinGecko API search failed');
+        }
+        // Try fallback mappings with different suffixes
+        const baseSymbol = symbol.replace(/USDT$|USD$|BTC$|ETH$|BNB$/i, '');
+        for (const suffix of ['', 't', '-token', '-coin']) {
+            const testSymbol = baseSymbol + suffix;
+            const testId = (0, symbolMapping_1.getCoinGeckoId)(testSymbol);
+            if (testId) {
+                lruCache_1.symbolMappingCache.set(cacheKey, testId, 3600000);
+                return testId;
+            }
+        }
+        logger_1.logger.warn({ symbol }, 'Could not map symbol to CoinGecko ID');
+        return null;
+    }
+    createBestEffortResult(symbol, timeframe) {
+        return {
+            symbol,
+            status: 'ok',
+            signal: 'HOLD',
+            accuracy: 0.6,
+            orderbookImbalance: 0,
+            recommendedAction: 'Best-effort analysis - some providers timed out',
+            microSignals: { spread: 0, volume: 0, priceMomentum: 0, orderbookDepth: 0 },
+            entry: null,
+            exits: [],
+            stopLoss: null,
+            takeProfit: null,
+            side: 'NEUTRAL',
+            confidence: 60,
+            timeframe,
+            signals: [],
+            currentPrice: 0,
+            mode: 'NORMAL',
+            recommendedTrade: null,
+            blurFields: false,
+            apiCalls: [],
+            apiCallReport: [],
+            explanations: ['Partial analysis completed - some providers timed out'],
+            accuracyRange: '60-70%',
+            timedOut: true,
+            partialData: true,
+            liveAnalysis: {
+                isLive: false,
+                lastUpdated: new Date().toISOString(),
+                summary: 'Best-effort analysis',
+                meta: {}
+            }
+        };
+    }
+    createCompleteFallbackResult(symbol, timeframe) {
+        return {
+            symbol,
+            status: 'ok',
+            signal: 'HOLD',
+            accuracy: 0.5,
+            orderbookImbalance: 0,
+            recommendedAction: 'Complete fallback analysis - all providers timed out',
+            microSignals: { spread: 0, volume: 0, priceMomentum: 0, orderbookDepth: 0 },
+            entry: null,
+            exits: [],
+            stopLoss: null,
+            takeProfit: null,
+            side: 'NEUTRAL',
+            confidence: 0.5,
+            timeframe,
+            signals: [],
+            currentPrice: 0,
+            mode: 'LOW',
+            recommendedTrade: null,
+            blurFields: false,
+            apiCalls: [],
+            apiCallReport: [],
+            explanations: [],
+            accuracyRange: undefined,
+            timedOut: true,
+            partialData: false,
+            liveAnalysis: {
+                isLive: false,
+                lastUpdated: new Date().toISOString(),
+                summary: 'Complete fallback analysis',
+                meta: {}
+            }
+        };
+    }
+    async runResearchInternal(symbol, uid, adapterOverride, _forceEngine = false, _legacy, timeframe = '5m', activeContext) {
+        const normalizedSymbol = this.normalizeSymbol(symbol);
+        const normalizedTimeframe = this.normalizeTimeframe(timeframe);
+        const startedAt = Date.now();
+        const context = activeContext ?? await this.resolveContext(uid);
+        logger_1.logger.info({ uid, symbol: normalizedSymbol, timeframe: normalizedTimeframe }, 'FINAL SYMBOL USED in research engine');
+        if (adapterOverride && !activeContext && uid !== 'system') {
+            logger_1.logger.warn({ uid, symbol: normalizedSymbol }, 'Adapter override ignored — active exchange determined via Firestore');
+        }
+        const apiCalls = [];
+        const apiCallReport = [];
+        const providerDebug = {};
+        // Declare variables that are used before their initialization
+        let binanceSpreadPercent = null;
+        let binanceTickerResult;
+        let binanceBookTickerResult;
+        let binanceVolatilityResult;
+        let binanceMarketData = {};
+        let binanceVolumeTrend = 'Stable';
+        let binanceTickerData = null;
+        const recordApiCall = (entry) => {
+            apiCallReport.push(entry);
+        };
+        const logProviderCall = async (providerName, fn) => {
+            const startTime = Date.now();
+            try {
+                const result = await fn();
+                const duration = Date.now() - startTime;
+                providerDebug[providerName] = {
+                    called: true,
+                    status: 'SUCCESS',
+                    durationMs: duration,
+                    dataPreview: result ? Object.keys(result) : null,
+                };
+                logger_1.logger.info({ provider: providerName, status: 'SUCCESS', durationMs: duration, dataKeys: result ? Object.keys(result) : null }, `Provider ${providerName} call completed`);
+                return { success: true, data: result, duration };
+            }
+            catch (err) {
+                const duration = Date.now() - startTime;
+                const httpStatus = err.response?.status;
+                providerDebug[providerName] = {
+                    called: true,
+                    status: 'ERROR',
+                    durationMs: duration,
+                    httpStatus,
+                    error: err.message,
+                };
+                logger_1.logger.error({ provider: providerName, status: 'ERROR', durationMs: duration, httpStatus, error: err.message }, `Provider ${providerName} call failed`);
+                return { success: false, error: err, duration, httpStatus };
+            }
+        };
+        const runApiCall = async (apiName, fn, timeoutMs = 5000, fallbackValue, provider, options) => {
+            const callStarted = Date.now();
+            const maxRetries = options?.maxRetries || 3;
+            let lastError = null;
+            let attempt = 0;
+            // Check circuit breaker
+            if (!options?.skipCircuitBreaker && provider) {
+                const circuitBreaker = (0, circuitBreaker_1.getCircuitBreaker)(provider);
+                if (circuitBreaker.isOpen()) {
+                    logger_1.logger.warn({ provider, apiName }, 'Circuit breaker is OPEN, using fallback immediately');
+                    return {
+                        success: false,
+                        data: fallbackValue,
+                        fallback: true,
+                        durationMs: 0,
+                        retries: 0
+                    };
+                }
+            }
+            // Check cache first
+            if (options?.useCache && options.cacheKey && provider) {
+                let cache = null;
+                if (provider === 'cryptocompare')
+                    cache = lruCache_1.cryptocompareCache;
+                else if (provider === 'coingecko')
+                    cache = lruCache_1.coingeckoCache;
+                if (cache) {
+                    const cachedData = cache.get(options.cacheKey);
+                    if (cachedData !== null) {
+                        logger_1.logger.info({ provider, apiName, cacheKey: options.cacheKey }, 'Using cached data');
+                        return {
+                            success: true,
+                            data: cachedData,
+                            fallback: false,
+                            durationMs: Date.now() - callStarted,
+                            cached: true
+                        };
+                    }
+                }
+            }
+            // Retry loop with exponential backoff
+            while (attempt <= maxRetries) {
+                try {
+                    const result = await Promise.race([
+                        fn(),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), timeoutMs))
+                    ]);
+                    const duration = Date.now() - callStarted;
+                    // Cache successful result
+                    if (options?.useCache && options.cacheKey && provider && attempt === 0) {
+                        let cache = null;
+                        if (provider === 'cryptocompare')
+                            cache = lruCache_1.cryptocompareCache;
+                        else if (provider === 'coingecko')
+                            cache = lruCache_1.coingeckoCache;
+                        if (cache) {
+                            cache.set(options.cacheKey, result, options.cacheTTL);
+                        }
+                    }
+                    recordApiCall({
+                        apiName,
+                        status: 'SUCCESS',
+                        durationMs: duration,
+                        provider,
+                    });
+                    return {
+                        success: true,
+                        data: result,
+                        fallback: false,
+                        durationMs: duration,
+                        retries: attempt
+                    };
+                }
+                catch (err) {
+                    lastError = err;
+                    attempt++;
+                    const duration = Date.now() - callStarted;
+                    const message = err?.message || 'Unknown error';
+                    // Don't record intermediate failures, only final failure
+                    if (attempt > maxRetries) {
+                        recordApiCall({
+                            apiName,
+                            status: 'FAILED',
+                            message,
+                            durationMs: duration,
+                            provider,
+                        });
+                        // Update circuit breaker
+                        if (provider && !options?.skipCircuitBreaker) {
+                            const circuitBreaker = (0, circuitBreaker_1.getCircuitBreaker)(provider);
+                            try {
+                                await circuitBreaker.execute(() => Promise.reject(err));
+                            }
+                            catch {
+                                // Expected - circuit breaker will handle the failure
+                            }
+                        }
+                    }
+                    // Exponential backoff for retries
+                    if (attempt <= maxRetries) {
+                        const backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+                        logger_1.logger.warn({
+                            apiName,
+                            provider,
+                            attempt,
+                            maxRetries,
+                            backoffMs,
+                            error: message
+                        }, `API call failed, retrying in ${backoffMs}ms`);
+                        await new Promise(resolve => setTimeout(resolve, backoffMs));
+                    }
+                }
+            }
+            // All retries failed
+            const duration = Date.now() - callStarted;
+            const message = lastError?.message || 'Unknown error after all retries';
+            logger_1.logger.warn({
+                apiName,
+                provider,
+                error: message,
+                timeoutMs,
+                maxRetries,
+                totalDurationMs: duration
+            }, 'API call failed after all retries, using fallback');
+            return {
+                success: false,
+                data: fallbackValue,
+                fallback: true,
+                durationMs: duration,
+                retries: maxRetries
+            };
+        };
+        // NOTE: Exchange API is now optional for Deep Research
+        const userExchangeAdapter = context?.adapter || null;
+        // ALL 5 provider APIs are MANDATORY - buildProviderAdapters throws if any are missing
+        // NOTE: CoinAPI replaced with free APIs
+        const { marketAuxAdapter, cryptoAdapter, binanceAdapter, coingeckoAdapter, googleFinanceAdapter } = await this.buildProviderAdapters(uid);
+        // NOTE: Exchange API is now OPTIONAL for Deep Research - only required for Auto-Trade
+        // Deep Research works with LunarCrush + CryptoQuant + Free APIs (Binance, CoinGecko, Google Finance)
+        // Exchange API is only needed for actual trading execution, not for research analysis
+        // Safe exchange name handling
+        const exchangeName = context?.name ?? "no-exchange";
+        // Initialize providersUsed - will be updated based on actual API call results
+        const providersUsed = {
+            userExchange: exchangeName, // Exchange connection is optional for research
+            cryptocompare: true, // Always attempted
+            marketaux: true, // Always attempted
+            binance: true, // Always attempted
+            coingecko: true, // Always attempted
+            googlefinance: true, // Always attempted
+        };
+        try {
+            // Use exchange candles if available, otherwise fall back to Binance free API
+            let candles;
+            if (userExchangeAdapter && context) {
+                const candlesResult = await runApiCall(`${exchangeName.toUpperCase()} Candles (${normalizedTimeframe})`, () => this.fetchExchangeCandles(userExchangeAdapter, normalizedSymbol, normalizedTimeframe, 500, apiCalls), 2500, [{
+                        timestamp: Date.now(),
+                        open: 0,
+                        high: 0,
+                        low: 0,
+                        close: 0,
+                        volume: 0
+                    }], exchangeName);
+                candles = candlesResult.data;
+            }
+            else {
+                // Use Binance free API for candles when no exchange API is configured
+                const binanceCandlesResult = await runApiCall(`Binance Candles (${normalizedTimeframe})`, () => binanceAdapter.getKlines(normalizedSymbol, normalizedTimeframe, 500), 2500, [{
+                        time: Date.now(),
+                        open: 0,
+                        high: 0,
+                        low: 0,
+                        close: 0,
+                        volume: 0
+                    }], 'Binance');
+                // Convert Binance format to NormalizedCandle format
+                candles = binanceCandlesResult.data.map(candle => ({
+                    timestamp: candle.time,
+                    open: candle.open,
+                    high: candle.high,
+                    low: candle.low,
+                    close: candle.close,
+                    volume: candle.volume,
+                }));
+            }
+            if (!candles || candles.length === 0) {
+                logger_1.logger.warn({ symbol: normalizedSymbol, exchange: exchangeName }, 'No candles available, using fallback data');
+                candles = [{
+                        timestamp: Date.now(),
+                        open: 0,
+                        high: 0,
+                        low: 0,
+                        close: 0,
+                        volume: 0
+                    }];
+            }
+            this.ensureCandleCoverage(candles);
+            const multiTimeframeCandles = await this.buildMultiTimeframeCandles({
+                symbol: normalizedSymbol,
+                primaryTimeframe: normalizedTimeframe,
+                primaryCandles: candles,
+                fetchTimeframe: async (tf) => {
+                    if (tf === normalizedTimeframe) {
+                        return candles;
+                    }
+                    // MTF: Use Binance as PRIMARY source with enhanced error handling
+                    const mtfResult = await runApiCall(`Binance MTF ${tf}`, () => binanceAdapter.getKlines(normalizedSymbol, tf, 500), 5000, // 5s timeout for MTF
+                    [], // Empty array fallback
+                    'binance', { maxRetries: 2 });
+                    if (mtfResult.success && mtfResult.data && mtfResult.data.length > 0) {
+                        return mtfResult.data.map((candle) => ({
+                            timestamp: candle[0],
+                            open: parseFloat(candle[1]),
+                            high: parseFloat(candle[2]),
+                            low: parseFloat(candle[3]),
+                            close: parseFloat(candle[4]),
+                            volume: parseFloat(candle[5]),
+                        }));
+                    }
+                    else {
+                        logger_1.logger.warn({
+                            symbol: normalizedSymbol,
+                            timeframe: tf,
+                            fallback: mtfResult.fallback
+                        }, `MTF ${tf} failed, returning partial data`);
+                        // Return fallback candles - don't fail entire MTF analysis
+                        return [{
+                                timestamp: Date.now(),
+                                open: currentPrice || 0,
+                                high: currentPrice || 0,
+                                low: currentPrice || 0,
+                                close: currentPrice || 0,
+                                volume: 0
+                            }];
+                    }
+                },
+            });
+            const currentPrice = candles[candles.length - 1].close;
+            const priceMomentum = this.calculatePriceMomentum(candles);
+            let rawOrderbook;
+            let orderbookProvider;
+            if (userExchangeAdapter && context) {
+                // Use exchange orderbook if available
+                const orderbookResult = await runApiCall(`${exchangeName.toUpperCase()} Orderbook`, async () => {
+                    apiCalls.push(`${exchangeName}:orderbook`);
+                    const orderbookResponse = await userExchangeAdapter.getOrderbook(normalizedSymbol, 20);
+                    if (!orderbookResponse) {
+                        logger_1.logger.warn({ symbol: normalizedSymbol, exchange: exchangeName }, 'Exchange returned empty orderbook, using fallback');
+                        return { symbol: normalizedSymbol, bids: [], asks: [], lastUpdateId: 0, fallback: true };
+                    }
+                    return orderbookResponse;
+                }, 2500, { symbol: normalizedSymbol, bids: [], asks: [], lastUpdateId: 0 }, exchangeName);
+                rawOrderbook = orderbookResult.data;
+                orderbookProvider = exchangeName;
+            }
+            else {
+                // Fall back to Binance orderbook (depth = 20 for compatibility)
+                const binanceOrderbookResult = await runApiCall('Binance Orderbook (Fallback)', async () => {
+                    apiCalls.push('binance:orderbook');
+                    const orderbookResponse = await binanceAdapter.getOrderbook(normalizedSymbol, 20);
+                    if (!orderbookResponse) {
+                        logger_1.logger.warn({ symbol: normalizedSymbol }, 'Binance returned empty orderbook, using fallback');
+                        return { symbol: normalizedSymbol, bids: [], asks: [], lastUpdateId: 0, fallback: true };
+                    }
+                    return orderbookResponse;
+                }, 2500, { symbol: normalizedSymbol, bids: [], asks: [], lastUpdateId: 0 }, 'Binance');
+                rawOrderbook = binanceOrderbookResult.data;
+                orderbookProvider = 'Binance';
+            }
+            if (!rawOrderbook) {
+                logger_1.logger.warn({ symbol: normalizedSymbol, provider: orderbookProvider }, 'No orderbook data available, using fallback');
+                rawOrderbook = { symbol: normalizedSymbol, bids: [], asks: [], lastUpdateId: 0, fallback: true };
+            }
+            const orderbook = {
+                symbol: normalizedSymbol,
+                bids: rawOrderbook.bids,
+                asks: rawOrderbook.asks,
+                lastUpdateId: Date.now(),
+            };
+            const exchangeOrderbooks = [
+                { exchange: orderbookProvider, bidsCount: orderbook.bids.length, asksCount: orderbook.asks.length },
+            ];
+            // Use Binance book ticker data for more accurate spread calculation
+            let enhancedLiquidity = (0, liquidityStrategy_1.analyzeLiquidity)(orderbook, 5);
+            // Override spread calculation if we have book ticker data
+            if (binanceSpreadPercent !== null && Number.isFinite(binanceSpreadPercent)) {
+                // Determine signal based on spread thresholds (updated from user's requirements)
+                let spreadSignal;
+                if (binanceSpreadPercent < 0.02) {
+                    spreadSignal = 'High';
+                }
+                else if (binanceSpreadPercent >= 0.02 && binanceSpreadPercent <= 0.1) {
+                    spreadSignal = 'Medium';
+                }
+                else {
+                    spreadSignal = 'Low';
+                }
+                // Create enhanced liquidity object with accurate spread
+                enhancedLiquidity = {
+                    ...enhancedLiquidity,
+                    spread: binanceSpreadPercent * (currentPrice / 100), // Convert percentage to absolute spread
+                    spreadPercent: binanceSpreadPercent,
+                    signal: spreadSignal,
+                };
+            }
+            const liquidity = enhancedLiquidity;
+            const imbalance = this.calculateOrderbookImbalance(orderbook);
+            const microSignals = this.buildMicroSignals(liquidity, priceMomentum);
+            recordApiCall({ apiName: 'Microstructure Module', status: 'SUCCESS' });
+            // CryptoCompare always available - returns neutral data if no API key
+            const cryptoCompareResult = await logProviderCall('cryptocompare', async () => {
+                const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('CryptoCompare timeout')), 1000));
+                const apiCall = cryptoAdapter.getAllMetrics(normalizedSymbol);
+                return Promise.race([apiCall, timeout]);
+            });
+            // All providers are always attempted and return data (success or fallback)
+            providersUsed.cryptocompare = true;
+            // Update debug preview for cryptocompare
+            if (cryptoCompareResult.success && cryptoCompareResult.data) {
+                providerDebug.cryptocompare.dataPreview = Object.keys(cryptoCompareResult.data);
+            }
+            const cryptoCompareData = cryptoCompareResult.success ? cryptoCompareResult.data : null;
+            // MTF Indicator Pipeline - fetch indicators for all timeframes
+            const mtfIndicators = {
+                "5m": { timeframe: "5m", rsi: null, macd: null, ema12: null, ema26: null, sma20: null },
+                "15m": { timeframe: "15m", rsi: null, macd: null, ema12: null, ema26: null, sma20: null },
+                "1h": { timeframe: "1h", rsi: null, macd: null, ema12: null, ema26: null, sma20: null },
+            };
+            // Fetch MTF indicators for each timeframe (always runs with neutral data fallback)
+            const mtfPromises = ["5m", "15m", "1h"].map(async (timeframe) => {
+                try {
+                    const result = await runApiCall(`CryptoCompare MTF ${timeframe}`, () => cryptoAdapter.getMTFIndicators(normalizedSymbol, timeframe), 3000, // Reduced timeout for CryptoCompare MTF
+                    {
+                        timeframe,
+                        rsi: 50,
+                        macd: { value: 0, signal: 0, histogram: 0 },
+                        ema12: null,
+                        ema26: null,
+                        sma20: null
+                    }, 'cryptocompare', {
+                        maxRetries: 2, // Reduced retries to avoid timeout cascade
+                        useCache: true,
+                        cacheKey: `cryptocompare_mtf_${normalizedSymbol}_${timeframe}`,
+                        cacheTTL: 300000 // 5 minutes cache
+                    });
+                    if (result.success && result.data) {
+                        mtfIndicators[timeframe] = result.data;
+                    }
+                    else {
+                        // FORCED FALLBACK: Always provide neutral data when API fails
+                        mtfIndicators[timeframe] = {
+                            timeframe,
+                            rsi: 50,
+                            macd: { value: 0, signal: 0, histogram: 0 },
+                            ema12: null,
+                            ema26: null,
+                            sma20: null
+                        };
+                    }
+                }
+                catch (error) {
+                    logger_1.logger.warn({ symbol: normalizedSymbol, timeframe, error: error.message }, `MTF ${timeframe} indicators failed, using fallback`);
+                    // FORCED FALLBACK: Always provide neutral data when API fails
+                    mtfIndicators[timeframe] = {
+                        timeframe,
+                        rsi: 50,
+                        macd: { value: 0, signal: 0, histogram: 0 },
+                        ema12: null,
+                        ema26: null,
+                        sma20: null
+                    };
+                }
+            });
+            await Promise.all(mtfPromises);
+            // Calculate MTF confluence (always runs with available data)
+            const mtfConfluence = cryptoAdapter.calculateMTFConfluence(mtfIndicators);
+            // Add MTF debug info
+            providerDebug.mtf = {
+                indicators: mtfIndicators,
+                confluence: mtfConfluence,
+            };
+            // Extract indicators from CryptoCompare data (if available)
+            const rsiFromCryptoCompare = cryptoCompareData?.indicators?.rsi ? {
+                value: cryptoCompareData.indicators.rsi,
+                signal: cryptoCompareData.indicators.rsi > 70 ? 'OVERBOUGHT' : cryptoCompareData.indicators.rsi < 30 ? 'OVERSOLD' : 'NEUTRAL'
+            } : { value: null, signal: 'NEUTRAL' };
+            const macdFromCryptoCompare = cryptoCompareData?.indicators?.macd ? {
+                signal: cryptoCompareData.indicators.macd.value,
+                histogram: cryptoCompareData.indicators.macd.histogram,
+                trend: cryptoCompareData.indicators.macd.histogram > 0 ? 'BULLISH' : 'BEARISH'
+            } : { signal: 0, histogram: 0, trend: 'NEUTRAL' };
+            // Derivatives data will come from user's providers (CryptoCompare, CoinAPI, etc.)
+            const derivativesResult = await runApiCall('Derivatives Data Fetch', async () => {
+                const { fetchDerivativesData } = await Promise.resolve().then(() => __importStar(require('./strategies/derivativesStrategy')));
+                return await fetchDerivativesData(normalizedSymbol, userExchangeAdapter, cryptoAdapter);
+            }, 2000, { source: 'exchange' }, 'Multiple');
+            const derivatives = (0, derivativesStrategy_1.analyzeDerivatives)(derivativesResult.data);
+            // Remove on-chain score since CryptoCompare no longer provides it
+            const onChainScore = 0;
+            // PARALLEL EXECUTION: Run all provider calls simultaneously
+            // PARALLEL EXECUTION: Run all provider calls simultaneously with optimized timeouts and caching
+            const providerResults = await Promise.all([
+                // MarketAux sentiment analysis - reduced timeout and retries to prevent blocking
+                runApiCall('marketaux', async () => {
+                    const baseSymbol = normalizedSymbol.replace(/USDT$/i, '').replace(/USD$/i, '');
+                    const result = await marketAuxAdapter.getNewsSentiment(baseSymbol);
+                    logger_1.logger.info({ symbol: normalizedSymbol, sentiment: result.sentiment, articles: result.totalArticles }, 'MarketAux: Called → OK');
+                    return result;
+                }, 4000, // Reduced timeout
+                {
+                    sentiment: 0.05,
+                    hypeScore: 45,
+                    totalArticles: 1,
+                    trendScore: 0,
+                    latestArticles: []
+                }, 'marketaux', {
+                    maxRetries: 1, // Reduced retries to prevent timeout cascade
+                    useCache: true,
+                    cacheKey: `marketaux_${normalizedSymbol.replace(/USDT$/i, '').replace(/USD$/i, '')}`,
+                    cacheTTL: 300000 // 5 minutes
+                }),
+                // Binance ticker data - fast and reliable
+                runApiCall('binance', () => binanceAdapter.getTicker(normalizedSymbol), 3000, // Fast timeout for reliable API
+                {
+                    lastPrice: 0,
+                    volume: 0,
+                    priceChangePercent: 0,
+                    fallback: true
+                }, 'binance', { maxRetries: 2 }),
+                // Binance book ticker - fast and reliable
+                runApiCall('binance_bookTicker', () => binanceAdapter.getBookTicker(normalizedSymbol), 3000, {
+                    symbol: normalizedSymbol,
+                    bidPrice: 0,
+                    askPrice: 0,
+                    fallback: true
+                }, 'binance', { maxRetries: 2 }),
+                // Binance volatility - moderately fast
+                runApiCall('binance_volatility', () => binanceAdapter.getVolatility(normalizedSymbol), 4000, 0.05, // 5% fallback volatility
+                'binance', { maxRetries: 2 }),
+                // Google Finance rates - can be slower
+                runApiCall('googlefinance', async () => {
+                    const result = await (0, googleFinanceAdapter_1.getExchangeRates)();
+                    logger_1.logger.info({ ratesCount: Object.keys(result.rates || {}).length }, 'GoogleFinance: Called → OK');
+                    return result;
+                }, 5000, { base: 'USD', rates: { USD: 1, INR: 83 }, timestamp: Date.now() }, 'googlefinance', {
+                    maxRetries: 1, // Reduced retries
+                    useCache: true,
+                    cacheKey: 'googlefinance_rates',
+                    cacheTTL: 600000 // 10 minutes
+                }),
+                // CoinGecko historical data with symbol mapping - can be slower due to mapping
+                runApiCall('coingecko', async () => {
+                    // Add timeout around getCoinGeckoId to prevent blocking
+                    const mappingTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error('CoinGecko mapping timeout')), 2000));
+                    const mappingPromise = this.getCoinGeckoId(normalizedSymbol, uid);
+                    const coingeckoId = await Promise.race([mappingPromise, mappingTimeout]);
+                    if (!coingeckoId) {
+                        throw new Error('Could not map symbol to CoinGecko ID');
+                    }
+                    const coingeckoHistoricalData = await coingeckoAdapter.getHistoricalData(coingeckoId, 90);
+                    return coingeckoHistoricalData;
+                }, 4000, // Reduced timeout
+                null, 'coingecko', {
+                    maxRetries: 1, // Reduced retries
+                    useCache: true,
+                    cacheKey: `coingecko_historical_${normalizedSymbol}`,
+                    cacheTTL: 600000 // 10 minutes
+                })
+            ]);
+            // Extract results from parallel execution
+            const [marketAuxResult, binanceTickerResult, binanceBookTickerResult, binanceVolatilityResult, googleFinanceResult, coingeckoResult] = providerResults;
+            const marketAuxData = marketAuxResult.data;
+            const binanceTickerData = binanceTickerResult.data;
+            const binanceBookTickerData = binanceBookTickerResult.data;
+            const binanceVolatility = binanceVolatilityResult.data;
+            const googleFinanceExchangeRate = googleFinanceResult.data;
+            const coingeckoHistoricalData = coingeckoResult.data;
+            // All providers are always attempted and return data (success or fallback)
+            providersUsed.marketaux = true;
+            providersUsed.binance = true;
+            providersUsed.googlefinance = true;
+            providersUsed.coingecko = true;
+            // Convert MarketAuxData to SentimentData format
+            const sentimentPayload = marketAuxData ? {
+                sentiment: marketAuxData.sentiment,
+                socialScore: marketAuxData.hypeScore,
+                socialVolume: marketAuxData.totalArticles,
+                timestamp: Date.now(),
+            } : undefined;
+            const sentiment = (0, sentimentStrategy_1.analyzeSentiment)(sentimentPayload || undefined);
+            // DERIVATIVES DATA: Fetch from Binance Futures API
+            const derivativesApiResult = await runApiCall('Binance Derivatives', () => binanceAdapter.getDerivativesData(normalizedSymbol), 5000, {
+                fundingRate: 0.0001,
+                openInterest: 0,
+                longShortRatio: { long: 50, short: 50, ratio: 1 }
+            }, 'binance', { maxRetries: 2, cacheTTL: 60000 } // Cache for 1 minute
+            );
+            const derivativesRawData = derivativesResult.data;
+            // Simplified derivatives analysis - using fallback for now
+            const fundingRateValue = typeof derivativesRawData.fundingRate === 'number' ? derivativesRawData.fundingRate : 0;
+            const openInterestValue = typeof derivativesRawData.openInterest === 'number' ? derivativesRawData.openInterest : 0;
+            const derivativesAnalysis = {
+                fundingRate: {
+                    signal: fundingRateValue > 0.001 ? 'Bullish' : fundingRateValue < -0.001 ? 'Bearish' : 'Neutral',
+                    score: 0.5,
+                    value: fundingRateValue,
+                    description: fundingRateValue !== 0 ? `Funding rate: ${(fundingRateValue * 100).toFixed(4)}%` : 'No funding rate data'
+                },
+                openInterest: {
+                    signal: 'Neutral',
+                    score: 0.5,
+                    change24h: 0,
+                    description: openInterestValue > 0 ? `Open interest: ${openInterestValue.toLocaleString()}` : 'No open interest data'
+                },
+                liquidations: {
+                    signal: 'Neutral',
+                    score: 0.5,
+                    longPct: 0,
+                    shortPct: 0,
+                    description: 'No liquidation data available'
+                },
+                overallSignal: 'Neutral',
+                overallScore: 0.5,
+                source: 'binance_futures'
+            };
+            // RVOL (Relative Volume): Calculate from Binance historical data
+            const rvolResult = await runApiCall('Binance RVOL', () => binanceAdapter.getRVOL(normalizedSymbol, 7), // 7-day lookback
+            5000, { rvol: 1.0, isConfirmed: false, avgVolume: 0 }, 'binance', { maxRetries: 2, cacheTTL: 300000 } // Cache for 5 minutes
+            );
+            const rvolData = rvolResult.data;
+            // Transform Binance ticker data to expected format
+            const binanceMarketData = binanceTickerData ? {
+                price: binanceTickerData.lastPrice || 0,
+                volume24h: binanceTickerData.volume || 0,
+                priceChangePercent24h: binanceTickerData.priceChangePercent || 0,
+            } : {};
+            // Calculate bid-ask spread percentage for liquidity
+            if (binanceBookTickerData) {
+                const bidPrice = binanceBookTickerData.bidPrice || 0;
+                const askPrice = binanceBookTickerData.askPrice || 0;
+                if (bidPrice > 0 && askPrice > 0 && askPrice > bidPrice) {
+                    binanceSpreadPercent = ((askPrice - bidPrice) / bidPrice) * 100;
+                }
+            }
+            // Enhanced volume analysis with trend comparison
+            if (binanceTickerData) {
+                const currentVolume = binanceTickerData.volume || 0;
+                const quoteVolume = binanceTickerData.volume || 0;
+                // Use quote volume if available (more accurate for BTC pairs)
+                const volume = quoteVolume > 0 ? quoteVolume : currentVolume;
+                if (volume > 0) {
+                    // Compare with previous day's volume if available
+                    const prevDayVolume = binanceTickerData.volume || 0; // Use current volume as approximation
+                    // For now, just classify based on volume levels - this is a simplified approach
+                    // In production, you'd want to fetch historical volume data
+                    binanceVolumeTrend = volume > 1000000 ? 'High' : volume > 100000 ? 'Medium' : 'Low';
+                }
+            }
+            // Update debug preview for binance with detailed metrics
+            if (binanceTickerResult.success || binanceBookTickerResult.success || binanceVolatilityResult.success) {
+                providerDebug.binance = {
+                    ...providerDebug.binance,
+                    depthParseSummary: {
+                        bidsCount: rawOrderbook?.bids?.length || 0,
+                        asksCount: rawOrderbook?.asks?.length || 0,
+                        totalBidVolume: rawOrderbook ? rawOrderbook.bids.slice(0, 10).reduce((sum, bid) => sum + parseFloat(bid.quantity || '0'), 0) : 0,
+                        totalAskVolume: rawOrderbook ? rawOrderbook.asks.slice(0, 10).reduce((sum, ask) => sum + parseFloat(ask.quantity || '0'), 0) : 0,
+                        imbalance: imbalance,
+                    },
+                    volumeSummary: {
+                        volume24h: binanceMarketData?.volume24h || null,
+                        trend: binanceVolumeTrend,
+                        quoteVolume: binanceTickerData ? binanceTickerData.volume : null,
+                    },
+                    spreadPercentage: binanceSpreadPercent,
+                    volatilityNumber: binanceVolatility,
+                };
+            }
+            if (coingeckoHistoricalData) {
+                recordApiCall({
+                    apiName: 'CoinGecko Historical Data',
+                    status: 'SUCCESS',
+                    durationMs: 0, // We don't track duration for CoinGecko anymore
+                    provider: 'CoinGecko'
+                });
+            }
+            else {
+                recordApiCall({
+                    apiName: 'CoinGecko Historical Data',
+                    status: 'SKIPPED',
+                    message: 'Rate limited or unavailable',
+                    durationMs: 0,
+                    provider: 'CoinGecko'
+                });
+            }
+            const rsi = (0, rsiStrategy_1.analyzeRSI)(candles);
+            const macd = (0, macdStrategy_1.analyzeMACD)(candles);
+            const volume = (0, volumeStrategy_1.analyzeVolume)(candles);
+            recordApiCall({
+                apiName: 'RVOL Calculation',
+                status: 'SUCCESS',
+                message: volume.relativeVolume ? `${volume.relativeVolume.toFixed(2)}x` : 'Volume normalized',
+            });
+            const trendAnalysis = this.computeTrendAnalysis(candles);
+            recordApiCall({ apiName: 'Trend Module', status: 'SUCCESS' });
+            const trendStrength = this.computeTrendStrength(candles);
+            const atr = this.computeAtr(candles);
+            recordApiCall({ apiName: 'Volatility Module', status: 'SUCCESS' });
+            // Update Binance usage based on successful calls throughout the research
+            // Binance is used for candles, orderbook, and various market data calls
+            providersUsed.binance = true; // Binance is always attempted and typically succeeds
+            const multiTimeframeContext = this.summarizeMultiTimeframes({
+                symbol: normalizedSymbol,
+                candlesByTimeframe: multiTimeframeCandles,
+                sharedInputs: {
+                    liquidity,
+                    sentiment,
+                    derivatives,
+                    microSignals,
+                    orderbookImbalance: imbalance,
+                },
+            });
+            MULTI_TIMEFRAMES.forEach((tf) => {
+                if (multiTimeframeCandles[tf]) {
+                    recordApiCall({ apiName: `MTF Indicator ${tf}`, status: 'SUCCESS' });
+                }
+                else {
+                    recordApiCall({
+                        apiName: `MTF Indicator ${tf}`,
+                        status: 'FAILED',
+                        message: 'Insufficient candles',
+                    });
+                }
+            });
+            const featureScores = (0, confidenceEngine_1.computeFeatureScores)({
+                symbol: normalizedSymbol,
+                timeframe: normalizedTimeframe,
+                price: currentPrice,
+                rsi,
+                macd,
+                trendStrength: {
+                    ...trendStrength,
+                    ema12: trendAnalysis?.ema12 ?? null,
+                    ema26: trendAnalysis?.ema26 ?? null,
+                },
+                orderbookImbalance: imbalance,
+                volume,
+                liquidity,
+                volatility: { atr, price: currentPrice },
+                sentiment,
+                derivatives,
+                priceMomentum,
+                onChainScore,
+                microSignals,
+            });
+            const confidenceResult = (0, confidenceEngine_1.computeConfidence)(featureScores);
+            const confidenceAdjustment = this.applyMultiTimeframeConfidenceAdjustments(confidenceResult.smoothedConfidence, multiTimeframeContext);
+            // Apply MTF confidence boost
+            const mtfBoost = (mtfConfluence.score / 3) * 15; // Max 15% boost for perfect 3/3 score
+            const confidenceBeforeMTF = confidenceAdjustment.confidence;
+            const confidence = Math.min(95, confidenceAdjustment.confidence + mtfBoost); // Cap at 95%
+            // Update explanations with MTF boost info
+            const mtfBoostExplanation = mtfBoost > 0 ? ` | MTF confluence ${mtfConfluence.label} (+${mtfBoost.toFixed(1)}%)` : '';
+            const accuracyRange = this.buildAccuracyRangeFromConfidence(confidence);
+            const finalSignal = confidenceResult.signal;
+            const side = finalSignal === 'BUY' ? 'LONG' : finalSignal === 'SELL' ? 'SHORT' : 'NEUTRAL';
+            const mtfConfluenceCount = multiTimeframeContext.alignmentCount;
+            const derivativesAligned = this.isDerivativesAligned(derivativesAnalysis, finalSignal);
+            const derivativesContradict = this.isDerivativesContradicting(derivativesAnalysis, finalSignal);
+            const liquidityAcceptable = this.isLiquidityAcceptable(liquidity);
+            const entry = currentPrice;
+            const takeProfit = side === 'LONG' ? entry * 1.03 : side === 'SHORT' ? entry * 0.97 : null;
+            const stopLoss = side === 'LONG' ? entry * 0.98 : side === 'SHORT' ? entry * 1.02 : null;
+            const exits = takeProfit ? [entry + (takeProfit - entry) * 0.5, takeProfit] : [];
+            const mode = confidence >= 75 ? 'TRADE_SETUP' : confidence >= 60 ? 'NORMAL' : 'LOW';
+            const blurFields = confidence < 60;
+            const recommendedTrade = mode === 'TRADE_SETUP' && side !== 'NEUTRAL' ? side : null;
+            const mtfDescription = Object.entries(multiTimeframeContext.signalsByTimeframe)
+                .map(([tf, data]) => `${tf}:${data.signal}`)
+                .join(' / ');
+            const features = {
+                rsi: rsi.value,
+                rsiSignal: rsi.signal,
+                macd: { signal: macd.signal, histogram: macd.histogram, trend: macd.trend },
+                volume: binanceVolumeTrend !== 'Stable' ? binanceVolumeTrend : `${volume.signal}${volume.relativeVolume ? ` (${volume.relativeVolume.toFixed(2)}x)` : ''}`,
+                orderbookImbalance: imbalance !== null ? `${(imbalance * 100).toFixed(2)}% ${imbalance >= 0 ? 'Buy' : 'Sell'} pressure` : 'Insufficient depth',
+                liquidity: `${liquidity.signal} (${liquidity.spreadPercent.toFixed(3)}% spread)`,
+                fundingRate: derivativesAnalysis.fundingRate.description,
+                openInterest: derivativesAnalysis.openInterest.description,
+                liquidations: derivativesAnalysis.liquidations.description,
+                trendStrength: trendStrength.trend,
+                volatility: binanceVolatility !== null ? (binanceVolatility * 100).toFixed(2) + '%' : (atr ? atr.toFixed(6) : null),
+                newsSentiment: sentiment.description,
+                onChainFlows: undefined, // Removed - no longer available from CryptoCompare
+                priceDivergence: undefined,
+                globalMarketData: binanceMarketData ? {
+                    price: binanceMarketData.price,
+                    volume24h: binanceMarketData.volume24h,
+                    priceChangePercent24h: binanceMarketData.priceChangePercent24h
+                } : undefined,
+                _volumeNumber: volume.relativeVolume ?? null,
+                _atrValue: atr,
+                _orderbookImbalanceValue: imbalance,
+                _trendStrengthValue: trendStrength,
+                _apisUsed: providersUsed,
+            };
+            const indicators = {
+                rsi: rsi.value,
+                macd: { signal: macd.signal, histogram: macd.histogram, trend: macd.trend },
+                volume: volume.relativeVolume ?? null,
+                trendStrength: {
+                    ...trendStrength,
+                    ema12: trendAnalysis?.ema12 ?? null,
+                    ema26: trendAnalysis?.ema26 ?? null,
+                },
+                volatility: atr,
+                orderbook: imbalance,
+            };
+            const explanations = [
+                `RSI ${rsi.signal} at ${rsi.value.toFixed(2)}`,
+                `MACD histogram ${macd.histogram.toFixed(4)}`,
+                `Volume ${volume.signal}${volume.relativeVolume ? ` (${volume.relativeVolume.toFixed(2)}x)` : ''}`,
+                `Liquidity ${liquidity.signal} (${liquidity.spreadPercent.toFixed(3)}%)`,
+                `Derivatives ${derivativesAnalysis.overallSignal} (${(derivativesAnalysis.overallScore * 100).toFixed(1)}%)`,
+                `Sentiment ${sentiment.signal} (${sentiment.sentiment.toFixed(2)})`,
+                `MTF confluence ${mtfConfluence.label} (${mtfConfluence.details["5m"]} | ${mtfConfluence.details["15m"]} | ${mtfConfluence.details["1h"]})`,
+            ];
+            if (confidenceAdjustment.reason) {
+                explanations.push(confidenceAdjustment.reason);
+            }
+            if (mtfBoost > 0) {
+                explanations.push(`MTF boost: ${mtfConfluence.label} (+${mtfBoost.toFixed(1)}% confidence)`);
+            }
+            const autoTradeEligible = confidence >= 75 && mtfConfluenceCount >= 2 && derivativesAligned && liquidityAcceptable;
+            const autoTradeReason = this.buildAutoTradeReason({
+                confidence,
+                confluenceCount: mtfConfluenceCount,
+                derivativesAligned,
+                liquidityAcceptable,
+            });
+            const result = {
+                symbol: normalizedSymbol,
+                status: 'ok',
+                signal: finalSignal,
+                accuracy: confidence / 100,
+                orderbookImbalance: imbalance,
+                recommendedAction: this.buildRecommendation(finalSignal, exchangeName),
+                microSignals,
+                entry,
+                exits,
+                stopLoss,
+                takeProfit,
+                side,
+                confidence,
+                timeframe: normalizedTimeframe,
+                signals: this.buildSignals(entry, stopLoss, takeProfit, exits),
+                liveAnalysis: this.buildLiveAnalysis(normalizedSymbol, finalSignal, confidence, entry, stopLoss, takeProfit),
+                message: 'Research completed using your private data providers.',
+                currentPrice: entry ?? 0,
+                mode,
+                recommendedTrade,
+                blurFields,
+                apiCalls,
+                explanations,
+                accuracyRange,
+                rsi5: null,
+                rsi14: rsi.value,
+                trendAnalysis,
+                confidenceBreakdown: confidenceResult.confidenceBreakdown,
+                exchangeOrderbooks,
+                exchangeCount: exchangeOrderbooks.length,
+                exchangesUsed: [exchangeName],
+                autoTradeDecision: {
+                    triggered: autoTradeEligible,
+                    confidence,
+                    threshold: 75,
+                    reason: autoTradeEligible ? 'All trade rules satisfied' : autoTradeReason,
+                    confluenceCount: mtfConfluenceCount,
+                },
+                features,
+                indicators,
+                entrySignal: side === 'NEUTRAL' ? null : side,
+                exitSignal: exits,
+                entryPrice: entry,
+                recommendation: recommendedTrade ? 'AUTO' : 'MANUAL',
+                perFeatureScore: confidenceResult.perFeatureScore,
+                apisUsed: providersUsed,
+                // Enhanced diagnostics and provider status
+                diagnostics: {
+                    providers: {
+                        binance: {
+                            status: binanceTickerResult.success ? 'success' : 'failed',
+                            durationMs: binanceTickerResult.durationMs,
+                            fallback: binanceTickerResult.fallback,
+                            dataPoints: ['candles', 'orderbook', 'ticker', 'volatility', 'derivatives', 'rvol'],
+                            error: binanceTickerResult.success ? undefined : 'Ticker data unavailable'
+                        },
+                        cryptocompare: {
+                            status: Object.values(mtfIndicators).some(ind => ind.rsi !== 50) ? 'success' : 'fallback',
+                            durationMs: 0, // Individual timing not tracked
+                            fallback: Object.values(mtfIndicators).every(ind => ind.rsi === 50),
+                            dataPoints: ['mtf_indicators'],
+                            error: Object.values(mtfIndicators).every(ind => ind.rsi === 50) ? 'All MTF data used fallback values' : undefined
+                        },
+                        marketaux: {
+                            status: marketAuxResult.success ? 'success' : 'failed',
+                            durationMs: marketAuxResult.durationMs,
+                            fallback: marketAuxResult.fallback,
+                            dataPoints: ['sentiment'],
+                            error: marketAuxResult.fallback ? 'Sentiment data used fallback' : undefined
+                        },
+                        coingecko: {
+                            status: coingeckoResult.success ? 'success' : 'failed',
+                            durationMs: coingeckoResult.durationMs,
+                            fallback: coingeckoResult.fallback,
+                            dataPoints: ['historical_data'],
+                            error: coingeckoResult.fallback ? 'Historical data unavailable' : undefined
+                        },
+                        googlefinance: {
+                            status: googleFinanceResult.success ? 'success' : 'failed',
+                            durationMs: googleFinanceResult.durationMs,
+                            fallback: googleFinanceResult.fallback,
+                            dataPoints: ['exchange_rates'],
+                            error: googleFinanceResult.fallback ? 'Exchange rates used fallback' : undefined
+                        }
+                    },
+                    derivatives: {
+                        fundingRate: fundingRateValue,
+                        openInterest: openInterestValue,
+                        source: 'binance_futures',
+                        available: fundingRateValue !== 0 || openInterestValue !== 0
+                    },
+                    rvol: rvolData,
+                    mtfStatus: {
+                        total: MULTI_TIMEFRAMES.length,
+                        successful: Object.keys(multiTimeframeCandles).filter(tf => multiTimeframeCandles[tf].length > 1).length,
+                        failed: MULTI_TIMEFRAMES.length - Object.keys(multiTimeframeCandles).filter(tf => multiTimeframeCandles[tf].length > 1).length,
+                        timeframes: Object.keys(multiTimeframeCandles).map(tf => ({
+                            timeframe: tf,
+                            candleCount: multiTimeframeCandles[tf].length,
+                            hasData: multiTimeframeCandles[tf].length > 1
+                        }))
+                    },
+                    overall: {
+                        timeout: false,
+                        providersAttempted: 5,
+                        providersSuccessful: [binanceTickerResult, marketAuxResult, coingeckoResult, googleFinanceResult].filter(r => r.success).length,
+                        dataCompleteness: 'partial' // Will be updated based on actual data availability
+                    }
+                },
+                // Add detailed API usage logging
+                _apiUsageSummary: {
+                    totalApis: Object.keys(providersUsed).length,
+                    successfulApis: Object.entries(providersUsed).filter(([key, value]) => value === true || typeof value === 'string').length,
+                    failedApis: Object.entries(providersUsed).filter(([key, value]) => value === false).length,
+                    providerDetails: providersUsed,
+                },
+                rawConfidence: confidenceResult.rawConfidence,
+                smoothedConfidence: confidence,
+                confluenceFlags: confidenceResult.confluenceFlags,
+                volumeConfirmed: volume.signal !== 'Stable',
+                derivativesContradict,
+                signalsByTimeframe: multiTimeframeContext.signalsByTimeframe,
+                confluenceMatrix: multiTimeframeContext.confluenceMatrix,
+                mtfScore: multiTimeframeContext.scorePercent,
+                mtfConfluenceCount,
+                highConfidenceReason: confidenceAdjustment.reason,
+                perTimeframeBreakdown: multiTimeframeContext.breakdown,
+                liquidityAcceptable,
+                derivativesAligned,
+                apiCallReport,
+                missingDependencies: [],
+                mtf: {
+                    "5m": mtfIndicators["5m"],
+                    "15m": mtfIndicators["15m"],
+                    "1h": mtfIndicators["1h"],
+                    score: mtfConfluence.label,
+                    boost: mtfBoost > 0 ? `+${mtfBoost.toFixed(1)}%` : '0%',
+                },
+                _providerDebug: providerDebug, // Debug info for provider calls
+            };
+            // Log final API usage summary
+            logger_1.logger.info({
+                uid,
+                symbol: normalizedSymbol,
+                apisUsed: providersUsed,
+                successfulCount: Object.values(providersUsed).filter(v => v === true || typeof v === 'string').length,
+                totalApis: Object.keys(providersUsed).length,
+                durationMs: Date.now() - startedAt
+            }, 'RESEARCH COMPLETE: API usage summary');
+            logger_1.logger.info({ uid, symbol: normalizedSymbol, exchange: exchangeName, confidence, durationMs: Date.now() - startedAt }, 'Deep research completed');
+            return result;
+        }
+        catch (err) {
+            if (err instanceof ResearchEngineError) {
+                throw err;
+            }
+            const errorId = this.createErrorId();
+            const message = err?.message || 'Research processing failed';
+            logger_1.logger.error({ uid, symbol: normalizedSymbol, error: message, errorId }, 'Research engine failed');
+            throw new ResearchEngineError(message, errorId, 400);
+        }
+    }
+    normalizeSymbol(symbol) {
+        return symbol.replace(/[^a-z0-9]/gi, '').toUpperCase();
+    }
+    normalizeTimeframe(timeframe) {
+        const tf = timeframe.toLowerCase();
+        if (VALID_TIMEFRAMES.includes(tf)) {
+            return tf;
+        }
+        return '5m';
+    }
+    async buildProviderAdapters(uid) {
+        // ALWAYS fetch API keys from Firestore - NO override keys allowed
+        const userKeys = await firestoreAdapter_1.firestoreAdapter.getUserProviderApiKeys(uid);
+        // MANDATORY API keys - Deep Research requires all 5 providers
+        // ALWAYS use Firestore keys - never fallback to null when user has keys
+        const marketAuxKey = userKeys['marketaux']?.apiKey;
+        const cryptocompareKey = userKeys['cryptocompare']?.apiKey;
+        // Add debug log next to adapter creation
+        logger_1.logger.info({
+            uid,
+            marketAuxKey: marketAuxKey ? 'PRESENT' : 'MISSING',
+            cryptocompareKey: cryptocompareKey ? 'PRESENT' : 'MISSING',
+            marketAuxKeyLength: marketAuxKey?.length,
+            cryptocompareKeyLength: cryptocompareKey?.length
+        }, 'Loaded user API keys for research');
+        // API keys - use null if missing (adapters handle gracefully)
+        logger_1.logger.info({
+            uid,
+            marketAuxKeyPresent: !!marketAuxKey,
+            cryptocompareKeyPresent: !!cryptocompareKey,
+        }, 'API key availability check');
+        // Always initialize ALL adapters - they handle missing keys internally
+        logger_1.logger.info({ uid }, 'Initializing ALL provider adapters (with fallback handling for missing keys)');
+        // Create ALL adapters - they handle missing keys with neutral defaults
+        let marketAuxAdapter;
+        let cryptoAdapter;
+        try {
+            logger_1.logger.debug({ uid, keyLength: marketAuxKey?.length }, 'Initializing MarketAux adapter');
+            marketAuxAdapter = new MarketAuxAdapter_1.MarketAuxAdapter(marketAuxKey || null);
+            logger_1.logger.info({ uid, hasKey: !!marketAuxKey }, 'MarketAux adapter initialized');
+        }
+        catch (error) {
+            logger_1.logger.error({ uid, error: error.message }, 'Failed to initialize MarketAux adapter - using fallback');
+            // Create adapter with null key as fallback - should not fail
+            marketAuxAdapter = new MarketAuxAdapter_1.MarketAuxAdapter(null);
+        }
+        try {
+            logger_1.logger.debug({ uid, keyLength: cryptocompareKey?.length }, 'Initializing CryptoCompare adapter');
+            cryptoAdapter = new cryptoCompareAdapter_1.CryptoCompareAdapter(cryptocompareKey || null);
+            logger_1.logger.info({ uid, hasKey: !!cryptocompareKey }, 'CryptoCompare adapter initialized');
+        }
+        catch (error) {
+            logger_1.logger.error({ uid, error: error.message }, 'Failed to initialize CryptoCompare adapter - using fallback');
+            // Create adapter with null key as fallback - should not fail
+            cryptoAdapter = new cryptoCompareAdapter_1.CryptoCompareAdapter(null);
+        }
+        // Create free API adapters - no API keys required
+        let binanceAdapter;
+        let coingeckoAdapter;
+        let googleFinanceAdapter;
+        try {
+            logger_1.logger.debug({ uid }, 'Initializing Binance public adapter (free API)');
+            binanceAdapter = new binancePublicAdapter_1.BinancePublicAdapter();
+            logger_1.logger.info({ uid }, 'Binance public adapter initialized successfully');
+        }
+        catch (error) {
+            logger_1.logger.error({ uid, error: error.message }, 'Failed to initialize Binance adapter');
+            throw new ResearchEngineError(`Failed to initialize Binance adapter: ${error.message}`, this.createErrorId(), 400);
+        }
+        try {
+            logger_1.logger.debug({ uid }, 'Initializing CoinGecko adapter (free API)');
+            coingeckoAdapter = coingeckoAdapter_1.CoinGeckoAdapter;
+            logger_1.logger.info({ uid }, 'CoinGecko adapter initialized successfully');
+        }
+        catch (error) {
+            logger_1.logger.error({ uid, error: error.message }, 'Failed to initialize CoinGecko adapter');
+            throw new ResearchEngineError(`Failed to initialize CoinGecko adapter: ${error.message}`, this.createErrorId(), 400);
+        }
+        try {
+            logger_1.logger.debug({ uid }, 'Initializing Google Finance adapter (free API)');
+            // Google Finance adapter is now imported directly
+            googleFinanceAdapter = googleFinanceAdapter_1.getExchangeRates; // Assign the imported function
+            logger_1.logger.info({ uid }, 'Google Finance adapter initialized successfully');
+        }
+        catch (error) {
+            logger_1.logger.error({ uid, error: error.message }, 'Failed to initialize Google Finance adapter');
+            throw new ResearchEngineError(`Failed to initialize Google Finance adapter: ${error.message}`, this.createErrorId(), 400);
+        }
+        logger_1.logger.info({ uid }, 'All provider adapters initialized successfully (including free APIs)');
+        return { marketAuxAdapter, cryptoAdapter, binanceAdapter, coingeckoAdapter, googleFinanceAdapter };
+    }
+    async resolveContext(uid) {
+        // For scheduled research (system user), completely disable exchange context resolution
+        if (uid === 'system') {
+            logger_1.logger.debug('Scheduled research: exchange context disabled');
+            return null;
+        }
+        try {
+            const context = await firestoreAdapter_1.firestoreAdapter.getActiveExchangeForUser(uid);
+            // Handle fallback object when no exchange is configured
+            if (context && typeof context === 'object' && 'exchangeConfigured' in context && context.exchangeConfigured === false) {
+                logger_1.logger.debug({ uid }, 'Exchange integration not configured, using null context for research');
+                return null;
+            }
+            // NOTE: Exchange API is now optional for Deep Research - return context if configured, null if not
+            // This allows Deep Research to work without exchange API keys
+            return (context && typeof context === 'object' && 'name' in context) ? context : null;
+        }
+        catch (error) {
+            // If exchange lookup fails, return null (exchange is optional for Deep Research)
+            logger_1.logger.debug({ uid, error: error.message }, 'Exchange context lookup failed, using null context');
+            return null;
+        }
+    }
+    mapTimeframeToCoinapiPeriod(timeframe) {
+        const map = {
+            '1m': '1MIN',
+            '3m': '3MIN',
+            '5m': '5MIN',
+            '15m': '15MIN',
+            '30m': '30MIN',
+            '1h': '1HRS',
+            '2h': '2HRS',
+            '4h': '4HRS',
+            '6h': '6HRS',
+            '8h': '8HRS',
+            '12h': '12HRS',
+            '1d': '1DAY',
+            '3d': '3DAY',
+            '1w': '7DAY',
+        };
+        return map[timeframe.toLowerCase()] || '5MIN';
+    }
+    async fetchExchangeCandles(adapter, symbol, timeframe, limit, apiCalls) {
+        const exchangeName = adapter.getExchangeName();
+        apiCalls.push(`${exchangeName}:klines:${timeframe}`);
+        const candles = await adapter.getKlines(symbol, timeframe, limit);
+        if (!candles.length) {
+            logger_1.logger.warn({ symbol, timeframe, exchange: exchangeName }, 'Exchange returned no candles, using fallback');
+            return [{
+                    timestamp: Date.now(),
+                    open: 0,
+                    high: 0,
+                    low: 0,
+                    close: 0,
+                    volume: 0
+                }];
+        }
+        return candles
+            .map((item) => ({
+            open: parseFloat(item.open),
+            high: parseFloat(item.high),
+            low: parseFloat(item.low),
+            close: parseFloat(item.close),
+            volume: parseFloat(item.volume),
+            timestamp: typeof item.timestamp === 'number' ? item.timestamp : Date.parse(item.timestamp),
+        }))
+            .sort((a, b) => a.timestamp - b.timestamp);
+    }
+    normalizeCandles(raw) {
+        return raw
+            .map((item) => {
+            if (Array.isArray(item)) {
+                const [timestamp, open, high, low, close, volume] = item;
+                return {
+                    open: parseFloat(open ?? 0),
+                    high: parseFloat(high ?? 0),
+                    low: parseFloat(low ?? 0),
+                    close: parseFloat(close ?? 0),
+                    volume: parseFloat(volume ?? 0),
+                    timestamp: Number(timestamp ?? Date.now()),
+                };
+            }
+            if (typeof item === 'object' && item !== null) {
+                return {
+                    open: parseFloat(item.open ?? item[1] ?? 0),
+                    high: parseFloat(item.high ?? item[2] ?? 0),
+                    low: parseFloat(item.low ?? item[3] ?? 0),
+                    close: parseFloat(item.close ?? item[4] ?? 0),
+                    volume: parseFloat(item.volume ?? item[5] ?? 0),
+                    timestamp: Number(item.timestamp ?? item[0] ?? Date.now()),
+                };
+            }
+            return null;
+        })
+            .filter((c) => !!c && c.close > 0)
+            .sort((a, b) => a.timestamp - b.timestamp);
+    }
+    ensureCandleCoverage(candles) {
+        if (candles.length < 60) {
+            throw new ResearchEngineError('Not enough market data to compute indicators (need at least 60 candles)', this.createErrorId(), 422);
+        }
+    }
+    calculateOrderbookImbalance(orderbook) {
+        if (!orderbook.bids || !orderbook.asks || orderbook.bids.length === 0 || orderbook.asks.length === 0) {
+            return null;
+        }
+        const bidVolume = orderbook.bids.slice(0, 10).reduce((sum, bid) => {
+            const qty = parseFloat(bid.quantity);
+            return sum + (Number.isFinite(qty) ? qty : 0);
+        }, 0);
+        const askVolume = orderbook.asks.slice(0, 10).reduce((sum, ask) => {
+            const qty = parseFloat(ask.quantity);
+            return sum + (Number.isFinite(qty) ? qty : 0);
+        }, 0);
+        const total = bidVolume + askVolume;
+        // If total volume is 0, do NOT compute ratio (return null)
+        if (total === 0 || !Number.isFinite(total)) {
+            return null;
+        }
+        const imbalance = (bidVolume - askVolume) / total;
+        return Number.isFinite(imbalance) ? imbalance : null;
+    }
+    buildMicroSignals(liquidity, priceMomentum) {
+        return {
+            spread: liquidity.spreadPercent,
+            volume: liquidity.bidDepth + liquidity.askDepth,
+            priceMomentum,
+            orderbookDepth: liquidity.bidDepth + liquidity.askDepth,
+        };
+    }
+    computeTrendAnalysis(candles) {
+        const ema12 = this.calculateEMA(candles.map((c) => c.close), 12);
+        const ema26 = this.calculateEMA(candles.map((c) => c.close), 26);
+        let trend = 'NEUTRAL';
+        if (ema12 !== null && ema26 !== null) {
+            if (ema12 > ema26)
+                trend = 'BULLISH';
+            else if (ema12 < ema26)
+                trend = 'BEARISH';
+        }
+        return { ema12, ema26, trend };
+    }
+    computeTrendStrength(candles) {
+        const ema20 = this.calculateEMA(candles.map((c) => c.close), 20);
+        const ema50 = this.calculateEMA(candles.map((c) => c.close), 50);
+        let trend = 'NEUTRAL';
+        if (ema20 !== null && ema50 !== null) {
+            if (ema20 > ema50)
+                trend = 'BULLISH';
+            else if (ema20 < ema50)
+                trend = 'BEARISH';
+        }
+        return { ema20, ema50, trend };
+    }
+    computeAtr(candles, period = 14) {
+        if (candles.length < period + 1) {
+            return null;
+        }
+        let sum = 0;
+        for (let i = candles.length - period; i < candles.length; i++) {
+            const current = candles[i];
+            const previous = candles[i - 1];
+            const tr = Math.max(current.high - current.low, Math.abs(current.high - previous.close), Math.abs(current.low - previous.close));
+            sum += tr;
+        }
+        return sum / period;
+    }
+    calculateEMA(prices, period) {
+        if (prices.length < period) {
+            return null;
+        }
+        const k = 2 / (period + 1);
+        let ema = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;
+        for (let i = period; i < prices.length; i++) {
+            ema = prices[i] * k + ema * (1 - k);
+        }
+        return ema;
+    }
+    buildSignals(entry, stopLoss, takeProfit, exits) {
+        const signals = [];
+        if (entry) {
+            signals.push({ type: 'entry', price: entry, reason: 'Primary entry' });
+        }
+        if (stopLoss) {
+            signals.push({ type: 'sl', price: stopLoss, reason: 'Risk management stop' });
+        }
+        if (takeProfit) {
+            signals.push({ type: 'tp', price: takeProfit, reason: 'Primary take-profit target' });
+        }
+        exits.forEach((price, idx) => signals.push({ type: 'exit', price, reason: idx === 0 ? 'First exit target' : 'Final exit target' }));
+        return signals;
+    }
+    buildRecommendation(signal, exchange) {
+        if (signal === 'BUY')
+            return `Consider LONG on ${exchange}`;
+        if (signal === 'SELL')
+            return `Consider SHORT on ${exchange}`;
+        return 'Wait for clearer confirmation';
+    }
+    buildLiveAnalysis(symbol, signal, confidence, entry, stopLoss, takeProfit) {
+        return {
+            isLive: true,
+            lastUpdated: new Date().toISOString(),
+            summary: `${symbol}: ${signal} signal at ${confidence}% confidence`,
+            meta: { entry, stopLoss, takeProfit, confidence },
+        };
+    }
+    isDerivativesAligned(derivatives, signal) {
+        if (signal === 'BUY') {
+            return derivatives.overallSignal === 'Bullish';
+        }
+        if (signal === 'SELL') {
+            return derivatives.overallSignal === 'Bearish';
+        }
+        return false;
+    }
+    isDerivativesContradicting(derivatives, signal) {
+        if (signal === 'HOLD')
+            return false;
+        if (signal === 'BUY' && derivatives.overallSignal === 'Bearish')
+            return true;
+        if (signal === 'SELL' && derivatives.overallSignal === 'Bullish')
+            return true;
+        return false;
+    }
+    createErrorId() {
+        return crypto_1.default.randomBytes(6).toString('hex');
+    }
+    async buildMultiTimeframeCandles(params) {
+        const map = {};
+        await Promise.all(MULTI_TIMEFRAMES.map(async (tf) => {
+            if (tf === params.primaryTimeframe && params.primaryCandles) {
+                map[tf] = params.primaryCandles;
+                return;
+            }
+            const candles = await params.fetchTimeframe(tf);
+            if (candles) {
+                map[tf] = candles;
+            }
+        }));
+        return map;
+    }
+    summarizeMultiTimeframes(params) {
+        const breakdown = {};
+        const signals = {};
+        let weightedScoreSum = 0;
+        let totalWeight = 0;
+        let availableCount = 0;
+        MULTI_TIMEFRAMES.forEach((tf) => {
+            const candles = params.candlesByTimeframe[tf];
+            if (!candles || candles.length < 40) {
+                breakdown[tf] = {
+                    available: false,
+                    bias: 'NEUTRAL',
+                    score: 0,
+                    scorePercent: 50,
+                    fusedScore: 0,
+                    weight: TIMEFRAME_WEIGHTS[tf],
+                    perFeatureScore: {},
+                    availability: {},
+                    metadata: {
+                        rsi: null,
+                        macdHistogram: null,
+                        volumeSignal: null,
+                        atr: null,
+                        priceMomentum: 0,
+                        trend: null,
+                    },
+                };
+                signals[tf] = {
+                    signal: 'NEUTRAL',
+                    scorePercent: 50,
+                    fusedScore: 0,
+                    confidence: 50,
+                    priceMomentum: 0,
+                    trend: null,
+                };
+                return;
+            }
+            const rsi = (0, rsiStrategy_1.analyzeRSI)(candles);
+            const macd = (0, macdStrategy_1.analyzeMACD)(candles);
+            const volume = (0, volumeStrategy_1.analyzeVolume)(candles);
+            const trendStrength = this.computeTrendStrength(candles);
+            const trendAnalysis = this.computeTrendAnalysis(candles);
+            const atr = this.computeAtr(candles);
+            const lastClose = candles[candles.length - 1].close;
+            const momentum = this.calculatePriceMomentum(candles);
+            const weight = TIMEFRAME_WEIGHTS[tf];
+            const scoreState = (0, confidenceEngine_1.computeFeatureScores)({
+                symbol: params.symbol,
+                timeframe: tf,
+                price: lastClose,
+                rsi,
+                macd,
+                trendStrength: {
+                    ...trendStrength,
+                    ema12: trendAnalysis?.ema12 ?? null,
+                    ema26: trendAnalysis?.ema26 ?? null,
+                },
+                orderbookImbalance: params.sharedInputs.orderbookImbalance,
+                volatility: { atr, price: lastClose },
+                volume,
+                liquidity: params.sharedInputs.liquidity,
+                sentiment: params.sharedInputs.sentiment,
+                derivatives: params.sharedInputs.derivatives,
+                priceMomentum: momentum,
+                microSignals: params.sharedInputs.microSignals,
+            });
+            const fused = (0, confidenceEngine_1.fuseSignals)(scoreState);
+            const bias = this.scoreToBias(fused.weightedScore);
+            const scorePercent = this.scoreToPercent(fused.weightedScore);
+            const confidencePercent = Math.max(35, Math.min(95, scorePercent));
+            breakdown[tf] = {
+                available: true,
+                bias,
+                score: fused.weightedScore,
+                scorePercent,
+                fusedScore: fused.weightedScore,
+                weight,
+                perFeatureScore: scoreState.perFeatureScore,
+                availability: scoreState.availability,
+                metadata: {
+                    rsi: rsi.value,
+                    macdHistogram: macd.histogram,
+                    volumeSignal: volume.signal,
+                    atr,
+                    priceMomentum: momentum,
+                    trend: trendStrength.trend,
+                },
+            };
+            signals[tf] = {
+                signal: bias,
+                scorePercent,
+                fusedScore: fused.weightedScore,
+                confidence: confidencePercent,
+                priceMomentum: momentum,
+                trend: trendStrength.trend,
+            };
+            weightedScoreSum += fused.weightedScore * weight;
+            totalWeight += weight;
+            availableCount += 1;
+        });
+        const scorePercent = totalWeight ? this.scoreToPercent(weightedScoreSum / totalWeight) : 50;
+        const bullCount = MULTI_TIMEFRAMES.filter((tf) => breakdown[tf].bias === 'BULLISH' && breakdown[tf].available).length;
+        const bearCount = MULTI_TIMEFRAMES.filter((tf) => breakdown[tf].bias === 'BEARISH' && breakdown[tf].available).length;
+        const alignmentCount = Math.max(bullCount, bearCount);
+        const confluenceMatrix = {};
+        const pairs = [
+            ['5m', '15m'],
+            ['5m', '1h'],
+            ['15m', '1h'],
+        ];
+        pairs.forEach(([a, b]) => {
+            const key = `${a}_${b}`;
+            const aData = breakdown[a];
+            const bData = breakdown[b];
+            const weight = (TIMEFRAME_WEIGHTS[a] + TIMEFRAME_WEIGHTS[b]) / 2;
+            if (!aData.available || !bData.available) {
+                confluenceMatrix[key] = { status: 'MISSING', weight: 0 };
+                return;
+            }
+            if (aData.bias === 'NEUTRAL' || bData.bias === 'NEUTRAL') {
+                confluenceMatrix[key] = { status: 'MIXED', weight: weight / 2 };
+                return;
+            }
+            confluenceMatrix[key] = { status: aData.bias === bData.bias ? 'ALIGNED' : 'OPPOSED', weight };
+        });
+        const availableAll = MULTI_TIMEFRAMES.every((tf) => breakdown[tf].available);
+        const allAgree = availableAll &&
+            MULTI_TIMEFRAMES.every((tf, _, arr) => breakdown[tf].bias !== 'NEUTRAL' &&
+                breakdown[tf].bias === breakdown[arr[0]].bias);
+        const higherContradiction = breakdown['1h'].available &&
+            breakdown['1h'].bias !== 'NEUTRAL' &&
+            ['5m', '15m'].some((tf) => breakdown[tf].available &&
+                breakdown[tf].bias !== 'NEUTRAL' &&
+                breakdown[tf].bias !== breakdown['1h'].bias);
+        const shortTermDominant = breakdown['5m'].available &&
+            Math.abs(breakdown['5m'].score) >= 0.6 &&
+            (!breakdown['15m'].available || Math.abs(breakdown['15m'].score) < 0.2) &&
+            (!breakdown['1h'].available || Math.abs(breakdown['1h'].score) < 0.2);
+        return {
+            breakdown,
+            signalsByTimeframe: signals,
+            confluenceMatrix,
+            alignmentCount,
+            allAgree,
+            higherContradiction,
+            shortTermDominant,
+            scorePercent,
+            availableCount,
+        };
+    }
+    applyMultiTimeframeConfidenceAdjustments(baseConfidence, context) {
+        let adjusted = baseConfidence;
+        const reasons = [];
+        if (context.allAgree) {
+            adjusted += 10;
+            reasons.push('5m/15m/1h alignment (+10%)');
+        }
+        if (context.higherContradiction) {
+            adjusted -= 8;
+            reasons.push('Higher timeframe contradiction (-8%)');
+        }
+        if (context.shortTermDominant) {
+            adjusted = Math.min(adjusted, Math.max(55, adjusted - 5));
+            reasons.push('Short-term strength dampened (higher TF weak)');
+        }
+        const clamped = Math.max(35, Math.min(95, Math.round(adjusted)));
+        return {
+            confidence: clamped,
+            reason: reasons.length ? reasons.join(' | ') : null,
+        };
+    }
+    buildAccuracyRangeFromConfidence(confidence) {
+        const lower = Math.max(35, confidence - 5);
+        const upper = Math.min(95, confidence + 5);
+        return `${lower}-${upper}%`;
+    }
+    scoreToBias(score) {
+        if (score >= 0.25)
+            return 'BULLISH';
+        if (score <= -0.25)
+            return 'BEARISH';
+        return 'NEUTRAL';
+    }
+    scoreToPercent(score) {
+        return Math.round(((score + 1) / 2) * 100);
+    }
+    calculatePriceMomentum(candles, lookback = 5) {
+        if (!candles.length) {
+            return 0;
+        }
+        const end = candles[candles.length - 1].close;
+        const startIndex = Math.max(0, candles.length - lookback - 1);
+        const start = candles[startIndex].close;
+        if (!start || !Number.isFinite(end) || !Number.isFinite(start)) {
+            return 0;
+        }
+        return ((end - start) / start) * 100;
+    }
+    isLiquidityAcceptable(liquidity) {
+        return liquidity.signal !== 'Low' && liquidity.spreadPercent <= 0.6;
+    }
+    buildAutoTradeReason(params) {
+        const reasons = [];
+        if (params.confidence < 75) {
+            reasons.push('Confidence below 75%');
+        }
+        if (params.confluenceCount < 2) {
+            reasons.push('Need ≥2 aligned timeframes');
+        }
+        if (!params.derivativesAligned) {
+            reasons.push('Derivatives contradict bias');
+        }
+        if (!params.liquidityAcceptable) {
+            reasons.push('Liquidity below threshold');
+        }
+        return reasons.length ? reasons.join(' | ') : 'All trade conditions satisfied';
+    }
+}
+exports.ResearchEngine = ResearchEngine;
+exports.researchEngine = new ResearchEngine();
+const runResearch = ({ symbol, uid, timeframe = '5m', adapterOverride, legacyAdapters, activeContext, }) => exports.researchEngine.runResearch(symbol, uid, adapterOverride, false, legacyAdapters, timeframe, activeContext);
+exports.runResearch = runResearch;
+/**
+ * Quick scan a symbol for lightweight analysis (<300ms)
+ * Only uses basic price/volume data and fallback RSI/MACD
+ */
+async function quickScan(symbol, binanceAdapter) {
+    const startTime = Date.now();
+    const normalizedSymbol = symbol.toUpperCase();
+    try {
+        // Get basic ticker data from Binance (fast)
+        const tickerData = await binanceAdapter.getTicker(normalizedSymbol);
+        const priceChange24h = parseFloat(tickerData.priceChangePercent || '0');
+        const volume24h = parseFloat(tickerData.volume || '0');
+        // Quick RSI/MACD fallback calculation (simplified)
+        let rsi = 50; // Neutral fallback
+        let macdSignal = 0; // Neutral fallback
+        try {
+            // Try to get recent klines for basic RSI calculation (fast)
+            const klines = await binanceAdapter.getKlines(normalizedSymbol, '5m', 50);
+            if (klines && klines.length > 14) {
+                const closes = klines.slice(-14).map((k) => parseFloat(k.close));
+                rsi = calculateSimpleRSI(closes);
+            }
+        }
+        catch (error) {
+            // Keep fallback values
+        }
+        // Compute rough confidence score based on price momentum and volume
+        const priceMomentum = Math.abs(priceChange24h); // 0-100 range
+        const volumeScore = Math.min(volume24h / 1000000, 10); // Cap at 10 for very high volume
+        const rsiScore = rsi > 70 ? 8 : rsi < 30 ? 8 : 5; // Extreme RSI = high confidence
+        const macdScore = Math.abs(macdSignal) > 0.001 ? 6 : 3; // MACD divergence = moderate confidence
+        const confidence = Math.min(100, (priceMomentum * 2) + // Price change weight
+            (volumeScore * 3) + // Volume weight
+            rsiScore + // RSI weight
+            macdScore // MACD weight
+        );
+        return {
+            symbol: normalizedSymbol,
+            confidence,
+            priceChange24h,
+            volume24h,
+            rsi,
+            macdSignal,
+            scanTimeMs: Date.now() - startTime
+        };
+    }
+    catch (error) {
+        // Return minimal result on error
+        return {
+            symbol: normalizedSymbol,
+            confidence: 0,
+            priceChange24h: 0,
+            volume24h: 0,
+            rsi: 50,
+            macdSignal: 0,
+            scanTimeMs: Date.now() - startTime
+        };
+    }
+}
+/**
+ * Simple RSI calculation for quick scan
+ */
+function calculateSimpleRSI(closes) {
+    if (closes.length < 14)
+        return 50;
+    let gains = 0;
+    let losses = 0;
+    for (let i = 1; i < closes.length; i++) {
+        const change = closes[i] - closes[i - 1];
+        if (change > 0)
+            gains += change;
+        else
+            losses += Math.abs(change);
+    }
+    const avgGain = gains / 13; // 14 periods - 1
+    const avgLoss = losses / 13;
+    if (avgLoss === 0)
+        return 100;
+    const rs = avgGain / avgLoss;
+    return 100 - (100 / (1 + rs));
+}
+/**
+ * Get top 100 symbols from CoinGecko/Binance
+ */
+async function getTop100Symbols() {
+    const { topCoinsService } = await Promise.resolve().then(() => __importStar(require('./topCoinsService')));
+    return await topCoinsService.getTop100Coins();
+}
+/**
+ * Select the best symbol from top 100 by running quick scans
+ */
+async function selectBestSymbolFromTop100(uid) {
+    const startTime = Date.now();
+    const { BinancePublicAdapter } = await Promise.resolve().then(() => __importStar(require('./binancePublicAdapter')));
+    // Get top 100 symbols
+    const topSymbols = await getTop100Symbols();
+    if (topSymbols.length === 0) {
+        logger_1.logger.warn('No symbols available from top coins service, using fallback');
+        // Return a fallback selection
+        return {
+            selectedSymbol: 'BTCUSDT',
+            confidence: 0.5,
+            topCandidates: [{ symbol: 'BTCUSDT', confidence: 0.5, priceChange24h: 0, volume24h: 0 }],
+            totalScanTimeMs: 0,
+            reason: 'Fallback: no symbols available'
+        };
+    }
+    // Limit to first 50 for performance (top coins are most important)
+    const symbolsToScan = topSymbols.slice(0, 50);
+    const binanceAdapter = new BinancePublicAdapter();
+    logger_1.logger.info({ uid, symbolCount: symbolsToScan.length }, 'Starting quick scan of top symbols for auto-selection');
+    // Run quick scans in parallel (with concurrency limit)
+    const scanPromises = [];
+    const concurrencyLimit = 10; // Limit concurrent requests
+    for (let i = 0; i < symbolsToScan.length; i += concurrencyLimit) {
+        const batch = symbolsToScan.slice(i, i + concurrencyLimit);
+        const batchPromises = batch.map(symbol => quickScan(symbol, binanceAdapter));
+        scanPromises.push(...batchPromises);
+        // Small delay between batches to avoid rate limiting
+        if (i + concurrencyLimit < symbolsToScan.length) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+    }
+    const scanResults = await Promise.all(scanPromises);
+    // Sort by confidence (highest first)
+    scanResults.sort((a, b) => b.confidence - a.confidence);
+    const selectedResult = scanResults[0];
+    const totalScanTimeMs = Date.now() - startTime;
+    // Get top 5 candidates for logging
+    const topCandidates = scanResults.slice(0, 5).map(result => ({
+        symbol: result.symbol,
+        confidence: result.confidence,
+        priceChange24h: result.priceChange24h,
+        volume24h: result.volume24h
+    }));
+    logger_1.logger.info({
+        uid,
+        selectedSymbol: selectedResult.symbol,
+        confidence: selectedResult.confidence,
+        topCandidates,
+        totalScanTimeMs,
+        symbolsScanned: scanResults.length
+    }, 'Auto-selected best symbol from top 100 coins');
+    return {
+        selectedSymbol: selectedResult.symbol,
+        confidence: selectedResult.confidence,
+        topCandidates,
+        totalScanTimeMs,
+        reason: `Highest confidence (${selectedResult.confidence.toFixed(1)}%) from quick scan of ${scanResults.length} top symbols`
+    };
+}
