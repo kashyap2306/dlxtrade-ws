@@ -501,14 +501,16 @@ export class CryptoCompareAdapter {
 
       apiUsageTracker.increment('cryptocompare');
 
-      const data = response.data?.Data || [];
-      return data.map((item: any) => ({
+      const raw = response.data?.Data?.Data;
+      if (!Array.isArray(raw)) return [];
+
+      return raw.map((item: any) => ({
         time: item.time,
         open: parseFloat(item.open) || 0,
         high: parseFloat(item.high) || 0,
         low: parseFloat(item.low) || 0,
         close: parseFloat(item.close) || 0,
-        volume: parseFloat(item.volumeto) || 0,
+        volume: parseFloat(item.volumefrom) || 0,
       }));
     } catch (error: any) {
       logger.warn({ symbol, timeframe, error: error.message }, 'Failed to get OHLC data from CryptoCompare');

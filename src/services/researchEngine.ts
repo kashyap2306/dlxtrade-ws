@@ -512,11 +512,11 @@ export class ResearchEngine {
       const microSignals = this.buildMicroSignals(liquidity, priceMomentum);
       recordApiCall({ apiName: 'Microstructure Module', status: 'SUCCESS' });
 
-      // CryptoCompare is MANDATORY - all adapters are guaranteed to exist
-      const cryptoCompareResult = await logProviderCall(
+      // CryptoCompare is OPTIONAL - skip if no adapter available
+      const cryptoCompareResult = cryptoAdapter ? await logProviderCall(
         'cryptocompare',
         async () => await cryptoAdapter.getAllMetrics(normalizedSymbol)
-      );
+      ) : { success: false, data: null, error: 'CryptoCompare adapter not available', duration: 0 };
 
       // Update debug preview for cryptocompare
       if (cryptoCompareResult.success && cryptoCompareResult.data) {
@@ -533,25 +533,32 @@ export class ResearchEngine {
         "1h": { timeframe: "1h", rsi: null, macd: null, ema12: null, ema26: null, sma20: null },
       };
 
-      // Fetch MTF indicators for each timeframe
-      const mtfPromises = (["5m", "15m", "1h"] as const).map(async (timeframe) => {
-        try {
-          const result = await logProviderCall(
-            `mtf_${timeframe}`,
-            async () => await cryptoAdapter.getMTFIndicators(normalizedSymbol, timeframe)
-          );
-          if (result.success && result.data) {
-            mtfIndicators[timeframe] = result.data;
+      // Fetch MTF indicators for each timeframe (only if CryptoCompare available)
+      if (cryptoAdapter) {
+        const mtfPromises = (["5m", "15m", "1h"] as const).map(async (timeframe) => {
+          try {
+            const result = await logProviderCall(
+              `mtf_${timeframe}`,
+              async () => await cryptoAdapter!.getMTFIndicators(normalizedSymbol, timeframe)
+            );
+            if (result.success && result.data) {
+              mtfIndicators[timeframe] = result.data;
+            }
+          } catch (error: any) {
+            logger.warn({ symbol: normalizedSymbol, timeframe, error: error.message }, `MTF ${timeframe} indicators failed`);
           }
-        } catch (error: any) {
-          logger.warn({ symbol: normalizedSymbol, timeframe, error: error.message }, `MTF ${timeframe} indicators failed`);
-        }
-      });
+        });
 
-      await Promise.all(mtfPromises);
+        await Promise.all(mtfPromises);
+      }
 
-      // Calculate MTF confluence
-      const mtfConfluence = cryptoAdapter.calculateMTFConfluence(mtfIndicators);
+      // Calculate MTF confluence (only if CryptoCompare available)
+      const mtfConfluence = cryptoAdapter ? cryptoAdapter.calculateMTFConfluence(mtfIndicators) : {
+        score: 0,
+        maxScore: 3,
+        label: '0/3',
+        details: { '5m': 'No data', '15m': 'No data', '1h': 'No data' }
+      };
 
       // Add MTF debug info
       providerDebug.mtf = {
@@ -578,14 +585,14 @@ export class ResearchEngine {
       // Remove on-chain score since CryptoCompare no longer provides it
       const onChainScore = 0;
 
-      // MarketAux is MANDATORY - adapter is guaranteed to exist
-      const marketAuxResult = await logProviderCall(
+      // MarketAux is OPTIONAL - skip if no adapter available
+      const marketAuxResult = marketAuxAdapter ? await logProviderCall(
         'marketaux',
         async () => {
           const baseSymbol = normalizedSymbol.replace(/USDT$/i, '').replace(/USD$/i, '');
-          return await marketAuxAdapter.getNewsSentiment(baseSymbol);
+          return await marketAuxAdapter!.getNewsSentiment(baseSymbol);
         }
-      );
+      ) : { success: false, data: null, error: 'MarketAux adapter not available', duration: 0 };
 
       const marketAuxData = marketAuxResult.success ? marketAuxResult.data : null;
 
@@ -946,8 +953,8 @@ export class ResearchEngine {
   }
 
   private async buildProviderAdapters(uid: string, overrideKeys?: { marketauxApiKey?: string; cryptocompareApiKey?: string }): Promise<{
-    marketAuxAdapter: MarketAuxAdapter;
-    cryptoAdapter: CryptoCompareAdapter;
+    marketAuxAdapter: MarketAuxAdapter | null;
+    cryptoAdapter: CryptoCompareAdapter | null;
     // Free APIs - no API keys required
     binanceAdapter: any;
     coingeckoAdapter: any;
@@ -971,58 +978,48 @@ export class ResearchEngine {
       cryptocompareKeyPresent: !!cryptocompareKey,
     }, 'API key sources resolved');
 
-    // Check for missing mandatory API keys
+    // OPTIONAL API keys - log warnings but don't block Deep Research
     if (!marketAuxKey) {
-      logger.error({ uid }, 'MarketAux API key required for Deep Research but not configured');
-      throw new ResearchEngineError(
-        'MarketAux API key required for Deep Research.',
-        this.createErrorId(),
-        400
-      );
+      logger.warn({ uid }, 'MarketAux key missing — skipping sentiment/news');
     }
     if (!cryptocompareKey) {
-      logger.error({ uid }, 'CryptoCompare API key required for Deep Research but not configured');
-      throw new ResearchEngineError(
-        'CryptoCompare API key required for Deep Research.',
-        this.createErrorId(),
-        400
-      );
+      logger.warn({ uid }, 'CryptoCompare key missing — using Binance-only indicators');
     }
 
-    // NOTE: MarketAux and CryptoQuant are now MANDATORY for Deep Research
+    // NOTE: MarketAux and CryptoCompare are now OPTIONAL for Deep Research
 
-    logger.info({ uid }, 'All required provider API keys found, initializing adapters');
+    logger.info({ uid }, 'Initializing adapters (optional providers will be skipped if keys missing)');
 
     // Log successful key retrieval for debugging
     logger.info({ uid, providers: Object.keys(providerKeys) }, 'Provider API keys successfully retrieved from integrations');
 
-    // Create adapters - MarketAux and CryptoCompare are MANDATORY
-    let marketAuxAdapter: MarketAuxAdapter;
-    try {
-      logger.debug({ uid }, 'Initializing MarketAux adapter with user API key');
-      marketAuxAdapter = new MarketAuxAdapter(marketAuxKey);
-      logger.info({ uid }, 'MarketAux adapter initialized successfully');
-    } catch (error: any) {
-      logger.error({ uid, error: error.message }, 'Failed to initialize MarketAux adapter');
-      throw new ResearchEngineError(
-        'Failed to initialize MarketAux adapter for Deep Research.',
-        this.createErrorId(),
-        400
-      );
+    // Create adapters - MarketAux is now OPTIONAL
+    let marketAuxAdapter: MarketAuxAdapter | null = null;
+    if (marketAuxKey) {
+      try {
+        logger.debug({ uid }, 'Initializing MarketAux adapter with user API key');
+        marketAuxAdapter = new MarketAuxAdapter(marketAuxKey);
+        logger.info({ uid }, 'MarketAux adapter initialized successfully');
+      } catch (error: any) {
+        logger.error({ uid, error: error.message }, 'Failed to initialize MarketAux adapter');
+        marketAuxAdapter = null;
+      }
+    } else {
+      logger.info({ uid }, 'MarketAux adapter skipped (no API key)');
     }
 
-    let cryptoAdapter: CryptoCompareAdapter;
-    try {
-      logger.debug({ uid }, 'Initializing CryptoCompare adapter with user API key');
-      cryptoAdapter = new CryptoCompareAdapter(cryptocompareKey);
-      logger.info({ uid }, 'CryptoCompare adapter initialized successfully');
-    } catch (error: any) {
-      logger.error({ uid, error: error.message }, 'Failed to initialize CryptoCompare adapter');
-      throw new ResearchEngineError(
-        'Failed to initialize CryptoCompare adapter for Deep Research.',
-        this.createErrorId(),
-        400
-      );
+    let cryptoAdapter: CryptoCompareAdapter | null = null;
+    if (cryptocompareKey) {
+      try {
+        logger.debug({ uid }, 'Initializing CryptoCompare adapter with user API key');
+        cryptoAdapter = new CryptoCompareAdapter(cryptocompareKey);
+        logger.info({ uid }, 'CryptoCompare adapter initialized successfully');
+      } catch (error: any) {
+        logger.error({ uid, error: error.message }, 'Failed to initialize CryptoCompare adapter');
+        cryptoAdapter = null;
+      }
+    } else {
+      logger.info({ uid }, 'CryptoCompare adapter skipped (no API key)');
     }
 
     // Create free API adapters - no API keys required

@@ -1,13 +1,13 @@
 /**
  * Sentiment Strategy Module
- * Analyzes news and social sentiment from LunarCrush
+ * Analyzes news and social sentiment from MarketAux
  */
 
 export interface SentimentData {
-  sentiment?: number; // -1 to 1 (LunarCrush sentiment)
-  bullishSentiment?: number; // 0 to 1 (LunarCrush bullish sentiment)
-  socialScore?: number; // Social score
-  socialVolume?: number; // Social volume
+  sentiment?: number; // -1 to 1 (MarketAux sentiment)
+  bullishSentiment?: number; // 0 to 1 (computed from MarketAux sentiment)
+  socialScore?: number; // Hype score from MarketAux
+  socialVolume?: number; // Total articles from MarketAux
   timestamp?: number;
 }
 
@@ -19,7 +19,7 @@ export interface SentimentResult {
 }
 
 /**
- * Analyze sentiment from LunarCrush data
+ * Analyze sentiment from MarketAux data
  * Signal logic:
  * - Sentiment > 0.3 → Bullish
  * - Sentiment < -0.3 → Bearish
@@ -27,10 +27,20 @@ export interface SentimentResult {
  * 
  * Uses both sentiment (-1 to 1) and bullishSentiment (0 to 1) if available
  */
-export function analyzeSentiment(data: SentimentData): SentimentResult {
+export function analyzeSentiment(data: SentimentData | undefined): SentimentResult {
+  // Handle undefined data
+  if (!data) {
+    return {
+      signal: 'Neutral',
+      score: 0.5,
+      sentiment: 0,
+      description: 'Sentiment data not available',
+    };
+  }
+
   // Prefer bullishSentiment if available (0-1 scale), otherwise use sentiment (-1 to 1)
   let sentimentValue: number;
-  
+
   if (data.bullishSentiment !== undefined && data.bullishSentiment !== null) {
     // Convert bullishSentiment (0-1) to sentiment scale (-1 to 1)
     sentimentValue = (data.bullishSentiment - 0.5) * 2;
