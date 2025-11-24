@@ -273,7 +273,13 @@ export async function researchRoutes(fastify: FastifyInstance) {
   // MANUAL RESEARCH ROUTE: POST /api/research/manual - Trigger manual research (always returns response)
   fastify.post('/manual', {
     preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Body: { symbol?: string; timeframe?: string } }>, reply: FastifyReply) => {
+  }, async (request: FastifyRequest<{ Body: {
+    symbol?: string;
+    timeframe?: string;
+    marketauxApiKey?: string;
+    cryptoquantApiKey?: string;
+    query?: string;
+  } }>, reply: FastifyReply) => {
     const user = (request as any).user;
     logger.info({ uid: user?.uid }, 'Manual Research triggered');
 
@@ -291,6 +297,12 @@ export async function researchRoutes(fastify: FastifyInstance) {
     try {
       const symbol = request.body?.symbol || 'BTCUSDT';
       const timeframe = request.body?.timeframe || '5m';
+
+      // Extract API keys from request body (optional fallback)
+      const overrideKeys = {
+        marketauxApiKey: request.body?.marketauxApiKey,
+        cryptoquantApiKey: request.body?.cryptoquantApiKey,
+      };
 
       // Get exchange context (will return safe fallback if not configured)
       const activeContext = await firestoreAdapter.getActiveExchangeForUser(user.uid);
@@ -313,7 +325,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
           false,
           undefined,
           timeframe,
-          contextForResearch || undefined
+          contextForResearch || undefined,
+          overrideKeys
         );
 
         // Return successful response

@@ -244,7 +244,8 @@ export class ResearchEngine {
     _forceEngine: boolean = false,
     _legacy?: Array<{ exchange: string; adapter: ExchangeConnector; credentials: any }>,
     timeframe: string = '5m',
-    activeContext?: ActiveExchangeContext
+    activeContext?: ActiveExchangeContext,
+    overrideKeys?: { marketauxApiKey?: string; cryptoquantApiKey?: string }
   ): Promise<ResearchResult> {
     const normalizedSymbol = this.normalizeSymbol(symbol);
     const normalizedTimeframe = this.normalizeTimeframe(timeframe);
@@ -299,7 +300,7 @@ export class ResearchEngine {
     // ALL 5 provider APIs are MANDATORY - buildProviderAdapters throws if any are missing
     // NOTE: CoinAPI replaced with free APIs
     const { marketAuxAdapter, cryptoAdapter, binanceAdapter, coingeckoAdapter, googleFinanceAdapter } =
-      await this.buildProviderAdapters(uid);
+      await this.buildProviderAdapters(uid, overrideKeys);
 
     // NOTE: Exchange API is now OPTIONAL for Deep Research - only required for Auto-Trade
     // Deep Research works with LunarCrush + CryptoQuant + Free APIs (Binance, CoinGecko, Google Finance)
@@ -775,7 +776,7 @@ export class ResearchEngine {
     return '5m';
   }
 
-  private async buildProviderAdapters(uid: string): Promise<{
+  private async buildProviderAdapters(uid: string, overrideKeys?: { marketauxApiKey?: string; cryptoquantApiKey?: string }): Promise<{
     marketAuxAdapter: MarketAuxAdapter;
     cryptoAdapter: CryptoCompareAdapter;
     // Free APIs - no API keys required
@@ -788,8 +789,9 @@ export class ResearchEngine {
     const missing: string[] = [];
 
     // MANDATORY API keys - Deep Research requires all 5 providers
-    const marketAuxKey = providerKeys['marketaux']?.apiKey;
-    const cryptoKey = providerKeys['cryptocompare']?.apiKey;
+    // Use override keys if provided, otherwise load from Firestore
+    const marketAuxKey = overrideKeys?.marketauxApiKey || providerKeys['marketaux']?.apiKey;
+    const cryptoKey = overrideKeys?.cryptoquantApiKey || providerKeys['cryptocompare']?.apiKey;
 
     // Check for missing mandatory API keys
     if (!marketAuxKey) {
@@ -809,7 +811,7 @@ export class ResearchEngine {
       );
     }
 
-    // NOTE: LunarCrush and CryptoQuant are now MANDATORY for Deep Research
+    // NOTE: MarketAux and CryptoQuant are now MANDATORY for Deep Research
 
     logger.info({ uid }, 'All required provider API keys found, initializing adapters');
 

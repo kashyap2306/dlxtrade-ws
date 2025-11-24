@@ -402,7 +402,7 @@ export class FirestoreAdapter {
     // Only create optional research providers - default providers are not stored in Firestore
     const defaultIntegrations = [
       // Required APIs (disabled by default, require API keys)
-      { name: 'lunarcrush', enabled: false, displayName: 'LunarCrush API', free: false },
+      { name: 'marketaux', enabled: false, displayName: 'MarketAux API', free: false },
       { name: 'cryptocompare', enabled: false, displayName: 'CryptoCompare API', free: false },
     ];
 
@@ -620,7 +620,7 @@ export class FirestoreAdapter {
 
   /**
    * Get user's provider API keys from integrations collection
-   * Reads from users/{uid}/integrations documents for cryptoquant, lunarcrush, coinapi_*
+   * Reads from users/{uid}/integrations documents for cryptocompare, marketaux, coinapi_*
    */
   async getUserProviderApiKeys(uid: string): Promise<Record<string, { apiKey: string }>> {
     try {
@@ -630,7 +630,7 @@ export class FirestoreAdapter {
       // Map integration document names to provider keys
       const providerMappings = {
         'cryptocompare': 'cryptocompare',
-        'lunarcrush': 'lunarcrush',
+        'marketaux': 'marketaux',
         'coinapi_market': 'coinapi_market',
         'coinapi_exchangerate': 'coinapi_exchangerate',
         'coinapi_flatfile': 'coinapi_flatfile'
