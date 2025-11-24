@@ -54,7 +54,10 @@ async function fetchValidBinanceSymbols(): Promise<void> {
  */
 export function loadValidSymbols(): string[] {
   try {
-    const cacheFile = path.join(__dirname, '../cache/validSymbols.json');
+    // In development, look in src/cache, in production look in dist/cache
+    const isCompiled = __dirname.includes('dist');
+    const cacheDir = isCompiled ? path.join(__dirname, '../cache') : path.join(__dirname, '../../src/cache');
+    const cacheFile = path.join(cacheDir, 'validSymbols.json');
 
     if (!fs.existsSync(cacheFile)) {
       logger.warn({ cacheFile }, 'Valid symbols cache not found, will fetch fresh data');
@@ -82,6 +85,33 @@ export function loadValidSymbols(): string[] {
 }
 
 /**
+ * Check if a symbol is valid for Binance trading
+ */
+export async function isValidBinanceSymbol(symbol: string): Promise<boolean> {
+  try {
+    const validSymbols = await getValidSymbols();
+    return validSymbols.includes(symbol.toUpperCase());
+  } catch (error) {
+    logger.warn({ error: error.message, symbol }, 'Failed to check symbol validity, allowing major symbols to proceed');
+
+    // In case of cache/network issues, allow major symbols to proceed
+    // This prevents blocking research when cache is temporarily unavailable
+    const majorSymbols = [
+      'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'XRPUSDT', 'SOLUSDT', 'DOTUSDT', 'DOGEUSDT',
+      'AVAXUSDT', 'LTCUSDT', 'MATICUSDT', 'SHIBUSDT', 'UNIUSDT', 'LINKUSDT', 'ETCUSDT', 'ATOMUSDT'
+    ];
+
+    if (majorSymbols.includes(symbol.toUpperCase())) {
+      logger.info({ symbol }, 'Allowing major symbol to proceed despite cache failure');
+      return true;
+    }
+
+    // For less common symbols, be more conservative
+    return false;
+  }
+}
+
+/**
  * Get valid symbols with auto-refresh
  */
 export async function getValidSymbols(): Promise<string[]> {
@@ -94,15 +124,54 @@ export async function getValidSymbols(): Promise<string[]> {
   }
 }
 
+// Test function for symbol validation
+async function testSymbolValidation(): Promise<void> {
+  console.log('🧪 Testing symbol validation...');
+
+  const testCases = [
+    { symbol: 'BTCUSDT', expected: true },
+    { symbol: 'btcusdt', expected: true }, // Case insensitive
+    { symbol: 'ETHUSDT', expected: true },
+    { symbol: 'RENUSDT', expected: false }, // Invalid symbol
+    { symbol: 'GNTUSDT', expected: false }, // Invalid symbol
+    { symbol: 'FAKESYMBOL', expected: false }, // Definitely invalid symbol
+    { symbol: 'INVALID123', expected: false }, // Invalid symbol
+  ];
+
+  for (const testCase of testCases) {
+    try {
+      const result = await isValidBinanceSymbol(testCase.symbol);
+      const status = result === testCase.expected ? '✅ PASS' : '❌ FAIL';
+      console.log(`${status} isValidBinanceSymbol("${testCase.symbol}") -> ${result} (expected: ${testCase.expected})`);
+    } catch (error: any) {
+      console.log(`❌ ERROR testing "${testCase.symbol}": ${error.message}`);
+    }
+  }
+}
+
 // Run if called directly
 if (require.main === module) {
-  fetchValidBinanceSymbols()
-    .then(() => {
-      logger.info('Symbol fetch completed successfully');
-      process.exit(0);
-    })
-    .catch((error) => {
-      logger.error({ error: error.message }, 'Symbol fetch failed');
-      process.exit(1);
-    });
+  const args = process.argv.slice(2);
+
+  if (args.includes('--test')) {
+    testSymbolValidation()
+      .then(() => {
+        console.log('🧪 Symbol validation tests completed');
+        process.exit(0);
+      })
+      .catch((error) => {
+        console.error('❌ Symbol validation tests failed:', error.message);
+        process.exit(1);
+      });
+  } else {
+    fetchValidBinanceSymbols()
+      .then(() => {
+        logger.info('Symbol fetch completed successfully');
+        process.exit(0);
+      })
+      .catch((error) => {
+        logger.error({ error: error.message }, 'Symbol fetch failed');
+        process.exit(1);
+      });
+  }
 }

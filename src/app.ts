@@ -258,9 +258,17 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   // WebSocket endpoint for real-time updates (user channel)
   app.get('/ws', { websocket: true }, async (connection, req) => {
+    const clientInfo = {
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+      origin: req.headers.origin,
+      timestamp: new Date().toISOString()
+    };
+
     console.log('WS client connected');
     console.log('🔌 WebSocket connection attempt to /ws');
-    logger.info('WebSocket connection attempt to /ws');
+    console.log('Client connection details:', clientInfo);
+    logger.info({ clientInfo }, 'WebSocket connection attempt to /ws');
     
     // Allow unauthenticated connections for Render plain WS; if token provided, attach user
     let uid: string | null = null;
@@ -345,7 +353,17 @@ export async function buildApp(): Promise<FastifyInstance> {
       }
     });
 
-    connection.socket.on('close', () => {
+    connection.socket.on('close', (code, reason) => {
+      const closeDetails = {
+        code,
+        reason: reason?.toString() || 'No reason provided',
+        uid,
+        timestamp: new Date().toISOString()
+      };
+
+      console.log('🔌 WebSocket connection closed:', closeDetails);
+      logger.info({ closeDetails }, 'WebSocket connection closed');
+
       // Unregister from user WebSocket manager
       if (uid) {
         (async () => {
@@ -353,14 +371,25 @@ export async function buildApp(): Promise<FastifyInstance> {
           userWebSocketManager.unregisterUser(connection.socket);
         })();
       }
-      
+
       if (accuracyEngine) {
         accuracyEngine.unregisterWebSocketClient(connection.socket);
       }
       if (hftEngine) {
         hftEngine.unregisterWebSocketClient(connection.socket);
       }
-      logger.info({ uid }, 'WebSocket connection closed');
+    });
+
+    connection.socket.on('error', (error) => {
+      const errorDetails = {
+        error: error.message,
+        uid,
+        timestamp: new Date().toISOString(),
+        readyState: connection.socket.readyState
+      };
+
+      console.error('❌ WebSocket connection error:', errorDetails);
+      logger.error({ errorDetails }, 'WebSocket connection error');
     });
   });
 

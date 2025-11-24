@@ -260,11 +260,11 @@ export class ResearchEngine {
     timeframe: string = '5m',
     activeContext?: ActiveExchangeContext
   ): Promise<ResearchResult> {
-    // Add global 3-second timeout to prevent hanging
+    // Add global 5-second timeout to prevent hanging
     return Promise.race([
       this.runResearchInternal(symbol, uid, adapterOverride, _forceEngine, _legacy, timeframe, activeContext),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Research timeout: exceeded 3 seconds')), 3000)
+        setTimeout(() => reject(new Error('Research timeout: exceeded 5 seconds')), 5000)
       )
     ]);
   }
@@ -568,7 +568,7 @@ export class ResearchEngine {
         'cryptocompare',
         async () => {
           const timeout = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('CryptoCompare timeout')), 300)
+            setTimeout(() => reject(new Error('CryptoCompare timeout')), 1500)
           );
           const apiCall = cryptoAdapter.getAllMetrics(normalizedSymbol);
           return Promise.race([apiCall, timeout]);
@@ -600,7 +600,7 @@ export class ResearchEngine {
             `mtf_${timeframe}`,
             async () => {
               const timeout = new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error(`MTF ${timeframe} timeout`)), 300)
+                setTimeout(() => reject(new Error(`MTF ${timeframe} timeout`)), 1500)
               );
               const apiCall = cryptoAdapter.getMTFIndicators(normalizedSymbol, timeframe);
               return Promise.race([apiCall, timeout]);
@@ -656,7 +656,7 @@ export class ResearchEngine {
         'marketaux',
         async () => {
           const timeout = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('MarketAux timeout')), 500)
+            setTimeout(() => reject(new Error('MarketAux timeout')), 800)
           );
           const apiCall = async () => {
             const baseSymbol = normalizedSymbol.replace(/USDT$/i, '').replace(/USD$/i, '');
@@ -787,7 +787,7 @@ export class ResearchEngine {
         'googlefinance',
         async () => {
           const timeout = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('GoogleFinance timeout')), 1200)
+            setTimeout(() => reject(new Error('GoogleFinance timeout')), 600)
           );
           const apiCall = async () => {
             const result = await googleFinanceAdapter.getExchangeRate('USD', 'INR');
@@ -804,9 +804,9 @@ export class ResearchEngine {
       const googleFinanceExchangeRate = googleFinanceResult.success ? googleFinanceResult.data : null;
 
       // CoinGecko - free API, always available (may return null data but API is accessible)
-      // Add 300ms timeout to prevent slowdown
+      // Add 600ms timeout to prevent slowdown
       const coingeckoTimeout = new Promise<null>((_, reject) =>
-        setTimeout(() => reject(new Error('CoinGecko timeout')), 300)
+        setTimeout(() => reject(new Error('CoinGecko timeout')), 600)
       );
       const coingeckoPromise = coingeckoAdapter.getHistoricalData(normalizedSymbol, 90);
       const coingeckoHistoricalData = await Promise.race([coingeckoPromise, coingeckoTimeout]).catch(() => null);

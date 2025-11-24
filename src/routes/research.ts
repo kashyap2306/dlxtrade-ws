@@ -4,6 +4,7 @@ import { researchEngine } from '../services/researchEngine';
 import { autoTradeController } from '../services/autoTradeController';
 // Note: liveAnalysisService is deprecated - all analysis now comes from researchEngine.runResearch()
 import { topCoinsService } from '../services/topCoinsService';
+import { isValidBinanceSymbol } from '../scripts/fetchValidBinanceSymbols';
 import { z } from 'zod';
 import { logger } from '../utils/logger';
 
@@ -366,6 +367,18 @@ export async function researchRoutes(fastify: FastifyInstance) {
         reason: selectionResult.reason,
         topCandidates: selectionResult.topCandidates.slice(0, 3) // Log top 3
       }, 'AUTO-SELECTED SYMBOL for manual research');
+
+      // Validate that the selected symbol is a valid Binance trading pair
+      const isValid = await isValidBinanceSymbol(symbol);
+      if (!isValid) {
+        logger.warn({ uid, symbol }, 'Invalid symbol provided for manual research');
+        reply.code(400).header('Content-Type', 'application/json').send({
+          success: false,
+          message: 'Research failed',
+          error: `Invalid trading pair: ${symbol}. Not listed on Binance.`
+        });
+        return;
+      }
 
       // Get exchange context (will return safe fallback if not configured)
       const activeContext = await firestoreAdapter.getActiveExchangeForUser(uid);
