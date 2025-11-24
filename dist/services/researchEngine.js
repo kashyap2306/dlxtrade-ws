@@ -45,7 +45,7 @@ const axios_1 = __importDefault(require("axios"));
 const logger_1 = require("../utils/logger");
 const firestoreAdapter_1 = require("./firestoreAdapter");
 const MarketAuxAdapter_1 = require("./MarketAuxAdapter");
-const cryptoCompareAdapter_1 = require("./cryptoCompareAdapter");
+// const cryptoCompareAdapter_1 = require("./cryptoCompareAdapter"); // DISABLED: CryptoCompare removed
 // NOTE: CoinAPI replaced with free APIs
 const binancePublicAdapter_1 = require("./binancePublicAdapter");
 const coingeckoAdapter_1 = require("./coingeckoAdapter");
@@ -571,34 +571,34 @@ class ResearchEngine {
             const imbalance = this.calculateOrderbookImbalance(orderbook);
             const microSignals = this.buildMicroSignals(liquidity, priceMomentum);
             recordApiCall({ apiName: 'Microstructure Module', status: 'SUCCESS' });
-            // CryptoCompare always available - returns neutral data if no API key
-            const cryptoCompareResult = await logProviderCall('cryptocompare', async () => {
-                const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('CryptoCompare timeout')), 1000));
-                const apiCall = cryptoAdapter.getAllMetrics(normalizedSymbol);
-                return Promise.race([apiCall, timeout]);
-            });
+            // DISABLED: CryptoCompare removed from research pipeline
+            // const cryptoCompareResult = await logProviderCall('cryptocompare', async () => {
+            //     const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('CryptoCompare timeout')), 1000));
+            //     const apiCall = cryptoAdapter.getAllMetrics(normalizedSymbol);
+            //     return Promise.race([apiCall, timeout]);
+            // });
             // All providers are always attempted and return data (success or fallback)
-            providersUsed.cryptocompare = true;
+            // providersUsed.cryptocompare = true; // DISABLED
             // Update debug preview for cryptocompare
-            if (cryptoCompareResult.success && cryptoCompareResult.data) {
-                providerDebug.cryptocompare.dataPreview = Object.keys(cryptoCompareResult.data);
-            }
-            const cryptoCompareData = cryptoCompareResult.success ? cryptoCompareResult.data : null;
+            // if (cryptoCompareResult.success && cryptoCompareResult.data) {
+            //     providerDebug.cryptocompare.dataPreview = Object.keys(cryptoCompareResult.data);
+            // }
+            const cryptoCompareData = null; // DISABLED: No CryptoCompare data
             // MTF Indicator Pipeline - fetch indicators for all timeframes
             const mtfIndicators = {
                 "5m": { timeframe: "5m", rsi: null, macd: null, ema12: null, ema26: null, sma20: null },
                 "15m": { timeframe: "15m", rsi: null, macd: null, ema12: null, ema26: null, sma20: null },
                 "1h": { timeframe: "1h", rsi: null, macd: null, ema12: null, ema26: null, sma20: null },
             };
-            // Fetch MTF indicators for each timeframe (always runs with neutral data fallback)
-            const mtfPromises = ["5m", "15m", "1h"].map(async (timeframe) => {
-                try {
-                    const result = await runApiCall(`CryptoCompare MTF ${timeframe}`, () => cryptoAdapter.getMTFIndicators(normalizedSymbol, timeframe), 3000, // Reduced timeout for CryptoCompare MTF
-                    {
-                        timeframe,
-                        rsi: 50,
-                        macd: { value: 0, signal: 0, histogram: 0 },
-                        ema12: null,
+            // DISABLED: CryptoCompare MTF indicators removed
+            // const mtfPromises = ["5m", "15m", "1h"].map(async (timeframe) => {
+            //     try {
+            //         const result = await runApiCall(`CryptoCompare MTF ${timeframe}`, () => cryptoAdapter.getMTFIndicators(normalizedSymbol, timeframe), 3000, // Reduced timeout for CryptoCompare MTF
+            //         {
+            //             timeframe,
+            //             rsi: 50,
+            //             macd: { value: 0, signal: 0, histogram: 0 },
+            //             ema12: null,
                         ema26: null,
                         sma20: null
                     }, 'cryptocompare', {
@@ -635,29 +635,19 @@ class ResearchEngine {
                     };
                 }
             });
-            await Promise.all(mtfPromises);
+            // await Promise.all(mtfPromises); // DISABLED: CryptoCompare removed
             // Calculate MTF confluence (always runs with available data)
-            const mtfConfluence = cryptoAdapter.calculateMTFConfluence(mtfIndicators);
+            const mtfConfluence = { label: 'NEUTRAL', scorePercent: 50 }; // DISABLED: Neutral fallback
             // Add MTF debug info
             providerDebug.mtf = {
                 indicators: mtfIndicators,
                 confluence: mtfConfluence,
             };
-            // Extract indicators from CryptoCompare data (if available)
-            const rsiFromCryptoCompare = cryptoCompareData?.indicators?.rsi ? {
-                value: cryptoCompareData.indicators.rsi,
-                signal: cryptoCompareData.indicators.rsi > 70 ? 'OVERBOUGHT' : cryptoCompareData.indicators.rsi < 30 ? 'OVERSOLD' : 'NEUTRAL'
-            } : { value: null, signal: 'NEUTRAL' };
-            const macdFromCryptoCompare = cryptoCompareData?.indicators?.macd ? {
-                signal: cryptoCompareData.indicators.macd.value,
-                histogram: cryptoCompareData.indicators.macd.histogram,
-                trend: cryptoCompareData.indicators.macd.histogram > 0 ? 'BULLISH' : 'BEARISH'
-            } : { signal: 0, histogram: 0, trend: 'NEUTRAL' };
-            // Derivatives data will come from user's providers (CryptoCompare, CoinAPI, etc.)
-            const derivativesResult = await runApiCall('Derivatives Data Fetch', async () => {
-                const { fetchDerivativesData } = await Promise.resolve().then(() => __importStar(require('./strategies/derivativesStrategy')));
-                return await fetchDerivativesData(normalizedSymbol, userExchangeAdapter, cryptoAdapter);
-            }, 2000, { source: 'exchange' }, 'Multiple');
+            // DISABLED: Extract indicators from CryptoCompare data (removed)
+            const rsiFromCryptoCompare = { value: null, signal: 'NEUTRAL' }; // DISABLED: Neutral fallback
+            const macdFromCryptoCompare = { signal: 0, histogram: 0, trend: 'NEUTRAL' }; // DISABLED: Neutral fallback
+            // DISABLED: Derivatives data from CryptoCompare removed
+            const derivativesResult = { success: false, data: null, fallback: true }; // DISABLED: Neutral fallback
             const derivatives = (0, derivativesStrategy_1.analyzeDerivatives)(derivativesResult.data);
             // Remove on-chain score since CryptoCompare no longer provides it
             const onChainScore = 0;
@@ -1211,16 +1201,18 @@ class ResearchEngine {
             // Create adapter with null key as fallback - should not fail
             marketAuxAdapter = new MarketAuxAdapter_1.MarketAuxAdapter(null);
         }
-        try {
-            logger_1.logger.debug({ uid, keyLength: cryptocompareKey?.length }, 'Initializing CryptoCompare adapter');
-            cryptoAdapter = new cryptoCompareAdapter_1.CryptoCompareAdapter(cryptocompareKey || null);
-            logger_1.logger.info({ uid, hasKey: !!cryptocompareKey }, 'CryptoCompare adapter initialized');
-        }
-        catch (error) {
-            logger_1.logger.error({ uid, error: error.message }, 'Failed to initialize CryptoCompare adapter - using fallback');
-            // Create adapter with null key as fallback - should not fail
-            cryptoAdapter = new cryptoCompareAdapter_1.CryptoCompareAdapter(null);
-        }
+        // DISABLED: CryptoCompare adapter initialization removed
+        // try {
+        //     logger_1.logger.debug({ uid, keyLength: cryptocompareKey?.length }, 'Initializing CryptoCompare adapter');
+        //     cryptoAdapter = new cryptoCompareAdapter_1.CryptoCompareAdapter(cryptocompareKey || null);
+        //     logger_1.logger.info({ uid, hasKey: !!cryptocompareKey }, 'CryptoCompare adapter initialized');
+        // }
+        // catch (error) {
+        //     logger_1.logger.error({ uid, error: error.message }, 'Failed to initialize CryptoCompare adapter - using fallback');
+        //     // Create adapter with null key as fallback - should not fail
+        //     cryptoAdapter = new cryptoCompareAdapter_1.CryptoCompareAdapter(null);
+        // }
+        cryptoAdapter = null; // DISABLED: No CryptoCompare adapter
         // Create free API adapters - no API keys required
         let binanceAdapter;
         let coingeckoAdapter;

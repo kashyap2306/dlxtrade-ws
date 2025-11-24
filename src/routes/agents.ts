@@ -1,20 +1,11 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import * as admin from 'firebase-admin';
 import { firestoreAdapter } from '../services/firestoreAdapter';
 import { logger } from '../utils/logger';
 import { ValidationError } from '../utils/errors';
 
 const unlockAgentSchema = z.object({
   agentName: z.string().min(1),
-});
-
-const submitUnlockRequestSchema = z.object({
-  agentId: z.string().min(1),
-  agentName: z.string().min(1),
-  fullName: z.string().min(1),
-  phoneNumber: z.string().min(1),
-  email: z.string().email(),
 });
 
 export async function agentsRoutes(fastify: FastifyInstance) {
@@ -83,31 +74,111 @@ export async function agentsRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // GET /api/agents/unlocked - Get user's unlocked agent IDs
-  // Returns format: { unlocked: [agentId1, agentId2] }
+  // GET /api/agents/unlocked - Get user's unlocked agent names
   fastify.get('/unlocked', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const user = (request as any).user;
-      // Read user ID from req.user (uid is the property set by firebaseAuth middleware)
-      const userId = user.id || user.uid;
+      const userData = await firestoreAdapter.getUser(user.uid);
+      const unlockedAgents = userData?.unlockedAgents || [];
       
-      if (!userId) {
-        return reply.code(401).send({ error: 'User ID not found' });
-      }
+      // Also get from unlocks subcollection for completeness
+      const unlocks = await firestoreAdapter.getUserAgentUnlocks(user.uid);
+      const unlockNames = unlocks.map(u => u.agentName);
       
-      const unlockedAgents = await firestoreAdapter.getUserUnlockedAgents(userId);
+      // Combine and deduplicate
+      const allUnlocked = [...new Set([...unlockedAgents, ...unlockNames])];
       
-      // Extract agentIds from unlocked agents
-      const agentIds = unlockedAgents
-        .map((unlocked: any) => unlocked.agentId || unlocked.agentName)
-        .filter((id: string) => !!id); // Remove any null/undefined values
-      
-      return { unlocked: agentIds };
+      return { unlocked: allUnlocked };
     } catch (err: any) {
       logger.error({ err }, 'Error getting unlocked agents');
       return reply.code(500).send({ error: err.message || 'Error fetching unlocked agents' });
+    }
+  });
+
+  // GET /api/agents/:id - Get single agent by ID
+  fastify.get('/:id', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    try {
+      const { id } = request.params;
+      const agent = await firestoreAdapter.getAgent(id);
+      if (!agent) {
+        return reply.code(404).send({ error: 'Agent not found' });
+      }
+      return { agent };
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting agent');
+      return reply.code(500).send({ error: err.message || 'Error fetching agent' });
+    }
+  });
+
+  // POST /api/agents/submit-unlock-request - Submit unlock request (creates purchase)
+  fastify.post('/submit-unlock-request', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: { agentId: string; agentName: string; fullName: string; phoneNumber: string; email: string } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const body = z.object({
+        agentId: z.string().min(1),
+        agentName: z.string().min(1),
+        fullName: z.string().min(1),
+        phoneNumber: z.string().min(1),
+        email: z.string().email(),
+      }).parse(request.body);
+
+      // Save purchase request to Firestore
+      const { getFirebaseAdmin } = await import('../utils/firebase');
+      const admin = await import('firebase-admin');
+      const db = getFirebaseAdmin().firestore();
+      
+      const purchaseRef = db.collection('agentPurchases').doc();
+      await purchaseRef.set({
+        id: purchaseRef.id,
+        uid: user.uid,
+        agentId: body.agentId,
+        agentName: body.agentName,
+        fullName: body.fullName,
+        phoneNumber: body.phoneNumber,
+        email: body.email,
+        status: 'pending',
+        submittedAt: admin.firestore.Timestamp.now(),
+        createdAt: admin.firestore.Timestamp.now(),
+      });
+
+      // Also create unlock request entry for backward compatibility
+      const unlockRequestRef = db.collection('agentUnlockRequests').doc();
+      await unlockRequestRef.set({
+        uid: user.uid,
+        agentId: body.agentId,
+        agentName: body.agentName,
+        fullName: body.fullName,
+        phoneNumber: body.phoneNumber,
+        email: body.email,
+        submittedAt: admin.firestore.Timestamp.now(),
+        status: 'pending',
+      });
+
+      // Log activity
+      await firestoreAdapter.logActivity(user.uid, 'AGENT_PURCHASE_REQUEST_SUBMITTED', {
+        agentId: body.agentId,
+        agentName: body.agentName,
+        purchaseId: purchaseRef.id,
+      });
+
+      logger.info({ uid: user.uid, agentName: body.agentName, purchaseId: purchaseRef.id }, 'Agent purchase request submitted');
+      return { 
+        success: true,
+        message: 'Purchase request submitted successfully', 
+        purchaseId: purchaseRef.id 
+      };
+    } catch (err: any) {
+      if (err instanceof z.ZodError) {
+        return reply.code(400).send({ error: 'Invalid input', details: err.errors });
+      }
+      logger.error({ err }, 'Error submitting purchase request');
+      return reply.code(500).send({ error: err.message || 'Error submitting purchase request' });
     }
   });
 
@@ -127,54 +198,22 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         return reply.code(404).send({ error: 'Agent not found' });
       }
 
-      await firestoreAdapter.updateAgentSettings(user.uid, agent.name, settings);
+      // Update agent settings in user's subcollection
+      const { getFirebaseAdmin } = await import('../utils/firebase');
+      const admin = await import('firebase-admin');
+      const db = getFirebaseAdmin().firestore();
+      const userAgentRef = db.collection('users').doc(user.uid).collection('agents').doc(agent.id);
+      const updateData: any = {
+        updatedAt: admin.firestore.Timestamp.now(),
+      };
+      Object.assign(updateData, settings);
+      await userAgentRef.set(updateData, { merge: true });
       
       logger.info({ uid: user.uid, agentName: agent.name }, 'Agent settings updated');
       return { message: 'Settings updated successfully' };
     } catch (err: any) {
       logger.error({ err }, 'Error updating agent settings');
       return reply.code(500).send({ error: err.message || 'Error updating agent settings' });
-    }
-  });
-
-  // POST /api/agents/submit-unlock-request - Submit unlock request form
-  fastify.post('/submit-unlock-request', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest, reply: FastifyReply) => {
-    try {
-      const user = (request as any).user;
-      const body = submitUnlockRequestSchema.parse(request.body);
-
-      // Save unlock request to Firestore
-      const { getFirebaseAdmin } = await import('../utils/firebase');
-      const db = getFirebaseAdmin().firestore();
-      
-      const unlockRequestRef = db.collection('agentUnlockRequests').doc();
-      await unlockRequestRef.set({
-        uid: user.uid,
-        agentId: body.agentId,
-        agentName: body.agentName,
-        fullName: body.fullName,
-        phoneNumber: body.phoneNumber,
-        email: body.email,
-        submittedAt: admin.firestore.Timestamp.now(),
-        status: 'pending',
-      });
-
-      // Log activity
-      await firestoreAdapter.logActivity(user.uid, 'AGENT_UNLOCK_REQUEST_SUBMITTED', {
-        agentId: body.agentId,
-        agentName: body.agentName,
-      });
-
-      logger.info({ uid: user.uid, agentName: body.agentName }, 'Unlock request submitted');
-      return { message: 'Unlock request submitted successfully', requestId: unlockRequestRef.id };
-    } catch (err: any) {
-      if (err instanceof z.ZodError) {
-        return reply.code(400).send({ error: 'Invalid input', details: err.errors });
-      }
-      logger.error({ err }, 'Error submitting unlock request');
-      return reply.code(500).send({ error: err.message || 'Error submitting unlock request' });
     }
   });
 }

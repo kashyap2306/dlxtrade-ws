@@ -3,10 +3,6 @@ import { verifyFirebaseToken } from '../utils/firebase';
 import { AuthenticationError } from '../utils/errors';
 import { logger } from '../utils/logger';
 
-// Rate limiting for Firebase token error logs (once per user per 10 minutes)
-const tokenErrorLogCache = new Map<string, number>();
-const TOKEN_ERROR_LOG_COOLDOWN = 10 * 60 * 1000; // 10 minutes in milliseconds
-
 export async function firebaseAuthMiddleware(
   request: FastifyRequest,
   reply: FastifyReply
@@ -15,14 +11,15 @@ export async function firebaseAuthMiddleware(
     const authHeader = request.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      throw new AuthenticationError('Missing or invalid authorization header');
+      reply.code(401).send({ error: 'Missing or invalid authorization header' });
+      return; // Don't throw, just return after sending response
     }
 
     const token = authHeader.substring(7); // Remove 'Bearer ' prefix
 
     try {
       const decodedToken = await verifyFirebaseToken(token);
-
+      
       // Attach user info + claims to request
       (request as any).user = {
         uid: decodedToken.uid,
@@ -33,27 +30,15 @@ export async function firebaseAuthMiddleware(
 
       logger.debug({ uid: decodedToken.uid }, 'Firebase token verified');
     } catch (error: any) {
-      // Rate limit Firebase token error logs (once per IP per 10 minutes)
-      const clientIP = request.ip || 'unknown';
-      const cacheKey = `token_error_${clientIP}`;
-      const now = Date.now();
-      const lastLogTime = tokenErrorLogCache.get(cacheKey) || 0;
-
-      if (now - lastLogTime > TOKEN_ERROR_LOG_COOLDOWN) {
-        logger.warn({ error: error.message, ip: clientIP }, 'Firebase token verification failed');
-        tokenErrorLogCache.set(cacheKey, now);
-      }
-
-      throw new AuthenticationError('Invalid or expired token');
+      logger.warn({ error: error.message }, 'Firebase token verification failed');
+      reply.code(401).send({ error: 'Invalid or expired token' });
+      return; // Don't throw, just return after sending response
     }
   } catch (error: any) {
-    if (error instanceof AuthenticationError) {
-      reply.code(401).send({ error: error.message });
-    } else {
-      logger.error({ error }, 'Error in Firebase auth middleware');
-      reply.code(401).send({ error: 'Authentication failed' });
-    }
-    throw error;
+    // Catch any unexpected errors
+    logger.error({ error, stack: error?.stack }, 'Unexpected error in Firebase auth middleware');
+    reply.code(401).send({ error: 'Authentication failed' });
+    return; // Don't throw, just return after sending response
   }
 }
 

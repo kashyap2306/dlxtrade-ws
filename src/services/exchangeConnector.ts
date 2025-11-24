@@ -2,11 +2,10 @@ import { BinanceAdapter } from './binanceAdapter';
 import { BitgetAdapter } from './bitgetAdapter';
 import { WeexAdapter } from './weexAdapter';
 import { BingXAdapter } from './bingXAdapter';
-import { KucoinAdapter } from './kucoinAdapter';
 import type { Orderbook, Trade } from '../types';
 import { logger } from '../utils/logger';
 
-export type ExchangeName = 'binance' | 'bitget' | 'weex' | 'bingx' | 'kucoin' | 'bybit' | 'mexc' | 'okx';
+export type ExchangeName = 'binance' | 'bitget' | 'weex' | 'bingx';
 
 export interface ExchangeCredentials {
   apiKey: string;
@@ -24,8 +23,6 @@ export interface ExchangeConnector {
 
   // Must be optional for compatibility
   getAccount?(): Promise<any>;
-  getBalance?(): Promise<any>;
-  getPositions?(symbol?: string): Promise<any>;
   placeOrder?(params: {
     symbol: string;
     side: "BUY" | "SELL";
@@ -33,107 +30,6 @@ export interface ExchangeConnector {
     quantity: number;
     price?: number;
   }): Promise<any>;
-  cancelOrder?(symbol: string, orderId: string, clientOrderId?: string): Promise<any>;
-}
-
-// Stub adapters for exchanges not yet implemented
-export class BybitAdapter implements ExchangeConnector {
-  constructor(apiKey: string, secret: string, testnet: boolean = true) {
-    // Store credentials but throw error on actual usage
-    this.apiKey = apiKey;
-    this.secret = secret;
-    this.testnet = testnet;
-  }
-
-  private apiKey: string;
-  private secret: string;
-  private testnet: boolean;
-
-  getExchangeName(): ExchangeName {
-    return 'bybit';
-  }
-
-  async getOrderbook(symbol: string, limit?: number): Promise<Orderbook> {
-    throw new Error('Bybit exchange integration not yet implemented');
-  }
-
-  async getTicker(symbol?: string): Promise<any> {
-    throw new Error('Bybit exchange integration not yet implemented');
-  }
-
-  async getKlines(symbol: string, interval: string, limit?: number): Promise<any[]> {
-    throw new Error('Bybit exchange integration not yet implemented');
-  }
-
-  async testConnection(): Promise<{ success: boolean; message: string }> {
-    throw new Error('Bybit exchange integration not yet implemented');
-  }
-}
-
-export class MexcAdapter implements ExchangeConnector {
-  constructor(apiKey: string, secret: string, testnet: boolean = true) {
-    // Store credentials but throw error on actual usage
-    this.apiKey = apiKey;
-    this.secret = secret;
-    this.testnet = testnet;
-  }
-
-  private apiKey: string;
-  private secret: string;
-  private testnet: boolean;
-
-  getExchangeName(): ExchangeName {
-    return 'mexc';
-  }
-
-  async getOrderbook(symbol: string, limit?: number): Promise<Orderbook> {
-    throw new Error('MEXC exchange integration not yet implemented');
-  }
-
-  async getTicker(symbol?: string): Promise<any> {
-    throw new Error('MEXC exchange integration not yet implemented');
-  }
-
-  async getKlines(symbol: string, interval: string, limit?: number): Promise<any[]> {
-    throw new Error('MEXC exchange integration not yet implemented');
-  }
-
-  async testConnection(): Promise<{ success: boolean; message: string }> {
-    throw new Error('MEXC exchange integration not yet implemented');
-  }
-}
-
-export class OkxAdapter implements ExchangeConnector {
-  constructor(apiKey: string, secret: string, testnet: boolean = true) {
-    // Store credentials but throw error on actual usage
-    this.apiKey = apiKey;
-    this.secret = secret;
-    this.testnet = testnet;
-  }
-
-  private apiKey: string;
-  private secret: string;
-  private testnet: boolean;
-
-  getExchangeName(): ExchangeName {
-    return 'okx';
-  }
-
-  async getOrderbook(symbol: string, limit?: number): Promise<Orderbook> {
-    throw new Error('OKX exchange integration not yet implemented');
-  }
-
-  async getTicker(symbol?: string): Promise<any> {
-    throw new Error('OKX exchange integration not yet implemented');
-  }
-
-  async getKlines(symbol: string, interval: string, limit?: number): Promise<any[]> {
-    throw new Error('OKX exchange integration not yet implemented');
-  }
-
-  async testConnection(): Promise<{ success: boolean; message: string }> {
-    throw new Error('OKX exchange integration not yet implemented');
-  }
 }
 
 export class ExchangeConnectorFactory {
@@ -147,23 +43,9 @@ export class ExchangeConnectorFactory {
         }
         return new BitgetAdapter(credentials.apiKey, credentials.secret, credentials.passphrase, credentials.testnet ?? true);
       case 'weex':
-        if (!credentials.passphrase) {
-          throw new Error('Passphrase is required for Weex');
-        }
         return new WeexAdapter(credentials.apiKey, credentials.secret, credentials.passphrase, credentials.testnet ?? true);
       case 'bingx':
         return new BingXAdapter(credentials.apiKey, credentials.secret, credentials.testnet ?? true);
-      case 'kucoin':
-        if (!credentials.passphrase) {
-          throw new Error('Passphrase is required for KuCoin');
-        }
-        return new KucoinAdapter(credentials.apiKey, credentials.secret, credentials.passphrase, credentials.testnet ?? false);
-      case 'bybit':
-        return new BybitAdapter(credentials.apiKey, credentials.secret, credentials.testnet ?? true);
-      case 'mexc':
-        return new MexcAdapter(credentials.apiKey, credentials.secret, credentials.testnet ?? true);
-      case 'okx':
-        return new OkxAdapter(credentials.apiKey, credentials.secret, credentials.testnet ?? true);
       default:
         throw new Error(`Unsupported exchange: ${exchange}`);
     }
@@ -178,14 +60,6 @@ export class ExchangeConnectorFactory {
       case 'weex':
         return ['apiKey', 'secret'];
       case 'bingx':
-        return ['apiKey', 'secret'];
-      case 'kucoin':
-        return ['apiKey', 'secret', 'passphrase'];
-      case 'bybit':
-        return ['apiKey', 'secret'];
-      case 'mexc':
-        return ['apiKey', 'secret'];
-      case 'okx':
         return ['apiKey', 'secret'];
       default:
         return [];
@@ -202,14 +76,6 @@ export class ExchangeConnectorFactory {
         return testnet ? 'https://api-demo.weex.com' : 'https://api.weex.com';
       case 'bingx':
         return testnet ? 'https://open-api-sandbox.bingx.com' : 'https://open-api.bingx.com';
-      case 'kucoin':
-        return testnet ? 'https://openapi-sandbox.kucoin.com' : 'https://api.kucoin.com';
-      case 'bybit':
-        return testnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
-      case 'mexc':
-        return testnet ? 'https://contract.mexc.com' : 'https://api.mexc.com';
-      case 'okx':
-        return testnet ? 'https://www.okx.com' : 'https://www.okx.com';
       default:
         throw new Error(`Unsupported exchange: ${exchange}`);
     }

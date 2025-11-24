@@ -28,13 +28,18 @@ const coinGeckoAdapter = {
             return this.generateFallbackHistoricalData(symbol, days);
         }
         try {
-            const response = await this.httpClient.get(`/coins/${coinId}/market_chart`, {
+            // Add 2-second timeout wrapper to prevent blocking
+            const apiCall = this.httpClient.get(`/coins/${coinId}/market_chart`, {
                 params: {
                     vs_currency: 'usd',
                     days: Math.min(days, 365), // CoinGecko limits to 365 days
                     interval: days > 90 ? 'daily' : 'hourly' // Use hourly for recent data, daily for longer periods
                 }
             });
+            const timeoutPromise = new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('CoinGecko API timeout after 2 seconds')), 2000)
+            );
+            const response = await Promise.race([apiCall, timeoutPromise]);
             const data = response.data;
             if (!data?.prices) {
                 // Return null silently for empty data
@@ -132,12 +137,17 @@ const coinGeckoAdapter = {
      */
     getCurrentPrice: async function (coinId) {
         try {
-            const response = await this.httpClient.get('/simple/price', {
+            // Add 2-second timeout wrapper to prevent blocking
+            const apiCall = this.httpClient.get('/simple/price', {
                 params: {
                     ids: coinId,
                     vs_currencies: 'usd'
                 }
             });
+            const timeoutPromise = new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('CoinGecko API timeout after 2 seconds')), 2000)
+            );
+            const response = await Promise.race([apiCall, timeoutPromise]);
             return response.data?.[coinId] || {};
         }
         catch (error) {

@@ -1,247 +1,384 @@
 import axios, { AxiosInstance } from 'axios';
+import crypto from 'crypto';
+import WebSocket from 'ws';
+import { config } from '../config';
 import { logger } from '../utils/logger';
-import { ExchangeConnector } from './exchangeConnector';
-import type { Orderbook } from '../types';
-
-export interface BinanceData {
-  price?: number;
-  volume24h?: number;
-  priceChange24h?: number;
-  priceChangePercent24h?: number;
-  klines?: Array<{
-    time: number;
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-    volume: number;
-  }>;
-  orderbook?: {
-    bids: Array<{ price: string; quantity: string }>;
-    asks: Array<{ price: string; quantity: string }>;
-  };
-}
+import { ExchangeError } from '../utils/errors';
+import type { Order, Orderbook, Trade, Quote } from '../types';
+import type { ExchangeConnector, ExchangeName } from './exchangeConnector';
 
 export class BinanceAdapter implements ExchangeConnector {
+  private apiKey: string;
+  private apiSecret: string;
+  private baseUrl: string;
+  private wsUrl: string;
   private httpClient: AxiosInstance;
-  private apiKey?: string;
-  private secret?: string;
-  private testnet: boolean;
+  private orderbookWs: WebSocket | null = null;
+  private tradesWs: WebSocket | null = null;
+  private userStreamWs: WebSocket | null = null;
+  private listenKey: string | null = null;
 
-  constructor(apiKey?: string, secret?: string, testnet: boolean = false) {
+  constructor(apiKey: string, apiSecret: string, testnet: boolean = true) {
     this.apiKey = apiKey;
-    this.secret = secret;
-    this.testnet = testnet;
-
-    // Use testnet URL if testnet is enabled
-    const baseURL = testnet
-      ? 'https://testnet.binance.vision/api/v3'
-      : 'https://api.binance.com/api/v3';
+    this.apiSecret = apiSecret;
+    this.baseUrl = testnet
+      ? 'https://testnet.binance.vision'
+      : 'https://api.binance.com';
+    this.wsUrl = testnet
+      ? 'wss://testnet.binance.vision'
+      : 'wss://stream.binance.com:9443';
 
     this.httpClient = axios.create({
-      baseURL,
+      baseURL: this.baseUrl,
       timeout: 10000,
+      headers: {
+        'X-MBX-APIKEY': this.apiKey,
+      },
     });
   }
 
-  getExchangeName(): 'binance' {
+  getExchangeName(): ExchangeName {
     return 'binance';
   }
 
-  async getOrderbook(symbol: string, limit: number = 20): Promise<Orderbook> {
-    const finalSymbol = symbol.replace('-', '').toUpperCase();
-    const params = { symbol: finalSymbol, limit: Math.min(Math.max(limit, 5), 1000) };
-    try {
-      const response = await this.httpClient.get('/depth', { params });
-      const data = response.data;
-      return {
-        symbol: data.symbol || finalSymbol,
-        bids: (data.bids || []).map(([price, quantity]: [string, string]) => ({ price, quantity })),
-        asks: (data.asks || []).map(([price, quantity]: [string, string]) => ({ price, quantity })),
-        lastUpdateId: data.lastUpdateId || Date.now(),
-      };
-    } catch (error: any) {
-      logger.warn({ symbol, error: error.message }, '[BinanceAdapter] getOrderbook failed');
-      throw error;
-    }
+  private sign(params: Record<string, any>): string {
+    const queryString = Object.keys(params)
+      .sort()
+      .map((key) => `${key}=${params[key]}`)
+      .join('&');
+    return crypto
+      .createHmac('sha256', this.apiSecret)
+      .update(queryString)
+      .digest('hex');
   }
 
-  async getTicker(symbol?: string): Promise<any> {
-    try {
-      const params = symbol ? { symbol: symbol.replace('-', '').toUpperCase() } : undefined;
-      const response = await this.httpClient.get('/ticker/24hr', { params });
-      return response.data;
-    } catch (error: any) {
-      logger.warn({ symbol, error: error.message }, '[BinanceAdapter] getTicker failed');
-      throw error;
+  private async request(
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    endpoint: string,
+    params: Record<string, any> = {},
+    signed: boolean = false
+  ): Promise<any> {
+    if (signed) {
+      params.timestamp = Date.now();
+      params.signature = this.sign(params);
     }
-  }
 
-  async getBookTicker(symbol: string): Promise<any> {
     try {
-      const params = { symbol: symbol.replace('-', '').toUpperCase() };
-      const response = await this.httpClient.get('/ticker/bookTicker', { params });
-      return response.data;
-    } catch (error: any) {
-      logger.warn({ symbol, error: error.message }, '[BinanceAdapter] getBookTicker failed');
-      throw error;
-    }
-  }
-
-  async getKlines(symbol: string, interval: string, limit: number = 500): Promise<any[]> {
-    try {
-      const finalSymbol = symbol.replace('-', '').toUpperCase();
-      const response = await this.httpClient.get('/klines', {
-        params: {
-          symbol: finalSymbol,
-          interval,
-          limit: Math.min(limit, 1000)
-        }
+      const response = await this.httpClient.request({
+        method,
+        url: endpoint,
+        params: method === 'GET' ? params : undefined,
+        data: method !== 'GET' ? params : undefined,
       });
       return response.data;
     } catch (error: any) {
-      logger.warn({ symbol, interval, error: error.message }, '[BinanceAdapter] getKlines failed');
-      throw error;
+      logger.error({ error, endpoint, params }, 'Binance API error');
+      throw new ExchangeError(
+        error.response?.data?.msg || error.message || 'Exchange API error',
+        error.response?.status || 500
+      );
     }
   }
 
-  async getVolatility(symbol: string): Promise<number | null> {
-    try {
-      // Fetch 5m candles for last 100 periods (about 8.3 hours)
-      const candles = await this.getKlines(symbol, '5m', 100);
-      if (!candles || candles.length < 10) {
-        return null;
-      }
+  async getOrderbook(symbol: string, limit: number = 20): Promise<Orderbook> {
+    const data = await this.request('GET', '/api/v3/depth', {
+      symbol: symbol.toUpperCase(),
+      limit,
+    });
 
-      // Calculate log returns
-      const returns: number[] = [];
-      for (let i = 1; i < candles.length; i++) {
-        const prevClose = parseFloat(candles[i - 1][4]); // close price
-        const currClose = parseFloat(candles[i][4]); // close price
-        if (prevClose > 0 && currClose > 0) {
-          const logReturn = Math.log(currClose / prevClose);
-          if (Number.isFinite(logReturn)) {
-            returns.push(logReturn);
-          }
-        }
-      }
+    return {
+      symbol: data.symbol,
+      bids: data.bids.map(([price, qty]: [string, string]) => ({
+        price,
+        quantity: qty,
+      })),
+      asks: data.asks.map(([price, qty]: [string, string]) => ({
+        price,
+        quantity: qty,
+      })),
+      lastUpdateId: data.lastUpdateId,
+    };
+  }
 
-      if (returns.length < 10) {
-        return null;
-      }
+  async getAccount(): Promise<any> {
+    return await this.request('GET', '/api/v3/account', {}, true);
+  }
 
-      // Calculate standard deviation of returns
-      const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
-      const variance = returns.reduce((sum, ret) => sum + Math.pow(ret - mean, 2), 0) / returns.length;
-      const dailyVolatility = Math.sqrt(variance);
+  async placeOrder(params: {
+    symbol: string;
+    side: "BUY" | "SELL";
+    type?: "MARKET" | "LIMIT";
+    quantity: number;
+    price?: number;
+  }): Promise<Order> {
+    const { symbol, side, type = 'MARKET', quantity, price } = params;
+    const timeInForce = 'GTC';
+    const orderParams: Record<string, any> = {
+      symbol: symbol.toUpperCase(),
+      side,
+      type,
+      quantity: quantity.toString(),
+    };
 
-      // Annualize volatility: sqrt(1440/5) = sqrt(288) ≈ 16.97
-      // This converts 5-minute volatility to daily volatility
-      const annualizedVolatility = dailyVolatility * Math.sqrt(1440 / 5);
-
-      return Number.isFinite(annualizedVolatility) ? annualizedVolatility : null;
-    } catch (error: any) {
-      logger.warn({ symbol, error: error.message }, '[BinanceAdapter] getVolatility failed');
-      return null;
+    if (type === 'LIMIT') {
+      if (!price) throw new Error('Price required for LIMIT orders');
+      orderParams.price = price.toString();
+      orderParams.timeInForce = timeInForce;
     }
+
+    const data = await this.request('POST', '/api/v3/order', orderParams, true);
+
+    return {
+      id: data.orderId.toString(),
+      symbol: data.symbol,
+      side: data.side as 'BUY' | 'SELL',
+      type: data.type as 'LIMIT' | 'MARKET',
+      quantity: parseFloat(data.executedQty || data.origQty),
+      price: parseFloat(data.price || '0'),
+      status: data.status as Order['status'],
+      clientOrderId: data.clientOrderId,
+      exchangeOrderId: data.orderId.toString(),
+      filledQty: parseFloat(data.executedQty || '0'),
+      avgPrice: parseFloat(data.price || '0'),
+      createdAt: new Date(data.transactTime || Date.now()),
+      updatedAt: new Date(data.updateTime || Date.now()),
+    };
+  }
+
+  async getTicker(symbol?: string): Promise<any> {
+    if (symbol) {
+      const data = await this.request('GET', '/api/v3/ticker/24hr', {
+        symbol: symbol.toUpperCase(),
+      });
+      return data;
+    } else {
+      // Get all tickers
+      const data = await this.request('GET', '/api/v3/ticker/24hr', {});
+      return data;
+    }
+  }
+
+  async getKlines(symbol: string, interval: string = '1m', limit: number = 100): Promise<any[]> {
+    const data = await this.request('GET', '/api/v3/klines', {
+      symbol: symbol.toUpperCase(),
+      interval,
+      limit,
+    });
+    return data || [];
   }
 
   async testConnection(): Promise<{ success: boolean; message: string }> {
     try {
-      await this.getTicker('BTCUSDT');
+      // Test with account info endpoint
+      await this.request('GET', '/api/v3/account', {}, true);
       return { success: true, message: 'Connection successful' };
     } catch (error: any) {
-      return { success: false, message: error.message };
+      const message = error.message || 'Connection test failed';
+      if (message.includes('401') || message.includes('Unauthorized')) {
+        return { success: false, message: 'Invalid API key or secret' };
+      }
+      return { success: false, message };
     }
   }
 
-  // For public API, account access is not available
-  async getAccount(): Promise<any> {
-    throw new Error('Binance public API does not support account access. Use authenticated exchange connection instead.');
+  async validateApiKey(): Promise<{ valid: boolean; canTrade: boolean; canWithdraw: boolean; error?: string }> {
+    try {
+      // Try to get account info - this validates the key
+      const accountInfo = await this.request('GET', '/api/v3/account', {}, true);
+      
+      // Check permissions (Binance doesn't expose this directly, but we can infer from account access)
+      // If we can access account, trading is likely enabled
+      // Withdrawal permission is harder to check without attempting a withdrawal
+      // For safety, we'll assume withdrawals are possible if account access works
+      // In production, you'd want to check API key restrictions via Binance API key management
+      
+      return {
+        valid: true,
+        canTrade: true, // If we can access account, trading should work
+        canWithdraw: false, // Assume false for safety - user should verify manually
+      };
+    } catch (error: any) {
+      logger.error({ error }, 'API key validation failed');
+      return {
+        valid: false,
+        canTrade: false,
+        canWithdraw: false,
+        error: error.message || 'Invalid API key',
+      };
+    }
   }
 
-  // Validate API key (not applicable for public API)
-  async validateApiKey(): Promise<any> {
-    throw new Error('Binance public API does not require API key validation.');
+  async cancelOrder(
+    symbol: string,
+    orderId?: string,
+    clientOrderId?: string
+  ): Promise<Order> {
+    const params: Record<string, any> = {
+      symbol: symbol.toUpperCase(),
+    };
+
+    if (orderId) params.orderId = orderId;
+    if (clientOrderId) params.origClientOrderId = clientOrderId;
+
+    const data = await this.request('DELETE', '/api/v3/order', params, true);
+
+    return {
+      id: data.orderId.toString(),
+      symbol: data.symbol,
+      side: data.side as 'BUY' | 'SELL',
+      type: data.type as 'LIMIT' | 'MARKET',
+      quantity: parseFloat(data.origQty),
+      price: parseFloat(data.price || '0'),
+      status: data.status as Order['status'],
+      clientOrderId: data.clientOrderId,
+      exchangeOrderId: data.orderId.toString(),
+      filledQty: parseFloat(data.executedQty || '0'),
+      avgPrice: parseFloat(data.price || '0'),
+      createdAt: new Date(data.time || Date.now()),
+      updatedAt: new Date(data.updateTime || Date.now()),
+    };
   }
 
-  // Trading methods - not supported for public API
-  async placeOrder(params: any): Promise<any> {
-    throw new Error('Binance public API does not support trading operations.');
+  async getOrderStatus(
+    symbol: string,
+    orderId?: string,
+    clientOrderId?: string
+  ): Promise<Order> {
+    const params: Record<string, any> = {
+      symbol: symbol.toUpperCase(),
+    };
+
+    if (orderId) params.orderId = orderId;
+    if (clientOrderId) params.origClientOrderId = clientOrderId;
+
+    const data = await this.request('GET', '/api/v3/order', params, true);
+
+    return {
+      id: data.orderId.toString(),
+      symbol: data.symbol,
+      side: data.side as 'BUY' | 'SELL',
+      type: data.type as 'LIMIT' | 'MARKET',
+      quantity: parseFloat(data.origQty),
+      price: parseFloat(data.price || '0'),
+      status: data.status as Order['status'],
+      clientOrderId: data.clientOrderId,
+      exchangeOrderId: data.orderId.toString(),
+      filledQty: parseFloat(data.executedQty || '0'),
+      avgPrice: parseFloat(data.price || '0'),
+      createdAt: new Date(data.time || Date.now()),
+      updatedAt: new Date(data.updateTime || Date.now()),
+    };
   }
 
-  async cancelOrder(symbol: string, orderId: string, clientOrderId?: string): Promise<any> {
-    throw new Error('Binance public API does not support trading operations.');
+  async startUserDataStream(): Promise<string> {
+    const data = await this.request('POST', '/api/v3/userDataStream', {}, false);
+    this.listenKey = data.listenKey;
+    return data.listenKey;
   }
 
-  async getBalance(): Promise<any> {
-    throw new Error('Binance public API does not support account operations.');
+  async keepAliveUserDataStream(): Promise<void> {
+    if (!this.listenKey) return;
+    await this.request('PUT', '/api/v3/userDataStream', {
+      listenKey: this.listenKey,
+    }, false);
   }
 
-  async getPositions(symbol?: string): Promise<any> {
-    throw new Error('Binance public API does not support account operations.');
+  async closeUserDataStream(): Promise<void> {
+    if (!this.listenKey) return;
+    await this.request('DELETE', '/api/v3/userDataStream', {
+      listenKey: this.listenKey,
+    }, false);
+    this.listenKey = null;
   }
 
-  // WebSocket methods - not supported for public API
-  subscribeOrderbook(symbol: string, callback: Function): void {
-    throw new Error('Binance public API does not support WebSocket subscriptions.');
+  subscribeOrderbook(
+    symbol: string,
+    callback: (orderbook: Orderbook) => void
+  ): void {
+    const stream = `${symbol.toLowerCase()}@depth20@100ms`;
+    this.orderbookWs = new WebSocket(`${this.wsUrl}/ws/${stream}`);
+
+    this.orderbookWs.on('message', (data: WebSocket.Data) => {
+      try {
+        const update = JSON.parse(data.toString());
+        callback({
+          symbol: update.s,
+          bids: update.b.map(([p, q]: [string, string]) => ({
+            price: p,
+            quantity: q,
+          })),
+          asks: update.a.map(([p, q]: [string, string]) => ({
+            price: p,
+            quantity: q,
+          })),
+          lastUpdateId: update.u,
+        });
+      } catch (err) {
+        logger.error({ err }, 'Error parsing orderbook update');
+      }
+    });
+
+    this.orderbookWs.on('error', (err) => {
+      logger.error({ err }, 'Orderbook WebSocket error');
+    });
   }
 
-  subscribeTrades(symbol: string, callback: Function): void {
-    throw new Error('Binance public API does not support WebSocket subscriptions.');
+  subscribeTrades(
+    symbol: string,
+    callback: (trade: Trade) => void
+  ): void {
+    const stream = `${symbol.toLowerCase()}@trade`;
+    this.tradesWs = new WebSocket(`${this.wsUrl}/ws/${stream}`);
+
+    this.tradesWs.on('message', (data: WebSocket.Data) => {
+      try {
+        const update = JSON.parse(data.toString());
+        callback({
+          id: update.t.toString(),
+          symbol: update.s,
+          price: update.p,
+          quantity: update.q,
+          time: update.T,
+          isBuyerMaker: update.m,
+        });
+      } catch (err) {
+        logger.error({ err }, 'Error parsing trade update');
+      }
+    });
+
+    this.tradesWs.on('error', (err) => {
+      logger.error({ err }, 'Trades WebSocket error');
+    });
   }
 
-  startUserDataStream(): Promise<any> {
-    throw new Error('Binance public API does not support user data streams.');
-  }
+  subscribeUserData(callback: (data: any) => void): void {
+    if (!this.listenKey) {
+      throw new Error('User data stream not started');
+    }
 
-  subscribeUserData(callback: Function): void {
-    throw new Error('Binance public API does not support user data streams.');
-  }
+    this.userStreamWs = new WebSocket(
+      `${this.wsUrl}/ws/${this.listenKey}`
+    );
 
-  keepAliveUserDataStream(): Promise<any> {
-    throw new Error('Binance public API does not support user data streams.');
-  }
+    this.userStreamWs.on('message', (data: WebSocket.Data) => {
+      try {
+        const update = JSON.parse(data.toString());
+        callback(update);
+      } catch (err) {
+        logger.error({ err }, 'Error parsing user data update');
+      }
+    });
 
-  closeUserDataStream(): Promise<any> {
-    throw new Error('Binance public API does not support user data streams.');
+    this.userStreamWs.on('error', (err) => {
+      logger.error({ err }, 'User data WebSocket error');
+    });
   }
 
   disconnect(): void {
-    // No-op for public API
+    this.orderbookWs?.close();
+    this.tradesWs?.close();
+    this.userStreamWs?.close();
+    this.closeUserDataStream();
   }
-
-  /**
-   * Get market data (price, volume, etc.) - replaces CoinAPI market data
-   */
-  async getMarketData(symbol: string): Promise<BinanceData> {
-    try {
-      // Binance uses different symbol format (BTCUSDT instead of BTC_USDT)
-      const binanceSymbol = symbol.toUpperCase();
-
-      const response = await this.httpClient.get('/ticker/24hr', {
-        params: { symbol: binanceSymbol }
-      });
-
-      const data = response.data;
-      if (!data) {
-        return {};
-      }
-
-      return {
-        price: parseFloat(data.lastPrice || '0'),
-        volume24h: parseFloat(data.volume || '0'),
-        priceChange24h: parseFloat(data.priceChange || '0'),
-        priceChangePercent24h: parseFloat(data.priceChangePercent || '0'),
-      };
-    } catch (error: any) {
-      logger.warn({
-        error: error.message,
-        status: error.response?.status,
-        symbol
-      }, 'Binance market data API error');
-      return {};
-    }
-  }
-
 }
+

@@ -1,6 +1,5 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { firestoreAdapter } from '../services/firestoreAdapter';
-import type { ExchangeName } from '../services/exchangeConnector';
 import { logger } from '../utils/logger';
 import { z } from 'zod';
 
@@ -11,7 +10,7 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest<{ Body: { api: string; apiKey?: string; secretKey?: string; passphrase?: string; exchange?: string } }>, reply: FastifyReply) => {
     const user = (request as any).user;
     const body = z.object({
-      api: z.enum(['binance', 'coingecko', 'googlefinance', 'marketaux', 'cryptocompare', 'exchange']),
+      api: z.enum(['coinapi', 'lunarcrush', 'cryptoquant', 'exchange']),
       apiKey: z.string().optional(),
       secretKey: z.string().optional(),
       passphrase: z.string().optional(),
@@ -28,20 +27,32 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
       const { decrypt } = await import('../services/keyManager');
 
       switch (apiName) {
-        case 'binance': {
-          // Test Binance public API - no API key required
+        case 'coinapi': {
+          // Test CoinAPI market API - use provided API key or fallback to stored
+          const apiKey = body.apiKey || integrations['coinapi_market']?.apiKey;
+          if (!apiKey) {
+            return {
+              apiName: 'coinapi',
+              success: false,
+              reachable: false,
+              credentialsValid: false,
+              error: 'CoinAPI market API key not configured',
+              latency: Date.now() - startTime,
+            };
+          }
+
           try {
-            const { BinanceAdapter } = await import('../services/binanceAdapter');
-            const adapter = new BinanceAdapter();
+            const { CoinAPIAdapter } = await import('../services/coinapiAdapter');
+            const adapter = new CoinAPIAdapter(apiKey, 'market');
             const testData = await adapter.getMarketData('BTCUSDT');
             const latency = Date.now() - startTime;
 
             return {
-              apiName: 'binance',
+              apiName: 'coinapi',
               success: true,
               reachable: true,
-              credentialsValid: true, // No credentials needed
-              rateLimitRemaining: undefined,
+              credentialsValid: true,
+              rateLimitRemaining: undefined, // CoinAPI doesn't expose rate limits in response
               latency,
               details: {
                 price: testData.price,
@@ -50,157 +61,90 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
             };
           } catch (err: any) {
             return {
-              apiName: 'binance',
-              success: false,
-              reachable: err.response?.status !== 404 && err.response?.status !== 403,
-              credentialsValid: true, // No credentials needed
-              error: err.message || 'Binance API test failed',
-              latency: Date.now() - startTime,
-            };
-          }
-        }
-
-        case 'coingecko': {
-          // Test CoinGecko API - no API key required
-          try {
-            const { CoinGeckoAdapter } = await import('../services/coingeckoAdapter');
-            const adapter = CoinGeckoAdapter;
-            const testData = await adapter.getHistoricalData('BTCUSDT', 1);
-            const latency = Date.now() - startTime;
-
-            return {
-              apiName: 'coingecko',
-              success: true,
-              reachable: true,
-              credentialsValid: true, // No credentials needed
-              rateLimitRemaining: undefined,
-              latency,
-              details: {
-                historicalDataPoints: testData.historicalData?.length || 0,
-              },
-            };
-          } catch (err: any) {
-            return {
-              apiName: 'coingecko',
-              success: false,
-              reachable: err.response?.status !== 404 && err.response?.status !== 403,
-              credentialsValid: true, // No credentials needed
-              error: err.message || 'CoinGecko API test failed',
-              latency: Date.now() - startTime,
-            };
-          }
-        }
-
-        case 'googlefinance': {
-          // Test Google Finance - no API key required
-          try {
-            const { GoogleFinanceAdapter } = await import('../services/googleFinanceAdapter');
-            const adapter = GoogleFinanceAdapter;
-            const testData = await adapter.getExchangeRate('USD', 'INR');
-            const latency = Date.now() - startTime;
-
-            return {
-              apiName: 'googlefinance',
-              success: true,
-              reachable: true,
-              credentialsValid: true, // No credentials needed
-              rateLimitRemaining: undefined,
-              latency,
-              details: {
-                exchangeRate: testData.exchangeRate,
-              },
-            };
-          } catch (err: any) {
-            return {
-              apiName: 'googlefinance',
-              success: false,
-              reachable: err.response?.status !== 404 && err.response?.status !== 403,
-              credentialsValid: true, // No credentials needed
-              error: err.message || 'Google Finance test failed',
-              latency: Date.now() - startTime,
-            };
-          }
-        }
-
-        case 'marketaux': {
-          const apiKey = body.apiKey || integrations['marketaux']?.apiKey;
-          if (!apiKey) {
-            return {
-              apiName: 'marketaux',
-              success: false,
-              reachable: false,
-              credentialsValid: false,
-              error: 'MarketAux API key not configured',
-              latency: Date.now() - startTime,
-            };
-          }
-
-          try {
-            const { MarketAuxAdapter } = await import('../services/MarketAuxAdapter');
-            const adapter = new MarketAuxAdapter(apiKey);
-            const testData = await adapter.getNewsSentiment('BTC');
-            const latency = Date.now() - startTime;
-
-            return {
-              apiName: 'marketaux',
-              success: true,
-              reachable: true,
-              credentialsValid: true,
-              latency,
-              details: {
-                sentiment: testData.sentiment,
-                hypeScore: testData.hypeScore,
-                trendScore: testData.trendScore,
-                totalArticles: testData.totalArticles,
-              },
-            };
-          } catch (err: any) {
-            return {
-              apiName: 'marketaux',
+              apiName: 'coinapi',
               success: false,
               reachable: err.response?.status !== 404 && err.response?.status !== 403,
               credentialsValid: err.response?.status !== 401 && err.response?.status !== 403,
-              error: err.message || 'MarketAux test failed',
+              error: err.message || 'CoinAPI test failed',
               latency: Date.now() - startTime,
             };
           }
         }
 
-        case 'cryptocompare': {
-          const apiKey = body.apiKey || integrations['cryptocompare']?.apiKey;
+        case 'lunarcrush': {
+          const apiKey = body.apiKey || integrations['lunarcrush']?.apiKey;
           if (!apiKey) {
             return {
-              apiName: 'cryptocompare',
+              apiName: 'lunarcrush',
               success: false,
               reachable: false,
               credentialsValid: false,
-              error: 'CryptoCompare API key not configured',
+              error: 'LunarCrush API key not configured',
               latency: Date.now() - startTime,
             };
           }
 
           try {
-            const { CryptoCompareAdapter } = await import('../services/cryptoCompareAdapter');
-            const adapter = new CryptoCompareAdapter(apiKey);
-            const testData = await adapter.getAllMetrics('BTCUSDT');
+            const { LunarCrushAdapter } = await import('../services/lunarcrushAdapter');
+            const adapter = new LunarCrushAdapter(apiKey);
+            const testData = await adapter.getCoinData('BTCUSDT');
             const latency = Date.now() - startTime;
 
             return {
-              apiName: 'cryptocompare',
+              apiName: 'lunarcrush',
               success: true,
               reachable: true,
               credentialsValid: true,
               latency,
               details: {
-                ohlcCount: testData.ohlc?.length || 0,
-                indicators: testData.indicators ? Object.keys(testData.indicators) : [],
-                marketData: testData.market ? Object.keys(testData.market) : [],
-                volumeData: testData.volume ? Object.keys(testData.volume) : [],
+                socialScore: testData.socialScore,
+                sentiment: testData.sentiment,
               },
             };
           } catch (err: any) {
             return {
-              apiName: 'cryptocompare',
+              apiName: 'lunarcrush',
+              success: false,
+              reachable: err.response?.status !== 404 && err.response?.status !== 403,
+              credentialsValid: err.response?.status !== 401 && err.response?.status !== 403,
+              error: err.message || 'LunarCrush test failed',
+              latency: Date.now() - startTime,
+            };
+          }
+        }
+
+        case 'cryptoquant': {
+          const apiKey = body.apiKey || integrations['cryptoquant']?.apiKey;
+          if (!apiKey) {
+            return {
+              apiName: 'cryptoquant',
+              success: false,
+              reachable: false,
+              credentialsValid: false,
+              error: 'CryptoQuant API key not configured',
+              latency: Date.now() - startTime,
+            };
+          }
+
+          try {
+            const { CryptoQuantAdapter } = await import('../services/cryptoquantAdapter');
+            const adapter = new CryptoQuantAdapter(apiKey);
+            const testData = await adapter.getExchangeFlow('BTCUSDT');
+            const latency = Date.now() - startTime;
+
+            return {
+              apiName: 'cryptoquant',
+              success: true,
+              reachable: true,
+              credentialsValid: true,
+              latency,
+              details: {
+                exchangeFlow: testData.exchangeFlow,
+              },
+            };
+          } catch (err: any) {
+            return {
+              apiName: 'cryptoquant',
               success: false,
               reachable: err.response?.status !== 404 && err.response?.status !== 403,
               credentialsValid: err.response?.status !== 401 && err.response?.status !== 403,
@@ -212,10 +156,10 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
 
         case 'exchange': {
           // Test exchange API (Binance/Bitget/BingX/Weex) - use provided credentials or fallback to stored
-          let exchangeName = (body.exchange || 'binance') as ExchangeName;
+          let exchangeName = (body.exchange || 'binance') as 'binance' | 'bitget' | 'bingx' | 'weex';
           
           // Validate exchange name
-          const validExchanges: ExchangeName[] = ['binance', 'bitget', 'bingx', 'weex'];
+          const validExchanges = ['binance', 'bitget', 'bingx', 'weex'];
           if (!validExchanges.includes(exchangeName)) {
             return reply.code(400).send({
               error: `Invalid exchange: ${exchangeName}. Must be one of: ${validExchanges.join(', ')}`,
@@ -344,6 +288,87 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
           }
         }
 
+        case 'flatfile': {
+          const apiKey = body.apiKey || integrations['coinapi_flatfile']?.apiKey;
+          if (!apiKey) {
+            return {
+              apiName: 'flatfile',
+              success: false,
+              reachable: false,
+              credentialsValid: false,
+              error: 'CoinAPI Flat File API key not configured',
+              latency: Date.now() - startTime,
+            };
+          }
+
+          try {
+            const { CoinAPIAdapter } = await import('../services/coinapiAdapter');
+            const adapter = new CoinAPIAdapter(apiKey, 'flatfile');
+            const testData = await adapter.getHistoricalData('BTCUSDT', 7);
+            const latency = Date.now() - startTime;
+
+            return {
+              apiName: 'flatfile',
+              success: true,
+              reachable: true,
+              credentialsValid: true,
+              latency,
+              details: {
+                historicalDataPoints: testData.historicalData?.length || 0,
+              },
+            };
+          } catch (err: any) {
+            return {
+              apiName: 'flatfile',
+              success: false,
+              reachable: err.response?.status !== 404 && err.response?.status !== 403,
+              credentialsValid: err.response?.status !== 401 && err.response?.status !== 403,
+              error: err.message || 'CoinAPI Flat File test failed',
+              latency: Date.now() - startTime,
+            };
+          }
+        }
+
+        case 'exchangerate': {
+          const apiKey = body.apiKey || integrations['coinapi_exchangerate']?.apiKey;
+          if (!apiKey) {
+            return {
+              apiName: 'exchangerate',
+              success: false,
+              reachable: false,
+              credentialsValid: false,
+              error: 'CoinAPI Exchange Rate API key not configured',
+              latency: Date.now() - startTime,
+            };
+          }
+
+          try {
+            const { CoinAPIAdapter } = await import('../services/coinapiAdapter');
+            const adapter = new CoinAPIAdapter(apiKey, 'exchangerate');
+            const testData = await adapter.getExchangeRate('BTC', 'USD');
+            const latency = Date.now() - startTime;
+
+            return {
+              apiName: 'exchangerate',
+              success: true,
+              reachable: true,
+              credentialsValid: true,
+              latency,
+              details: {
+                exchangeRate: testData.exchangeRate,
+              },
+            };
+          } catch (err: any) {
+            return {
+              apiName: 'exchangerate',
+              success: false,
+              reachable: err.response?.status !== 404 && err.response?.status !== 403,
+              credentialsValid: err.response?.status !== 401 && err.response?.status !== 403,
+              error: err.message || 'CoinAPI Exchange Rate test failed',
+              latency: Date.now() - startTime,
+            };
+          }
+        }
 
         default:
           return reply.code(400).send({

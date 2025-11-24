@@ -30,11 +30,10 @@ import { globalStatsRoutes } from './routes/globalStats';
 import { engineStatusRoutes } from './routes/engineStatus';
 import { hftLogsRoutes } from './routes/hftLogs';
 import { autoTradeRoutes } from './routes/autoTrade';
-import { exchangeConfigRoutes } from './routes/exchangeConfig';
-import { marketRoutes } from './routes/market';
-import { walletRoutes } from './routes/wallet';
-import { chatbotRoutes } from './routes/chatbot';
+import { exchangeRoutes } from './routes/exchange';
 import { diagnosticsRoutes } from './routes/diagnostics';
+import { chatbotRoutes } from './routes/chatbot';
+import { walletRoutes } from './routes/wallet';
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -46,17 +45,12 @@ export async function buildApp(): Promise<FastifyInstance> {
   // CORS - allow all origins in development, specific origin in production
   await app.register(fastifyCors, {
     origin: (origin, cb) => {
-      // Allow all origins for WebSocket compatibility
       const allowed = [
         'https://dlx-trading.web.app',
         'http://localhost:5173',
-        'http://localhost:3000',
-        'http://127.0.0.1:5173',
-        'http://127.0.0.1:3000',
         process.env.FRONTEND_URL || '',
       ].filter(Boolean);
-      // Allow all origins in development, or if origin is in allowed list
-      if (!origin || allowed.includes(origin) || config.env === 'development') {
+      if (!origin || allowed.includes(origin)) {
         cb(null, true);
       } else {
         cb(null, false);
@@ -105,20 +99,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(fastifyWebsocket);
   console.log('WS ROUTE READY');
 
-  // HEALTH CHECK ENDPOINTS - MUST LOAD FIRST (before any scheduled jobs)
-  // API health endpoint with uptime (simple, no database checks)
-  app.get('/api/health', async (request, reply) => {
-    return {
-      status: 'ok',
-      uptime: process.uptime()
-    };
-  });
-
   // Routes
-  // Debug: Verify routes are loaded
-  console.log('Loaded agentsRoutes:', typeof agentsRoutes, agentsRoutes ? 'OK' : 'UNDEFINED');
-  console.log('Loaded researchRoutes:', typeof researchRoutes, researchRoutes ? 'OK' : 'UNDEFINED');
-  
   await app.register(authRoutes, { prefix: '/api/auth' });
   await app.register(adminRoutes, { prefix: '/api/admin' });
   await app.register(ordersRoutes, { prefix: '/api' });
@@ -131,27 +112,22 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(hftRoutes, { prefix: '/api/hft' });
   await app.register(usersRoutes, { prefix: '/api/users' });
   await app.register(agentsRoutes, { prefix: '/api/agents' });
-  
-  console.log('✅ Routes registered - /api/agents/unlocked and /api/research/manual should be available');
   await app.register(activityLogsRoutes, { prefix: '/api/activity-logs' });
   await app.register(tradesRoutes, { prefix: '/api/trades' });
   await app.register(notificationsRoutes, { prefix: '/api/notifications' });
-  console.log('✅ Notifications routes registered: GET /api/notifications, POST /api/notifications/push, POST /api/notifications/mark-read');
   await app.register(systemLogsRoutes, { prefix: '/api/logs' });
   await app.register(uiPreferencesRoutes, { prefix: '/api/ui-preferences' });
   await app.register(globalStatsRoutes, { prefix: '/api/global-stats' });
   await app.register(engineStatusRoutes, { prefix: '/api/engine-status' });
   await app.register(hftLogsRoutes, { prefix: '/api/hft-logs' });
   await app.register(autoTradeRoutes, { prefix: '/api/auto-trade' });
-  await app.register(exchangeConfigRoutes, { prefix: '/api/exchange-config' });
-  await app.register(marketRoutes, { prefix: '/api/market' });
-  await app.register(walletRoutes, { prefix: '/api/wallet' });
-  await app.register(chatbotRoutes, { prefix: '/api' });
+  await app.register(exchangeRoutes, { prefix: '/api' });
   await app.register(diagnosticsRoutes, { prefix: '/api/diagnostics' });
+  await app.register(notificationsRoutes, { prefix: '/api' });
+  await app.register(chatbotRoutes, { prefix: '/api' });
+  await app.register(walletRoutes, { prefix: '/api/wallet' });
 
   console.log('✅ All routes registered:');
-  console.log('  - / (Root health check - returns "OK")');
-  console.log('  - /api/health (Health check with uptime)');
   console.log('  - /api/auth/*');
   console.log('  - /api/admin/*');
   console.log('  - /api/orders');
@@ -170,27 +146,25 @@ export async function buildApp(): Promise<FastifyInstance> {
   console.log('  - /api/ui-preferences/*');
   console.log('  - /api/global-stats/*');
   console.log('  - /api/engine-status/*');
-  console.log('  - /api/hft-logs/*');
-  console.log('  - /api/auto-trade/*');
-  console.log('  - /api/market/*');
-  console.log('  - /api/wallet/*');
+    console.log('  - /api/hft-logs/*');
+    console.log('  - /api/auto-trade/*');
+    console.log('  - /api/exchange/*');
+    console.log('  - /api/health');
+  console.log('  - /api/metrics');
   console.log('  - /api/chatbot');
-  console.log('  - /api/diagnostics/*');
-  console.log('  - /api/test (Legacy health check)');
   console.log('  - /ws (WebSocket)');
   console.log('  - /ws/admin (Admin WebSocket)');
-  console.log('  - /ws/health (Health WebSocket - unauthenticated, for Render WS health)');
-
-  // Root endpoint for basic health check (registered last to avoid conflicts)
-  app.get('/', async (request, reply) => {
-    return 'OK';
-  });
+  console.log('  - / (Root WebSocket - unauthenticated, for Render WS health)');
 
   // Test route to verify server is running (no auth required)
   app.get('/api/test', async (request, reply) => {
     return { status: 'ok', message: 'Backend is running', timestamp: new Date().toISOString() };
   });
 
+  // Health check route (no auth required)
+  app.get('/health', async (request, reply) => {
+    return { status: 'healthy', timestamp: new Date().toISOString() };
+  });
 
   // Admin WebSocket endpoint for real-time admin events
   app.get('/ws/admin', { websocket: true }, async (connection, req) => {
@@ -245,31 +219,19 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
 
   // Root WebSocket endpoint: allow plain connections without auth (Render compatibility/health)
-  app.get('/ws/health', { websocket: true }, async (connection, req) => {
-    logger.info('Health WebSocket client connected (no auth)');
+  app.get('/', { websocket: true }, async (connection, req) => {
+    logger.info('Root WebSocket client connected (no auth)');
     try {
       connection.socket.send(JSON.stringify({ type: 'welcome', data: 'ok' }));
     } catch {}
 
     connection.socket.on('close', () => {
-      logger.info('Health WebSocket client disconnected');
+      logger.info('Root WebSocket client disconnected');
     });
   });
 
   // WebSocket endpoint for real-time updates (user channel)
   app.get('/ws', { websocket: true }, async (connection, req) => {
-    const clientInfo = {
-      ip: req.ip,
-      userAgent: req.headers['user-agent'],
-      origin: req.headers.origin,
-      timestamp: new Date().toISOString()
-    };
-
-    console.log('WS client connected');
-    console.log('🔌 WebSocket connection attempt to /ws');
-    console.log('Client connection details:', clientInfo);
-    logger.info({ clientInfo }, 'WebSocket connection attempt to /ws');
-    
     // Allow unauthenticated connections for Render plain WS; if token provided, attach user
     let uid: string | null = null;
     const token = (req.query as any).token || req.headers.authorization?.replace('Bearer ', '');
@@ -279,29 +241,11 @@ export async function buildApp(): Promise<FastifyInstance> {
         const decoded = await verifyFirebaseToken(token);
         uid = decoded.uid;
         (req as any).user = { uid: decoded.uid, email: decoded.email };
-        console.log('✅ WebSocket authenticated for user:', uid);
-        logger.info({ uid }, 'WebSocket authenticated');
       } catch (err) {
-        console.warn('⚠️ WebSocket auth failed; continuing unauthenticated:', err);
         logger.warn({ err }, 'WebSocket auth failed; continuing unauthenticated');
       }
     } else {
-      console.log('ℹ️ WebSocket connection without token (unauthenticated)');
       logger.info('WebSocket connection without token (unauthenticated)');
-    }
-    
-    // Send welcome message
-    try {
-      connection.socket.send(JSON.stringify({ type: 'connected', message: 'WebSocket connected successfully' }));
-      console.log('✅ WebSocket welcome message sent');
-    } catch (err) {
-      console.error('❌ Error sending WebSocket welcome message:', err);
-    }
-
-    // Register user WebSocket connection
-    if (uid) {
-      const { userWebSocketManager } = await import('./services/userWebSocketManager');
-      userWebSocketManager.registerUser(connection.socket, uid);
     }
 
     // Register WebSocket to user's engines if they exist
@@ -323,73 +267,23 @@ export async function buildApp(): Promise<FastifyInstance> {
       logger.debug({ uid }, 'WebSocket connected but user engines not initialized yet');
     }
 
-    // Store user WebSocket connection for broadcasting research updates
-    // This allows broadcasting to specific users or all users
-    if (uid) {
-      // Store connection in a global map (would need to be created)
-      // For now, we'll use the adminWebSocketManager pattern
-      // In production, create a UserWebSocketManager similar to AdminWebSocketManager
-    }
-
     connection.socket.on('message', (message) => {
       try {
         const data = JSON.parse(message.toString());
         logger.debug({ data, uid }, 'WebSocket message received');
-        
-        // Handle research update subscriptions
-        if (data.type === 'subscribe' && data.channel?.startsWith('research:update:')) {
-          // User is subscribing to research updates for a symbol
-          const symbol = data.channel.replace('research:update:', '');
-          if (uid) {
-            (async () => {
-              const { userWebSocketManager } = await import('./services/userWebSocketManager');
-              userWebSocketManager.subscribeToSymbol(connection.socket, symbol);
-              logger.debug({ uid, symbol }, 'User subscribed to research updates');
-            })();
-          }
-        }
       } catch (err) {
         logger.error({ err }, 'Error parsing WebSocket message');
       }
     });
 
-    connection.socket.on('close', (code, reason) => {
-      const closeDetails = {
-        code,
-        reason: reason?.toString() || 'No reason provided',
-        uid,
-        timestamp: new Date().toISOString()
-      };
-
-      console.log('🔌 WebSocket connection closed:', closeDetails);
-      logger.info({ closeDetails }, 'WebSocket connection closed');
-
-      // Unregister from user WebSocket manager
-      if (uid) {
-        (async () => {
-          const { userWebSocketManager } = await import('./services/userWebSocketManager');
-          userWebSocketManager.unregisterUser(connection.socket);
-        })();
-      }
-
+    connection.socket.on('close', () => {
       if (accuracyEngine) {
         accuracyEngine.unregisterWebSocketClient(connection.socket);
       }
       if (hftEngine) {
         hftEngine.unregisterWebSocketClient(connection.socket);
       }
-    });
-
-    connection.socket.on('error', (error) => {
-      const errorDetails = {
-        error: error.message,
-        uid,
-        timestamp: new Date().toISOString(),
-        readyState: connection.socket.readyState
-      };
-
-      console.error('❌ WebSocket connection error:', errorDetails);
-      logger.error({ errorDetails }, 'WebSocket connection error');
+      logger.info({ uid }, 'WebSocket connection closed');
     });
   });
 

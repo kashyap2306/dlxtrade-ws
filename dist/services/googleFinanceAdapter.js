@@ -207,5 +207,6 @@ const googleFinanceAdapter = {
     },
 };
 // Export the methods directly for easier importing
+exports.googleFinanceAdapter = googleFinanceAdapter;
 exports.getExchangeRates = googleFinanceAdapter.getExchangeRates;
 exports.GoogleFinanceAdapter = googleFinanceAdapter;

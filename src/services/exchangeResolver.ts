@@ -1,5 +1,7 @@
-import type { ExchangeName } from './exchangeConnector';
-import { firestoreAdapter, type ActiveExchangeContext } from './firestoreAdapter';
+import { getFirebaseAdmin } from '../utils/firebase';
+import { ExchangeConnectorFactory, type ExchangeName } from './exchangeConnector';
+import { decrypt } from './keyManager';
+import { firestoreAdapter } from './firestoreAdapter';
 import { logger } from '../utils/logger';
 
 export interface ResolvedExchangeConnector {
@@ -20,41 +22,104 @@ export interface ResolvedExchangeConnector {
  * 
  * Returns null if no credentials found, with detailed logging
  */
-export async function resolveExchangeConnector(uid: string): Promise<ResolvedExchangeConnector | null> {
+export async function resolveExchangeConnector(
+  uid: string
+): Promise<ResolvedExchangeConnector | null> {
   try {
-    const active = await firestoreAdapter.getActiveExchangeForUser(uid);
-
-    // Handle fallback object when no exchange is configured
-    if (active && typeof active === 'object' && 'exchangeConfigured' in active && active.exchangeConfigured === false) {
-      logger.debug({ uid }, 'Exchange integration not configured');
-      return null;
+    const db = getFirebaseAdmin().firestore();
+    
+    // PRIMARY: Check exchangeConfig subcollection (where frontend saves credentials)
+    const configDoc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+    
+    if (configDoc.exists) {
+      const config = configDoc.data()!;
+      
+      // Validate required fields EARLY - return null immediately if invalid
+      if (!config.exchange) {
+        logger.warn({ uid }, 'Exchange config exists but missing exchange field');
+        return null;
+      }
+      
+      if (!config.apiKeyEncrypted || !config.secretEncrypted) {
+        logger.warn({ uid, exchange: config.exchange }, 'Exchange config exists but missing encrypted credentials');
+        return null;
+      }
+      
+      try {
+        // Normalize exchange name
+        const exchange = (config.exchange as string).toLowerCase().trim() as ExchangeName;
+        const validExchanges: ExchangeName[] = ['binance', 'bitget', 'bingx', 'weex'];
+        
+        // Validate exchange name EARLY - return null immediately if invalid
+        if (!validExchanges.includes(exchange)) {
+          logger.warn({ uid, exchange: config.exchange }, 'Unsupported exchange name in config');
+          return null;
+        }
+        
+        // Proceed with decryption and connector creation
+        // Decrypt credentials
+        let apiKey: string;
+        let secret: string;
+        let passphrase: string | undefined;
+        
+        try {
+          apiKey = decrypt(config.apiKeyEncrypted);
+          secret = decrypt(config.secretEncrypted);
+          passphrase = config.passphraseEncrypted ? decrypt(config.passphraseEncrypted) : undefined;
+        } catch (decryptErr: any) {
+          logger.error({ uid, exchange, error: decryptErr.message }, 'Failed to decrypt exchange credentials');
+          return null;
+        }
+        
+        // Validate decrypted values - return null immediately if empty
+        if (!apiKey || apiKey.trim() === '') {
+          logger.warn({ uid, exchange }, 'Decrypted API key is empty');
+          return null;
+        }
+        
+        if (!secret || secret.trim() === '') {
+          logger.warn({ uid, exchange }, 'Decrypted secret is empty');
+          return null;
+        }
+        
+        const testnet = config.testnet ?? true;
+        
+        // Create connector using factory
+        try {
+          const connector = ExchangeConnectorFactory.create(exchange, {
+            apiKey,
+            secret,
+            passphrase,
+            testnet,
+          });
+          
+          logger.info({ uid, exchange, testnet }, 'Exchange connector resolved from exchangeConfig');
+          
+          return {
+            exchange,
+            connector,
+            credentials: {
+              apiKey,
+              secret,
+              passphrase,
+              testnet,
+            },
+          };
+        } catch (createErr: any) {
+          logger.error({ uid, exchange, error: createErr.message }, 'Failed to create exchange connector');
+          return null;
+        }
+      } catch (parseErr: any) {
+        logger.error({ uid, error: parseErr.message }, 'Error parsing exchange config');
+        return null;
+      }
     }
-
-    // Type assertion since we've handled the fallback case
-    const activeContext = active as any;
-    // ActiveExchangeContext should be valid at this point
-    if (!activeContext.adapter) {
-      logger.warn({ uid }, 'resolveExchangeConnector requested but user has no exchange adapter');
-      return null;
-    }
-
-    if (!activeContext.apiKey || !activeContext.secret) {
-      logger.warn({ uid, exchange: activeContext.name }, 'Active exchange missing credentials');
-      return null;
-    }
-
-    return {
-      exchange: activeContext.name as ExchangeName,
-      connector: activeContext.adapter,
-      credentials: {
-        apiKey: activeContext.apiKey,
-        secret: activeContext.secret,
-        passphrase: activeContext.passphrase,
-        testnet: activeContext.testnet ?? false,
-      },
-    };
+    
+    // No credentials found in exchangeConfig/current
+    logger.warn({ uid }, 'No exchange credentials found in users/{uid}/exchangeConfig/current. Please configure your exchange API credentials in Settings → Trading API Integration.');
+    return null;
   } catch (err: any) {
-    logger.error({ uid, error: err.message }, 'Error resolving exchange connector');
+    logger.error({ uid, error: err.message, stack: err.stack }, 'Error resolving exchange connector');
     return null;
   }
 }

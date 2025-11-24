@@ -177,7 +177,7 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
 
       // If credentials provided, use them; otherwise load from user's config
       if (body.apiKey && body.secret) {
-        exchange = body.exchange || 'bybit';
+        exchange = body.exchange || 'binance';
         credentials = {
           apiKey: body.apiKey,
           secret: body.secret,

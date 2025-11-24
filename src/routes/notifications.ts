@@ -1,159 +1,296 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { z } from 'zod';
 import { firestoreAdapter } from '../services/firestoreAdapter';
 import { logger } from '../utils/logger';
-import { ValidationError } from '../utils/errors';
+import { z } from 'zod';
+import * as admin from 'firebase-admin';
+import { getFirebaseAdmin } from '../utils/firebase';
+
+const db = () => admin.firestore(getFirebaseAdmin());
 
 export async function notificationsRoutes(fastify: FastifyInstance) {
   // GET /api/notifications - Get user notifications
-  fastify.get('/', {
+  fastify.get('/notifications', {
     preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Querystring: { limit?: string } }>, reply: FastifyReply) => {
+  }, async (request: FastifyRequest<{ Querystring: { limit?: number } }>, reply: FastifyReply) => {
+    const user = (request as any).user;
+    const limit = request.query.limit ? parseInt(String(request.query.limit)) || 50 : 50;
+
     try {
-      const user = (request as any).user;
-      if (!user || !user.uid) {
-        return reply.code(401).send({ error: 'Unauthorized', notifications: [], unreadCount: 0 });
+      // Try new path first (notifications/{uid}/items), fallback to old path
+      let snapshot;
+      try {
+        snapshot = await db()
+          .collection('notifications')
+          .doc(user.uid)
+          .collection('items')
+          .orderBy('timestamp', 'desc')
+          .limit(limit)
+          .get();
+      } catch (err: any) {
+        // Fallback to old path
+        snapshot = await db()
+          .collection('users')
+          .doc(user.uid)
+          .collection('notifications')
+          .orderBy('timestamp', 'desc')
+          .limit(limit)
+          .get();
       }
 
-      // Firestore requires manual composite index for this query:
-      // Collection: notifications
-      // Fields: (userId ASC, timestamp DESC)
-      // Create this index in Firebase Console if you see index errors
-      
-      const limit = request.query.limit ? parseInt(request.query.limit, 10) : 50;
-      
-      // Auto-correct limit to max 500 instead of throwing error
-      // This prevents ZodError and Firestore index errors
-      const safeLimit = Math.min(Math.max(1, limit), 500);
-      
-      let notifications: any[] = [];
-      let unreadCount = 0;
-      
-      try {
-        notifications = await firestoreAdapter.getUserNotifications(user.uid, safeLimit);
-        // Ensure all notifications have required fields and convert timestamps
-        notifications = notifications.map((notif: any) => ({
-          id: notif.id || '',
-          title: notif.title || '',
-          message: notif.message || '',
-          type: notif.type || 'info',
-          read: notif.read || false,
-          timestamp: notif.timestamp || new Date().toISOString(),
-          createdAt: notif.createdAt?.toDate?.()?.toISOString() || notif.createdAt || new Date().toISOString(),
-        })).filter((notif: any) => notif.id); // Remove any invalid entries
-      } catch (notifErr: any) {
-        logger.error({ err: notifErr, uid: user.uid }, 'Error fetching notifications, returning empty array');
-        notifications = [];
-      }
-      
-      try {
-        unreadCount = await firestoreAdapter.getUnreadNotificationCount(user.uid);
-      } catch (countErr: any) {
-        logger.error({ err: countErr, uid: user.uid }, 'Error fetching unread count, defaulting to 0');
-        unreadCount = 0;
-      }
-      
-      return { 
-        notifications: notifications || [], 
-        unreadCount: unreadCount || 0 
+      const notifications = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+        timestamp: doc.data().timestamp?.toDate?.()?.toISOString() || new Date().toISOString(),
+      }));
+
+      return notifications;
+    } catch (err: any) {
+      logger.error({ err, uid: user.uid }, 'Error fetching notifications');
+      return reply.code(500).send({
+        error: 'Failed to fetch notifications',
+      });
+    }
+  });
+
+  // POST /api/notifications - Create notification
+  fastify.post('/notifications', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: { title: string; message: string; type: 'success' | 'warning' | 'error' | 'info' } }>, reply: FastifyReply) => {
+    const user = (request as any).user;
+    
+    try {
+      const body = z.object({
+        title: z.string().min(1),
+        message: z.string().min(1),
+        type: z.enum(['success', 'warning', 'error', 'info']),
+      }).parse(request.body);
+
+      const notificationData = {
+        title: body.title,
+        message: body.message,
+        type: body.type,
+        read: false,
+        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      // Use new path: notifications/{uid}/items
+      const docRef = await db()
+        .collection('notifications')
+        .doc(user.uid)
+        .collection('items')
+        .add(notificationData);
+
+      return {
+        id: docRef.id,
+        title: body.title,
+        message: body.message,
+        type: body.type,
+        read: false,
+        timestamp: new Date().toISOString(),
       };
     } catch (err: any) {
-      logger.error({ err, uid: (request as any).user?.uid }, 'Error getting notifications');
-      // Always return valid JSON structure even on error
-      return reply.code(200).send({ 
-        notifications: [], 
-        unreadCount: 0,
-        error: err.message || 'Error fetching notifications' 
-      });
-    }
-  });
-
-  // POST /api/notifications/push - Create a new notification
-  fastify.post('/push', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Body: { userId?: string; uid?: string; title: string; message: string; type: string } }>, reply: FastifyReply) => {
-    try {
-      const { userId, uid, title, message, type } = request.body;
-      
-      // Support both userId and uid (frontend sends uid)
-      const targetUserId = userId || uid;
-      
-      // Validate required fields
-      if (!targetUserId || !title || !message || !type) {
-        throw new ValidationError('userId (or uid), title, message, and type are required');
-      }
-
-      // Validate userId is not empty
-      if (typeof targetUserId !== 'string' || targetUserId.trim() === '') {
-        throw new ValidationError('userId (or uid) must be a non-empty string');
-      }
-
-      // Validate title is not empty
-      if (typeof title !== 'string' || title.trim() === '') {
-        throw new ValidationError('title must be a non-empty string');
-      }
-
-      // Validate message is not empty
-      if (typeof message !== 'string' || message.trim() === '') {
-        throw new ValidationError('message must be a non-empty string');
-      }
-
-      // Validate type is not empty
-      if (typeof type !== 'string' || type.trim() === '') {
-        throw new ValidationError('type must be a non-empty string');
-      }
-
-      // Save notification to Firestore (notifications collection)
-      const notificationId = await firestoreAdapter.createNotification(targetUserId, {
-        title: title.trim(),
-        message: message.trim(),
-        type: type.trim(),
-      });
-      
-      logger.info({ userId: targetUserId, notificationId, title }, 'Notification created via push endpoint');
-      
-      // Return success response
-      reply.code(200).header('Content-Type', 'application/json').send({
-        success: true,
-      });
-      return; // Explicit return to prevent further execution
-    } catch (err: any) {
-      if (err instanceof ValidationError) {
-        reply.code(400).header('Content-Type', 'application/json').send({ 
-          success: false,
-          error: err.message 
+      if (err instanceof z.ZodError) {
+        return reply.code(400).send({
+          error: 'Invalid notification data',
+          details: err.errors,
         });
-        return; // Explicit return to prevent further execution
       }
-      logger.error({ err }, 'Error creating notification');
-      reply.code(500).header('Content-Type', 'application/json').send({ 
-        success: false,
-        error: err.message || 'Error creating notification' 
+      logger.error({ err, uid: user.uid }, 'Error creating notification');
+      return reply.code(500).send({
+        error: 'Failed to create notification',
       });
-      return; // Explicit return to prevent further execution
     }
   });
 
-  // POST /api/notifications/mark-read - Mark notification as read
-  fastify.post('/mark-read', {
+  // POST /api/notifications/mark-read - Mark notification as read (body parameter)
+  fastify.post('/notifications/mark-read', {
     preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Body: { notificationId: string } }>, reply: FastifyReply) => {
+  }, async (request: FastifyRequest<{ Body: { notificationId: string | number } }>, reply: FastifyReply) => {
+    const user = (request as any).user;
+    
     try {
-      const { notificationId } = request.body;
-      if (!notificationId) {
-        throw new ValidationError('Notification ID is required');
+      const body = z.object({
+        notificationId: z.union([z.string(), z.number()]),
+      }).parse(request.body);
+
+      const notificationId = String(body.notificationId);
+
+      // Try new path first, fallback to old
+      try {
+        await db()
+          .collection('notifications')
+          .doc(user.uid)
+          .collection('items')
+          .doc(notificationId)
+          .update({ read: true });
+      } catch (err: any) {
+        await db()
+          .collection('users')
+          .doc(user.uid)
+          .collection('notifications')
+          .doc(notificationId)
+          .update({ read: true });
       }
 
-      await firestoreAdapter.markNotificationRead(notificationId);
-      
-      return { message: 'Notification marked as read' };
+      return { success: true };
     } catch (err: any) {
-      if (err instanceof ValidationError) {
-        return reply.code(400).send({ error: err.message });
+      if (err instanceof z.ZodError) {
+        return reply.code(400).send({
+          error: 'Invalid notification ID',
+          details: err.errors,
+        });
       }
-      logger.error({ err }, 'Error marking notification as read');
-      return reply.code(500).send({ error: err.message || 'Error marking notification as read' });
+      logger.error({ err, uid: user.uid, notificationId: String((request.body as any)?.notificationId || 'unknown') }, 'Error marking notification as read');
+      return reply.code(500).send({
+        error: 'Failed to mark notification as read',
+      });
+    }
+  });
+
+  // POST /api/notifications/:id/read - Mark notification as read (URL parameter)
+  fastify.post('/notifications/:id/read', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    const user = (request as any).user;
+    const { id } = request.params;
+
+    try {
+      // Try new path first, fallback to old
+      try {
+        await db()
+          .collection('notifications')
+          .doc(user.uid)
+          .collection('items')
+          .doc(id)
+          .update({ read: true });
+      } catch (err: any) {
+        await db()
+          .collection('users')
+          .doc(user.uid)
+          .collection('notifications')
+          .doc(id)
+          .update({ read: true });
+      }
+
+      return { success: true };
+    } catch (err: any) {
+      logger.error({ err, uid: user.uid, notificationId: id }, 'Error marking notification as read');
+      return reply.code(500).send({
+        error: 'Failed to mark notification as read',
+      });
+    }
+  });
+
+  // POST /api/notifications/read-all - Mark all notifications as read
+  fastify.post('/notifications/read-all', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = (request as any).user;
+
+    try {
+      // Try new path first, fallback to old
+      let snapshot;
+      try {
+        snapshot = await db()
+          .collection('notifications')
+          .doc(user.uid)
+          .collection('items')
+          .where('read', '==', false)
+          .get();
+      } catch (err: any) {
+        snapshot = await db()
+          .collection('users')
+          .doc(user.uid)
+          .collection('notifications')
+          .where('read', '==', false)
+          .get();
+      }
+
+      const batch = db().batch();
+      snapshot.docs.forEach((doc) => {
+        batch.update(doc.ref, { read: true });
+      });
+
+      await batch.commit();
+
+      return { success: true, updated: snapshot.docs.length };
+    } catch (err: any) {
+      logger.error({ err, uid: user.uid }, 'Error marking all notifications as read');
+      return reply.code(500).send({
+        error: 'Failed to mark all notifications as read',
+      });
+    }
+  });
+
+  // POST /api/notifications/push - Push notification to user (and admin)
+  fastify.post('/notifications/push', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ 
+    Body: { 
+      uid: string;
+      type: 'success' | 'warning' | 'error' | 'info';
+      title: string;
+      message: string;
+      timestamp?: number;
+    } 
+  }>, reply: FastifyReply) => {
+    const requestingUser = (request as any).user;
+    
+    try {
+      const body = z.object({
+        uid: z.string().min(1),
+        type: z.enum(['success', 'warning', 'error', 'info']),
+        title: z.string().min(1),
+        message: z.string().min(1),
+        timestamp: z.number().optional(),
+      }).parse(request.body);
+
+      const notificationData = {
+        title: body.title,
+        message: body.message,
+        type: body.type,
+        read: false,
+        timestamp: body.timestamp 
+          ? admin.firestore.Timestamp.fromMillis(body.timestamp)
+          : admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      // Save to user's notifications
+      const userDocRef = await db()
+        .collection('notifications')
+        .doc(body.uid)
+        .collection('items')
+        .add(notificationData);
+
+      // Also save to admin's notifications
+      const adminDocRef = await db()
+        .collection('notifications')
+        .doc('admin')
+        .collection('items')
+        .add({
+          ...notificationData,
+          originalUid: body.uid, // Track which user this notification is about
+        });
+
+      return {
+        id: userDocRef.id,
+        title: body.title,
+        message: body.message,
+        type: body.type,
+        read: false,
+        timestamp: body.timestamp ? new Date(body.timestamp).toISOString() : new Date().toISOString(),
+      };
+    } catch (err: any) {
+      if (err instanceof z.ZodError) {
+        return reply.code(400).send({
+          error: 'Invalid notification data',
+          details: err.errors,
+        });
+      }
+      logger.error({ err, uid: requestingUser.uid }, 'Error pushing notification');
+      return reply.code(500).send({
+        error: 'Failed to push notification',
+      });
     }
   });
 }
-

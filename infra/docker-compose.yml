@@ -34,7 +34,7 @@ services:
   backend:
     build:
       context: ..
-      dockerfile: dlxtrade-ws/Dockerfile
+      dockerfile: backend/Dockerfile
     container_name: dlxtrade-backend
     environment:
       NODE_ENV: production

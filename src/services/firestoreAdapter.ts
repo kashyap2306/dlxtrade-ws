@@ -2,7 +2,6 @@ import * as admin from 'firebase-admin';
 import { getFirebaseAdmin } from '../utils/firebase';
 import { logger } from '../utils/logger';
 import { encrypt, decrypt, maskKey } from './keyManager';
-import { ExchangeConnectorFactory, type ExchangeConnector, type ExchangeName } from './exchangeConnector';
 
 const db = () => admin.firestore(getFirebaseAdmin());
 
@@ -66,32 +65,12 @@ export interface ExecutionLogDocument {
   createdAt: admin.firestore.Timestamp;
 }
 
-export type IntegrationStatus = 'CONNECTED' | 'SAVED' | 'UNVERIFIED' | 'VERIFIED' | 'ERROR' | 'DISABLED';
-
 export interface IntegrationDocument {
   enabled: boolean;
   apiKey?: string; // encrypted
   secretKey?: string; // encrypted (only for Binance)
-  passphrase?: string; // encrypted
   apiType?: string; // For CoinAPI: 'market' | 'flatfile' | 'exchangerate'
-  testnet?: boolean;
-  exchangeName?: string;
-  userId?: string;
-  status?: IntegrationStatus;
-  meta?: Record<string, any>;
-  validationDetails?: Record<string, any>;
-  lastValidatedAt?: admin.firestore.Timestamp;
-  createdAt?: admin.firestore.Timestamp;
   updatedAt: admin.firestore.Timestamp;
-}
-
-export interface ActiveExchangeContext {
-  name: ExchangeName;
-  apiKey: string;
-  secret: string;
-  passphrase?: string;
-  testnet?: boolean;
-  adapter: ExchangeConnector;
 }
 
 export interface HFTSettingsDocument {
@@ -216,48 +195,22 @@ export class FirestoreAdapter {
   }
 
   async getLatestApiKey(uid: string, exchange: string): Promise<ApiKeyDocument | null> {
-    try {
-      const snapshot = await db()
-        .collection('users')
-        .doc(uid)
-        .collection('apikeys')
-        .where('exchange', '==', exchange)
-        .orderBy('updatedAt', 'desc')
-        .limit(1)
-        .get();
+    const snapshot = await db()
+      .collection('users')
+      .doc(uid)
+      .collection('apikeys')
+      .where('exchange', '==', exchange)
+      .orderBy('updatedAt', 'desc')
+      .limit(1)
+      .get();
 
-      if (snapshot.empty) return null;
+    if (snapshot.empty) return null;
 
-      const doc = snapshot.docs[0];
-      return {
-        id: doc.id,
-        ...doc.data(),
-      } as ApiKeyDocument;
-    } catch (error: any) {
-      // Handle composite index errors gracefully
-      if (error.message?.includes('index')) {
-        logger.warn({ uid, exchange, error: error.message }, 'Composite index error in getLatestApiKey, falling back to unordered query');
-        // Fallback: get all keys for this exchange and sort in memory
-        const fallbackSnapshot = await db()
-          .collection('users')
-          .doc(uid)
-          .collection('apikeys')
-          .where('exchange', '==', exchange)
-          .get();
-
-        if (fallbackSnapshot.empty) return null;
-
-        const docs = fallbackSnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data(),
-        } as ApiKeyDocument)).sort((a, b) =>
-          (b.updatedAt?.toMillis() || 0) - (a.updatedAt?.toMillis() || 0)
-        );
-
-        return docs[0] || null;
-      }
-      throw error;
-    }
+    const doc = snapshot.docs[0];
+    return {
+      id: doc.id,
+      ...doc.data(),
+    } as ApiKeyDocument;
   }
 
   // Settings
@@ -300,6 +253,7 @@ export class FirestoreAdapter {
   }
 
   async getResearchLogs(uid: string, limit: number = 100): Promise<ResearchLogDocument[]> {
+    // Get logs from both researchLogs collection (scheduled research) and old research collection
     const snapshot = await db()
       .collection('users')
       .doc(uid)
@@ -372,215 +326,51 @@ export class FirestoreAdapter {
     return integrations;
   }
 
-  /**
-   * Get default data providers that are always available (not stored in Firestore)
-   */
-  getDefaultProviders(): Record<string, { enabled: boolean; displayName: string; free: boolean }> {
-    return {
-      'binance': { enabled: true, displayName: 'Binance Public API', free: true },
-      'coingecko': { enabled: true, displayName: 'CoinGecko API', free: true },
-      'googlefinance': { enabled: true, displayName: 'Google Finance', free: true },
-    };
-  }
-
-  /**
-   * Get real exchanges that can be connected (stored in Firestore)
-   */
-  getRealExchanges(): string[] {
-    return ['bybit', 'mexc', 'kucoin', 'bingx', 'okx', 'weex', 'bitget'];
-  }
-
-  async ensureDefaultIntegrations(uid: string): Promise<void> {
-    const integrationsRef = db()
-      .collection('users')
-      .doc(uid)
-      .collection('integrations');
-
-    const snapshot = await integrationsRef.get();
-    const existingIntegrations = new Set(snapshot.docs.map(doc => doc.id));
-
-    // Only create optional research providers - default providers are not stored in Firestore
-    const defaultIntegrations = [
-      // Required APIs (disabled by default, require API keys)
-      { name: 'marketaux', enabled: false, displayName: 'MarketAux API', free: false },
-      { name: 'cryptocompare', enabled: false, displayName: 'CryptoCompare API', free: false },
-    ];
-
-    const now = admin.firestore.Timestamp.now();
-    const createdIntegrations: string[] = [];
-
-    for (const integration of defaultIntegrations) {
-      const docRef = integrationsRef.doc(integration.name);
-
-      if (!existingIntegrations.has(integration.name)) {
-        // Create new integration document
-        await docRef.set({
-          enabled: integration.enabled,
-          exchangeName: integration.displayName,
-          free: integration.free || false,
-          createdAt: now,
-          updatedAt: now,
-          // Free APIs don't need API keys
-          apiKey: integration.free ? null : undefined,
-          secretKey: integration.free ? null : undefined,
-          passphrase: integration.free ? null : undefined,
-          status: integration.free ? 'VERIFIED' : 'SAVED',
-        });
-
-        createdIntegrations.push(integration.name);
-        logger.info({ uid, apiName: integration.name }, `Created default integration: ${integration.displayName}`);
-      } else {
-        // Update existing integration if it's a free API to ensure it's always enabled
-        if (integration.free) {
-          const existingDoc = await docRef.get();
-          const existingData = existingDoc.data();
-
-          if (!existingData?.enabled) {
-            await docRef.update({
-              enabled: true,
-              free: true,
-              updatedAt: now,
-              status: 'VERIFIED',
-            });
-            logger.info({ uid, apiName: integration.name }, `Re-enabled free API: ${integration.displayName}`);
-          }
-        }
-      }
-    }
-
-    if (createdIntegrations.length > 0) {
-      logger.info({ uid, createdIntegrations }, 'Default integrations created for new user');
-    } else {
-      logger.debug({ uid }, 'Default integrations already exist');
-    }
-  }
-
   async saveIntegration(uid: string, apiName: string, data: {
     enabled: boolean;
     apiKey?: string; // plain text, will be encrypted
     secretKey?: string; // plain text, will be encrypted (only for Binance)
-    passphrase?: string; // plain text, will be encrypted (for Bitget, Weex, etc.)
     apiType?: string; // For CoinAPI type
-    status?: IntegrationStatus;
-    exchangeName?: string;
-    meta?: Record<string, any>;
-    userId?: string;
-    lastValidatedAt?: admin.firestore.Timestamp;
-    validationDetails?: Record<string, any>;
-  }): Promise<{ path: string; data: any }> {
+  }): Promise<void> {
     const docRef = db()
       .collection('users')
       .doc(uid)
       .collection('integrations')
       .doc(apiName);
 
-    // Check if document exists for idempotency
+    // Check if document exists to determine if we should set createdAt
     const existingDoc = await docRef.get();
-    const existingData = existingDoc.exists ? existingDoc.data() as IntegrationDocument : null;
     const now = admin.firestore.Timestamp.now();
 
-    const docData: any = {
+    const docData: IntegrationDocument = {
       enabled: data.enabled,
       updatedAt: now,
-      userId: data.userId || uid,
-      exchangeName: data.exchangeName || existingData?.exchangeName || apiName,
-      status: data.status || existingData?.status || (data.enabled ? 'SAVED' : 'DISABLED'),
     };
 
-    // Set createdAt only if document doesn't exist (required field)
+    // Add createdAt only if document doesn't exist
     if (!existingDoc.exists) {
-      docData.createdAt = now;
-    } else if (data.enabled === false && existingDoc.exists && !existingDoc.data().createdAt) {
-      // Patch: ensure createdAt exists on disables for legacy docs
-      docData.createdAt = now;
+      (docData as any).createdAt = now;
     }
 
-    if (data.meta) {
-      docData.meta = data.meta;
+    if (data.apiKey) {
+      docData.apiKey = encrypt(data.apiKey);
     }
-
-    if (data.validationDetails) {
-      docData.validationDetails = data.validationDetails;
+    if (data.secretKey) {
+      docData.secretKey = encrypt(data.secretKey);
     }
-
-    if (data.lastValidatedAt) {
-      docData.lastValidatedAt = data.lastValidatedAt;
-    }
-
-    // Encrypt API keys safely
-    try {
-      if (data.apiKey) {
-        docData.apiKey = encrypt(data.apiKey);
-      }
-      if (data.secretKey) {
-        docData.secretKey = encrypt(data.secretKey);
-      }
-      if (data.passphrase) {
-        docData.passphrase = encrypt(data.passphrase);
-      }
-    } catch (error: any) {
-      logger.error({ error: error.message, uid, apiName }, 'Encryption failed during saveIntegration');
-      throw new Error(`Encryption failed: ${error.message}`);
-    }
-
-    // Set apiType for CoinAPI integrations (required field)
     if (data.apiType) {
       docData.apiType = data.apiType;
-    } else if (apiName.startsWith('coinapi_')) {
-      // Extract apiType from docName if not provided (e.g., 'coinapi_market' -> 'market')
-      docData.apiType = apiName.replace('coinapi_', '');
     }
 
     await docRef.set(docData, { merge: true });
-    logger.info({ uid, apiName, enabled: data.enabled }, 'Saving integration');
-
-    // Post-save verification: read back the document and verify all required fields
-    const verification = await docRef.get();
-    if (!verification.exists) {
-      logger.error({ uid, apiName }, 'Post-save read failed - document missing');
-      throw new Error('Post-save verification failed: document not found');
-    }
-
-    const savedData = verification.data() || {};
-    
-    // Verify all required fields are present
-    const requiredFields = ['enabled', 'createdAt', 'updatedAt'];
-    const missingFields = requiredFields.filter(field => savedData[field] === undefined);
-    
-    // For CoinAPI, apiType is also required
-    if (apiName.startsWith('coinapi_') && !savedData.apiType) {
-      missingFields.push('apiType');
-    }
-    
-    if (missingFields.length > 0) {
-      logger.error({ uid, apiName, missingFields }, '❌ Integration missing required fields after save');
-      throw new Error(`Post-save verification failed: missing required fields: ${missingFields.join(', ')}`);
-    }
-
     logger.info({ 
       uid, 
-      path: `users/${uid}/integrations/${apiName}`,
-      hasEnabled: savedData.enabled !== undefined,
-      hasApiKey: savedData.apiKey !== undefined,
-      hasSecretKey: savedData.secretKey !== undefined,
-      hasApiType: savedData.apiType !== undefined,
-      hasCreatedAt: !!savedData.createdAt,
-      hasUpdatedAt: !!savedData.updatedAt,
-    }, '✅ Integration verified with all required fields');
-
-    return {
-      path: `users/${uid}/integrations/${apiName}`,
-      data: {
-        enabled: savedData.enabled || false,
-        hasKey: !!savedData.apiKey,
-        hasSecret: !!savedData.secretKey,
-        apiType: savedData.apiType || null,
-        status: savedData.status || (savedData.enabled ? 'SAVED' : 'DISABLED'),
-        updatedAt: savedData.updatedAt,
-        createdAt: savedData.createdAt,
-        exchangeName: savedData.exchangeName || apiName,
-      },
-    };
+      apiName, 
+      enabled: data.enabled,
+      hasApiKey: !!data.apiKey,
+      hasSecretKey: !!data.secretKey,
+      hasCreatedAt: !existingDoc.exists 
+    }, 'Integration saved to Firestore');
   }
 
   async deleteIntegration(uid: string, apiName: string): Promise<void> {
@@ -600,118 +390,14 @@ export class FirestoreAdapter {
 
     for (const [apiName, integration] of Object.entries(allIntegrations)) {
       if (integration.enabled && integration.apiKey) {
-        const decryptedApiKey = decrypt(integration.apiKey);
-
-        // Skip if decryption failed
-        if (!decryptedApiKey) {
-          logger.warn({ uid, apiName }, 'Failed to decrypt API key - skipping integration');
-          continue;
-        }
-
         enabled[apiName] = {
-          apiKey: decryptedApiKey,
-          ...(integration.secretKey ? { secretKey: decrypt(integration.secretKey) || '' } : {}),
+          apiKey: decrypt(integration.apiKey),
+          ...(integration.secretKey ? { secretKey: decrypt(integration.secretKey) } : {}),
         };
       }
     }
 
     return enabled;
-  }
-
-  /**
-   * Get user's provider API keys from integrations collection
-   * Reads from users/{uid}/integrations documents for cryptocompare, marketaux, coinapi_*
-   */
-  async getUserProviderApiKeys(uid: string): Promise<Record<string, { apiKey: string }>> {
-    try {
-      const integrations = await this.getAllIntegrations(uid);
-      const providerKeys: Record<string, { apiKey: string }> = {};
-
-      // Map integration document names to provider keys
-      const providerMappings = {
-        'cryptocompare': 'cryptocompare',
-        'marketaux': 'marketaux',
-        'coinapi_market': 'coinapi_market',
-        'coinapi_exchangerate': 'coinapi_exchangerate',
-        'coinapi_flatfile': 'coinapi_flatfile'
-      };
-
-      for (const [integrationName, providerField] of Object.entries(providerMappings)) {
-        const integration = integrations[integrationName];
-
-        if (integration && integration.enabled && integration.apiKey) {
-          const encryptedKey = integration.apiKey;
-          const decryptedKey = decrypt(encryptedKey);
-
-          if (decryptedKey) {
-            providerKeys[providerField] = { apiKey: decryptedKey };
-            logger.info({ uid, provider: integrationName }, `Successfully retrieved ${integrationName} API key`);
-          } else {
-            logger.warn({ uid, provider: integrationName }, `Failed to decrypt ${integrationName} API key`);
-          }
-        }
-      }
-
-      logger.info({ uid, providersFound: Object.keys(providerKeys) }, 'Retrieved provider API keys from integrations collection');
-      return providerKeys;
-
-    } catch (error: any) {
-      logger.error({ uid, error: error.message }, 'Error retrieving provider API keys from integrations collection');
-      throw error;
-    }
-  }
-
-
-  /**
-   * Returns { exchange, credentials } for the highest-priority enabled exchange for a user.
-   * If none, returns { exchange: 'fallback' }
-   */
-  async getActiveExchangeForUser(uid: string): Promise<ActiveExchangeContext | { exchangeConfigured: false; error: string }> {
-    const integrations = await this.getAllIntegrations(uid);
-    // Only real exchanges that can be connected for auto-trade (no default binance)
-    const priorities: ExchangeName[] = ['bitget', 'bingx', 'bybit', 'mexc', 'kucoin', 'okx', 'weex'];
-
-    for (const exchangeName of priorities) {
-      const config = integrations[exchangeName];
-      if (!config || !config.enabled) continue;
-
-      try {
-        const apiKey = config.apiKey ? decrypt(config.apiKey) : '';
-        const secretKey = config.secretKey ? decrypt(config.secretKey) : '';
-        const passphrase = config.passphrase ? decrypt(config.passphrase) : undefined;
-
-        if (!apiKey || !secretKey) {
-          logger.warn({ uid, exchangeName }, 'Active exchange missing decrypted credentials');
-          continue;
-        }
-
-        const adapter = ExchangeConnectorFactory.create(exchangeName, {
-          apiKey,
-          secret: secretKey,
-          passphrase,
-          testnet: config.testnet ?? false,
-        });
-
-        return { 
-          name: exchangeName, 
-          apiKey, 
-          secret: secretKey, 
-          passphrase, 
-          testnet: config.testnet ?? false,
-          adapter 
-        };
-      } catch (err: any) {
-        logger.error({ uid, exchangeName, error: err.message }, 'Failed to instantiate exchange adapter');
-        continue;
-      }
-    }
-
-    // Return safe fallback instead of throwing error for Deep Research compatibility
-    logger.debug({ uid }, 'No exchange integration configured, returning safe fallback');
-    return {
-      exchangeConfigured: false,
-      error: "No exchange integration connected"
-    } as any;
   }
 
   // HFT Settings
@@ -769,29 +455,15 @@ export class FirestoreAdapter {
   }
 
   // Agent Management
-  async unlockAgent(uid: string, agentName: string, agentId?: string, metadata?: any): Promise<void> {
+  async unlockAgent(uid: string, agentName: string): Promise<void> {
     const docRef = db().collection('users').doc(uid).collection('agents').doc(agentName);
     
     await docRef.set({
       unlocked: true,
-      agentId: agentId || agentName,
-      agentName,
       unlockedAt: admin.firestore.Timestamp.now(),
-      status: 'active',
-      settings: {},
-      ...metadata,
     }, { merge: true });
 
-    // Also update user's unlockedAgents array
-    const userData = await this.getUser(uid);
-    const currentUnlocked = userData?.unlockedAgents || [];
-    if (!currentUnlocked.includes(agentName)) {
-      await this.createOrUpdateUser(uid, {
-        unlockedAgents: [...currentUnlocked, agentName],
-      });
-    }
-
-    logger.info({ uid, agentName, agentId }, 'Agent unlocked');
+    logger.info({ uid, agentName }, 'Agent unlocked');
   }
 
   async lockAgent(uid: string, agentName: string): Promise<void> {
@@ -799,50 +471,10 @@ export class FirestoreAdapter {
     
     await docRef.set({
       unlocked: false,
-      status: 'inactive',
-      lockedAt: admin.firestore.Timestamp.now(),
+      unlockedAt: admin.firestore.Timestamp.now(),
     }, { merge: true });
-
-    // Remove from user's unlockedAgents array
-    const userData = await this.getUser(uid);
-    const currentUnlocked = userData?.unlockedAgents || [];
-    const updatedUnlocked = currentUnlocked.filter((name: string) => name !== agentName);
-    await this.createOrUpdateUser(uid, {
-      unlockedAgents: updatedUnlocked,
-    });
 
     logger.info({ uid, agentName }, 'Agent locked');
-  }
-
-  async getUserUnlockedAgents(uid: string): Promise<Array<{ agentId: string; agentName: string; unlockedAt: admin.firestore.Timestamp; status: string; settings: any }>> {
-    try {
-      const snapshot = await db()
-        .collection('users')
-        .doc(uid)
-        .collection('agents')
-        .where('unlocked', '==', true)
-        .get();
-      
-      return snapshot.docs.map((doc) => ({
-        agentId: doc.data().agentId || doc.id,
-        agentName: doc.data().agentName || doc.id,
-        unlockedAt: doc.data().unlockedAt,
-        status: doc.data().status || 'active',
-        settings: doc.data().settings || {},
-      }));
-    } catch (err: any) {
-      logger.warn({ err: err.message }, 'getUserUnlockedAgents error');
-      return [];
-    }
-  }
-
-  async updateAgentSettings(uid: string, agentName: string, settings: any): Promise<void> {
-    const docRef = db().collection('users').doc(uid).collection('agents').doc(agentName);
-    await docRef.set({
-      settings,
-      updatedAt: admin.firestore.Timestamp.now(),
-    }, { merge: true });
-    logger.info({ uid, agentName }, 'Agent settings updated');
   }
 
   async getAgentStatus(uid: string, agentName: string): Promise<{ unlocked: boolean; unlockedAt?: admin.firestore.Timestamp } | null> {
@@ -892,7 +524,7 @@ export class FirestoreAdapter {
 
   async getAllUsers(): Promise<Array<{ uid: string; email?: string; role?: string; createdAt?: admin.firestore.Timestamp }>> {
     const snapshot = await db().collection('users').get();
-
+    
     return snapshot.docs.map((doc) => {
       const data = doc.data();
       const profile = data?.profile || {};
@@ -903,31 +535,6 @@ export class FirestoreAdapter {
         createdAt: data?.createdAt || profile.createdAt,
       };
     });
-  }
-
-  /**
-   * Get all users who have the required API keys for Deep Research (marketaux + cryptocompare)
-   */
-  async getAllUsersWithAPIs(): Promise<Array<{ uid: string; email?: string; role?: string; createdAt?: admin.firestore.Timestamp }>> {
-    const allUsers = await this.getAllUsers();
-    const usersWithAPIs: Array<{ uid: string; email?: string; role?: string; createdAt?: admin.firestore.Timestamp }> = [];
-
-    for (const user of allUsers) {
-      try {
-        const providerKeys = await this.getUserProviderApiKeys(user.uid);
-        const hasMarketaux = !!providerKeys['marketaux']?.apiKey;
-        const hasCryptocompare = !!providerKeys['cryptocompare']?.apiKey;
-
-        if (hasMarketaux && hasCryptocompare) {
-          usersWithAPIs.push(user);
-        }
-      } catch (error: any) {
-        // Skip users with errors (likely no integrations collection)
-        continue;
-      }
-    }
-
-    return usersWithAPIs;
   }
 
   // ========== USERS COLLECTION METHODS ==========
@@ -1035,156 +642,12 @@ export class FirestoreAdapter {
   }
 
   async getUserApiKeys(uid: string): Promise<any[]> {
-    try {
-      const snapshot = await db()
-        .collection('apiKeys')
-        .where('uid', '==', uid)
-        .orderBy('createdAt', 'desc')
-        .get();
-      return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-    } catch (error: any) {
-      // Handle composite index errors gracefully
-      if (error.message?.includes('index')) {
-        logger.warn({ uid, error: error.message }, 'Composite index error in getUserApiKeys, falling back to unordered query');
-        // Fallback: get all keys for this user and sort in memory
-        const fallbackSnapshot = await db()
-          .collection('apiKeys')
-          .where('uid', '==', uid)
-          .get();
-        return fallbackSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as ApiKeyDocument))
-          .sort((a, b) => (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0));
-      }
-      throw error;
-    }
-  }
-
-  // ========== EXCHANGE CONFIG METHODS ==========
-  async saveExchangeConfig(uid: string, data: {
-    exchange: string;
-    apiKey: string;
-    secret: string;
-    passphrase?: string;
-    testnet?: boolean;
-  }): Promise<{ path: string; data: any }> {
-    const docRef = db()
-      .collection('users')
-      .doc(uid)
-      .collection('exchangeConfig')
-      .doc('current');
-
-    // Check if document exists for idempotency
-    const existingDoc = await docRef.get();
-    const now = admin.firestore.Timestamp.now();
-
-    // Encrypt credentials safely
-    let apiKeyEncrypted: string;
-    let secretEncrypted: string;
-    let passphraseEncrypted: string = '';
-
-    try {
-      apiKeyEncrypted = encrypt(data.apiKey);
-      secretEncrypted = encrypt(data.secret);
-      if (data.passphrase) {
-        passphraseEncrypted = encrypt(data.passphrase);
-      }
-    } catch (error: any) {
-      logger.error({ error: error.message, uid }, 'Encryption failed during saveExchangeConfig');
-      throw new Error(`Encryption failed: ${error.message}`);
-    }
-
-    const configData: any = {
-      exchange: data.exchange,
-      apiKeyEncrypted,
-      secretEncrypted,
-      passphraseEncrypted,
-      testnet: data.testnet || false,
-      enabled: true,
-      updatedAt: now,
-    };
-
-    // Set createdAt only if document doesn't exist
-    if (!existingDoc.exists) {
-      configData.createdAt = now;
-    }
-
-    await docRef.set(configData, { merge: true });
-    logger.info({ uid, exchange: data.exchange }, 'Saving exchange config');
-
-    // Post-save verification: read back the document and verify all required fields
-    const verification = await docRef.get();
-    if (!verification.exists) {
-      logger.error({ uid }, 'Post-save read failed - document missing');
-      throw new Error('Post-save verification failed: document not found');
-    }
-
-    const savedData = verification.data() || {};
-    
-    // Verify all required fields are present
-    const requiredFields = ['exchange', 'apiKeyEncrypted', 'secretEncrypted', 'passphraseEncrypted', 'testnet', 'enabled', 'createdAt', 'updatedAt'];
-    const missingFields = requiredFields.filter(field => savedData[field] === undefined);
-    
-    if (missingFields.length > 0) {
-      logger.error({ uid, missingFields }, '❌ Exchange config missing required fields after save');
-      throw new Error(`Post-save verification failed: missing required fields: ${missingFields.join(', ')}`);
-    }
-
-    logger.info({ 
-      uid, 
-      path: `users/${uid}/exchangeConfig/current`,
-      hasExchange: savedData.exchange !== undefined,
-      hasApiKeyEncrypted: savedData.apiKeyEncrypted !== undefined,
-      hasSecretEncrypted: savedData.secretEncrypted !== undefined,
-      hasPassphraseEncrypted: savedData.passphraseEncrypted !== undefined,
-      hasTestnet: savedData.testnet !== undefined,
-      hasEnabled: savedData.enabled !== undefined,
-      hasCreatedAt: !!savedData.createdAt,
-      hasUpdatedAt: !!savedData.updatedAt,
-    }, '✅ Exchange config verified with all required fields');
-
-    // Update user document's apiConnected status
-    try {
-      await db().collection('users').doc(uid).set({
-        apiConnected: true,
-        apiStatus: 'connected',
-        connectedExchanges: admin.firestore.FieldValue.arrayUnion(data.exchange),
-        updatedAt: now,
-      }, { merge: true });
-      logger.info({ uid, exchange: data.exchange }, 'Updated user apiConnected status');
-    } catch (userUpdateErr: any) {
-      logger.warn({ err: userUpdateErr, uid }, 'Failed to update user apiConnected status (non-critical)');
-    }
-
-    return {
-      path: `users/${uid}/exchangeConfig/current`,
-      data: {
-        exchange: savedData.exchange || '',
-        hasKey: !!savedData.apiKeyEncrypted,
-        hasSecret: !!savedData.secretEncrypted,
-        hasPassphrase: !!savedData.passphraseEncrypted,
-        testnet: savedData.testnet || false,
-        enabled: savedData.enabled || false,
-        updatedAt: savedData.updatedAt,
-        createdAt: savedData.createdAt,
-      },
-    };
-  }
-
-  // ========== ERROR LOGGING METHODS ==========
-  async logError(errorId: string, error: {
-    uid?: string;
-    path?: string;
-    message: string;
-    error: string;
-    stack?: string;
-    metadata?: any;
-  }): Promise<void> {
-    const errorRef = db().collection('admin').doc('errors').collection('errors').doc(errorId);
-    await errorRef.set({
-      ...error,
-      timestamp: admin.firestore.Timestamp.now(),
-      errorId,
-    });
-    logger.error({ errorId, ...error }, 'Error logged to admin/errors');
+    const snapshot = await db()
+      .collection('apiKeys')
+      .where('uid', '==', uid)
+      .orderBy('createdAt', 'desc')
+      .get();
+    return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
   }
 
   // ========== ACTIVITY LOGS COLLECTION METHODS ==========
@@ -1267,44 +730,22 @@ export class FirestoreAdapter {
   }
 
   async getHFTLogs(uid?: string, limit: number = 100): Promise<any[]> {
-    try {
-      let query: admin.firestore.Query = db().collection('hftLogs');
-
-      if (uid) {
-        query = query.where('uid', '==', uid);
-      }
-
-      const snapshot = await query
-        .orderBy('timestamp', 'desc')
-        .limit(limit)
-        .get();
-
-      return snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-        timestamp: doc.data().timestamp?.toDate().toISOString(),
-      }));
-    } catch (error: any) {
-      // Handle composite index errors gracefully
-      if (error.message?.includes('index') && uid) {
-        logger.warn({ uid, error: error.message }, 'Composite index error in getHFTLogs, falling back to unordered query');
-        // Fallback: get all logs for this user and sort in memory
-        const fallbackSnapshot = await db()
-          .collection('hftLogs')
-          .where('uid', '==', uid)
-          .limit(limit * 2) // Get more to account for sorting
-          .get();
-
-        return fallbackSnapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-          timestamp: doc.data().timestamp?.toDate().toISOString(),
-        })).sort((a, b) =>
-          (b.timestamp?.toMillis() || 0) - (a.timestamp?.toMillis() || 0)
-        ).slice(0, limit);
-      }
-      throw error;
+    let query: admin.firestore.Query = db().collection('hftLogs');
+    
+    if (uid) {
+      query = query.where('uid', '==', uid);
     }
+    
+    const snapshot = await query
+      .orderBy('timestamp', 'desc')
+      .limit(limit)
+      .get();
+    
+    return snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+      timestamp: doc.data().timestamp?.toDate().toISOString(),
+    }));
   }
 
   // ========== TRADES COLLECTION METHODS ==========
@@ -1389,40 +830,18 @@ export class FirestoreAdapter {
   }
 
   async getUserNotifications(uid: string, limit: number = 50): Promise<any[]> {
-    try {
-      const snapshot = await db()
-        .collection('notifications')
-        .where('uid', '==', uid)
-        .orderBy('timestamp', 'desc')
-        .limit(limit)
-        .get();
-
-      return snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-        timestamp: doc.data().timestamp?.toDate().toISOString(),
-      }));
-    } catch (error: any) {
-      // Handle composite index errors gracefully
-      if (error.message?.includes('index')) {
-        logger.warn({ uid, error: error.message }, 'Composite index error in getUserNotifications, falling back to unordered query');
-        // Fallback: get all notifications for this user and sort in memory
-        const fallbackSnapshot = await db()
-          .collection('notifications')
-          .where('uid', '==', uid)
-          .limit(limit * 2) // Get more to account for sorting
-          .get();
-
-        return fallbackSnapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-          timestamp: doc.data().timestamp?.toDate().toISOString(),
-        })).sort((a, b) =>
-          (b.timestamp?.toMillis() || 0) - (a.timestamp?.toMillis() || 0)
-        ).slice(0, limit);
-      }
-      throw error;
-    }
+    const snapshot = await db()
+      .collection('notifications')
+      .where('uid', '==', uid)
+      .orderBy('timestamp', 'desc')
+      .limit(limit)
+      .get();
+    
+    return snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+      timestamp: doc.data().timestamp?.toDate().toISOString(),
+    }));
   }
 
   async markNotificationRead(notificationId: string): Promise<void> {
