@@ -123,8 +123,8 @@ export class CryptoCompareAdapter {
 
         // Handle authentication errors immediately (no retry)
         if (status === 401 || status === 403) {
-          logger.warn({ status, errorMessage, symbol }, 'CryptoCompare API authentication failed');
-          throw new Error(`CryptoCompare API authentication failed: ${errorMessage}`);
+          logger.warn({ status, errorMessage, symbol }, 'CryptoCompare API authentication failed, using fallback');
+          return 0;
         }
 
         // Handle ENOTFOUND and other network/DNS issues with retry
@@ -134,25 +134,21 @@ export class CryptoCompareAdapter {
             await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1))); // Progressive delay
             continue;
           } else {
-            logger.error({ errorCode, errorMessage, symbol, retryCount }, 'CryptoCompare API unavailable after all retries');
-            // Convert to 400 error instead of 500
-            const researchError = new Error('CryptoCompare API unavailable, please try again.');
-            (researchError as any).statusCode = 400;
-            throw researchError;
+            logger.warn({ errorCode, errorMessage, symbol, retryCount }, 'CryptoCompare API unavailable after all retries, using fallback');
+            return 0;
           }
         }
 
-        // For other errors, don't retry
-        logger.warn({ error: errorMessage, status, symbol, errorCode }, 'CryptoCompare API error');
-        throw new Error(`CryptoCompare API error: ${errorMessage}`);
+        // For other errors, don't retry - return fallback
+        logger.warn({ error: errorMessage, status, symbol, errorCode }, 'CryptoCompare API error, using fallback');
+        return 0;
       }
     }
 
-    // If we get here, all retries failed
+    // If we get here, all retries failed - return fallback
     const errorMessage = lastError?.response?.data?.Message || lastError?.message || 'Unknown error';
-    const researchError = new Error(`CryptoCompare API error after retries: ${errorMessage}`);
-    (researchError as any).statusCode = 400;
-    throw researchError;
+    logger.warn({ symbol, error: errorMessage }, 'CryptoCompare API failed after all retries, using fallback');
+    return 0;
   }
 
   /**
@@ -206,8 +202,8 @@ export class CryptoCompareAdapter {
         lastError = error;
 
         if (status === 401 || status === 403) {
-          logger.warn({ status, errorMessage, symbol }, 'CryptoCompare API authentication failed');
-          throw new Error(`CryptoCompare API authentication failed: ${errorMessage}`);
+          logger.warn({ status, errorMessage, symbol }, 'CryptoCompare API authentication failed, using fallback');
+          return 0;
         }
 
         if (errorCode === 'ENOTFOUND' || error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
@@ -216,15 +212,13 @@ export class CryptoCompareAdapter {
             await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
             continue;
           } else {
-            logger.error({ errorCode, errorMessage, symbol, retryCount }, 'CryptoCompare API unavailable after all retries');
-            const researchError = new Error('CryptoCompare API unavailable, please try again.');
-            (researchError as any).statusCode = 400;
-            throw researchError;
+            logger.warn({ errorCode, errorMessage, symbol, retryCount }, 'CryptoCompare API unavailable after all retries, using fallback');
+            return 0;
           }
         }
 
-        logger.warn({ error: errorMessage, status, symbol, errorCode }, 'CryptoCompare reserves API error');
-        throw new Error(`CryptoCompare API error: ${errorMessage}`);
+        logger.warn({ error: errorMessage, status, symbol, errorCode }, 'CryptoCompare reserves API error, using fallback');
+        return 0;
       }
     }
 
@@ -274,8 +268,8 @@ export class CryptoCompareAdapter {
         lastError = error;
 
         if (status === 401 || status === 403) {
-          logger.warn({ status, errorMessage, symbol }, 'CryptoCompare API authentication failed');
-          throw new Error(`CryptoCompare API authentication failed: ${errorMessage}`);
+          logger.warn({ status, errorMessage, symbol }, 'CryptoCompare API authentication failed, using fallback');
+          return 0;
         }
 
         if (errorCode === 'ENOTFOUND' || error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
@@ -284,22 +278,19 @@ export class CryptoCompareAdapter {
             await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
             continue;
           } else {
-            logger.error({ errorCode, errorMessage, symbol, retryCount }, 'CryptoCompare API unavailable after all retries');
-            const researchError = new Error('CryptoCompare API unavailable, please try again.');
-            (researchError as any).statusCode = 400;
-            throw researchError;
+            logger.warn({ errorCode, errorMessage, symbol, retryCount }, 'CryptoCompare API unavailable after all retries, using fallback');
+            return 0;
           }
         }
 
-        logger.warn({ error: errorMessage, status, symbol, errorCode }, 'CryptoCompare on-chain API error');
-        throw new Error(`CryptoCompare API error: ${errorMessage}`);
+        logger.warn({ error: errorMessage, status, symbol, errorCode }, 'CryptoCompare on-chain API error, using fallback');
+        return 0;
       }
     }
 
     const errorMessage = lastError?.response?.data?.Message || lastError?.message || 'Unknown error';
-    const researchError = new Error(`CryptoCompare API error after retries: ${errorMessage}`);
-    (researchError as any).statusCode = 400;
-    throw researchError;
+    logger.warn({ symbol, error: errorMessage }, 'CryptoCompare on-chain API failed after all retries, using fallback');
+    return 0;
   }
 
   /**

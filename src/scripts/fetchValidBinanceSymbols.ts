@@ -66,6 +66,12 @@ export function loadValidSymbols(): string[] {
 
     if (!fs.existsSync(cacheFile)) {
       logger.warn({ cacheFile }, 'Valid symbols cache not found, using fallback');
+      // Ensure directory exists for future writes
+      try {
+        fs.mkdirSync(cacheDir, { recursive: true });
+      } catch (dirError: any) {
+        logger.warn({ error: dirError.message, cacheDir }, 'Failed to create cache directory (non-critical)');
+      }
       // Return fallback instead of throwing
       return getFallbackSymbols();
     }
