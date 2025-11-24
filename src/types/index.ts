@@ -36,6 +36,7 @@ export interface Orderbook {
   bids: OrderbookLevel[];
   asks: OrderbookLevel[];
   lastUpdateId: number;
+  fallback?: boolean;
 }
 
 export interface Trade {

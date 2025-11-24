@@ -791,6 +791,11 @@ export class ResearchEngine {
 
       const binanceTickerData = binanceTickerResult.success ? binanceTickerResult.data : null;
 
+      // Log when Binance returns fallback data
+      if (binanceTickerData?.fallback) {
+        logger.warn({ symbol: normalizedSymbol }, 'Binance ticker failed, continuing with fallback data');
+      }
+
       // Get book ticker for accurate bid-ask spread
       const binanceBookTickerResult = await logProviderCall(
         'binance_bookTicker',
@@ -805,6 +810,11 @@ export class ResearchEngine {
 
       const binanceBookTickerData = binanceBookTickerResult.success ? binanceBookTickerResult.data : null;
 
+      // Log when Binance returns fallback data
+      if (binanceBookTickerData?.fallback) {
+        logger.warn({ symbol: normalizedSymbol }, 'Binance book ticker failed, continuing with fallback data');
+      }
+
       // Get volatility from 5m candles
       const binanceVolatilityResult = await logProviderCall(
         'binance_volatility',
@@ -818,6 +828,11 @@ export class ResearchEngine {
       );
 
       const binanceVolatility = binanceVolatilityResult.success ? binanceVolatilityResult.data : null;
+
+      // Log when Binance returns fallback data (volatility doesn't have fallback flag, but we can check if it's null)
+      if (binanceVolatilityResult.success && !binanceVolatility) {
+        logger.warn({ symbol: normalizedSymbol }, 'Binance volatility failed, continuing with null data');
+      }
 
       // Transform Binance ticker data to expected format
       const binanceMarketData = binanceTickerData ? {
