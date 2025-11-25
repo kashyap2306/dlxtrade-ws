@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { logger } from '../utils/logger';
 
 const executionQuerySchema = z.object({
-  limit: z.coerce.number().int().positive().max(500).optional().default(100),
+  limit: z.coerce.number().int().positive().max(2000).optional().default(100),
 });
 
 const closePositionSchema = z.object({

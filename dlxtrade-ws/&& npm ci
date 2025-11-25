@@ -1,5 +1,0 @@
-[35mdlxtrade-ws-old/src/utils/firestoreInitializer.ts[m[36m:[m[32m28[m[36m:[mconst INITIALIZER_DOC_ID = '[1;31m__initializer__[m';
-[35mdlxtrade-ws/backend/src/utils/firestoreInitializer.ts[m[36m:[m[32m28[m[36m:[mconst INITIALIZER_DOC_ID = '[1;31m__initializer__[m';
-[35mdlxtrade-ws/dlxtrade-ws/src/utils/firestoreInitializer.ts[m[36m:[m[32m28[m[36m:[mconst INITIALIZER_DOC_ID = '[1;31m__initializer__[m';
-[35mdlxtrade-ws/src/server.ts[m[36m:[m[32m98[m[36m:[m        // No need for "[1;31m__initializer__[m" documents
-[35msrc/utils/firestoreInitializer.ts[m[36m:[m[32m28[m[36m:[mconst INITIALIZER_DOC_ID = '[1;31m__initializer__[m';
