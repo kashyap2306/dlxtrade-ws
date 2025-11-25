@@ -7,8 +7,8 @@ import { logger } from "./logger";
  */
 const REQUIRED_COLLECTIONS = [
   "users",
-  "agents", 
-  "agentUnlocks",
+  "agents",
+  "agentUnlocks", 
   "uiPreferences",
   "activityLogs",
   "hftLogs",
