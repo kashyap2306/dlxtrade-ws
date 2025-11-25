@@ -1,9 +1,9 @@
 import axios from 'axios';
 
 // API base URL - must include /api prefix since backend routes are prefixed
-const API_BASE = import.meta.env.VITE_API_BASE_URL;
+const API_BASE = import.meta.env.VITE_API_URL || 'https://dlxtrade-ws-1.onrender.com';
 if (!API_BASE) {
-  throw new Error('VITE_API_BASE_URL environment variable is not set');
+  throw new Error('VITE_API_URL environment variable is not set');
 }
 // Ensure /api prefix is included
 const API_URL = API_BASE.endsWith('/api') ? API_BASE : `${API_BASE}/api`;

@@ -24,7 +24,6 @@ export function useAutoTradeMode(): UseAutoTradeModeReturn {
   const [isApiConnected, setIsApiConnected] = useState(false);
   const [integrations, setIntegrations] = useState<any>({
     cryptoquant: { enabled: false, apiKey: null },
-    lunarcrush: { enabled: false, apiKey: null },
     coinapi: {
       market: { enabled: false, apiKey: null },
       flatfile: { enabled: false, apiKey: null },
@@ -53,7 +52,6 @@ export function useAutoTradeMode(): UseAutoTradeModeReturn {
       
       const loaded: any = {
         cryptoquant: data.cryptoquant || { enabled: false, apiKey: null },
-        lunarcrush: data.lunarcrush || { enabled: false, apiKey: null },
         coinapi: {
           market: data.coinapi?.market || { enabled: false, apiKey: null },
           flatfile: data.coinapi?.flatfile || { enabled: false, apiKey: null },
@@ -74,9 +72,6 @@ export function useAutoTradeMode(): UseAutoTradeModeReturn {
       missing.push('cryptoquant');
     }
     
-    if (!integrations.lunarcrush || !integrations.lunarcrush.apiKey || !integrations.lunarcrush.enabled) {
-      missing.push('lunarcrush');
-    }
     
     const coinapi = integrations.coinapi as any;
     if (!coinapi?.market || !coinapi.market.apiKey || !coinapi.market.enabled) {

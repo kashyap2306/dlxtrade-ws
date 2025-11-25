@@ -134,7 +134,7 @@ export default function AutoTradeMode({ onStatusChange }: AutoTradeModeProps) {
 
           {!canEnable && !enabled && (
             <p className="text-xs text-yellow-400 text-center">
-              Connect exchange API and all required APIs (CryptoQuant, LunarCrush, CoinAPI) to enable
+              Connect exchange API and all required APIs (CryptoQuant, CoinAPI) to enable
             </p>
           )}
         </div>

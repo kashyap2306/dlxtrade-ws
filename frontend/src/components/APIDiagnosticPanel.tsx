@@ -6,7 +6,7 @@ import { useAuth } from '../hooks/useAuth';
 import { getApiErrorMessage, suppressConsoleError } from '../utils/errorHandler';
 import { ArrowPathIcon, ChevronDownIcon, XMarkIcon } from '@heroicons/react/24/outline';
 
-type APIKey = 'lunarcrush' | 'coinapi' | 'cryptoquant' | 'exchange';
+type APIKey = 'coinapi' | 'cryptoquant' | 'exchange';
 type ExchangeName = 'binance' | 'bitget' | 'bingx' | 'weex';
 
 interface APIOption {
@@ -19,7 +19,6 @@ interface APIOption {
 }
 
 const API_OPTIONS: APIOption[] = [
-  { key: 'lunarcrush', name: 'LunarCrush', icon: '🌙' },
   { key: 'coinapi', name: 'CoinAPI', icon: '🪙' },
   { key: 'cryptoquant', name: 'CryptoQuant', icon: '📊' },
   { 

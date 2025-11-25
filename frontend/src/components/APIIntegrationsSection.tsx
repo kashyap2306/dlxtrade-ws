@@ -16,7 +16,7 @@ import {
   ChevronUpIcon,
 } from '@heroicons/react/24/outline';
 
-type ApiName = 'cryptoquant' | 'lunarcrush' | 'coinapi';
+type ApiName = 'cryptoquant' | 'coinapi';
 type CoinApiType = 'market' | 'flatfile' | 'exchangerate';
 
 interface ApiConfig {
@@ -36,14 +36,6 @@ const API_CONFIGS: Record<ApiName, ApiConfig> = {
     description: 'On-chain analytics and market intelligence',
     icon: '📊',
     gradient: 'from-blue-500/20 via-cyan-500/20 to-teal-500/20',
-  },
-  lunarcrush: {
-    name: 'lunarcrush',
-    displayName: 'LunarCrush API',
-    requiresSecret: false,
-    description: 'Social sentiment and influencer analytics',
-    icon: '🌙',
-    gradient: 'from-purple-500/20 via-pink-500/20 to-rose-500/20',
   },
   coinapi: {
     name: 'coinapi',
@@ -86,7 +78,6 @@ export default function APIIntegrationsSection() {
   const [integrations, setIntegrations] = useState<Record<ApiName, Integration | CoinApiData>>({
     binance: { enabled: false, apiKey: null, secretKey: null },
     cryptoquant: { enabled: false, apiKey: null, secretKey: null },
-    lunarcrush: { enabled: false, apiKey: null, secretKey: null },
     coinapi: {},
   });
   const [loading, setLoading] = useState(false);
@@ -111,11 +102,10 @@ export default function APIIntegrationsSection() {
 
       const loaded: Record<ApiName, Integration | CoinApiData> = {
         cryptoquant: { enabled: false, apiKey: null, secretKey: null },
-        lunarcrush: { enabled: false, apiKey: null, secretKey: null },
         coinapi: {},
       };
 
-      ['cryptoquant', 'lunarcrush'].forEach((apiName) => {
+      ['cryptoquant'].forEach((apiName) => {
         const api = apiName as ApiName;
         if (data[api]) {
           loaded[api] = {
@@ -359,7 +349,7 @@ export default function APIIntegrationsSection() {
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
-          {(['cryptoquant', 'lunarcrush'] as ApiName[]).map((apiName) => {
+          {(['cryptoquant'] as ApiName[]).map((apiName) => {
             const config = API_CONFIGS[apiName];
             const integration = integrations[apiName] as Integration;
             const isExpanded = expandedApi === apiName;

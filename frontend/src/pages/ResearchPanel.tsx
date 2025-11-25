@@ -207,11 +207,6 @@ export default function ResearchPanel() {
           updateProgress(1, 'error', result.cryptoQuant.error);
         }
         
-        if (result.lunarCrush && !result.lunarCrush.error) {
-          updateProgress(3, 'success'); // sentiment
-        } else if (result.lunarCrush?.error) {
-          updateProgress(3, 'error', result.lunarCrush.error);
-        }
         
         if (result.coinApi?.marketData && !result.coinApi.marketData.error) {
           updateProgress(0, 'success'); // market data
