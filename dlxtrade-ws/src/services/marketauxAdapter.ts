@@ -33,13 +33,14 @@ export async function fetchMarketAuxData(apiKey: string, symbol: string): Promis
     });
 
     if (response.status !== 200) {
-      throw new AdapterError(
-        'MarketAux',
-        `HTTP ${response.status}`,
-        response.status,
-        false,
-        response.status === 401 || response.status === 403
-      );
+      throw new AdapterError({
+        adapter: 'MarketAux',
+        method: 'GET',
+        url: `${BASE_URL}/news/all?symbols=${symbol.replace('USDT', '')}`,
+        errorMessage: `HTTP ${response.status}`,
+        statusCode: response.status,
+        isAuthError: response.status === 401 || response.status === 403
+      });
     }
 
     const articles = response.data?.data || [];
@@ -55,22 +56,24 @@ export async function fetchMarketAuxData(apiKey: string, symbol: string): Promis
     };
   } catch (error: any) {
     if (error.response?.status === 401 || error.response?.status === 403) {
-      throw new AdapterError(
-        'MarketAux',
-        'Authentication failed - invalid API key',
-        error.response.status,
-        true,
-        true
-      );
+      throw new AdapterError({
+        adapter: 'MarketAux',
+        method: 'GET',
+        url: `${BASE_URL}/news/all?symbols=${symbol.replace('USDT', '')}`,
+        errorMessage: 'Authentication failed - invalid API key',
+        statusCode: error.response.status,
+        isAuthError: true
+      });
     }
 
-    throw new AdapterError(
-      'MarketAux',
-      error.message || 'Network error',
-      error.response?.status,
-      false,
-      false
-    );
+    throw new AdapterError({
+      adapter: 'MarketAux',
+      method: 'GET',
+      url: `${BASE_URL}/news/all?symbols=${symbol.replace('USDT', '')}`,
+      errorMessage: error.message || 'Network error',
+      statusCode: error.response?.status,
+      isAuthError: false
+    });
   }
 }
 
