@@ -50,6 +50,9 @@ class OrderManager {
         }
         const clientOrderId = `dlx_${(0, uuid_1.v4)()}`;
         try {
+            if (!this.adapter.placeOrder) {
+                throw new Error('Exchange adapter does not support placeOrder');
+            }
             const exchangeOrder = await this.adapter.placeOrder({
                 symbol: params.symbol,
                 side: params.side,
@@ -57,7 +60,6 @@ class OrderManager {
                 quantity: params.quantity,
                 price: params.price,
             });
-            // Get strategy from settings if available
             const { firestoreAdapter } = await Promise.resolve().then(() => __importStar(require('./firestoreAdapter')));
             const settings = await firestoreAdapter.getSettings(uid);
             const strategy = settings?.strategy || null;

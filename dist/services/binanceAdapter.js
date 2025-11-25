@@ -5,198 +5,320 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BinanceAdapter = void 0;
 const axios_1 = __importDefault(require("axios"));
+const crypto_1 = __importDefault(require("crypto"));
+const ws_1 = __importDefault(require("ws"));
 const logger_1 = require("../utils/logger");
+const errors_1 = require("../utils/errors");
 class BinanceAdapter {
-    constructor(apiKey, secret, testnet = false) {
+    constructor(apiKey, apiSecret, testnet = true) {
+        this.orderbookWs = null;
+        this.tradesWs = null;
+        this.userStreamWs = null;
+        this.listenKey = null;
         this.apiKey = apiKey;
-        this.secret = secret;
-        this.testnet = testnet;
-        // Use testnet URL if testnet is enabled
-        const baseURL = testnet
-            ? 'https://testnet.binance.vision/api/v3'
-            : 'https://api.binance.com/api/v3';
+        this.apiSecret = apiSecret;
+        this.baseUrl = testnet
+            ? 'https://testnet.binance.vision'
+            : 'https://api.binance.com';
+        this.wsUrl = testnet
+            ? 'wss://testnet.binance.vision'
+            : 'wss://stream.binance.com:9443';
         this.httpClient = axios_1.default.create({
-            baseURL,
+            baseURL: this.baseUrl,
             timeout: 10000,
+            headers: {
+                'X-MBX-APIKEY': this.apiKey,
+            },
         });
     }
     getExchangeName() {
         return 'binance';
     }
-    async getOrderbook(symbol, limit = 20) {
-        const finalSymbol = symbol.replace('-', '').toUpperCase();
-        const params = { symbol: finalSymbol, limit: Math.min(Math.max(limit, 5), 1000) };
-        try {
-            const response = await this.httpClient.get('/depth', { params });
-            const data = response.data;
-            return {
-                symbol: data.symbol || finalSymbol,
-                bids: (data.bids || []).map(([price, quantity]) => ({ price, quantity })),
-                asks: (data.asks || []).map(([price, quantity]) => ({ price, quantity })),
-                lastUpdateId: data.lastUpdateId || Date.now(),
-            };
-        }
-        catch (error) {
-            logger_1.logger.warn({ symbol, error: error.message }, '[BinanceAdapter] getOrderbook failed');
-            throw error;
-        }
+    sign(params) {
+        const queryString = Object.keys(params)
+            .sort()
+            .map((key) => `${key}=${params[key]}`)
+            .join('&');
+        return crypto_1.default
+            .createHmac('sha256', this.apiSecret)
+            .update(queryString)
+            .digest('hex');
     }
-    async getTicker(symbol) {
+    async request(method, endpoint, params = {}, signed = false) {
+        if (signed) {
+            params.timestamp = Date.now();
+            params.signature = this.sign(params);
+        }
         try {
-            const params = symbol ? { symbol: symbol.replace('-', '').toUpperCase() } : undefined;
-            const response = await this.httpClient.get('/ticker/24hr', { params });
-            return response.data;
-        }
-        catch (error) {
-            logger_1.logger.warn({ symbol, error: error.message }, '[BinanceAdapter] getTicker failed');
-            throw error;
-        }
-    }
-    async getBookTicker(symbol) {
-        try {
-            const params = { symbol: symbol.replace('-', '').toUpperCase() };
-            const response = await this.httpClient.get('/ticker/bookTicker', { params });
-            return response.data;
-        }
-        catch (error) {
-            logger_1.logger.warn({ symbol, error: error.message }, '[BinanceAdapter] getBookTicker failed');
-            throw error;
-        }
-    }
-    async getKlines(symbol, interval, limit = 500) {
-        try {
-            const finalSymbol = symbol.replace('-', '').toUpperCase();
-            const response = await this.httpClient.get('/klines', {
-                params: {
-                    symbol: finalSymbol,
-                    interval,
-                    limit: Math.min(limit, 1000)
-                }
+            const response = await this.httpClient.request({
+                method,
+                url: endpoint,
+                params: method === 'GET' ? params : undefined,
+                data: method !== 'GET' ? params : undefined,
             });
             return response.data;
         }
         catch (error) {
-            logger_1.logger.warn({ symbol, interval, error: error.message }, '[BinanceAdapter] getKlines failed');
-            throw error;
+            logger_1.logger.error({ error, endpoint, params }, 'Binance API error');
+            throw new errors_1.ExchangeError(error.response?.data?.msg || error.message || 'Exchange API error', error.response?.status || 500);
         }
     }
-    async getVolatility(symbol) {
-        try {
-            // Fetch 5m candles for last 100 periods (about 8.3 hours)
-            const candles = await this.getKlines(symbol, '5m', 100);
-            if (!candles || candles.length < 10) {
-                return null;
-            }
-            // Calculate log returns
-            const returns = [];
-            for (let i = 1; i < candles.length; i++) {
-                const prevClose = parseFloat(candles[i - 1][4]); // close price
-                const currClose = parseFloat(candles[i][4]); // close price
-                if (prevClose > 0 && currClose > 0) {
-                    const logReturn = Math.log(currClose / prevClose);
-                    if (Number.isFinite(logReturn)) {
-                        returns.push(logReturn);
-                    }
-                }
-            }
-            if (returns.length < 10) {
-                return null;
-            }
-            // Calculate standard deviation of returns
-            const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
-            const variance = returns.reduce((sum, ret) => sum + Math.pow(ret - mean, 2), 0) / returns.length;
-            const dailyVolatility = Math.sqrt(variance);
-            // Annualize volatility: sqrt(1440/5) = sqrt(288) ≈ 16.97
-            // This converts 5-minute volatility to daily volatility
-            const annualizedVolatility = dailyVolatility * Math.sqrt(1440 / 5);
-            return Number.isFinite(annualizedVolatility) ? annualizedVolatility : null;
+    async getOrderbook(symbol, limit = 20) {
+        const data = await this.request('GET', '/api/v3/depth', {
+            symbol: symbol.toUpperCase(),
+            limit,
+        });
+        return {
+            symbol: data.symbol,
+            bids: data.bids.map(([price, qty]) => ({
+                price,
+                quantity: qty,
+            })),
+            asks: data.asks.map(([price, qty]) => ({
+                price,
+                quantity: qty,
+            })),
+            lastUpdateId: data.lastUpdateId,
+        };
+    }
+    async getAccount() {
+        return await this.request('GET', '/api/v3/account', {}, true);
+    }
+    async placeOrder(params) {
+        const { symbol, side, type = 'MARKET', quantity, price } = params;
+        const timeInForce = 'GTC';
+        const orderParams = {
+            symbol: symbol.toUpperCase(),
+            side,
+            type,
+            quantity: quantity.toString(),
+        };
+        if (type === 'LIMIT') {
+            if (!price)
+                throw new Error('Price required for LIMIT orders');
+            orderParams.price = price.toString();
+            orderParams.timeInForce = timeInForce;
         }
-        catch (error) {
-            logger_1.logger.warn({ symbol, error: error.message }, '[BinanceAdapter] getVolatility failed');
-            return null;
+        const data = await this.request('POST', '/api/v3/order', orderParams, true);
+        return {
+            id: data.orderId.toString(),
+            symbol: data.symbol,
+            side: data.side,
+            type: data.type,
+            quantity: parseFloat(data.executedQty || data.origQty),
+            price: parseFloat(data.price || '0'),
+            status: data.status,
+            clientOrderId: data.clientOrderId,
+            exchangeOrderId: data.orderId.toString(),
+            filledQty: parseFloat(data.executedQty || '0'),
+            avgPrice: parseFloat(data.price || '0'),
+            createdAt: new Date(data.transactTime || Date.now()),
+            updatedAt: new Date(data.updateTime || Date.now()),
+        };
+    }
+    async getTicker(symbol) {
+        if (symbol) {
+            const data = await this.request('GET', '/api/v3/ticker/24hr', {
+                symbol: symbol.toUpperCase(),
+            });
+            return data;
         }
+        else {
+            // Get all tickers
+            const data = await this.request('GET', '/api/v3/ticker/24hr', {});
+            return data;
+        }
+    }
+    async getKlines(symbol, interval = '1m', limit = 100) {
+        const data = await this.request('GET', '/api/v3/klines', {
+            symbol: symbol.toUpperCase(),
+            interval,
+            limit,
+        });
+        return data || [];
     }
     async testConnection() {
         try {
-            await this.getTicker('BTCUSDT');
+            // Test with account info endpoint
+            await this.request('GET', '/api/v3/account', {}, true);
             return { success: true, message: 'Connection successful' };
         }
         catch (error) {
-            return { success: false, message: error.message };
+            const message = error.message || 'Connection test failed';
+            if (message.includes('401') || message.includes('Unauthorized')) {
+                return { success: false, message: 'Invalid API key or secret' };
+            }
+            return { success: false, message };
         }
     }
-    // For public API, account access is not available
-    async getAccount() {
-        throw new Error('Binance public API does not support account access. Use authenticated exchange connection instead.');
-    }
-    // Validate API key (not applicable for public API)
     async validateApiKey() {
-        throw new Error('Binance public API does not require API key validation.');
-    }
-    // Trading methods - not supported for public API
-    async placeOrder(params) {
-        throw new Error('Binance public API does not support trading operations.');
-    }
-    async cancelOrder(symbol, orderId, clientOrderId) {
-        throw new Error('Binance public API does not support trading operations.');
-    }
-    async getBalance() {
-        throw new Error('Binance public API does not support account operations.');
-    }
-    async getPositions(symbol) {
-        throw new Error('Binance public API does not support account operations.');
-    }
-    // WebSocket methods - not supported for public API
-    subscribeOrderbook(symbol, callback) {
-        throw new Error('Binance public API does not support WebSocket subscriptions.');
-    }
-    subscribeTrades(symbol, callback) {
-        throw new Error('Binance public API does not support WebSocket subscriptions.');
-    }
-    startUserDataStream() {
-        throw new Error('Binance public API does not support user data streams.');
-    }
-    subscribeUserData(callback) {
-        throw new Error('Binance public API does not support user data streams.');
-    }
-    keepAliveUserDataStream() {
-        throw new Error('Binance public API does not support user data streams.');
-    }
-    closeUserDataStream() {
-        throw new Error('Binance public API does not support user data streams.');
-    }
-    disconnect() {
-        // No-op for public API
-    }
-    /**
-     * Get market data (price, volume, etc.) - replaces CoinAPI market data
-     */
-    async getMarketData(symbol) {
         try {
-            // Binance uses different symbol format (BTCUSDT instead of BTC_USDT)
-            const binanceSymbol = symbol.toUpperCase();
-            const response = await this.httpClient.get('/ticker/24hr', {
-                params: { symbol: binanceSymbol }
-            });
-            const data = response.data;
-            if (!data) {
-                return {};
-            }
+            // Try to get account info - this validates the key
+            const accountInfo = await this.request('GET', '/api/v3/account', {}, true);
+            // Check permissions (Binance doesn't expose this directly, but we can infer from account access)
+            // If we can access account, trading is likely enabled
+            // Withdrawal permission is harder to check without attempting a withdrawal
+            // For safety, we'll assume withdrawals are possible if account access works
+            // In production, you'd want to check API key restrictions via Binance API key management
             return {
-                price: parseFloat(data.lastPrice || '0'),
-                volume24h: parseFloat(data.volume || '0'),
-                priceChange24h: parseFloat(data.priceChange || '0'),
-                priceChangePercent24h: parseFloat(data.priceChangePercent || '0'),
+                valid: true,
+                canTrade: true, // If we can access account, trading should work
+                canWithdraw: false, // Assume false for safety - user should verify manually
             };
         }
         catch (error) {
-            logger_1.logger.warn({
-                error: error.message,
-                status: error.response?.status,
-                symbol
-            }, 'Binance market data API error');
-            return {};
+            logger_1.logger.error({ error }, 'API key validation failed');
+            return {
+                valid: false,
+                canTrade: false,
+                canWithdraw: false,
+                error: error.message || 'Invalid API key',
+            };
         }
+    }
+    async cancelOrder(symbol, orderId, clientOrderId) {
+        const params = {
+            symbol: symbol.toUpperCase(),
+        };
+        if (orderId)
+            params.orderId = orderId;
+        if (clientOrderId)
+            params.origClientOrderId = clientOrderId;
+        const data = await this.request('DELETE', '/api/v3/order', params, true);
+        return {
+            id: data.orderId.toString(),
+            symbol: data.symbol,
+            side: data.side,
+            type: data.type,
+            quantity: parseFloat(data.origQty),
+            price: parseFloat(data.price || '0'),
+            status: data.status,
+            clientOrderId: data.clientOrderId,
+            exchangeOrderId: data.orderId.toString(),
+            filledQty: parseFloat(data.executedQty || '0'),
+            avgPrice: parseFloat(data.price || '0'),
+            createdAt: new Date(data.time || Date.now()),
+            updatedAt: new Date(data.updateTime || Date.now()),
+        };
+    }
+    async getOrderStatus(symbol, orderId, clientOrderId) {
+        const params = {
+            symbol: symbol.toUpperCase(),
+        };
+        if (orderId)
+            params.orderId = orderId;
+        if (clientOrderId)
+            params.origClientOrderId = clientOrderId;
+        const data = await this.request('GET', '/api/v3/order', params, true);
+        return {
+            id: data.orderId.toString(),
+            symbol: data.symbol,
+            side: data.side,
+            type: data.type,
+            quantity: parseFloat(data.origQty),
+            price: parseFloat(data.price || '0'),
+            status: data.status,
+            clientOrderId: data.clientOrderId,
+            exchangeOrderId: data.orderId.toString(),
+            filledQty: parseFloat(data.executedQty || '0'),
+            avgPrice: parseFloat(data.price || '0'),
+            createdAt: new Date(data.time || Date.now()),
+            updatedAt: new Date(data.updateTime || Date.now()),
+        };
+    }
+    async startUserDataStream() {
+        const data = await this.request('POST', '/api/v3/userDataStream', {}, false);
+        this.listenKey = data.listenKey;
+        return data.listenKey;
+    }
+    async keepAliveUserDataStream() {
+        if (!this.listenKey)
+            return;
+        await this.request('PUT', '/api/v3/userDataStream', {
+            listenKey: this.listenKey,
+        }, false);
+    }
+    async closeUserDataStream() {
+        if (!this.listenKey)
+            return;
+        await this.request('DELETE', '/api/v3/userDataStream', {
+            listenKey: this.listenKey,
+        }, false);
+        this.listenKey = null;
+    }
+    subscribeOrderbook(symbol, callback) {
+        const stream = `${symbol.toLowerCase()}@depth20@100ms`;
+        this.orderbookWs = new ws_1.default(`${this.wsUrl}/ws/${stream}`);
+        this.orderbookWs.on('message', (data) => {
+            try {
+                const update = JSON.parse(data.toString());
+                callback({
+                    symbol: update.s,
+                    bids: update.b.map(([p, q]) => ({
+                        price: p,
+                        quantity: q,
+                    })),
+                    asks: update.a.map(([p, q]) => ({
+                        price: p,
+                        quantity: q,
+                    })),
+                    lastUpdateId: update.u,
+                });
+            }
+            catch (err) {
+                logger_1.logger.error({ err }, 'Error parsing orderbook update');
+            }
+        });
+        this.orderbookWs.on('error', (err) => {
+            logger_1.logger.error({ err }, 'Orderbook WebSocket error');
+        });
+    }
+    subscribeTrades(symbol, callback) {
+        const stream = `${symbol.toLowerCase()}@trade`;
+        this.tradesWs = new ws_1.default(`${this.wsUrl}/ws/${stream}`);
+        this.tradesWs.on('message', (data) => {
+            try {
+                const update = JSON.parse(data.toString());
+                callback({
+                    id: update.t.toString(),
+                    symbol: update.s,
+                    price: update.p,
+                    quantity: update.q,
+                    time: update.T,
+                    isBuyerMaker: update.m,
+                });
+            }
+            catch (err) {
+                logger_1.logger.error({ err }, 'Error parsing trade update');
+            }
+        });
+        this.tradesWs.on('error', (err) => {
+            logger_1.logger.error({ err }, 'Trades WebSocket error');
+        });
+    }
+    subscribeUserData(callback) {
+        if (!this.listenKey) {
+            throw new Error('User data stream not started');
+        }
+        this.userStreamWs = new ws_1.default(`${this.wsUrl}/ws/${this.listenKey}`);
+        this.userStreamWs.on('message', (data) => {
+            try {
+                const update = JSON.parse(data.toString());
+                callback(update);
+            }
+            catch (err) {
+                logger_1.logger.error({ err }, 'Error parsing user data update');
+            }
+        });
+        this.userStreamWs.on('error', (err) => {
+            logger_1.logger.error({ err }, 'User data WebSocket error');
+        });
+    }
+    disconnect() {
+        this.orderbookWs?.close();
+        this.tradesWs?.close();
+        this.userStreamWs?.close();
+        this.closeUserDataStream();
     }
 }
 exports.BinanceAdapter = BinanceAdapter;

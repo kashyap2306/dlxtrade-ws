@@ -36,6 +36,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.fetchValidBinanceSymbols = fetchValidBinanceSymbols;
 exports.loadValidSymbols = loadValidSymbols;
 exports.isValidBinanceSymbol = isValidBinanceSymbol;
 exports.getValidSymbols = getValidSymbols;
@@ -52,7 +53,6 @@ async function fetchValidBinanceSymbols() {
         const response = await axios_1.default.get('https://api.binance.com/api/v3/exchangeInfo', {
             timeout: 10000,
         });
-        // Filter for USDT pairs that are TRADING status
         const validSymbols = response.data.symbols
             .filter((symbol) => symbol.status === 'TRADING' && symbol.quoteAsset === 'USDT')
             .map((symbol) => symbol.symbol)
@@ -163,9 +163,9 @@ function getFallbackSymbols() {
 /**
  * Check if a symbol is valid for Binance trading (never blocks research)
  */
-async function isValidBinanceSymbol(symbol) {
+function isValidBinanceSymbol(symbol) {
     try {
-        const validSymbols = await getValidSymbols();
+        const validSymbols = loadValidSymbols();
         // Check if we're using fallback (limited symbols)
         const isUsingFallback = validSymbols.length <= 5; // Fallback has exactly 5 symbols
         if (isUsingFallback) {
@@ -183,80 +183,12 @@ async function isValidBinanceSymbol(symbol) {
     catch (error) {
         logger_1.logger.warn({ error: error.message, symbol }, 'Symbol validation failed, allowing USDT symbols to proceed');
         // In case of any validation failure, allow USDT symbols to proceed
-        // This ensures research never fails due to validation issues
-        if (symbol.toUpperCase().endsWith('USDT')) {
-            logger_1.logger.info({ symbol }, 'Allowing USDT symbol to proceed despite validation failure');
-            return true;
-        }
-        return false;
+        return symbol.toUpperCase().endsWith('USDT');
     }
 }
 /**
- * Get valid symbols with auto-refresh (never fails)
+ * Get valid symbols (with fallback)
  */
-async function getValidSymbols() {
-    try {
-        return loadValidSymbols();
-    }
-    catch (error) {
-        // Cache miss or expired, try to fetch fresh data
-        try {
-            await fetchValidBinanceSymbols();
-            return loadValidSymbols();
-        }
-        catch (fetchError) {
-            logger_1.logger.warn({ error: fetchError.message }, 'Failed to fetch fresh symbols, using fallback');
-            // Return fallback if fetch also fails
-            return getFallbackSymbols();
-        }
-    }
-}
-// Test function for symbol validation
-async function testSymbolValidation() {
-    console.log('🧪 Testing symbol validation...');
-    const testCases = [
-        { symbol: 'BTCUSDT', expected: true }, // Should always pass
-        { symbol: 'btcusdt', expected: true }, // Case insensitive
-        { symbol: 'ETHUSDT', expected: true }, // Should always pass
-        { symbol: 'RENUSDT', expected: true }, // USDT symbol, allowed in fallback mode
-        { symbol: 'GNTUSDT', expected: true }, // USDT symbol, allowed in fallback mode
-        { symbol: 'FAKESYMBOL', expected: false }, // Non-USDT symbol, should fail
-        { symbol: 'INVALID123', expected: false }, // Non-USDT symbol, should fail
-    ];
-    for (const testCase of testCases) {
-        try {
-            const result = await isValidBinanceSymbol(testCase.symbol);
-            const status = result === testCase.expected ? '✅ PASS' : '❌ FAIL';
-            console.log(`${status} isValidBinanceSymbol("${testCase.symbol}") -> ${result} (expected: ${testCase.expected})`);
-        }
-        catch (error) {
-            console.log(`❌ ERROR testing "${testCase.symbol}": ${error.message}`);
-        }
-    }
-}
-// Run if called directly
-if (require.main === module) {
-    const args = process.argv.slice(2);
-    if (args.includes('--test')) {
-        testSymbolValidation()
-            .then(() => {
-            console.log('🧪 Symbol validation tests completed');
-            process.exit(0);
-        })
-            .catch((error) => {
-            console.error('❌ Symbol validation tests failed:', error.message);
-            process.exit(1);
-        });
-    }
-    else {
-        fetchValidBinanceSymbols()
-            .then(() => {
-            logger_1.logger.info('Symbol fetch completed successfully');
-            process.exit(0);
-        })
-            .catch((error) => {
-            logger_1.logger.error({ error: error.message }, 'Symbol fetch failed');
-            process.exit(1);
-        });
-    }
+function getValidSymbols() {
+    return loadValidSymbols();
 }

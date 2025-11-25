@@ -48,12 +48,8 @@ const hftSettingsSchema = zod_1.z.object({
     maxTradesPerDay: zod_1.z.number().int().positive(),
     enabled: zod_1.z.boolean(),
 });
-// Firestore requires manual composite indexes for queries with multiple fields
-// If you see index errors, create indexes in Firebase Console:
-// - hftLogs: (userId ASC, timestamp DESC)
 const hftQuerySchema = zod_1.z.object({
-    // Auto-correct limit to max 500 instead of throwing ZodError
-    limit: zod_1.z.coerce.number().int().positive().transform((val) => Math.min(val, 500)).optional().default(100),
+    limit: zod_1.z.coerce.number().int().positive().max(500).optional().default(100),
 });
 async function hftRoutes(fastify) {
     // Get HFT status

@@ -8,8 +8,8 @@ const dotenv_1 = __importDefault(require("dotenv"));
 dotenv_1.default.config();
 exports.config = {
     env: process.env.NODE_ENV || 'development',
-    // Force port to 4000 - ensure it's always correct
-    port: parseInt(process.env.PORT || '4000', 10) || 4000,
+    // Use PORT from environment (Render sets this automatically)
+    port: parseInt(process.env.PORT || '4000', 10),
     jwtSecret: process.env.JWT_SECRET || 'change_me',
     jwtExpiry: '7d',
     database: {
@@ -51,8 +51,5 @@ exports.config = {
     firebase: {
         projectId: process.env.FIREBASE_PROJECT_ID || 'dlx-trading',
         serviceAccountKey: process.env.FIREBASE_SERVICE_ACCOUNT_KEY,
-    },
-    features: {
-    // All APIs are user-provided - no system APIs
     },
 };

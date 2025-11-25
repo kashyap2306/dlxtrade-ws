@@ -37,7 +37,6 @@ exports.engineRoutes = engineRoutes;
 const zod_1 = require("zod");
 const userEngineManager_1 = require("../services/userEngineManager");
 const firestoreAdapter_1 = require("../services/firestoreAdapter");
-const keyManager_1 = require("../services/keyManager");
 const logger_1 = require("../utils/logger");
 const engineConfigSchema = zod_1.z.object({
     symbol: zod_1.z.string().min(1),
@@ -91,36 +90,17 @@ async function engineRoutes(fastify) {
                 return { message: 'Auto-trade started', config: body };
             }
             // Legacy flow for research-only mode
-            // Load enabled integrations
+            const { resolveExchangeConnector } = await Promise.resolve().then(() => __importStar(require('../services/exchangeResolver')));
+            const resolved = await resolveExchangeConnector(user.uid);
+            if (!resolved) {
+                return reply.code(400).send({
+                    error: 'No exchange API keys configured. Please set up your exchange API credentials in Settings → API Integration.'
+                });
+            }
+            // Create or get user engine using resolved credentials
+            await userEngineManager_1.userEngineManager.createUserEngine(user.uid, resolved.credentials.apiKey, resolved.credentials.secret, resolved.credentials.testnet);
+            // Load enabled integrations for research APIs (CryptoQuant, LunarCrush, CoinAPI)
             const integrations = await firestoreAdapter_1.firestoreAdapter.getEnabledIntegrations(user.uid);
-            let apiKey;
-            let apiSecret;
-            let testnet = true;
-            // Check for Binance integration (required for trading)
-            if (!integrations.binance || !integrations.binance.apiKey || !integrations.binance.secretKey) {
-                // Fallback to old API keys system for backward compatibility
-                const keys = await firestoreAdapter_1.firestoreAdapter.getApiKeys(user.uid);
-                if (keys.length === 0) {
-                    return reply.code(400).send({ error: 'No API keys configured. Please set up Binance integration.' });
-                }
-                const keyDoc = await firestoreAdapter_1.firestoreAdapter.getLatestApiKey(user.uid, 'binance');
-                if (!keyDoc) {
-                    return reply.code(400).send({ error: 'No Binance API key found. Please configure Binance integration.' });
-                }
-                apiKey = (0, keyManager_1.decrypt)(keyDoc.apiKeyEncrypted);
-                apiSecret = (0, keyManager_1.decrypt)(keyDoc.apiSecretEncrypted);
-                testnet = keyDoc.testnet;
-            }
-            else {
-                // Use integration API keys
-                apiKey = integrations.binance.apiKey;
-                apiSecret = integrations.binance.secretKey;
-                testnet = true; // Default to testnet - can be made configurable later
-            }
-            // Create or get user engine
-            await userEngineManager_1.userEngineManager.createUserEngine(user.uid, apiKey, apiSecret, testnet);
-            // Store loaded integrations for other services (CryptoQuant, LunarCrush, CoinAPI)
-            // These can be accessed by other services as needed
             global.apiIntegrations = integrations;
             // Save settings
             await firestoreAdapter_1.firestoreAdapter.saveSettings(user.uid, {

@@ -17,15 +17,8 @@ async function hftLogsRoutes(fastify) {
             if (targetUid && targetUid !== user.uid && !isAdmin) {
                 return reply.code(403).send({ error: 'Access denied' });
             }
-            // Firestore requires manual composite index for this query:
-            // Collection: hftLogs
-            // Fields: (userId ASC, timestamp DESC)
-            // Create this index in Firebase Console if you see index errors
             const limitNum = limit ? parseInt(limit, 10) : 100;
-            // Auto-correct limit to max 500 instead of throwing error
-            // This prevents Firestore index errors
-            const safeLimit = Math.min(Math.max(1, limitNum), 500);
-            const logs = await firestoreAdapter_1.firestoreAdapter.getHFTLogs(targetUid, safeLimit);
+            const logs = await firestoreAdapter_1.firestoreAdapter.getHFTLogs(targetUid, limitNum);
             return { logs };
         }
         catch (err) {

@@ -5,6 +5,22 @@ const db_1 = require("../db");
 const riskManager_1 = require("../services/riskManager");
 const metricsService_1 = require("../services/metricsService");
 async function metricsRoutes(fastify) {
+    fastify.get('/health', async (request, reply) => {
+        try {
+            // Check database
+            await (0, db_1.query)('SELECT 1');
+            return {
+                status: 'healthy',
+                timestamp: new Date().toISOString(),
+            };
+        }
+        catch (err) {
+            return reply.code(503).send({
+                status: 'unhealthy',
+                error: 'Database connection failed',
+            });
+        }
+    });
     fastify.get('/metrics', async (request, reply) => {
         try {
             // Get basic metrics

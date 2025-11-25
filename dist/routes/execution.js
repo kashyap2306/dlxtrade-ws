@@ -38,12 +38,8 @@ const firestoreAdapter_1 = require("../services/firestoreAdapter");
 const userEngineManager_1 = require("../services/userEngineManager");
 const zod_1 = require("zod");
 const logger_1 = require("../utils/logger");
-// Firestore requires manual composite indexes for queries with multiple fields
-// If you see index errors, create indexes in Firebase Console:
-// - executionLogs: (userId ASC, timestamp DESC)
 const executionQuerySchema = zod_1.z.object({
-    // Auto-correct limit to max 500 instead of throwing ZodError
-    limit: zod_1.z.coerce.number().int().positive().transform((val) => Math.min(val, 500)).optional().default(100),
+    limit: zod_1.z.coerce.number().int().positive().max(500).optional().default(100),
 });
 const closePositionSchema = zod_1.z.object({
     symbol: zod_1.z.string(),
@@ -53,58 +49,27 @@ async function executionRoutes(fastify) {
     fastify.get('/logs', {
         preHandler: [fastify.authenticate],
     }, async (request, reply) => {
-        try {
-            const user = request.user;
-            if (!user || !user.uid) {
-                return reply.code(401).send({ error: 'Unauthorized', logs: [] });
-            }
-            const query = executionQuerySchema.parse(request.query);
-            // Limit is already clamped to 500 by Zod transform, but ensure it's at least 1
-            const safeLimit = Math.max(1, query.limit);
-            let logs = [];
-            try {
-                logs = await firestoreAdapter_1.firestoreAdapter.getExecutionLogs(user.uid, safeLimit);
-            }
-            catch (logErr) {
-                logger_1.logger.error({ err: logErr, uid: user.uid }, 'Error fetching execution logs, returning empty array');
-                logs = [];
-            }
-            // Map logs with proper null checks and ensure all fields are defined
-            const mappedLogs = logs.map((log) => {
-                const mapped = {
-                    id: log.id || '',
-                    symbol: log.symbol || '',
-                    timestamp: log.timestamp?.toDate?.()?.toISOString() || log.timestamp || new Date().toISOString(),
-                    action: log.action || 'UNKNOWN',
-                    reason: log.reason || null,
-                    accuracy: log.accuracy ?? null,
-                    accuracyUsed: log.accuracyUsed ?? null,
-                    orderId: log.orderId || null,
-                    orderIds: log.orderIds || null,
-                    executionLatency: log.executionLatency ?? null,
-                    slippage: log.slippage ?? null,
-                    pnl: log.pnl ?? null,
-                    strategy: log.strategy || null,
-                    signal: log.signal || null,
-                    status: log.status || null,
-                    createdAt: log.createdAt?.toDate?.()?.toISOString() || log.createdAt || new Date().toISOString(),
-                };
-                // Remove null orderIds array if empty
-                if (mapped.orderIds === null || (Array.isArray(mapped.orderIds) && mapped.orderIds.length === 0)) {
-                    delete mapped.orderIds;
-                }
-                return mapped;
-            }).filter((log) => log.id); // Remove any invalid entries
-            return mappedLogs;
-        }
-        catch (err) {
-            logger_1.logger.error({ err, uid: request.user?.uid }, 'Error getting execution logs');
-            // Always return valid JSON structure even on error
-            return reply.code(200).send({
-                logs: [],
-                error: err.message || 'Error fetching execution logs'
-            });
-        }
+        const user = request.user;
+        const query = executionQuerySchema.parse(request.query);
+        const logs = await firestoreAdapter_1.firestoreAdapter.getExecutionLogs(user.uid, query.limit);
+        return logs.map((log) => ({
+            id: log.id,
+            symbol: log.symbol,
+            timestamp: log.timestamp?.toDate().toISOString(),
+            action: log.action,
+            reason: log.reason,
+            accuracy: log.accuracy,
+            accuracyUsed: log.accuracyUsed,
+            orderId: log.orderId,
+            orderIds: log.orderIds,
+            executionLatency: log.executionLatency,
+            slippage: log.slippage,
+            pnl: log.pnl,
+            strategy: log.strategy,
+            signal: log.signal,
+            status: log.status,
+            createdAt: log.createdAt?.toDate().toISOString(),
+        }));
     });
     fastify.post('/execute', {
         preHandler: [fastify.authenticate],

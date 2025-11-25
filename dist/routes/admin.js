@@ -32,21 +32,15 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.adminRoutes = adminRoutes;
 const zod_1 = require("zod");
 const admin = __importStar(require("firebase-admin"));
-const path_1 = __importDefault(require("path"));
-const child_process_1 = require("child_process");
 const firestoreAdapter_1 = require("../services/firestoreAdapter");
 const keyManager_1 = require("../services/keyManager");
 const userEngineManager_1 = require("../services/userEngineManager");
 const adminStatsService_1 = require("../services/adminStatsService");
 const adminAuth_1 = require("../middleware/adminAuth");
-const mlModelService_1 = require("../services/ml/mlModelService");
 const logger_1 = require("../utils/logger");
 const errors_1 = require("../utils/errors");
 const firebase_1 = require("../utils/firebase");
@@ -63,13 +57,6 @@ const updateKeySchema = zod_1.z.object({
     apiSecret: zod_1.z.string().optional(),
     testnet: zod_1.z.boolean().optional(),
 });
-const retrainSchema = zod_1.z.object({
-    symbol: zod_1.z.string().min(3).optional().default('BTCUSDT'),
-    timeframe: zod_1.z.string().optional().default('5m'),
-    horizon: zod_1.z.string().optional().default('15m'),
-    synthetic: zod_1.z.boolean().optional().default(false),
-});
-let currentTrainingJob = null;
 async function adminRoutes(fastify) {
     // Decorate with admin auth middleware
     fastify.decorate('adminAuth', adminAuth_1.adminAuthMiddleware);
@@ -168,78 +155,6 @@ async function adminRoutes(fastify) {
         }
     });
     // ========== NEW ADMIN ROUTES ==========
-    fastify.get('/research-model/metrics', {
-        preHandler: [fastify.authenticate, fastify.adminAuth],
-    }, async (_request, reply) => {
-        try {
-            const metrics = await mlModelService_1.mlModelService.getModelMetrics();
-            if (!metrics) {
-                return reply.code(503).send({ error: 'Model metrics unavailable' });
-            }
-            return metrics;
-        }
-        catch (err) {
-            logger_1.logger.error({ err }, 'Failed to fetch research model metrics');
-            return reply.code(500).send({ error: err.message || 'Unable to fetch metrics' });
-        }
-    });
-    fastify.get('/research-model/retrain', {
-        preHandler: [fastify.authenticate, fastify.adminAuth],
-    }, async (_request, _reply) => {
-        return currentTrainingJob || { status: 'idle' };
-    });
-    fastify.post('/research-model/retrain', {
-        preHandler: [fastify.authenticate, fastify.adminAuth],
-    }, async (request, reply) => {
-        if (currentTrainingJob?.status === 'running') {
-            return reply.code(409).send({ error: 'Training job already running', job: currentTrainingJob });
-        }
-        const params = retrainSchema.parse(request.body || {});
-        // Ensure defaults are applied
-        const finalParams = {
-            symbol: params.symbol ?? 'BTCUSDT',
-            timeframe: params.timeframe ?? '5m',
-            horizon: params.horizon ?? '15m',
-            synthetic: params.synthetic ?? false,
-        };
-        const jobId = `train_${Date.now()}`;
-        currentTrainingJob = {
-            id: jobId,
-            status: 'running',
-            startedAt: Date.now(),
-            params: finalParams,
-        };
-        const repoRoot = path_1.default.resolve(__dirname, '..', '..');
-        const pythonBin = process.env.PYTHON_BIN || 'python';
-        const args = [
-            path_1.default.join('ml-service', 'train_model.py'),
-            '--symbol', finalParams.symbol,
-            '--timeframe', finalParams.timeframe,
-            '--horizon', finalParams.horizon,
-        ];
-        if (finalParams.synthetic) {
-            args.push('--synthetic');
-        }
-        const child = (0, child_process_1.spawn)(pythonBin, args, {
-            cwd: repoRoot,
-            env: process.env,
-            stdio: 'inherit',
-        });
-        child.on('close', (code) => {
-            if (!currentTrainingJob)
-                return;
-            currentTrainingJob.status = code === 0 ? 'success' : 'error';
-            currentTrainingJob.finishedAt = Date.now();
-            if (code !== 0) {
-                currentTrainingJob.error = `Training exited with code ${code}`;
-                logger_1.logger.error({ code }, 'Training job failed');
-            }
-            else {
-                logger_1.logger.info({ jobId }, 'Training job completed');
-            }
-        });
-        return reply.code(202).send({ jobId, status: 'running' });
-    });
     // Get all users with stats
     fastify.get('/users', {
         preHandler: [fastify.authenticate, fastify.adminAuth],
@@ -267,46 +182,6 @@ async function adminRoutes(fastify) {
         catch (err) {
             logger_1.logger.error({ err }, 'Error getting users list');
             return reply.code(500).send({ error: err.message || 'Error fetching users' });
-        }
-    });
-    fastify.get('/integrations/submissions', {
-        preHandler: [fastify.authenticate, fastify.adminAuth],
-    }, async (request, reply) => {
-        const uid = request.query.uid;
-        if (!uid) {
-            return reply.code(400).send({
-                ok: false,
-                code: 'MISSING_UID',
-                message: 'Query parameter uid is required',
-            });
-        }
-        try {
-            const integrations = await firestoreAdapter_1.firestoreAdapter.getAllIntegrations(uid);
-            const submissions = Object.entries(integrations).map(([id, integration]) => ({
-                id,
-                exchangeName: integration.exchangeName || id,
-                status: integration.status || (integration.enabled ? 'SAVED' : 'DISABLED'),
-                enabled: integration.enabled,
-                maskedApiKey: integration.apiKey ? (0, keyManager_1.maskKey)(integration.apiKey) : null,
-                maskedSecretKey: integration.secretKey ? (0, keyManager_1.maskKey)(integration.secretKey) : null,
-                updatedAt: integration.updatedAt?.toDate().toISOString(),
-                createdAt: integration.createdAt?.toDate().toISOString(),
-                meta: integration.meta || null,
-            }));
-            return {
-                ok: true,
-                uid,
-                count: submissions.length,
-                submissions,
-            };
-        }
-        catch (err) {
-            logger_1.logger.error({ err, uid }, 'Failed to list integration submissions');
-            return reply.code(500).send({
-                ok: false,
-                code: 'ADMIN_SUBMISSIONS_FAILED',
-                message: err.message || 'Failed to load submissions',
-            });
         }
     });
     // Get user details
@@ -465,12 +340,8 @@ async function adminRoutes(fastify) {
             if (!agentName) {
                 throw new errors_1.ValidationError('Agent name is required');
             }
-            // Get agent details to get agentId
-            const agents = await firestoreAdapter_1.firestoreAdapter.getAllAgents();
-            const agent = agents.find((a) => a.name === agentName);
-            const agentId = agent?.id || agentName;
-            await firestoreAdapter_1.firestoreAdapter.unlockAgent(uid, agentName, agentId);
-            logger_1.logger.info({ uid, agentName, agentId, adminUid: request.user.uid }, 'Admin unlocked agent');
+            await firestoreAdapter_1.firestoreAdapter.unlockAgent(uid, agentName);
+            logger_1.logger.info({ uid, agentName, adminUid: request.user.uid }, 'Admin unlocked agent');
             return { message: 'Agent unlocked' };
         }
         catch (err) {
@@ -667,28 +538,16 @@ async function adminRoutes(fastify) {
             return reply.code(500).send({ error: err.message || 'Error fetching agent users' });
         }
     });
-    // Agent CRUD endpoints
-    const updateAgentSchema = zod_1.z.object({
-        name: zod_1.z.string().min(1).optional(),
-        description: zod_1.z.string().optional(),
-        longDescription: zod_1.z.string().optional(),
-        price: zod_1.z.number().min(0).optional(),
-        features: zod_1.z.array(zod_1.z.string()).optional(),
-        category: zod_1.z.string().optional(),
-        badge: zod_1.z.string().optional(),
-        imageUrl: zod_1.z.string().url().optional().or(zod_1.z.literal('')),
-        enabled: zod_1.z.boolean().optional(),
-        whatsappNumber: zod_1.z.string().optional(),
-    });
-    // Update agent
-    fastify.put('/agents/:agentId', {
+    fastify.put('/agents/:id', {
         preHandler: [fastify.authenticate, fastify.adminAuth],
     }, async (request, reply) => {
         try {
-            const { agentId } = request.params;
-            const body = updateAgentSchema.parse(request.body);
-            const db = (0, firebase_1.getFirebaseAdmin)().firestore();
-            const agentRef = db.collection('agents').doc(agentId);
+            const { id } = request.params;
+            const body = request.body;
+            const { getFirebaseAdmin } = await Promise.resolve().then(() => __importStar(require('../utils/firebase')));
+            const admin = await Promise.resolve().then(() => __importStar(require('firebase-admin')));
+            const db = getFirebaseAdmin().firestore();
+            const agentRef = db.collection('agents').doc(id);
             const agentDoc = await agentRef.get();
             if (!agentDoc.exists) {
                 return reply.code(404).send({ error: 'Agent not found' });
@@ -696,6 +555,7 @@ async function adminRoutes(fastify) {
             const updateData = {
                 updatedAt: admin.firestore.Timestamp.now(),
             };
+            // Only include valid fields from body
             if (body.name !== undefined)
                 updateData.name = body.name;
             if (body.description !== undefined)
@@ -711,166 +571,193 @@ async function adminRoutes(fastify) {
             if (body.badge !== undefined)
                 updateData.badge = body.badge;
             if (body.imageUrl !== undefined)
-                updateData.imageUrl = body.imageUrl || null;
+                updateData.imageUrl = body.imageUrl;
             if (body.enabled !== undefined)
                 updateData.enabled = body.enabled;
-            if (body.whatsappNumber !== undefined)
-                updateData.whatsappNumber = body.whatsappNumber;
+            if (body.displayOrder !== undefined)
+                updateData.displayOrder = body.displayOrder;
+            if (body.tags !== undefined)
+                updateData.tags = body.tags;
+            if (body.benefits !== undefined)
+                updateData.benefits = body.benefits;
+            if (body.requirements !== undefined)
+                updateData.requirements = body.requirements;
+            if (body.buyingInstructions !== undefined)
+                updateData.buyingInstructions = body.buyingInstructions;
+            if (body.faq !== undefined)
+                updateData.faq = body.faq;
             await agentRef.update(updateData);
-            logger_1.logger.info({ agentId, adminUid: request.user.uid }, 'Agent updated');
-            return { message: 'Agent updated successfully', agentId };
+            logger_1.logger.info({ agentId: id, adminUid: request.user.uid }, 'Agent updated');
+            return { message: 'Agent updated successfully', agentId: id };
+        }
+        catch (err) {
+            logger_1.logger.error({ err }, 'Error updating agent');
+            return reply.code(500).send({ error: err.message || 'Error updating agent' });
+        }
+    });
+    // POST /api/admin/agents - Create agent
+    fastify.post('/agents', {
+        preHandler: [fastify.authenticate, fastify.adminAuth],
+    }, async (request, reply) => {
+        try {
+            const body = zod_1.z.object({
+                name: zod_1.z.string().min(1),
+                description: zod_1.z.string().optional(),
+                longDescription: zod_1.z.string().optional(),
+                price: zod_1.z.number().min(0),
+                features: zod_1.z.array(zod_1.z.string()).optional(),
+                category: zod_1.z.string().optional(),
+                badge: zod_1.z.string().optional(),
+                imageUrl: zod_1.z.string().optional(),
+                enabled: zod_1.z.boolean().optional().default(true),
+                displayOrder: zod_1.z.number().optional().default(0),
+                tags: zod_1.z.array(zod_1.z.string()).optional(),
+                benefits: zod_1.z.array(zod_1.z.string()).optional(),
+                requirements: zod_1.z.string().optional(),
+                buyingInstructions: zod_1.z.string().optional(),
+                faq: zod_1.z.array(zod_1.z.object({ question: zod_1.z.string(), answer: zod_1.z.string() })).optional(),
+            }).parse(request.body);
+            const { getFirebaseAdmin } = await Promise.resolve().then(() => __importStar(require('../utils/firebase')));
+            const admin = await Promise.resolve().then(() => __importStar(require('firebase-admin')));
+            const db = getFirebaseAdmin().firestore();
+            const agentRef = db.collection('agents').doc();
+            await agentRef.set({
+                id: agentRef.id,
+                ...body,
+                createdAt: admin.firestore.Timestamp.now(),
+                updatedAt: admin.firestore.Timestamp.now(),
+            });
+            logger_1.logger.info({ agentId: agentRef.id, adminUid: request.user.uid }, 'Agent created');
+            return { message: 'Agent created successfully', agentId: agentRef.id };
         }
         catch (err) {
             if (err instanceof zod_1.z.ZodError) {
                 return reply.code(400).send({ error: 'Invalid input', details: err.errors });
             }
-            logger_1.logger.error({ err }, 'Error updating agent');
-            return reply.code(500).send({ error: err.message || 'Error updating agent' });
+            logger_1.logger.error({ err }, 'Error creating agent');
+            return reply.code(500).send({ error: err.message || 'Error creating agent' });
         }
     });
-    // Get unlock requests (pending)
-    fastify.get('/unlock-requests', {
+    // DELETE /api/admin/agents/:id - Delete agent
+    fastify.delete('/agents/:id', {
         preHandler: [fastify.authenticate, fastify.adminAuth],
     }, async (request, reply) => {
         try {
-            const db = (0, firebase_1.getFirebaseAdmin)().firestore();
-            const snapshot = await db
-                .collection('agentUnlockRequests')
-                .where('status', '==', 'pending')
-                .orderBy('submittedAt', 'desc')
-                .get();
-            const requests = await Promise.all(snapshot.docs.map(async (doc) => {
-                const data = doc.data();
-                // Get user email
-                const userDoc = await db.collection('users').doc(data.uid).get();
-                const userData = userDoc.data();
-                return {
-                    id: doc.id,
-                    uid: data.uid,
-                    userEmail: userData?.email || 'N/A',
-                    agentId: data.agentId,
-                    agentName: data.agentName,
-                    fullName: data.fullName,
-                    phoneNumber: data.phoneNumber,
-                    email: data.email,
-                    submittedAt: data.submittedAt?.toDate().toISOString(),
-                    status: data.status,
-                };
-            }));
-            return { requests };
+            const { id } = request.params;
+            const { getFirebaseAdmin } = await Promise.resolve().then(() => __importStar(require('../utils/firebase')));
+            const db = getFirebaseAdmin().firestore();
+            await db.collection('agents').doc(id).delete();
+            logger_1.logger.info({ agentId: id, adminUid: request.user.uid }, 'Agent deleted');
+            return { message: 'Agent deleted successfully' };
         }
         catch (err) {
-            logger_1.logger.error({ err }, 'Error getting unlock requests');
-            return reply.code(500).send({ error: err.message || 'Error fetching unlock requests' });
+            logger_1.logger.error({ err }, 'Error deleting agent');
+            return reply.code(500).send({ error: err.message || 'Error deleting agent' });
         }
     });
-    // Approve unlock request
-    fastify.post('/unlock-requests/:requestId/approve', {
+    // GET /api/admin/agents/purchases - Get all agent purchases
+    fastify.get('/agents/purchases', {
         preHandler: [fastify.authenticate, fastify.adminAuth],
     }, async (request, reply) => {
         try {
-            const { requestId } = request.params;
-            const db = (0, firebase_1.getFirebaseAdmin)().firestore();
-            // Get request
-            const requestDoc = await db.collection('agentUnlockRequests').doc(requestId).get();
-            if (!requestDoc.exists) {
-                return reply.code(404).send({ error: 'Request not found' });
+            const { status, limit } = request.query;
+            const { getFirebaseAdmin } = await Promise.resolve().then(() => __importStar(require('../utils/firebase')));
+            const db = getFirebaseAdmin().firestore();
+            let query = db.collection('agentPurchases').orderBy('submittedAt', 'desc');
+            if (status) {
+                query = query.where('status', '==', status);
             }
-            const requestData = requestDoc.data();
-            if (requestData.status !== 'pending') {
-                return reply.code(400).send({ error: 'Request already processed' });
+            const limitNum = limit ? parseInt(limit, 10) : 100;
+            const snapshot = await query.limit(limitNum).get();
+            const purchases = snapshot.docs.map(doc => {
+                const data = doc.data();
+                return {
+                    id: doc.id,
+                    ...data,
+                    submittedAt: data.submittedAt?.toDate?.()?.toISOString() || new Date(data.submittedAt).toISOString(),
+                    createdAt: data.createdAt?.toDate?.()?.toISOString() || new Date(data.createdAt).toISOString(),
+                    approvedAt: data.approvedAt?.toDate?.()?.toISOString() || (data.approvedAt ? new Date(data.approvedAt).toISOString() : null),
+                };
+            });
+            return { purchases };
+        }
+        catch (err) {
+            logger_1.logger.error({ err }, 'Error getting purchases');
+            return reply.code(500).send({ error: err.message || 'Error fetching purchases' });
+        }
+    });
+    // POST /api/admin/agents/purchases/:id/approve - Approve purchase and unlock agent
+    fastify.post('/agents/purchases/:id/approve', {
+        preHandler: [fastify.authenticate, fastify.adminAuth],
+    }, async (request, reply) => {
+        try {
+            const { id } = request.params;
+            const { getFirebaseAdmin } = await Promise.resolve().then(() => __importStar(require('../utils/firebase')));
+            const admin = await Promise.resolve().then(() => __importStar(require('firebase-admin')));
+            const db = getFirebaseAdmin().firestore();
+            const purchaseRef = db.collection('agentPurchases').doc(id);
+            const purchaseDoc = await purchaseRef.get();
+            if (!purchaseDoc.exists) {
+                return reply.code(404).send({ error: 'Purchase not found' });
             }
+            const purchase = purchaseDoc.data();
             // Unlock agent for user
-            await firestoreAdapter_1.firestoreAdapter.unlockAgent(requestData.uid, requestData.agentName, requestData.agentId);
-            // Update request status
-            await db.collection('agentUnlockRequests').doc(requestId).update({
+            await firestoreAdapter_1.firestoreAdapter.unlockAgent(purchase.uid, purchase.agentName);
+            await firestoreAdapter_1.firestoreAdapter.createAgentUnlock(purchase.uid, purchase.agentName, {
+                unlockedBy: request.user.uid,
+                purchaseId: id,
+            });
+            // Update user's unlockedAgents array
+            const userData = await firestoreAdapter_1.firestoreAdapter.getUser(purchase.uid);
+            const currentUnlocked = userData?.unlockedAgents || [];
+            if (!currentUnlocked.includes(purchase.agentName)) {
+                await firestoreAdapter_1.firestoreAdapter.createOrUpdateUser(purchase.uid, {
+                    unlockedAgents: [...currentUnlocked, purchase.agentName],
+                });
+            }
+            // Update purchase status
+            await purchaseRef.update({
                 status: 'approved',
                 approvedAt: admin.firestore.Timestamp.now(),
                 approvedBy: request.user.uid,
             });
-            logger_1.logger.info({ requestId, uid: requestData.uid, agentName: requestData.agentName }, 'Unlock request approved');
-            return { message: 'Unlock request approved', requestId };
+            logger_1.logger.info({ purchaseId: id, uid: purchase.uid, agentName: purchase.agentName, adminUid: request.user.uid }, 'Purchase approved and agent unlocked');
+            return { message: 'Purchase approved and agent unlocked successfully' };
         }
         catch (err) {
-            logger_1.logger.error({ err }, 'Error approving unlock request');
-            return reply.code(500).send({ error: err.message || 'Error approving unlock request' });
+            logger_1.logger.error({ err }, 'Error approving purchase');
+            return reply.code(500).send({ error: err.message || 'Error approving purchase' });
         }
     });
-    // Deny unlock request
-    fastify.post('/unlock-requests/:requestId/deny', {
+    // POST /api/admin/agents/purchases/:id/reject - Reject purchase
+    fastify.post('/agents/purchases/:id/reject', {
         preHandler: [fastify.authenticate, fastify.adminAuth],
     }, async (request, reply) => {
         try {
-            const { requestId } = request.params;
+            const { id } = request.params;
             const { reason } = request.body || {};
-            const db = (0, firebase_1.getFirebaseAdmin)().firestore();
-            // Get request
-            const requestDoc = await db.collection('agentUnlockRequests').doc(requestId).get();
-            if (!requestDoc.exists) {
-                return reply.code(404).send({ error: 'Request not found' });
+            const { getFirebaseAdmin } = await Promise.resolve().then(() => __importStar(require('../utils/firebase')));
+            const admin = await Promise.resolve().then(() => __importStar(require('firebase-admin')));
+            const db = getFirebaseAdmin().firestore();
+            const purchaseRef = db.collection('agentPurchases').doc(id);
+            const purchaseDoc = await purchaseRef.get();
+            if (!purchaseDoc.exists) {
+                return reply.code(404).send({ error: 'Purchase not found' });
             }
-            const requestData = requestDoc.data();
-            if (requestData.status !== 'pending') {
-                return reply.code(400).send({ error: 'Request already processed' });
-            }
-            // Update request status
-            await db.collection('agentUnlockRequests').doc(requestId).update({
-                status: 'denied',
-                deniedAt: admin.firestore.Timestamp.now(),
-                deniedBy: request.user.uid,
-                reason: reason || 'No reason provided',
+            await purchaseRef.update({
+                status: 'rejected',
+                rejectedAt: admin.firestore.Timestamp.now(),
+                rejectedBy: request.user.uid,
+                rejectionReason: reason || 'No reason provided',
             });
-            logger_1.logger.info({ requestId, uid: requestData.uid, agentName: requestData.agentName }, 'Unlock request denied');
-            return { message: 'Unlock request denied', requestId };
+            logger_1.logger.info({ purchaseId: id, adminUid: request.user.uid }, 'Purchase rejected');
+            return { message: 'Purchase rejected successfully' };
         }
         catch (err) {
-            logger_1.logger.error({ err }, 'Error denying unlock request');
-            return reply.code(500).send({ error: err.message || 'Error denying unlock request' });
+            logger_1.logger.error({ err }, 'Error rejecting purchase');
+            return reply.code(500).send({ error: err.message || 'Error rejecting purchase' });
         }
     });
-    // Update agent settings for user
-    fastify.put('/user/:uid/agent/:agentName/settings', {
-        preHandler: [fastify.authenticate, fastify.adminAuth],
-    }, async (request, reply) => {
-        try {
-            const { uid, agentName } = request.params;
-            const settings = request.body;
-            await firestoreAdapter_1.firestoreAdapter.updateAgentSettings(uid, agentName, settings);
-            logger_1.logger.info({ uid, agentName, adminUid: request.user.uid }, 'Agent settings updated');
-            return { message: 'Agent settings updated' };
-        }
-        catch (err) {
-            logger_1.logger.error({ err }, 'Error updating agent settings');
-            return reply.code(500).send({ error: err.message || 'Error updating agent settings' });
-        }
-    });
-    // Toggle agent enabled/disabled
-    fastify.post('/agents/:agentId/toggle', {
-        preHandler: [fastify.authenticate, fastify.adminAuth],
-    }, async (request, reply) => {
-        try {
-            const { agentId } = request.params;
-            const db = (0, firebase_1.getFirebaseAdmin)().firestore();
-            const agentRef = db.collection('agents').doc(agentId);
-            const agentDoc = await agentRef.get();
-            if (!agentDoc.exists) {
-                return reply.code(404).send({ error: 'Agent not found' });
-            }
-            const currentData = agentDoc.data();
-            const newEnabled = !(currentData?.enabled !== false);
-            await agentRef.update({
-                enabled: newEnabled,
-                updatedAt: admin.firestore.Timestamp.now(),
-            });
-            logger_1.logger.info({ agentId, enabled: newEnabled, adminUid: request.user.uid }, 'Agent toggled');
-            return { message: `Agent ${newEnabled ? 'enabled' : 'disabled'}`, enabled: newEnabled };
-        }
-        catch (err) {
-            logger_1.logger.error({ err }, 'Error toggling agent');
-            return reply.code(500).send({ error: err.message || 'Error toggling agent' });
-        }
-    });
-    // System health endpoint
     fastify.get('/system-health', {
         preHandler: [fastify.authenticate, fastify.adminAuth],
     }, async (request, reply) => {
@@ -969,57 +856,6 @@ async function adminRoutes(fastify) {
         catch (err) {
             logger_1.logger.error({ err }, 'Error getting system health');
             return reply.code(500).send({ error: err.message || 'Error fetching system health' });
-        }
-    });
-    // Deep Research Scheduler Status
-    fastify.get('/scheduler/status', {
-        preHandler: [fastify.authenticate, fastify.adminAuth],
-    }, async (request, reply) => {
-        try {
-            const { deepResearchScheduler } = await Promise.resolve().then(() => __importStar(require('../services/deepResearchScheduler')));
-            const status = await deepResearchScheduler.getStatus();
-            return status;
-        }
-        catch (err) {
-            logger_1.logger.error({ err }, 'Error getting scheduler status');
-            return reply.code(500).send({ error: err.message || 'Error fetching scheduler status' });
-        }
-    });
-    // Force run Deep Research for one coin
-    fastify.post('/scheduler/force-run', {
-        preHandler: [fastify.authenticate, fastify.adminAuth],
-    }, async (request, reply) => {
-        try {
-            const { deepResearchScheduler } = await Promise.resolve().then(() => __importStar(require('../services/deepResearchScheduler')));
-            const result = await deepResearchScheduler.forceRun();
-            return result;
-        }
-        catch (err) {
-            logger_1.logger.error({ err }, 'Error in force run');
-            return reply.code(500).send({ error: err.message || 'Error in force run' });
-        }
-    });
-    // Update scheduler configuration
-    fastify.post('/scheduler/config', {
-        preHandler: [fastify.authenticate, fastify.adminAuth],
-    }, async (request, reply) => {
-        try {
-            const { deepResearchScheduler } = await Promise.resolve().then(() => __importStar(require('../services/deepResearchScheduler')));
-            const config = request.body || {};
-            // Validate intervals - only [5, 10, 15, 30, 60] minutes allowed
-            const allowedIntervals = [5, 10, 15, 30, 60];
-            if (config.intervals) {
-                const invalidIntervals = config.intervals.filter((i) => !allowedIntervals.includes(i));
-                if (invalidIntervals.length > 0) {
-                    return reply.code(400).send({ error: `Invalid intervals: ${invalidIntervals.join(', ')}. Allowed: ${allowedIntervals.join(', ')}` });
-                }
-            }
-            await deepResearchScheduler.updateConfig(config);
-            return { success: true, message: 'Scheduler config updated' };
-        }
-        catch (err) {
-            logger_1.logger.error({ err }, 'Error updating scheduler config');
-            return reply.code(500).send({ error: err.message || 'Error updating scheduler config' });
         }
     });
 }

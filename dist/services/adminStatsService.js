@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.adminStatsService = exports.AdminStatsService = void 0;
 const db_1 = require("../db");
@@ -98,18 +131,33 @@ class AdminStatsService {
         }
         const apiStatus = {};
         try {
+            const { getFirebaseAdmin } = await Promise.resolve().then(() => __importStar(require('../utils/firebase')));
+            const db = getFirebaseAdmin().firestore();
+            const exchangeConfigDoc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+            if (exchangeConfigDoc.exists) {
+                const exchange = exchangeConfigDoc.data()?.exchange || exchangeConfigDoc.data()?.type;
+                if (exchange) {
+                    apiStatus[exchange] = {
+                        connected: true,
+                        hasKey: true,
+                    };
+                }
+            }
+            // Check research APIs from integrations collection
             const integrations = await firestoreAdapter_1.firestoreAdapter.getAllIntegrations(uid);
-            const apiNames = ['binance', 'cryptocompare', 'lunarcrush', 'coinapi'];
-            for (const apiName of apiNames) {
+            const researchApis = ['cryptoquant', 'lunarcrush', 'coinapi_market', 'coinapi_flatfile', 'coinapi_exchangerate'];
+            for (const apiName of researchApis) {
                 const integration = integrations[apiName];
-                apiStatus[apiName] = {
-                    connected: integration?.enabled || false,
-                    hasKey: !!integration?.apiKey,
-                };
+                if (integration) {
+                    apiStatus[apiName] = {
+                        connected: integration.enabled || false,
+                        hasKey: !!integration.apiKey,
+                    };
+                }
             }
         }
         catch (error) {
-            logger_1.logger.warn({ error, uid }, 'User stats: integrations unavailable, defaulting api status');
+            logger_1.logger.warn({ error, uid }, 'User stats: API status check failed, defaulting api status');
         }
         let autoTradeEnabled = false;
         let hftEnabled = false;
