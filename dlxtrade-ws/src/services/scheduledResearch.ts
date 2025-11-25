@@ -87,13 +87,19 @@ export class ScheduledResearchService {
       logger.info('Running scheduled research for all users (Research APIs only)');
 
       try {
-        // Wrap Firebase access in try/catch
+        // Check Firebase availability
+        const firebaseAdmin = getFirebaseAdmin();
+        if (!firebaseAdmin) {
+          logger.warn('Firebase Admin not initialized - skipping scheduled research');
+          return; // Exit early if Firebase is not available
+        }
+
         let db;
         try {
-          db = getFirebaseAdmin().firestore();
+          db = firebaseAdmin.firestore();
         } catch (fbErr: any) {
-          logger.error({ error: fbErr.message, stack: fbErr.stack }, 'Failed to get Firebase Admin in scheduled research');
-          return; // Exit early if Firebase is not available
+          logger.error({ error: fbErr.message, stack: fbErr.stack }, 'Failed to get Firestore in scheduled research');
+          return; // Exit early if Firestore is not available
         }
         
         // Get all users (limit to first 100 to avoid timeout)
@@ -103,26 +109,6 @@ export class ScheduledResearchService {
         for (const userDoc of usersSnapshot.docs) {
           const uid = userDoc.id;
           try {
-            // CHECK PREMIUM AGENT: Only run scheduled research for users with Premium Trading Agent unlocked
-            const userData = userDoc.data();
-            const unlockedAgents = userData?.unlockedAgents || [];
-            const hasPremiumAgent = unlockedAgents.includes('Premium Trading Agent');
-
-            if (!hasPremiumAgent) {
-              logger.debug({ uid }, 'Skipping scheduled research - Premium Trading Agent not unlocked');
-              results.push({ uid, status: 'skipped', reason: 'Premium Agent not unlocked' });
-              continue;
-            }
-
-            // CHECK AUTO-TRADE ENABLED: Only run scheduled research for users with autoTradeEnabled = true
-            const autoTradeEnabled = userData?.autoTradeEnabled || false;
-
-            if (!autoTradeEnabled) {
-              logger.debug({ uid }, 'Skipping scheduled research - autoTradeEnabled is false');
-              results.push({ uid, status: 'skipped', reason: 'autoTradeEnabled=false' });
-              continue;
-            }
-
             await this.runResearchForUser(uid);
             results.push({ uid, status: 'success' });
           } catch (error: any) {

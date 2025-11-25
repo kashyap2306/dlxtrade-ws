@@ -16,15 +16,20 @@ const DEMO_USERS_COUNT = 10;
 export async function seedFirestoreData(): Promise<void> {
   try {
     const firebaseAdmin = getFirebaseAdmin();
+    if (!firebaseAdmin) {
+      logger.warn('Seed skipped — Firebase Admin not initialized');
+      return;
+    }
+
     const db = firebaseAdmin.firestore();
-    
+
     // Verify project ID
     const serviceAccountProjectId = (firebaseAdmin.options as any).projectId || 'NOT_FOUND';
     const appProjectId = firebaseAdmin.options.projectId || 'NOT_FOUND';
-    
+
     console.log('🔥 VERIFY: serviceAccount.project_id =', serviceAccountProjectId);
     console.log('🔥 VERIFY: admin.app().options.projectId =', appProjectId);
-    
+
     if (!serviceAccountProjectId || serviceAccountProjectId === 'NOT_FOUND' || appProjectId === 'NOT_FOUND') {
       throw new Error('Project ID verification failed! Cannot proceed.');
     }

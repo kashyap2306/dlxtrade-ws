@@ -138,6 +138,16 @@ export default function AdminUsersList() {
     }
   };
 
+  const handleGiveFullAccess = async (uid: string) => {
+    try {
+      await adminApi.giveFullAccess(uid);
+      showToast('Full access granted successfully', 'success');
+      loadUsers();
+    } catch (err: any) {
+      showToast(err.response?.data?.error || 'Error giving full access', 'error');
+    }
+  };
+
   const confirmDeleteUser = async () => {
     if (!deleteUser) return;
 
@@ -278,6 +288,12 @@ export default function AdminUsersList() {
                         className="btn btn-success text-xs px-2 py-1"
                       >
                         All Agents
+                      </button>
+                      <button
+                        onClick={() => handleGiveFullAccess(user.uid)}
+                        className="btn btn-primary text-xs px-2 py-1"
+                      >
+                        Full Access
                       </button>
                       <button
                         onClick={() => handleDeleteUser(user.uid, user.email || 'unknown')}

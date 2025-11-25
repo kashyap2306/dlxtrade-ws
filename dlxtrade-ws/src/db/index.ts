@@ -4,8 +4,17 @@ import { logger } from '../utils/logger';
 
 let pool: Pool | null = null;
 
-export function getPool(): Pool {
+export function getPool(): Pool | null {
   if (!pool) {
+    // Check if database credentials are available
+    const hasCredentials = config.database.url ||
+      (config.database.host && config.database.user && config.database.password && config.database.database);
+
+    if (!hasCredentials) {
+      logger.warn('Postgres credentials missing (PGHOST, PGUSER, PGPASSWORD, PGDATABASE) — database operations unavailable');
+      return null;
+    }
+
     // Use individual PostgreSQL env vars for Render (preferred)
     // or fallback to DATABASE_URL for other providers
     const poolConfig = config.database.url ? {
@@ -34,36 +43,70 @@ export function getPool(): Pool {
 }
 
 export async function query<T = any>(text: string, params?: any[]): Promise<T[]> {
-  const client = await getPool().connect();
+  const pool = getPool();
+  if (!pool) {
+    logger.warn({ query: text.substring(0, 100) }, 'Postgres unavailable — returning empty results');
+    return [];
+  }
+
   try {
-    const result = await client.query(text, params);
-    return result.rows;
-  } finally {
-    client.release();
+    const client = await pool.connect();
+    try {
+      const result = await client.query(text, params);
+      return result.rows;
+    } finally {
+      client.release();
+    }
+  } catch (error: any) {
+    if (error.code === '28000') {
+      logger.warn({ query: text.substring(0, 100), code: error.code }, 'Postgres unavailable (28000) — using default values');
+      return [];
+    }
+    throw error;
   }
 }
 
 export async function transaction<T>(
   callback: (client: PoolClient) => Promise<T>
 ): Promise<T> {
-  const client = await getPool().connect();
+  const pool = getPool();
+  if (!pool) {
+    logger.warn('Postgres unavailable — transaction skipped');
+    // For transactions, we can't really provide a default, so we throw
+    throw new Error('Database unavailable');
+  }
+
   try {
-    await client.query('BEGIN');
-    const result = await callback(client);
-    await client.query('COMMIT');
-    return result;
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await callback(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (error: any) {
+    if (error.code === '28000') {
+      logger.warn({ code: error.code }, 'Postgres unavailable (28000) — transaction failed');
+      throw new Error('Database unavailable');
+    }
+    throw error;
   }
 }
 
 export async function initDb(): Promise<void> {
   const pool = getPool();
-  
-  // Create tables
+  if (!pool) {
+    logger.warn('Postgres unavailable — database initialization skipped');
+    return;
+  }
+
+  try {
+    // Create tables
   await pool.query(`
     CREATE TABLE IF NOT EXISTS api_keys (
       id SERIAL PRIMARY KEY,
@@ -162,6 +205,13 @@ export async function initDb(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_pnl_user_id ON pnl(user_id);
   `);
 
-  logger.info('Database initialized');
+    logger.info('Database initialized');
+  } catch (error: any) {
+    if (error.code === '28000') {
+      logger.warn({ code: error.code }, 'Postgres unavailable (28000) — database initialization failed');
+      return;
+    }
+    throw error;
+  }
 }
 

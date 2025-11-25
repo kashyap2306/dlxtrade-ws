@@ -81,6 +81,7 @@ export const adminApi = {
   reloadKeys: (uid: string) => api.post(`/admin/user/${uid}/reload-keys`),
   unlockAgent: (uid: string, agentName: string) => api.post(`/admin/user/${uid}/unlock-agent`, { agentName }),
   lockAgent: (uid: string, agentName: string) => api.post(`/admin/user/${uid}/lock-agent`, { agentName }),
+  giveFullAccess: (uid: string) => api.post(`/admin/user/${uid}/give-full-access`),
   getGlobalStats: () => api.get('/admin/global-stats'),
   reloadAllEngines: () => api.post('/admin/reload-all-engines'),
   getAgentStats: () => api.get('/admin/agents/stats'),

@@ -49,16 +49,6 @@ export async function researchRoutes(fastify: FastifyInstance) {
     try {
       logger.info({ uid: user.uid }, 'Starting deep research with 5 allowed providers');
 
-      // PREMIUM AGENT REQUIREMENT: Check if user has unlocked Premium Trading Agent
-      const userData = await firestoreAdapter.getUser(user.uid);
-      const unlockedAgents = userData?.unlockedAgents || [];
-      if (!unlockedAgents || !unlockedAgents.includes('Premium Trading Agent')) {
-        return reply.code(403).send({
-          error: 'Premium Agent Locked',
-          message: 'Please unlock Premium Trading Agent to access Deep Research and Auto Trade.',
-        });
-      }
-
       // Get enabled integrations for research APIs - ONLY 5 providers allowed
       const integrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
 
@@ -350,16 +340,6 @@ export async function researchRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest<{ Body: { symbols?: string[]; topN?: number } }>, reply: FastifyReply) => {
     const user = (request as any).user;
 
-    // PREMIUM AGENT REQUIREMENT: Check if user has unlocked Premium Trading Agent
-    const userData = await firestoreAdapter.getUser(user.uid);
-    const unlockedAgents = userData?.unlockedAgents || [];
-    if (!unlockedAgents || !unlockedAgents.includes('Premium Trading Agent')) {
-      return reply.code(403).send({
-        error: 'Premium Agent Locked',
-        message: 'Please unlock Premium Trading Agent to access Deep Research and Auto Trade.',
-      });
-    }
-
     // Simplified deep research endpoint
     return reply.send({
       message: 'Deep research completed',
@@ -375,16 +355,6 @@ export async function researchRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Body: { symbols?: string[]; topN?: number } }>, reply: FastifyReply) => {
     const user = (request as any).user;
-
-    // PREMIUM AGENT REQUIREMENT: Check if user has unlocked Premium Trading Agent
-    const userData = await firestoreAdapter.getUser(user.uid);
-    const unlockedAgents = userData?.unlockedAgents || [];
-    if (!unlockedAgents || !unlockedAgents.includes('Premium Trading Agent')) {
-      return reply.code(403).send({
-        error: 'Premium Agent Locked',
-        message: 'Please unlock Premium Trading Agent to access Deep Research and Auto Trade.',
-      });
-    }
 
     // Get user integrations for manual research
     const integrations = await firestoreAdapter.getEnabledIntegrations(user.uid);

@@ -155,15 +155,6 @@ export default function ResearchPanel() {
 
   // Run deep research with 10-second processing animation
   const handleDeepResearch = async () => {
-    // Check if user has unlocked agents
-    if (unlockedAgents.length === 0) {
-      setToast({
-        message: 'Agent locked — unlock agent in /agents to request admin approval',
-        type: 'error'
-      });
-      return;
-    }
-
     setDeepResearchLoading(true);
     
     // Initialize progress steps with new messaging
@@ -323,33 +314,6 @@ export default function ResearchPanel() {
       </div>
 
       <Sidebar onLogout={handleLogout} />
-
-      {/* Premium Agent Lock Banner */}
-      {!hasPremiumAgent && !agentsLoading && (
-        <div className="fixed top-16 left-0 right-0 z-50 bg-gradient-to-r from-red-900/90 to-orange-900/90 backdrop-blur-md border-b border-red-500/50 shadow-lg">
-          <div className="max-w-7xl mx-auto px-4 py-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-6 h-6 rounded-full bg-red-500 flex items-center justify-center">
-                  <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                  </svg>
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold text-white">Premium Agent Locked</h3>
-                  <p className="text-xs text-red-200">Unlock Premium Trading Agent to access Deep Research and Auto Trade.</p>
-                </div>
-              </div>
-              <Link
-                to="/agents"
-                className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-lg border border-white/20 transition-all duration-200 hover:border-white/40"
-              >
-                Unlock Premium Agent
-              </Link>
-            </div>
-          </div>
-        </div>
-      )}
 
       <main className="min-h-screen">
         <div className="max-w-7xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8">

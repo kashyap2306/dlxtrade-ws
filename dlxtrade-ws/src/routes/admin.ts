@@ -41,6 +41,15 @@ export async function adminRoutes(fastify: FastifyInstance) {
     try {
       logger.info({ adminUid: adminUser.uid, targetUid: uid }, 'Admin deleting user completely');
 
+      // 0. Stop running engines for this user
+      try {
+        await userEngineManager.stopUserEngine(uid);
+        await userEngineManager.stopHFT(uid);
+        logger.info({ uid }, 'Stopped user engines before deletion');
+      } catch (engineError: any) {
+        logger.warn({ uid, error: engineError.message }, 'Error stopping user engines during deletion - continuing');
+      }
+
       const db = getFirebaseAdmin().firestore();
 
       // 1. Delete user document
@@ -977,6 +986,50 @@ export async function adminRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       logger.error({ err }, 'Error rejecting purchase');
       return reply.code(500).send({ error: err.message || 'Error rejecting purchase' });
+    }
+  });
+
+  // POST /api/admin/user/:uid/give-full-access - Give full access to all default features
+  fastify.post('/user/:uid/give-full-access', {
+    preHandler: [fastify.authenticate, fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
+    try {
+      const { uid } = request.params;
+      const adminUid = (request as any).user.uid;
+
+      // Enable all default features for the user
+      await firestoreAdapter.createOrUpdateUser(uid, {
+        autoTradeEnabled: true,
+        // Note: We don't unlock premium agents here, only enable default features
+        // Premium agents remain locked and require separate approval
+      });
+
+      // Create default settings if they don't exist
+      const existingSettings = await firestoreAdapter.getSettings(uid);
+      const defaultSettings = {
+        autoTradeEnabled: true,
+        minAccuracyThreshold: 0.85,
+        strategy: 'orderbook_imbalance',
+        max_loss_pct: 5,
+        max_drawdown_pct: 10,
+        per_trade_risk_pct: 1,
+      };
+
+      if (!existingSettings) {
+        await firestoreAdapter.saveSettings(uid, defaultSettings);
+      } else {
+        // Update existing settings to enable features
+        await firestoreAdapter.saveSettings(uid, {
+          ...existingSettings,
+          autoTradeEnabled: true,
+        });
+      }
+
+      logger.info({ uid, adminUid }, 'Admin granted full access to default features');
+      return { message: 'Full access granted successfully - all default features enabled' };
+    } catch (err: any) {
+      logger.error({ err }, 'Error giving full access');
+      return reply.code(500).send({ error: err.message || 'Error giving full access' });
     }
   });
 
