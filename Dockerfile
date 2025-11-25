@@ -4,7 +4,7 @@ WORKDIR /app
 
 # Copy package files
 COPY package.json pnpm-lock.yaml* ./
-COPY backend/package.json ./backend/
+COPY dlxtrade-ws/package.json ./dlxtrade-ws/
 
 # Install pnpm
 RUN npm install -g pnpm
@@ -13,10 +13,10 @@ RUN npm install -g pnpm
 RUN pnpm install --frozen-lockfile
 
 # Copy source
-COPY backend ./backend
+COPY dlxtrade-ws ./dlxtrade-ws
 
 # Build
-WORKDIR /app/backend
+WORKDIR /app/dlxtrade-ws
 RUN pnpm build
 
 # Production image
@@ -26,7 +26,7 @@ WORKDIR /app
 
 # Copy package files
 COPY package.json pnpm-lock.yaml* ./
-COPY backend/package.json ./backend/
+COPY dlxtrade-ws/package.json ./dlxtrade-ws/
 
 # Install pnpm
 RUN npm install -g pnpm
@@ -35,9 +35,9 @@ RUN npm install -g pnpm
 RUN pnpm install --prod --frozen-lockfile
 
 # Copy built files
-COPY --from=builder /app/backend/dist ./backend/dist
+COPY --from=builder /app/dlxtrade-ws/dist ./dlxtrade-ws/dist
 
-WORKDIR /app/backend
+WORKDIR /app/dlxtrade-ws
 
 EXPOSE 4000
 

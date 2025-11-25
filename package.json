@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "build": "tsc -p backend/tsconfig.json",
-    "start": "node backend/dist/server.js",
+    "build": "tsc -p dlxtrade-ws/tsconfig.json",
+    "start": "node dlxtrade-ws/dist/server.js",
     "verify:ws": "node -e \"require('@fastify/websocket'); require('ws'); console.log('ws-ok')\"",
     "postinstall": "npm run verify:ws"
   },
