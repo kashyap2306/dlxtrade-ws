@@ -5,6 +5,7 @@ import { adminAuthMiddleware } from '../middleware/adminAuth';
 import { z } from 'zod';
 import { logger } from '../utils/logger';
 import { getFirebaseAdmin } from '../utils/firebase';
+import { deepResearchEngine } from '../services/deepResearchEngine';
 import * as admin from 'firebase-admin';
 
 const researchQuerySchema = z.object({
@@ -36,7 +37,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
     }));
   });
 
-  // POST /api/research/run - Run deep research using ONLY the 5 allowed providers
+  // POST /api/research/run - Run comprehensive deep research with 8-10 trading strategies
   fastify.post('/run', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Body: { symbol?: string; symbols?: string[] } }>, reply: FastifyReply) => {
@@ -47,26 +48,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
     }).parse(request.body || {});
 
     try {
-      logger.info({ uid: user.uid }, 'Starting deep research with 5 allowed providers');
-
-      // Get enabled integrations for research APIs - ONLY 5 providers allowed
-      const integrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
-
-      // Check if at least one research API is configured (user-provided keys required)
-      const hasMarketAux = integrations.marketaux?.apiKey;
-      const hasCryptoCompare = integrations.cryptocompare?.apiKey;
-
-      // Auto-enabled APIs are always available (no user keys required)
-      const hasGoogleFinance = true; // Auto-enabled
-      const hasBinancePublic = true; // Auto-enabled
-      const hasCoinGecko = true; // Auto-enabled
-
-      if (!hasMarketAux && !hasCryptoCompare) {
-        return reply.code(400).send({
-          error: 'Missing research API credentials',
-          reason: 'Please configure at least one of: MarketAux or CryptoCompare in Settings → Trading API Integration.',
-        });
-      }
+      logger.info({ uid: user.uid }, 'Starting comprehensive deep research with 8-10 trading strategies');
 
       // Determine symbols to analyze
       let symbols = body.symbols || (body.symbol ? [body.symbol] : ['BTCUSDT']);
@@ -101,224 +83,67 @@ export async function researchRoutes(fastify: FastifyInstance) {
         symbols = symbols.slice(0, 5);
       }
 
-      logger.info({ uid: user.uid, symbols }, 'Starting research API calls for symbols');
+      logger.info({ uid: user.uid, symbols }, 'Running deep research analysis for symbols');
 
-      // Collect results for each symbol
+      // Collect comprehensive results for each symbol
       const results: any[] = [];
 
       for (const symbol of symbols) {
         try {
-          logger.info({ uid: user.uid, symbol }, 'Fetching research data from 5 allowed providers');
+          logger.info({ uid: user.uid, symbol }, 'Running comprehensive deep research analysis');
 
-          let marketAuxData: any = {};
-          let cryptoCompareData: any = {};
-          let googleFinanceData: any = {};
-          let binancePublicData: any = {};
-          let coinGeckoData: any = {};
-
-          // 1. Fetch MarketAux data (user-provided API key required)
-          if (hasMarketAux) {
-            try {
-              marketAuxData = await fetchMarketAuxData(integrations.marketaux.apiKey, symbol);
-              logger.info({ uid: user.uid, symbol }, 'MarketAux data fetched');
-            } catch (err: any) {
-              logger.error({ err: err.message, symbol }, 'MarketAux API call failed');
-              marketAuxData = { error: err.message };
-            }
-          }
-
-          // 2. Fetch CryptoCompare data (user-provided API key required)
-          if (hasCryptoCompare) {
-            try {
-              const { CryptoCompareAdapter } = await import('../services/cryptocompareAdapter');
-              const cryptoCompareAdapter = new CryptoCompareAdapter(integrations.cryptocompare.apiKey);
-              cryptoCompareData = await cryptoCompareAdapter.getMarketData(symbol);
-              logger.info({ uid: user.uid, symbol }, 'CryptoCompare data fetched');
-            } catch (err: any) {
-              logger.error({ err: err.message }, 'CryptoCompare API call failed');
-              cryptoCompareData = { error: err.message };
-            }
-          }
-
-          // 3. Fetch Google Finance data (auto-enabled, no API key required)
-          try {
-            const { GoogleFinanceAdapter } = await import('../services/googleFinanceAdapter');
-            const googleFinanceAdapter = new GoogleFinanceAdapter();
-            googleFinanceData = await googleFinanceAdapter.getMarketData(symbol);
-            logger.info({ uid: user.uid, symbol }, 'Google Finance data fetched');
-          } catch (err: any) {
-            logger.error({ err: err.message }, 'Google Finance API call failed');
-            googleFinanceData = { error: err.message };
-          }
-
-          // 4. Fetch Binance Public API data (auto-enabled, no API key required)
-          try {
-            const { BinanceAdapter } = await import('../services/binanceAdapter');
-            const binanceAdapter = new BinanceAdapter(); // Public API only, no keys needed
-            binancePublicData = await binanceAdapter.getPublicMarketData(symbol);
-            logger.info({ uid: user.uid, symbol }, 'Binance Public API data fetched');
-          } catch (err: any) {
-            logger.error({ err: err.message }, 'Binance Public API call failed - continuing with other providers');
-            binancePublicData = { error: err.message };
-          }
-
-          // 5. Fetch CoinGecko data (auto-enabled, rate-limit safe)
-          try {
-            const { CoinGeckoAdapter } = await import('../services/coingeckoAdapter');
-            const coinGeckoAdapter = new CoinGeckoAdapter();
-            coinGeckoData = await coinGeckoAdapter.getMarketData(symbol);
-            logger.info({ uid: user.uid, symbol }, 'CoinGecko data fetched');
-          } catch (err: any) {
-            logger.error({ err: err.message }, 'CoinGecko API call failed');
-            coinGeckoData = { error: err.message };
-          }
-
-          // Calculate signal based on available data from 5 providers only
-          let signal: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
-          let confidence = 0.5;
-          let reasoning = 'Analysis completed with available data';
-
-          // Simple sentiment analysis from available providers
-          const sentiments = [];
-          let successfulProviders = 0;
-          let avgSentiment = 0;
-
-          // MarketAux sentiment (if available and no error)
-          if (marketAuxData && !marketAuxData.error) {
-            successfulProviders++;
-            if (marketAuxData.sentiment === 'bullish') sentiments.push(1);
-            else if (marketAuxData.sentiment === 'bearish') sentiments.push(-1);
-            else if (marketAuxData.sentiment) sentiments.push(0);
-          }
-
-          // CryptoCompare price change (if available and no error)
-          if (cryptoCompareData && !cryptoCompareData.error && cryptoCompareData.priceChangePercent24h !== undefined) {
-            successfulProviders++;
-            if (cryptoCompareData.priceChangePercent24h > 1) sentiments.push(1);
-            else if (cryptoCompareData.priceChangePercent24h < -1) sentiments.push(-1);
-            else sentiments.push(0);
-          }
-
-          // Google Finance price change (if available and no error)
-          if (googleFinanceData && !googleFinanceData.error && googleFinanceData.priceChangePercent !== undefined) {
-            successfulProviders++;
-            if (googleFinanceData.priceChangePercent > 0.5) sentiments.push(1);
-            else if (googleFinanceData.priceChangePercent < -0.5) sentiments.push(-1);
-            else sentiments.push(0);
-          }
-
-          // Binance Public API price change (if available and no error)
-          if (binancePublicData && !binancePublicData.error && binancePublicData.priceChangePercent24h !== undefined) {
-            successfulProviders++;
-            if (binancePublicData.priceChangePercent24h > 0.5) sentiments.push(1);
-            else if (binancePublicData.priceChangePercent24h < -0.5) sentiments.push(-1);
-            else sentiments.push(0);
-          }
-
-          // CoinGecko price change (if available and no error, not rate limited)
-          if (coinGeckoData && !coinGeckoData.error && !coinGeckoData.rateLimited && coinGeckoData.change24h !== undefined) {
-            successfulProviders++;
-            if (coinGeckoData.change24h > 1) sentiments.push(1);
-            else if (coinGeckoData.change24h < -1) sentiments.push(-1);
-            else sentiments.push(0);
-          }
-
-          // Calculate average sentiment only if we have data from at least 1 provider
-          if (sentiments.length > 0) {
-            avgSentiment = sentiments.reduce((a, b) => a + b, 0) / sentiments.length;
-
-            if (avgSentiment > 0.3) {
-              signal = 'BUY';
-              confidence = Math.min(0.85, 0.5 + Math.abs(avgSentiment) * 0.35);
-              reasoning = `Bullish signals dominate (${sentiments.filter(s => s > 0).length}/${sentiments.length} sources)`;
-            } else if (avgSentiment < -0.3) {
-              signal = 'SELL';
-              confidence = Math.min(0.85, 0.5 + Math.abs(avgSentiment) * 0.35);
-              reasoning = `Bearish signals dominate (${sentiments.filter(s => s < 0).length}/${sentiments.length} sources)`;
-            } else {
-              signal = 'HOLD';
-              confidence = 0.5;
-              reasoning = `Mixed signals - hold position (${sentiments.filter(s => s === 0).length}/${sentiments.length} neutral)`;
-            }
-          } else {
-            // No data available from any provider
-            signal = 'HOLD';
-            confidence = 0.5;
-            reasoning = `Insufficient data - all providers failed or returned no data (${successfulProviders} providers attempted)`;
-          }
-
-          // Get price from available sources (prioritize Binance > CoinGecko > Google > CryptoCompare > MarketAux)
-          let price = 0;
-          let volume = 0;
-
-          if (binancePublicData && !binancePublicData.error && binancePublicData.lastPrice) {
-            price = binancePublicData.lastPrice;
-            volume = binancePublicData.volume24h || volume;
-          } else if (coinGeckoData && !coinGeckoData.error && !coinGeckoData.rateLimited && coinGeckoData.price) {
-            price = coinGeckoData.price;
-            volume = coinGeckoData.volume24h || volume;
-          } else if (googleFinanceData && !googleFinanceData.error && googleFinanceData.price) {
-            price = googleFinanceData.price;
-            volume = googleFinanceData.volume || volume;
-          } else if (cryptoCompareData && !cryptoCompareData.error && cryptoCompareData.price) {
-            price = cryptoCompareData.price;
-            volume = cryptoCompareData.volume24h || volume;
-          } else if (marketAuxData && !marketAuxData.error && marketAuxData.price) {
-            price = marketAuxData.price;
-            volume = marketAuxData.volume || volume;
-          }
-
-          // Save research result to Firestore for this user
-          const researchResult = {
-            symbol,
-            signal,
-            accuracy: confidence,
-            orderbookImbalance: 0, // Not used in research API analysis
-            recommendedAction: signal,
-            microSignals: {
-              spread: 0,
-              volume: volume,
-              priceMomentum: marketAuxData.sentimentScore || avgSentiment * 100,
-              orderbookDepth: 0,
-            },
-            timestamp: admin.firestore.Timestamp.now(),
-            createdAt: admin.firestore.Timestamp.now(),
-            userId: user.uid,
-            dataSources: {
-              marketAux: !!marketAuxData.price,
-              cryptoCompare: !!cryptoCompareData.price,
-              googleFinance: !!googleFinanceData.price,
-              binancePublic: !!binancePublicData.price,
-              coinGecko: !!coinGeckoData.price,
-            },
-          };
-
-          await firestoreAdapter.saveResearchLog(user.uid, researchResult);
+          // Use the new deep research engine
+          const deepResult = await deepResearchEngine.runDeepResearch(symbol, user.uid);
 
           results.push({
             symbol,
-            signal,
-            accuracy: confidence,
-            reasoning,
-            price: price,
-            volume: volume,
-            dataSources: researchResult.dataSources,
+            rsi: deepResult.rsi,
+            volume: deepResult.volume,
+            momentum: deepResult.momentum,
+            trend: deepResult.trend,
+            volatility: deepResult.volatility,
+            supportResistance: deepResult.supportResistance,
+            priceAction: deepResult.priceAction,
+            vwap: deepResult.vwap,
+            signals: deepResult.signals,
+            combinedSignal: deepResult.combinedSignal,
+            accuracy: deepResult.accuracy,
+            providersCalled: deepResult.providersCalled,
+            raw: deepResult.raw,
           });
 
         } catch (error: any) {
-          logger.error({ error: error.message, symbol, uid: user.uid }, 'Research analysis failed for symbol');
+          logger.error({ error: error.message, symbol, uid: user.uid }, 'Deep research analysis failed for symbol');
+
+          // Return fallback structure
           results.push({
             symbol,
-            signal: 'HOLD',
+            rsi: { value: 50, strength: 0.5 },
+            volume: { score: 0.5, trend: 'neutral' },
+            momentum: { score: 0.5, direction: 'neutral' },
+            trend: { emaTrend: 'neutral', smaTrend: 'neutral' },
+            volatility: { atrPct: 0, classification: 'unknown' },
+            supportResistance: { nearSupport: false, nearResistance: false, breakout: false },
+            priceAction: { pattern: 'none', confidence: 0 },
+            vwap: { deviationPct: 0, signal: 'neutral' },
+            signals: [],
+            combinedSignal: 'HOLD',
             accuracy: 0.5,
-            reasoning: `Analysis failed: ${error.message}`,
+            providersCalled: ['None'],
+            raw: {
+              cryptoCompare: { error: error.message },
+              marketAux: { error: error.message },
+              coinGecko: { error: error.message },
+              googleFinance: { error: error.message },
+              binancePublic: { error: error.message }
+            },
             error: error.message,
           });
         }
       }
 
       return {
-        message: 'Deep research completed successfully',
+        message: 'Comprehensive deep research completed successfully',
         results,
         totalSymbols: symbols.length,
         successfulAnalyses: results.filter(r => !r.error).length,
