@@ -8,11 +8,11 @@ import { fetchMarketAuxData } from './marketauxAdapter';
 /**
  * Scheduled Research Service
  * Runs deep research every 5 minutes for all active users
- * Uses ONLY 5 allowed research APIs: CryptoCompare, MarketAux, Google Finance, Binance Public API, CoinGecko
+ * Uses ONLY 5 allowed research APIs: MarketAux, CryptoCompare, Google Finance, Binance Public API, CoinGecko
  *
  * STRICTLY FORBIDDEN:
  * - NO trading exchange APIs (Binance, Bitget, BingX, WEEX) - except Binance Public API for research only
- * - NO LunarCrush, CoinAPI, CryptoQuant calls
+ * - NO LunarCrush, CoinAPI, CryptoQuant calls (removed)
  * - NO getOrderbook() calls
  * - NO getKlines() calls
  * - NO getTicker() calls for trading

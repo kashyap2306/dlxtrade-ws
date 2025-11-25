@@ -3,23 +3,21 @@ import { firestoreAdapter } from '../services/firestoreAdapter';
 import { z } from 'zod';
 import { maskKey, encrypt } from '../services/keyManager';
 import { BinanceAdapter } from '../services/binanceAdapter';
+import { fetchMarketAuxData } from '../services/marketauxAdapter';
 import { logger } from '../utils/logger';
 import * as admin from 'firebase-admin';
 import { getFirebaseAdmin } from '../utils/firebase';
 
-// Validation schemas
+// Validation schemas - ONLY 5 research providers allowed
 const integrationUpdateSchema = z.object({
-  apiName: z.enum(['binance', 'bitget', 'bingx', 'weex', 'cryptoquant', 'lunarcrush', 'coinapi']),
+  apiName: z.enum(['binance', 'bitget', 'bingx', 'weex', 'marketaux', 'cryptocompare', 'googlefinance', 'coingecko', 'binancepublic']),
   enabled: z.boolean(),
   apiKey: z.string().optional(),
   secretKey: z.string().optional(),
-  // Allow legacy and namespaced CoinAPI types
-  apiType: z.enum(['market', 'flatfile', 'exchangerate', 'coinapi_market', 'coinapi_flatfile', 'coinapi_exchangerate']).optional(),
 });
 
 const integrationDeleteSchema = z.object({
-  apiName: z.enum(['binance', 'bitget', 'bingx', 'weex', 'cryptoquant', 'lunarcrush', 'coinapi']),
-  apiType: z.enum(['market', 'flatfile', 'exchangerate', 'coinapi_market', 'coinapi_flatfile', 'coinapi_exchangerate']).optional(),
+  apiName: z.enum(['binance', 'bitget', 'bingx', 'weex', 'marketaux', 'cryptocompare', 'googlefinance', 'coingecko', 'binancepublic']),
 });
 
 export async function integrationsRoutes(fastify: FastifyInstance) {
@@ -30,35 +28,16 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     const user = (request as any).user;
     const integrations = await firestoreAdapter.getAllIntegrations(user.uid);
 
-    // Return integrations with masked keys
+    // Return integrations with masked keys - ONLY 5 research providers
     const result: Record<string, any> = {};
-    
-    // Group CoinAPI sub-types
-    const coinApiTypes: Record<string, any> = {};
-    
+
     for (const [docName, integration] of Object.entries(integrations)) {
-      if (docName.startsWith('coinapi_')) {
-        const type = docName.replace('coinapi_', '');
-        coinApiTypes[type] = {
-          enabled: integration.enabled,
-          apiKey: integration.apiKey ? maskKey(integration.apiKey) : null,
-          apiType: type,
-          updatedAt: integration.updatedAt?.toDate().toISOString(),
-        };
-      } else {
         result[docName] = {
           enabled: integration.enabled,
           apiKey: integration.apiKey ? maskKey(integration.apiKey) : null,
           secretKey: integration.secretKey ? maskKey(integration.secretKey) : null,
-          apiType: integration.apiType || null,
           updatedAt: integration.updatedAt?.toDate().toISOString(),
         };
-      }
-    }
-    
-    // Add CoinAPI grouped data
-    if (Object.keys(coinApiTypes).length > 0) {
-      result.coinapi = coinApiTypes;
     }
 
     return result;
@@ -82,30 +61,29 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
 
     const body = integrationUpdateSchema.parse(request.body);
 
-    // Handle CoinAPI sub-types
-    let docName: string = body.apiName;
-    if (body.apiName === 'coinapi' && body.apiType) {
-      // Accept both 'market' and 'coinapi_market' - normalize to 'coinapi_market'
-      const t = body.apiType.startsWith('coinapi_') ? body.apiType : `coinapi_${body.apiType}`;
-      docName = t;
-    }
+    // Integration name is used directly (no CoinAPI sub-types)
+    const docName: string = body.apiName;
 
     // Check if this is a trading exchange (Binance, Bitget, BingX, Weex)
     const tradingExchanges = ['binance', 'bitget', 'bingx', 'weex'];
     const isTradingExchange = tradingExchanges.includes(body.apiName);
 
+    // Check if this is an auto-enabled research API (Google Finance, Binance Public, CoinGecko)
+    const autoEnabledAPIs = ['googlefinance', 'binancepublic', 'coingecko'];
+    const isAutoEnabled = autoEnabledAPIs.includes(body.apiName);
+
     // Validate required fields based on API type
     if (isTradingExchange) {
       if (body.enabled && (!body.apiKey || !body.secretKey)) {
-        return reply.code(400).send({ 
-          error: `${body.apiName} API requires both API key and secret key` 
+        return reply.code(400).send({
+          error: `${body.apiName} API requires both API key and secret key`
         });
       }
-    } else {
-      // Research APIs: LunarCrush, CryptoQuant, CoinAPI
+    } else if (!isAutoEnabled) {
+      // Research APIs that require user-provided keys: MarketAux, CryptoCompare
       if (body.enabled && !body.apiKey) {
-        return reply.code(400).send({ 
-          error: `${body.apiName} API requires an API key` 
+        return reply.code(400).send({
+          error: `${body.apiName} API requires an API key`
         });
       }
     }
@@ -186,15 +164,12 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       });
     } else {
       // Research APIs: Save to integrations/{integrationName}
-      const integrationData: { enabled: boolean; apiKey?: string; apiType?: string } = {
+      const integrationData: { enabled: boolean; apiKey?: string } = {
         enabled: true,
       };
 
       if (body.apiKey) {
         integrationData.apiKey = body.apiKey;
-      }
-      if (body.apiType) {
-        integrationData.apiType = body.apiType;
       }
 
       logger.info({ 
@@ -228,13 +203,9 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = (request as any).user;
     const body = integrationDeleteSchema.parse(request.body);
-    
-    // Handle CoinAPI sub-types - check if apiType is provided in body
-    let docName: string = body.apiName;
-    if (body.apiName === 'coinapi' && (request.body as any).apiType) {
-      const t = ((request.body as any).apiType as string);
-      docName = t.startsWith('coinapi_') ? t : `coinapi_${t}`;
-    }
+
+    // Integration name is used directly
+    const docName: string = body.apiName;
 
     await firestoreAdapter.deleteIntegration(user.uid, docName);
 
@@ -260,12 +231,8 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     // Parse body using same schema
     const body = integrationUpdateSchema.parse(request.body);
 
-    // Handle CoinAPI sub-types
-    let docName: string = body.apiName;
-    if (body.apiName === 'coinapi' && body.apiType) {
-      const t = body.apiType.startsWith('coinapi_') ? body.apiType : `coinapi_${body.apiType}`;
-      docName = t;
-    }
+    // Integration name is used directly
+    const docName: string = body.apiName;
 
     // Check if this is a trading exchange (Binance, Bitget, BingX, Weex)
     const tradingExchanges = ['binance', 'bitget', 'bingx', 'weex'];
@@ -358,15 +325,12 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       }
     } else {
       // Research APIs: Save to integrations/{integrationName}
-      const integrationData: { enabled: boolean; apiKey?: string; apiType?: string } = {
+      const integrationData: { enabled: boolean; apiKey?: string } = {
         enabled: true,
       };
 
       if (body.apiKey) {
         integrationData.apiKey = body.apiKey;
-      }
-      if (body.apiType) {
-        integrationData.apiType = body.apiType;
       }
 
       logger.info({ 
@@ -401,14 +365,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     const body = integrationUpdateSchema.parse(request.body);
 
     try {
-      // Handle CoinAPI sub-types
-    let docName: string = body.apiName;
-    if (body.apiName === 'coinapi' && body.apiType) {
-      const t = body.apiType.startsWith('coinapi_') ? body.apiType : `coinapi_${body.apiType}`;
-      docName = t;
-    }
-
-      // Validate based on API type
+      // Validate based on API type (no CoinAPI sub-types)
       if (body.apiName === 'binance') {
         if (!body.apiKey || !body.secretKey) {
           return reply.code(400).send({
@@ -435,108 +392,82 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
             apiName: 'binance',
           });
         }
-      } else if (body.apiName === 'cryptoquant') {
+      } else if (body.apiName === 'marketaux') {
         if (!body.apiKey) {
           return reply.code(400).send({
             valid: false,
-            error: 'CryptoQuant API requires an API key',
-            apiName: 'cryptoquant',
+            error: 'MarketAux API requires an API key',
+            apiName: 'marketaux',
           });
         }
 
-        // DISABLED: CryptoQuant testing - CryptoQuant removed
-        // try {
-        //   const { CryptoQuantAdapter } = await import('../services/cryptoquantAdapter');
-        //   const adapter = new CryptoQuantAdapter(body.apiKey);
-        //   // Test with a simple call
-        //   await adapter.getExchangeFlow('BTCUSDT');
+        try {
+          const newsData = await fetchMarketAuxData(body.apiKey, 'BTCUSDT');
 
-        //   return {
-        //     valid: true,
-        //     apiName: 'cryptoquant',
-        //   };
-        // } catch (error: any) {
-        //   return reply.code(400).send({
-        //     valid: false,
-        //     error: error.message || 'CryptoQuant API validation failed',
-        //     apiName: 'cryptoquant',
-        //   });
-        // }
+          return {
+            valid: true,
+            apiName: 'marketaux',
+          };
+        } catch (error: any) {
+          return reply.code(400).send({
+            valid: false,
+            error: error.message || 'MarketAux API validation failed',
+            apiName: 'marketaux',
+          });
+        }
+      } else if (body.apiName === 'cryptocompare') {
+        if (!body.apiKey) {
+          return reply.code(400).send({
+            valid: false,
+            error: 'CryptoCompare API requires an API key',
+            apiName: 'cryptocompare',
+          });
+        }
 
-        // Return disabled status for CryptoQuant
+        try {
+          const { CryptoCompareAdapter } = await import('../services/cryptocompareAdapter');
+          const adapter = new CryptoCompareAdapter(body.apiKey);
+          // Test with a simple call
+          await adapter.getMarketData('BTC');
+
+          return {
+            valid: true,
+            apiName: 'cryptocompare',
+          };
+        } catch (error: any) {
+          return reply.code(400).send({
+            valid: false,
+            error: error.message || 'CryptoCompare API validation failed',
+            apiName: 'cryptocompare',
+          });
+        }
+      } else if (body.apiName === 'googlefinance') {
+        // Google Finance is auto-enabled, no validation needed
+        return {
+          valid: true,
+          apiName: 'googlefinance',
+          note: 'Google Finance is auto-enabled and does not require API keys',
+        };
+      } else if (body.apiName === 'binancepublic') {
+        // Binance Public API is auto-enabled, no validation needed
+        return {
+          valid: true,
+          apiName: 'binancepublic',
+          note: 'Binance Public API is auto-enabled and does not require API keys',
+        };
+      } else if (body.apiName === 'coingecko') {
+        // CoinGecko is auto-enabled, no validation needed
+        return {
+          valid: true,
+          apiName: 'coingecko',
+          note: 'CoinGecko is auto-enabled and does not require API keys',
+        };
+      } else {
         return reply.code(400).send({
           valid: false,
-          error: 'CryptoQuant integration is disabled',
-          apiName: 'cryptoquant',
+          error: 'Unknown API name',
         });
-      } else if (body.apiName === 'lunarcrush') {
-        if (!body.apiKey) {
-          return reply.code(400).send({
-            valid: false,
-            error: 'LunarCrush API requires an API key',
-            apiName: 'lunarcrush',
-          });
-        }
-
-        try {
-          const { LunarCrushAdapter } = await import('../services/lunarcrushAdapter');
-          const adapter = new LunarCrushAdapter(body.apiKey);
-          // Test with a simple call
-          await adapter.getCoinData('BTCUSDT');
-          
-          return {
-            valid: true,
-            apiName: 'lunarcrush',
-          };
-        } catch (error: any) {
-          return reply.code(400).send({
-            valid: false,
-            error: error.message || 'LunarCrush API validation failed',
-            apiName: 'lunarcrush',
-          });
-        }
-      } else if (body.apiName === 'coinapi') {
-        if (!body.apiKey || !body.apiType) {
-          return reply.code(400).send({
-            valid: false,
-            error: 'CoinAPI requires both API key and apiType',
-            apiName: 'coinapi',
-          });
-        }
-
-        try {
-          const { CoinAPIAdapter } = await import('../services/coinapiAdapter');
-          const apiTypePlain = (body.apiType.startsWith('coinapi_') ? body.apiType.replace('coinapi_', '') : body.apiType) as 'market' | 'flatfile' | 'exchangerate';
-          const adapter = new CoinAPIAdapter(body.apiKey, apiTypePlain);
-          
-          // Test based on type
-          if (body.apiType === 'market' || body.apiType === 'coinapi_market') {
-            await adapter.getMarketData('BTCUSDT');
-          } else if (body.apiType === 'flatfile' || body.apiType === 'coinapi_flatfile') {
-            await adapter.getHistoricalData('BTCUSDT', 1);
-          } else if (body.apiType === 'exchangerate' || body.apiType === 'coinapi_exchangerate') {
-            await adapter.getExchangeRate('BTC', 'USD');
-          }
-          
-          return {
-            valid: true,
-            apiName: 'coinapi',
-            apiType: body.apiType,
-          };
-        } catch (error: any) {
-          return reply.code(400).send({
-            valid: false,
-            error: error.message || 'CoinAPI validation failed',
-            apiName: 'coinapi',
-            apiType: body.apiType,
-          });
-        }
       }
-
-      return reply.code(400).send({
-        valid: false,
-        error: 'Unknown API name',
-      });
     } catch (error: any) {
       logger.error({ error: error.message, uid: user.uid }, 'API validation error');
       return reply.code(500).send({

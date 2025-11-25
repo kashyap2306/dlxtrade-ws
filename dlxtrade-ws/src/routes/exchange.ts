@@ -144,13 +144,34 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       const data = doc.data()!;
       
       // Return masked configuration
+      let updatedAt: string | undefined;
+      try {
+        if (data.updatedAt) {
+          // Handle Firestore Timestamp
+          if (typeof data.updatedAt.toISOString === 'function') {
+            updatedAt = data.updatedAt.toISOString();
+          } else if (data.updatedAt instanceof Date) {
+            updatedAt = data.updatedAt.toISOString();
+          } else if (typeof data.updatedAt === 'string') {
+            const date = new Date(data.updatedAt);
+            if (!isNaN(date.getTime())) {
+              updatedAt = date.toISOString();
+            }
+          }
+        }
+      } catch (error) {
+        logger.warn({ error: (error as Error).message }, 'Failed to parse updatedAt timestamp');
+        // Fall back to current time if parsing fails
+        updatedAt = new Date().toISOString();
+      }
+
       return {
         exchange: data.exchange,
         testnet: data.testnet ?? true,
         hasApiKey: !!data.apiKeyEncrypted,
         hasSecret: !!data.secretEncrypted,
         hasPassphrase: !!data.passphraseEncrypted,
-        updatedAt: data.updatedAt?.toISOString?.() || new Date(data.updatedAt).toISOString(),
+        updatedAt,
       };
     } catch (err: any) {
       logger.error({ err }, 'Error getting exchange config');

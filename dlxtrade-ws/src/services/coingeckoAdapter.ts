@@ -56,6 +56,21 @@ export class CoinGeckoAdapter {
         });
       }
 
+      // CoinGecko rate-limit safe mode: auto-skip on 429 errors
+      if (error.response?.status === 429) {
+        console.warn(`CoinGecko rate limit hit for ${symbol}, skipping...`);
+        return {
+          price: null,
+          volume24h: null,
+          change24h: null,
+          marketCap: null,
+          rank: null,
+          ath: null,
+          atl: null,
+          rateLimited: true
+        };
+      }
+
       const errorDetails = extractAdapterError('CoinGecko', 'GET', url, error);
       throw new AdapterError(errorDetails);
     }

@@ -347,7 +347,7 @@ export async function ensureUser(
 
     // users/{uid}/integrations: create default disabled docs for RESEARCH APIs only
     // Trading exchanges (binance, bitget, bingx, weex) are stored in exchangeConfig/current, NOT in integrations
-    const integrations = ['lunarcrush', 'cryptoquant', 'coinapi_market', 'coinapi_flatfile', 'coinapi_exchangerate'];
+    const integrations = ['marketaux', 'cryptocompare', 'googlefinance', 'coingecko', 'binancepublic'];
     for (const apiName of integrations) {
       const ref = userDocRef.collection('integrations').doc(apiName);
       const doc = await ref.get();
