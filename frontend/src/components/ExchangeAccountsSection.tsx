@@ -388,71 +388,34 @@ export default function ExchangeAccountsSection() {
           </button>
         </div>
 
-        {/* Exchange List - Similar to Research API Integration */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
-          {(Object.keys(EXCHANGE_INFO) as ExchangeName[]).map((exchange) => {
-            const info = EXCHANGE_INFO[exchange];
-            const isConnected = currentExchange === exchange && savedConfig;
-            const LogoComponent = info.LogoComponent;
-
-            return (
-              <div
-                key={exchange}
-                className={`relative bg-gradient-to-br ${info.gradient} backdrop-blur-xl rounded-2xl border border-purple-500/30 shadow-2xl transition-all duration-300 hover:scale-[1.02] hover:shadow-purple-500/20 ${
-                  isConnected ? 'ring-2 ring-green-400/50' : ''
-                }`}
-              >
-                <div className="p-6">
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex items-start space-x-4 flex-1">
-                      <div className="w-12 h-12 flex items-center justify-center flex-shrink-0">
-                        <LogoComponent className="w-full h-full" />
-                      </div>
-                      <div className="flex-1">
-                        <div className="flex items-center space-x-2 mb-1">
-                          <h3 className="text-xl font-semibold text-white">{info.name}</h3>
-                          {isConnected ? (
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-500/20 text-green-300 border border-green-400/30">
-                              <CheckCircleIcon className="w-3 h-3 mr-1" />
-                              Connected
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-500/20 text-gray-300 border border-gray-400/30">
-                              <XCircleIcon className="w-3 h-3 mr-1" />
-                              Not Connected
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-sm text-gray-300">{info.description}</p>
-                        {isConnected && savedConfig && (
-                          <div className="mt-2 text-xs text-gray-400">
-                            API Key: {getMaskedApiKey(savedConfig.apiKey) || 'N/A'}
-                            {savedConfig.testnet && (
-                              <span className="ml-2 px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-300 border border-yellow-400/30">
-                                Testnet
-                              </span>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => {
-                      setSelectedExchange(exchange);
-                      setModalStep('form');
-                      setShowModal(true);
-                    }}
-                    className="w-full px-4 py-2 text-sm font-medium text-white bg-purple-500/20 border border-purple-500/30 rounded-lg hover:bg-purple-500/30 transition-all"
-                  >
-                    {isConnected ? 'Update' : 'Connect'}
-                  </button>
+        {/* Connected Exchange Display */}
+        {currentExchange && savedConfig && (
+          <div className="bg-slate-800/50 backdrop-blur-xl rounded-2xl border border-purple-500/30 shadow-2xl p-6">
+            <div className="flex items-start space-x-4">
+              <div className="w-12 h-12 flex items-center justify-center flex-shrink-0">
+                {React.createElement(EXCHANGE_INFO[currentExchange].LogoComponent, { className: 'w-full h-full' })}
+              </div>
+              <div className="flex-1">
+                <div className="flex items-center space-x-2 mb-1">
+                  <h3 className="text-xl font-semibold text-white">{EXCHANGE_INFO[currentExchange].name}</h3>
+                  <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-500/20 text-green-300 border border-green-400/30">
+                    <CheckCircleIcon className="w-3 h-3 mr-1" />
+                    Connected
+                  </span>
+                </div>
+                <p className="text-sm text-gray-300 mb-2">{EXCHANGE_INFO[currentExchange].description}</p>
+                <div className="text-xs text-gray-400">
+                  API Key: {getMaskedApiKey(savedConfig.apiKey) || 'N/A'}
+                  {savedConfig.testnet && (
+                    <span className="ml-2 px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-300 border border-yellow-400/30">
+                      Testnet
+                    </span>
+                  )}
                 </div>
               </div>
-            );
-          })}
-        </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Modal */}

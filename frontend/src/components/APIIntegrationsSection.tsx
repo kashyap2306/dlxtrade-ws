@@ -18,6 +18,15 @@ import {
 
 type ApiName = 'cryptocompare' | 'marketaux';
 
+// Auto-enabled providers that don't require user input
+interface AutoEnabledProvider {
+  name: string;
+  displayName: string;
+  description: string;
+  icon: React.ReactNode;
+  gradient: string;
+}
+
 interface ApiConfig {
   name: ApiName;
   displayName: string;
@@ -27,56 +36,47 @@ interface ApiConfig {
   gradient: string;
 }
 
-
 const API_CONFIGS: Record<ApiName, ApiConfig> = {
   cryptocompare: {
     name: 'cryptocompare',
     displayName: 'CryptoCompare API',
     requiresSecret: false,
-    description: 'Cryptocurrency market data and price feeds',
+    description: 'Cryptocurrency market data and price intelligence',
     icon: '📊',
-    gradient: 'from-orange-500/20 via-red-500/20 to-pink-500/20',
+    gradient: 'from-blue-500/20 via-cyan-500/20 to-teal-500/20',
   },
   marketaux: {
     name: 'marketaux',
     displayName: 'MarketAux API',
     requiresSecret: false,
-    description: 'Financial news and market sentiment analysis',
-    icon: '🪙',
+    description: 'Financial market news and sentiment analysis',
+    icon: '📰',
     gradient: 'from-green-500/20 via-emerald-500/20 to-teal-500/20',
   },
 };
 
-interface AutoEnabledApiConfig {
-  name: string;
-  displayName: string;
-  description: string;
-  icon: React.ReactNode;
-  status: 'auto-enabled';
-}
-
-const AUTO_ENABLED_APIS: AutoEnabledApiConfig[] = [
+const AUTO_ENABLED_PROVIDERS: AutoEnabledProvider[] = [
   {
     name: 'googlefinance',
     displayName: 'Google Finance',
-    description: 'Public financial data (auto-enabled)',
+    description: 'Real-time market data and financial information',
     icon: '📈',
-    status: 'auto-enabled'
+    gradient: 'from-red-500/20 via-orange-500/20 to-yellow-500/20',
   },
   {
     name: 'binance_public',
     displayName: 'Binance Public API',
-    description: 'Public market data (auto-enabled)',
-    icon: '📊',
-    status: 'auto-enabled'
+    description: 'Public cryptocurrency trading data',
+    icon: '🪙',
+    gradient: 'from-yellow-500/20 via-orange-500/20 to-red-500/20',
   },
   {
     name: 'coingecko',
     displayName: 'CoinGecko',
-    description: 'Cryptocurrency market data (auto-enabled)',
-    icon: '🪙',
-    status: 'auto-enabled'
-  }
+    description: 'Cryptocurrency prices, market data, and analytics',
+    icon: '💎',
+    gradient: 'from-purple-500/20 via-pink-500/20 to-rose-500/20',
+  },
 ];
 
 interface Integration {
@@ -95,7 +95,7 @@ export default function APIIntegrationsSection() {
   });
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-  const [editingApi, setEditingApi] = useState<{ apiName: ApiName } | null>(null);
+  const [editingApi, setEditingApi] = useState<ApiName | null>(null);
   const [expandedApi, setExpandedApi] = useState<ApiName | null>(null);
   const [formData, setFormData] = useState<{ apiKey: string; secretKey: string }>({
     apiKey: '',
@@ -142,8 +142,9 @@ export default function APIIntegrationsSection() {
     setTimeout(() => setToast(null), 3000);
   };
 
+
   const handleToggle = async (apiName: ApiName) => {
-    const current = integrations[apiName] as Integration;
+    const current = integrations[apiName];
     const newEnabled = !current.enabled;
 
     if (!newEnabled) {
@@ -155,7 +156,7 @@ export default function APIIntegrationsSection() {
         });
         setIntegrations((prev) => ({
           ...prev,
-          [apiName]: { ...(prev[apiName] as Integration), enabled: false },
+          [apiName]: { ...prev[apiName], enabled: false },
         }));
         setExpandedApi(null);
         showToast(`${API_CONFIGS[apiName].displayName} disabled`, 'success');
@@ -168,12 +169,12 @@ export default function APIIntegrationsSection() {
     }
 
     setExpandedApi(apiName);
-    setEditingApi({ apiName });
+    setEditingApi(apiName);
     setFormData({ apiKey: '', secretKey: '' });
   };
 
   const handleEdit = (apiName: ApiName) => {
-    setEditingApi({ apiName });
+    setEditingApi(apiName);
     setExpandedApi(apiName);
     setFormData({ apiKey: '', secretKey: '' });
   };
@@ -256,11 +257,11 @@ export default function APIIntegrationsSection() {
   };
 
   const isEditing = (apiName: ApiName) => {
-    return editingApi?.apiName === apiName;
+    return editingApi === apiName;
   };
 
   const isConnected = (apiName: ApiName) => {
-    const integration = integrations[apiName] as Integration;
+    const integration = integrations[apiName];
     return integration.enabled && integration.apiKey;
   };
 
@@ -268,7 +269,10 @@ export default function APIIntegrationsSection() {
     <>
       <div className="border-t border-purple-500/20 pt-6 mt-6">
         <h3 className="text-lg font-semibold text-white mb-4">Research API Integration</h3>
-        <p className="text-sm text-gray-400 mb-6">Connect and manage your research API integrations. All keys are encrypted and stored securely.</p>
+        <p className="text-sm text-gray-400 mb-6">
+          Connect your research API credentials. Only CryptoCompare and MarketAux require user input.
+          Google Finance, Binance Public API, and CoinGecko are automatically enabled for all users.
+        </p>
 
         {loading && (
           <div className="flex items-center justify-center py-12">
@@ -276,225 +280,234 @@ export default function APIIntegrationsSection() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
-          {(['cryptocompare', 'marketaux'] as ApiName[]).map((apiName) => {
-            const config = API_CONFIGS[apiName];
-            const integration = integrations[apiName] as Integration;
-            const isExpanded = expandedApi === apiName;
-            const connected = isConnected(apiName);
+        {/* Required APIs Section */}
+        <div className="mb-8">
+          <h4 className="text-md font-semibold text-white mb-4">Required API Credentials</h4>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+            {(['cryptocompare', 'marketaux'] as ApiName[]).map((apiName) => {
+              const config = API_CONFIGS[apiName];
+              const integration = integrations[apiName];
+              const isExpanded = expandedApi === apiName;
+              const connected = isConnected(apiName);
 
-            return (
-              <div
-                key={apiName}
-                className={`relative bg-gradient-to-br ${config.gradient} backdrop-blur-xl rounded-2xl border border-purple-500/30 shadow-2xl transition-all duration-300 hover:scale-[1.02] hover:shadow-purple-500/20 ${
-                  connected ? 'ring-2 ring-green-400/50' : ''
-                }`}
-              >
-                <div className="p-6">
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex items-start space-x-4 flex-1">
-                      <div className="text-4xl">{config.icon}</div>
-                      <div className="flex-1">
-                        <div className="flex items-center space-x-2 mb-1">
-                          <h3 className="text-xl font-semibold text-white">{config.displayName}</h3>
-                          {connected ? (
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-500/20 text-green-300 border border-green-400/30">
-                              <CheckCircleIcon className="w-3 h-3 mr-1" />
-                              Connected
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-500/20 text-gray-300 border border-gray-400/30">
-                              <XCircleIcon className="w-3 h-3 mr-1" />
-                              Not Connected
-                            </span>
-                          )}
+              return (
+                <div
+                  key={apiName}
+                  className={`relative bg-gradient-to-br ${config.gradient} backdrop-blur-xl rounded-2xl border border-purple-500/30 shadow-2xl transition-all duration-300 hover:scale-[1.02] hover:shadow-purple-500/20 ${
+                    connected ? 'ring-2 ring-green-400/50' : ''
+                  }`}
+                >
+                  <div className="p-6">
+                    <div className="flex items-start justify-between mb-4">
+                      <div className="flex items-start space-x-4 flex-1">
+                        <div className="text-4xl">{config.icon}</div>
+                        <div className="flex-1">
+                          <div className="flex items-center space-x-2 mb-1">
+                            <h3 className="text-xl font-semibold text-white">{config.displayName}</h3>
+                            {connected ? (
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-500/20 text-green-300 border border-green-400/30">
+                                <CheckCircleIcon className="w-3 h-3 mr-1" />
+                                Connected
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-500/20 text-gray-300 border border-gray-400/30">
+                                <XCircleIcon className="w-3 h-3 mr-1" />
+                                Not Connected
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-sm text-gray-300">{config.description}</p>
                         </div>
-                        <p className="text-sm text-gray-300">{config.description}</p>
                       </div>
-                    </div>
-                    <button
-                      onClick={() => toggleExpand(apiName)}
-                      className="ml-4 p-2 text-gray-400 hover:text-white transition-colors"
-                    >
-                      {isExpanded ? (
-                        <ChevronUpIcon className="w-5 h-5" />
-                      ) : (
-                        <ChevronDownIcon className="w-5 h-5" />
-                      )}
-                    </button>
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <label className="flex items-center cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={integration.enabled}
-                        onChange={() => handleToggle(apiName)}
-                        disabled={loading}
-                        className="sr-only"
-                      />
-                      <div
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                          integration.enabled ? 'bg-purple-500' : 'bg-gray-600'
-                        }`}
+                      <button
+                        onClick={() => toggleExpand(apiName)}
+                        className="ml-4 p-2 text-gray-400 hover:text-white transition-colors"
                       >
-                        <span
-                          className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                            integration.enabled ? 'translate-x-6' : 'translate-x-1'
-                          }`}
-                        />
-                      </div>
-                      <span className="ml-3 text-sm font-medium text-gray-300">
-                        {integration.enabled ? 'Enabled' : 'Disabled'}
-                      </span>
-                    </label>
-                  </div>
+                        {isExpanded ? (
+                          <ChevronUpIcon className="w-5 h-5" />
+                        ) : (
+                          <ChevronDownIcon className="w-5 h-5" />
+                        )}
+                      </button>
+                    </div>
 
-                  {isExpanded && (
-                    <div className="mt-6 pt-6 border-t border-purple-500/30 animate-fade-in">
-                      {!isEditing(apiName) ? (
-                        <div className="space-y-4">
-                          <div className="space-y-3">
-                            <div>
-                              <label className="block text-xs font-medium text-gray-400 mb-1.5">API Key</label>
-                              <div className="flex items-center space-x-2 p-3 bg-slate-800/50 backdrop-blur-sm rounded-lg border border-purple-500/20">
-                                <KeyIcon className="w-4 h-4 text-purple-400" />
-                                <span className="text-sm font-mono text-gray-300 flex-1">
-                                  {integration.apiKey || 'Not configured'}
-                                </span>
-                              </div>
-                            </div>
-                            {config.requiresSecret && (
+                    <div className="flex items-center justify-between">
+                      <label className="flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={integration.enabled}
+                          onChange={() => handleToggle(apiName)}
+                          disabled={loading}
+                          className="sr-only"
+                        />
+                        <div
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                            integration.enabled ? 'bg-purple-500' : 'bg-gray-600'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              integration.enabled ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </div>
+                        <span className="ml-3 text-sm font-medium text-gray-300">
+                          {integration.enabled ? 'Enabled' : 'Disabled'}
+                        </span>
+                      </label>
+                    </div>
+
+                    {isExpanded && (
+                      <div className="mt-6 pt-6 border-t border-purple-500/30 animate-fade-in">
+                        {!isEditing(apiName) ? (
+                          <div className="space-y-4">
+                            <div className="space-y-3">
                               <div>
-                                <label className="block text-xs font-medium text-gray-400 mb-1.5">Secret Key</label>
+                                <label className="block text-xs font-medium text-gray-400 mb-1.5">API Key</label>
                                 <div className="flex items-center space-x-2 p-3 bg-slate-800/50 backdrop-blur-sm rounded-lg border border-purple-500/20">
-                                  <LockClosedIcon className="w-4 h-4 text-purple-400" />
+                                  <KeyIcon className="w-4 h-4 text-purple-400" />
                                   <span className="text-sm font-mono text-gray-300 flex-1">
-                                    {integration.secretKey || 'Not configured'}
+                                    {integration.apiKey || 'Not configured'}
                                   </span>
                                 </div>
                               </div>
-                            )}
-                            {integration.updatedAt && (
-                              <div>
-                                <label className="block text-xs font-medium text-gray-400 mb-1.5">Last Updated</label>
-                                <div className="text-xs text-gray-400">
-                                  {new Date(integration.updatedAt).toLocaleString()}
+                              {config.requiresSecret && (
+                                <div>
+                                  <label className="block text-xs font-medium text-gray-400 mb-1.5">Secret Key</label>
+                                  <div className="flex items-center space-x-2 p-3 bg-slate-800/50 backdrop-blur-sm rounded-lg border border-purple-500/20">
+                                    <LockClosedIcon className="w-4 h-4 text-purple-400" />
+                                    <span className="text-sm font-mono text-gray-300 flex-1">
+                                      {integration.secretKey || 'Not configured'}
+                                    </span>
+                                  </div>
                                 </div>
-                              </div>
-                            )}
-                          </div>
-                          <div className="flex flex-col sm:flex-row gap-2 pt-2">
-                            <button
-                              onClick={() => handleEdit(apiName)}
-                              className="btn-mobile-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
-                            >
-                              <PencilIcon className="w-4 h-4 mr-2" />
-                              Edit
-                            </button>
-                            <button
-                              onClick={() => handleRotate(apiName)}
-                              className="btn-mobile-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
-                            >
-                              <ArrowPathIcon className="w-4 h-4 mr-2" />
-                              Rotate
-                            </button>
-                            <button
-                              onClick={() => handleDelete(apiName)}
-                              className="btn-mobile-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-red-300 bg-red-900/30 backdrop-blur-sm border border-red-500/30 rounded-lg hover:bg-red-900/50 transition-all"
-                            >
-                              <TrashIcon className="w-4 h-4 mr-2" />
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="space-y-4">
-                          <div className="space-y-3">
-                            <div>
-                              <label className="block text-xs font-medium text-gray-400 mb-1.5">
-                                API Key <span className="text-red-400">*</span>
-                              </label>
-                              <input
-                                type="text"
-                                className="w-full px-3 py-2.5 text-sm bg-slate-800/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
-                                value={formData.apiKey}
-                                onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
-                                placeholder="Enter your API key"
-                              />
+                              )}
+                              {integration.updatedAt && (
+                                <div>
+                                  <label className="block text-xs font-medium text-gray-400 mb-1.5">Last Updated</label>
+                                  <div className="text-xs text-gray-400">
+                                    {new Date(integration.updatedAt).toLocaleString()}
+                                  </div>
+                                </div>
+                              )}
                             </div>
-                            {config.requiresSecret && (
+                            <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                              <button
+                                onClick={() => handleEdit(apiName)}
+                                className="btn-mobile-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
+                              >
+                                <PencilIcon className="w-4 h-4 mr-2" />
+                                Edit
+                              </button>
+                              <button
+                                onClick={() => handleRotate(apiName)}
+                                className="btn-mobile-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
+                              >
+                                <ArrowPathIcon className="w-4 h-4 mr-2" />
+                                Rotate
+                              </button>
+                              <button
+                                onClick={() => handleDelete(apiName)}
+                                className="btn-mobile-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-red-300 bg-red-900/30 backdrop-blur-sm border border-red-500/30 rounded-lg hover:bg-red-900/50 transition-all"
+                              >
+                                <TrashIcon className="w-4 h-4 mr-2" />
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="space-y-4">
+                            <div className="space-y-3">
                               <div>
                                 <label className="block text-xs font-medium text-gray-400 mb-1.5">
-                                  Secret Key <span className="text-red-400">*</span>
+                                  API Key <span className="text-red-400">*</span>
                                 </label>
                                 <input
-                                  type="password"
+                                  type="text"
                                   className="w-full px-3 py-2.5 text-sm bg-slate-800/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
-                                  value={formData.secretKey}
-                                  onChange={(e) => setFormData({ ...formData, secretKey: e.target.value })}
-                                  placeholder="Enter your secret key"
+                                  value={formData.apiKey}
+                                  onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
+                                  placeholder="Enter your API key"
                                 />
                               </div>
-                            )}
+                              {config.requiresSecret && (
+                                <div>
+                                  <label className="block text-xs font-medium text-gray-400 mb-1.5">
+                                    Secret Key <span className="text-red-400">*</span>
+                                  </label>
+                                  <input
+                                    type="password"
+                                    className="w-full px-3 py-2.5 text-sm bg-slate-800/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
+                                    value={formData.secretKey}
+                                    onChange={(e) => setFormData({ ...formData, secretKey: e.target.value })}
+                                    placeholder="Enter your secret key"
+                                  />
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                              <button
+                                onClick={() => {
+                                  setEditingApi(null);
+                                  setFormData({ apiKey: '', secretKey: '' });
+                                }}
+                                className="btn-mobile-full px-4 py-2.5 text-sm font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
+                                disabled={loading}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                onClick={() => handleSave(apiName)}
+                                className="btn-mobile-full px-4 py-2.5 text-sm font-medium text-white bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/50"
+                                disabled={loading}
+                              >
+                                {loading ? 'Connecting...' : 'Connect API'}
+                              </button>
+                            </div>
                           </div>
-                          <div className="flex flex-col sm:flex-row gap-2 pt-2">
-                            <button
-                              onClick={() => {
-                                setEditingApi(null);
-                                setFormData({ apiKey: '', secretKey: '' });
-                              }}
-                              className="btn-mobile-full px-4 py-2.5 text-sm font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
-                              disabled={loading}
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              onClick={() => handleSave(apiName)}
-                              className="btn-mobile-full px-4 py-2.5 text-sm font-medium text-white bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/50"
-                              disabled={loading}
-                            >
-                              {loading ? 'Connecting...' : 'Connect API'}
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })
+              );
+            })}
+          </div>
+        </div>
 
-          {/* TODO: Re-enable coinapi section after fixing missing types and functions */}
-
-          {/* Auto-Enabled APIs Section */}
-          {AUTO_ENABLED_APIS.map((api) =>
-            <div
-              key={api.name}
-              className="relative bg-gradient-to-br from-slate-800/40 to-slate-900/40 backdrop-blur-xl rounded-2xl border border-purple-500/30 shadow-2xl transition-all duration-300"
-            >
-              <div className="p-6">
-                <div className="flex items-start justify-between mb-4">
-                  <div className="flex items-start space-x-4 flex-1">
-                    <div className="text-4xl">{api.icon}</div>
+        {/* Auto-Enabled Providers Section */}
+        <div>
+          <h4 className="text-md font-semibold text-white mb-4">Auto-Enabled Providers</h4>
+          <p className="text-sm text-gray-400 mb-4">
+            These providers are automatically enabled for all users and don't require configuration.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
+            {AUTO_ENABLED_PROVIDERS.map((provider) => (
+              <div
+                key={provider.name}
+                className={`relative bg-gradient-to-br ${provider.gradient} backdrop-blur-xl rounded-2xl border border-purple-500/30 shadow-2xl transition-all duration-300 hover:scale-[1.02] hover:shadow-purple-500/20 ring-2 ring-green-400/50`}
+              >
+                <div className="p-6">
+                  <div className="flex items-start space-x-4">
+                    <div className="text-4xl">{provider.icon}</div>
                     <div className="flex-1">
                       <div className="flex items-center space-x-2 mb-1">
-                        <h3 className="text-xl font-semibold text-white">{api.displayName}</h3>
-                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-500/20 text-blue-300 border border-blue-400/30">
+                        <h3 className="text-xl font-semibold text-white">{provider.displayName}</h3>
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-500/20 text-green-300 border border-green-400/30">
+                          <CheckCircleIcon className="w-3 h-3 mr-1" />
                           Auto-Enabled
                         </span>
                       </div>
-                      <p className="text-sm text-gray-300">{api.description}</p>
+                      <p className="text-sm text-gray-300">{provider.description}</p>
                     </div>
                   </div>
                 </div>
               </div>
-            </div>
-          )}
+            ))}
+          </div>
         </div>
-        {toast && <Toast message={toast.message} type={toast.type} />}
       </div>
+      {toast && <Toast message={toast.message} type={toast.type} />}
     </>
   );
 }

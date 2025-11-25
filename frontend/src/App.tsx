@@ -36,48 +36,38 @@ import { useAuth } from './hooks/useAuth';
 import { useEffect } from 'react';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
-  const { authState } = useAuth();
+  const { user, loading } = useAuth();
 
-  if (authState === 'loading') {
+  if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#0a0f1c] via-[#101726] to-[#0a0f1c]">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-400 mx-auto mb-4"></div>
-          <div className="text-lg text-gray-300">Loading...</div>
-        </div>
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-lg">Loading...</div>
       </div>
     );
   }
 
-  if (authState === 'loggedOut') {
-    return <Navigate to="/login" replace />;
-  }
-
-  // authState === 'loggedIn'
-  return (
+  return user ? (
     <>
       <TopNavigation />
       {children}
     </>
-  );
+  ) : <Navigate to="/login" />;
 }
 
 // AdminRoute moved to components/AdminRoute with simplified logic
 
 function App() {
-  const { authState } = useAuth();
+  const { user } = useAuth();
 
   useEffect(() => {
-    if (authState === 'loggedIn') {
+    if (user) {
       wsService.connect();
-    } else {
-      wsService.disconnect();
     }
 
     return () => {
       wsService.disconnect();
     };
-  }, [authState]);
+  }, [user]);
 
   return (
     <ErrorProvider>

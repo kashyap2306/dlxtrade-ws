@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, GithubAuthProvider, sendPasswordResetEmail } from 'firebase/auth';
+import { signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, GithubAuthProvider, sendPasswordResetEmail, onAuthStateChanged } from 'firebase/auth';
 import { auth } from '../config/firebase';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
-import { useAuth } from '../hooks/useAuth';
+import { wsService } from '../services/ws';
 import Toast from '../components/Toast';
 import { useError } from '../contexts/ErrorContext';
 import { useNotificationContext } from '../contexts/NotificationContext';
@@ -16,17 +16,21 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const navigate = useNavigate();
-  const { authState } = useAuth();
   const { showError } = useError();
   // NotificationContext is available since NotificationProvider wraps all routes
   const { addNotification } = useNotificationContext();
 
-  // Redirect if already logged in (but not during loading)
+  // Redirect if already logged in
   useEffect(() => {
-    if (authState === 'loggedIn') {
-      navigate('/dashboard', { replace: true });
-    }
-  }, [authState, navigate]);
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      const token = localStorage.getItem('firebaseToken');
+      if (user || token) {
+        // User is already logged in, redirect to dashboard
+        navigate('/dashboard', { replace: true });
+      }
+    });
+    return () => unsubscribe();
+  }, [navigate]);
 
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
@@ -35,13 +39,17 @@ export default function Login() {
 
   const handleAfterSignIn = async (userCredential: any) => {
     try {
-      // Get fresh token (useAuth hook will handle storage)
       const token = await userCredential.user.getIdToken();
-
+      localStorage.setItem('firebaseToken', token);
+      localStorage.setItem('firebaseUser', JSON.stringify({
+        uid: userCredential.user.uid,
+        email: userCredential.user.email,
+      }));
+      
       // Call backend afterSignIn endpoint
-      const API_BASE = import.meta.env.VITE_API_URL;
+      const API_BASE = import.meta.env.VITE_API_BASE_URL;
       if (!API_BASE) {
-        throw new Error('VITE_API_URL environment variable is not set');
+        throw new Error('VITE_API_BASE_URL environment variable is not set');
       }
       const baseURL = API_BASE.endsWith('/api') ? API_BASE : `${API_BASE}/api`;
       const authResponse = await fetch(`${baseURL}/auth/afterSignIn`, {
@@ -53,34 +61,36 @@ export default function Login() {
           idToken: token,
         }),
       });
-
+      
       if (!authResponse.ok) {
         const errorData = await authResponse.json();
         suppressConsoleError(errorData, 'afterSignIn');
         throw new Error(errorData.error || 'Failed to complete sign-in');
       }
-
+      
+      const authData = await authResponse.json();
+      
       // Check if user needs onboarding
       const userDoc = await getDoc(doc(db, 'users', userCredential.user.uid));
       const userData = userDoc.data();
       const needsOnboarding = userData?.onboardingRequired === true;
-
-      // Add login success notification
+      
+      wsService.connect();
+      
+      // Add login success notification with a flag to prevent showing on refresh
+      // Store a flag in sessionStorage to mark that we just logged in
       sessionStorage.setItem('justLoggedIn', 'true');
       await addNotification({
         title: 'Login Success',
         message: `Welcome back! Successfully logged in as ${userCredential.user.email}`,
         type: 'success',
       });
+      
+      // Determine target path
+      const targetPath = needsOnboarding ? '/onboarding' : '/dashboard';
 
-      showToast('Login successful!', 'success');
-
-      // Navigate based on onboarding status (auth state will update automatically)
-      if (needsOnboarding) {
-        navigate('/onboarding', { replace: true });
-      } else {
-        navigate('/dashboard', { replace: true });
-      }
+      // Use React Router navigation to prevent blinking/page reload
+      navigate(targetPath, { replace: true });
     } catch (err: any) {
       suppressConsoleError(err, 'completeSignIn');
       const { message, type } = getFirebaseErrorMessage(err);

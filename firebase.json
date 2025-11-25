@@ -3,26 +3,9 @@
     "source": "backend",
     "runtime": "nodejs20"
   },
-  "hosting": {
-    "public": "frontend/dist",
-    "ignore": [
-      "firebase.json",
-      "**/.*",
-      "**/node_modules/**"
-    ],
-    "rewrites": [
-      {
-        "source": "**",
-        "destination": "/index.html"
-      }
-    ]
-  },
   "emulators": {
     "functions": {
       "port": 5001
-    },
-    "hosting": {
-      "port": 5000
     },
     "firestore": {
       "port": 8080

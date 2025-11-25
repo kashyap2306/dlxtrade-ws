@@ -243,7 +243,7 @@ export default function AutoTrade() {
       <Sidebar onLogout={handleLogout} />
 
       <main className="min-h-screen relative z-10">
-        <div className="max-w-7xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8 pt-16">
+        <div className="max-w-7xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8">
           {/* Header */}
           <section className="mb-6 sm:mb-8">
             <div className="flex items-center justify-between flex-wrap gap-4">

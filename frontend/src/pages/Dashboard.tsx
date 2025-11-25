@@ -123,7 +123,7 @@ export default function Dashboard() {
       <Sidebar />
 
       <main className="min-h-screen">
-        <div className="max-w-7xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8 pt-16">
+        <div className="max-w-7xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8">
           {/* Header */}
           <section className="mb-6 sm:mb-8">
             <div className="space-y-2">

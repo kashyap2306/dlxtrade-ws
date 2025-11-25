@@ -18,9 +18,9 @@ export class BinanceAdapter implements ExchangeConnector {
   private userStreamWs: WebSocket | null = null;
   private listenKey: string | null = null;
 
-  constructor(apiKey: string, apiSecret: string, testnet: boolean = true) {
-    this.apiKey = apiKey;
-    this.apiSecret = apiSecret;
+  constructor(apiKey?: string, apiSecret?: string, testnet: boolean = true) {
+    this.apiKey = apiKey || '';
+    this.apiSecret = apiSecret || '';
     this.baseUrl = testnet
       ? 'https://testnet.binance.vision'
       : 'https://api.binance.com';
@@ -31,9 +31,9 @@ export class BinanceAdapter implements ExchangeConnector {
     this.httpClient = axios.create({
       baseURL: this.baseUrl,
       timeout: 10000,
-      headers: {
+      headers: this.apiKey ? {
         'X-MBX-APIKEY': this.apiKey,
-      },
+      } : {},
     });
   }
 
@@ -379,6 +379,33 @@ export class BinanceAdapter implements ExchangeConnector {
     this.tradesWs?.close();
     this.userStreamWs?.close();
     this.closeUserDataStream();
+  }
+
+  /**
+   * Get public market data (no authentication required)
+   */
+  async getPublicMarketData(symbol: string): Promise<any> {
+    try {
+      const response = await axios.get('https://api.binance.com/api/v3/ticker/24hr', {
+        params: { symbol },
+        timeout: 10000
+      });
+
+      if (response.status !== 200) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      return {
+        price: parseFloat(response.data.lastPrice),
+        volume24h: parseFloat(response.data.volume),
+        change24h: parseFloat(response.data.priceChangePercent),
+        high24h: parseFloat(response.data.highPrice),
+        low24h: parseFloat(response.data.lowPrice),
+        count: parseInt(response.data.count)
+      };
+    } catch (error: any) {
+      throw new Error(`Binance public API error: ${error.message}`);
+    }
   }
 }
 

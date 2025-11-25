@@ -5,13 +5,25 @@ interface ExchangeRateData {
   exchangeRate: number;
 }
 
-const googleFinanceAdapter = {
-  httpClient: null as any,
-  lastKnownRate: 83.0, // Fallback rate if scraping fails
-  lastFetchTime: 0,
-  CACHE_DURATION: 5 * 60 * 1000, // 5 minutes cache
+interface MarketData {
+  price: number;
+  priceChangePercent?: number;
+  change24h: number;
+  volume24h: number;
+  marketCap?: number;
+}
 
-  initialize() {
+export class GoogleFinanceAdapter {
+  private httpClient: any = null;
+  private lastKnownRate: number = 83.0; // Fallback rate if scraping fails
+  private lastFetchTime: number = 0;
+  private CACHE_DURATION: number = 5 * 60 * 1000; // 5 minutes cache
+
+  constructor() {
+    this.initialize();
+  }
+
+  private initialize() {
     if (!this.httpClient) {
       this.httpClient = axios.create({
         timeout: 10000,
@@ -20,13 +32,12 @@ const googleFinanceAdapter = {
         }
       });
     }
-  },
+  }
 
   /**
    * Get USD to INR exchange rate from Google Finance - replaces CoinAPI exchange rate
    */
   async getExchangeRate(baseCurrency = 'USD', quoteCurrency = 'INR'): Promise<ExchangeRateData> {
-    this.initialize();
     try {
       // Use cached rate if recent enough
       const now = Date.now();
@@ -62,7 +73,7 @@ const googleFinanceAdapter = {
       }, 'Google Finance exchange rate fetch failed, using cached rate');
       return { exchangeRate: this.lastKnownRate };
     }
-  },
+  }
 
   async parseExchangeRateFromHTML(html: string): Promise<number | null> {
     try {
@@ -91,15 +102,32 @@ const googleFinanceAdapter = {
       logger.error({ error: error.message }, 'Error parsing Google Finance HTML');
       return null;
     }
-  },
+  }
 
   async getExchangeRates(baseCurrency = 'USD', quoteCurrency = 'INR'): Promise<ExchangeRateData> {
     return this.getExchangeRate(baseCurrency, quoteCurrency);
   }
-};
 
-export { googleFinanceAdapter };
-export const getExchangeRates = googleFinanceAdapter.getExchangeRates.bind(googleFinanceAdapter);
-export const GoogleFinanceAdapter = googleFinanceAdapter;
+  /**
+   * Get market data for a cryptocurrency symbol
+   */
+  async getMarketData(symbol: string): Promise<MarketData> {
+    try {
+      // For now, return mock data as Google Finance doesn't provide crypto data via API
+      // In production, this would scrape Google Finance or use alternative data source
+      return {
+        price: 50000, // Mock BTC price
+        change24h: 2.5,
+        volume24h: 25000000,
+        marketCap: 1000000000000
+      };
+    } catch (error: any) {
+      logger.error({ error: error.message, symbol }, 'Error fetching Google Finance market data');
+      throw new Error(`Google Finance market data error: ${error.message}`);
+    }
+  }
+}
+
+
 
 

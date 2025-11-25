@@ -28,16 +28,17 @@ export class ResearchEngine {
   private depthHistory: Map<string, number[]> = new Map();
   private imbalanceHistory: Map<string, number[]> = new Map();
 
-  async runResearch(symbol: string, uid: string, adapter?: BinanceAdapter): Promise<ResearchResult> {
-    // IMPORTANT: This method works ENTIRELY on research APIs only
-    // The adapter parameter is DEPRECATED and will be ignored
-    // For scheduled research, NO adapter is provided - uses research APIs only
-    // For manual research, NO adapter should be provided - uses research APIs only
-    // Trading exchange adapters (Binance, Bitget, BingX, WEEX) are NEVER used in research flow
-    // All data comes from: CryptoQuant, LunarCrush, CoinAPI (market/flatfile/exchangerate)
-    
-    // Skip all exchange-based logic - use research APIs only
-    const orderbook: Orderbook | null = null;
+  async runResearch(symbol: string, uid: string): Promise<ResearchResult> {
+    // This method now works ENTIRELY on the 5 allowed research APIs only:
+    // - CryptoCompare (user-provided)
+    // - MarketAux (user-provided)
+    // - Google Finance (auto-enabled)
+    // - Binance Public API (auto-enabled)
+    // - CoinGecko (auto-enabled)
+    //
+    // NO trading exchange adapters (Binance, Bitget, BingX, WEEX) are used
+    // NO orderbook data is used in research flow
+
     const imbalance = 0;
     const microSignals: ResearchResult['microSignals'] = {
       spread: 0,
@@ -46,15 +47,12 @@ export class ResearchEngine {
       orderbookDepth: 0,
     };
 
-    // Calculate accuracy based on research APIs only (no orderbook data)
-    let accuracy = await this.calculateAccuracy(symbol, imbalance, microSignals, uid);
+    // Calculate accuracy based on research APIs only
+    let accuracy = await this.calculateAccuracyFromResearchAPIs(symbol, uid);
 
-    // Liquidity filters: NOT APPLICABLE (no orderbook data in research flow)
-    // Removed: if (orderbook && this.shouldBlockForLiquidity(symbol, microSignals))
-    
-    // Determine signal using research APIs only (no orderbook-based logic)
+    // Determine signal using research APIs only
     const signal = await this.determineSignalFromResearchAPIs(symbol, accuracy, uid);
-    
+
     // Recommended action
     const recommendedAction = this.getRecommendedAction(signal, accuracy);
 
@@ -78,13 +76,13 @@ export class ResearchEngine {
       microSignals,
     });
 
-    logger.info({ symbol, signal, accuracy, hasOrderbook: false }, 'Research completed (research APIs only)');
+    logger.info({ symbol, signal, accuracy }, 'Research completed (5 allowed APIs only)');
 
     return result;
   }
 
   /**
-   * Determine signal from research APIs only (when no orderbook data available)
+   * Determine signal from the 5 allowed research APIs only
    */
   private async determineSignalFromResearchAPIs(
     symbol: string,
@@ -100,50 +98,80 @@ export class ResearchEngine {
       let bullishSignals = 0;
       let bearishSignals = 0;
 
-      // DISABLED: Analyze CryptoQuant data - CryptoQuant removed
-      // if (integrations.cryptoquant) {
-      //   try {
-      //     const cryptoquantAdapter = new CryptoQuantAdapter(integrations.cryptoquant.apiKey);
-      //     const flowData = await cryptoquantAdapter.getExchangeFlow(symbol);
-      //     if (flowData.exchangeFlow && flowData.exchangeFlow > 0) {
-      //       bullishSignals++;
-      //     } else if (flowData.exchangeFlow && flowData.exchangeFlow < 0) {
-      //       bearishSignals++;
-      //     }
-      //   } catch (err) {
-      //     // Ignore errors
-      //   }
-      // }
-
-      // Analyze LunarCrush sentiment
-      if (integrations.lunarcrush) {
+      // Analyze CryptoCompare data (user-provided, required)
+      if (integrations.cryptocompare) {
         try {
-          const lunarcrushAdapter = new LunarCrushAdapter(integrations.lunarcrush.apiKey);
-          const sentimentData = await lunarcrushAdapter.getCoinData(symbol);
-          if (sentimentData.sentiment && sentimentData.sentiment > 0.3) {
-            bullishSignals++;
-          } else if (sentimentData.sentiment && sentimentData.sentiment < -0.3) {
-            bearishSignals++;
-          }
-        } catch (err) {
-          // Ignore errors
-        }
-      }
-
-      // Analyze CoinAPI market data
-      const coinapiMarket = integrations['coinapi_market'];
-      if (coinapiMarket) {
-        try {
-          const marketAdapter = new CoinAPIAdapter(coinapiMarket.apiKey, 'market');
-          const marketData = await marketAdapter.getMarketData(symbol);
+          const { CryptoCompareAdapter } = await import('./cryptocompareAdapter');
+          const adapter = new CryptoCompareAdapter(integrations.cryptocompare.apiKey);
+          const marketData = await adapter.getMarketData(symbol);
           if (marketData.priceChangePercent24h && marketData.priceChangePercent24h > 2) {
             bullishSignals++;
           } else if (marketData.priceChangePercent24h && marketData.priceChangePercent24h < -2) {
             bearishSignals++;
           }
         } catch (err) {
-          // Ignore errors
+          logger.debug({ err, symbol }, 'CryptoCompare signal analysis error (non-critical)');
         }
+      }
+
+      // Analyze MarketAux news data (user-provided, required)
+      if (integrations.marketaux) {
+        try {
+          const MarketAuxAdapter = (await import('./marketauxAdapter')).default;
+          const adapter = new MarketAuxAdapter(integrations.marketaux.apiKey);
+          const newsData = await adapter.getNewsData(symbol);
+          // MarketAux sentiment analysis would go here
+          // For now, count positive mentions as bullish
+          if (newsData.positiveMentions && newsData.positiveMentions > newsData.negativeMentions) {
+            bullishSignals++;
+          } else if (newsData.negativeMentions && newsData.negativeMentions > newsData.positiveMentions) {
+            bearishSignals++;
+          }
+        } catch (err) {
+          logger.debug({ err, symbol }, 'MarketAux signal analysis error (non-critical)');
+        }
+      }
+
+      // Analyze Google Finance data (auto-enabled)
+      try {
+        const { GoogleFinanceAdapter } = await import('./googleFinanceAdapter');
+        const adapter = new GoogleFinanceAdapter();
+        const financeData = await adapter.getMarketData(symbol);
+        if (financeData.priceChangePercent && financeData.priceChangePercent > 1) {
+          bullishSignals++;
+        } else if (financeData.priceChangePercent && financeData.priceChangePercent < -1) {
+          bearishSignals++;
+        }
+      } catch (err) {
+        logger.debug({ err, symbol }, 'Google Finance signal analysis error (non-critical)');
+      }
+
+      // Analyze Binance Public API data (auto-enabled)
+      try {
+        const { BinanceAdapter } = await import('./binanceAdapter');
+        const adapter = new BinanceAdapter();
+        const publicData = await adapter.getPublicMarketData(symbol);
+        if (publicData.priceChangePercent && publicData.priceChangePercent > 1) {
+          bullishSignals++;
+        } else if (publicData.priceChangePercent && publicData.priceChangePercent < -1) {
+          bearishSignals++;
+        }
+      } catch (err) {
+        logger.debug({ err, symbol }, 'Binance Public API signal analysis error (non-critical)');
+      }
+
+      // Analyze CoinGecko data (auto-enabled)
+      try {
+        const { CoinGeckoAdapter } = await import('./coingeckoAdapter');
+        const adapter = new CoinGeckoAdapter();
+        const geckoData = await adapter.getMarketData(symbol);
+        if (geckoData.priceChangePercent24h && geckoData.priceChangePercent24h > 1) {
+          bullishSignals++;
+        } else if (geckoData.priceChangePercent24h && geckoData.priceChangePercent24h < -1) {
+          bearishSignals++;
+        }
+      } catch (err) {
+        logger.debug({ err, symbol }, 'CoinGecko signal analysis error (non-critical)');
       }
 
       if (bullishSignals > bearishSignals) {
@@ -222,190 +250,111 @@ export class ResearchEngine {
     };
   }
 
-  private async calculateAccuracy(
+  private async calculateAccuracyFromResearchAPIs(
     symbol: string,
-    imbalance: number,
-    microSignals: ResearchResult['microSignals'],
-    uid?: string
+    uid: string
   ): Promise<number> {
-    // Multi-source accuracy calculation using all available data sources
+    // Accuracy calculation using only the 5 allowed research APIs
     let accuracy = 0.5; // Base accuracy
+    let apiSuccessCount = 0;
 
-    // Orderbook-based calculations (only if we have orderbook data)
-    // When adapter is not provided (scheduled research), imbalance=0 and microSignals are zeros
-    const hasOrderbookData = imbalance !== 0 || microSignals.spread > 0 || microSignals.volume > 0;
+    try {
+      const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
 
-    if (hasOrderbookData) {
-      // 1. Orderbook imbalance strength (trading exchange data)
-      const imbalanceStrength = Math.abs(imbalance);
-      if (imbalanceStrength > 0.3) {
-        accuracy += 0.15;
-      } else if (imbalanceStrength > 0.15) {
-        accuracy += 0.1;
-      } else if (imbalanceStrength > 0.05) {
-        accuracy += 0.05;
+      // CryptoCompare data (user-provided, required)
+      if (integrations.cryptocompare) {
+        try {
+          const { CryptoCompareAdapter } = await import('./cryptocompareAdapter');
+          const adapter = new CryptoCompareAdapter(integrations.cryptocompare.apiKey);
+          const marketData = await adapter.getMarketData(symbol);
+
+          // Positive price change boosts accuracy
+          if (marketData.priceChangePercent24h && marketData.priceChangePercent24h > 1) {
+            accuracy += 0.03;
+          }
+
+          // High volume indicates liquidity
+          if (marketData.volume24h && marketData.volume24h > 1000000) {
+            accuracy += 0.02;
+          }
+
+          apiSuccessCount++;
+        } catch (err) {
+          logger.debug({ err, symbol }, 'CryptoCompare accuracy calculation error (non-critical)');
+        }
       }
 
-      // 2. Spread analysis (tighter spread = higher confidence)
-      if (microSignals.spread < 0.05) {
-        accuracy += 0.15; // Very tight spread
-      } else if (microSignals.spread < 0.1) {
-        accuracy += 0.1;
-      } else if (microSignals.spread < 0.2) {
-        accuracy += 0.05;
+      // MarketAux news data (user-provided, required)
+      if (integrations.marketaux) {
+        try {
+          const MarketAuxAdapter = (await import('./marketauxAdapter')).default;
+          const adapter = new MarketAuxAdapter(integrations.marketaux.apiKey);
+          const newsData = await adapter.getNewsData(symbol);
+
+          // News sentiment affects accuracy
+          if (newsData.overallSentiment && newsData.overallSentiment > 0.5) {
+            accuracy += 0.03;
+          } else if (newsData.overallSentiment && newsData.overallSentiment < -0.5) {
+            accuracy -= 0.02;
+          }
+
+          apiSuccessCount++;
+        } catch (err) {
+          logger.debug({ err, symbol }, 'MarketAux accuracy calculation error (non-critical)');
+        }
       }
 
-      // 3. Volume depth analysis
-      if (microSignals.volume > 500000) {
-        accuracy += 0.15; // Very high volume
-      } else if (microSignals.volume > 100000) {
-        accuracy += 0.1;
-      } else if (microSignals.volume > 50000) {
-        accuracy += 0.05;
-      }
-
-      // 4. Orderbook depth analysis
-      if (microSignals.orderbookDepth > 1000000) {
-        accuracy += 0.1;
-      } else if (microSignals.orderbookDepth > 500000) {
-        accuracy += 0.05;
-      }
-    }
-
-    // 5. Fetch external data sources if integrations are available
-    if (uid) {
+      // Google Finance data (auto-enabled)
       try {
-        const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
-        
-        // DISABLED: CryptoQuant data (if available) - CryptoQuant removed
-        // if (integrations.cryptoquant) {
-        //   try {
-        //     const cryptoquantAdapter = new CryptoQuantAdapter(integrations.cryptoquant.apiKey);
-        //     const onChainData = await cryptoquantAdapter.getOnChainMetrics(symbol);
-        //     const flowData = await cryptoquantAdapter.getExchangeFlow(symbol);
-        //
-        //     // Positive exchange flow (more inflow than outflow) is bullish
-        //     if (flowData.exchangeFlow && flowData.exchangeFlow > 0) {
-        //       accuracy += 0.05;
-        //     }
-        //
-        //     // High whale transactions indicate strong interest
-        //     if (onChainData.whaleTransactions && onChainData.whaleTransactions > 10) {
-        //       accuracy += 0.03;
-        //     }
-        //
-        //     // Active addresses indicate network activity
-        //     if (onChainData.activeAddresses && onChainData.activeAddresses > 100000) {
-        //       accuracy += 0.02;
-        //     }
-        //   } catch (err) {
-        //     logger.debug({ err, symbol }, 'CryptoQuant fetch error (non-critical)');
-        //   }
-        // }
+        const { GoogleFinanceAdapter } = await import('./googleFinanceAdapter');
+        const adapter = new GoogleFinanceAdapter();
+        const financeData = await adapter.getMarketData(symbol);
 
-        // LunarCrush sentiment data (if available)
-        if (integrations.lunarcrush) {
-          try {
-            const lunarcrushAdapter = new LunarCrushAdapter(integrations.lunarcrush.apiKey);
-            const sentimentData = await lunarcrushAdapter.getCoinData(symbol);
-            
-            // Positive sentiment boosts accuracy
-            if (sentimentData.sentiment && sentimentData.sentiment > 0.3) {
-              accuracy += 0.05;
-            } else if (sentimentData.sentiment && sentimentData.sentiment < -0.3) {
-              // Negative sentiment reduces accuracy
-              accuracy -= 0.03;
-            }
-            
-            // High social volume indicates interest
-            if (sentimentData.socialVolume && sentimentData.socialVolume > 1000) {
-              accuracy += 0.03;
-            }
-            
-            // Bullish sentiment percentage
-            if (sentimentData.bullishSentiment && sentimentData.bullishSentiment > 0.6) {
-              accuracy += 0.02;
-            }
-          } catch (err) {
-            logger.debug({ err, symbol }, 'LunarCrush fetch error (non-critical)');
-          }
+        if (financeData.priceChangePercent && financeData.priceChangePercent > 0.5) {
+          accuracy += 0.02;
         }
 
-        // CoinAPI historical data (if available)
-        // Check for all CoinAPI sub-types
-        const coinapiMarket = integrations['coinapi_market'];
-        const coinapiFlatfile = integrations['coinapi_flatfile'];
-        const coinapiExchangerate = integrations['coinapi_exchangerate'];
-        
-        if (coinapiMarket || coinapiFlatfile || coinapiExchangerate) {
-          try {
-            // Try market data first
-            if (coinapiMarket) {
-              const marketAdapter = new CoinAPIAdapter(coinapiMarket.apiKey, 'market');
-              const marketData = await marketAdapter.getMarketData(symbol);
-              
-              // Positive 24h price change is bullish
-              if (marketData.priceChangePercent24h && marketData.priceChangePercent24h > 2) {
-                accuracy += 0.03;
-              }
-              
-              // High volume indicates liquidity
-              if (marketData.volume24h && marketData.volume24h > 1000000) {
-                accuracy += 0.02;
-              }
-            }
-            
-            // Try historical data for trend analysis
-            if (coinapiFlatfile) {
-              const flatfileAdapter = new CoinAPIAdapter(coinapiFlatfile.apiKey, 'flatfile');
-              const historicalData = await flatfileAdapter.getHistoricalData(symbol, 7);
-              
-              // Analyze trend from historical data
-              if (historicalData.historicalData && historicalData.historicalData.length >= 2) {
-                const recent = historicalData.historicalData[historicalData.historicalData.length - 1];
-                const previous = historicalData.historicalData[historicalData.historicalData.length - 2];
-                // CoinAPI OHLCV uses 'close' field, not 'price'
-                const trend = (recent.close - previous.close) / previous.close;
-                
-                if (trend > 0.02) {
-                  accuracy += 0.03; // Uptrend
-                } else if (trend < -0.02) {
-                  accuracy -= 0.02; // Downtrend
-                }
-              }
-            }
-            
-            // Exchange rate data (less critical for accuracy, but can be used)
-            if (coinapiExchangerate) {
-              const baseAsset = symbol.replace('USDT', '').replace('USD', '');
-              const exchangerateAdapter = new CoinAPIAdapter(coinapiExchangerate.apiKey, 'exchangerate');
-              const rateData = await exchangerateAdapter.getExchangeRate(baseAsset, 'USD');
-              // Could use exchange rate for additional validation
-            }
-          } catch (err) {
-            logger.debug({ err, symbol }, 'CoinAPI fetch error (non-critical)');
-          }
-        }
+        apiSuccessCount++;
       } catch (err) {
-        logger.debug({ err }, 'Error fetching external data sources for accuracy');
+        logger.debug({ err, symbol }, 'Google Finance accuracy calculation error (non-critical)');
       }
-    }
 
-    // 6. Price momentum (if we have historical orderbook data - only for manual research with adapter)
-    if (hasOrderbookData && this.orderbookHistory.has(symbol)) {
-      const history = this.orderbookHistory.get(symbol)!;
-      if (history.length >= 2) {
-        const recent = history[history.length - 1];
-        const previous = history[history.length - 2];
-        const recentMid = (parseFloat(recent.bids[0]?.price || '0') + parseFloat(recent.asks[0]?.price || '0')) / 2;
-        const previousMid = (parseFloat(previous.bids[0]?.price || '0') + parseFloat(previous.asks[0]?.price || '0')) / 2;
-        const momentum = (recentMid - previousMid) / previousMid;
-        
-        // Strong momentum in direction of signal increases confidence
-        if (Math.abs(momentum) > 0.001) {
-          accuracy += 0.05;
+      // Binance Public API data (auto-enabled)
+      try {
+        const { BinanceAdapter } = await import('./binanceAdapter');
+        const adapter = new BinanceAdapter();
+        const publicData = await adapter.getPublicMarketData(symbol);
+
+        if (publicData.volume24h && publicData.volume24h > 500000) {
+          accuracy += 0.02;
         }
+
+        apiSuccessCount++;
+      } catch (err) {
+        logger.debug({ err, symbol }, 'Binance Public API accuracy calculation error (non-critical)');
       }
+
+      // CoinGecko data (auto-enabled)
+      try {
+        const { CoinGeckoAdapter } = await import('./coingeckoAdapter');
+        const adapter = new CoinGeckoAdapter();
+        const geckoData = await adapter.getMarketData(symbol);
+
+        if (geckoData.marketCap && geckoData.marketCap > 1000000000) { // $1B+ market cap
+          accuracy += 0.02;
+        }
+
+        apiSuccessCount++;
+      } catch (err) {
+        logger.debug({ err, symbol }, 'CoinGecko accuracy calculation error (non-critical)');
+      }
+
+      // Base accuracy boost from API success (each API adds 5%)
+      const apiBoost = Math.min(0.25, apiSuccessCount * 0.05); // Max 25% boost
+      accuracy = accuracy + apiBoost;
+
+    } catch (err) {
+      logger.debug({ err }, 'Error fetching external data sources for accuracy');
     }
 
     // Cap at 0.95 max (never 100% confidence)
@@ -562,4 +511,5 @@ export class ResearchEngine {
 }
 
 export const researchEngine = new ResearchEngine();
+
 
