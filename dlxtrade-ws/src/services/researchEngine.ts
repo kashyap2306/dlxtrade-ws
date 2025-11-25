@@ -4,6 +4,7 @@ import { firestoreAdapter } from './firestoreAdapter';
 // import { CryptoQuantAdapter } from './cryptoquantAdapter'; // DISABLED: CryptoQuant removed
 import { LunarCrushAdapter } from './lunarcrushAdapter';
 import { CoinAPIAdapter } from './coinapiAdapter';
+import { fetchMarketAuxData } from './marketauxAdapter';
 import type { Orderbook, Trade } from '../types';
 
 export interface ResearchResult {
@@ -117,9 +118,7 @@ export class ResearchEngine {
       // Analyze MarketAux news data (user-provided, required)
       if (integrations.marketaux) {
         try {
-          const MarketAuxAdapter = (await import('./marketauxAdapter')).default;
-          const adapter = new MarketAuxAdapter(integrations.marketaux.apiKey);
-          const newsData = await adapter.getNewsData(symbol);
+          const newsData = await fetchMarketAuxData(integrations.marketaux.apiKey, symbol);
           // MarketAux sentiment analysis would go here
           // For now, count positive mentions as bullish
           if (newsData.positiveMentions && newsData.positiveMentions > newsData.negativeMentions) {
@@ -287,9 +286,7 @@ export class ResearchEngine {
       // MarketAux news data (user-provided, required)
       if (integrations.marketaux) {
         try {
-          const MarketAuxAdapter = (await import('./marketauxAdapter')).default;
-          const adapter = new MarketAuxAdapter(integrations.marketaux.apiKey);
-          const newsData = await adapter.getNewsData(symbol);
+          const newsData = await fetchMarketAuxData(integrations.marketaux.apiKey, symbol);
 
           // News sentiment affects accuracy
           if (newsData.overallSentiment && newsData.overallSentiment > 0.5) {

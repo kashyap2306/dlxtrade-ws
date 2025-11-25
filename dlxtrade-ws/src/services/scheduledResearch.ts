@@ -3,6 +3,7 @@ import { firestoreAdapter } from './firestoreAdapter';
 import { getFirebaseAdmin } from '../utils/firebase';
 import * as admin from 'firebase-admin';
 import { AdapterError } from '../utils/adapterErrorHandler';
+import { fetchMarketAuxData } from './marketauxAdapter';
 
 /**
  * Scheduled Research Service
@@ -209,9 +210,7 @@ export class ScheduledResearchService {
       if (hasMarketAux) {
         try {
           providersCalled.push('MarketAux');
-          const MarketAuxAdapter = (await import('./marketauxAdapter')).default;
-          const adapter = new MarketAuxAdapter(integrations.marketaux.apiKey);
-          researchData.marketaux = await adapter.getNewsData(symbol);
+          researchData.marketaux = await fetchMarketAuxData(integrations.marketaux.apiKey, symbol);
           logger.debug({ uid, symbol, adapter: 'MarketAux' }, 'MarketAux data fetched successfully');
         } catch (err: any) {
           await this.handleAdapterError(uid, 'MarketAux', err, symbol, adapterErrors);
