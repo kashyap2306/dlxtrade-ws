@@ -1,30 +1,30 @@
-import * as admin from 'firebase-admin';
-import { getFirebaseAdmin } from './firebase';
-import { logger } from './logger';
+import * as admin from "firebase-admin";
+import { getFirebaseAdmin } from "./firebase";
+import { logger } from "./logger";
 
 /**
  * List of required Firestore collections that must exist
  */
 const REQUIRED_COLLECTIONS = [
-  'users',
-  'agents',
-  'agentUnlocks',
-  'uiPreferences',
-  'activityLogs',
-  'hftLogs',
-  'engineStatus',
-  'trades',
-  'notifications',
-  'globalStats',
-  'apiKeys',
-  'admin',
-  'logs',
-  'settings',
+  "users",
+  "agents", 
+  "agentUnlocks",
+  "uiPreferences",
+  "activityLogs",
+  "hftLogs",
+  "engineStatus",
+  "trades",
+  "notifications",
+  "globalStats",
+  "apiKeys",
+  "admin",
+  "logs",
+  "settings",
 ] as const;
 
 /**
  * Checks if a collection exists by attempting to read documents.
- * In Firestore, a collection doesn't exist until it has at least one document.
+ * In Firestore, a collection doesn\'t exist until it has at least one document.
  * Skips any documents starting with "__" prefix.
  * 
  * @param db Firestore instance
@@ -40,19 +40,19 @@ async function collectionExists(
     const snapshot = await db.collection(collectionName).limit(100).get();
     
     // Filter out documents starting with "__"
-    const validDocs = snapshot.docs.filter(doc => !doc.id.startsWith('__'));
+    const validDocs = snapshot.docs.filter(doc => !doc.id.startsWith("__"));
     
     return validDocs.length > 0;
   } catch (error: any) {
-    // If collection doesn't exist, Firestore may throw an error
+    // If collection doesn\'t exist, Firestore may throw an error
     // Log and return false to be safe
-    if (error.code === 'not-found' || error.code === 5) {
+    if (error.code === "not-found" || error.code === 5) {
       return false;
     }
-    // For other errors, log and assume collection doesn't exist
+    // For other errors, log and assume collection doesn\'t exist
     logger.warn(
       { error: error.message, collectionName },
-      'Error checking collection existence, assuming it does not exist'
+      "Error checking collection existence, assuming it does not exist"
     );
     return false;
   }
@@ -72,29 +72,29 @@ async function initializeCollection(
   collectionName: string
 ): Promise<boolean> {
   try {
-    console.log('Checking collection:', collectionName);
+    console.log("Checking collection:", collectionName);
     
     // Collections are created automatically when first document is added
-    // We don't need to create any "__" prefixed documents
+    // We don\'t need to create any "__" prefixed documents
     // Just verify the collection exists (has at least one non-__ document)
     const exists = await collectionExists(db, collectionName);
     
     if (exists) {
-      logger.debug({ collectionName }, 'Collection already exists');
+      logger.debug({ collectionName }, "Collection already exists");
       console.log(`Collection ${collectionName} already exists`);
       return false;
     }
     
-    // Collection doesn't exist yet, but it will be created when first real document is added
-    // We don't create placeholder documents with "__" prefix
-    logger.info({ collectionName }, 'Collection will be created when first document is added');
+    // Collection doesn\'t exist yet, but it will be created when first real document is added
+    // We don\'t create placeholder documents with "__" prefix
+    logger.info({ collectionName }, "Collection will be created when first document is added");
     console.log(`Collection ${collectionName} will be created when first document is added`);
     return false;
   } catch (error: any) {
     console.error(`INIT ERROR (Collection ${collectionName}):`, error);
     logger.error(
       { error: error.message, collectionName },
-      'Error checking collection'
+      "Error checking collection"
     );
     throw error;
   }
@@ -108,11 +108,18 @@ async function initializeCollection(
  */
 export async function initializeFirestoreCollections(): Promise<void> {
   try {
-    console.log('🔥 Starting Firestore collection initialization...');
+    // Skip collection creation in production
+    if (process.env.NODE_ENV === "production") {
+      console.log("?? Skipping Firestore collection initialization in production");
+      logger.info("Skipping Firestore collection initialization in production");
+      return;
+    }
+
+    console.log("?? Starting Firestore collection initialization...");
     const firebaseAdmin = getFirebaseAdmin();
     const db = firebaseAdmin.firestore();
 
-    logger.info('Starting Firestore collection initialization...');
+    logger.info("Starting Firestore collection initialization...");
     console.log(`Total collections to initialize: ${REQUIRED_COLLECTIONS.length}`);
 
     const results = await Promise.allSettled(
@@ -122,9 +129,8 @@ export async function initializeFirestoreCollections(): Promise<void> {
           const exists = await collectionExists(db, collectionName);
           
           if (!exists) {
-            console.log(`Collection ${collectionName} does not exist, creating...`);
-            await initializeCollection(db, collectionName);
-            return { collectionName, initialized: true };
+            console.log(`Collection ${collectionName} does not exist - skipping creation in production-safe mode`);
+            return { collectionName, initialized: false };
           }
           
           console.log(`Collection ${collectionName} already exists`);
@@ -144,7 +150,7 @@ export async function initializeFirestoreCollections(): Promise<void> {
     results.forEach((result, index) => {
       const collectionName = REQUIRED_COLLECTIONS[index];
       
-      if (result.status === 'fulfilled') {
+      if (result.status === "fulfilled") {
         if (result.value.initialized) {
           initialized.push(collectionName);
         } else {
@@ -153,7 +159,7 @@ export async function initializeFirestoreCollections(): Promise<void> {
       } else {
         errors.push({
           collection: collectionName,
-          error: result.reason?.message || 'Unknown error',
+          error: result.reason?.message || "Unknown error",
         });
       }
     });
@@ -178,7 +184,7 @@ export async function initializeFirestoreCollections(): Promise<void> {
         { errors },
         `Failed to initialize ${errors.length} collection(s)`
       );
-      // Don't throw - allow server to start even if some collections fail
+      // Don\'t throw - allow server to start even if some collections fail
       // This ensures production stability
     }
 
@@ -189,20 +195,19 @@ export async function initializeFirestoreCollections(): Promise<void> {
         existing: alreadyExists.length,
         errors: errors.length,
       },
-      'Firestore collection initialization completed'
+      "Firestore collection initialization completed"
     );
 
     // Log completion message as requested
-    console.log('🔥 Firestore initialization complete');
+    console.log("?? Firestore initialization complete");
     console.log(`Summary: ${initialized.length} initialized, ${alreadyExists.length} existing, ${errors.length} errors`);
   } catch (error: any) {
-    // Log error but don't throw - allow server to start
+    // Log error but don\'t throw - allow server to start
     // This ensures production stability
-    console.error('INIT ERROR (Critical):', error);
+    console.error("INIT ERROR (Critical):", error);
     logger.error(
       { error: error.message, stack: error.stack },
-      'Critical error during Firestore collection initialization'
+      "Critical error during Firestore collection initialization"
     );
   }
 }
-
