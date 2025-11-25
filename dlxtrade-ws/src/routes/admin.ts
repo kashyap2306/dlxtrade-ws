@@ -29,6 +29,86 @@ export async function adminRoutes(fastify: FastifyInstance) {
   // Decorate with admin auth middleware
   fastify.decorate('adminAuth', adminAuthMiddleware);
 
+  // ========== USER DELETION ENDPOINT ==========
+
+  // DELETE /api/admin/users/:uid - Delete user completely
+  fastify.delete('/users/:uid', {
+    preHandler: [fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
+    const adminUser = (request as any).user;
+    const { uid } = request.params;
+
+    try {
+      logger.info({ adminUid: adminUser.uid, targetUid: uid }, 'Admin deleting user completely');
+
+      const db = getFirebaseAdmin().firestore();
+
+      // 1. Delete user document
+      await db.collection('users').doc(uid).delete();
+
+      // 2. Delete all subcollections
+      const subcollections = [
+        'integrations',
+        'exchangeConfig',
+        'agents',
+        'agentUnlocks',
+        'researchLogs',
+        'activityLogs',
+        'trades',
+        'orders',
+        'settings',
+        'hftSettings',
+        'uiPreferences'
+      ];
+
+      for (const subcollection of subcollections) {
+        const snapshot = await db.collection('users').doc(uid).collection(subcollection).get();
+        const batch = db.batch();
+        snapshot.docs.forEach(doc => {
+          batch.delete(doc.ref);
+        });
+        if (snapshot.docs.length > 0) {
+          await batch.commit();
+        }
+      }
+
+      // 3. Delete agent purchases and unlock requests
+      const purchasesQuery = await db.collection('agentPurchases').where('uid', '==', uid).get();
+      const unlockRequestsQuery = await db.collection('agentUnlockRequests').where('uid', '==', uid).get();
+
+      const deleteBatch = db.batch();
+      purchasesQuery.docs.forEach(doc => deleteBatch.delete(doc.ref));
+      unlockRequestsQuery.docs.forEach(doc => deleteBatch.delete(doc.ref));
+
+      if (purchasesQuery.docs.length > 0 || unlockRequestsQuery.docs.length > 0) {
+        await deleteBatch.commit();
+      }
+
+      // 4. Stop any running engines for this user
+      try {
+        userEngineManager.stopUserEngine(uid);
+      } catch (err: any) {
+        logger.warn({ err: err.message, uid }, 'Error stopping user engine during deletion');
+      }
+
+      // 5. Log the deletion
+      await firestoreAdapter.logActivity(uid, 'USER_DELETED', {
+        deletedBy: adminUser.uid,
+        deletedAt: new Date().toISOString(),
+      });
+
+      logger.info({ adminUid: adminUser.uid, targetUid: uid }, 'User deleted successfully');
+      return { message: 'User deleted successfully' };
+
+    } catch (error: any) {
+      logger.error({ error: error.message, adminUid: adminUser.uid, targetUid: uid }, 'Error deleting user');
+      return reply.code(500).send({
+        error: 'Failed to delete user',
+        details: error.message,
+      });
+    }
+  });
+
   // ========== EXISTING ADMIN ROUTES (for backward compatibility) ==========
   fastify.get('/keys', {
     preHandler: [fastify.authenticate],

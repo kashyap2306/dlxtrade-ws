@@ -103,6 +103,16 @@ export class ScheduledResearchService {
         for (const userDoc of usersSnapshot.docs) {
           const uid = userDoc.id;
           try {
+            // CHECK AUTO-TRADE ENABLED: Only run scheduled research for users with autoTradeEnabled = true
+            const userData = userDoc.data();
+            const autoTradeEnabled = userData?.autoTradeEnabled || false;
+
+            if (!autoTradeEnabled) {
+              logger.debug({ uid }, 'Skipping scheduled research - autoTradeEnabled is false');
+              results.push({ uid, status: 'skipped', reason: 'autoTradeEnabled=false' });
+              continue;
+            }
+
             await this.runResearchForUser(uid);
             results.push({ uid, status: 'success' });
           } catch (error: any) {

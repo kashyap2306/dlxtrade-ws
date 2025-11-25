@@ -17,16 +17,18 @@ interface ConfigCardProps {
   onSave: (updates: Partial<AutoTradeConfig>) => Promise<void>;
   onEnableToggle: (enabled: boolean) => Promise<void>;
   isConfigValid: boolean;
+  hasUnlockedAgents?: boolean;
 }
 
-export default memo(function ConfigCard({ 
-  config, 
-  loading, 
+export default memo(function ConfigCard({
+  config,
+  loading,
   isApiConnected,
-  onUpdate, 
+  onUpdate,
   onSave,
   onEnableToggle,
-  isConfigValid 
+  isConfigValid,
+  hasUnlockedAgents = true
 }: ConfigCardProps) {
   const handleSave = async () => {
     await onSave(config);
@@ -41,13 +43,18 @@ export default memo(function ConfigCard({
       <div className="space-y-4">
         {/* Enable Toggle */}
         <div className="flex items-center justify-between p-3 bg-black/40 rounded-lg">
-          <span className="text-sm text-gray-300">Enable Auto-Trade</span>
+          <div className="flex flex-col">
+            <span className="text-sm text-gray-300">Enable Auto-Trade</span>
+            {!hasUnlockedAgents && (
+              <span className="text-xs text-red-400">Agent unlock required</span>
+            )}
+          </div>
           <button
             onClick={() => onEnableToggle(!config.autoTradeEnabled)}
-            disabled={loading}
+            disabled={loading || !hasUnlockedAgents}
             className={`relative w-12 h-6 rounded-full transition-colors ${
               config.autoTradeEnabled ? 'bg-green-500' : 'bg-gray-600'
-            } ${!isApiConnected ? 'opacity-50 cursor-not-allowed' : ''}`}
+            } ${(!isApiConnected || !hasUnlockedAgents) ? 'opacity-50 cursor-not-allowed' : ''}`}
             aria-label={config.autoTradeEnabled ? 'Disable Auto-Trade' : 'Enable Auto-Trade'}
             title={!isApiConnected ? 'Connect exchange API first' : ''}
           >

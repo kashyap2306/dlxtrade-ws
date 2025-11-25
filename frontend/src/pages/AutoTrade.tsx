@@ -4,6 +4,8 @@ import Sidebar from '../components/Sidebar';
 import { autoTradeApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { useAutoTradeMode } from '../hooks/useAutoTradeMode';
+import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
+import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
 import { useError } from '../contexts/ErrorContext';
 import { useNotificationContext } from '../contexts/NotificationContext';
 import { suppressConsoleError, getApiErrorMessage } from '../utils/errorHandler';
@@ -57,6 +59,7 @@ export default function AutoTrade() {
   const navigate = useNavigate();
   const { showError } = useError();
   const { addNotification } = useNotificationContext();
+  const { unlockedAgents, loading: agentsLoading } = useUnlockedAgents();
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<AutoTradeStatus | null>(null);
@@ -383,14 +386,15 @@ export default function AutoTrade() {
               )}
 
               {/* Configuration Card */}
-              <ConfigCard 
-                config={config} 
-                loading={loading} 
+              <ConfigCard
+                config={config}
+                loading={loading}
                 isApiConnected={status?.isApiConnected ?? false}
                 onUpdate={handleConfigUpdate}
                 onSave={handleConfigSave}
                 onEnableToggle={handleEnableToggle}
                 isConfigValid={isConfigValid}
+                hasUnlockedAgents={unlockedAgents.length > 0}
               />
 
               {/* Activity List */}

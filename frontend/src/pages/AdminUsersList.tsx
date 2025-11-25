@@ -25,6 +25,7 @@ export default function AdminUsersList() {
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<{ uid: string; agentName: string } | null>(null);
+  const [deleteUser, setDeleteUser] = useState<{ uid: string; email: string } | null>(null);
 
   useEffect(() => {
     loadUsers();
@@ -87,6 +88,23 @@ export default function AdminUsersList() {
       setSelectedAgent(null);
     } catch (err: any) {
       showToast(err.response?.data?.error || 'Error locking agent', 'error');
+    }
+  };
+
+  const handleDeleteUser = (uid: string, email: string) => {
+    setDeleteUser({ uid, email });
+  };
+
+  const confirmDeleteUser = async () => {
+    if (!deleteUser) return;
+
+    try {
+      await adminApi.deleteUser(deleteUser.uid);
+      showToast(`User ${deleteUser.email} deleted successfully`, 'success');
+      setDeleteUser(null);
+      loadUsers();
+    } catch (err: any) {
+      showToast(err.response?.data?.error || 'Error deleting user', 'error');
     }
   };
 
@@ -204,6 +222,12 @@ export default function AdminUsersList() {
                       >
                         Agent
                       </button>
+                      <button
+                        onClick={() => handleDeleteUser(user.uid, user.email || 'unknown')}
+                        className="btn btn-danger text-xs px-2 py-1"
+                      >
+                        Delete
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -253,6 +277,43 @@ export default function AdminUsersList() {
                 >
                   Cancel
                 </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Delete User Confirmation Modal */}
+        {deleteUser && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center">
+            <div className="card max-w-md w-full mx-4">
+              <h2 className="text-xl font-bold text-red-400 mb-4">⚠️ Delete User Permanently</h2>
+              <div className="space-y-4">
+                <div className="bg-red-900/20 border border-red-500/30 rounded-lg p-4">
+                  <p className="text-white text-sm mb-2">
+                    Are you sure you want to delete user <strong>{deleteUser.email}</strong>?
+                  </p>
+                  <div className="text-xs text-red-300 space-y-1">
+                    <p>• All user data will be permanently removed</p>
+                    <p>• API keys and integrations will be deleted</p>
+                    <p>• Agent unlocks will be revoked</p>
+                    <p>• Running engines will be stopped</p>
+                    <p>• Scheduled research will stop for this user</p>
+                  </div>
+                </div>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => setDeleteUser(null)}
+                    className="btn btn-secondary flex-1"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={confirmDeleteUser}
+                    className="btn btn-danger flex-1"
+                  >
+                    Yes, Delete User
+                  </button>
+                </div>
               </div>
             </div>
           </div>

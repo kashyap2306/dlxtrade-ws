@@ -96,6 +96,7 @@ export const adminApi = {
   getGlobalSettings: () => api.get('/admin/global-settings'),
   updateGlobalSettings: (settings: any) => api.post('/admin/global-settings', settings),
   getMarketData: () => api.get('/market/top-coins'),
+  deleteUser: (uid: string) => api.delete(`/admin/users/${uid}`),
     // Agent purchases
     getPurchases: (params?: { status?: string; limit?: number }) => api.get('/admin/agents/purchases', { params }),
     approvePurchase: (purchaseId: string) => api.post(`/admin/agents/purchases/${purchaseId}/approve`),

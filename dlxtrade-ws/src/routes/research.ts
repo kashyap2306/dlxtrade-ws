@@ -49,6 +49,16 @@ export async function researchRoutes(fastify: FastifyInstance) {
     try {
       logger.info({ uid: user.uid }, 'Starting deep research with 5 allowed providers');
 
+      // AGENT UNLOCK REQUIREMENT: Check if user has unlocked at least one Premium Trading Agent
+      const userData = await firestoreAdapter.getUser(user.uid);
+      const unlockedAgents = userData?.unlockedAgents || [];
+      if (!unlockedAgents || unlockedAgents.length === 0) {
+        return reply.code(403).send({
+          error: 'Agent unlock required',
+          reason: 'You must unlock at least one Premium Trading Agent to use Deep Research. Please visit the Agents section to unlock an agent.',
+        });
+      }
+
       // Get enabled integrations for research APIs - ONLY 5 providers allowed
       const integrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
 
@@ -278,6 +288,16 @@ export async function researchRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Body: { symbols?: string[]; topN?: number } }>, reply: FastifyReply) => {
     const user = (request as any).user;
+
+    // AGENT UNLOCK REQUIREMENT: Check if user has unlocked at least one Premium Trading Agent
+    const userData = await firestoreAdapter.getUser(user.uid);
+    const unlockedAgents = userData?.unlockedAgents || [];
+    if (!unlockedAgents || unlockedAgents.length === 0) {
+      return reply.code(403).send({
+        error: 'Agent unlock required',
+        reason: 'You must unlock at least one Premium Trading Agent to use Deep Research. Please visit the Agents section to unlock an agent.',
+      });
+    }
 
     // Get user integrations for manual research
     const integrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
