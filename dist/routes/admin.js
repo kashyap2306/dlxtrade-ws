@@ -538,6 +538,8 @@ async function adminRoutes(fastify) {
             return reply.code(500).send({ error: err.message || 'Error fetching agent users' });
         }
     });
+    // ========== AGENT CRUD ROUTES ==========
+    // PUT /api/admin/agents/:id - Update agent
     fastify.put('/agents/:id', {
         preHandler: [fastify.authenticate, fastify.adminAuth],
     }, async (request, reply) => {
@@ -758,6 +760,7 @@ async function adminRoutes(fastify) {
             return reply.code(500).send({ error: err.message || 'Error rejecting purchase' });
         }
     });
+    // System health endpoint
     fastify.get('/system-health', {
         preHandler: [fastify.authenticate, fastify.adminAuth],
     }, async (request, reply) => {

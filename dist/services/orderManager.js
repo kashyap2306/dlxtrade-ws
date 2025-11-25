@@ -60,6 +60,7 @@ class OrderManager {
                 quantity: params.quantity,
                 price: params.price,
             });
+            // Get strategy from settings if available
             const { firestoreAdapter } = await Promise.resolve().then(() => __importStar(require('./firestoreAdapter')));
             const settings = await firestoreAdapter.getSettings(uid);
             const strategy = settings?.strategy || null;

@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.researchEngine = exports.ResearchEngine = void 0;
 const logger_1 = require("../utils/logger");
 const firestoreAdapter_1 = require("./firestoreAdapter");
+const cryptoquantAdapter_1 = require("./cryptoquantAdapter");
 const lunarcrushAdapter_1 = require("./lunarcrushAdapter");
 const coinapiAdapter_1 = require("./coinapiAdapter");
 class ResearchEngine {
@@ -15,6 +16,13 @@ class ResearchEngine {
         this.imbalanceHistory = new Map();
     }
     async runResearch(symbol, uid, adapter) {
+        // IMPORTANT: This method works ENTIRELY on research APIs only
+        // The adapter parameter is DEPRECATED and will be ignored
+        // For scheduled research, NO adapter is provided - uses research APIs only
+        // For manual research, NO adapter should be provided - uses research APIs only
+        // Trading exchange adapters (Binance, Bitget, BingX, WEEX) are NEVER used in research flow
+        // All data comes from: CryptoQuant, LunarCrush, CoinAPI (market/flatfile/exchangerate)
+        // Skip all exchange-based logic - use research APIs only
         const orderbook = null;
         const imbalance = 0;
         const microSignals = {
@@ -29,6 +37,7 @@ class ResearchEngine {
         // Removed: if (orderbook && this.shouldBlockForLiquidity(symbol, microSignals))
         // Determine signal using research APIs only (no orderbook-based logic)
         const signal = await this.determineSignalFromResearchAPIs(symbol, accuracy, uid);
+        // Recommended action
         const recommendedAction = this.getRecommendedAction(signal, accuracy);
         const result = {
             symbol,
@@ -51,6 +60,9 @@ class ResearchEngine {
         logger_1.logger.info({ symbol, signal, accuracy, hasOrderbook: false }, 'Research completed (research APIs only)');
         return result;
     }
+    /**
+     * Determine signal from research APIs only (when no orderbook data available)
+     */
     async determineSignalFromResearchAPIs(symbol, accuracy, uid) {
         if (accuracy < 0.5) {
             return 'HOLD';
@@ -59,20 +71,22 @@ class ResearchEngine {
             const integrations = await firestoreAdapter_1.firestoreAdapter.getEnabledIntegrations(uid);
             let bullishSignals = 0;
             let bearishSignals = 0;
-            // DISABLED: Analyze CryptoQuant data - CryptoQuant removed
-            // if (integrations.cryptoquant) {
-            //   try {
-            //     const cryptoquantAdapter = new CryptoQuantAdapter(integrations.cryptoquant.apiKey);
-            //     const flowData = await cryptoquantAdapter.getExchangeFlow(symbol);
-            //     if (flowData.exchangeFlow && flowData.exchangeFlow > 0) {
-            //       bullishSignals++;
-            //     } else if (flowData.exchangeFlow && flowData.exchangeFlow < 0) {
-            //       bearishSignals++;
-            //     }
-            //   } catch (err) {
-            //     // Ignore errors
-            //   }
-            // }
+            // Analyze CryptoQuant data
+            if (integrations.cryptoquant) {
+                try {
+                    const cryptoquantAdapter = new cryptoquantAdapter_1.CryptoQuantAdapter(integrations.cryptoquant.apiKey);
+                    const flowData = await cryptoquantAdapter.getExchangeFlow(symbol);
+                    if (flowData.exchangeFlow && flowData.exchangeFlow > 0) {
+                        bullishSignals++;
+                    }
+                    else if (flowData.exchangeFlow && flowData.exchangeFlow < 0) {
+                        bearishSignals++;
+                    }
+                }
+                catch (err) {
+                    // Ignore errors
+                }
+            }
             // Analyze LunarCrush sentiment
             if (integrations.lunarcrush) {
                 try {
@@ -174,6 +188,8 @@ class ResearchEngine {
     async calculateAccuracy(symbol, imbalance, microSignals, uid) {
         // Multi-source accuracy calculation using all available data sources
         let accuracy = 0.5; // Base accuracy
+        // Orderbook-based calculations (only if we have orderbook data)
+        // When adapter is not provided (scheduled research), imbalance=0 and microSignals are zeros
         const hasOrderbookData = imbalance !== 0 || microSignals.spread > 0 || microSignals.volume > 0;
         if (hasOrderbookData) {
             // 1. Orderbook imbalance strength (trading exchange data)
@@ -219,6 +235,30 @@ class ResearchEngine {
         if (uid) {
             try {
                 const integrations = await firestoreAdapter_1.firestoreAdapter.getEnabledIntegrations(uid);
+                // CryptoQuant data (if available)
+                if (integrations.cryptoquant) {
+                    try {
+                        const cryptoquantAdapter = new cryptoquantAdapter_1.CryptoQuantAdapter(integrations.cryptoquant.apiKey);
+                        const onChainData = await cryptoquantAdapter.getOnChainMetrics(symbol);
+                        const flowData = await cryptoquantAdapter.getExchangeFlow(symbol);
+                        // Positive exchange flow (more inflow than outflow) is bullish
+                        if (flowData.exchangeFlow && flowData.exchangeFlow > 0) {
+                            accuracy += 0.05;
+                        }
+                        // High whale transactions indicate strong interest
+                        if (onChainData.whaleTransactions && onChainData.whaleTransactions > 10) {
+                            accuracy += 0.03;
+                        }
+                        // Active addresses indicate network activity
+                        if (onChainData.activeAddresses && onChainData.activeAddresses > 100000) {
+                            accuracy += 0.02;
+                        }
+                    }
+                    catch (err) {
+                        logger_1.logger.debug({ err, symbol }, 'CryptoQuant fetch error (non-critical)');
+                    }
+                }
+                // LunarCrush sentiment data (if available)
                 if (integrations.lunarcrush) {
                     try {
                         const lunarcrushAdapter = new lunarcrushAdapter_1.LunarCrushAdapter(integrations.lunarcrush.apiKey);
@@ -272,6 +312,7 @@ class ResearchEngine {
                             if (historicalData.historicalData && historicalData.historicalData.length >= 2) {
                                 const recent = historicalData.historicalData[historicalData.historicalData.length - 1];
                                 const previous = historicalData.historicalData[historicalData.historicalData.length - 2];
+                                // CoinAPI OHLCV uses 'close' field, not 'price'
                                 const trend = (recent.close - previous.close) / previous.close;
                                 if (trend > 0.02) {
                                     accuracy += 0.03; // Uptrend
@@ -298,6 +339,7 @@ class ResearchEngine {
                 logger_1.logger.debug({ err }, 'Error fetching external data sources for accuracy');
             }
         }
+        // 6. Price momentum (if we have historical orderbook data - only for manual research with adapter)
         if (hasOrderbookData && this.orderbookHistory.has(symbol)) {
             const history = this.orderbookHistory.get(symbol);
             if (history.length >= 2) {

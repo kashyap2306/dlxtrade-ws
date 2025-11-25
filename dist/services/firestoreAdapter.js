@@ -160,6 +160,7 @@ class FirestoreAdapter {
         return docRef.id;
     }
     async getResearchLogs(uid, limit = 100) {
+        // Get logs from both researchLogs collection (scheduled research) and old research collection
         const snapshot = await db()
             .collection('users')
             .doc(uid)
@@ -226,6 +227,7 @@ class FirestoreAdapter {
             .doc(uid)
             .collection('integrations')
             .doc(apiName);
+        // Check if document exists to determine if we should set createdAt
         const existingDoc = await docRef.get();
         const now = admin.firestore.Timestamp.now();
         const docData = {

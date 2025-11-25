@@ -96,6 +96,7 @@ async function integrationsRoutes(fastify) {
         preHandler: [fastify.authenticate],
     }, async (request, reply) => {
         const user = request.user;
+        // Log request details for debugging
         logger_1.logger.info({
             uid: user.uid,
             body: JSON.stringify(request.body),
@@ -112,6 +113,7 @@ async function integrationsRoutes(fastify) {
             const t = body.apiType.startsWith('coinapi_') ? body.apiType : `coinapi_${body.apiType}`;
             docName = t;
         }
+        // Check if this is a trading exchange (Binance, Bitget, BingX, Weex)
         const tradingExchanges = ['binance', 'bitget', 'bingx', 'weex'];
         const isTradingExchange = tradingExchanges.includes(body.apiName);
         // Validate required fields based on API type
@@ -138,6 +140,7 @@ async function integrationsRoutes(fastify) {
             });
             return { message: 'Integration disabled', apiName: body.apiName };
         }
+        // If enabling, require keys - save to appropriate location
         if (isTradingExchange) {
             // Trading exchanges: Save to exchangeConfig/current
             try {
@@ -248,6 +251,7 @@ async function integrationsRoutes(fastify) {
     fastify.post('/connect', {
         preHandler: [fastify.authenticate],
     }, async (request, reply) => {
+        // Reuse update endpoint logic by calling it directly
         const user = request.user;
         logger_1.logger.info({
             uid: user.uid,
@@ -265,6 +269,7 @@ async function integrationsRoutes(fastify) {
             const t = body.apiType.startsWith('coinapi_') ? body.apiType : `coinapi_${body.apiType}`;
             docName = t;
         }
+        // Check if this is a trading exchange (Binance, Bitget, BingX, Weex)
         const tradingExchanges = ['binance', 'bitget', 'bingx', 'weex'];
         const isTradingExchange = tradingExchanges.includes(body.apiName);
         // Validate required fields based on API type
@@ -290,6 +295,7 @@ async function integrationsRoutes(fastify) {
             });
             return { message: 'Integration disabled', apiName: body.apiName };
         }
+        // If enabling, require keys - save to appropriate location
         if (isTradingExchange) {
             // Trading exchanges: Save to exchangeConfig/current
             try {
@@ -424,11 +430,23 @@ async function integrationsRoutes(fastify) {
                         apiName: 'cryptoquant',
                     });
                 }
-                return reply.code(400).send({
-                    valid: false,
-                    error: 'CryptoQuant integration is disabled',
-                    apiName: 'cryptoquant',
-                });
+                try {
+                    const { CryptoQuantAdapter } = await Promise.resolve().then(() => __importStar(require('../services/cryptoquantAdapter')));
+                    const adapter = new CryptoQuantAdapter(body.apiKey);
+                    // Test with a simple call
+                    await adapter.getExchangeFlow('BTCUSDT');
+                    return {
+                        valid: true,
+                        apiName: 'cryptoquant',
+                    };
+                }
+                catch (error) {
+                    return reply.code(400).send({
+                        valid: false,
+                        error: error.message || 'CryptoQuant API validation failed',
+                        apiName: 'cryptoquant',
+                    });
+                }
             }
             else if (body.apiName === 'lunarcrush') {
                 if (!body.apiKey) {

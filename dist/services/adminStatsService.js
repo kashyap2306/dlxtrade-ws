@@ -131,6 +131,7 @@ class AdminStatsService {
         }
         const apiStatus = {};
         try {
+            // Check trading exchanges from exchangeConfig/current
             const { getFirebaseAdmin } = await Promise.resolve().then(() => __importStar(require('../utils/firebase')));
             const db = getFirebaseAdmin().firestore();
             const exchangeConfigDoc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();

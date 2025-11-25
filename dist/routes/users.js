@@ -104,10 +104,12 @@ async function usersRoutes(fastify) {
             if (!userData) {
                 throw new errors_1.NotFoundError('User not found');
             }
+            // Check if user has exchange API keys configured (read from exchangeConfig/current)
             const { getFirebaseAdmin } = await Promise.resolve().then(() => __importStar(require('../utils/firebase')));
             const db = getFirebaseAdmin().firestore();
             const exchangeConfigDoc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
             const hasExchangeConfig = exchangeConfigDoc.exists && exchangeConfigDoc.data()?.apiKeyEncrypted && exchangeConfigDoc.data()?.secretEncrypted;
+            // Convert timestamps
             const result = { ...userData };
             if (result.createdAt) {
                 result.createdAt = result.createdAt.toDate().toISOString();
@@ -115,6 +117,7 @@ async function usersRoutes(fastify) {
             if (result.updatedAt) {
                 result.updatedAt = result.updatedAt.toDate().toISOString();
             }
+            // Override apiConnected with computed value from exchangeConfig/current
             result.apiConnected = hasExchangeConfig || false;
             return result;
         }
@@ -204,6 +207,7 @@ async function usersRoutes(fastify) {
             return reply.code(500).send({ error: err.message || 'Error updating user' });
         }
     });
+    // GET /api/users/:id/details - Get user details
     fastify.get('/:id/details', {
         preHandler: [fastify.authenticate],
     }, async (request, reply) => {

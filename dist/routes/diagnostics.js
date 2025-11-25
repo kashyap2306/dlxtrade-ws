@@ -151,41 +151,32 @@ async function diagnosticsRoutes(fastify) {
                             latency: Date.now() - startTime,
                         };
                     }
-                    // DISABLED: CryptoQuant testing - CryptoQuant removed
-                    // try {
-                    //   const { CryptoQuantAdapter } = await import('../services/cryptoquantAdapter');
-                    //   const adapter = new CryptoQuantAdapter(apiKey);
-                    //   const testData = await adapter.getExchangeFlow('BTCUSDT');
-                    //   const latency = Date.now() - startTime;
-                    //   return {
-                    //     apiName: 'cryptoquant',
-                    //     success: true,
-                    //     reachable: true,
-                    //     credentialsValid: true,
-                    //     latency,
-                    //     details: {
-                    //       exchangeFlow: testData.exchangeFlow,
-                    //     },
-                    //   };
-                    // } catch (err: any) {
-                    //   return {
-                    //     apiName: 'cryptoquant',
-                    //     success: false,
-                    //     reachable: err.response?.status !== 404 && err.response?.status !== 403,
-                    //     credentialsValid: err.response?.status !== 401 && err.response?.status !== 403,
-                    //     error: err.message || 'CryptoQuant test failed',
-                    //     latency: Date.now() - startTime,
-                    //   };
-                    // }
-                    // Return disabled status for CryptoQuant
-                    return {
-                        apiName: 'cryptoquant',
-                        success: false,
-                        reachable: false,
-                        credentialsValid: false,
-                        error: 'CryptoQuant integration is disabled',
-                        latency: Date.now() - startTime,
-                    };
+                    try {
+                        const { CryptoQuantAdapter } = await Promise.resolve().then(() => __importStar(require('../services/cryptoquantAdapter')));
+                        const adapter = new CryptoQuantAdapter(apiKey);
+                        const testData = await adapter.getExchangeFlow('BTCUSDT');
+                        const latency = Date.now() - startTime;
+                        return {
+                            apiName: 'cryptoquant',
+                            success: true,
+                            reachable: true,
+                            credentialsValid: true,
+                            latency,
+                            details: {
+                                exchangeFlow: testData.exchangeFlow,
+                            },
+                        };
+                    }
+                    catch (err) {
+                        return {
+                            apiName: 'cryptoquant',
+                            success: false,
+                            reachable: err.response?.status !== 404 && err.response?.status !== 403,
+                            credentialsValid: err.response?.status !== 401 && err.response?.status !== 403,
+                            error: err.message || 'CryptoQuant test failed',
+                            latency: Date.now() - startTime,
+                        };
+                    }
                 }
                 case 'exchange': {
                     // Test exchange API (Binance/Bitget/BingX/Weex) - use provided credentials or fallback to stored

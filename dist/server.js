@@ -39,6 +39,7 @@ const config_1 = require("./config");
 const logger_1 = require("./utils/logger");
 const firebase_1 = require("./utils/firebase");
 const firestoreSeed_1 = require("./utils/firestoreSeed");
+// Global error handlers to catch all errors and prevent crashes
 process.on('uncaughtException', (error) => {
     console.error('UNCAUGHT EXCEPTION:', error);
     console.error('STACK:', error.stack);
@@ -115,6 +116,24 @@ async function start() {
                     // DO NOT throw - allow server to continue even if test write fails
                     // This prevents blocking server startup on Render
                 }
+                // Initialize Firestore collections - DISABLED (collections created naturally)
+                // Collections are created automatically when first document is added
+                // No need for "__initializer__" documents
+                // try {
+                //   await initializeFirestoreCollections();
+                // } catch (initError: any) {
+                //   console.error('❌ INIT ERROR (Collection Initializer):', initError.message);
+                //   logger.error({ error: initError.message, stack: initError.stack }, 'Firestore collection initialization failed');
+                // }
+                // Auto-migration DISABLED - no longer running on startup
+                // Migration should be run manually via scripts if needed
+                // try {
+                //   await migrateFirestoreDocuments();
+                // } catch (migrationError: any) {
+                //   console.error('❌ INIT ERROR (Migration):', migrationError.message);
+                //   logger.error({ error: migrationError.message }, 'Firestore migration failed');
+                // }
+                // Seed Firestore with default data
                 try {
                     await (0, firestoreSeed_1.seedFirestoreData)();
                 }
@@ -165,6 +184,8 @@ async function start() {
                     console.error('⚠️ Auto-promote admin failed:', autoPromoteErr.message);
                     logger_1.logger.warn({ error: autoPromoteErr.message }, 'Auto-promote admin failed');
                 }
+                // Start scheduled research service (runs every 5 minutes)
+                // Wrap in try/catch and error boundary to prevent crashes
                 try {
                     const { scheduledResearchService } = await Promise.resolve().then(() => __importStar(require('./services/scheduledResearch')));
                     // Wrap start() in error handler

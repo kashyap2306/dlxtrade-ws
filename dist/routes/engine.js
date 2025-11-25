@@ -90,6 +90,7 @@ async function engineRoutes(fastify) {
                 return { message: 'Auto-trade started', config: body };
             }
             // Legacy flow for research-only mode
+            // Use exchangeResolver to get trading exchange credentials (reads from exchangeConfig/current)
             const { resolveExchangeConnector } = await Promise.resolve().then(() => __importStar(require('../services/exchangeResolver')));
             const resolved = await resolveExchangeConnector(user.uid);
             if (!resolved) {
@@ -101,6 +102,8 @@ async function engineRoutes(fastify) {
             await userEngineManager_1.userEngineManager.createUserEngine(user.uid, resolved.credentials.apiKey, resolved.credentials.secret, resolved.credentials.testnet);
             // Load enabled integrations for research APIs (CryptoQuant, LunarCrush, CoinAPI)
             const integrations = await firestoreAdapter_1.firestoreAdapter.getEnabledIntegrations(user.uid);
+            // Store loaded integrations for other services (CryptoQuant, LunarCrush, CoinAPI)
+            // These can be accessed by other services as needed
             global.apiIntegrations = integrations;
             // Save settings
             await firestoreAdapter_1.firestoreAdapter.saveSettings(user.uid, {

@@ -46,6 +46,7 @@ async function ensureUser(uid, profileData) {
         const db = (0, firebase_1.getFirebaseAdmin)().firestore();
         const now = admin.firestore.Timestamp.now();
         logger_1.logger.info({ uid, email: profileData?.email }, '🚀 Starting user onboarding (ensureUser) - creating all required Firestore documents');
+        // 1. Ensure users/{uid} exists with ALL required fields (idempotent)
         const userRef = db.collection('users').doc(uid);
         const existingUser = await userRef.get();
         if (!existingUser.exists) {
@@ -102,6 +103,7 @@ async function ensureUser(uid, profileData) {
             if (!existingData.phone && profileData?.phone) {
                 updateData.phone = profileData.phone;
             }
+            // Ensure onboarding fields exist (don't overwrite if already set)
             if (existingData.onboardingRequired === undefined) {
                 updateData.onboardingRequired = true;
             }
@@ -172,6 +174,7 @@ async function ensureUser(uid, profileData) {
         }
         // 2. API keys are now stored in users/{uid}/exchangeConfig/current and users/{uid}/integrations/{apiName}
         // No need to create apiKeys collection document
+        // 3. Create engineStatus/{uid}
         const engineStatusRef = db.collection('engineStatus').doc(uid);
         const existingEngineStatus = await engineStatusRef.get();
         if (!existingEngineStatus.exists) {
@@ -336,6 +339,8 @@ async function ensureUser(uid, profileData) {
         }
         // 9. Initialize required collections and docs under users/{uid}
         const userDocRef = db.collection('users').doc(uid);
+        // users/{uid}/integrations: create default disabled docs for RESEARCH APIs only
+        // Trading exchanges (binance, bitget, bingx, weex) are stored in exchangeConfig/current, NOT in integrations
         const integrations = ['lunarcrush', 'cryptoquant', 'coinapi_market', 'coinapi_flatfile', 'coinapi_exchangerate'];
         for (const apiName of integrations) {
             const ref = userDocRef.collection('integrations').doc(apiName);
@@ -503,6 +508,7 @@ async function ensureUser(uid, profileData) {
             }
         }
         const duration = Date.now() - startTime;
+        // Log summary of all documents created/verified
         const createdDocs = [];
         if (createdNew) {
             createdDocs.push(`users/${uid}`);

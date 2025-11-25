@@ -23,7 +23,6 @@ const REQUIRED_COLLECTIONS = [
     'settings',
 ];
 /**
-<<<<<<< HEAD
  * Checks if a collection exists by attempting to read documents.
  * In Firestore, a collection doesn't exist until it has at least one document.
  * Skips any documents starting with "__" prefix.
@@ -31,21 +30,10 @@ const REQUIRED_COLLECTIONS = [
  * @param db Firestore instance
  * @param collectionName Name of the collection to check
  * @returns true if collection exists (has at least one non-__ document), false otherwise
-=======
- * Initializer document ID - using a special prefix to avoid conflicts
- */
-const INITIALIZER_DOC_ID = '__initializer__';
-/**
- * Checks if a collection exists by attempting to read a document.
- * In Firestore, a collection doesn't exist until it has at least one document.
- *
- * @param db Firestore instance
- * @param collectionName Name of the collection to check
- * @returns true if collection exists (has at least one document), false otherwise
->>>>>>> 9636cc16c78c77b9f0c35101a040dc5c414846c5
  */
 async function collectionExists(db, collectionName) {
     try {
+        // Check if collection has any documents, skipping those starting with "__"
         const snapshot = await db.collection(collectionName).limit(100).get();
         // Filter out documents starting with "__"
         const validDocs = snapshot.docs.filter(doc => !doc.id.startsWith('__'));
@@ -63,7 +51,6 @@ async function collectionExists(db, collectionName) {
     }
 }
 /**
-<<<<<<< HEAD
  * Initializes a collection by ensuring it exists.
  * Collections in Firestore are created automatically when the first document is added.
  * This function does not create any "__" prefixed documents.
@@ -71,14 +58,6 @@ async function collectionExists(db, collectionName) {
  * @param db Firestore instance
  * @param collectionName Name of the collection to initialize
  * @returns false (collections are created naturally when first document is added)
-=======
- * Creates an initializer document in a collection if it doesn't exist.
- * This ensures the collection is created in Firestore.
- *
- * @param db Firestore instance
- * @param collectionName Name of the collection to initialize
- * @returns true if document was created, false if it already existed
->>>>>>> 9636cc16c78c77b9f0c35101a040dc5c414846c5
  */
 async function initializeCollection(db, collectionName) {
     try {

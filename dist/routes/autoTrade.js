@@ -75,6 +75,7 @@ const executeTradeSchema = zod_1.z.object({
 async function autoTradeRoutes(fastify) {
     // Decorate with admin auth middleware
     fastify.decorate('adminAuth', adminAuth_1.adminAuthMiddleware);
+    // GET /api/auto-trade/status - Get auto-trade status
     fastify.get('/status', {
         preHandler: [fastify.authenticate],
     }, async (request, reply) => {
@@ -108,6 +109,7 @@ async function autoTradeRoutes(fastify) {
             return reply.code(500).send({ error: err.message || 'Error fetching auto-trade status' });
         }
     });
+    // POST /api/auto-trade/config - Update user auto-trade configuration
     fastify.post('/config', {
         preHandler: [fastify.authenticate],
     }, async (request, reply) => {
@@ -292,6 +294,7 @@ async function autoTradeRoutes(fastify) {
         try {
             const user = request.user;
             const body = toggleAutoTradeSchema.parse(request.body);
+            // Verify user has connected exchange API keys (read from exchangeConfig/current)
             const db = (0, firebase_1.getFirebaseAdmin)().firestore();
             const exchangeConfigDoc = await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').get();
             if (!exchangeConfigDoc.exists) {
@@ -356,6 +359,7 @@ async function autoTradeRoutes(fastify) {
             return reply.code(500).send({ error: err.message || 'Error toggling auto-trade' });
         }
     });
+    // POST /api/auto-trade/reset-circuit-breaker - Reset circuit breaker (admin only)
     fastify.post('/reset-circuit-breaker', {
         preHandler: [fastify.authenticate, fastify.adminAuth],
     }, async (request, reply) => {

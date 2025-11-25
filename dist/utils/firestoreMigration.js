@@ -46,6 +46,7 @@ async function migrateFirestoreDocuments() {
         console.log('🔄 Starting Firestore auto-migration...');
         const db = (0, firebase_1.getFirebaseAdmin)().firestore();
         let migrationCount = 0;
+        // Migrate users collection - skip documents starting with "__"
         const usersSnapshot = await db.collection('users').get();
         for (const doc of usersSnapshot.docs) {
             // Skip documents starting with "__"
@@ -81,6 +82,7 @@ async function migrateFirestoreDocuments() {
                 migrationCount++;
             }
         }
+        // Migrate engineStatus collection - skip documents starting with "__"
         const engineStatusSnapshot = await db.collection('engineStatus').get();
         for (const doc of engineStatusSnapshot.docs) {
             // Skip documents starting with "__"

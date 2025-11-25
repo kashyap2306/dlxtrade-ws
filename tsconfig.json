@@ -8,17 +8,7 @@
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "strict": false,
-<<<<<<< HEAD
     "noImplicitAny": false
   },
   "include": ["src/**/*"]
 }
-=======
-    "noImplicitAny": false,
-    "moduleResolution": "node",
-    "types": ["node"]
-  },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
-}
->>>>>>> 9636cc16c78c77b9f0c35101a040dc5c414846c5

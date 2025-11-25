@@ -94,6 +94,7 @@ async function authRoutes(fastify) {
                 });
             }
             // Run idempotent user onboarding
+            // For OAuth logins, phone will be null initially
             const result = await (0, userOnboarding_1.ensureUser)(uid, {
                 name,
                 email,

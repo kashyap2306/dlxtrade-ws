@@ -102,6 +102,7 @@ async function agentsRoutes(fastify) {
             return reply.code(500).send({ error: err.message || 'Error fetching agent unlocks' });
         }
     });
+    // GET /api/agents/unlocked - Get user's unlocked agent names
     fastify.get('/unlocked', {
         preHandler: [fastify.authenticate],
     }, async (request, reply) => {

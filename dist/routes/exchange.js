@@ -56,6 +56,7 @@ async function exchangeRoutes(fastify) {
         try {
             const { id } = request.params;
             const user = request.user;
+            // Log request details
             logger_1.logger.info({
                 uid: user.uid,
                 targetId: id,
@@ -66,11 +67,13 @@ async function exchangeRoutes(fastify) {
                 exchange: request.body.exchange,
                 type: request.body.type
             }, 'Exchange config save request received');
+            // Users can only update their own config unless they're admin
             const isAdmin = await firestoreAdapter_1.firestoreAdapter.isAdmin(user.uid);
             if (id !== user.uid && !isAdmin) {
                 return reply.code(403).send({ error: 'Access denied' });
             }
             const body = exchangeConfigSchema.parse(request.body);
+            // Determine type: use 'type' field if provided, otherwise use 'exchange' field, default to 'binance'
             const configType = body.type || body.exchange || 'binance';
             // Validate required fields for trading exchanges only
             if (['binance', 'bitget', 'weex', 'bingx'].includes(configType)) {
@@ -237,6 +240,7 @@ async function exchangeRoutes(fastify) {
             });
         }
     });
+    // POST /api/exchange/test-trade - Place a test trade order
     fastify.post('/exchange/test-trade', {
         preHandler: [fastify.authenticate],
     }, async (request, reply) => {

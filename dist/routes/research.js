@@ -45,6 +45,7 @@ const researchQuerySchema = zod_1.z.object({
     limit: zod_1.z.coerce.number().int().positive().max(500).optional().default(100),
 });
 async function researchRoutes(fastify) {
+    // Decorate with admin auth middleware
     fastify.decorate('adminAuth', adminAuth_1.adminAuthMiddleware);
     fastify.get('/logs', {
         preHandler: [fastify.authenticate],
@@ -64,6 +65,7 @@ async function researchRoutes(fastify) {
             createdAt: log.createdAt?.toDate().toISOString(),
         }));
     });
+    // POST /api/research/run - Run deep research using ONLY CryptoQuant + LunarCrush + CoinAPI
     fastify.post('/run', {
         preHandler: [fastify.authenticate],
     }, async (request, reply) => {
@@ -99,7 +101,7 @@ async function researchRoutes(fastify) {
                 try {
                     logger_1.logger.info({ uid: user.uid, symbol, requestId }, 'Fetching research data from CryptoQuant + LunarCrush + CoinAPI');
                     // Initialize adapters
-                    // const { CryptoQuantAdapter } = await import('../services/cryptoquantAdapter'); // DISABLED: CryptoQuant removed
+                    const { CryptoQuantAdapter } = await Promise.resolve().then(() => __importStar(require('../services/cryptoquantAdapter')));
                     const { LunarCrushAdapter } = await Promise.resolve().then(() => __importStar(require('../services/lunarcrushAdapter')));
                     const { CoinAPIAdapter } = await Promise.resolve().then(() => __importStar(require('../services/coinapiAdapter')));
                     let cryptoQuantData = {};
@@ -107,17 +109,18 @@ async function researchRoutes(fastify) {
                     let coinApiMarketData = {};
                     let coinApiExchangeRateData = {};
                     let coinApiFlatFileData = {};
-                    // DISABLED: 1. Fetch CryptoQuant data - CryptoQuant removed
-                    // if (hasCryptoQuant) {
-                    //   try {
-                    //     const cryptoQuantAdapter = new CryptoQuantAdapter(integrations.cryptoquant.apiKey);
-                    //     cryptoQuantData = await cryptoQuantAdapter.getAllData(symbol);
-                    //     logger.info({ uid: user.uid, symbol, requestId }, 'CryptoQuant data fetched');
-                    //   } catch (err: any) {
-                    //     logger.error({ err: err.message, symbol, requestId }, 'CryptoQuant API call failed');
-                    //     cryptoQuantData = { error: err.message };
-                    //   }
-                    // }
+                    // 1. Fetch CryptoQuant data
+                    if (hasCryptoQuant) {
+                        try {
+                            const cryptoQuantAdapter = new CryptoQuantAdapter(integrations.cryptoquant.apiKey);
+                            cryptoQuantData = await cryptoQuantAdapter.getAllData(symbol);
+                            logger_1.logger.info({ uid: user.uid, symbol, requestId }, 'CryptoQuant data fetched');
+                        }
+                        catch (err) {
+                            logger_1.logger.error({ err: err.message, symbol, requestId }, 'CryptoQuant API call failed');
+                            cryptoQuantData = { error: err.message };
+                        }
+                    }
                     // 2. Fetch LunarCrush data
                     if (hasLunarCrush) {
                         try {
@@ -404,6 +407,7 @@ async function researchRoutes(fastify) {
             topN: zod_1.z.number().int().positive().max(10).optional().default(3),
         }).parse(request.body);
         try {
+            // Load user integrations for research APIs ONLY
             const integrations = await firestoreAdapter_1.firestoreAdapter.getEnabledIntegrations(user.uid);
             // Check if at least one research API is configured
             const hasCryptoQuant = integrations.cryptoquant?.apiKey;
@@ -421,6 +425,7 @@ async function researchRoutes(fastify) {
             const candidates = [];
             for (const symbol of body.symbols) {
                 try {
+                    // Run research WITHOUT adapter (uses research APIs only)
                     const research = await researchEngine_1.researchEngine.runResearch(symbol, user.uid);
                     // Calculate entry, size, stop-loss, take-profit based on research
                     // Note: Without orderbook data, we use default price estimates
@@ -495,6 +500,9 @@ async function researchRoutes(fastify) {
             });
         }
     });
+    // REMOVED: getExchangeConnector() - Research endpoints must NOT use trading exchange adapters
+    // All research endpoints now use ONLY research APIs (CryptoQuant, LunarCrush, CoinAPI)
+    // Helper function to calculate RSI
     function calculateRSI(prices, period = 14) {
         if (prices.length < period + 1)
             return 50; // Neutral RSI if not enough data
@@ -529,7 +537,7 @@ async function researchRoutes(fastify) {
         try {
             // Get enabled integrations
             const integrations = await firestoreAdapter_1.firestoreAdapter.getEnabledIntegrations(uid);
-            // const { CryptoQuantAdapter } = await import('../services/cryptoquantAdapter'); // DISABLED: CryptoQuant removed
+            const { CryptoQuantAdapter } = await Promise.resolve().then(() => __importStar(require('../services/cryptoquantAdapter')));
             const { LunarCrushAdapter } = await Promise.resolve().then(() => __importStar(require('../services/lunarcrushAdapter')));
             const { CoinAPIAdapter } = await Promise.resolve().then(() => __importStar(require('../services/coinapiAdapter')));
             // Get CoinAPI market integration
@@ -601,17 +609,18 @@ async function researchRoutes(fastify) {
                             logger_1.logger.debug({ err, symbol: coin.symbol }, 'LunarCrush fetch error in fallback');
                         }
                     }
-                    // DISABLED: Fetch CryptoQuant data - CryptoQuant removed
-                    // const cryptoquant = integrations['cryptoquant'];
-                    // if (cryptoquant) {
-                    //   try {
-                    //     const cryptoquantAdapter = new CryptoQuantAdapter(cryptoquant.apiKey);
-                    //     const flowData = await cryptoquantAdapter.getExchangeFlow(coin.symbol);
-                    //     onChainFlow = flowData.exchangeFlow || 0;
-                    //   } catch (err) {
-                    //     logger.debug({ err, symbol: coin.symbol }, 'CryptoQuant fetch error in fallback');
-                    //   }
-                    // }
+                    // Fetch CryptoQuant data
+                    const cryptoquant = integrations['cryptoquant'];
+                    if (cryptoquant) {
+                        try {
+                            const cryptoquantAdapter = new CryptoQuantAdapter(cryptoquant.apiKey);
+                            const flowData = await cryptoquantAdapter.getExchangeFlow(coin.symbol);
+                            onChainFlow = flowData.exchangeFlow || 0;
+                        }
+                        catch (err) {
+                            logger_1.logger.debug({ err, symbol: coin.symbol }, 'CryptoQuant fetch error in fallback');
+                        }
+                    }
                     // Calculate RSI from price change (simplified)
                     const rsi = coin.priceChangePercent24h > 0 ?
                         Math.min(30 + (coin.priceChangePercent24h * 2), 70) :
@@ -746,6 +755,7 @@ async function researchRoutes(fastify) {
             topN: zod_1.z.number().int().positive().max(10).optional().default(3),
         }).parse(request.body || {});
         try {
+            // Load user integrations for research APIs ONLY
             const integrations = await firestoreAdapter_1.firestoreAdapter.getEnabledIntegrations(user.uid);
             // Check if at least one research API is configured
             const hasCryptoQuant = integrations.cryptoquant?.apiKey;
@@ -1052,9 +1062,12 @@ async function researchRoutes(fastify) {
             const candidates = [];
             for (const symbol of symbols) {
                 try {
+                    // Run research WITHOUT adapter (uses research APIs only)
                     const research = await researchEngine_1.researchEngine.runResearch(symbol, user.uid);
+                    // Skip HOLD signals
                     if (research.signal === 'HOLD')
                         continue;
+                    // Try to get price from CoinAPI if available
                     let estimatedPrice = 50000; // Default BTC price estimate
                     if (hasCoinAPIMarket) {
                         try {
@@ -1165,6 +1178,7 @@ async function researchRoutes(fastify) {
             });
         }
     });
+    // POST /api/research/runOne - Run research for a single user (for debugging)
     fastify.post('/runOne', {
         preHandler: [fastify.authenticate, fastify.adminAuth],
     }, async (request, reply) => {
