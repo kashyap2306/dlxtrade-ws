@@ -8,7 +8,6 @@ coverage/
 *.log
 
 # Production
-dist/
 build/
 *.local
 

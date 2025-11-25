@@ -29,25 +29,50 @@ function getEncryptionKey() {
     return Buffer.from(key.slice(0, 32));
 }
 function encrypt(text) {
-    const iv = crypto_1.default.randomBytes(IV_LENGTH);
-    const salt = crypto_1.default.randomBytes(SALT_LENGTH);
-    const cipher = crypto_1.default.createCipheriv(ALGORITHM, getEncryptionKey(), iv);
-    const encrypted = Buffer.concat([
-        cipher.update(text, 'utf8'),
-        cipher.final(),
-    ]);
-    const tag = cipher.getAuthTag();
-    return Buffer.concat([salt, iv, tag, encrypted]).toString('base64');
+    try {
+        if (!text || text.trim() === '') {
+            throw new Error('Cannot encrypt empty string');
+        }
+        const iv = crypto_1.default.randomBytes(IV_LENGTH);
+        const salt = crypto_1.default.randomBytes(SALT_LENGTH);
+        const cipher = crypto_1.default.createCipheriv(ALGORITHM, getEncryptionKey(), iv);
+        const encrypted = Buffer.concat([
+            cipher.update(text, 'utf8'),
+            cipher.final(),
+        ]);
+        const tag = cipher.getAuthTag();
+        return Buffer.concat([salt, iv, tag, encrypted]).toString('base64');
+    }
+    catch (error) {
+        logger_1.logger.error({ error: error.message }, 'Encryption failed');
+        throw new Error(`Encryption failed: ${error.message}`);
+    }
 }
 function decrypt(encryptedText) {
-    const data = Buffer.from(encryptedText, 'base64');
-    const salt = data.slice(0, SALT_LENGTH);
-    const iv = data.slice(SALT_LENGTH, TAG_POSITION);
-    const tag = data.slice(TAG_POSITION, ENCRYPTED_POSITION);
-    const encrypted = data.slice(ENCRYPTED_POSITION);
-    const decipher = crypto_1.default.createDecipheriv(ALGORITHM, getEncryptionKey(), iv);
-    decipher.setAuthTag(tag);
-    return decipher.update(encrypted) + decipher.final('utf8');
+    try {
+        if (!encryptedText || encryptedText.trim() === '') {
+            logger_1.logger.warn('Decrypt called with empty string');
+            return null;
+        }
+        const data = Buffer.from(encryptedText, 'base64');
+        // Validate data length
+        if (data.length < ENCRYPTED_POSITION) {
+            logger_1.logger.warn('Decrypt called with invalid data length');
+            return null;
+        }
+        const salt = data.slice(0, SALT_LENGTH);
+        const iv = data.slice(SALT_LENGTH, TAG_POSITION);
+        const tag = data.slice(TAG_POSITION, ENCRYPTED_POSITION);
+        const encrypted = data.slice(ENCRYPTED_POSITION);
+        const decipher = crypto_1.default.createDecipheriv(ALGORITHM, getEncryptionKey(), iv);
+        decipher.setAuthTag(tag);
+        return decipher.update(encrypted) + decipher.final('utf8');
+    }
+    catch (error) {
+        // "Unsupported state or unable to authenticate data" - safe handling
+        logger_1.logger.warn({ error: error.message }, 'Decryption failed (key missing or corrupted)');
+        return null;
+    }
 }
 async function listKeys() {
     const rows = await (0, db_1.query)(`
@@ -69,12 +94,19 @@ async function getKey(id) {
     if (rows.length === 0)
         return null;
     const row = rows[0];
+    const apiKey = decrypt(row.api_key_encrypted);
+    const apiSecret = decrypt(row.api_secret_encrypted);
+    // If decryption failed, return null
+    if (!apiKey || !apiSecret) {
+        logger_1.logger.warn({ id }, 'Failed to decrypt API key');
+        return null;
+    }
     return {
         id: row.id.toString(),
         exchange: row.exchange,
         name: row.name,
-        apiKey: decrypt(row.api_key_encrypted),
-        apiSecret: decrypt(row.api_secret_encrypted),
+        apiKey,
+        apiSecret,
         testnet: row.testnet,
         createdAt: row.created_at,
         updatedAt: row.updated_at,

@@ -226,21 +226,79 @@ class FirestoreAdapter {
             .doc(uid)
             .collection('integrations')
             .doc(apiName);
+        // Check if document exists for idempotency
+        const existingDoc = await docRef.get();
+        const now = admin.firestore.Timestamp.now();
         const docData = {
             enabled: data.enabled,
-            updatedAt: admin.firestore.Timestamp.now(),
+            updatedAt: now,
         };
-        if (data.apiKey) {
-            docData.apiKey = (0, keyManager_1.encrypt)(data.apiKey);
+        // Set createdAt only if document doesn't exist (required field)
+        if (!existingDoc.exists) {
+            docData.createdAt = now;
         }
-        if (data.secretKey) {
-            docData.secretKey = (0, keyManager_1.encrypt)(data.secretKey);
+        // Encrypt API keys safely
+        try {
+            if (data.apiKey) {
+                docData.apiKey = (0, keyManager_1.encrypt)(data.apiKey);
+            }
+            if (data.secretKey) {
+                docData.secretKey = (0, keyManager_1.encrypt)(data.secretKey);
+            }
         }
+        catch (error) {
+            logger_1.logger.error({ error: error.message, uid, apiName }, 'Encryption failed during saveIntegration');
+            throw new Error(`Encryption failed: ${error.message}`);
+        }
+        // Set apiType for CoinAPI integrations (required field)
         if (data.apiType) {
             docData.apiType = data.apiType;
         }
+        else if (apiName.startsWith('coinapi_')) {
+            // Extract apiType from docName if not provided (e.g., 'coinapi_market' -> 'market')
+            docData.apiType = apiName.replace('coinapi_', '');
+        }
         await docRef.set(docData, { merge: true });
-        logger_1.logger.info({ uid, apiName, enabled: data.enabled }, 'Integration saved to Firestore');
+        logger_1.logger.info({ uid, apiName, enabled: data.enabled }, 'Saving integration');
+        // Post-save verification: read back the document and verify all required fields
+        const verification = await docRef.get();
+        if (!verification.exists) {
+            logger_1.logger.error({ uid, apiName }, 'Post-save read failed - document missing');
+            throw new Error('Post-save verification failed: document not found');
+        }
+        const savedData = verification.data() || {};
+        // Verify all required fields are present
+        const requiredFields = ['enabled', 'createdAt', 'updatedAt'];
+        const missingFields = requiredFields.filter(field => savedData[field] === undefined);
+        // For CoinAPI, apiType is also required
+        if (apiName.startsWith('coinapi_') && !savedData.apiType) {
+            missingFields.push('apiType');
+        }
+        if (missingFields.length > 0) {
+            logger_1.logger.error({ uid, apiName, missingFields }, '❌ Integration missing required fields after save');
+            throw new Error(`Post-save verification failed: missing required fields: ${missingFields.join(', ')}`);
+        }
+        logger_1.logger.info({
+            uid,
+            path: `users/${uid}/integrations/${apiName}`,
+            hasEnabled: savedData.enabled !== undefined,
+            hasApiKey: savedData.apiKey !== undefined,
+            hasSecretKey: savedData.secretKey !== undefined,
+            hasApiType: savedData.apiType !== undefined,
+            hasCreatedAt: !!savedData.createdAt,
+            hasUpdatedAt: !!savedData.updatedAt,
+        }, '✅ Integration verified with all required fields');
+        return {
+            path: `users/${uid}/integrations/${apiName}`,
+            data: {
+                enabled: savedData.enabled || false,
+                hasKey: !!savedData.apiKey,
+                hasSecret: !!savedData.secretKey,
+                apiType: savedData.apiType || null,
+                updatedAt: savedData.updatedAt,
+                createdAt: savedData.createdAt,
+            },
+        };
     }
     async deleteIntegration(uid, apiName) {
         await db()
@@ -256,9 +314,15 @@ class FirestoreAdapter {
         const enabled = {};
         for (const [apiName, integration] of Object.entries(allIntegrations)) {
             if (integration.enabled && integration.apiKey) {
+                const decryptedApiKey = (0, keyManager_1.decrypt)(integration.apiKey);
+                // Skip if decryption failed
+                if (!decryptedApiKey) {
+                    logger_1.logger.warn({ uid, apiName }, 'Failed to decrypt API key - skipping integration');
+                    continue;
+                }
                 enabled[apiName] = {
-                    apiKey: (0, keyManager_1.decrypt)(integration.apiKey),
-                    ...(integration.secretKey ? { secretKey: (0, keyManager_1.decrypt)(integration.secretKey) } : {}),
+                    apiKey: decryptedApiKey,
+                    ...(integration.secretKey ? { secretKey: (0, keyManager_1.decrypt)(integration.secretKey) || '' } : {}),
                 };
             }
         }
@@ -509,6 +573,96 @@ class FirestoreAdapter {
             .orderBy('createdAt', 'desc')
             .get();
         return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    }
+    // ========== EXCHANGE CONFIG METHODS ==========
+    async saveExchangeConfig(uid, data) {
+        const docRef = db()
+            .collection('users')
+            .doc(uid)
+            .collection('exchangeConfig')
+            .doc('current');
+        // Check if document exists for idempotency
+        const existingDoc = await docRef.get();
+        const now = admin.firestore.Timestamp.now();
+        // Encrypt credentials safely
+        let apiKeyEncrypted;
+        let secretEncrypted;
+        let passphraseEncrypted = '';
+        try {
+            apiKeyEncrypted = (0, keyManager_1.encrypt)(data.apiKey);
+            secretEncrypted = (0, keyManager_1.encrypt)(data.secret);
+            if (data.passphrase) {
+                passphraseEncrypted = (0, keyManager_1.encrypt)(data.passphrase);
+            }
+        }
+        catch (error) {
+            logger_1.logger.error({ error: error.message, uid }, 'Encryption failed during saveExchangeConfig');
+            throw new Error(`Encryption failed: ${error.message}`);
+        }
+        const configData = {
+            exchange: data.exchange,
+            apiKeyEncrypted,
+            secretEncrypted,
+            passphraseEncrypted,
+            testnet: data.testnet || false,
+            enabled: true,
+            updatedAt: now,
+        };
+        // Set createdAt only if document doesn't exist
+        if (!existingDoc.exists) {
+            configData.createdAt = now;
+        }
+        await docRef.set(configData, { merge: true });
+        logger_1.logger.info({ uid, exchange: data.exchange }, 'Saving exchange config');
+        // Post-save verification: read back the document and verify all required fields
+        const verification = await docRef.get();
+        if (!verification.exists) {
+            logger_1.logger.error({ uid }, 'Post-save read failed - document missing');
+            throw new Error('Post-save verification failed: document not found');
+        }
+        const savedData = verification.data() || {};
+        // Verify all required fields are present
+        const requiredFields = ['exchange', 'apiKeyEncrypted', 'secretEncrypted', 'passphraseEncrypted', 'testnet', 'enabled', 'createdAt', 'updatedAt'];
+        const missingFields = requiredFields.filter(field => savedData[field] === undefined);
+        if (missingFields.length > 0) {
+            logger_1.logger.error({ uid, missingFields }, '❌ Exchange config missing required fields after save');
+            throw new Error(`Post-save verification failed: missing required fields: ${missingFields.join(', ')}`);
+        }
+        logger_1.logger.info({
+            uid,
+            path: `users/${uid}/exchangeConfig/current`,
+            hasExchange: savedData.exchange !== undefined,
+            hasApiKeyEncrypted: savedData.apiKeyEncrypted !== undefined,
+            hasSecretEncrypted: savedData.secretEncrypted !== undefined,
+            hasPassphraseEncrypted: savedData.passphraseEncrypted !== undefined,
+            hasTestnet: savedData.testnet !== undefined,
+            hasEnabled: savedData.enabled !== undefined,
+            hasCreatedAt: !!savedData.createdAt,
+            hasUpdatedAt: !!savedData.updatedAt,
+        }, '✅ Exchange config verified with all required fields');
+        return {
+            path: `users/${uid}/exchangeConfig/current`,
+            data: {
+                exchange: savedData.exchange || '',
+                hasKey: !!savedData.apiKeyEncrypted,
+                hasSecret: !!savedData.secretEncrypted,
+                hasPassphrase: !!savedData.passphraseEncrypted,
+                testnet: savedData.testnet || false,
+                enabled: savedData.enabled || false,
+                updatedAt: savedData.updatedAt,
+                createdAt: savedData.createdAt,
+            },
+        };
+    }
+    // ========== ERROR LOGGING METHODS ==========
+    async logError(errorId, error) {
+        const errorRef = db().collection('admin').doc('errors').collection('errors').doc(errorId);
+        await errorRef.set({
+            ...error,
+            timestamp: admin.firestore.Timestamp.now(),
+            errorId,
+        });
+        logger_1.logger.error({ errorId, ...error }, 'Error logged to admin/errors');
     }
     // ========== ACTIVITY LOGS COLLECTION METHODS ==========
     async logActivity(uid, type, metadata) {

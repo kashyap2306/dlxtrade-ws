@@ -81,7 +81,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
           logger.info({ uid: user.uid, symbol, requestId }, 'Fetching research data from CryptoQuant + LunarCrush + CoinAPI');
           
           // Initialize adapters
-          const { CryptoQuantAdapter } = await import('../services/cryptoquantAdapter');
+          // const { CryptoQuantAdapter } = await import('../services/cryptoquantAdapter'); // DISABLED: CryptoQuant removed
           const { LunarCrushAdapter } = await import('../services/lunarcrushAdapter');
           const { CoinAPIAdapter } = await import('../services/coinapiAdapter');
           
@@ -91,17 +91,17 @@ export async function researchRoutes(fastify: FastifyInstance) {
           let coinApiExchangeRateData: any = {};
           let coinApiFlatFileData: any = {};
 
-          // 1. Fetch CryptoQuant data
-          if (hasCryptoQuant) {
-            try {
-              const cryptoQuantAdapter = new CryptoQuantAdapter(integrations.cryptoquant.apiKey);
-              cryptoQuantData = await cryptoQuantAdapter.getAllData(symbol);
-              logger.info({ uid: user.uid, symbol, requestId }, 'CryptoQuant data fetched');
-            } catch (err: any) {
-              logger.error({ err: err.message, symbol, requestId }, 'CryptoQuant API call failed');
-              cryptoQuantData = { error: err.message };
-            }
-          }
+          // DISABLED: 1. Fetch CryptoQuant data - CryptoQuant removed
+          // if (hasCryptoQuant) {
+          //   try {
+          //     const cryptoQuantAdapter = new CryptoQuantAdapter(integrations.cryptoquant.apiKey);
+          //     cryptoQuantData = await cryptoQuantAdapter.getAllData(symbol);
+          //     logger.info({ uid: user.uid, symbol, requestId }, 'CryptoQuant data fetched');
+          //   } catch (err: any) {
+          //     logger.error({ err: err.message, symbol, requestId }, 'CryptoQuant API call failed');
+          //     cryptoQuantData = { error: err.message };
+          //   }
+          // }
 
           // 2. Fetch LunarCrush data
           if (hasLunarCrush) {
@@ -571,7 +571,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
     try {
       // Get enabled integrations
       const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
-      const { CryptoQuantAdapter } = await import('../services/cryptoquantAdapter');
+      // const { CryptoQuantAdapter } = await import('../services/cryptoquantAdapter'); // DISABLED: CryptoQuant removed
       const { LunarCrushAdapter } = await import('../services/lunarcrushAdapter');
       const { CoinAPIAdapter } = await import('../services/coinapiAdapter');
 
@@ -669,17 +669,17 @@ export async function researchRoutes(fastify: FastifyInstance) {
             }
           }
 
-          // Fetch CryptoQuant data
-          const cryptoquant = integrations['cryptoquant'];
-          if (cryptoquant) {
-            try {
-              const cryptoquantAdapter = new CryptoQuantAdapter(cryptoquant.apiKey);
-              const flowData = await cryptoquantAdapter.getExchangeFlow(coin.symbol);
-              onChainFlow = flowData.exchangeFlow || 0;
-            } catch (err) {
-              logger.debug({ err, symbol: coin.symbol }, 'CryptoQuant fetch error in fallback');
-            }
-          }
+          // DISABLED: Fetch CryptoQuant data - CryptoQuant removed
+          // const cryptoquant = integrations['cryptoquant'];
+          // if (cryptoquant) {
+          //   try {
+          //     const cryptoquantAdapter = new CryptoQuantAdapter(cryptoquant.apiKey);
+          //     const flowData = await cryptoquantAdapter.getExchangeFlow(coin.symbol);
+          //     onChainFlow = flowData.exchangeFlow || 0;
+          //   } catch (err) {
+          //     logger.debug({ err, symbol: coin.symbol }, 'CryptoQuant fetch error in fallback');
+          //   }
+          // }
 
           // Calculate RSI from price change (simplified)
           const rsi = coin.priceChangePercent24h > 0 ? 

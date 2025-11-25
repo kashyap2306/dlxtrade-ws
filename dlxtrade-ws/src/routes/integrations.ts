@@ -444,23 +444,31 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
           });
         }
 
-        try {
-          const { CryptoQuantAdapter } = await import('../services/cryptoquantAdapter');
-          const adapter = new CryptoQuantAdapter(body.apiKey);
-          // Test with a simple call
-          await adapter.getExchangeFlow('BTCUSDT');
-          
-          return {
-            valid: true,
-            apiName: 'cryptoquant',
-          };
-        } catch (error: any) {
-          return reply.code(400).send({
-            valid: false,
-            error: error.message || 'CryptoQuant API validation failed',
-            apiName: 'cryptoquant',
-          });
-        }
+        // DISABLED: CryptoQuant testing - CryptoQuant removed
+        // try {
+        //   const { CryptoQuantAdapter } = await import('../services/cryptoquantAdapter');
+        //   const adapter = new CryptoQuantAdapter(body.apiKey);
+        //   // Test with a simple call
+        //   await adapter.getExchangeFlow('BTCUSDT');
+
+        //   return {
+        //     valid: true,
+        //     apiName: 'cryptoquant',
+        //   };
+        // } catch (error: any) {
+        //   return reply.code(400).send({
+        //     valid: false,
+        //     error: error.message || 'CryptoQuant API validation failed',
+        //     apiName: 'cryptoquant',
+        //   });
+        // }
+
+        // Return disabled status for CryptoQuant
+        return reply.code(400).send({
+          valid: false,
+          error: 'CryptoQuant integration is disabled',
+          apiName: 'cryptoquant',
+        });
       } else if (body.apiName === 'lunarcrush') {
         if (!body.apiKey) {
           return reply.code(400).send({

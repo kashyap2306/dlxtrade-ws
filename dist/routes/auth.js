@@ -94,6 +94,7 @@ async function authRoutes(fastify) {
                 });
             }
             // Run idempotent user onboarding
+            logger_1.logger.info({ uid, email }, 'Starting user onboarding from afterSignIn');
             const result = await (0, userOnboarding_1.ensureUser)(uid, {
                 name,
                 email,
@@ -106,13 +107,37 @@ async function authRoutes(fastify) {
                     details: result.error
                 });
             }
-            // Get full user document to return
-            const userDoc = await firestoreAdapter_1.firestoreAdapter.getUser(uid);
+            // Post-onboarding verification: verify document exists in Firestore
+            logger_1.logger.info({ uid }, 'Verifying user document exists after onboarding');
+            let userDoc = await firestoreAdapter_1.firestoreAdapter.getUser(uid);
             if (!userDoc) {
-                logger_1.logger.error({ uid }, 'User document not found after onboarding');
-                return reply.code(500).send({
-                    error: 'User document not found after onboarding'
+                logger_1.logger.error({ uid }, '❌ User document not found after onboarding - CRITICAL ERROR');
+                // Retry onboarding once
+                logger_1.logger.info({ uid }, 'Retrying user onboarding after verification failure');
+                const retryResult = await (0, userOnboarding_1.ensureUser)(uid, {
+                    name,
+                    email,
+                    phone: null,
                 });
+                if (!retryResult.success) {
+                    logger_1.logger.error({ uid, error: retryResult.error }, 'Retry onboarding also failed');
+                    return reply.code(500).send({
+                        error: 'User document not found after onboarding and retry failed',
+                        details: retryResult.error
+                    });
+                }
+                // Try to get user doc again after retry
+                userDoc = await firestoreAdapter_1.firestoreAdapter.getUser(uid);
+                if (!userDoc) {
+                    logger_1.logger.error({ uid }, '❌ User document still not found after retry');
+                    return reply.code(500).send({
+                        error: 'User document creation failed after retry'
+                    });
+                }
+                logger_1.logger.info({ uid }, '✅ User document found after retry');
+            }
+            else {
+                logger_1.logger.info({ uid, hasEmail: !!userDoc.email, hasName: !!userDoc.name }, '✅ User document verified after onboarding');
             }
             // Convert timestamps for JSON response
             const response = { ...userDoc };

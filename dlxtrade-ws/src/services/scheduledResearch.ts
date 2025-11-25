@@ -180,59 +180,59 @@ export class ScheduledResearchService {
       // Track errors for detailed response
       const adapterErrors: Array<{ adapter: string; error: string; isAuthError: boolean }> = [];
 
-      // Fetch CryptoQuant data (if available)
-      if (hasCryptoQuant) {
-        try {
-          // Log API key status before creating adapter (for debugging)
-          const cryptoquantApiKey = integrations.cryptoquant.apiKey;
-          logger.info({ 
-            uid, 
-            symbol,
-            hasApiKey: !!cryptoquantApiKey,
-            apiKeyLength: cryptoquantApiKey?.length || 0,
-            apiKeyPrefix: cryptoquantApiKey?.substring(0, 4) || 'N/A',
-          }, 'CryptoQuant: Loading adapter with API key');
-          
-          const { CryptoQuantAdapter } = await import('./cryptoquantAdapter');
-          const cryptoQuantAdapter = new CryptoQuantAdapter(cryptoquantApiKey);
-          
-          logger.debug({ uid, symbol }, 'CryptoQuant: Fetching on-chain metrics and exchange flow');
-          
-          researchData.cryptoquant = {
-            onChainMetrics: await cryptoQuantAdapter.getOnChainMetrics(symbol),
-            exchangeFlow: await cryptoQuantAdapter.getExchangeFlow(symbol),
-          };
-          
-          logger.info({ uid, symbol }, 'CryptoQuant: Successfully fetched research data');
-      } catch (err: any) {
-          // Check if it's an auth error - if so, skip this user gracefully
-          const isAuthError = err instanceof AdapterError && err.details.isAuthError;
-          
-          // Store error to Firestore
-          await this.storeAdapterError(uid, 'CryptoQuant', err, symbol);
-          
-          // Track error for response
-          adapterErrors.push({
-            adapter: 'CryptoQuant',
-            error: err instanceof AdapterError ? err.details.errorMessage : err?.message || String(err),
-            isAuthError,
-          });
-          
-          if (isAuthError) {
-            logger.warn({ uid, symbol, adapter: 'CryptoQuant' }, 'CryptoQuant auth error - skipping user for this run');
-            // Skip this user for this run (graceful skip-on-auth-failure)
-            await this.notifyAdminAuthError(uid, 'CryptoQuant', err);
-            return {
-              success: false,
-              symbol,
-              errors: adapterErrors,
-            };
-          }
-          
-          logger.debug({ err: err.message, uid, symbol }, 'CryptoQuant fetch error (non-critical)');
-          // Continue with other APIs for non-auth errors
-        }
-      }
+      // DISABLED: Fetch CryptoQuant data (if available) - CryptoQuant removed
+      // if (hasCryptoQuant) {
+      //   try {
+      //     // Log API key status before creating adapter (for debugging)
+      //     const cryptoquantApiKey = integrations.cryptoquant.apiKey;
+      //     logger.info({
+      //       uid,
+      //       symbol,
+      //       hasApiKey: !!cryptoquantApiKey,
+      //       apiKeyLength: cryptoquantApiKey?.length || 0,
+      //       apiKeyPrefix: cryptoquantApiKey?.substring(0, 4) || 'N/A',
+      //     }, 'CryptoQuant: Loading adapter with API key');
+      //
+      //     const { CryptoQuantAdapter } = await import('./cryptoquantAdapter');
+      //     const cryptoQuantAdapter = new CryptoQuantAdapter(cryptoquantApiKey);
+      //
+      //     logger.debug({ uid, symbol }, 'CryptoQuant: Fetching on-chain metrics and exchange flow');
+      //
+      //     researchData.cryptoquant = {
+      //       onChainMetrics: await cryptoQuantAdapter.getOnChainMetrics(symbol),
+      //       exchangeFlow: await cryptoQuantAdapter.getExchangeFlow(symbol),
+      //     };
+      //
+      //     logger.info({ uid, symbol }, 'CryptoQuant: Successfully fetched research data');
+      // } catch (err: any) {
+      //     // Check if it's an auth error - if so, skip this user gracefully
+      //     const isAuthError = err instanceof AdapterError && err.details.isAuthError;
+      //
+      //     // Store error to Firestore
+      //     await this.storeAdapterError(uid, 'CryptoQuant', err, symbol);
+      //
+      //     // Track error for response
+      //     adapterErrors.push({
+      //       adapter: 'CryptoQuant',
+      //       error: err instanceof AdapterError ? err.details.errorMessage : err?.message || String(err),
+      //       isAuthError,
+      //     });
+      //
+      //     if (isAuthError) {
+      //       logger.warn({ uid, symbol, adapter: 'CryptoQuant' }, 'CryptoQuant auth error - skipping user for this run');
+      //       // Skip this user for this run (graceful skip-on-auth-failure)
+      //       await this.notifyAdminAuthError(uid, 'CryptoQuant', err);
+      //       return {
+      //         success: false,
+      //         symbol,
+      //         errors: adapterErrors,
+      //       };
+      //     }
+      //
+      //     logger.debug({ err: err.message, uid, symbol }, 'CryptoQuant fetch error (non-critical)');
+      //     // Continue with other APIs for non-auth errors
+      //   }
+      // }
 
       // Fetch LunarCrush data (if available)
       if (hasLunarCrush) {

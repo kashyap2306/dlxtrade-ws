@@ -50,34 +50,86 @@ async function ensureUser(uid, profileData) {
         const userRef = db.collection('users').doc(uid);
         const existingUser = await userRef.get();
         if (!existingUser.exists) {
-            // Create new user with full schema
+            // Create new user with full schema - ALL required fields
             const userData = {
                 uid,
-                name: profileData?.name || '',
                 email: profileData?.email || '',
+                name: profileData?.name || '',
                 phone: profileData?.phone || null,
-                createdAt: now,
-                updatedAt: now,
-                isApiConnected: false,
-                connectedExchanges: [],
+                role: 'user',
+                onboardingRequired: true,
+                autoTradeEnabled: false,
+                engineRunning: false,
+                hftRunning: false,
+                engineStatus: 'stopped',
+                preferences: {
+                    analysisType: 'technical',
+                    riskLevel: 'medium',
+                    tradingStyle: 'swing',
+                },
+                interestedAgents: [],
+                unlockedAgents: [],
+                tradingMarkets: [],
+                portfolioSize: 'small',
+                experienceLevel: 'beginner',
                 totalTrades: 0,
-                totalPnl: 0,
                 dailyPnl: 0,
                 weeklyPnl: 0,
                 monthlyPnl: 0,
-                unlockedAgents: [],
-                apiStatus: 'disconnected',
-                engineStatus: 'stopped',
-                hftRunning: false,
-                engineRunning: false,
-                autoTradeEnabled: false,
-                role: 'user',
-                profilePicture: null,
+                totalPnl: 0,
+                createdAt: now,
+                updatedAt: now,
                 lastLogin: now,
+                profilePicture: null,
+                // Additional fields for backward compatibility
+                isApiConnected: false,
+                connectedExchanges: [],
+                apiStatus: 'disconnected',
             };
+            // Write user document to Firestore
+            logger_1.logger.info({ uid, email: profileData?.email }, 'Saving user document to Firestore');
             await userRef.set(userData);
             createdNew = true;
-            logger_1.logger.info({ uid, createdNew: true }, '✅ User document created');
+            logger_1.logger.info({ uid, createdNew: true, path: `users/${uid}` }, '✅ User document created');
+            // Post-write verification: read back the document immediately
+            logger_1.logger.info({ uid }, 'Performing post-write verification');
+            const verification = await userRef.get();
+            if (!verification.exists) {
+                logger_1.logger.error({ uid, path: `users/${uid}` }, '❌ User document verification failed - document not found after write');
+                throw new Error('Post-write verification failed: user document not found');
+            }
+            const verifiedData = verification.data();
+            // Verify all required fields are present
+            const requiredFields = [
+                'uid', 'email', 'name', 'role', 'onboardingRequired',
+                'autoTradeEnabled', 'engineRunning', 'hftRunning', 'engineStatus',
+                'preferences', 'interestedAgents', 'unlockedAgents', 'tradingMarkets',
+                'portfolioSize', 'experienceLevel', 'totalTrades', 'dailyPnl',
+                'weeklyPnl', 'monthlyPnl', 'totalPnl', 'createdAt', 'updatedAt',
+                'lastLogin', 'profilePicture'
+            ];
+            const missingFields = requiredFields.filter(field => {
+                if (field === 'preferences') {
+                    return !verifiedData?.preferences ||
+                        !verifiedData.preferences.analysisType ||
+                        !verifiedData.preferences.riskLevel ||
+                        !verifiedData.preferences.tradingStyle;
+                }
+                return verifiedData?.[field] === undefined;
+            });
+            if (missingFields.length > 0) {
+                logger_1.logger.error({ uid, missingFields }, '❌ Post-write verification failed - missing required fields');
+                throw new Error(`Post-write verification failed: missing required fields: ${missingFields.join(', ')}`);
+            }
+            logger_1.logger.info({
+                uid,
+                path: `users/${uid}`,
+                hasEmail: !!verifiedData?.email,
+                hasName: !!verifiedData?.name,
+                hasPreferences: !!verifiedData?.preferences,
+                hasOnboardingRequired: verifiedData?.onboardingRequired !== undefined,
+                allFieldsPresent: true,
+            }, '✅ Post-write verification success - user document confirmed with all required fields');
         }
         else {
             // Update only missing fields (do not overwrite existing user-provided fields)
@@ -96,12 +148,46 @@ async function ensureUser(uid, profileData) {
             if (!existingData.phone && profileData?.phone) {
                 updateData.phone = profileData.phone;
             }
-            // Ensure required fields exist
-            if (existingData.isApiConnected === undefined) {
-                updateData.isApiConnected = false;
+            // Ensure ALL required fields exist
+            if (existingData.role === undefined) {
+                updateData.role = 'user';
             }
-            if (existingData.connectedExchanges === undefined) {
-                updateData.connectedExchanges = [];
+            if (existingData.onboardingRequired === undefined) {
+                updateData.onboardingRequired = false; // Existing users have completed onboarding
+            }
+            if (existingData.autoTradeEnabled === undefined) {
+                updateData.autoTradeEnabled = false;
+            }
+            if (existingData.engineRunning === undefined) {
+                updateData.engineRunning = false;
+            }
+            if (existingData.hftRunning === undefined) {
+                updateData.hftRunning = false;
+            }
+            if (existingData.engineStatus === undefined) {
+                updateData.engineStatus = 'stopped';
+            }
+            if (!existingData.preferences) {
+                updateData.preferences = {
+                    analysisType: 'technical',
+                    riskLevel: 'medium',
+                    tradingStyle: 'swing',
+                };
+            }
+            if (existingData.interestedAgents === undefined) {
+                updateData.interestedAgents = [];
+            }
+            if (existingData.unlockedAgents === undefined) {
+                updateData.unlockedAgents = [];
+            }
+            if (existingData.tradingMarkets === undefined) {
+                updateData.tradingMarkets = [];
+            }
+            if (existingData.portfolioSize === undefined) {
+                updateData.portfolioSize = 'small';
+            }
+            if (existingData.experienceLevel === undefined) {
+                updateData.experienceLevel = 'beginner';
             }
             if (existingData.totalTrades === undefined) {
                 updateData.totalTrades = 0;
@@ -118,29 +204,18 @@ async function ensureUser(uid, profileData) {
             if (existingData.monthlyPnl === undefined) {
                 updateData.monthlyPnl = 0;
             }
-            if (existingData.unlockedAgents === undefined) {
-                updateData.unlockedAgents = [];
+            if (existingData.profilePicture === undefined) {
+                updateData.profilePicture = null;
+            }
+            // Backward compatibility fields
+            if (existingData.isApiConnected === undefined) {
+                updateData.isApiConnected = false;
+            }
+            if (existingData.connectedExchanges === undefined) {
+                updateData.connectedExchanges = [];
             }
             if (existingData.apiStatus === undefined) {
                 updateData.apiStatus = 'disconnected';
-            }
-            if (existingData.engineStatus === undefined) {
-                updateData.engineStatus = 'stopped';
-            }
-            if (existingData.hftRunning === undefined) {
-                updateData.hftRunning = false;
-            }
-            if (existingData.engineRunning === undefined) {
-                updateData.engineRunning = false;
-            }
-            if (existingData.autoTradeEnabled === undefined) {
-                updateData.autoTradeEnabled = false;
-            }
-            if (existingData.role === undefined) {
-                updateData.role = 'user';
-            }
-            if (existingData.profilePicture === undefined) {
-                updateData.profilePicture = null;
             }
             if (Object.keys(updateData).length > 2) { // More than just updatedAt and lastLogin
                 await userRef.update(updateData);
@@ -331,23 +406,11 @@ async function ensureUser(uid, profileData) {
         }
         // 9. Initialize required collections and docs under users/{uid}
         const userDocRef = db.collection('users').doc(uid);
-        // users/{uid}/integrations: create default disabled docs
-        const integrations = ['binance', 'lunarcrush', 'cryptoquant', 'coinapi_market', 'coinapi_flatfile', 'coinapi_exchangerate'];
-        for (const apiName of integrations) {
-            const ref = userDocRef.collection('integrations').doc(apiName);
-            const doc = await ref.get();
-            if (!doc.exists) {
-                await ref.set({
-                    enabled: false,
-                    apiKey: '',
-                    secretKey: '',
-                    apiType: apiName.startsWith('coinapi_') ? apiName.replace('coinapi_', '') : undefined,
-                    updatedAt: now,
-                    verified: false,
-                    lastCheckedAt: null,
-                });
-            }
-        }
+        // NOTE: We do NOT create empty integration or exchangeConfig documents at signup.
+        // These documents are created ONLY when the user submits API keys via:
+        // - POST /api/integrations/update (creates users/{uid}/integrations/{apiName})
+        // - POST /api/exchange-config/update (creates users/{uid}/exchangeConfig/current)
+        // This ensures no empty documents exist at signup time.
         // users/{uid}/riskLimits/current
         const riskRef = userDocRef.collection('riskLimits').doc('current');
         const riskDoc = await riskRef.get();

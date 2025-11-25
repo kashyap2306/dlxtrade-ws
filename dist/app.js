@@ -68,6 +68,7 @@ const globalStats_1 = require("./routes/globalStats");
 const engineStatus_1 = require("./routes/engineStatus");
 const hftLogs_1 = require("./routes/hftLogs");
 const autoTrade_1 = require("./routes/autoTrade");
+const exchangeConfig_1 = require("./routes/exchangeConfig");
 async function buildApp() {
     const app = (0, fastify_1.default)({
         logger: logger_1.logger.child({ component: 'fastify' }),
@@ -155,6 +156,7 @@ async function buildApp() {
     await app.register(engineStatus_1.engineStatusRoutes, { prefix: '/api/engine-status' });
     await app.register(hftLogs_1.hftLogsRoutes, { prefix: '/api/hft-logs' });
     await app.register(autoTrade_1.autoTradeRoutes, { prefix: '/api/auto-trade' });
+    await app.register(exchangeConfig_1.exchangeConfigRoutes, { prefix: '/api/exchange-config' });
     console.log('✅ All routes registered:');
     console.log('  - /api/auth/*');
     console.log('  - /api/admin/*');

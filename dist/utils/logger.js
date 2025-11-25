@@ -6,7 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.logger = void 0;
 const pino_1 = __importDefault(require("pino"));
 exports.logger = (0, pino_1.default)({
-    level: process.env.LOG_LEVEL || 'info',
+    level: process.env.LOG_LEVEL || 'warn', // Changed from 'info' to 'warn' to reduce log spam
     transport: process.env.NODE_ENV === 'development'
         ? {
             target: 'pino-pretty',

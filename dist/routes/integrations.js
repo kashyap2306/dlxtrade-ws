@@ -91,12 +91,29 @@ async function integrationsRoutes(fastify) {
         }
         return result;
     });
-    // Update or create an integration
-    fastify.post('/update', {
+    // Update or create an integration  
+    // POST /api/integrations/save - Save research API integration
+    fastify.post('/save', {
         preHandler: [fastify.authenticate],
     }, async (request, reply) => {
         const user = request.user;
-        const body = integrationUpdateSchema.parse(request.body);
+        const uid = user.uid;
+        // Validate UID from auth (server-side only)
+        if (!uid || typeof uid !== 'string') {
+            logger_1.logger.error({ uid }, 'Invalid UID in request');
+            return reply.code(400).send({ error: 'Invalid user authentication' });
+        }
+        let body;
+        try {
+            body = integrationUpdateSchema.parse(request.body);
+        }
+        catch (err) {
+            logger_1.logger.error({ err, uid }, 'Invalid payload in save integration');
+            return reply.code(400).send({
+                error: 'Invalid request data',
+                details: err.errors || err.message
+            });
+        }
         // Handle CoinAPI sub-types
         let docName = body.apiName;
         if (body.apiName === 'coinapi' && body.apiType) {
@@ -121,10 +138,21 @@ async function integrationsRoutes(fastify) {
         }
         // If disabling, just update enabled status
         if (!body.enabled) {
-            await firestoreAdapter_1.firestoreAdapter.saveIntegration(user.uid, docName, {
-                enabled: false,
-            });
-            return { message: 'Integration disabled', apiName: body.apiName };
+            try {
+                const result = await firestoreAdapter_1.firestoreAdapter.saveIntegration(uid, docName, {
+                    enabled: false,
+                });
+                return {
+                    ok: true,
+                    doc: result
+                };
+            }
+            catch (error) {
+                logger_1.logger.error({ error: error.message, uid, docName }, 'Failed to disable integration');
+                return reply.code(500).send({
+                    error: `Failed to disable integration: ${error.message}`
+                });
+            }
         }
         // If enabling, require keys
         const updateData = {
@@ -139,71 +167,201 @@ async function integrationsRoutes(fastify) {
         if (body.apiType) {
             updateData.apiType = body.apiType;
         }
-        await firestoreAdapter_1.firestoreAdapter.saveIntegration(user.uid, docName, updateData);
-        // PART 2: Also save to apiKeys collection if Binance with validation
-        if (body.apiName === 'binance' && body.apiKey && body.secretKey) {
-            // PART 2: Validate Binance API keys via connectivity test
+        try {
+            logger_1.logger.info({ uid, integration: docName }, 'Saving integration');
+            // Encrypt and save with post-verification
+            const result = await firestoreAdapter_1.firestoreAdapter.saveIntegration(uid, docName, updateData);
+            logger_1.logger.info({ uid, path: result.path }, 'Write success');
+            return {
+                ok: true,
+                doc: result
+            };
+        }
+        catch (error) {
+            // Generate error ID for correlation
+            const errorId = `err_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            // Log error to admin/errors collection
             try {
-                const testAdapter = new binanceAdapter_1.BinanceAdapter(body.apiKey, body.secretKey, true); // Test with testnet first
-                const validation = await testAdapter.validateApiKey();
-                if (!validation.valid) {
-                    return reply.code(400).send({
-                        error: `Binance API key validation failed: ${validation.error || 'Invalid API key'}`,
-                    });
-                }
-                if (!validation.canTrade) {
-                    return reply.code(400).send({
-                        error: 'API key does not have trading permissions. Please enable Spot & Margin Trading in Binance API settings.',
-                    });
-                }
-                // Keys are valid - encrypt and save
-                const db = admin.firestore((0, firebase_1.getFirebaseAdmin)());
-                const apiKeysRef = db.collection('apiKeys').doc(user.uid);
-                await apiKeysRef.set({
-                    uid: user.uid,
-                    exchange: 'binance',
-                    apiKeyEncrypted: (0, keyManager_1.encrypt)(body.apiKey),
-                    apiSecretEncrypted: (0, keyManager_1.encrypt)(body.secretKey),
-                    createdAt: admin.firestore.Timestamp.now(),
-                    updatedAt: admin.firestore.Timestamp.now(),
-                    status: 'connected',
+                await firestoreAdapter_1.firestoreAdapter.logError(errorId, {
+                    uid,
+                    path: `users/${uid}/integrations/${docName}`,
+                    message: 'Failed to save integration',
+                    error: error.message,
+                    stack: error.stack,
+                    metadata: { docName, apiName: body.apiName },
                 });
-                // Also save to integrations subcollection
-                await firestoreAdapter_1.firestoreAdapter.saveApiKeyToCollection(user.uid, {
-                    publicKey: body.apiKey,
-                    secretKey: body.secretKey,
-                    exchange: 'binance',
-                });
-                // PART 2: Update user's apiConnected status and connectedExchanges
-                const userData = await firestoreAdapter_1.firestoreAdapter.getUser(user.uid);
-                const connectedExchanges = userData?.connectedExchanges || [];
-                if (!connectedExchanges.includes('binance')) {
-                    connectedExchanges.push('binance');
-                }
-                await firestoreAdapter_1.firestoreAdapter.createOrUpdateUser(user.uid, {
-                    isApiConnected: true,
-                    apiConnected: true, // Keep for backward compatibility
-                    connectedExchanges,
-                });
-                // PART 2: Log activity
-                await firestoreAdapter_1.firestoreAdapter.logActivity(user.uid, 'API_CONNECTED', {
-                    message: 'Binance API connected successfully',
-                    exchange: 'binance',
-                });
-                logger_1.logger.info({ uid: user.uid, exchange: 'binance' }, 'Binance API keys validated and saved');
             }
-            catch (error) {
-                logger_1.logger.error({ error: error.message, uid: user.uid }, 'Binance API key validation error');
+            catch (logError) {
+                logger_1.logger.error({ logError: logError.message }, 'Failed to log error to admin/errors');
+            }
+            logger_1.logger.error({ error: error.message, uid, docName, errorId }, 'Post-save failed');
+            // Check if it's an encryption error
+            if (error.message.includes('Encryption failed')) {
+                return reply.code(500).send({
+                    error: 'Failed to encrypt API key',
+                    errorId
+                });
+            }
+            // Retry once if post-save verification failed
+            if (error.message.includes('Post-save verification failed')) {
+                try {
+                    logger_1.logger.info({ uid, docName }, 'Retrying save after verification failure');
+                    const retryResult = await firestoreAdapter_1.firestoreAdapter.saveIntegration(uid, docName, updateData);
+                    logger_1.logger.info({ uid, path: retryResult.path }, 'Retry write success');
+                    return {
+                        ok: true,
+                        doc: retryResult
+                    };
+                }
+                catch (retryError) {
+                    logger_1.logger.error({ error: retryError.message, uid, docName, errorId }, 'Retry failed');
+                    return reply.code(500).send({
+                        error: 'Failed to save integration after retry',
+                        errorId
+                    });
+                }
+            }
+            return reply.code(500).send({
+                error: `Failed to save integration: ${error.message}`,
+                errorId
+            });
+        }
+    });
+    // Update or create an integration (alias for /save, for frontend compatibility)
+    fastify.post('/update', {
+        preHandler: [fastify.authenticate],
+    }, async (request, reply) => {
+        // Reuse the same logic as /save endpoint
+        const user = request.user;
+        const uid = user.uid;
+        // Validate UID from auth (server-side only)
+        if (!uid || typeof uid !== 'string') {
+            logger_1.logger.error({ uid }, 'Invalid UID in request');
+            return reply.code(400).send({ error: 'Invalid user authentication' });
+        }
+        let body;
+        try {
+            body = integrationUpdateSchema.parse(request.body);
+        }
+        catch (err) {
+            logger_1.logger.error({ err, uid }, 'Invalid payload in update integration');
+            return reply.code(400).send({
+                error: 'Invalid request data',
+                details: err.errors || err.message
+            });
+        }
+        // Handle CoinAPI sub-types
+        let docName = body.apiName;
+        if (body.apiName === 'coinapi' && body.apiType) {
+            // Accept both 'market' and 'coinapi_market' - normalize to 'coinapi_market'
+            const t = body.apiType.startsWith('coinapi_') ? body.apiType : `coinapi_${body.apiType}`;
+            docName = t;
+        }
+        // Validate required fields based on API type
+        if (body.apiName === 'binance') {
+            if (body.enabled && (!body.apiKey || !body.secretKey)) {
                 return reply.code(400).send({
-                    error: `Binance API key validation failed: ${error.message}`,
+                    error: 'Binance API requires both API key and secret key'
                 });
             }
         }
-        return {
-            message: 'Integration updated',
-            apiName: body.apiName,
+        else {
+            if (body.enabled && !body.apiKey) {
+                return reply.code(400).send({
+                    error: `${body.apiName} API requires an API key`
+                });
+            }
+        }
+        // If disabling, just update enabled status
+        if (!body.enabled) {
+            try {
+                const result = await firestoreAdapter_1.firestoreAdapter.saveIntegration(uid, docName, {
+                    enabled: false,
+                });
+                return {
+                    ok: true,
+                    doc: result
+                };
+            }
+            catch (error) {
+                logger_1.logger.error({ error: error.message, uid, docName }, 'Failed to disable integration');
+                return reply.code(500).send({
+                    error: `Failed to disable integration: ${error.message}`
+                });
+            }
+        }
+        // If enabling, require keys
+        const updateData = {
             enabled: true,
         };
+        if (body.apiKey) {
+            updateData.apiKey = body.apiKey;
+        }
+        if (body.secretKey) {
+            updateData.secretKey = body.secretKey;
+        }
+        if (body.apiType) {
+            updateData.apiType = body.apiType;
+        }
+        try {
+            logger_1.logger.info({ uid, integration: docName }, 'Updating integration');
+            // Encrypt and save with post-verification
+            const result = await firestoreAdapter_1.firestoreAdapter.saveIntegration(uid, docName, updateData);
+            logger_1.logger.info({ uid, path: result.path }, 'Write success');
+            return {
+                ok: true,
+                doc: result
+            };
+        }
+        catch (error) {
+            // Generate error ID for correlation
+            const errorId = `err_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            // Log error to admin/errors collection
+            try {
+                await firestoreAdapter_1.firestoreAdapter.logError(errorId, {
+                    uid,
+                    path: `users/${uid}/integrations/${docName}`,
+                    message: 'Failed to update integration',
+                    error: error.message,
+                    stack: error.stack,
+                    metadata: { docName, apiName: body.apiName },
+                });
+            }
+            catch (logError) {
+                logger_1.logger.error({ logError: logError.message }, 'Failed to log error to admin/errors');
+            }
+            logger_1.logger.error({ error: error.message, uid, docName, errorId }, 'Post-save failed');
+            // Check if it's an encryption error
+            if (error.message.includes('Encryption failed')) {
+                return reply.code(500).send({
+                    error: 'Failed to encrypt API key',
+                    errorId
+                });
+            }
+            // Retry once if post-save verification failed
+            if (error.message.includes('Post-save verification failed')) {
+                try {
+                    logger_1.logger.info({ uid, docName }, 'Retrying save after verification failure');
+                    const retryResult = await firestoreAdapter_1.firestoreAdapter.saveIntegration(uid, docName, updateData);
+                    logger_1.logger.info({ uid, path: retryResult.path }, 'Retry write success');
+                    return {
+                        ok: true,
+                        doc: retryResult
+                    };
+                }
+                catch (retryError) {
+                    logger_1.logger.error({ error: retryError.message, uid, docName, errorId }, 'Retry failed');
+                    return reply.code(500).send({
+                        error: 'Failed to save integration after retry',
+                        errorId
+                    });
+                }
+            }
+            return reply.code(500).send({
+                error: `Failed to update integration: ${error.message}`,
+                errorId
+            });
+        }
     });
     // Delete an integration
     fastify.post('/delete', {

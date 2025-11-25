@@ -1,7 +1,7 @@
 import { logger } from '../utils/logger';
 import { BinanceAdapter } from './binanceAdapter';
 import { firestoreAdapter } from './firestoreAdapter';
-import { CryptoQuantAdapter } from './cryptoquantAdapter';
+// import { CryptoQuantAdapter } from './cryptoquantAdapter'; // DISABLED: CryptoQuant removed
 import { LunarCrushAdapter } from './lunarcrushAdapter';
 import { CoinAPIAdapter } from './coinapiAdapter';
 import type { Orderbook, Trade } from '../types';
@@ -100,20 +100,20 @@ export class ResearchEngine {
       let bullishSignals = 0;
       let bearishSignals = 0;
 
-      // Analyze CryptoQuant data
-      if (integrations.cryptoquant) {
-        try {
-          const cryptoquantAdapter = new CryptoQuantAdapter(integrations.cryptoquant.apiKey);
-          const flowData = await cryptoquantAdapter.getExchangeFlow(symbol);
-          if (flowData.exchangeFlow && flowData.exchangeFlow > 0) {
-            bullishSignals++;
-          } else if (flowData.exchangeFlow && flowData.exchangeFlow < 0) {
-            bearishSignals++;
-          }
-        } catch (err) {
-          // Ignore errors
-        }
-      }
+      // DISABLED: Analyze CryptoQuant data - CryptoQuant removed
+      // if (integrations.cryptoquant) {
+      //   try {
+      //     const cryptoquantAdapter = new CryptoQuantAdapter(integrations.cryptoquant.apiKey);
+      //     const flowData = await cryptoquantAdapter.getExchangeFlow(symbol);
+      //     if (flowData.exchangeFlow && flowData.exchangeFlow > 0) {
+      //       bullishSignals++;
+      //     } else if (flowData.exchangeFlow && flowData.exchangeFlow < 0) {
+      //       bearishSignals++;
+      //     }
+      //   } catch (err) {
+      //     // Ignore errors
+      //   }
+      // }
 
       // Analyze LunarCrush sentiment
       if (integrations.lunarcrush) {
@@ -277,31 +277,31 @@ export class ResearchEngine {
       try {
         const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
         
-        // CryptoQuant data (if available)
-        if (integrations.cryptoquant) {
-          try {
-            const cryptoquantAdapter = new CryptoQuantAdapter(integrations.cryptoquant.apiKey);
-            const onChainData = await cryptoquantAdapter.getOnChainMetrics(symbol);
-            const flowData = await cryptoquantAdapter.getExchangeFlow(symbol);
-            
-            // Positive exchange flow (more inflow than outflow) is bullish
-            if (flowData.exchangeFlow && flowData.exchangeFlow > 0) {
-              accuracy += 0.05;
-            }
-            
-            // High whale transactions indicate strong interest
-            if (onChainData.whaleTransactions && onChainData.whaleTransactions > 10) {
-              accuracy += 0.03;
-            }
-            
-            // Active addresses indicate network activity
-            if (onChainData.activeAddresses && onChainData.activeAddresses > 100000) {
-              accuracy += 0.02;
-            }
-          } catch (err) {
-            logger.debug({ err, symbol }, 'CryptoQuant fetch error (non-critical)');
-          }
-        }
+        // DISABLED: CryptoQuant data (if available) - CryptoQuant removed
+        // if (integrations.cryptoquant) {
+        //   try {
+        //     const cryptoquantAdapter = new CryptoQuantAdapter(integrations.cryptoquant.apiKey);
+        //     const onChainData = await cryptoquantAdapter.getOnChainMetrics(symbol);
+        //     const flowData = await cryptoquantAdapter.getExchangeFlow(symbol);
+        //
+        //     // Positive exchange flow (more inflow than outflow) is bullish
+        //     if (flowData.exchangeFlow && flowData.exchangeFlow > 0) {
+        //       accuracy += 0.05;
+        //     }
+        //
+        //     // High whale transactions indicate strong interest
+        //     if (onChainData.whaleTransactions && onChainData.whaleTransactions > 10) {
+        //       accuracy += 0.03;
+        //     }
+        //
+        //     // Active addresses indicate network activity
+        //     if (onChainData.activeAddresses && onChainData.activeAddresses > 100000) {
+        //       accuracy += 0.02;
+        //     }
+        //   } catch (err) {
+        //     logger.debug({ err, symbol }, 'CryptoQuant fetch error (non-critical)');
+        //   }
+        // }
 
         // LunarCrush sentiment data (if available)
         if (integrations.lunarcrush) {

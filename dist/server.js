@@ -41,14 +41,16 @@ const firebase_1 = require("./utils/firebase");
 const firestoreInitializer_1 = require("./utils/firestoreInitializer");
 const firestoreSeed_1 = require("./utils/firestoreSeed");
 const firestoreMigration_1 = require("./utils/firestoreMigration");
-// Global error handlers to catch all errors
+// Global error handlers to catch all errors (DO NOT EXIT PROCESS)
 process.on('uncaughtException', (error) => {
-    console.error('UNCAUGHT EXCEPTION:', error);
-    logger_1.logger.error({ error }, 'Uncaught exception');
+    // Log error but don't crash the process
+    logger_1.logger.error({ error: error.message, stack: error.stack }, 'Uncaught exception - continuing');
+    // DO NOT call process.exit() - keep server running
 });
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('UNHANDLED REJECTION:', reason);
-    logger_1.logger.error({ reason, promise }, 'Unhandled rejection');
+    // Log error but don't crash the process
+    logger_1.logger.error({ reason: reason?.message || reason, promise }, 'Unhandled rejection - continuing');
+    // DO NOT call process.exit() - keep server running
 });
 async function start() {
     try {

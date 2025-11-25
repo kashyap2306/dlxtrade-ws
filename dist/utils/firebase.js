@@ -102,7 +102,10 @@ async function verifyFirebaseToken(token) {
     if (!firebaseAdmin) {
         initializeFirebaseAdmin();
     }
-    return admin.auth().verifyIdToken(token);
+    if (!firebaseAdmin) {
+        throw new Error('Firebase Admin not initialized - cannot verify token');
+    }
+    return admin.auth(firebaseAdmin).verifyIdToken(token);
 }
 function getFirebaseAdmin() {
     if (!firebaseAdmin) {
