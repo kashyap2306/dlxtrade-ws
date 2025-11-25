@@ -283,9 +283,6 @@ const TopNavigation = memo(() => {
           </div>
         </div>
       </header>
-
-      {/* Spacer */}
-      <div className="h-16" />
     </>
   );
 });

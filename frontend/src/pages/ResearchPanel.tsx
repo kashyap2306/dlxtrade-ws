@@ -313,7 +313,7 @@ export default function ResearchPanel() {
       <Sidebar onLogout={handleLogout} />
 
       <main className="min-h-screen">
-        <div className="max-w-7xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8 pt-20 lg:pt-8">
+        <div className="max-w-7xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8 pt-16">
           {/* Mobile: Sticky Research Header */}
           <div className="lg:hidden sticky top-16 z-40 -mx-4 px-4 py-4 bg-black/40 backdrop-blur-2xl border-b border-purple-500/30 shadow-lg shadow-purple-500/10 mb-6">
             <h2 className="text-lg font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent mb-3">

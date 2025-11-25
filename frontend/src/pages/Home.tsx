@@ -121,7 +121,7 @@ export default function Home() {
       {user && <Sidebar onMenuToggle={setMenuOpen} />}
 
       <main className="min-h-screen relative z-10">
-        <div className={`max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 ${user ? 'pt-20 lg:pt-8' : 'pt-8'}`}>
+        <div className={`max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 ${user ? 'pt-16' : 'pt-8'}`}>
           {user ? (
             <div className="mb-8">
               <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-cyan-400 bg-clip-text text-transparent mb-4">

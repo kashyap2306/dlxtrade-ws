@@ -143,7 +143,7 @@ export default function Settings() {
       <Sidebar onLogout={handleLogout} />
 
       <main className="min-h-screen">
-        <div className="max-w-4xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8 pt-20 lg:pt-8">
+        <div className="max-w-4xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8 pt-16">
           <section className="mb-6 sm:mb-8">
             <div className="space-y-2">
               <h1 className="text-3xl sm:text-4xl font-bold bg-gradient-to-r from-purple-300 via-pink-300 to-cyan-300 bg-clip-text text-transparent">

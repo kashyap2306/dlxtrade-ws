@@ -16,8 +16,7 @@ import {
   ChevronUpIcon,
 } from '@heroicons/react/24/outline';
 
-type ApiName = 'cryptoquant' | 'coinapi';
-type CoinApiType = 'market' | 'flatfile' | 'exchangerate';
+type ApiName = 'cryptocompare' | 'marketaux';
 
 interface ApiConfig {
   name: ApiName;
@@ -28,36 +27,57 @@ interface ApiConfig {
   gradient: string;
 }
 
+
 const API_CONFIGS: Record<ApiName, ApiConfig> = {
-  cryptoquant: {
-    name: 'cryptoquant',
-    displayName: 'CryptoQuant API',
+  cryptocompare: {
+    name: 'cryptocompare',
+    displayName: 'CryptoCompare API',
     requiresSecret: false,
-    description: 'On-chain analytics and market intelligence',
+    description: 'Cryptocurrency market data and price feeds',
     icon: '📊',
-    gradient: 'from-blue-500/20 via-cyan-500/20 to-teal-500/20',
+    gradient: 'from-orange-500/20 via-red-500/20 to-pink-500/20',
   },
-  coinapi: {
-    name: 'coinapi',
-    displayName: 'CoinAPI',
+  marketaux: {
+    name: 'marketaux',
+    displayName: 'MarketAux API',
     requiresSecret: false,
-    description: 'Cryptocurrency market data and historical prices',
+    description: 'Financial news and market sentiment analysis',
     icon: '🪙',
     gradient: 'from-green-500/20 via-emerald-500/20 to-teal-500/20',
   },
 };
 
-const COINAPI_TYPES: { value: CoinApiType; label: string; icon: string }[] = [
-  { value: 'market', label: 'Market API', icon: '📈' },
-  { value: 'flatfile', label: 'Flat File API', icon: '📄' },
-  { value: 'exchangerate', label: 'Exchange Rate API', icon: '💱' },
-];
-
-interface CoinApiIntegration {
-  enabled: boolean;
-  apiKey: string | null;
-  updatedAt?: string;
+interface AutoEnabledApiConfig {
+  name: string;
+  displayName: string;
+  description: string;
+  icon: React.ReactNode;
+  status: 'auto-enabled';
 }
+
+const AUTO_ENABLED_APIS: AutoEnabledApiConfig[] = [
+  {
+    name: 'googlefinance',
+    displayName: 'Google Finance',
+    description: 'Public financial data (auto-enabled)',
+    icon: '📈',
+    status: 'auto-enabled'
+  },
+  {
+    name: 'binance_public',
+    displayName: 'Binance Public API',
+    description: 'Public market data (auto-enabled)',
+    icon: '📊',
+    status: 'auto-enabled'
+  },
+  {
+    name: 'coingecko',
+    displayName: 'CoinGecko',
+    description: 'Cryptocurrency market data (auto-enabled)',
+    icon: '🪙',
+    status: 'auto-enabled'
+  }
+];
 
 interface Integration {
   enabled: boolean;
@@ -66,25 +86,17 @@ interface Integration {
   updatedAt?: string;
 }
 
-interface CoinApiData {
-  market?: CoinApiIntegration;
-  flatfile?: CoinApiIntegration;
-  exchangerate?: CoinApiIntegration;
-}
-
 export default function APIIntegrationsSection() {
   const { addNotification } = useNotificationContext();
   const { user } = useAuth();
-  const [integrations, setIntegrations] = useState<Record<ApiName, Integration | CoinApiData>>({
-    binance: { enabled: false, apiKey: null, secretKey: null },
-    cryptoquant: { enabled: false, apiKey: null, secretKey: null },
-    coinapi: {},
+  const [integrations, setIntegrations] = useState<Record<ApiName, Integration>>({
+    cryptocompare: { enabled: false, apiKey: null, secretKey: null },
+    marketaux: { enabled: false, apiKey: null, secretKey: null },
   });
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-  const [editingApi, setEditingApi] = useState<{ apiName: ApiName; apiType?: CoinApiType } | null>(null);
+  const [editingApi, setEditingApi] = useState<{ apiName: ApiName } | null>(null);
   const [expandedApi, setExpandedApi] = useState<ApiName | null>(null);
-  const [expandedCoinApiType, setExpandedCoinApiType] = useState<CoinApiType | null>(null);
   const [formData, setFormData] = useState<{ apiKey: string; secretKey: string }>({
     apiKey: '',
     secretKey: '',
@@ -100,12 +112,12 @@ export default function APIIntegrationsSection() {
       const response = await integrationsApi.load();
       const data = response.data;
 
-      const loaded: Record<ApiName, Integration | CoinApiData> = {
-        cryptoquant: { enabled: false, apiKey: null, secretKey: null },
-        coinapi: {},
+      const loaded: Record<ApiName, Integration> = {
+        cryptocompare: { enabled: false, apiKey: null, secretKey: null },
+        marketaux: { enabled: false, apiKey: null, secretKey: null },
       };
 
-      ['cryptoquant'].forEach((apiName) => {
+      ['cryptocompare', 'marketaux'].forEach((apiName) => {
         const api = apiName as ApiName;
         if (data[api]) {
           loaded[api] = {
@@ -116,14 +128,6 @@ export default function APIIntegrationsSection() {
           };
         }
       });
-
-      if (data.coinapi) {
-        loaded.coinapi = {
-          market: data.coinapi.market || { enabled: false, apiKey: null },
-          flatfile: data.coinapi.flatfile || { enabled: false, apiKey: null },
-          exchangerate: data.coinapi.exchangerate || { enabled: false, apiKey: null },
-        };
-      }
 
       setIntegrations(loaded);
     } catch (err: any) {
@@ -138,66 +142,7 @@ export default function APIIntegrationsSection() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  const getCoinApiStatus = (): 'fully' | 'partial' | 'none' => {
-    const coinApi = integrations.coinapi as CoinApiData;
-    const connected = [
-      coinApi.market?.enabled && coinApi.market?.apiKey,
-      coinApi.flatfile?.enabled && coinApi.flatfile?.apiKey,
-      coinApi.exchangerate?.enabled && coinApi.exchangerate?.apiKey,
-    ].filter(Boolean).length;
-
-    if (connected === 3) return 'fully';
-    if (connected > 0) return 'partial';
-    return 'none';
-  };
-
-  const handleCoinApiSubCardClick = (apiType: CoinApiType) => {
-    if (expandedCoinApiType === apiType) {
-      setExpandedCoinApiType(null);
-      setEditingApi(null);
-    } else {
-      setExpandedCoinApiType(apiType);
-      const coinApi = integrations.coinapi as CoinApiData;
-      const integration = coinApi[apiType];
-      if (integration?.enabled && integration?.apiKey) {
-        setEditingApi(null);
-      } else {
-        setEditingApi({ apiName: 'coinapi', apiType });
-      }
-      setFormData({ apiKey: '', secretKey: '' });
-    }
-  };
-
-  const handleToggle = async (apiName: ApiName, apiType?: CoinApiType) => {
-    if (apiName === 'coinapi' && apiType) {
-      const coinApi = integrations.coinapi as CoinApiData;
-      const current = coinApi[apiType];
-      const newEnabled = !current?.enabled;
-
-      if (!newEnabled) {
-        try {
-          setLoading(true);
-          await integrationsApi.update({
-            apiName: 'coinapi',
-            apiType,
-            enabled: false,
-          });
-          await loadIntegrations();
-          showToast(`${COINAPI_TYPES.find((t) => t.value === apiType)?.label} disabled`, 'success');
-        } catch (err: any) {
-          showToast(err.response?.data?.error || 'Error updating integration', 'error');
-        } finally {
-          setLoading(false);
-        }
-        return;
-      }
-
-      setExpandedCoinApiType(apiType);
-      setEditingApi({ apiName, apiType });
-      setFormData({ apiKey: '', secretKey: '' });
-      return;
-    }
-
+  const handleToggle = async (apiName: ApiName) => {
     const current = integrations[apiName] as Integration;
     const newEnabled = !current.enabled;
 
@@ -227,17 +172,17 @@ export default function APIIntegrationsSection() {
     setFormData({ apiKey: '', secretKey: '' });
   };
 
-  const handleEdit = (apiName: ApiName, apiType?: CoinApiType) => {
-    setEditingApi({ apiName, apiType });
+  const handleEdit = (apiName: ApiName) => {
+    setEditingApi({ apiName });
     setExpandedApi(apiName);
     setFormData({ apiKey: '', secretKey: '' });
   };
 
-  const handleRotate = (apiName: ApiName, apiType?: CoinApiType) => {
-    handleEdit(apiName, apiType);
+  const handleRotate = (apiName: ApiName) => {
+    handleEdit(apiName);
   };
 
-  const handleSave = async (apiName: ApiName, apiType?: CoinApiType) => {
+  const handleSave = async (apiName: ApiName) => {
     const config = API_CONFIGS[apiName];
 
     if (!formData.apiKey.trim()) {
@@ -252,11 +197,9 @@ export default function APIIntegrationsSection() {
 
     try {
       setLoading(true);
-      
-      // Research APIs (CryptoQuant, LunarCrush, CoinAPI) go to integrations only
+
       await integrationsApi.update({
         apiName,
-        apiType,
         enabled: true,
         apiKey: formData.apiKey.trim(),
         secretKey: config.requiresSecret ? formData.secretKey.trim() : undefined,
@@ -264,15 +207,11 @@ export default function APIIntegrationsSection() {
 
       await loadIntegrations();
       setEditingApi(null);
-      if (apiType) {
-        setExpandedCoinApiType(apiType);
-      }
       setFormData({ apiKey: '', secretKey: '' });
-      const apiDisplayName = apiType ? COINAPI_TYPES.find((t) => t.value === apiType)?.label : config.displayName;
-      showToast(`${apiDisplayName} saved successfully`, 'success');
+      showToast(`${config.displayName} saved successfully`, 'success');
       await addNotification({
         title: 'API Connected Successfully',
-        message: `${apiDisplayName} has been connected and configured`,
+        message: `${config.displayName} has been connected and configured`,
         type: 'success',
       });
     } catch (err: any) {
@@ -280,7 +219,7 @@ export default function APIIntegrationsSection() {
       showToast(errorMsg, 'error');
       await addNotification({
         title: 'API Connection Failed',
-        message: `${apiType ? COINAPI_TYPES.find((t) => t.value === apiType)?.label : config.displayName}: ${errorMsg}`,
+        message: `${config.displayName}: ${errorMsg}`,
         type: 'error',
       });
     } finally {
@@ -288,21 +227,17 @@ export default function APIIntegrationsSection() {
     }
   };
 
-  const handleDelete = async (apiName: ApiName, apiType?: CoinApiType) => {
-    const name = apiType ? COINAPI_TYPES.find((t) => t.value === apiType)?.label : API_CONFIGS[apiName].displayName;
+  const handleDelete = async (apiName: ApiName) => {
+    const name = API_CONFIGS[apiName].displayName;
     if (!confirm(`Are you sure you want to delete ${name} integration?`)) {
       return;
     }
 
     try {
       setLoading(true);
-      await integrationsApi.delete(apiName, apiType);
+      await integrationsApi.delete(apiName);
       await loadIntegrations();
-      if (apiType) {
-        setExpandedApi('coinapi');
-      } else {
-        setExpandedApi(null);
-      }
+      setExpandedApi(null);
       showToast(`${name} deleted`, 'success');
     } catch (err: any) {
       showToast(err.response?.data?.error || 'Error deleting integration', 'error');
@@ -315,23 +250,16 @@ export default function APIIntegrationsSection() {
     if (expandedApi === apiName) {
       setExpandedApi(null);
       setEditingApi(null);
-      if (apiName === 'coinapi') {
-        setExpandedCoinApiType(null);
-      }
     } else {
       setExpandedApi(apiName);
     }
   };
 
-  const isEditing = (apiName: ApiName, apiType?: CoinApiType) => {
-    return editingApi?.apiName === apiName && editingApi?.apiType === apiType;
+  const isEditing = (apiName: ApiName) => {
+    return editingApi?.apiName === apiName;
   };
 
-  const isConnected = (apiName: ApiName, apiType?: CoinApiType) => {
-    if (apiName === 'coinapi' && apiType) {
-      const coinApi = integrations.coinapi as CoinApiData;
-      return coinApi[apiType]?.enabled && coinApi[apiType]?.apiKey;
-    }
+  const isConnected = (apiName: ApiName) => {
     const integration = integrations[apiName] as Integration;
     return integration.enabled && integration.apiKey;
   };
@@ -349,7 +277,7 @@ export default function APIIntegrationsSection() {
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
-          {(['cryptoquant'] as ApiName[]).map((apiName) => {
+          {(['cryptocompare', 'marketaux'] as ApiName[]).map((apiName) => {
             const config = API_CONFIGS[apiName];
             const integration = integrations[apiName] as Integration;
             const isExpanded = expandedApi === apiName;
@@ -536,252 +464,37 @@ export default function APIIntegrationsSection() {
                 </div>
               </div>
             );
-          })}
+          })
 
-          {/* CoinAPI Card with Sub-types */}
-          <div
-            className={`relative bg-gradient-to-br ${API_CONFIGS.coinapi.gradient} backdrop-blur-xl rounded-2xl border border-purple-500/30 shadow-2xl transition-all duration-300 hover:scale-[1.02] hover:shadow-purple-500/20 ${
-              getCoinApiStatus() !== 'none' ? 'ring-2 ring-green-400/50' : ''
-            }`}
-          >
-            <div className="p-6">
-              <div className="flex items-start justify-between mb-4">
-                <div className="flex items-start space-x-4 flex-1">
-                  <div className="text-4xl">{API_CONFIGS.coinapi.icon}</div>
-                  <div className="flex-1">
-                    <div className="flex items-center space-x-2 mb-1">
-                      <h3 className="text-xl font-semibold text-white">{API_CONFIGS.coinapi.displayName}</h3>
-                      {getCoinApiStatus() === 'fully' ? (
-                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-500/20 text-green-300 border border-green-400/30">
-                          <CheckCircleIcon className="w-3 h-3 mr-1" />
-                          Fully Connected
+          {/* TODO: Re-enable coinapi section after fixing missing types and functions */}
+
+          {/* Auto-Enabled APIs Section */}
+          {AUTO_ENABLED_APIS.map((api) =>
+            <div
+              key={api.name}
+              className="relative bg-gradient-to-br from-slate-800/40 to-slate-900/40 backdrop-blur-xl rounded-2xl border border-purple-500/30 shadow-2xl transition-all duration-300"
+            >
+              <div className="p-6">
+                <div className="flex items-start justify-between mb-4">
+                  <div className="flex items-start space-x-4 flex-1">
+                    <div className="text-4xl">{api.icon}</div>
+                    <div className="flex-1">
+                      <div className="flex items-center space-x-2 mb-1">
+                        <h3 className="text-xl font-semibold text-white">{api.displayName}</h3>
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-500/20 text-blue-300 border border-blue-400/30">
+                          Auto-Enabled
                         </span>
-                      ) : getCoinApiStatus() === 'partial' ? (
-                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-500/20 text-yellow-300 border border-yellow-400/30">
-                          <CheckCircleIcon className="w-3 h-3 mr-1" />
-                          Partially Connected
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-500/20 text-gray-300 border border-gray-400/30">
-                          <XCircleIcon className="w-3 h-3 mr-1" />
-                          Not Connected
-                        </span>
-                      )}
+                      </div>
+                      <p className="text-sm text-gray-300">{api.description}</p>
                     </div>
-                    <p className="text-sm text-gray-300">{API_CONFIGS.coinapi.description}</p>
                   </div>
                 </div>
-                <button
-                  onClick={() => toggleExpand('coinapi')}
-                  className="ml-4 p-2 text-gray-400 hover:text-white transition-colors"
-                >
-                  {expandedApi === 'coinapi' ? (
-                    <ChevronUpIcon className="w-5 h-5" />
-                  ) : (
-                    <ChevronDownIcon className="w-5 h-5" />
-                  )}
-                </button>
               </div>
             </div>
-
-            {expandedApi === 'coinapi' && (
-              <div className="px-6 pb-6 animate-fade-in">
-                <div className="space-y-4">
-                  {COINAPI_TYPES.map((type) => {
-                    const coinApi = integrations.coinapi as CoinApiData;
-                    const integration = coinApi[type.value];
-                    const connected = isConnected('coinapi', type.value);
-                    const editing = isEditing('coinapi', type.value);
-                    const isSubExpanded = expandedCoinApiType === type.value;
-
-                    return (
-                      <div
-                        key={type.value}
-                        className="bg-slate-800/40 backdrop-blur-sm rounded-xl border border-purple-500/20 transition-all hover:border-purple-500/40 cursor-pointer"
-                        onClick={(e) => {
-                          if ((e.target as HTMLElement).closest('label, button')) return;
-                          handleCoinApiSubCardClick(type.value);
-                        }}
-                      >
-                        <div className="p-4">
-                          <div className="flex items-center justify-between mb-3">
-                            <div className="flex items-center space-x-3 flex-1">
-                              <span className="text-2xl">{type.icon}</span>
-                              <div className="flex-1">
-                                <h4 className="text-sm font-semibold text-white">{type.label}</h4>
-                                {connected ? (
-                                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-300 border border-green-400/30 mt-1">
-                                    Connected
-                                  </span>
-                                ) : (
-                                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-500/20 text-gray-300 border border-gray-400/30 mt-1">
-                                    Not Connected
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                            <div className="flex items-center space-x-2">
-                              <label 
-                                className="flex items-center cursor-pointer"
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={integration?.enabled || false}
-                                  onChange={() => handleToggle('coinapi', type.value)}
-                                  disabled={loading}
-                                  className="sr-only"
-                                />
-                                <div
-                                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                                    integration?.enabled ? 'bg-purple-500' : 'bg-gray-600'
-                                  }`}
-                                >
-                                  <span
-                                    className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
-                                      integration?.enabled ? 'translate-x-5' : 'translate-x-1'
-                                    }`}
-                                  />
-                                </div>
-                              </label>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleCoinApiSubCardClick(type.value);
-                                }}
-                                className="p-1 text-gray-400 hover:text-white transition-colors"
-                              >
-                                {isSubExpanded ? (
-                                  <ChevronUpIcon className="w-4 h-4" />
-                                ) : (
-                                  <ChevronDownIcon className="w-4 h-4" />
-                                )}
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-
-                        {isSubExpanded && (
-                          <div className="px-4 pb-4 pt-2 border-t border-purple-500/20 animate-fade-in" onClick={(e) => e.stopPropagation()}>
-                            {!editing ? (
-                              integration?.enabled && integration?.apiKey ? (
-                                <div className="space-y-3">
-                                  <div>
-                                    <label className="block text-xs font-medium text-gray-400 mb-1.5">API Key</label>
-                                    <div className="flex items-center space-x-2 p-3 bg-slate-900/50 backdrop-blur-sm rounded-lg border border-purple-500/20">
-                                      <KeyIcon className="w-4 h-4 text-purple-400" />
-                                      <span className="text-sm font-mono text-gray-300 flex-1">
-                                        {integration.apiKey}
-                                      </span>
-                                    </div>
-                                  </div>
-                                  <div className="flex flex-wrap gap-2">
-                                    <button
-                                      onClick={() => handleEdit('coinapi', type.value)}
-                                      className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
-                                    >
-                                      <PencilIcon className="w-3 h-3 mr-1.5" />
-                                      Edit
-                                    </button>
-                                    <button
-                                      onClick={() => handleRotate('coinapi', type.value)}
-                                      className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
-                                    >
-                                      <ArrowPathIcon className="w-3 h-3 mr-1.5" />
-                                      Rotate
-                                    </button>
-                                    <button
-                                      onClick={() => handleDelete('coinapi', type.value)}
-                                      className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-red-300 bg-red-900/30 backdrop-blur-sm border border-red-500/30 rounded-lg hover:bg-red-900/50 transition-all"
-                                    >
-                                      <TrashIcon className="w-3 h-3 mr-1.5" />
-                                      Delete
-                                    </button>
-                                  </div>
-                                </div>
-                              ) : (
-                                <div className="space-y-3">
-                                  <div>
-                                    <label className="block text-xs font-medium text-gray-400 mb-1.5">
-                                      API Key <span className="text-red-400">*</span>
-                                    </label>
-                                    <input
-                                      type="text"
-                                      className="w-full px-3 py-2 text-sm bg-slate-900/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
-                                      value={formData.apiKey}
-                                      onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
-                                      placeholder="Enter your API key"
-                                    />
-                                  </div>
-                                  <div className="flex gap-2">
-                                    <button
-                                      onClick={() => {
-                                        setEditingApi(null);
-                                        setExpandedCoinApiType(null);
-                                        setFormData({ apiKey: '', secretKey: '' });
-                                      }}
-                                      className="flex-1 px-3 py-2 text-xs font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
-                                      disabled={loading}
-                                    >
-                                      Cancel
-                                    </button>
-                                    <button
-                                      onClick={() => handleSave('coinapi', type.value)}
-                                      className="flex-1 px-3 py-2 text-xs font-medium text-white bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                                      disabled={loading}
-                                    >
-                                      {loading ? 'Saving...' : 'Save'}
-                                    </button>
-                                  </div>
-                                </div>
-                              )
-                            ) : (
-                              <div className="space-y-3">
-                                <div>
-                                  <label className="block text-xs font-medium text-gray-400 mb-1.5">
-                                    API Key <span className="text-red-400">*</span>
-                                  </label>
-                                  <input
-                                    type="text"
-                                    className="w-full px-3 py-2 text-sm bg-slate-900/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
-                                    value={formData.apiKey}
-                                    onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
-                                    placeholder="Enter your API key"
-                                  />
-                                </div>
-                                <div className="flex gap-2">
-                                  <button
-                                    onClick={() => {
-                                      setEditingApi(null);
-                                      setFormData({ apiKey: '', secretKey: '' });
-                                    }}
-                                    className="flex-1 px-3 py-2 text-xs font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
-                                    disabled={loading}
-                                  >
-                                    Cancel
-                                  </button>
-                                  <button
-                                    onClick={() => handleSave('coinapi', type.value)}
-                                    className="flex-1 px-3 py-2 text-xs font-medium text-white bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                                    disabled={loading}
-                                  >
-                                    {loading ? 'Saving...' : 'Save'}
-                                  </button>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
+          )}
         </div>
+        {toast && <Toast message={toast.message} type={toast.type} />}
       </div>
-      {toast && <Toast message={toast.message} type={toast.type} />}
     </>
   );
 }
