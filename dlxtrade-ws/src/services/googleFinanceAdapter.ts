@@ -102,3 +102,4 @@ export { googleFinanceAdapter };
 export const getExchangeRates = googleFinanceAdapter.getExchangeRates.bind(googleFinanceAdapter);
 export const GoogleFinanceAdapter = googleFinanceAdapter;
 
+

@@ -166,3 +166,4 @@ export function getValidSymbols(): string[] {
     return loadValidSymbols();
 }
 
+
