@@ -114,7 +114,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // POST /api/agents/submit-unlock-request - Submit unlock request (creates purchase)
+  // POST /api/agents/submit-unlock-request - Submit unlock request (creates unlock request)
   fastify.post('/submit-unlock-request', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Body: { agentId: string; agentName: string; fullName: string; phoneNumber: string; email: string } }>, reply: FastifyReply) => {
@@ -128,14 +128,13 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         email: z.string().email(),
       }).parse(request.body);
 
-      // Save purchase request to Firestore
+      // Create document in /agentUnlockRequests/{uid} with status "pending"
       const { getFirebaseAdmin } = await import('../utils/firebase');
       const admin = await import('firebase-admin');
       const db = getFirebaseAdmin().firestore();
-      
-      const purchaseRef = db.collection('agentPurchases').doc();
-      await purchaseRef.set({
-        id: purchaseRef.id,
+
+      const unlockRequestRef = db.collection('agentUnlockRequests').doc(user.uid);
+      await unlockRequestRef.set({
         uid: user.uid,
         agentId: body.agentId,
         agentName: body.agentName,
@@ -147,38 +146,24 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         createdAt: admin.firestore.Timestamp.now(),
       });
 
-      // Also create unlock request entry for backward compatibility
-      const unlockRequestRef = db.collection('agentUnlockRequests').doc();
-      await unlockRequestRef.set({
-        uid: user.uid,
-        agentId: body.agentId,
-        agentName: body.agentName,
-        fullName: body.fullName,
-        phoneNumber: body.phoneNumber,
-        email: body.email,
-        submittedAt: admin.firestore.Timestamp.now(),
-        status: 'pending',
-      });
-
       // Log activity
-      await firestoreAdapter.logActivity(user.uid, 'AGENT_PURCHASE_REQUEST_SUBMITTED', {
+      await firestoreAdapter.logActivity(user.uid, 'AGENT_UNLOCK_REQUEST_SUBMITTED', {
         agentId: body.agentId,
         agentName: body.agentName,
-        purchaseId: purchaseRef.id,
       });
 
-      logger.info({ uid: user.uid, agentName: body.agentName, purchaseId: purchaseRef.id }, 'Agent purchase request submitted');
-      return { 
+      logger.info({ uid: user.uid, agentName: body.agentName }, 'Agent unlock request submitted');
+      return {
         success: true,
-        message: 'Purchase request submitted successfully', 
-        purchaseId: purchaseRef.id 
+        message: 'Request sent to admin',
+        requestId: user.uid
       };
     } catch (err: any) {
       if (err instanceof z.ZodError) {
         return reply.code(400).send({ error: 'Invalid input', details: err.errors });
       }
-      logger.error({ err }, 'Error submitting purchase request');
-      return reply.code(500).send({ error: err.message || 'Error submitting purchase request' });
+      logger.error({ err }, 'Error submitting unlock request');
+      return reply.code(500).send({ error: err.message || 'Error submitting unlock request' });
     }
   });
 

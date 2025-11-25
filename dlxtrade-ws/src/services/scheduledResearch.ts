@@ -103,8 +103,18 @@ export class ScheduledResearchService {
         for (const userDoc of usersSnapshot.docs) {
           const uid = userDoc.id;
           try {
-            // CHECK AUTO-TRADE ENABLED: Only run scheduled research for users with autoTradeEnabled = true
+            // CHECK PREMIUM AGENT: Only run scheduled research for users with Premium Trading Agent unlocked
             const userData = userDoc.data();
+            const unlockedAgents = userData?.unlockedAgents || [];
+            const hasPremiumAgent = unlockedAgents.includes('Premium Trading Agent');
+
+            if (!hasPremiumAgent) {
+              logger.debug({ uid }, 'Skipping scheduled research - Premium Trading Agent not unlocked');
+              results.push({ uid, status: 'skipped', reason: 'Premium Agent not unlocked' });
+              continue;
+            }
+
+            // CHECK AUTO-TRADE ENABLED: Only run scheduled research for users with autoTradeEnabled = true
             const autoTradeEnabled = userData?.autoTradeEnabled || false;
 
             if (!autoTradeEnabled) {

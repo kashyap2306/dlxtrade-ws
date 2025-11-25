@@ -5,7 +5,6 @@ import { autoTradeApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { useAutoTradeMode } from '../hooks/useAutoTradeMode';
 import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
-import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
 import { useError } from '../contexts/ErrorContext';
 import { useNotificationContext } from '../contexts/NotificationContext';
 import { suppressConsoleError, getApiErrorMessage } from '../utils/errorHandler';
@@ -59,7 +58,7 @@ export default function AutoTrade() {
   const navigate = useNavigate();
   const { showError } = useError();
   const { addNotification } = useNotificationContext();
-  const { unlockedAgents, loading: agentsLoading } = useUnlockedAgents();
+  const { unlockedAgents, loading: agentsLoading, hasPremiumAgent } = useUnlockedAgents();
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<AutoTradeStatus | null>(null);
@@ -233,6 +232,31 @@ export default function AutoTrade() {
       config.takeProfitPct >= 0.5 && config.takeProfitPct <= 20
     );
   }, [config]);
+
+  // Premium Agent Check - Redirect if not unlocked
+  if (!hasPremiumAgent && !agentsLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-[#0a0f1c] via-[#101726] to-[#0a0f1c] flex items-center justify-center">
+        <div className="card max-w-md w-full mx-4 text-center">
+          <div className="w-16 h-16 mx-auto mb-4 bg-red-500/20 rounded-full flex items-center justify-center">
+            <svg className="w-8 h-8 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+          </div>
+          <h2 className="text-2xl font-bold text-white mb-2">Premium Feature Locked</h2>
+          <p className="text-gray-400 mb-6">
+            Auto Trade is only available to users with Premium Trading Agent unlocked.
+          </p>
+          <a
+            href="/agents"
+            className="inline-flex items-center px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all shadow-lg shadow-purple-500/30"
+          >
+            Unlock Premium Agent
+          </a>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#0a0f1c] via-[#101726] to-[#0a0f1c] pb-20 lg:pb-0 relative overflow-hidden">

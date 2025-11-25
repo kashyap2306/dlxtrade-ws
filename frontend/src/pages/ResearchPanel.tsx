@@ -50,7 +50,7 @@ export default function ResearchPanel() {
   }[]>([]);
   const [showMoreAnalysis, setShowMoreAnalysis] = useState(false);
   const { showError } = useError();
-  const { unlockedAgents, loading: agentsLoading } = useUnlockedAgents();
+  const { unlockedAgents, loading: agentsLoading, hasPremiumAgent } = useUnlockedAgents();
   const { addNotification } = useNotificationContext();
   const { user } = useAuth();
   const [isAdmin, setIsAdmin] = useState(false);
@@ -324,8 +324,8 @@ export default function ResearchPanel() {
 
       <Sidebar onLogout={handleLogout} />
 
-      {/* Agent Lock Banner */}
-      {unlockedAgents.length === 0 && !agentsLoading && (
+      {/* Premium Agent Lock Banner */}
+      {!hasPremiumAgent && !agentsLoading && (
         <div className="fixed top-16 left-0 right-0 z-50 bg-gradient-to-r from-red-900/90 to-orange-900/90 backdrop-blur-md border-b border-red-500/50 shadow-lg">
           <div className="max-w-7xl mx-auto px-4 py-3">
             <div className="flex items-center justify-between">
@@ -336,15 +336,15 @@ export default function ResearchPanel() {
                   </svg>
                 </div>
                 <div>
-                  <h3 className="text-sm font-semibold text-white">Deep Research Locked</h3>
-                  <p className="text-xs text-red-200">Unlock a Premium Trading Agent to enable research features</p>
+                  <h3 className="text-sm font-semibold text-white">Premium Agent Locked</h3>
+                  <p className="text-xs text-red-200">Unlock Premium Trading Agent to access Deep Research and Auto Trade.</p>
                 </div>
               </div>
               <Link
                 to="/agents"
                 className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-lg border border-white/20 transition-all duration-200 hover:border-white/40"
               >
-                Unlock Agent
+                Unlock Premium Agent
               </Link>
             </div>
           </div>

@@ -10,7 +10,14 @@ export const config = {
   jwtExpiry: '7d',
   
   database: {
-    url: process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/dlxagent',
+    // Use individual PostgreSQL env vars (Render provides these)
+    host: process.env.POSTGRES_HOST || process.env.PGHOST || 'localhost',
+    port: parseInt(process.env.POSTGRES_PORT || process.env.PGPORT || '5432', 10),
+    user: process.env.POSTGRES_USER || process.env.PGUSER || 'postgres',
+    password: process.env.POSTGRES_PASSWORD || process.env.PGPASSWORD || 'postgres',
+    database: process.env.POSTGRES_DATABASE || process.env.PGDATABASE || 'dlxagent',
+    // Fallback to DATABASE_URL if available (for other hosting providers)
+    url: process.env.DATABASE_URL,
   },
   
   redis: {

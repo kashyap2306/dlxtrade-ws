@@ -5,9 +5,11 @@ import Sidebar from '../components/Sidebar';
 import APIIntegrationsSection from '../components/APIIntegrationsSection';
 import ExchangeAccountsSection from '../components/ExchangeAccountsSection';
 import { useAuth } from '../hooks/useAuth';
+import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
 
 export default function Settings() {
   const { user } = useAuth();
+  const { hasPremiumAgent } = useUnlockedAgents();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -317,10 +319,35 @@ export default function Settings() {
             </form>
 
             {/* Exchange Accounts Section - Unified Exchange Management */}
-            <ExchangeAccountsSection />
+            {/* Premium Agent Required Sections */}
+            {hasPremiumAgent ? (
+              <>
+                <ExchangeAccountsSection />
 
-            {/* API Integrations Section */}
-            <APIIntegrationsSection />
+                {/* API Integrations Section */}
+                <APIIntegrationsSection />
+              </>
+            ) : (
+              <div className="card">
+                <div className="text-center py-12">
+                  <div className="w-16 h-16 mx-auto mb-4 bg-red-500/20 rounded-full flex items-center justify-center">
+                    <svg className="w-8 h-8 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                    </svg>
+                  </div>
+                  <h3 className="text-xl font-semibold text-white mb-2">Premium Features Locked</h3>
+                  <p className="text-gray-400 mb-6 max-w-md mx-auto">
+                    Trading API settings and Exchange connections are only available to users with Premium Trading Agent unlocked.
+                  </p>
+                  <a
+                    href="/agents"
+                    className="inline-flex items-center px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all shadow-lg shadow-purple-500/30"
+                  >
+                    Unlock Premium Agent
+                  </a>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </main>

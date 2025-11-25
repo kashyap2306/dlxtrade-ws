@@ -49,13 +49,13 @@ export async function researchRoutes(fastify: FastifyInstance) {
     try {
       logger.info({ uid: user.uid }, 'Starting deep research with 5 allowed providers');
 
-      // AGENT UNLOCK REQUIREMENT: Check if user has unlocked at least one Premium Trading Agent
+      // PREMIUM AGENT REQUIREMENT: Check if user has unlocked Premium Trading Agent
       const userData = await firestoreAdapter.getUser(user.uid);
       const unlockedAgents = userData?.unlockedAgents || [];
-      if (!unlockedAgents || unlockedAgents.length === 0) {
+      if (!unlockedAgents || !unlockedAgents.includes('Premium Trading Agent')) {
         return reply.code(403).send({
-          error: 'Agent unlock required',
-          reason: 'You must unlock at least one Premium Trading Agent to use Deep Research. Please visit the Agents section to unlock an agent.',
+          error: 'Premium Agent Locked',
+          message: 'Please unlock Premium Trading Agent to access Deep Research and Auto Trade.',
         });
       }
 
@@ -79,7 +79,37 @@ export async function researchRoutes(fastify: FastifyInstance) {
       }
 
       // Determine symbols to analyze
-      const symbols = body.symbols || (body.symbol ? [body.symbol] : ['BTCUSDT']);
+      let symbols = body.symbols || (body.symbol ? [body.symbol] : ['BTCUSDT']);
+
+      // Validate and normalize symbols
+      symbols = symbols.map(symbol => {
+        // Ensure symbol ends with USDT or USD
+        if (!symbol.endsWith('USDT') && !symbol.endsWith('USD')) {
+          symbol = symbol + 'USDT';
+        }
+        // Convert to uppercase
+        return symbol.toUpperCase();
+      });
+
+      // Validate symbols are in proper format (BASEQUOTE)
+      const validSymbols = symbols.filter(symbol => {
+        const parts = symbol.split(/(USDT|USD)$/);
+        return parts.length === 3 && parts[1].length >= 2 && parts[1].length <= 10;
+      });
+
+      if (validSymbols.length === 0) {
+        return reply.code(400).send({
+          error: 'Invalid symbols',
+          message: 'No valid trading symbols provided. Symbols must be in format like BTCUSDT, ETHUSDT, etc.',
+        });
+      }
+
+      symbols = validSymbols;
+
+      // Limit to maximum 5 symbols per request to prevent abuse
+      if (symbols.length > 5) {
+        symbols = symbols.slice(0, 5);
+      }
 
       logger.info({ uid: user.uid, symbols }, 'Starting research API calls for symbols');
 
@@ -132,9 +162,15 @@ export async function researchRoutes(fastify: FastifyInstance) {
           }
 
           // 4. Fetch Binance Public API data (auto-enabled, no API key required)
-          // Temporarily disabled due to module resolution issues
-          binancePublicData = { price: 0, volume24h: 0, priceChangePercent24h: 0 };
-          logger.info({ uid: user.uid, symbol }, 'Binance Public API temporarily disabled');
+          try {
+            const { BinanceAdapter } = await import('../services/binanceAdapter');
+            const binanceAdapter = new BinanceAdapter(); // Public API only, no keys needed
+            binancePublicData = await binanceAdapter.getPublicMarketData(symbol);
+            logger.info({ uid: user.uid, symbol }, 'Binance Public API data fetched');
+          } catch (err: any) {
+            logger.error({ err: err.message }, 'Binance Public API call failed - continuing with other providers');
+            binancePublicData = { error: err.message };
+          }
 
           // 5. Fetch CoinGecko data (auto-enabled, rate-limit safe)
           try {
@@ -154,52 +190,93 @@ export async function researchRoutes(fastify: FastifyInstance) {
 
           // Simple sentiment analysis from available providers
           const sentiments = [];
+          let successfulProviders = 0;
+          let avgSentiment = 0;
 
-          // MarketAux sentiment (if available)
-          if (marketAuxData.sentiment === 'bullish') sentiments.push(1);
-          else if (marketAuxData.sentiment === 'bearish') sentiments.push(-1);
-          else if (marketAuxData.sentiment) sentiments.push(0);
-
-          // CryptoCompare price change (if available)
-          if (cryptoCompareData.priceChangePercent24h > 1) sentiments.push(1);
-          else if (cryptoCompareData.priceChangePercent24h < -1) sentiments.push(-1);
-          else if (cryptoCompareData.priceChangePercent24h !== undefined) sentiments.push(0);
-
-          // Google Finance price change (if available)
-          if (googleFinanceData.priceChangePercent > 0.5) sentiments.push(1);
-          else if (googleFinanceData.priceChangePercent < -0.5) sentiments.push(-1);
-          else if (googleFinanceData.priceChangePercent !== undefined) sentiments.push(0);
-
-          // Binance Public API price change (if available)
-          if (binancePublicData.priceChangePercent24h > 0.5) sentiments.push(1);
-          else if (binancePublicData.priceChangePercent24h < -0.5) sentiments.push(-1);
-          else if (binancePublicData.priceChangePercent24h !== undefined) sentiments.push(0);
-
-          // CoinGecko price change (if available)
-          if (coinGeckoData.change24h > 1) sentiments.push(1);
-          else if (coinGeckoData.change24h < -1) sentiments.push(-1);
-          else if (coinGeckoData.change24h !== undefined) sentiments.push(0);
-
-          // Calculate average sentiment
-          const avgSentiment = sentiments.length > 0 ? sentiments.reduce((a, b) => a + b, 0) / sentiments.length : 0;
-
-          if (avgSentiment > 0.3) {
-            signal = 'BUY';
-            confidence = Math.min(0.8, 0.5 + Math.abs(avgSentiment) * 0.3);
-            reasoning = `Bullish signals dominate (${sentiments.filter(s => s > 0).length}/${sentiments.length} sources)`;
-          } else if (avgSentiment < -0.3) {
-            signal = 'SELL';
-            confidence = Math.min(0.8, 0.5 + Math.abs(avgSentiment) * 0.3);
-            reasoning = `Bearish signals dominate (${sentiments.filter(s => s < 0).length}/${sentiments.length} sources)`;
-          } else {
-            signal = 'HOLD';
-            confidence = 0.5;
-            reasoning = `Mixed signals - hold position (${sentiments.filter(s => s === 0).length}/${sentiments.length} neutral)`;
+          // MarketAux sentiment (if available and no error)
+          if (marketAuxData && !marketAuxData.error) {
+            successfulProviders++;
+            if (marketAuxData.sentiment === 'bullish') sentiments.push(1);
+            else if (marketAuxData.sentiment === 'bearish') sentiments.push(-1);
+            else if (marketAuxData.sentiment) sentiments.push(0);
           }
 
-          // Get price from available sources (prioritize Binance > Google > default)
-          const price = binancePublicData.price || googleFinanceData.price || 0;
-          const volume = binancePublicData.volume24h || googleFinanceData.volume || 0;
+          // CryptoCompare price change (if available and no error)
+          if (cryptoCompareData && !cryptoCompareData.error && cryptoCompareData.priceChangePercent24h !== undefined) {
+            successfulProviders++;
+            if (cryptoCompareData.priceChangePercent24h > 1) sentiments.push(1);
+            else if (cryptoCompareData.priceChangePercent24h < -1) sentiments.push(-1);
+            else sentiments.push(0);
+          }
+
+          // Google Finance price change (if available and no error)
+          if (googleFinanceData && !googleFinanceData.error && googleFinanceData.priceChangePercent !== undefined) {
+            successfulProviders++;
+            if (googleFinanceData.priceChangePercent > 0.5) sentiments.push(1);
+            else if (googleFinanceData.priceChangePercent < -0.5) sentiments.push(-1);
+            else sentiments.push(0);
+          }
+
+          // Binance Public API price change (if available and no error)
+          if (binancePublicData && !binancePublicData.error && binancePublicData.priceChangePercent24h !== undefined) {
+            successfulProviders++;
+            if (binancePublicData.priceChangePercent24h > 0.5) sentiments.push(1);
+            else if (binancePublicData.priceChangePercent24h < -0.5) sentiments.push(-1);
+            else sentiments.push(0);
+          }
+
+          // CoinGecko price change (if available and no error, not rate limited)
+          if (coinGeckoData && !coinGeckoData.error && !coinGeckoData.rateLimited && coinGeckoData.change24h !== undefined) {
+            successfulProviders++;
+            if (coinGeckoData.change24h > 1) sentiments.push(1);
+            else if (coinGeckoData.change24h < -1) sentiments.push(-1);
+            else sentiments.push(0);
+          }
+
+          // Calculate average sentiment only if we have data from at least 1 provider
+          if (sentiments.length > 0) {
+            avgSentiment = sentiments.reduce((a, b) => a + b, 0) / sentiments.length;
+
+            if (avgSentiment > 0.3) {
+              signal = 'BUY';
+              confidence = Math.min(0.85, 0.5 + Math.abs(avgSentiment) * 0.35);
+              reasoning = `Bullish signals dominate (${sentiments.filter(s => s > 0).length}/${sentiments.length} sources)`;
+            } else if (avgSentiment < -0.3) {
+              signal = 'SELL';
+              confidence = Math.min(0.85, 0.5 + Math.abs(avgSentiment) * 0.35);
+              reasoning = `Bearish signals dominate (${sentiments.filter(s => s < 0).length}/${sentiments.length} sources)`;
+            } else {
+              signal = 'HOLD';
+              confidence = 0.5;
+              reasoning = `Mixed signals - hold position (${sentiments.filter(s => s === 0).length}/${sentiments.length} neutral)`;
+            }
+          } else {
+            // No data available from any provider
+            signal = 'HOLD';
+            confidence = 0.5;
+            reasoning = `Insufficient data - all providers failed or returned no data (${successfulProviders} providers attempted)`;
+          }
+
+          // Get price from available sources (prioritize Binance > CoinGecko > Google > CryptoCompare > MarketAux)
+          let price = 0;
+          let volume = 0;
+
+          if (binancePublicData && !binancePublicData.error && binancePublicData.lastPrice) {
+            price = binancePublicData.lastPrice;
+            volume = binancePublicData.volume24h || volume;
+          } else if (coinGeckoData && !coinGeckoData.error && !coinGeckoData.rateLimited && coinGeckoData.price) {
+            price = coinGeckoData.price;
+            volume = coinGeckoData.volume24h || volume;
+          } else if (googleFinanceData && !googleFinanceData.error && googleFinanceData.price) {
+            price = googleFinanceData.price;
+            volume = googleFinanceData.volume || volume;
+          } else if (cryptoCompareData && !cryptoCompareData.error && cryptoCompareData.price) {
+            price = cryptoCompareData.price;
+            volume = cryptoCompareData.volume24h || volume;
+          } else if (marketAuxData && !marketAuxData.error && marketAuxData.price) {
+            price = marketAuxData.price;
+            volume = marketAuxData.volume || volume;
+          }
 
           // Save research result to Firestore for this user
           const researchResult = {
@@ -273,6 +350,16 @@ export async function researchRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest<{ Body: { symbols?: string[]; topN?: number } }>, reply: FastifyReply) => {
     const user = (request as any).user;
 
+    // PREMIUM AGENT REQUIREMENT: Check if user has unlocked Premium Trading Agent
+    const userData = await firestoreAdapter.getUser(user.uid);
+    const unlockedAgents = userData?.unlockedAgents || [];
+    if (!unlockedAgents || !unlockedAgents.includes('Premium Trading Agent')) {
+      return reply.code(403).send({
+        error: 'Premium Agent Locked',
+        message: 'Please unlock Premium Trading Agent to access Deep Research and Auto Trade.',
+      });
+    }
+
     // Simplified deep research endpoint
     return reply.send({
       message: 'Deep research completed',
@@ -289,13 +376,13 @@ export async function researchRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest<{ Body: { symbols?: string[]; topN?: number } }>, reply: FastifyReply) => {
     const user = (request as any).user;
 
-    // AGENT UNLOCK REQUIREMENT: Check if user has unlocked at least one Premium Trading Agent
+    // PREMIUM AGENT REQUIREMENT: Check if user has unlocked Premium Trading Agent
     const userData = await firestoreAdapter.getUser(user.uid);
     const unlockedAgents = userData?.unlockedAgents || [];
-    if (!unlockedAgents || unlockedAgents.length === 0) {
+    if (!unlockedAgents || !unlockedAgents.includes('Premium Trading Agent')) {
       return reply.code(403).send({
-        error: 'Agent unlock required',
-        reason: 'You must unlock at least one Premium Trading Agent to use Deep Research. Please visit the Agents section to unlock an agent.',
+        error: 'Premium Agent Locked',
+        message: 'Please unlock Premium Trading Agent to access Deep Research and Auto Trade.',
       });
     }
 

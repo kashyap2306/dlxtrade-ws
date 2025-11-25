@@ -70,6 +70,26 @@ async function seedAgents(db: admin.firestore.Firestore): Promise<void> {
     
     const agents = [
       {
+        id: 'premium_trading_agent',
+        name: 'Premium Trading Agent',
+        price: 999,
+        description: 'Master agent that unlocks full DLXTRADE system access - Deep Research, Auto Trade, Exchange connections, and all premium features',
+        features: [
+          'Unlocks Deep Research capabilities',
+          'Enables Auto Trade mode',
+          'Activates 5-minute background research engine',
+          'Provides Exchange API settings access',
+          'Grants Trading engines access',
+          'Full system premium access',
+        ],
+        icon: '👑',
+        category: 'Premium',
+        badge: 'MASTER',
+        displayOrder: 0,
+        enabled: true,
+        createdAt: admin.firestore.Timestamp.now(),
+      },
+      {
         id: 'airdrop_multiverse',
         name: 'Airdrop Multiverse Agent',
         price: 350,
@@ -83,6 +103,7 @@ async function seedAgents(db: admin.firestore.Firestore): Promise<void> {
         icon: '🎁',
         category: 'Airdrop',
         badge: 'Popular',
+        displayOrder: 1,
         createdAt: admin.firestore.Timestamp.now(),
       },
       {
@@ -99,6 +120,7 @@ async function seedAgents(db: admin.firestore.Firestore): Promise<void> {
         icon: '⚡',
         category: 'Arbitrage',
         badge: 'Premium',
+        displayOrder: 2,
         createdAt: admin.firestore.Timestamp.now(),
       },
       {
@@ -115,6 +137,7 @@ async function seedAgents(db: admin.firestore.Firestore): Promise<void> {
         icon: '🚀',
         category: 'Launchpad',
         badge: 'Hot',
+        displayOrder: 3,
         createdAt: admin.firestore.Timestamp.now(),
       },
       {
@@ -130,6 +153,7 @@ async function seedAgents(db: admin.firestore.Firestore): Promise<void> {
         ],
         icon: '🐋',
         category: 'Tracking',
+        displayOrder: 4,
         createdAt: admin.firestore.Timestamp.now(),
       },
       {
@@ -146,6 +170,7 @@ async function seedAgents(db: admin.firestore.Firestore): Promise<void> {
         ],
         icon: '🧠',
         category: 'AI Prediction',
+        displayOrder: 5,
         createdAt: admin.firestore.Timestamp.now(),
       },
       {
@@ -161,6 +186,7 @@ async function seedAgents(db: admin.firestore.Firestore): Promise<void> {
         ],
         icon: '📊',
         category: 'Copy Trading',
+        displayOrder: 6,
         createdAt: admin.firestore.Timestamp.now(),
       },
     ];

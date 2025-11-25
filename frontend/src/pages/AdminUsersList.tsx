@@ -95,6 +95,49 @@ export default function AdminUsersList() {
     setDeleteUser({ uid, email });
   };
 
+  const handleEnableAllAgentsForUser = async (targetUid: string | null) => {
+    try {
+      // If targetUid is null, enable for all users
+      const uids = targetUid ? [targetUid] : users.map(u => u.uid);
+
+      for (const uid of uids) {
+        // Unlock Premium Trading Agent
+        await adminApi.unlockAgent(uid, 'Premium Trading Agent');
+
+        // Unlock all other agents
+        const allAgentNames = [
+          'Airdrop Multiverse Agent',
+          'Liquidity Sniper & Arbitrage Agent',
+          'AI Launchpad Hunter & Presale Sniper',
+          'Whale Movement Tracker Agent',
+          'Pre-Market AI Alpha Agent',
+          'Whale Copy Trade Agent',
+        ];
+
+        for (const agentName of allAgentNames) {
+          try {
+            await adminApi.unlockAgent(uid, agentName);
+          } catch (err) {
+            // Continue if agent already unlocked
+            console.warn(`Agent ${agentName} may already be unlocked for user ${uid}`);
+          }
+        }
+
+        // Set autoTradeEnabled = true
+        // This would need a new API endpoint to update user settings
+        // For now, we'll unlock the agents and let the user know they need to enable auto trade manually
+      }
+
+      const message = targetUid
+        ? 'All agents unlocked successfully for user'
+        : 'All agents unlocked successfully for all users';
+      showToast(message, 'success');
+      loadUsers();
+    } catch (err: any) {
+      showToast(err.response?.data?.error || 'Error enabling all agents', 'error');
+    }
+  };
+
   const confirmDeleteUser = async () => {
     if (!deleteUser) return;
 
@@ -137,12 +180,20 @@ export default function AdminUsersList() {
           <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
             All Users
           </h1>
-          <button
-            onClick={() => navigate('/admin')}
-            className="btn btn-secondary"
-          >
-            Back to Dashboard
-          </button>
+          <div className="flex gap-3">
+            <button
+              onClick={() => handleEnableAllAgentsForUser(null)}
+              className="btn btn-primary bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600"
+            >
+              ⚡ Enable All Agents (Global)
+            </button>
+            <button
+              onClick={() => navigate('/admin')}
+              className="btn btn-secondary"
+            >
+              Back to Dashboard
+            </button>
+          </div>
         </div>
 
         <div className="card overflow-x-auto">
@@ -221,6 +272,12 @@ export default function AdminUsersList() {
                         className="btn btn-primary text-xs px-2 py-1"
                       >
                         Agent
+                      </button>
+                      <button
+                        onClick={() => handleEnableAllAgentsForUser(user.uid)}
+                        className="btn btn-success text-xs px-2 py-1"
+                      >
+                        All Agents
                       </button>
                       <button
                         onClick={() => handleDeleteUser(user.uid, user.email || 'unknown')}

@@ -61,9 +61,12 @@ export default function AgentsMarketplace() {
         badge: agent.badge,
         imageUrl: agent.imageUrl,
         enabled: agent.enabled !== false, // Default to enabled if not specified
+        displayOrder: agent.displayOrder || 999, // Default high number for sorting
       }));
       
-      setAgents(mappedAgents);
+      // Sort agents by displayOrder (Premium Trading Agent first)
+      const sortedAgents = mappedAgents.sort((a, b) => (a.displayOrder || 999) - (b.displayOrder || 999));
+      setAgents(sortedAgents);
 
       // Load unlocked agents from backend
       const unlocksResponse = await agentsApi.getUnlocks();

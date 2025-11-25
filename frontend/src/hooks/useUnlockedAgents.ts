@@ -81,6 +81,10 @@ export function useUnlockedAgents() {
     }
   };
 
-  return { unlockedAgents, loading, error, refresh: loadUnlockedAgents };
+  const hasPremiumAgent = unlockedAgents.some(agent =>
+    agent.agentName === 'Premium Trading Agent' || agent.agentId === 'premium_trading_agent'
+  );
+
+  return { unlockedAgents, loading, error, refresh: loadUnlockedAgents, hasPremiumAgent };
 }
 

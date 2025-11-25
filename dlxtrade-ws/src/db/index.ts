@@ -6,12 +6,25 @@ let pool: Pool | null = null;
 
 export function getPool(): Pool {
   if (!pool) {
-    pool = new Pool({
+    // Use individual PostgreSQL env vars for Render (preferred)
+    // or fallback to DATABASE_URL for other providers
+    const poolConfig = config.database.url ? {
       connectionString: config.database.url,
       max: 20,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 2000,
-    });
+    } : {
+      host: config.database.host,
+      port: config.database.port,
+      user: config.database.user,
+      password: config.database.password,
+      database: config.database.database,
+      max: 20,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 2000,
+    };
+
+    pool = new Pool(poolConfig);
 
     pool.on('error', (err) => {
       logger.error({ err }, 'Unexpected error on idle client');
