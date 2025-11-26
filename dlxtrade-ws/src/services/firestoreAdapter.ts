@@ -403,10 +403,16 @@ export class FirestoreAdapter {
     for (const [apiName, integration] of Object.entries(allIntegrations)) {
       if (integration.enabled && integration.apiKey) {
         try {
-          enabled[apiName] = {
-            apiKey: decrypt(integration.apiKey),
-            ...(integration.secretKey ? { secretKey: decrypt(integration.secretKey) } : {}),
-          };
+          const decryptedApiKey = decrypt(integration.apiKey);
+          const decryptedSecretKey = integration.secretKey ? decrypt(integration.secretKey) : null;
+
+          // Only include if we have a valid decrypted API key
+          if (decryptedApiKey) {
+            enabled[apiName] = {
+              apiKey: decryptedApiKey,
+              ...(decryptedSecretKey ? { secretKey: decryptedSecretKey } : {}),
+            };
+          }
         } catch (error: any) {
           logger.warn({ apiName, error: error.message }, 'Skipping corrupt integration due to decrypt error');
           // Skip this integration instead of failing entirely

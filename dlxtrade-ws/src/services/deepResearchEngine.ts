@@ -205,7 +205,7 @@ export class DeepResearchEngine {
       const newsDataStart = Date.now();
       try {
         if (!integrations.newsData?.apiKey) {
-          throw new Error('NewsData API key is required');
+          throw new Error('NewsData API key is missing - skipping gracefully');
         }
         newsData = await fetchNewsData(integrations.newsData.apiKey, symbol);
         providerLatencies.NewsData = Date.now() - newsDataStart;
@@ -214,8 +214,8 @@ export class DeepResearchEngine {
         console.log(`[NewsData] SUCCESS - ${symbol} (${providerLatencies.NewsData}ms)`);
         logger.info({ uid, symbol }, 'NewsData news data fetched successfully');
       } catch (err: any) {
-        console.log(`[NewsData] FAILED: ${err.message} - ${symbol}`);
-        logger.warn({ err: err.message, symbol }, 'NewsData news fetch failed');
+        console.log(`[NewsData] SKIPPED: ${err.message} - ${symbol}`);
+        logger.info({ uid, symbol }, 'NewsData skipped due to missing API key');
         newsData = { error: err.message, latencyMs: Date.now() - newsDataStart };
       }
 

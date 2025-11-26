@@ -34,17 +34,28 @@ export function encrypt(text: string): string {
   return Buffer.concat([salt, iv, tag, encrypted]).toString('base64');
 }
 
-export function decrypt(encryptedText: string): string {
-  const data = Buffer.from(encryptedText, 'base64');
-  const salt = data.slice(0, SALT_LENGTH);
-  const iv = data.slice(SALT_LENGTH, TAG_POSITION);
-  const tag = data.slice(TAG_POSITION, ENCRYPTED_POSITION);
-  const encrypted = data.slice(ENCRYPTED_POSITION);
-  
-  const decipher = crypto.createDecipheriv(ALGORITHM, getEncryptionKey(), iv);
-  decipher.setAuthTag(tag);
-  
-  return decipher.update(encrypted) + decipher.final('utf8');
+export function decrypt(encryptedText: string): string | null {
+  // Safety check: return null if encrypted value is missing or empty
+  if (!encryptedText || encryptedText.trim() === '') {
+    return null;
+  }
+
+  try {
+    const data = Buffer.from(encryptedText, 'base64');
+    const salt = data.slice(0, SALT_LENGTH);
+    const iv = data.slice(SALT_LENGTH, TAG_POSITION);
+    const tag = data.slice(TAG_POSITION, ENCRYPTED_POSITION);
+    const encrypted = data.slice(ENCRYPTED_POSITION);
+
+    const decipher = crypto.createDecipheriv(ALGORITHM, getEncryptionKey(), iv);
+    decipher.setAuthTag(tag);
+
+    return decipher.update(encrypted) + decipher.final('utf8');
+  } catch (error: any) {
+    // Return null instead of throwing error for safety
+    console.warn('Decrypt failed, returning null:', error.message);
+    return null;
+  }
 }
 
 export async function listKeys(): Promise<Omit<ApiKey, 'apiKey' | 'apiSecret'>[]> {

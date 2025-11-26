@@ -16,7 +16,7 @@ const hftSettingsSchema = z.object({
 });
 
 const hftQuerySchema = z.object({
-  limit: z.coerce.number().int().positive().max(500).optional().default(100),
+  limit: z.coerce.number().int().positive().optional().default(100).transform((val) => Math.min(val, 500)),
 });
 
 export async function hftRoutes(fastify: FastifyInstance) {

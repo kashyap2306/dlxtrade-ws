@@ -3,6 +3,39 @@ import axios from 'axios';
 
 const BASE_URL = 'https://pro-api.coinmarketcap.com/v1';
 
+// Parse trading pair symbols to base symbols for CoinMarketCap
+// BTCUSDT → BTC, ETHUSDT → ETH, etc.
+function parseCoinMarketCapSymbol(symbol: string): string {
+  // Common trading pairs - extract base symbol
+  const pairs = [
+    'BTCUSDT', 'BTC', 'ETHUSDT', 'ETH', 'BNBUSDT', 'BNB',
+    'ADAUSDT', 'ADA', 'SOLUSDT', 'SOL', 'DOTUSDT', 'DOT',
+    'DOGEUSDT', 'DOGE', 'AVAXUSDT', 'AVAX', 'LTCUSDT', 'LTC',
+    'LINKUSDT', 'LINK', 'UNIUSDT', 'UNI', 'ALGOUSDT', 'ALGO'
+  ];
+
+  // If it's already a base symbol, return as-is
+  if (pairs.includes(symbol.toUpperCase())) {
+    return symbol.toUpperCase();
+  }
+
+  // Extract base symbol from trading pairs
+  for (const pair of pairs) {
+    if (pair.endsWith('USDT') && symbol.toUpperCase() === pair) {
+      return pair.replace('USDT', '');
+    }
+  }
+
+  // Fallback: remove common quote currencies
+  let baseSymbol = symbol.toUpperCase();
+  baseSymbol = baseSymbol.replace(/USDT$/, '');
+  baseSymbol = baseSymbol.replace(/USD$/, '');
+  baseSymbol = baseSymbol.replace(/BTC$/, '');
+  baseSymbol = baseSymbol.replace(/ETH$/, '');
+
+  return baseSymbol;
+}
+
 // Simple in-memory cache for CoinMarketCap results
 interface CacheEntry {
   data: any;
@@ -67,7 +100,9 @@ async function attemptWithRetry(url: string, apiKey?: string): Promise<any> {
 export async function fetchCoinMarketCapMetadata(symbol: string, apiKey?: string): Promise<any> {
   const startTime = Date.now();
 
-  console.log('[CoinMarketCap] START - Fetching metadata for', symbol);
+  // Parse symbol for CoinMarketCap (BTCUSDT → BTC)
+  const cmcSymbol = parseCoinMarketCapSymbol(symbol);
+  console.log('[CoinMarketCap] START - Fetching metadata for', symbol, `(parsed: ${cmcSymbol})`);
 
   // Check cache first
   const cacheKey = `cmc_metadata_${symbol}`;
@@ -79,7 +114,7 @@ export async function fetchCoinMarketCapMetadata(symbol: string, apiKey?: string
 
   try {
     // First get the coin ID from symbol
-    const mapUrl = `${BASE_URL}/cryptocurrency/map?symbol=${symbol}`;
+    const mapUrl = `${BASE_URL}/cryptocurrency/map?symbol=${cmcSymbol}`;
     const mapResponse = await attemptWithRetry(mapUrl, apiKey);
 
     if (mapResponse === null) {
@@ -185,7 +220,9 @@ export async function fetchCoinMarketCapMetadata(symbol: string, apiKey?: string
 export async function fetchCoinMarketCapMarketData(symbol: string, apiKey?: string): Promise<any> {
   const startTime = Date.now();
 
-  console.log('[CoinMarketCap] START - Fetching market data for', symbol);
+  // Parse symbol for CoinMarketCap (BTCUSDT → BTC)
+  const cmcSymbol = parseCoinMarketCapSymbol(symbol);
+  console.log('[CoinMarketCap] START - Fetching market data for', symbol, `(parsed: ${cmcSymbol})`);
 
   // Check cache first (shorter TTL for market data)
   const cacheKey = `cmc_market_${symbol}`;
@@ -197,7 +234,7 @@ export async function fetchCoinMarketCapMarketData(symbol: string, apiKey?: stri
 
   try {
     // Get latest quotes
-    const quotesUrl = `${BASE_URL}/cryptocurrency/quotes/latest?symbol=${symbol}&convert=USD`;
+    const quotesUrl = `${BASE_URL}/cryptocurrency/quotes/latest?symbol=${cmcSymbol}&convert=USD`;
     const quotesResponse = await attemptWithRetry(quotesUrl, apiKey);
 
     if (quotesResponse === null) {
@@ -211,15 +248,15 @@ export async function fetchCoinMarketCapMarketData(symbol: string, apiKey?: stri
     }
 
     const quotesData = quotesResponse.data;
-    const coinQuotes = quotesData?.data?.[symbol]?.[0];
+    const coinQuotes = quotesData?.data?.[cmcSymbol]?.[0];
 
     if (!coinQuotes) {
-      console.log('[CoinMarketCap] NO DATA - Symbol not found');
+      console.log('[CoinMarketCap] NO DATA - Symbol not found:', cmcSymbol);
       return {
         success: true,
         marketData: {},
         latency: Date.now() - startTime,
-        message: "Symbol not found in CoinMarketCap"
+        message: `Symbol ${cmcSymbol} not found in CoinMarketCap`
       };
     }
 

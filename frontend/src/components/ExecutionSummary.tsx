@@ -18,7 +18,7 @@ export default function ExecutionSummary() {
     if (!user) return;
     setLoading(true);
     try {
-      const response = await executionApi.getLogs({ limit: 1000 });
+      const response = await executionApi.getLogs({ limit: 500 });
       const logs = response.data || [];
       
       const executed = logs.filter((log: any) => log.action === 'EXECUTED').length;
