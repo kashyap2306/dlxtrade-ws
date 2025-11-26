@@ -142,8 +142,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
           console.log('[RESEARCH API] Provider response summaries:', {
             BinancePublic: deepResult.raw.binancePublic?.price ? 'SUCCESS' : 'FAILED',
             CryptoCompare: deepResult.raw.cryptoCompare?.price ? 'SUCCESS' : 'FAILED',
-            CoinGecko: deepResult.raw.coinMarketCap?.price ? 'SUCCESS' : 'FAILED',
-            CryptoPanic: deepResult.raw.newsData?.sentiment !== undefined ? 'SUCCESS' : 'FAILED',
+            CoinMarketCap: deepResult.raw.coinMarketCap?.price ? 'SUCCESS' : 'FAILED',
+            NewsData: deepResult.raw.newsData?.sentiment !== undefined ? 'SUCCESS' : 'FAILED',
           });
 
           // Transform to frontend-compatible format
@@ -190,7 +190,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
       // Transform API calls to frontend format with real latency and market data
       const apiCalls = {
         price: {
-          success: deepResult.providersCalled.includes('BinancePublic') || deepResult.providersCalled.includes('CoinGecko'),
+          success: deepResult.providersCalled.includes('BinancePublic') || deepResult.providersCalled.includes('CoinMarketCap'),
           data: deepResult.raw.binancePublic?.price || deepResult.raw.coinMarketCap?.price,
           latency: Math.floor(Math.random() * 200) + 50 // Simulate realistic latency 50-250ms
         },
@@ -205,7 +205,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
           latency: Math.floor(Math.random() * 300) + 150 // Simulate realistic latency 150-450ms
         },
         news: {
-          success: deepResult.providersCalled.includes('CryptoPanic'),
+          success: deepResult.providersCalled.includes('NewsData'),
           latency: deepResult.raw.newsData?.latency || 0,
           articles: deepResult.raw.newsData?.articles || [],
           sentiment: deepResult.raw.newsData?.sentiment || 0.5
@@ -381,8 +381,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
       console.log('[RESEARCH API] Provider response summaries:', {
         BinancePublic: deepResult.raw.binancePublic?.price ? 'SUCCESS' : 'FAILED',
         CryptoCompare: deepResult.raw.cryptoCompare?.price ? 'SUCCESS' : 'FAILED',
-        CoinGecko: deepResult.raw.coinMarketCap?.price ? 'SUCCESS' : 'FAILED',
-            CryptoPanic: deepResult.raw.newsData?.sentiment !== undefined ? 'SUCCESS' : 'FAILED',
+        CoinMarketCap: deepResult.raw.coinMarketCap?.price ? 'SUCCESS' : 'FAILED',
+            NewsData: deepResult.raw.newsData?.sentiment !== undefined ? 'SUCCESS' : 'FAILED',
       });
 
       // Transform to frontend-compatible format
@@ -428,7 +428,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
       // Transform API calls to frontend format
       const apiCalls = {
         price: {
-          success: deepResult.providersCalled.includes('BinancePublic') || deepResult.providersCalled.includes('CoinGecko'),
+          success: deepResult.providersCalled.includes('BinancePublic') || deepResult.providersCalled.includes('CoinMarketCap'),
           data: deepResult.raw.binancePublic?.price || deepResult.raw.coinMarketCap?.price,
           latency: 100
         },
@@ -566,8 +566,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
       console.log('[RESEARCH API] Provider response summaries:', {
         BinancePublic: deepResult.raw.binancePublic?.price ? 'SUCCESS' : 'FAILED',
         CryptoCompare: deepResult.raw.cryptoCompare?.price ? 'SUCCESS' : 'FAILED',
-        CoinGecko: deepResult.raw.coinMarketCap?.price ? 'SUCCESS' : 'FAILED',
-            CryptoPanic: deepResult.raw.newsData?.sentiment !== undefined ? 'SUCCESS' : 'FAILED',
+        CoinMarketCap: deepResult.raw.coinMarketCap?.price ? 'SUCCESS' : 'FAILED',
+            NewsData: deepResult.raw.newsData?.sentiment !== undefined ? 'SUCCESS' : 'FAILED',
       });
 
       // Transform to frontend-compatible format
@@ -613,7 +613,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
       // Transform API calls to frontend format
       const apiCalls = {
         price: {
-          success: deepResult.providersCalled.includes('BinancePublic') || deepResult.providersCalled.includes('CoinGecko'),
+          success: deepResult.providersCalled.includes('BinancePublic') || deepResult.providersCalled.includes('CoinMarketCap'),
           data: deepResult.raw.binancePublic?.price || deepResult.raw.coinMarketCap?.price,
           latency: 100
         },

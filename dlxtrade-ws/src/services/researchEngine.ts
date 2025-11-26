@@ -26,12 +26,11 @@ export class ResearchEngine {
   private imbalanceHistory: Map<string, number[]> = new Map();
 
   async runResearch(symbol: string, uid: string): Promise<ResearchResult> {
-    // This method now works ENTIRELY on the 5 allowed research APIs only:
-    // - CryptoPanic (user-provided, optional)
-    // - CryptoCompare (user-provided)
-    // - Google Finance (auto-enabled)
+    // This method now works ENTIRELY on the 4 allowed research APIs only:
+    // - NewsData (user-provided, required)
+    // - CryptoCompare (user-provided, required)
     // - Binance Public API (auto-enabled)
-    // - CoinGecko (auto-enabled)
+    // - CoinMarketCap (user-provided, optional)
     //
     // NO trading exchange adapters (Binance, Bitget, BingX, WEEX) are used
     // NO orderbook data is used in research flow
@@ -251,9 +250,9 @@ export class ResearchEngine {
         }
       }
 
-      // CryptoPanic news data (user-provided, optional)
+      // NewsData news data (user-provided, required)
       try {
-        const newsData = await fetchNewsData(integrations.cryptopanic?.apiKey);
+        const newsData = await fetchNewsData(integrations.newsData?.apiKey, symbol);
         if (newsData.success && newsData.articles && newsData.articles.length > 0) {
           // News sentiment affects accuracy (0-1 scale)
           if (newsData.sentiment > 0.6) {
@@ -265,7 +264,7 @@ export class ResearchEngine {
           apiSuccessCount++;
         }
       } catch (err) {
-        logger.debug({ err, symbol }, 'CryptoPanic accuracy calculation error (non-critical)');
+        logger.debug({ err, symbol }, 'NewsData accuracy calculation error (non-critical)');
       }
 
       // CoinMarketCap data (optional)

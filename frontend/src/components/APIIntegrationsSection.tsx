@@ -13,6 +13,7 @@ import {
   PencilIcon,
   TrashIcon,
   ChevronDownIcon,
+  ChevronUpIcon,
   PlusIcon,
   ShieldCheckIcon,
 } from '@heroicons/react/24/outline';
@@ -329,15 +330,12 @@ export default function APIIntegrationsSection({ backupApis: propBackupApis, onB
 
   return (
     <>
-      <div className="border-t border-slate-700/50 pt-6 mt-6 px-1">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h3 className="text-2xl font-bold text-white mb-1">API Integrations</h3>
-            <p className="text-sm text-slate-400">
-              Connect data providers for market research and trading signals
-            </p>
-          </div>
-        </div>
+      <div className="border-t border-purple-500/20 pt-6 mt-6">
+        <h3 className="text-lg font-semibold text-white mb-4">Research API Integration</h3>
+        <p className="text-sm text-gray-400 mb-6">
+          Connect your API credentials. CryptoCompare and NewsData.io are required for research.
+          Binance and CoinMarketCap are optional backups. Binance Public API is automatically enabled.
+        </p>
 
         {loading && (
           <div className="flex items-center justify-center py-12">
@@ -354,6 +352,7 @@ export default function APIIntegrationsSection({ backupApis: propBackupApis, onB
               const integration = integrations[apiName];
               const isExpanded = expandedApi === apiName;
               const connected = isConnected(apiName);
+              const apiBackupApis = backupApis.filter(api => api.apiType === apiName);
 
               return (
                 <div
@@ -382,18 +381,32 @@ export default function APIIntegrationsSection({ backupApis: propBackupApis, onB
                             )}
                           </div>
                           <p className="text-sm text-gray-300">{config.description}</p>
+                          {apiBackupApis.length > 0 && (
+                            <p className="text-xs text-gray-500 mt-1">
+                              {apiBackupApis.length} backup{apiBackupApis.length > 1 ? 's' : ''} configured
+                            </p>
+                          )}
                         </div>
                       </div>
-                      <button
-                        onClick={() => toggleExpand(apiName)}
-                        className="ml-4 p-2 text-gray-400 hover:text-white transition-colors"
-                      >
-                        {isExpanded ? (
-                          <ChevronUpIcon className="w-5 h-5" />
-                        ) : (
-                          <ChevronDownIcon className="w-5 h-5" />
-                        )}
-                      </button>
+                      <div className="flex items-center gap-3">
+                        <ShieldCheckIcon
+                          className={`w-5 h-5 ${
+                            apiBackupApis.length > 0
+                              ? 'text-green-400'
+                              : 'text-gray-500'
+                          }`}
+                        />
+                        <button
+                          onClick={() => toggleExpand(apiName)}
+                          className="p-2 text-gray-400 hover:text-white transition-colors"
+                        >
+                          {isExpanded ? (
+                            <ChevronUpIcon className="w-5 h-5" />
+                          ) : (
+                            <ChevronDownIcon className="w-5 h-5" />
+                          )}
+                        </button>
+                      </div>
                     </div>
 
                     <div className="flex items-center justify-between">

@@ -1140,17 +1140,17 @@ export default function ResearchPanel() {
                               </div>
                             </ProviderCard>
 
-                            {/* CoinGecko API */}
+                            {/* CoinMarketCap API */}
                             <ProviderCard
                               icon={<span className="text-cyan-400 font-bold text-sm">🪙</span>}
-                              name="CoinGecko"
+                              name="CoinMarketCap"
                               description="Market Data"
                               status={
-                                result.raw?.coinGecko?.rateLimited ? 'Rate-Limited' :
+                                result.raw?.coinMarketCap?.rateLimited ? 'Rate-Limited' :
                                 result.apiCalls?.price?.success ? 'Success' : 'Failed'
                               }
                               latencyMs={result.apiCalls?.price?.latency || 0}
-                              jsonData={result.raw?.coinGecko || result.apiCalls?.price?.error}
+                              jsonData={result.raw?.coinMarketCap || result.apiCalls?.price?.error}
                             >
                               <div className="space-y-2">
                                 {result.raw?.coinGecko && !result.raw.coinGecko.rateLimited && (

@@ -80,7 +80,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         });
       }
     } else if (!isAutoEnabled) {
-      // Research APIs that require user-provided keys: CryptoPanic (optional), CryptoCompare
+      // Research APIs that require user-provided keys: NewsData (required), CryptoCompare (required)
       if (body.enabled && !body.apiKey) {
         return reply.code(400).send({
           error: `${body.apiName} API requires an API key`

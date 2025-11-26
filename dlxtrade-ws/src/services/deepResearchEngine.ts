@@ -601,7 +601,7 @@ export class DeepResearchEngine {
     // Find the highest priority working provider
     for (const providerName of priorityOrder) {
       const data = providerData[providerName as keyof typeof providerData];
-      if (data && !data.error && (!data.rateLimited || providerName !== 'CoinGecko')) {
+      if (data && !data.error && !data.rateLimited) {
         if (!primaryProvider) {
           primaryProvider = providerName;
           primaryPrice = data.price || 0;
@@ -715,11 +715,10 @@ export class DeepResearchEngine {
         createdAt: admin.firestore.Timestamp.now(),
         userId: uid,
         dataSources: {
-          cryptoPanic: result.providersCalled.includes('CryptoPanic'),
           cryptoCompare: result.providersCalled.includes('CryptoCompare'),
-          googleFinance: result.providersCalled.includes('GoogleFinance'),
+          newsData: result.providersCalled.includes('NewsData'),
+          coinMarketCap: result.providersCalled.includes('CoinMarketCap'),
           binancePublic: result.providersCalled.includes('BinancePublic'),
-          coinGecko: result.providersCalled.includes('CoinGecko'),
         },
         // Store detailed analysis
         deepAnalysis: {

@@ -9,7 +9,7 @@ import { AdapterError } from '../utils/adapterErrorHandler';
 /**
  * Scheduled Research Service
  * Runs deep research every 5 minutes for all active users
- * Uses ONLY 5 allowed research APIs: CryptoPanic, CryptoCompare, Google Finance, Binance Public API, CoinGecko
+ * Uses ONLY 4 allowed research APIs: NewsData, CryptoCompare, Binance Public API, CoinMarketCap
  *
  * STRICTLY FORBIDDEN:
  * - NO trading exchange APIs (Binance, Bitget, BingX, WEEX) - except Binance Public API for research only
