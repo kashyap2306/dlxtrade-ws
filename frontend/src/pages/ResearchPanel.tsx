@@ -10,6 +10,8 @@ import { useAuth } from '../hooks/useAuth';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { Link } from 'react-router-dom';
+import ProviderCard from '../components/ui/ProviderCard';
+import { formatPrice, formatVolume, formatPercentage, formatMarketCap } from '../utils/numberFormatters';
 
 interface ResearchLog {
   id: string;
@@ -42,6 +44,7 @@ export default function ResearchPanel() {
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [deepResearchLoading, setDeepResearchLoading] = useState(false);
   const [deepResearchResults, setDeepResearchResults] = useState<any[]>([]);
+  const [cooldownSeconds, setCooldownSeconds] = useState(0);
   const [researchProgress, setResearchProgress] = useState<{
     step: string;
     status: 'pending' | 'loading' | 'success' | 'error';
@@ -52,6 +55,16 @@ export default function ResearchPanel() {
   const { addNotification } = useNotificationContext();
   const { user } = useAuth();
   const [isAdmin, setIsAdmin] = useState(false);
+
+  // Countdown timer for cooldown
+  useEffect(() => {
+    if (cooldownSeconds > 0) {
+      const timer = setTimeout(() => {
+        setCooldownSeconds(cooldownSeconds - 1);
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [cooldownSeconds]);
 
   const checkAdmin = async () => {
     if (!user) return;
@@ -266,18 +279,30 @@ export default function ResearchPanel() {
       }
     } catch (err: any) {
       suppressConsoleError(err, 'deepResearch');
+      // Check if it's a cooldown error
+      if (err.response?.status === 429 && err.response?.data?.error) {
+        showError(err.response.data.message, 'warning');
+        // Don't start cooldown timer for cooldown errors
+        return;
+      }
+
       const { message, type } = getApiErrorMessage(err);
       showError(message, type);
-      
+
       // Mark all remaining steps as error
-      setResearchProgress(prev => prev.map((p, i) => 
-        p.status === 'pending' || p.status === 'loading' 
+      setResearchProgress(prev => prev.map((p, i) =>
+        p.status === 'pending' || p.status === 'loading'
           ? { ...p, status: 'error' as const, error: message }
           : p
       ));
+      // Don't start cooldown on error
+      return;
     } finally {
       setDeepResearchLoading(false);
     }
+
+    // Start 30-second cooldown after successful research
+    setCooldownSeconds(30);
   };
 
   const showToast = (message: string, type: 'success' | 'error') => {
@@ -323,13 +348,18 @@ export default function ResearchPanel() {
             <div className="flex gap-2">
               <button
                 onClick={handleDeepResearch}
-                disabled={deepResearchLoading}
+                disabled={deepResearchLoading || cooldownSeconds > 0}
                 className="flex-1 px-4 py-3 bg-gradient-to-r from-purple-600 via-pink-600 to-cyan-600 text-white font-semibold rounded-xl hover:from-purple-500 hover:via-pink-500 hover:to-cyan-500 transition-all duration-300 shadow-lg shadow-purple-500/40 hover:shadow-purple-500/60 disabled:opacity-50 disabled:cursor-not-allowed text-sm transform hover:scale-[1.02] active:scale-[0.98]"
               >
                 {deepResearchLoading ? (
                   <span className="flex items-center justify-center gap-2">
                     <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
                     Running Deep Research...
+                  </span>
+                ) : cooldownSeconds > 0 ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                    Cooldown: {cooldownSeconds}s
                   </span>
                 ) : (
                   'Run Deep Research'
@@ -1049,161 +1079,138 @@ export default function ResearchPanel() {
 
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             {/* Binance Public API */}
-                            <details className="group bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl overflow-hidden hover:bg-slate-800/70 transition-all duration-200">
-                              <summary className="flex items-center justify-between p-4 cursor-pointer">
-                                <div className="flex items-center gap-3">
-                                  <div className="w-8 h-8 rounded-lg bg-orange-500/20 flex items-center justify-center">
-                                    <span className="text-orange-400 font-bold text-sm">B</span>
-                                  </div>
-                                  <div>
-                                    <div className="text-sm font-medium text-white">Binance Public</div>
-                                    <div className="text-xs text-slate-400">Price & Orderbook</div>
-                                  </div>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <span className={`px-2 py-1 rounded text-xs font-medium ${
-                                    result.apiCalls?.price?.success ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
-                                  }`}>
-                                    {result.apiCalls?.price?.success ? 'Success' : 'Failed'}
-                                  </span>
-                                  <span className="text-xs text-slate-400">{result.apiCalls?.price?.latency || 0}ms</span>
-                                  <svg className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                                  </svg>
-                                </div>
-                              </summary>
-                              <div className="px-4 pb-4 border-t border-slate-600/20">
-                                <div className="mt-3 bg-slate-900/50 rounded-lg p-3 font-mono text-xs text-slate-300 max-h-48 overflow-y-auto">
-                                  <pre className="whitespace-pre-wrap break-all">
-                                    {JSON.stringify(result.apiCalls?.price?.data || result.apiCalls?.orderbook?.data || result.apiCalls?.price?.error || 'No data available', null, 2)}
-                                  </pre>
-                                </div>
-                              </div>
-                            </details>
+                            <ProviderCard
+                              icon={<span className="text-orange-400 font-bold text-sm">B</span>}
+                              name="Binance Public"
+                              description="Price & Orderbook"
+                              status={result.apiCalls?.price?.success ? 'Success' : 'Failed'}
+                              latencyMs={result.apiCalls?.price?.latency || 0}
+                              jsonData={result.apiCalls?.price?.data || result.apiCalls?.orderbook?.data || result.apiCalls?.price?.error}
+                            />
 
                             {/* CryptoCompare API */}
-                            <details className="group bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl overflow-hidden hover:bg-slate-800/70 transition-all duration-200">
-                              <summary className="flex items-center justify-between p-4 cursor-pointer">
-                                <div className="flex items-center gap-3">
-                                  <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center">
-                                    <span className="text-blue-400 font-bold text-sm">C</span>
-                                  </div>
-                                  <div>
-                                    <div className="text-sm font-medium text-white">CryptoCompare</div>
-                                    <div className="text-xs text-slate-400">OHLC Candles</div>
-                                  </div>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <span className={`px-2 py-1 rounded text-xs font-medium ${
-                                    result.apiCalls?.kline?.success ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
-                                  }`}>
-                                    {result.apiCalls?.kline?.success ? 'Success' : 'Failed'}
-                                  </span>
-                                  <span className="text-xs text-slate-400">{result.apiCalls?.kline?.latency || 0}ms</span>
-                                  <svg className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                                  </svg>
-                                </div>
-                              </summary>
-                              <div className="px-4 pb-4 border-t border-slate-600/20">
-                                <div className="mt-3 bg-slate-900/50 rounded-lg p-3 font-mono text-xs text-slate-300 max-h-48 overflow-y-auto">
-                                  <pre className="whitespace-pre-wrap break-all">
-                                    {JSON.stringify(result.apiCalls?.kline?.data || result.apiCalls?.kline?.error || 'No data available', null, 2)}
-                                  </pre>
-                                </div>
+                            <ProviderCard
+                              icon={<span className="text-blue-400 font-bold text-sm">🟦</span>}
+                              name="CryptoCompare"
+                              description="OHLC Candles"
+                              status={result.apiCalls?.kline?.success ? 'Success' : 'Failed'}
+                              latencyMs={result.apiCalls?.kline?.latency || 0}
+                              jsonData={result.apiCalls?.kline?.data || result.apiCalls?.kline?.error}
+                            >
+                              <div className="space-y-2">
+                                {result.apiCalls?.kline?.data && (
+                                  <>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-sm text-slate-400">Price:</span>
+                                      <span className="text-sm font-medium text-white">
+                                        {formatPrice(result.apiCalls.kline.data.price || 0)}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-sm text-slate-400">Volume (24h):</span>
+                                      <span className="text-sm font-medium text-white">
+                                        {formatVolume(result.apiCalls.kline.data.volume24h || 0)} BTC
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-sm text-slate-400">Change (24h):</span>
+                                      <span className={`text-sm font-medium ${
+                                        (result.apiCalls.kline.data.change24h || 0) >= 0 ? 'text-green-400' : 'text-red-400'
+                                      }`}>
+                                        {formatPercentage(result.apiCalls.kline.data.change24h || 0)}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-sm text-slate-400">Market Cap:</span>
+                                      <span className="text-sm font-medium text-white">
+                                        {formatMarketCap(result.apiCalls.kline.data.marketCap || 0)}
+                                      </span>
+                                    </div>
+                                  </>
+                                )}
                               </div>
-                            </details>
+                            </ProviderCard>
 
                             {/* CoinGecko API */}
-                            <details className="group bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl overflow-hidden hover:bg-slate-800/70 transition-all duration-200">
-                              <summary className="flex items-center justify-between p-4 cursor-pointer">
-                                <div className="flex items-center gap-3">
-                                  <div className="w-8 h-8 rounded-lg bg-cyan-500/20 flex items-center justify-center">
-                                    <span className="text-cyan-400 font-bold text-sm">G</span>
-                                  </div>
-                                  <div>
-                                    <div className="text-sm font-medium text-white">CoinGecko</div>
-                                    <div className="text-xs text-slate-400">Market Data</div>
-                                  </div>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <span className={`px-2 py-1 rounded text-xs font-medium ${
-                                    result.apiCalls?.price?.success ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
-                                  }`}>
-                                    {result.apiCalls?.price?.success ? 'Success' : 'Failed'}
-                                  </span>
-                                  <span className="text-xs text-slate-400">{result.apiCalls?.price?.latency || 0}ms</span>
-                                  <svg className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                                  </svg>
-                                </div>
-                              </summary>
-                              <div className="px-4 pb-4 border-t border-slate-600/20">
-                                <div className="mt-3 bg-slate-900/50 rounded-lg p-3 font-mono text-xs text-slate-300 max-h-48 overflow-y-auto">
-                                  <pre className="whitespace-pre-wrap break-all">
-                                    {JSON.stringify(result.raw?.coinGecko || result.apiCalls?.price?.error || 'No data available', null, 2)}
-                                  </pre>
-                                </div>
-                              </div>
-                            </details>
-
-                            {/* Crypto News */}
-                            <details className="group bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl overflow-hidden hover:bg-slate-800/70 transition-all duration-200">
-                              <summary className="flex items-center justify-between p-4 cursor-pointer">
-                                <div className="flex items-center gap-3">
-                                  <div className="w-8 h-8 rounded-lg bg-green-500/20 flex items-center justify-center">
-                                    <span className="text-green-400 font-bold text-sm">📰</span>
-                                  </div>
-                                  <div>
-                                    <div className="text-sm font-medium text-white">Crypto News</div>
-                                    <div className="text-xs text-slate-400 flex items-center gap-2">
-                                      Sentiment: {result.raw?.cryptoPanic?.sentiment ? `${(result.raw.cryptoPanic.sentiment * 100).toFixed(0)}%` : 'N/A'}
-                                      {result.raw?.cryptoPanic?.sentiment > 0.6 && '📈'}
-                                      {result.raw?.cryptoPanic?.sentiment < 0.4 && '📉'}
-                                      {result.raw?.cryptoPanic?.sentiment >= 0.4 && result.raw?.cryptoPanic?.sentiment <= 0.6 && '➡️'}
+                            <ProviderCard
+                              icon={<span className="text-cyan-400 font-bold text-sm">🪙</span>}
+                              name="CoinGecko"
+                              description="Market Data"
+                              status={
+                                result.raw?.coinGecko?.rateLimited ? 'Rate-Limited' :
+                                result.apiCalls?.price?.success ? 'Success' : 'Failed'
+                              }
+                              latencyMs={result.apiCalls?.price?.latency || 0}
+                              jsonData={result.raw?.coinGecko || result.apiCalls?.price?.error}
+                            >
+                              <div className="space-y-2">
+                                {result.raw?.coinGecko && !result.raw.coinGecko.rateLimited && (
+                                  <>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-sm text-slate-400">Price:</span>
+                                      <span className="text-sm font-medium text-white">
+                                        {formatPrice(result.raw.coinGecko.price || 0)}
+                                      </span>
                                     </div>
-                                  </div>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <span className={`px-2 py-1 rounded text-xs font-medium ${
-                                    result.raw?.cryptoPanic && !result.raw.cryptoPanic.error ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
-                                  }`}>
-                                    {result.raw?.cryptoPanic && !result.raw.cryptoPanic.error ? 'Success' : 'Failed'}
-                                  </span>
-                                  <span className="text-xs text-slate-400">{result.raw?.cryptoPanic?.latency ? `~${result.raw.cryptoPanic.latency}ms` : '~200ms'}</span>
-                                  <svg className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                                  </svg>
-                                </div>
-                              </summary>
-                              <div className="px-4 pb-4 border-t border-slate-600/20">
-                                {result.raw?.cryptoPanic?.articles && result.raw.cryptoPanic.articles.length > 0 ? (
-                                  <div className="mt-3 space-y-3 max-h-96 overflow-y-auto">
-                                    {result.raw.cryptoPanic.articles.slice(0, 5).map((article: any, index: number) => (
-                                      <div key={index} className="bg-slate-900/50 rounded-lg p-3 border border-slate-600/20">
-                                        <h4 className="text-sm font-medium text-white mb-1 line-clamp-2">{article.title}</h4>
-                                        <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
-                                          <span>{article.source}</span>
-                                          <span>{article.published_at ? new Date(article.published_at).toLocaleDateString() : 'Recent'}</span>
-                                        </div>
-                                        <a
-                                          href={article.url}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="inline-flex items-center gap-1 px-3 py-1 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded text-xs font-medium transition-colors"
-                                        >
-                                          Read Full Article →
-                                        </a>
-                                      </div>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <div className="mt-3 bg-slate-900/50 rounded-lg p-4 text-center">
-                                    <p className="text-sm text-slate-400">No recent news found (normal for some assets)</p>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-sm text-slate-400">Change (24h):</span>
+                                      <span className={`text-sm font-medium ${
+                                        (result.raw.coinGecko.change24h || 0) >= 0 ? 'text-green-400' : 'text-red-400'
+                                      }`}>
+                                        {formatPercentage(result.raw.coinGecko.change24h || 0)}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-sm text-slate-400">Market Cap:</span>
+                                      <span className="text-sm font-medium text-white">
+                                        {formatMarketCap(result.raw.coinGecko.marketCap || 0)}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-sm text-slate-400">Rank:</span>
+                                      <span className="text-sm font-medium text-white">
+                                        #{result.raw.coinGecko.rank || 'N/A'}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-sm text-slate-400">ATH:</span>
+                                      <span className="text-sm font-medium text-white">
+                                        {formatPrice(result.raw.coinGecko.ath || 0)}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-sm text-slate-400">ATL:</span>
+                                      <span className="text-sm font-medium text-white">
+                                        {formatPrice(result.raw.coinGecko.atl || 0)}
+                                      </span>
+                                    </div>
+                                  </>
+                                )}
+                                {result.raw?.coinGecko?.rateLimited && (
+                                  <div className="text-center py-4">
+                                    <span className="text-sm text-yellow-400">Rate limited - please try again later</span>
                                   </div>
                                 )}
                               </div>
-                            </details>
+                            </ProviderCard>
+
+                            {/* Crypto News */}
+                            <ProviderCard
+                              icon={<span className="text-green-400 font-bold text-sm">📰</span>}
+                              name="Crypto News"
+                              description="Latest Articles"
+                              status={result.raw?.cryptoPanic && !result.raw.cryptoPanic.error ? 'Success' : 'Failed'}
+                              latencyMs={result.raw?.cryptoPanic?.latency || 200}
+                              sentiment={result.raw?.cryptoPanic?.sentiment}
+                              articles={result.raw?.cryptoPanic?.articles || []}
+                              jsonData={result.raw?.cryptoPanic}
+                            >
+                              {(!result.raw?.cryptoPanic?.articles || result.raw.cryptoPanic.articles.length === 0) && (
+                                <div className="text-center py-4">
+                                  <p className="text-sm text-slate-400">No recent news found (normal for some assets)</p>
+                                </div>
+                              )}
+                            </ProviderCard>
                           </div>
                         </div>
                       </div>

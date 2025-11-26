@@ -382,29 +382,58 @@ export class BinanceAdapter implements ExchangeConnector {
   }
 
   /**
-   * Get public market data (no authentication required)
+   * Get public market data (no authentication required) with multi-endpoint fallback
    */
   async getPublicMarketData(symbol: string): Promise<any> {
-    try {
-      const response = await axios.get('https://api.binance.com/api/v3/ticker/24hr', {
-        params: { symbol },
-        timeout: 10000
-      });
+    const endpoints = [
+      'https://api.binance.com/api/v3/ticker/24hr',
+      'https://data-api.binance.vision/api/v3/ticker/24hr',
+      'https://api-gcp.binance.com/api/v3/ticker/24hr'
+    ];
 
-      if (response.status !== 200) {
-        throw new Error(`HTTP ${response.status}`);
+    for (const endpoint of endpoints) {
+      try {
+        const response = await axios.get(endpoint, {
+          params: { symbol },
+          timeout: 10000
+        });
+
+        if (response.status !== 200) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        return {
+          price: parseFloat(response.data.lastPrice),
+          volume24h: parseFloat(response.data.volume),
+          change24h: parseFloat(response.data.priceChangePercent),
+          high24h: parseFloat(response.data.highPrice),
+          low24h: parseFloat(response.data.lowPrice),
+          count: parseInt(response.data.count)
+        };
+      } catch (error: any) {
+        console.log(`[BinancePublic] Endpoint ${endpoint} failed: ${error.message}`);
+        // Continue to next endpoint
       }
+    }
+
+    // All endpoints failed, try CryptoCompare fallback
+    console.log('[BinancePublic] All endpoints failed, trying CryptoCompare fallback');
+    try {
+      const { CryptoCompareAdapter } = await import('./cryptocompareAdapter');
+      const adapter = new CryptoCompareAdapter(process.env.CRYPTOCOMPARE_API_KEY || '');
+      const cryptoCompareData = await adapter.getMarketData(symbol);
 
       return {
-        price: parseFloat(response.data.lastPrice),
-        volume24h: parseFloat(response.data.volume),
-        change24h: parseFloat(response.data.priceChangePercent),
-        high24h: parseFloat(response.data.highPrice),
-        low24h: parseFloat(response.data.lowPrice),
-        count: parseInt(response.data.count)
+        price: cryptoCompareData.price,
+        volume24h: cryptoCompareData.volume24h || 0,
+        change24h: cryptoCompareData.priceChangePercent24h || 0,
+        high24h: cryptoCompareData.high24h || cryptoCompareData.price,
+        low24h: cryptoCompareData.low24h || cryptoCompareData.price,
+        count: 0
       };
-    } catch (error: any) {
-      throw new Error(`Binance public API error: ${error.message}`);
+    } catch (fallbackError: any) {
+      console.log(`[BinancePublic] CryptoCompare fallback also failed: ${fallbackError.message}`);
+      throw new Error(`All Binance endpoints and CryptoCompare fallback failed`);
     }
   }
 }

@@ -50,6 +50,30 @@ export async function researchRoutes(fastify: FastifyInstance) {
     try {
       console.log('[RESEARCH API] START: Deep Research');
 
+      // Check 30-second cooldown
+      const userDoc = await admin.firestore().collection('users').doc(user.uid).get();
+      const userData = userDoc.data();
+      const lastRun = userData?.deepResearchLastRun;
+
+      if (lastRun) {
+        const now = Date.now();
+        const timeSinceLastRun = now - lastRun;
+        const cooldownMs = 30 * 1000; // 30 seconds
+
+        if (timeSinceLastRun < cooldownMs) {
+          const remainingSeconds = Math.ceil((cooldownMs - timeSinceLastRun) / 1000);
+          return reply.code(429).send({
+            error: true,
+            message: `Please wait ${remainingSeconds} seconds before next scan`
+          });
+        }
+      }
+
+      // Update last research timestamp
+      await admin.firestore().collection('users').doc(user.uid).update({
+        deepResearchLastRun: Date.now()
+      });
+
       // Get user integrations for logging
       const userIntegrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
       console.log('[RESEARCH API] Fetched user API keys:', {
@@ -313,6 +337,30 @@ export async function researchRoutes(fastify: FastifyInstance) {
 
     try {
       console.log('[RESEARCH API] START: Deep Research');
+
+      // Check 30-second cooldown
+      const userDoc = await admin.firestore().collection('users').doc(user.uid).get();
+      const userData = userDoc.data();
+      const lastRun = userData?.deepResearchLastRun;
+
+      if (lastRun) {
+        const now = Date.now();
+        const timeSinceLastRun = now - lastRun;
+        const cooldownMs = 30 * 1000; // 30 seconds
+
+        if (timeSinceLastRun < cooldownMs) {
+          const remainingSeconds = Math.ceil((cooldownMs - timeSinceLastRun) / 1000);
+          return reply.code(429).send({
+            error: true,
+            message: `Please wait ${remainingSeconds} seconds before next scan`
+          });
+        }
+      }
+
+      // Update last research timestamp
+      await admin.firestore().collection('users').doc(user.uid).update({
+        deepResearchLastRun: Date.now()
+      });
 
       // Get user integrations for logging
       const userIntegrations = await firestoreAdapter.getEnabledIntegrations(user.uid);

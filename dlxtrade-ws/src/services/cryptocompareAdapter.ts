@@ -83,7 +83,7 @@ export class CryptoCompareAdapter {
   }
 
   async getOHLCData(symbol: string): Promise<any> {
-    const historicalData = await this.getHistoricalOHLC(symbol, 200); // Get 200 hours of data
+    const historicalData = await this.getHistoricalOHLC(symbol, 300); // Get 300 hours of data for MA50/MA200
 
     if (historicalData.length === 0) {
       return {
