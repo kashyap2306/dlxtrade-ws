@@ -14,9 +14,10 @@ import {
   TrashIcon,
   ChevronDownIcon,
   ChevronUpIcon,
+  PlusIcon,
 } from '@heroicons/react/24/outline';
 
-type ApiName = 'cryptocompare' | 'cryptopanic';
+type ApiName = 'cryptocompare' | 'newsdata' | 'binance' | 'coinmarketcap';
 
 // Auto-enabled providers that don't require user input
 interface AutoEnabledProvider {
@@ -41,41 +42,43 @@ const API_CONFIGS: Record<ApiName, ApiConfig> = {
     name: 'cryptocompare',
     displayName: 'CryptoCompare API',
     requiresSecret: false,
-    description: 'Cryptocurrency market data and price intelligence',
+    description: 'Main market data and fundamentals provider',
     icon: '📊',
     gradient: 'from-blue-500/20 via-cyan-500/20 to-teal-500/20',
   },
-  cryptopanic: {
-    name: 'cryptopanic',
-    displayName: 'CryptoPanic API (Optional)',
+  newsdata: {
+    name: 'newsdata',
+    displayName: 'NewsData.io API',
     requiresSecret: false,
-    description: 'Cryptocurrency news and market sentiment analysis',
+    description: 'News and sentiment analysis provider',
     icon: '📰',
     gradient: 'from-green-500/20 via-emerald-500/20 to-teal-500/20',
+  },
+  binance: {
+    name: 'binance',
+    displayName: 'Binance API',
+    requiresSecret: true,
+    description: 'Optional backup market data provider',
+    icon: '🪙',
+    gradient: 'from-yellow-500/20 via-orange-500/20 to-red-500/20',
+  },
+  coinmarketcap: {
+    name: 'coinmarketcap',
+    displayName: 'CoinMarketCap API',
+    requiresSecret: false,
+    description: 'Metadata backup and market data',
+    icon: '💎',
+    gradient: 'from-purple-500/20 via-pink-500/20 to-rose-500/20',
   },
 };
 
 const AUTO_ENABLED_PROVIDERS: AutoEnabledProvider[] = [
-  {
-    name: 'googlefinance',
-    displayName: 'Google Finance',
-    description: 'Real-time market data and financial information',
-    icon: '📈',
-    gradient: 'from-red-500/20 via-orange-500/20 to-yellow-500/20',
-  },
   {
     name: 'binance_public',
     displayName: 'Binance Public API',
     description: 'Public cryptocurrency trading data',
     icon: '🪙',
     gradient: 'from-yellow-500/20 via-orange-500/20 to-red-500/20',
-  },
-  {
-    name: 'coingecko',
-    displayName: 'CoinGecko',
-    description: 'Cryptocurrency prices, market data, and analytics',
-    icon: '💎',
-    gradient: 'from-purple-500/20 via-pink-500/20 to-rose-500/20',
   },
 ];
 
@@ -86,12 +89,26 @@ interface Integration {
   updatedAt?: string;
 }
 
-export default function APIIntegrationsSection() {
+interface BackupApi {
+  id: string;
+  providerName: string;
+  apiKey: string;
+  apiType: string;
+}
+
+interface APIIntegrationsSectionProps {
+  backupApis?: BackupApi[];
+  onBackupApisChange?: (backupApis: BackupApi[]) => void;
+}
+
+export default function APIIntegrationsSection({ backupApis: propBackupApis, onBackupApisChange }: APIIntegrationsSectionProps = {}) {
   const { addNotification } = useNotificationContext();
   const { user } = useAuth();
   const [integrations, setIntegrations] = useState<Record<ApiName, Integration>>({
     cryptocompare: { enabled: false, apiKey: null, secretKey: null },
-    cryptopanic: { enabled: false, apiKey: null, secretKey: null },
+    newsdata: { enabled: false, apiKey: null, secretKey: null },
+    binance: { enabled: false, apiKey: null, secretKey: null },
+    coinmarketcap: { enabled: false, apiKey: null, secretKey: null },
   });
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -101,6 +118,20 @@ export default function APIIntegrationsSection() {
     apiKey: '',
     secretKey: '',
   });
+  const [backupApis, setBackupApis] = useState<BackupApi[]>(propBackupApis || []);
+  const [showBackupApiForm, setShowBackupApiForm] = useState(false);
+  const [backupApiForm, setBackupApiForm] = useState({
+    providerName: '',
+    apiKey: '',
+    apiType: '',
+  });
+
+  // Update local state when props change
+  useEffect(() => {
+    if (propBackupApis) {
+      setBackupApis(propBackupApis);
+    }
+  }, [propBackupApis]);
 
   useEffect(() => {
     loadIntegrations();
@@ -114,10 +145,12 @@ export default function APIIntegrationsSection() {
 
       const loaded: Record<ApiName, Integration> = {
         cryptocompare: { enabled: false, apiKey: null, secretKey: null },
-        cryptopanic: { enabled: false, apiKey: null, secretKey: null },
+        newsdata: { enabled: false, apiKey: null, secretKey: null },
+        binance: { enabled: false, apiKey: null, secretKey: null },
+        coinmarketcap: { enabled: false, apiKey: null, secretKey: null },
       };
 
-      ['cryptocompare', 'cryptopanic'].forEach((apiName) => {
+      ['cryptocompare', 'newsdata', 'binance', 'coinmarketcap'].forEach((apiName) => {
         const api = apiName as ApiName;
         if (data[api]) {
           loaded[api] = {
@@ -256,6 +289,35 @@ export default function APIIntegrationsSection() {
     }
   };
 
+  const handleAddBackupApi = () => {
+    if (!backupApiForm.providerName.trim() || !backupApiForm.apiKey.trim() || !backupApiForm.apiType.trim()) {
+      showToast('All fields are required', 'error');
+      return;
+    }
+
+    const newBackupApi: BackupApi = {
+      id: Date.now().toString(),
+      providerName: backupApiForm.providerName.trim(),
+      apiKey: backupApiForm.apiKey.trim(),
+      apiType: backupApiForm.apiType.trim(),
+    };
+
+    const updatedBackupApis = [...backupApis, newBackupApi];
+    setBackupApis(updatedBackupApis);
+    onBackupApisChange?.(updatedBackupApis);
+
+    setBackupApiForm({ providerName: '', apiKey: '', apiType: '' });
+    setShowBackupApiForm(false);
+    showToast('Backup API added successfully', 'success');
+  };
+
+  const handleRemoveBackupApi = (id: string) => {
+    const updatedBackupApis = backupApis.filter(api => api.id !== id);
+    setBackupApis(updatedBackupApis);
+    onBackupApisChange?.(updatedBackupApis);
+    showToast('Backup API removed', 'success');
+  };
+
   const isEditing = (apiName: ApiName) => {
     return editingApi === apiName;
   };
@@ -270,8 +332,8 @@ export default function APIIntegrationsSection() {
       <div className="border-t border-purple-500/20 pt-6 mt-6">
         <h3 className="text-lg font-semibold text-white mb-4">Research API Integration</h3>
         <p className="text-sm text-gray-400 mb-6">
-          Connect your research API credentials. Only CryptoCompare and CryptoPanic (optional) require user input.
-          Google Finance, Binance Public API, and CoinGecko are automatically enabled for all users.
+          Connect your API credentials. CryptoCompare and NewsData.io are required for research.
+          Binance and CoinMarketCap are optional backups. Binance Public API is automatically enabled.
         </p>
 
         {loading && (
@@ -284,7 +346,7 @@ export default function APIIntegrationsSection() {
         <div className="mb-8">
           <h4 className="text-md font-semibold text-white mb-4">Required API Credentials</h4>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
-            {(['cryptocompare', 'cryptopanic'] as ApiName[]).map((apiName) => {
+            {(['cryptocompare', 'newsdata'] as ApiName[]).map((apiName) => {
               const config = API_CONFIGS[apiName];
               const integration = integrations[apiName];
               const isExpanded = expandedApi === apiName;
@@ -475,6 +537,201 @@ export default function APIIntegrationsSection() {
           </div>
         </div>
 
+        {/* Optional APIs Section */}
+        <div className="mb-8">
+          <h4 className="text-md font-semibold text-white mb-4">Optional API Credentials</h4>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+            {(['binance', 'coinmarketcap'] as ApiName[]).map((apiName) => {
+              const config = API_CONFIGS[apiName];
+              const integration = integrations[apiName];
+              const isExpanded = expandedApi === apiName;
+              const connected = isConnected(apiName);
+
+              return (
+                <div
+                  key={apiName}
+                  className={`relative bg-gradient-to-br ${config.gradient} backdrop-blur-xl rounded-2xl border border-purple-500/30 shadow-2xl transition-all duration-300 hover:scale-[1.02] hover:shadow-purple-500/20 ${
+                    connected ? 'ring-2 ring-green-400/50' : ''
+                  }`}
+                >
+                  <div className="p-6">
+                    <div className="flex items-start justify-between mb-4">
+                      <div className="flex items-start space-x-4 flex-1">
+                        <div className="text-4xl">{config.icon}</div>
+                        <div className="flex-1">
+                          <div className="flex items-center space-x-2 mb-1">
+                            <h3 className="text-xl font-semibold text-white">{config.displayName}</h3>
+                            {connected ? (
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-500/20 text-green-300 border border-green-400/30">
+                                <CheckCircleIcon className="w-3 h-3 mr-1" />
+                                Connected
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-500/20 text-gray-300 border border-gray-400/30">
+                                <XCircleIcon className="w-3 h-3 mr-1" />
+                                Not Connected
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-sm text-gray-300">{config.description}</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => toggleExpand(apiName)}
+                        className="ml-4 p-2 text-gray-400 hover:text-white transition-colors"
+                      >
+                        {isExpanded ? (
+                          <ChevronUpIcon className="w-5 h-5" />
+                        ) : (
+                          <ChevronDownIcon className="w-5 h-5" />
+                        )}
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <label className="flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={integration.enabled}
+                          onChange={() => handleToggle(apiName)}
+                          disabled={loading}
+                          className="sr-only"
+                        />
+                        <div
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                            integration.enabled ? 'bg-purple-500' : 'bg-gray-600'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              integration.enabled ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </div>
+                        <span className="ml-3 text-sm font-medium text-gray-300">
+                          {integration.enabled ? 'Enabled' : 'Disabled'}
+                        </span>
+                      </label>
+                    </div>
+
+                    {isExpanded && (
+                      <div className="mt-6 pt-6 border-t border-purple-500/30 animate-fade-in">
+                        {!isEditing(apiName) ? (
+                          <div className="space-y-4">
+                            <div className="space-y-3">
+                              <div>
+                                <label className="block text-xs font-medium text-gray-400 mb-1.5">API Key</label>
+                                <div className="flex items-center space-x-2 p-3 bg-slate-800/50 backdrop-blur-sm rounded-lg border border-purple-500/20">
+                                  <KeyIcon className="w-4 h-4 text-purple-400" />
+                                  <span className="text-sm font-mono text-gray-300 flex-1">
+                                    {integration.apiKey || 'Not configured'}
+                                  </span>
+                                </div>
+                              </div>
+                              {config.requiresSecret && (
+                                <div>
+                                  <label className="block text-xs font-medium text-gray-400 mb-1.5">Secret Key</label>
+                                  <div className="flex items-center space-x-2 p-3 bg-slate-800/50 backdrop-blur-sm rounded-lg border border-purple-500/20">
+                                    <LockClosedIcon className="w-4 h-4 text-purple-400" />
+                                    <span className="text-sm font-mono text-gray-300 flex-1">
+                                      {integration.secretKey || 'Not configured'}
+                                    </span>
+                                  </div>
+                                </div>
+                              )}
+                              {integration.updatedAt && (
+                                <div>
+                                  <label className="block text-xs font-medium text-gray-400 mb-1.5">Last Updated</label>
+                                  <div className="text-xs text-gray-400">
+                                    {new Date(integration.updatedAt).toLocaleString()}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                              <button
+                                onClick={() => handleEdit(apiName)}
+                                className="btn-mobile-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
+                              >
+                                <PencilIcon className="w-4 h-4 mr-2" />
+                                Edit
+                              </button>
+                              <button
+                                onClick={() => handleRotate(apiName)}
+                                className="btn-mobile-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
+                              >
+                                <ArrowPathIcon className="w-4 h-4 mr-2" />
+                                Rotate
+                              </button>
+                              <button
+                                onClick={() => handleDelete(apiName)}
+                                className="btn-mobile-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-red-300 bg-red-900/30 backdrop-blur-sm border border-red-500/30 rounded-lg hover:bg-red-900/50 transition-all"
+                              >
+                                <TrashIcon className="w-4 h-4 mr-2" />
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="space-y-4">
+                            <div className="space-y-3">
+                              <div>
+                                <label className="block text-xs font-medium text-gray-400 mb-1.5">
+                                  API Key <span className="text-red-400">*</span>
+                                </label>
+                                <input
+                                  type="text"
+                                  className="w-full px-3 py-2.5 text-sm bg-slate-800/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
+                                  value={formData.apiKey}
+                                  onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
+                                  placeholder="Enter your API key"
+                                />
+                              </div>
+                              {config.requiresSecret && (
+                                <div>
+                                  <label className="block text-xs font-medium text-gray-400 mb-1.5">
+                                    Secret Key <span className="text-red-400">*</span>
+                                  </label>
+                                  <input
+                                    type="password"
+                                    className="w-full px-3 py-2.5 text-sm bg-slate-800/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
+                                    value={formData.secretKey}
+                                    onChange={(e) => setFormData({ ...formData, secretKey: e.target.value })}
+                                    placeholder="Enter your secret key"
+                                  />
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                              <button
+                                onClick={() => {
+                                  setEditingApi(null);
+                                  setFormData({ apiKey: '', secretKey: '' });
+                                }}
+                                className="btn-mobile-full px-4 py-2.5 text-sm font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
+                                disabled={loading}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                onClick={() => handleSave(apiName)}
+                                className="btn-mobile-full px-4 py-2.5 text-sm font-medium text-white bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/50"
+                                disabled={loading}
+                              >
+                                Connect API
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Auto-Enabled Providers Section */}
         <div>
           <h4 className="text-md font-semibold text-white mb-4">Auto-Enabled Providers</h4>
@@ -505,6 +762,122 @@ export default function APIIntegrationsSection() {
               </div>
             ))}
           </div>
+        </div>
+
+        {/* Backup APIs Section */}
+        <div className="mt-8">
+          <div className="flex items-center justify-between mb-4">
+            <h4 className="text-md font-semibold text-white">Backup API Providers</h4>
+            <button
+              onClick={() => setShowBackupApiForm(!showBackupApiForm)}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold rounded-lg hover:from-purple-500 hover:to-pink-500 transition-all shadow-lg shadow-purple-500/40"
+            >
+              <PlusIcon className="w-4 h-4" />
+              Add Backup API
+            </button>
+          </div>
+          <p className="text-sm text-gray-400 mb-4">
+            Add additional API providers as backups for enhanced data reliability.
+          </p>
+
+          {showBackupApiForm && (
+            <div className="bg-slate-800/50 backdrop-blur-xl rounded-2xl border border-purple-500/30 p-6 mb-6">
+              <h5 className="text-lg font-semibold text-white mb-4">Add New Backup API</h5>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium mb-2 text-gray-300">
+                    Provider Name <span className="text-red-400">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    className="w-full px-3 py-2.5 text-sm bg-slate-900/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
+                    value={backupApiForm.providerName}
+                    onChange={(e) => setBackupApiForm({ ...backupApiForm, providerName: e.target.value })}
+                    placeholder="e.g., CoinMarketCap, CoinGecko"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-2 text-gray-300">
+                    API Key <span className="text-red-400">*</span>
+                  </label>
+                  <input
+                    type="password"
+                    className="w-full px-3 py-2.5 text-sm bg-slate-900/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
+                    value={backupApiForm.apiKey}
+                    onChange={(e) => setBackupApiForm({ ...backupApiForm, apiKey: e.target.value })}
+                    placeholder="Enter your API key"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-2 text-gray-300">
+                    API Type <span className="text-red-400">*</span>
+                  </label>
+                  <select
+                    className="w-full px-3 py-2.5 text-sm bg-slate-900/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
+                    value={backupApiForm.apiType}
+                    onChange={(e) => setBackupApiForm({ ...backupApiForm, apiType: e.target.value })}
+                  >
+                    <option value="">Select API type</option>
+                    <option value="market_data">Market Data</option>
+                    <option value="news">News</option>
+                    <option value="social">Social Media</option>
+                    <option value="on_chain">On-chain Data</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+                <div className="flex gap-3 pt-2">
+                  <button
+                    onClick={() => {
+                      setShowBackupApiForm(false);
+                      setBackupApiForm({ providerName: '', apiKey: '', apiType: '' });
+                    }}
+                    className="px-4 py-2.5 text-sm font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleAddBackupApi}
+                    className="px-4 py-2.5 text-sm font-medium text-white bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all shadow-lg shadow-purple-500/50"
+                  >
+                    Add API
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {backupApis.length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {backupApis.map((api) => (
+                <div
+                  key={api.id}
+                  className="bg-gradient-to-br from-slate-700/50 to-slate-800/50 backdrop-blur-xl rounded-2xl border border-purple-500/30 p-4"
+                >
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex-1">
+                      <h6 className="text-lg font-semibold text-white">{api.providerName}</h6>
+                      <p className="text-sm text-gray-400 capitalize">{api.apiType.replace('_', ' ')}</p>
+                    </div>
+                    <button
+                      onClick={() => handleRemoveBackupApi(api.id)}
+                      className="text-red-400 hover:text-red-300 transition-colors p-1"
+                    >
+                      <TrashIcon className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    API Key: ••••••••••••••••••••••••••••
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {backupApis.length === 0 && !showBackupApiForm && (
+            <div className="text-center py-8 text-gray-400">
+              No backup APIs configured yet. Add one above to enhance data reliability.
+            </div>
+          )}
         </div>
       </div>
       {toast && <Toast message={toast.message} type={toast.type} />}
