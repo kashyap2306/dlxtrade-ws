@@ -1,15 +1,12 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { GoogleFinanceAdapter } from '../services/googleFinanceAdapter';
-import { CoinGeckoAdapter } from '../services/coingeckoAdapter';
 import { BinanceAdapter } from '../services/binanceAdapter';
+import { fetchCoinMarketCapMarketData } from '../services/coinMarketCapAdapter';
 import { logger } from '../utils/logger';
 
 export async function marketRoutes(fastify: FastifyInstance) {
   // GET /api/market/top-coins - Get top 20 coins using available providers
   fastify.get('/top-coins', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      const googleFinanceAdapter = new GoogleFinanceAdapter();
-      const coinGeckoAdapter = new CoinGeckoAdapter();
       const binanceAdapter = new BinanceAdapter();
 
       const topCoins = [
@@ -39,31 +36,33 @@ export async function marketRoutes(fastify: FastifyInstance) {
             logger.debug({ symbol }, 'Binance data unavailable, trying alternatives');
           }
 
-          // Fallback to CoinGecko
+          // Fallback to CryptoCompare
           if (price === 0) {
             try {
-              const coinGeckoData = await coinGeckoAdapter.getMarketData(symbol);
-              if (coinGeckoData && coinGeckoData.price) {
-                price = coinGeckoData.price;
-                volume24h = coinGeckoData.volume24h || 0;
-                priceChangePercent24h = coinGeckoData.change24h || 0;
+              const { CryptoCompareAdapter } = await import('../services/cryptocompareAdapter');
+              const ccAdapter = new CryptoCompareAdapter('');
+              const ccData = await ccAdapter.getMarketData(symbol);
+              if (ccData && ccData.price) {
+                price = ccData.price;
+                volume24h = ccData.volume24h || 0;
+                priceChangePercent24h = ccData.priceChangePercent24h || 0;
               }
-            } catch (cgErr) {
-              logger.debug({ symbol }, 'CoinGecko data unavailable, trying Google Finance');
+            } catch (ccErr) {
+              logger.debug({ symbol }, 'CryptoCompare data unavailable, trying CoinMarketCap');
             }
           }
 
-          // Final fallback to Google Finance
+          // Final fallback to CoinMarketCap
           if (price === 0) {
             try {
-              const googleFinanceData = await googleFinanceAdapter.getMarketData(symbol);
-              if (googleFinanceData && googleFinanceData.price) {
-                price = googleFinanceData.price;
-                volume24h = googleFinanceData.volume24h || 0;
-                priceChangePercent24h = googleFinanceData.priceChangePercent || 0;
+              const cmcData = await fetchCoinMarketCapMarketData(symbol, undefined);
+              if (cmcData.success && cmcData.marketData?.price) {
+                price = cmcData.marketData.price;
+                volume24h = cmcData.marketData.volume24h || 0;
+                priceChangePercent24h = cmcData.marketData.priceChangePercent24h || 0;
               }
-            } catch (gfErr) {
-              logger.debug({ symbol }, 'Google Finance data unavailable, using fallback');
+            } catch (cmcErr) {
+              logger.debug({ symbol }, 'CoinMarketCap data unavailable, using fallback');
               // Use fallback values for demo purposes
               price = Math.random() * 1000 + 100;
               volume24h = Math.random() * 10000000 + 1000000;

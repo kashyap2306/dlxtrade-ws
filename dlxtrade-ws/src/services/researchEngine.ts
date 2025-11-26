@@ -95,11 +95,11 @@ export class ResearchEngine {
       let bullishSignals = 0;
       let bearishSignals = 0;
 
-      // Analyze CryptoPanic news data (user-provided, optional)
+      // Analyze NewsData.io news data (required)
       try {
-        const newsData = await fetchNewsData(integrations.cryptopanic?.apiKey);
+        const newsData = await fetchNewsData(integrations.newsdata?.apiKey);
         if (newsData.success && newsData.articles && newsData.articles.length > 0) {
-          // CryptoPanic sentiment analysis (0-1 scale)
+          // NewsData sentiment analysis (0-1 scale)
           if (newsData.sentiment > 0.6) {
             bullishSignals++;
           } else if (newsData.sentiment < 0.4) {
@@ -107,7 +107,7 @@ export class ResearchEngine {
           }
         }
       } catch (err) {
-        logger.debug({ err, symbol }, 'CryptoPanic signal analysis error (non-critical)');
+        logger.debug({ err, symbol }, 'NewsData signal analysis error (non-critical)');
       }
 
       // Analyze CryptoCompare data (user-provided)
@@ -126,46 +126,19 @@ export class ResearchEngine {
         }
       }
 
-      // Analyze Google Finance data (auto-enabled)
+      // Analyze CoinMarketCap data (optional backup)
       try {
-        const { GoogleFinanceAdapter } = await import('./googleFinanceAdapter');
-        const adapter = new GoogleFinanceAdapter();
-        const financeData = await adapter.getMarketData(symbol);
-        if (financeData.priceChangePercent && financeData.priceChangePercent > 1) {
-          bullishSignals++;
-        } else if (financeData.priceChangePercent && financeData.priceChangePercent < -1) {
-          bearishSignals++;
+        const { fetchCoinMarketCapMarketData } = await import('./coinMarketCapAdapter');
+        const cmcData = await fetchCoinMarketCapMarketData(symbol, integrations.coinmarketcap?.apiKey);
+        if (cmcData.success && cmcData.marketData?.priceChangePercent24h) {
+          if (cmcData.marketData.priceChangePercent24h > 1) {
+            bullishSignals++;
+          } else if (cmcData.marketData.priceChangePercent24h < -1) {
+            bearishSignals++;
+          }
         }
       } catch (err) {
-        logger.debug({ err, symbol }, 'Google Finance signal analysis error (non-critical)');
-      }
-
-      // Analyze Binance Public API data (auto-enabled) - temporarily disabled
-      try {
-        // Temporarily disabled due to module resolution issues
-        const adapter = { getPublicMarketData: async (sym: string) => ({ price: 0, volume24h: 0, priceChangePercent24h: 0 }) };
-        const publicData = await adapter.getPublicMarketData(symbol);
-        if (publicData.priceChangePercent24h && publicData.priceChangePercent24h > 1) {
-          bullishSignals++;
-        } else if (publicData.priceChangePercent24h && publicData.priceChangePercent24h < -1) {
-          bearishSignals++;
-        }
-      } catch (err) {
-        logger.debug({ err, symbol }, 'Binance Public API signal analysis error (non-critical)');
-      }
-
-      // Analyze CoinGecko data (auto-enabled)
-      try {
-        const { CoinGeckoAdapter } = await import('./coingeckoAdapter');
-        const adapter = new CoinGeckoAdapter();
-        const geckoData = await adapter.getMarketData(symbol);
-        if (geckoData.priceChangePercent24h && geckoData.priceChangePercent24h > 1) {
-          bullishSignals++;
-        } else if (geckoData.priceChangePercent24h && geckoData.priceChangePercent24h < -1) {
-          bearishSignals++;
-        }
-      } catch (err) {
-        logger.debug({ err, symbol }, 'CoinGecko signal analysis error (non-critical)');
+        logger.debug({ err, symbol }, 'CoinMarketCap signal analysis error (non-critical)');
       }
 
       if (bullishSignals > bearishSignals) {
@@ -295,49 +268,20 @@ export class ResearchEngine {
         logger.debug({ err, symbol }, 'CryptoPanic accuracy calculation error (non-critical)');
       }
 
-      // Google Finance data (auto-enabled)
-      try {
-        const { GoogleFinanceAdapter } = await import('./googleFinanceAdapter');
-        const adapter = new GoogleFinanceAdapter();
-        const financeData = await adapter.getMarketData(symbol);
+      // CoinMarketCap data (optional)
+      if (integrations.coinmarketcap) {
+        try {
+          const { fetchCoinMarketCapMarketData } = await import('./coinMarketCapAdapter');
+          const cmcData = await fetchCoinMarketCapMarketData(symbol, integrations.coinmarketcap.apiKey);
 
-        if (financeData.priceChangePercent && financeData.priceChangePercent > 0.5) {
-          accuracy += 0.02;
+          if (cmcData.success && cmcData.marketData?.marketCap && cmcData.marketData.marketCap > 1000000000) { // $1B+ market cap
+            accuracy += 0.02;
+          }
+
+          apiSuccessCount++;
+        } catch (err) {
+          logger.debug({ err, symbol }, 'CoinMarketCap accuracy calculation error (non-critical)');
         }
-
-        apiSuccessCount++;
-      } catch (err) {
-        logger.debug({ err, symbol }, 'Google Finance accuracy calculation error (non-critical)');
-      }
-
-      // Binance Public API data (auto-enabled) - temporarily disabled
-      try {
-        // Temporarily disabled due to module resolution issues
-        const adapter = { getPublicMarketData: async (sym: string) => ({ price: 0, volume24h: 0, priceChangePercent24h: 0 }) };
-        const publicData = await adapter.getPublicMarketData(symbol);
-
-        if (publicData.volume24h && publicData.volume24h > 500000) {
-          accuracy += 0.02;
-        }
-
-        apiSuccessCount++;
-      } catch (err) {
-        logger.debug({ err, symbol }, 'Binance Public API accuracy calculation error (non-critical)');
-      }
-
-      // CoinGecko data (auto-enabled)
-      try {
-        const { CoinGeckoAdapter } = await import('./coingeckoAdapter');
-        const adapter = new CoinGeckoAdapter();
-        const geckoData = await adapter.getMarketData(symbol);
-
-        if (geckoData.marketCap && geckoData.marketCap > 1000000000) { // $1B+ market cap
-          accuracy += 0.02;
-        }
-
-        apiSuccessCount++;
-      } catch (err) {
-        logger.debug({ err, symbol }, 'CoinGecko accuracy calculation error (non-critical)');
       }
 
       // Base accuracy boost from API success (each API adds 5%)

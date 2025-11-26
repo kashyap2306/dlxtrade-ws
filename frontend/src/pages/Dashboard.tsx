@@ -114,20 +114,12 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#0a0f1c] via-[#101726] to-[#0a0f1c] pb-20 lg:pb-0 relative overflow-hidden smooth-scroll">
-      {/* Modern animated background with grid pattern - Performance optimized */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none gpu-accelerated">
-        {/* Animated gradient orbs - Reduced count on mobile */}
-        <div className="absolute -top-40 -right-40 w-96 h-96 bg-purple-500/30 rounded-full mix-blend-screen filter blur-3xl animate-blob"></div>
-        <div className="absolute -bottom-40 -left-40 w-96 h-96 bg-cyan-500/30 rounded-full mix-blend-screen filter blur-3xl animate-blob animation-delay-2000"></div>
-        <div className="hidden sm:block absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-pink-500/20 rounded-full mix-blend-screen filter blur-3xl animate-blob animation-delay-4000"></div>
-
-        {/* Grid pattern overlay */}
-        <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px] opacity-40"></div>
-
-        {/* Glowing lines effect - Hidden on mobile */}
-        <div className="hidden lg:block absolute top-0 left-1/4 w-px h-full bg-gradient-to-b from-transparent via-purple-500/20 to-transparent"></div>
-        <div className="hidden lg:block absolute top-0 right-1/4 w-px h-full bg-gradient-to-b from-transparent via-cyan-500/20 to-transparent"></div>
+    <div className="min-h-screen bg-slate-900 relative overflow-hidden">
+      {/* Clean modern background */}
+      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900"></div>
+        <div className="absolute top-0 left-1/4 w-96 h-96 bg-purple-500/5 rounded-full blur-3xl"></div>
+        <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-blue-500/5 rounded-full blur-3xl"></div>
       </div>
 
       <Sidebar />
@@ -135,14 +127,21 @@ export default function Dashboard() {
       <main className="min-h-screen smooth-scroll">
         <div className="container py-4 sm:py-8">
           {/* Header */}
-          <section className="mb-6 sm:mb-8">
-            <div className="space-y-2">
-              <h1 className="text-3xl sm:text-4xl font-bold bg-gradient-to-r from-purple-300 via-pink-300 to-cyan-300 bg-clip-text text-transparent">
-                Dashboard
-              </h1>
-              <p className="text-sm sm:text-base text-gray-300">
-                Monitor your trading activity and market insights
-              </p>
+          <section className="mb-8">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h1 className="text-4xl font-bold text-white mb-2">
+                  Trading Dashboard
+                </h1>
+                <p className="text-slate-400">
+                  Real-time market insights and portfolio performance
+                </p>
+              </div>
+              <div className="hidden md:flex items-center gap-4">
+                <div className="px-4 py-2 bg-green-500/10 border border-green-500/20 rounded-lg">
+                  <div className="text-xs text-green-400 font-medium">LIVE</div>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -183,58 +182,105 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* 1. Auto-Trade Mode Section (TOP PRIORITY) - Always visible */}
-          <div className="mb-4 sm:mb-6">
-            <Suspense fallback={<div className="h-32 bg-slate-800/50 rounded-xl animate-pulse"></div>}>
-              <AutoTradeMode onStatusChange={handleAutoTradeStatusChange} />
-            </Suspense>
-          </div>
+          {/* Main Dashboard Grid */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+            {/* Left Column - Primary Actions & Status */}
+            <div className="lg:col-span-2 space-y-6">
+              {/* Auto-Trade Control */}
+              <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700/50 p-6">
+                <Suspense fallback={
+                  <div className="animate-pulse">
+                    <div className="h-6 bg-slate-700 rounded w-48 mb-4"></div>
+                    <div className="h-32 bg-slate-700 rounded"></div>
+                  </div>
+                }>
+                  <AutoTradeMode onStatusChange={handleAutoTradeStatusChange} />
+                </Suspense>
+              </div>
 
-          {/* 2. Recent Trades (After Auto-Trade) - High priority */}
-          <div className="mb-4 sm:mb-6">
-            <Suspense fallback={<div className="h-48 bg-slate-800/50 rounded-xl animate-pulse"></div>}>
-              <RecentTrades />
-            </Suspense>
-          </div>
-
-          {/* Main Content Grid - Responsive */}
-          <div className="responsive-grid mb-4 sm:mb-6">
-            {/* 3. Wallet Balance Section */}
-            <div className="space-y-4 sm:space-y-6">
-              <Suspense fallback={<div className="h-40 bg-slate-800/50 rounded-xl animate-pulse"></div>}>
-                <WalletCard onConnectClick={handleConnectClick} />
-              </Suspense>
-
-              {/* 4. Execution Summary */}
-              <Suspense fallback={<div className="h-32 bg-slate-800/50 rounded-xl animate-pulse"></div>}>
-                <ExecutionSummary />
-              </Suspense>
+              {/* Recent Trades */}
+              <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700/50 p-6">
+                <Suspense fallback={
+                  <div className="animate-pulse">
+                    <div className="h-6 bg-slate-700 rounded w-32 mb-4"></div>
+                    <div className="h-48 bg-slate-700 rounded"></div>
+                  </div>
+                }>
+                  <RecentTrades />
+                </Suspense>
+              </div>
             </div>
 
-            {/* 5. PnL & Performance */}
-            <Suspense fallback={<div className="h-48 bg-slate-800/50 rounded-xl animate-pulse"></div>}>
-              <PnLWidget />
-            </Suspense>
+            {/* Right Column - Analytics & Performance */}
+            <div className="space-y-6">
+              {/* Wallet Balance */}
+              <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700/50 p-6">
+                <Suspense fallback={
+                  <div className="animate-pulse">
+                    <div className="h-6 bg-slate-700 rounded w-24 mb-4"></div>
+                    <div className="h-24 bg-slate-700 rounded"></div>
+                  </div>
+                }>
+                  <WalletCard onConnectClick={handleConnectClick} />
+                </Suspense>
+              </div>
+
+              {/* Execution Summary */}
+              <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700/50 p-6">
+                <Suspense fallback={
+                  <div className="animate-pulse">
+                    <div className="h-6 bg-slate-700 rounded w-36 mb-4"></div>
+                    <div className="h-20 bg-slate-700 rounded"></div>
+                  </div>
+                }>
+                  <ExecutionSummary />
+                </Suspense>
+              </div>
+            </div>
           </div>
 
-          {/* 6. Market Scanner (Last Section) - Lazy loaded */}
-          <div className="mb-6" ref={marketScannerRef}>
-            {marketScannerVisible && (
-              <Suspense fallback={<div className="h-64 bg-slate-800/50 rounded-xl animate-pulse"></div>}>
-                <MarketScanner />
-              </Suspense>
-            )}
+          {/* Bottom Section - Performance & Market Data */}
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-8">
+            {/* PnL Chart - Full Width on Mobile, 2/3 on Desktop */}
+            <div className="xl:col-span-2">
+              <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700/50 p-6">
+                <Suspense fallback={
+                  <div className="animate-pulse">
+                    <div className="h-6 bg-slate-700 rounded w-28 mb-4"></div>
+                    <div className="h-64 bg-slate-700 rounded"></div>
+                  </div>
+                }>
+                  <PnLWidget />
+                </Suspense>
+              </div>
+            </div>
+
+            {/* Market Scanner - Sidebar on Desktop */}
+            <div ref={marketScannerRef}>
+              {marketScannerVisible && (
+                <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700/50 p-6">
+                  <Suspense fallback={
+                    <div className="animate-pulse">
+                      <div className="h-6 bg-slate-700 rounded w-32 mb-4"></div>
+                      <div className="h-48 bg-slate-700 rounded"></div>
+                    </div>
+                  }>
+                    <MarketScanner />
+                  </Suspense>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </main>
 
       {/* Exchange Accounts Modal */}
       {showExchangeModal && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="relative bg-gradient-to-br from-slate-800 via-purple-900/30 to-slate-900 border border-purple-500/50 rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="relative bg-slate-800 border border-slate-700 rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
             <button
               onClick={() => setShowExchangeModal(false)}
-              className="absolute top-4 right-4 text-gray-400 hover:text-white transition-colors p-2 hover:bg-white/10 rounded-lg z-10"
+              className="absolute top-4 right-4 text-slate-400 hover:text-white transition-colors p-2 hover:bg-slate-700 rounded-lg z-10"
             >
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />

@@ -39,15 +39,7 @@ export const PROVIDER_PRIORITY_CONFIG: PriorityConfig = {
       priority: 1,
       enabled: true,
       rateLimitPerMinute: 1200,
-      backupProviders: ['coingecko', 'cryptocompare']
-    },
-    coingecko: {
-      name: 'coingecko',
-      type: 'price',
-      priority: 2,
-      enabled: true,
-      rateLimitPerMinute: 30,
-      backupProviders: ['cryptocompare']
+      backupProviders: ['cryptocompare', 'coinmarketcap']
     },
 
     // Historical/OHLC data providers
@@ -57,7 +49,7 @@ export const PROVIDER_PRIORITY_CONFIG: PriorityConfig = {
       priority: 1,
       enabled: true,
       rateLimitPerMinute: 100,
-      backupProviders: ['coingecko']
+      backupProviders: ['coinmarketcap']
     },
 
     // Metadata providers
@@ -67,44 +59,26 @@ export const PROVIDER_PRIORITY_CONFIG: PriorityConfig = {
       priority: 1,
       enabled: true,
       rateLimitPerMinute: 333,
-      backupProviders: ['cryptocompare', 'coingecko']
+      backupProviders: ['cryptocompare']
     },
 
     // News providers
-    cryptopanic: {
-      name: 'cryptopanic',
-      type: 'news',
-      priority: 1,
-      enabled: true,
-      rateLimitPerMinute: 60,
-      backupProviders: ['newsdata']
-    },
     newsdata: {
       name: 'newsdata',
       type: 'news',
-      priority: 2,
-      enabled: true,
-      rateLimitPerMinute: 100,
-      backupProviders: ['cryptopanic']
-    },
-
-    // Sentiment providers (same as news for now)
-    cryptopanic_sentiment: {
-      name: 'cryptopanic',
-      type: 'sentiment',
       priority: 1,
       enabled: true,
-      rateLimitPerMinute: 60,
-      backupProviders: ['newsdata']
+      rateLimitPerMinute: 100,
+      backupProviders: [] // Will use backupApis[] from settings
     }
   },
 
   fallbackChains: {
-    price: ['binance', 'coingecko', 'cryptocompare'],
-    historical: ['cryptocompare', 'coingecko'],
-    metadata: ['coinmarketcap', 'cryptocompare', 'coingecko'],
-    news: ['cryptopanic', 'newsdata'],
-    sentiment: ['cryptopanic', 'newsdata']
+    price: ['binance', 'cryptocompare', 'coinmarketcap'],
+    historical: ['cryptocompare', 'coinmarketcap'],
+    metadata: ['cryptocompare', 'coinmarketcap'],
+    news: ['newsdata'], // Will fall back to backupApis[] from user settings
+    sentiment: ['newsdata'] // Will fall back to backupApis[] from user settings
   },
 
   rotation: {

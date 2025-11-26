@@ -10,14 +10,14 @@ import { getFirebaseAdmin } from '../utils/firebase';
 
 // Validation schemas - ONLY 5 research providers allowed
 const integrationUpdateSchema = z.object({
-  apiName: z.enum(['binance', 'bitget', 'bingx', 'weex', 'cryptopanic', 'cryptocompare', 'googlefinance', 'coingecko', 'binancepublic']),
+  apiName: z.enum(['binance', 'bitget', 'bingx', 'weex', 'cryptocompare', 'newsdata', 'coinmarketcap', 'binancepublic']),
   enabled: z.boolean(),
   apiKey: z.string().optional(),
   secretKey: z.string().optional(),
 });
 
 const integrationDeleteSchema = z.object({
-  apiName: z.enum(['binance', 'bitget', 'bingx', 'weex', 'cryptopanic', 'cryptocompare', 'googlefinance', 'coingecko', 'binancepublic']),
+  apiName: z.enum(['binance', 'bitget', 'bingx', 'weex', 'cryptocompare', 'newsdata', 'coinmarketcap', 'binancepublic']),
 });
 
 export async function integrationsRoutes(fastify: FastifyInstance) {
@@ -68,8 +68,8 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     const tradingExchanges = ['binance', 'bitget', 'bingx', 'weex'];
     const isTradingExchange = tradingExchanges.includes(body.apiName);
 
-    // Check if this is an auto-enabled research API (Google Finance, Binance Public, CoinGecko)
-    const autoEnabledAPIs = ['googlefinance', 'binancepublic', 'coingecko'];
+    // Check if this is an auto-enabled research API (Binance Public)
+    const autoEnabledAPIs = ['binancepublic'];
     const isAutoEnabled = autoEnabledAPIs.includes(body.apiName);
 
     // Validate required fields based on API type
@@ -392,20 +392,45 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
             apiName: 'binance',
           });
         }
-      } else if (body.apiName === 'cryptopanic') {
-        // CryptoPanic API key is optional - test with or without key
+      } else if (body.apiName === 'newsdata') {
+        // NewsData.io API key is required
+        if (!body.apiKey) {
+          return reply.code(400).send({
+            valid: false,
+            error: 'NewsData.io API requires an API key',
+            apiName: 'newsdata',
+          });
+        }
+
         try {
           const newsData = await fetchNewsData(body.apiKey);
 
           return {
             valid: true,
-            apiName: 'cryptopanic',
+            apiName: 'newsdata',
           };
         } catch (error: any) {
           return reply.code(400).send({
             valid: false,
-            error: error.message || 'CryptoPanic API validation failed',
-            apiName: 'cryptopanic',
+            error: error.message || 'NewsData.io API validation failed',
+            apiName: 'newsdata',
+          });
+        }
+      } else if (body.apiName === 'coinmarketcap') {
+        // CoinMarketCap API key is optional
+        try {
+          const { fetchCoinMarketCapMarketData } = await import('../services/coinMarketCapAdapter');
+          const cmcData = await fetchCoinMarketCapMarketData('BTC', body.apiKey);
+
+          return {
+            valid: true,
+            apiName: 'coinmarketcap',
+          };
+        } catch (error: any) {
+          return reply.code(400).send({
+            valid: false,
+            error: error.message || 'CoinMarketCap API validation failed',
+            apiName: 'coinmarketcap',
           });
         }
       } else if (body.apiName === 'cryptocompare') {
@@ -434,26 +459,12 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
             apiName: 'cryptocompare',
           });
         }
-      } else if (body.apiName === 'googlefinance') {
-        // Google Finance is auto-enabled, no validation needed
-        return {
-          valid: true,
-          apiName: 'googlefinance',
-          note: 'Google Finance is auto-enabled and does not require API keys',
-        };
       } else if (body.apiName === 'binancepublic') {
         // Binance Public API is auto-enabled, no validation needed
         return {
           valid: true,
           apiName: 'binancepublic',
           note: 'Binance Public API is auto-enabled and does not require API keys',
-        };
-      } else if (body.apiName === 'coingecko') {
-        // CoinGecko is auto-enabled, no validation needed
-        return {
-          valid: true,
-          apiName: 'coingecko',
-          note: 'CoinGecko is auto-enabled and does not require API keys',
         };
       } else {
         return reply.code(400).send({

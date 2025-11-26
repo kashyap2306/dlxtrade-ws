@@ -84,7 +84,6 @@ export interface DeepResearchResult {
     cryptoCompare: any;
     newsData: any;
     coinMarketCap: any;
-    googleFinance: any;
     binancePublic: any;
   };
 }
@@ -170,7 +169,6 @@ export class DeepResearchEngine {
     let cryptoCompareData: any = {};
     let newsData: any = {};
     let coinMarketCapData: any = {};
-    let googleFinanceData: any = {};
     let binancePublicData: any = {};
     let ohlcData: OHLCData[] = [];
 
@@ -237,25 +235,7 @@ export class DeepResearchEngine {
         coinMarketCapData = { error: err.message, latencyMs: Date.now() - coinMarketCapStart };
       }
 
-      // 4. Fetch Google Finance data
-      console.log(`[GoogleFinance] START - ${symbol}`);
-      const googleFinanceStart = Date.now();
-      try {
-        const { GoogleFinanceAdapter } = await import('./googleFinanceAdapter');
-        const googleFinanceAdapter = new GoogleFinanceAdapter();
-        googleFinanceData = await googleFinanceAdapter.getMarketData(symbol);
-        providerLatencies.GoogleFinance = Date.now() - googleFinanceStart;
-        googleFinanceData.latencyMs = providerLatencies.GoogleFinance;
-        providersCalled.push('GoogleFinance');
-        console.log(`[GoogleFinance] SUCCESS - ${symbol} (${providerLatencies.GoogleFinance}ms)`);
-        logger.info({ uid, symbol }, 'Google Finance data fetched successfully');
-      } catch (err: any) {
-        console.log(`[GoogleFinance] FAILED: ${err.message} - ${symbol}`);
-        logger.warn({ err: err.message, symbol }, 'Google Finance fetch failed');
-        googleFinanceData = { error: err.message, latencyMs: Date.now() - googleFinanceStart };
-      }
-
-      // 5. Fetch Binance Public data
+      // 4. Fetch Binance Public data
       console.log(`[BinancePublic] START - ${symbol}`);
       const binancePublicStart = Date.now();
       try {
@@ -279,7 +259,6 @@ export class DeepResearchEngine {
         ohlcData = this.createSyntheticOHLCData(
           cryptoCompareData,
           coinMarketCapData,
-          googleFinanceData,
           binancePublicData,
           symbol
         );
@@ -319,7 +298,6 @@ export class DeepResearchEngine {
       const { primaryProvider, providerConfirmations } = this.selectPrimaryProvider(
         cryptoCompareData,
         coinMarketCapData,
-        googleFinanceData,
         binancePublicData,
         providersCalled
       );
@@ -343,7 +321,6 @@ export class DeepResearchEngine {
       const marketData = this.consolidateMarketData(
         cryptoCompareData,
         coinMarketCapData,
-        googleFinanceData,
         binancePublicData
       );
 
@@ -374,7 +351,6 @@ export class DeepResearchEngine {
           cryptoCompare: cryptoCompareData,
           newsData: newsData,
           coinMarketCap: coinMarketCapData,
-          googleFinance: googleFinanceData,
           binancePublic: binancePublicData
         }
       };
@@ -470,7 +446,6 @@ export class DeepResearchEngine {
           cryptoCompare: cryptoCompareData,
           newsData: newsData,
           coinMarketCap: coinMarketCapData,
-          googleFinance: googleFinanceData,
           binancePublic: binancePublicData
         }
       };
@@ -515,8 +490,7 @@ export class DeepResearchEngine {
 
   private createSyntheticOHLCData(
     cryptoCompare: any,
-    coinGecko: any,
-    googleFinance: any,
+    coinMarketCap: any,
     binancePublic: any,
     symbol: string
   ): OHLCData[] {
@@ -527,15 +501,12 @@ export class DeepResearchEngine {
     if (binancePublic && !binancePublic.error && binancePublic.price) {
       currentPrice = binancePublic.price;
       change24h = binancePublic.priceChangePercent24h || 0;
-    } else if (coinGecko && !coinGecko.error && !coinGecko.rateLimited && coinGecko.price) {
-      currentPrice = coinGecko.price;
-      change24h = coinGecko.change24h || 0;
     } else if (cryptoCompare && !cryptoCompare.error && cryptoCompare.price) {
       currentPrice = cryptoCompare.price;
       change24h = cryptoCompare.priceChangePercent24h || 0;
-    } else if (googleFinance && !googleFinance.error && googleFinance.price) {
-      currentPrice = googleFinance.price;
-      change24h = googleFinance.priceChangePercent || 0;
+    } else if (coinMarketCap && !coinMarketCap.error && coinMarketCap.marketData?.price) {
+      currentPrice = coinMarketCap.marketData.price;
+      change24h = coinMarketCap.marketData.priceChangePercent24h || 0;
     }
 
     // Create synthetic 24-hour OHLC data
@@ -571,8 +542,7 @@ export class DeepResearchEngine {
 
   private consolidateMarketData(
     cryptoCompare: any,
-    coinGecko: any,
-    googleFinance: any,
+    coinMarketCap: any,
     binancePublic: any
   ): any {
     // Get the best available price and volume data with new priority order
@@ -580,29 +550,23 @@ export class DeepResearchEngine {
     let volume24h = 0;
     let change24h = 0;
 
-    // Priority: CryptoCompare > CoinGecko > BinancePublic > GoogleFinance
-    if (cryptoCompare && !cryptoCompare.error) {
-      price = cryptoCompare.price || price;
-      volume24h = cryptoCompare.volume24h || volume24h;
-      change24h = cryptoCompare.priceChangePercent24h || change24h;
-    }
-
-    if (coinGecko && !coinGecko.error && !coinGecko.rateLimited) {
-      price = price || coinGecko.price;
-      volume24h = volume24h || coinGecko.volume24h;
-      change24h = change24h || coinGecko.change24h;
-    }
-
+    // Priority: Binance > CryptoCompare > CoinMarketCap
     if (binancePublic && !binancePublic.error) {
-      price = price || binancePublic.price;
-      volume24h = volume24h || binancePublic.volume24h;
-      change24h = change24h || binancePublic.priceChangePercent24h;
+      price = binancePublic.price || price;
+      volume24h = binancePublic.volume24h || volume24h;
+      change24h = binancePublic.priceChangePercent24h || change24h;
     }
 
-    if (googleFinance && !googleFinance.error) {
-      price = price || googleFinance.price;
-      volume24h = volume24h || googleFinance.volume24h;
-      change24h = change24h || googleFinance.priceChangePercent;
+    if (cryptoCompare && !cryptoCompare.error) {
+      price = price || cryptoCompare.price;
+      volume24h = volume24h || cryptoCompare.volume24h;
+      change24h = change24h || cryptoCompare.priceChangePercent24h;
+    }
+
+    if (coinMarketCap && !coinMarketCap.error && coinMarketCap.marketData) {
+      price = price || coinMarketCap.marketData.price;
+      volume24h = volume24h || coinMarketCap.marketData.volume24h;
+      change24h = change24h || coinMarketCap.marketData.priceChangePercent24h;
     }
 
     return {
@@ -614,13 +578,12 @@ export class DeepResearchEngine {
   }
 
   private getProviderPriority(): string[] {
-    return ['BinancePublic', 'CryptoCompare', 'CoinMarketCap', 'GoogleFinance'];
+    return ['BinancePublic', 'CryptoCompare', 'CoinMarketCap'];
   }
 
   private selectPrimaryProvider(
     cryptoCompare: any,
     coinMarketCap: any,
-    googleFinance: any,
     binancePublic: any,
     providersCalled: string[]
   ): { primaryProvider: string; providerConfirmations: ProviderConfirmation[] } {
@@ -628,7 +591,6 @@ export class DeepResearchEngine {
     const providerData = {
       CryptoCompare: cryptoCompare,
       CoinMarketCap: coinMarketCap,
-      GoogleFinance: googleFinance,
       BinancePublic: binancePublic
     };
 

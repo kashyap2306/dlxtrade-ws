@@ -62,7 +62,7 @@ export class ScheduledResearchService {
       const stats = apiUsageTracker.getUsageStats();
 
       // If more than 50% of providers are exhausted, consider it degraded
-      const totalProviders = 5; // cryptocompare, cryptopanic, coingecko, googlefinance, binancepublic
+      const totalProviders = 4; // binance, cryptocompare, coinmarketcap, newsdata
       const exhaustedCount = stats.exhaustedProviders.length;
 
       if (exhaustedCount > totalProviders * 0.5) {

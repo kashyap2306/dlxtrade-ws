@@ -78,9 +78,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
       const userIntegrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
       console.log('[RESEARCH API] Fetched user API keys:', {
         cryptoCompare: !!userIntegrations.cryptocompare?.apiKey,
-        newsData: !!userIntegrations.cryptopanic?.apiKey,
+        newsData: !!userIntegrations.newsdata?.apiKey,
         coinMarketCap: !!userIntegrations.coinMarketCap?.apiKey,
-        googleFinance: !!userIntegrations.googleFinance?.apiKey,
         binancePublic: !!userIntegrations.binancePublic?.apiKey,
       });
 
@@ -145,7 +144,6 @@ export async function researchRoutes(fastify: FastifyInstance) {
             CryptoCompare: deepResult.raw.cryptoCompare?.price ? 'SUCCESS' : 'FAILED',
             CoinGecko: deepResult.raw.coinMarketCap?.price ? 'SUCCESS' : 'FAILED',
             CryptoPanic: deepResult.raw.newsData?.sentiment !== undefined ? 'SUCCESS' : 'FAILED',
-            GoogleFinance: deepResult.raw.googleFinance?.price ? 'SUCCESS' : 'FAILED',
           });
 
           // Transform to frontend-compatible format
@@ -281,8 +279,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
               cryptoCompare: { error: error.message },
               newsData: { error: error.message },
               coinMarketCap: { error: error.message },
-              googleFinance: { error: error.message },
-              binancePublic: { error: error.message }
+            binancePublic: { error: error.message }
             },
             error: error.message,
           });
@@ -366,9 +363,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
       const userIntegrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
       console.log('[RESEARCH API] Fetched user API keys:', {
         cryptoCompare: !!userIntegrations.cryptocompare?.apiKey,
-        newsData: !!userIntegrations.cryptopanic?.apiKey,
+        newsData: !!userIntegrations.newsdata?.apiKey,
         coinMarketCap: !!userIntegrations.coinMarketCap?.apiKey,
-        googleFinance: !!userIntegrations.googleFinance?.apiKey,
         binancePublic: !!userIntegrations.binancePublic?.apiKey,
       });
 
@@ -387,7 +383,6 @@ export async function researchRoutes(fastify: FastifyInstance) {
         CryptoCompare: deepResult.raw.cryptoCompare?.price ? 'SUCCESS' : 'FAILED',
         CoinGecko: deepResult.raw.coinMarketCap?.price ? 'SUCCESS' : 'FAILED',
             CryptoPanic: deepResult.raw.newsData?.sentiment !== undefined ? 'SUCCESS' : 'FAILED',
-        GoogleFinance: deepResult.raw.googleFinance?.price ? 'SUCCESS' : 'FAILED',
       });
 
       // Transform to frontend-compatible format
@@ -554,9 +549,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
       const userIntegrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
       console.log('[RESEARCH API] Fetched user API keys:', {
         cryptoCompare: !!userIntegrations.cryptocompare?.apiKey,
-        newsData: !!userIntegrations.cryptopanic?.apiKey,
+        newsData: !!userIntegrations.newsdata?.apiKey,
         coinMarketCap: !!userIntegrations.coinMarketCap?.apiKey,
-        googleFinance: !!userIntegrations.googleFinance?.apiKey,
         binancePublic: !!userIntegrations.binancePublic?.apiKey,
       });
 
@@ -574,7 +568,6 @@ export async function researchRoutes(fastify: FastifyInstance) {
         CryptoCompare: deepResult.raw.cryptoCompare?.price ? 'SUCCESS' : 'FAILED',
         CoinGecko: deepResult.raw.coinMarketCap?.price ? 'SUCCESS' : 'FAILED',
             CryptoPanic: deepResult.raw.newsData?.sentiment !== undefined ? 'SUCCESS' : 'FAILED',
-        GoogleFinance: deepResult.raw.googleFinance?.price ? 'SUCCESS' : 'FAILED',
       });
 
       // Transform to frontend-compatible format
@@ -780,7 +773,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
 
       // Run research for the specified user using their own API keys
       const userIntegrations = await firestoreAdapter.getEnabledIntegrations(body.uid);
-      const hasCryptoPanic = userIntegrations.cryptopanic?.apiKey;
+      const hasNewsData = userIntegrations.newsdata?.apiKey;
       const hasCryptoCompare = userIntegrations.cryptocompare?.apiKey;
 
       let result: { symbol: string; signal: 'BUY' | 'SELL' | 'HOLD'; accuracy: number } = {
@@ -789,7 +782,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
         accuracy: 0.5,
       };
 
-      if (hasCryptoPanic || hasCryptoCompare) {
+      if (hasNewsData || hasCryptoCompare) {
         // Perform basic analysis for the target user
         result = {
           symbol: 'BTCUSDT',

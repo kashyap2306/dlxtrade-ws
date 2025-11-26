@@ -21,16 +21,17 @@ export default function MarketScanner() {
       const response = await api.get('/market/top-coins');
       const data = response.data || [];
       
-      // Transform CoinMarketCap data to our format
+      // Transform backend data to our format
       const topCoins = data
         .map((coin: any) => ({
           symbol: coin.symbol || '',
           price: parseFloat(coin.price || 0),
-          priceChange24h: parseFloat(coin.percent_change_24h || 0),
-          volume24h: parseFloat(coin.volume_24h || 0),
-          pumpPercent: parseFloat(coin.percent_change_24h || 0),
+          priceChange24h: parseFloat(coin.priceChangePercent24h || 0),
+          volume24h: parseFloat(coin.volume24h || 0),
+          pumpPercent: parseFloat(coin.priceChangePercent24h || 0),
         }))
-        .sort((a: CoinData, b: CoinData) => b.pumpPercent - a.pumpPercent)
+        .filter((coin: CoinData) => coin.price > 0) // Filter out invalid data
+        .sort((a: CoinData, b: CoinData) => Math.abs(b.pumpPercent) - Math.abs(a.pumpPercent)) // Sort by absolute change
         .slice(0, 5);
       
       setCoins(topCoins);
@@ -51,25 +52,23 @@ export default function MarketScanner() {
   }, [fetchTopCoins]);
 
   return (
-    <div className="bg-black/30 backdrop-blur-xl border border-purple-500/30 rounded-2xl p-6 shadow-2xl shadow-purple-500/10 hover:shadow-purple-500/20 transition-all duration-300 overflow-hidden">
+    <div>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h2 className="text-xl sm:text-2xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-cyan-400 bg-clip-text text-transparent mb-1">
-            Market Scanner
-          </h2>
-          <p className="text-xs sm:text-sm text-gray-400 flex items-center gap-2">
+          <h3 className="text-xl font-bold text-white mb-1">Market Scanner</h3>
+          <p className="text-sm text-slate-400 flex items-center gap-2">
             <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
-            Top 5 Gainers (24h)
+            Top 5 Movers (24h)
           </p>
         </div>
         <button
           onClick={fetchTopCoins}
           disabled={loading}
-          className="px-4 py-2 text-xs sm:text-sm bg-black/40 backdrop-blur-sm border border-purple-500/40 text-gray-200 rounded-xl hover:bg-purple-500/20 hover:border-purple-400/60 transition-all duration-300 disabled:opacity-50 flex items-center justify-center gap-2 transform hover:scale-105 active:scale-95"
+          className="px-3 py-2 text-sm bg-slate-700/50 hover:bg-slate-700/70 text-slate-300 rounded-lg transition-all disabled:opacity-50 flex items-center gap-2"
         >
           {loading ? (
             <>
-              <span className="w-3 h-3 border-2 border-purple-400/30 border-t-purple-400 rounded-full animate-spin"></span>
+              <div className="w-4 h-4 border-2 border-slate-400/30 border-t-slate-400 rounded-full animate-spin"></div>
               Loading...
             </>
           ) : (
@@ -86,78 +85,62 @@ export default function MarketScanner() {
       {loading && coins.length === 0 ? (
         <div className="space-y-3">
           {[1, 2, 3, 4, 5].map((i) => (
-            <div key={i} className="h-16 bg-gray-700/30 rounded-lg animate-pulse"></div>
+            <div key={i} className="h-16 bg-slate-700/30 rounded-lg animate-pulse"></div>
           ))}
         </div>
       ) : coins.length === 0 ? (
         <div className="text-center py-12">
-          <p className="text-gray-400 text-sm">No market data available</p>
+          <p className="text-slate-400 text-sm">No market data available</p>
+          <p className="text-slate-500 text-xs mt-2">Check your API connections</p>
         </div>
       ) : (
         <div className="space-y-2">
-          {/* Exchange-style Header */}
-          <div className="hidden md:grid grid-cols-5 gap-4 px-4 py-3 bg-black/40 rounded-lg border border-purple-500/20 mb-2">
-            <div className="text-xs font-bold text-purple-300 uppercase tracking-wider">#</div>
-            <div className="text-xs font-bold text-purple-300 uppercase tracking-wider">Symbol</div>
-            <div className="text-xs font-bold text-purple-300 uppercase tracking-wider text-right">Price</div>
-            <div className="text-xs font-bold text-purple-300 uppercase tracking-wider text-right">24h %</div>
-            <div className="text-xs font-bold text-purple-300 uppercase tracking-wider text-right">Volume</div>
+          {/* Table Header - Desktop */}
+          <div className="hidden md:grid grid-cols-4 gap-4 px-4 py-3 bg-slate-700/30 rounded-lg text-xs font-semibold text-slate-300 uppercase tracking-wider mb-3">
+            <div>Asset</div>
+            <div className="text-right">Price</div>
+            <div className="text-right">24h Change</div>
+            <div className="text-right">Volume</div>
           </div>
 
-          {/* Coin Cards */}
+          {/* Coin List */}
           {coins.map((coin, index) => (
             <div
               key={coin.symbol}
-              className="relative bg-gradient-to-r from-black/50 to-black/30 backdrop-blur-sm border border-purple-500/30 rounded-lg p-3 md:p-4 hover:border-purple-400/60 hover:from-purple-500/10 hover:to-black/40 transition-all duration-300 overflow-hidden group cursor-pointer"
+              className="bg-slate-800/30 backdrop-blur-sm rounded-lg border border-slate-700/50 p-4 hover:bg-slate-800/50 transition-all duration-200 mb-3"
             >
-              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 md:gap-4">
-                {/* Rank & Symbol */}
-                <div className="flex items-center gap-3 md:gap-4 flex-1">
-                  <div className="flex items-center justify-center w-8 h-8 md:w-10 md:h-10 rounded-lg bg-gradient-to-br from-purple-500/30 to-pink-500/30 text-purple-300 font-bold text-xs md:text-sm border border-purple-400/40">
+              <div className="flex items-center justify-between">
+                {/* Asset Info */}
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-slate-700/50 text-slate-300 font-bold text-sm">
                     {index + 1}
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-base md:text-lg font-bold text-white truncate">{coin.symbol}</span>
-                    </div>
-                    <div className="md:hidden flex items-center gap-3 text-xs text-gray-400">
-                      <span>${coin.price.toFixed(2)}</span>
-                      <span className={`font-semibold ${
-                        coin.pumpPercent >= 0 ? 'text-green-400' : 'text-red-400'
-                      }`}>
-                        {coin.pumpPercent >= 0 ? '+' : ''}{coin.pumpPercent.toFixed(2)}%
-                      </span>
-                    </div>
+                  <div>
+                    <div className="font-semibold text-white">{coin.symbol.replace('USDT', '')}</div>
+                    <div className="text-xs text-slate-400">{coin.symbol}</div>
                   </div>
                 </div>
 
-                {/* Desktop Grid Layout */}
-                <div className="hidden md:grid md:grid-cols-4 gap-4 flex-1">
+                {/* Price & Change */}
+                <div className="flex items-center gap-6">
                   <div className="text-right">
-                    <div className="text-sm font-bold text-white">${coin.price.toFixed(2)}</div>
-                    <div className="text-xs text-gray-400">Price</div>
-                  </div>
-                  <div className="text-right">
-                    <div className={`text-sm font-bold ${
-                      coin.pumpPercent >= 0 ? 'text-green-400' : 'text-red-400'
-                    }`}>
+                    <div className="font-semibold text-white">${coin.price.toFixed(coin.price < 1 ? 4 : 2)}</div>
+                    <div className={`text-sm ${coin.pumpPercent >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       {coin.pumpPercent >= 0 ? '+' : ''}{coin.pumpPercent.toFixed(2)}%
                     </div>
-                    <div className="text-xs text-gray-400">24h Change</div>
                   </div>
-                  <div className="text-right">
-                    <div className="text-sm font-bold text-white">${(coin.volume24h / 1000000).toFixed(1)}M</div>
-                    <div className="text-xs text-gray-400">24h Volume</div>
+                  <div className="text-right hidden md:block">
+                    <div className="font-semibold text-white">${(coin.volume24h / 1000000).toFixed(1)}M</div>
+                    <div className="text-xs text-slate-400">Volume</div>
                   </div>
-                  <div className="text-right">
-                    <div className={`inline-flex items-center px-2 py-1 rounded text-xs font-semibold ${
-                      coin.pumpPercent >= 0
-                        ? 'bg-green-500/20 text-green-300 border border-green-400/30'
-                        : 'bg-red-500/20 text-red-300 border border-red-400/30'
-                    }`}>
-                      {coin.pumpPercent >= 0 ? '↑' : '↓'} {Math.abs(coin.pumpPercent).toFixed(2)}%
-                    </div>
-                  </div>
+                </div>
+              </div>
+
+              {/* Mobile-only volume */}
+              <div className="md:hidden mt-3 pt-3 border-t border-slate-700/50">
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">24h Volume</span>
+                  <span className="text-white font-semibold">${(coin.volume24h / 1000000).toFixed(1)}M</span>
                 </div>
               </div>
 
