@@ -200,18 +200,18 @@ export default function Profile() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
-      {/* Animated background elements */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 smooth-scroll">
+      {/* Animated background elements - Performance optimized */}
+      <div className="fixed inset-0 overflow-hidden pointer-events-none gpu-accelerated">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob"></div>
         <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-blue-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-2000"></div>
-        <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-80 h-80 bg-pink-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-4000"></div>
+        <div className="hidden lg:block absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-80 h-80 bg-pink-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-4000"></div>
       </div>
 
       <Sidebar onLogout={handleLogout} />
 
-      <main className="min-h-screen">
-        <div className="max-w-4xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8">
+      <main className="min-h-screen smooth-scroll">
+        <div className="container py-4 sm:py-8">
           <section className="mb-6 sm:mb-8">
             <div className="space-y-2">
               <h1 className="text-3xl sm:text-4xl font-bold bg-gradient-to-r from-purple-300 via-pink-300 to-cyan-300 bg-clip-text text-transparent">
@@ -237,7 +237,7 @@ export default function Profile() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-6 border-t border-purple-500/20">
+              <div className="space-y-4 pt-6 border-t border-purple-500/20">{/* Single column on mobile */}
                 <div>
                   <label className="block text-xs font-medium text-gray-400 mb-1">Account Creation</label>
                   <p className="text-sm text-gray-200">{userData?.createdAt ? new Date(userData.createdAt).toLocaleDateString() : getAccountCreationDate(user)}</p>

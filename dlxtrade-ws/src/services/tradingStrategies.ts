@@ -588,17 +588,19 @@ export class TradingStrategies {
   }
 
   // Calculate combined signal from all strategies
-  calculateCombinedSignal(strategies: StrategyResult[]): {
+  calculateCombinedSignal(strategies: StrategyResult[], newsSentiment?: number, fundamentalsScore?: number): {
     signal: 'BUY' | 'SELL' | 'HOLD';
     accuracy: number;
     providersCalled: string[];
   } {
-    let buyScore = 0;
-    let sellScore = 0;
-    let totalWeight = 0;
+    // Implement 50/30/20 weighted formula:
+    // 50% Price/Technical, 30% News Sentiment, 20% Fundamentals
 
-    // Weight different strategies
-    const weights: { [key: string]: number } = {
+    let technicalScore = 0;
+    let technicalWeight = 0;
+
+    // Calculate technical analysis score (50% weight)
+    const technicalWeights: { [key: string]: number } = {
       'RSI': 1.0,
       'Volume': 0.8,
       'Momentum': 1.0,
@@ -610,41 +612,58 @@ export class TradingStrategies {
       'VWAP': 0.8
     };
 
-    strategies.forEach(strategy => {
-      const weight = weights[strategy.name] || 1.0;
-      totalWeight += weight;
+    let buySignals = 0;
+    let sellSignals = 0;
+
+    for (const strategy of strategies) {
+      if (strategy.action === 'BUY') buySignals++;
+      else if (strategy.action === 'SELL') sellSignals++;
+
+      const weight = technicalWeights[strategy.name] || 1.0;
+      technicalWeight += weight;
 
       if (strategy.action === 'BUY') {
-        buyScore += strategy.score * weight;
+        technicalScore += strategy.score * weight;
       } else if (strategy.action === 'SELL') {
-        sellScore += strategy.score * weight;
+        technicalScore -= strategy.score * weight;
       }
-    });
-
-    // Normalize scores
-    buyScore /= totalWeight;
-    sellScore /= totalWeight;
-
-    let signal: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
-    let accuracy = 0.5;
-
-    if (buyScore > sellScore + 0.1) {
-      signal = 'BUY';
-      accuracy = Math.min(0.95, 0.5 + buyScore * 0.4);
-    } else if (sellScore > buyScore + 0.1) {
-      signal = 'SELL';
-      accuracy = Math.min(0.95, 0.5 + sellScore * 0.4);
-    } else {
-      accuracy = Math.max(0.5, 1 - Math.abs(buyScore - sellScore));
     }
 
-    // Ensure minimum accuracy
-    accuracy = Math.max(0.5, accuracy);
+    // Normalize technical score to 0-1 range
+    const normalizedTechnicalScore = technicalWeight > 0 ? (technicalScore / technicalWeight + 1) / 2 : 0.5;
+
+    // News sentiment (30% weight) - use provided sentiment or default to neutral
+    const newsScore = newsSentiment !== undefined ? newsSentiment : 0.5;
+
+    // Fundamentals (20% weight) - use provided fundamentals or default to neutral
+    const fundamentalsNormalizedScore = fundamentalsScore !== undefined ? fundamentalsScore : 0.5;
+
+    // Calculate weighted accuracy (0-1 scale)
+    const accuracy = (
+      normalizedTechnicalScore * 0.5 +    // 50% technical
+      newsScore * 0.3 +                   // 30% news sentiment
+      fundamentalsNormalizedScore * 0.2   // 20% fundamentals
+    );
+
+    // Determine signal based on majority and technical bias
+    let signal: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
+    if (buySignals > sellSignals) {
+      signal = 'BUY';
+    } else if (sellSignals > buySignals) {
+      signal = 'SELL';
+    } else if (normalizedTechnicalScore > 0.6) {
+      signal = 'BUY';
+    } else if (normalizedTechnicalScore < 0.4) {
+      signal = 'SELL';
+    }
+
+    // Extract provider names from strategies
+    const providersCalled = strategies.map(s => s.name);
 
     return {
       signal,
       accuracy,
-      providersCalled: ['CryptoCompare', 'CryptoPanic', 'CoinGecko', 'GoogleFinance', 'BinancePublic']
+      providersCalled
     };
   }
 }

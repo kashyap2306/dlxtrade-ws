@@ -2,9 +2,9 @@ import { logger } from '../utils/logger';
 import { firestoreAdapter } from './firestoreAdapter';
 import { getFirebaseAdmin } from '../utils/firebase';
 import { deepResearchEngine } from './deepResearchEngine';
+import { autoTradeExecutor } from './autoTradeExecutor';
 import * as admin from 'firebase-admin';
 import { AdapterError } from '../utils/adapterErrorHandler';
-import { fetchCryptoPanicNews } from './cryptoPanicAdapter';
 
 /**
  * Scheduled Research Service
@@ -23,6 +23,59 @@ import { fetchCryptoPanicNews } from './cryptoPanicAdapter';
  * This service is completely independent of trading exchange adapters.
  */
 export class ScheduledResearchService {
+  /**
+   * Check if currently in a maintenance window
+   */
+  private async isMaintenanceWindow(): Promise<boolean> {
+    try {
+      // Check environment variable for maintenance mode
+      const maintenanceMode = process.env.MAINTENANCE_MODE === 'true';
+      if (maintenanceMode) {
+        return true;
+      }
+
+      // Check for scheduled maintenance windows (e.g., weekends 2-4 AM UTC)
+      const now = new Date();
+      const utcHour = now.getUTCHours();
+      const utcDay = now.getUTCDay(); // 0 = Sunday, 6 = Saturday
+
+      // Maintenance window: Saturdays and Sundays, 2-4 AM UTC
+      if ((utcDay === 0 || utcDay === 6) && (utcHour >= 2 && utcHour < 4)) {
+        return true;
+      }
+
+      return false;
+    } catch (error: any) {
+      logger.error({ error: error.message }, 'Error checking maintenance window');
+      return false; // Default to allowing research
+    }
+  }
+
+  /**
+   * Check if providers are in a degraded state
+   */
+  private async areProvidersDegraded(): Promise<boolean> {
+    try {
+      // Import the usage tracker to check provider status
+      const { apiUsageTracker } = await import('./apiUsageTracker');
+
+      const stats = apiUsageTracker.getUsageStats();
+
+      // If more than 50% of providers are exhausted, consider it degraded
+      const totalProviders = 5; // cryptocompare, cryptopanic, coingecko, googlefinance, binancepublic
+      const exhaustedCount = stats.exhaustedProviders.length;
+
+      if (exhaustedCount > totalProviders * 0.5) {
+        logger.warn({ exhaustedCount, totalProviders }, 'Provider chain degraded - too many exhausted providers');
+        return true;
+      }
+
+      return false;
+    } catch (error: any) {
+      logger.error({ error: error.message }, 'Error checking provider degradation');
+      return false; // Default to allowing research
+    }
+  }
   private intervalId: NodeJS.Timeout | null = null;
   private isRunning = false;
 
@@ -78,6 +131,21 @@ export class ScheduledResearchService {
    * Wrapped in comprehensive error handling to prevent crashes
    */
   private async runScheduledResearch() {
+    try {
+      // Check for maintenance windows
+      if (await this.isMaintenanceWindow()) {
+        logger.info('Skipping scheduled research due to maintenance window');
+        return;
+      }
+
+      // Check provider health
+      if (await this.areProvidersDegraded()) {
+        logger.warn('Skipping scheduled research due to degraded provider chain');
+        return;
+      }
+    } catch (error: any) {
+      logger.error({ error: error.message }, 'Error checking maintenance/provider status, proceeding with research');
+    }
     try {
       if (this.isRunning) {
         logger.warn('Scheduled research already running, skipping');
@@ -152,20 +220,20 @@ export class ScheduledResearchService {
       // Get user's API integrations from Firestore
       const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
 
-      // Check for at least one of the required user-provided APIs (others are auto-enabled)
+      // Check for required APIs: CryptoCompare and NewsData are mandatory
       const hasCryptoCompare = integrations.cryptocompare?.apiKey;
-      const hasCryptoPanic = integrations.cryptopanic?.apiKey;
+      const hasNewsData = integrations.newsData?.apiKey;
 
-      if (!hasCryptoCompare && !hasCryptoPanic) {
-        // Skip users without at least one of the required APIs
-        logger.debug({ uid }, 'Skipping user - no required research API credentials');
+      if (!hasCryptoCompare || !hasNewsData) {
+        // Skip users without required APIs
+        logger.debug({ uid, hasCryptoCompare, hasNewsData }, 'Skipping user - missing required research API credentials');
         return {
           success: false,
           symbol: 'BTCUSDT',
           providersCalled: [],
           errors: [{
             adapter: 'Required APIs',
-            error: 'Missing CryptoCompare API key (CryptoPanic is optional)',
+            error: 'Missing required API keys: CryptoCompare and NewsData.io are mandatory',
             isAuthError: true,
           }],
         };
@@ -187,6 +255,11 @@ export class ScheduledResearchService {
         providersCalled: deepResult.providersCalled.join(', '),
         strategies: deepResult.signals.length
       }, 'Scheduled deep research completed with full strategy analysis');
+
+      // Check for auto-trading if accuracy >= 75% and user has auto-trade enabled
+      if (deepResult.accuracy >= 0.75 && (deepResult.combinedSignal === 'BUY' || deepResult.combinedSignal === 'SELL')) {
+        await this.executeAutoTradeIfEnabled(uid, symbol, deepResult);
+      }
 
       return {
         success: true,
@@ -335,6 +408,98 @@ export class ScheduledResearchService {
       logger.info({ uid, adapter }, 'Admin notified about research auth error');
     } catch (notifyError: any) {
       logger.error({ err: notifyError, uid, adapter }, 'Failed to notify admin about auth error');
+    }
+  }
+
+  /**
+   * Execute auto-trade if user has auto-trading enabled and meets accuracy threshold
+   */
+  private async executeAutoTradeIfEnabled(uid: string, symbol: string, deepResult: any): Promise<void> {
+    try {
+      // Get user settings to check if auto-trade is enabled
+      const db = getFirebaseAdmin().firestore();
+      const userDoc = await db.collection('users').doc(uid).get();
+
+      if (!userDoc.exists) {
+        logger.debug({ uid }, 'User not found for auto-trade check');
+        return;
+      }
+
+      const userData = userDoc.data();
+      const settings = userData?.settings || {};
+
+      // Check if auto-trade is enabled and user has required exchanges
+      if (!settings.enableAutoTrade || !settings.exchanges || settings.exchanges.length === 0) {
+        logger.debug({ uid }, 'Auto-trade not enabled or no exchanges configured');
+        return;
+      }
+
+      // Get current price from research data
+      let currentPrice = 50000; // fallback
+      if (deepResult.raw?.binancePublic?.price) {
+        currentPrice = deepResult.raw.binancePublic.price;
+      } else if (deepResult.raw?.coinMarketCap?.marketData?.price) {
+        currentPrice = deepResult.raw.coinMarketCap.marketData.price;
+      }
+
+      logger.info({
+        uid,
+        symbol,
+        signal: deepResult.combinedSignal,
+        accuracy: deepResult.accuracy,
+        confidencePercent: Math.round(deepResult.accuracy * 100),
+        currentPrice,
+        exchanges: settings.exchanges
+      }, 'Executing auto-trade for user');
+
+      // Execute trade on user's configured exchanges
+      for (const exchange of settings.exchanges) {
+        try {
+          const tradeResult = await autoTradeExecutor.executeAutoTrade({
+            userId: uid,
+            symbol,
+            signal: deepResult.combinedSignal as 'BUY' | 'SELL',
+            confidencePercent: Math.round(deepResult.accuracy * 100),
+            researchRequestId: `auto_trade_${Date.now()}_${symbol}_${uid}`,
+            currentPrice,
+            exchangeName: exchange
+          });
+
+          if (tradeResult.success) {
+            logger.info({
+              uid,
+              symbol,
+              exchange,
+              signal: deepResult.combinedSignal,
+              orderId: tradeResult.orderId,
+              confidencePercent: Math.round(deepResult.accuracy * 100)
+            }, 'Auto-trade executed successfully');
+          } else {
+            logger.warn({
+              uid,
+              symbol,
+              exchange,
+              signal: deepResult.combinedSignal,
+              error: tradeResult.error
+            }, 'Auto-trade execution failed');
+          }
+        } catch (tradeError: any) {
+          logger.error({
+            error: tradeError.message,
+            uid,
+            symbol,
+            exchange,
+            signal: deepResult.combinedSignal
+          }, 'Auto-trade execution error');
+        }
+      }
+    } catch (error: any) {
+      logger.error({
+        error: error.message,
+        uid,
+        symbol,
+        signal: deepResult.combinedSignal
+      }, 'Error in auto-trade execution');
     }
   }
 

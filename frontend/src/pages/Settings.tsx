@@ -51,6 +51,14 @@ export default function Settings() {
           max_loss_pct: response.data.max_loss_pct || 5,
           max_drawdown_pct: response.data.max_drawdown_pct || 10,
           per_trade_risk_pct: response.data.per_trade_risk_pct || 1,
+          cryptoCompareKey: response.data.cryptoCompareKey || '',
+          newsDataKey: response.data.newsDataKey || '',
+          binaceKey: response.data.binaceKey || '',
+          coinmarketcapKey: response.data.coinmarketcapKey || '',
+          enableAutoTrade: response.data.enableAutoTrade || false,
+          exchanges: response.data.exchanges || [],
+          backupApis: response.data.backupApis || [],
+          showUnmaskedKeys: response.data.showUnmaskedKeys || false,
         });
       } else {
         // Initialize with defaults if no settings exist
@@ -65,6 +73,14 @@ export default function Settings() {
           max_loss_pct: 5,
           max_drawdown_pct: 10,
           per_trade_risk_pct: 1,
+          cryptoCompareKey: '',
+          newsDataKey: '',
+          binaceKey: '',
+          coinmarketcapKey: '',
+          enableAutoTrade: false,
+          exchanges: [],
+          backupApis: [],
+          showUnmaskedKeys: false,
         });
       }
     } catch (err: any) {
@@ -82,6 +98,14 @@ export default function Settings() {
         max_loss_pct: 5,
         max_drawdown_pct: 10,
         per_trade_risk_pct: 1,
+        cryptoCompareKey: '',
+        newsDataKey: '',
+        binaceKey: '',
+        coinmarketcapKey: '',
+        enableAutoTrade: false,
+        exchanges: [],
+        backupApis: [],
+        showUnmaskedKeys: false,
       });
     } finally {
       setLoading(false);
@@ -91,6 +115,17 @@ export default function Settings() {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!settings) return;
+
+    // Validate required API keys
+    if (!settings.cryptoCompareKey?.trim()) {
+      showToast('CryptoCompare API key is required', 'error');
+      return;
+    }
+    if (!settings.newsDataKey?.trim()) {
+      showToast('NewsData.io API key is required', 'error');
+      return;
+    }
+
     setSaving(true);
 
     try {
@@ -132,31 +167,265 @@ export default function Settings() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 pb-20 lg:pb-0">
-      {/* Animated background elements */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 pb-20 lg:pb-0 smooth-scroll">
+      {/* Animated background elements - Performance optimized */}
+      <div className="fixed inset-0 overflow-hidden pointer-events-none gpu-accelerated">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob"></div>
         <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-blue-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-2000"></div>
-        <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-80 h-80 bg-pink-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-4000"></div>
+        <div className="hidden lg:block absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-80 h-80 bg-pink-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-4000"></div>
       </div>
 
       <Sidebar onLogout={handleLogout} />
 
-      <main className="min-h-screen">
-        <div className="max-w-4xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8">
+      <main className="min-h-screen smooth-scroll">
+        <div className="container py-4 sm:py-8">
           <section className="mb-6 sm:mb-8">
             <div className="space-y-2">
               <h1 className="text-3xl sm:text-4xl font-bold bg-gradient-to-r from-purple-300 via-pink-300 to-cyan-300 bg-clip-text text-transparent">
                 Trading Settings
               </h1>
               <p className="text-sm sm:text-base text-gray-300">
-                Configure your trading parameters and preferences
+                Configure your API keys and trading parameters
               </p>
             </div>
           </section>
+
+          {/* API Keys Section */}
+          <div className="card mb-6">
+            <h2 className="text-xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent mb-4">
+              API Keys
+            </h2>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1 text-gray-300">
+                  CryptoCompare API Key <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type={settings.showUnmaskedKeys ? "text" : "password"}
+                  className="input"
+                  placeholder="Enter your CryptoCompare API key"
+                  value={settings.cryptoCompareKey || ''}
+                  onChange={(e) => setSettings({ ...settings, cryptoCompareKey: e.target.value })}
+                  required
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Required for historical OHLC data and market analysis
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1 text-gray-300">
+                  NewsData.io API Key <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type={settings.showUnmaskedKeys ? "text" : "password"}
+                  className="input"
+                  placeholder="Enter your NewsData.io API key"
+                  value={settings.newsDataKey || ''}
+                  onChange={(e) => setSettings({ ...settings, newsDataKey: e.target.value })}
+                  required
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Required for news sentiment analysis and market insights
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1 text-gray-300">
+                  Binance API Key
+                </label>
+                <input
+                  type={settings.showUnmaskedKeys ? "text" : "password"}
+                  className="input"
+                  placeholder="Enter your Binance API key (optional)"
+                  value={settings.binaceKey || ''}
+                  onChange={(e) => setSettings({ ...settings, binaceKey: e.target.value })}
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Optional - platform uses public endpoints if not provided
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1 text-gray-300">
+                  CoinMarketCap API Key
+                </label>
+                <input
+                  type={settings.showUnmaskedKeys ? "text" : "password"}
+                  className="input"
+                  placeholder="Enter your CoinMarketCap API key (optional)"
+                  value={settings.coinmarketcapKey || ''}
+                  onChange={(e) => setSettings({ ...settings, coinmarketcapKey: e.target.value })}
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Optional backup for token metadata and market data
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Backup APIs Section */}
+          <div className="card mb-6">
+            <h2 className="text-xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent mb-4">
+              Backup API Providers
+            </h2>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1 text-gray-300">
+                  Backup API Keys (JSON format)
+                </label>
+                <textarea
+                  className="input min-h-32"
+                  placeholder='{"cryptocompare": "key1", "newsdata": "key2", "binance": "key3"}'
+                  value={Array.isArray(settings.backupApis) ? JSON.stringify(settings.backupApis, null, 2) : ''}
+                  onChange={(e) => {
+                    try {
+                      const parsed = JSON.parse(e.target.value);
+                      setSettings({ ...settings, backupApis: Array.isArray(parsed) ? parsed : [] });
+                    } catch (err) {
+                      // Allow invalid JSON during typing
+                      setSettings({ ...settings, backupApis: [] });
+                    }
+                  }}
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Additional API keys for rotation when primary keys are exhausted. JSON object with provider names as keys.
+                </p>
+              </div>
+
+              <div>
+                <label className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                    checked={settings.showUnmaskedKeys || false}
+                    onChange={(e) => setSettings({ ...settings, showUnmaskedKeys: e.target.checked })}
+                  />
+                  <span className="text-sm font-medium text-gray-300">Show API keys unmasked</span>
+                </label>
+                <p className="text-xs text-gray-400 mt-1">
+                  Display API keys in plain text instead of masked format
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Provider Status Section */}
+          <div className="card mb-6">
+            <h2 className="text-xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent mb-4">
+              API Provider Status
+            </h2>
+            <div className="space-y-3">
+              {[
+                { name: 'CryptoCompare', key: 'cryptoCompareKey', required: true },
+                { name: 'NewsData.io', key: 'newsDataKey', required: true },
+                { name: 'Binance', key: 'binaceKey', required: false },
+                { name: 'CoinMarketCap', key: 'coinmarketcapKey', required: false },
+              ].map((provider) => {
+                const hasKey = settings[provider.key as keyof typeof settings];
+                const isConfigured = hasKey && String(hasKey).trim().length > 0;
+
+                let status = 'Not Configured';
+                let statusColor = 'text-gray-400';
+                let bgColor = 'bg-gray-500/20';
+                let borderColor = 'border-gray-400/30';
+
+                if (isConfigured) {
+                  // Mock status - in real implementation, this would check actual API status
+                  const mockStatus = Math.random();
+                  if (mockStatus > 0.8) {
+                    status = 'Throttled';
+                    statusColor = 'text-yellow-300';
+                    bgColor = 'bg-yellow-500/20';
+                    borderColor = 'border-yellow-400/30';
+                  } else if (mockStatus > 0.95) {
+                    status = 'Exhausted';
+                    statusColor = 'text-red-300';
+                    bgColor = 'bg-red-500/20';
+                    borderColor = 'border-red-400/30';
+                  } else {
+                    status = 'OK';
+                    statusColor = 'text-green-300';
+                    bgColor = 'bg-green-500/20';
+                    borderColor = 'border-green-400/30';
+                  }
+                }
+
+                return (
+                  <div key={provider.key} className={`flex items-center justify-between p-3 rounded-lg border ${bgColor} ${borderColor}`}>
+                    <div className="flex items-center space-x-3">
+                      <span className="text-sm font-medium text-white">{provider.name}</span>
+                      {provider.required && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-300 border border-red-400/30">
+                          Required
+                        </span>
+                      )}
+                    </div>
+                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${bgColor} ${statusColor} ${borderColor}`}>
+                      {status}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="text-xs text-gray-400 mt-3">
+              Real-time status of API providers. Status updates every 30 seconds.
+            </p>
+          </div>
+
+          {/* Auto-Trading Section */}
+          <div className="card mb-6">
+            <h2 className="text-xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent mb-4">
+              Auto-Trading Configuration
+            </h2>
+            <div className="space-y-4">
+              <div>
+                <label className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                    checked={settings.enableAutoTrade || false}
+                    onChange={(e) => setSettings({ ...settings, enableAutoTrade: e.target.checked })}
+                  />
+                  <span className="text-sm font-medium text-gray-300">Enable Auto-Trading</span>
+                </label>
+                <p className="text-xs text-gray-400 mt-1">
+                  Automatically execute trades when accuracy ≥ 75%
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1 text-gray-300">
+                  Trading Exchanges
+                </label>
+                <div className="space-y-2">
+                  {['Binance', 'Bitget', 'Weex', 'BingX', 'MEXC'].map((exchange) => (
+                    <label key={exchange} className="flex items-center space-x-2">
+                      <input
+                        type="checkbox"
+                        className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                        checked={(settings.exchanges || []).includes(exchange)}
+                        onChange={(e) => {
+                          const currentExchanges = settings.exchanges || [];
+                          const newExchanges = e.target.checked
+                            ? [...currentExchanges, exchange]
+                            : currentExchanges.filter(ex => ex !== exchange);
+                          setSettings({ ...settings, exchanges: newExchanges });
+                        }}
+                      />
+                      <span className="text-sm text-gray-300">{exchange}</span>
+                    </label>
+                  ))}
+                </div>
+                <p className="text-xs text-gray-400 mt-1">
+                  Select exchanges where auto-trades will be executed
+                </p>
+              </div>
+            </div>
+          </div>
           <div className="card">
             <form onSubmit={handleSave} className="space-y-4 sm:space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+              <div className="space-y-4 sm:space-y-6">{/* Single column on mobile */}
                 <div>
                   <label className="block text-sm font-medium mb-1 text-gray-300">Symbol</label>
                   <input

@@ -99,7 +99,19 @@ export interface HFTExecutionLogDocument {
   reason?: string;
   strategy: string;
   status?: string;
-  createdAt: admin.firestore.Timestamp;
+  createdAt?: admin.firestore.Timestamp;
+}
+
+export interface ApiUsageDocument {
+  id?: string;
+  userId: string;
+  providers: Record<string, {
+    provider: string;
+    hourlyUsage: Array<{ timestamp: number; count: number }>;
+    dailyUsage: Array<{ timestamp: number; count: number }>;
+    lastRotation: number;
+  }>;
+  lastUpdated: number;
 }
 
 export class FirestoreAdapter {
@@ -997,6 +1009,31 @@ export class FirestoreAdapter {
       updatedAt: admin.firestore.Timestamp.now(),
     }, { merge: true });
     logger.debug('Global stats updated');
+  }
+
+  // API Usage Tracking
+  async saveApiUsage(uid: string, usage: any): Promise<void> {
+    const docRef = db().collection('users').doc(uid).collection('apiUsage').doc('current');
+
+    await docRef.set({
+      ...usage,
+      updatedAt: admin.firestore.Timestamp.now(),
+    }, { merge: true });
+
+    logger.debug({ uid }, 'API usage saved to Firestore');
+  }
+
+  async getApiUsage(uid: string): Promise<any | null> {
+    const doc = await db()
+      .collection('users')
+      .doc(uid)
+      .collection('apiUsage')
+      .doc('current')
+      .get();
+
+    if (!doc.exists) return null;
+
+    return doc.data();
   }
 }
 

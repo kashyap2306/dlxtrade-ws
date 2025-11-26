@@ -10,6 +10,15 @@ export interface AutoTradeConfig {
   minBalanceUSD: number;
   orderType: 'market' | 'limit';
   dryRun: boolean;
+  // Position sizing defaults
+  defaultPositionSize: number; // 0.01 = 1% of balance
+  // TP/SL defaults (in percent)
+  defaultTakeProfitPct: number; // 2.0 = 2%
+  defaultStopLossPct: number; // 1.0 = 1%
+  // User overrides (if set, override defaults)
+  positionSizeOverride?: number;
+  takeProfitOverride?: number;
+  stopLossOverride?: number;
 }
 
 export interface TradeExecutionRequest {
@@ -19,6 +28,7 @@ export interface TradeExecutionRequest {
   confidencePercent: number;
   researchRequestId: string;
   currentPrice: number;
+  exchangeName?: string; // Optional exchange name for auto-trading
 }
 
 export interface TradeResult {
@@ -38,7 +48,11 @@ export class AutoTradeExecutor {
     maxOpenOrders: 3,
     minBalanceUSD: 10,
     orderType: 'market',
-    dryRun: false
+    dryRun: false,
+    // Position sizing defaults
+    defaultPositionSize: 0.01, // 1% default
+    defaultTakeProfitPct: 2.0, // 2% TP default
+    defaultStopLossPct: 1.0, // 1% SL default
   };
 
   private constructor() {}
@@ -142,7 +156,10 @@ export class AutoTradeExecutor {
         return { success: false, error: tradeSize.reason };
       }
 
-      // 8. Execute the trade
+      // 8. Execute the trade with TP/SL
+      const takeProfitPct = userSettings.takeProfitOverride || userSettings.defaultTakeProfitPct;
+      const stopLossPct = userSettings.stopLossOverride || userSettings.defaultStopLossPct;
+
       const tradeResult = await this.executeTrade({
         userId: request.userId,
         symbol: request.symbol,
@@ -152,7 +169,9 @@ export class AutoTradeExecutor {
         userIntegrations,
         researchRequestId: request.researchRequestId,
         dryRun: userSettings.dryRun || this.globalConfig.dryRun,
-        orderType: userSettings.orderType
+        orderType: userSettings.orderType,
+        takeProfitPct,
+        stopLossPct
       });
 
       const latency = Date.now() - startTime;
@@ -205,7 +224,7 @@ export class AutoTradeExecutor {
   /**
    * Get user's auto-trade settings
    */
-  private async getUserAutoTradeSettings(userId: string): Promise<AutoTradeConfig> {
+  async getUserAutoTradeSettings(userId: string): Promise<AutoTradeConfig> {
     try {
       const userDoc = await admin.firestore()
         .collection('users')
@@ -221,7 +240,15 @@ export class AutoTradeExecutor {
         maxOpenOrders: settings.maxOpenOrders || this.globalConfig.maxOpenOrders,
         minBalanceUSD: settings.minBalanceUSD || this.globalConfig.minBalanceUSD,
         orderType: settings.orderType || this.globalConfig.orderType,
-        dryRun: settings.dryRun || false
+        dryRun: settings.dryRun || false,
+        // Position sizing defaults
+        defaultPositionSize: settings.defaultPositionSize || 0.01, // 1% default
+        defaultTakeProfitPct: settings.defaultTakeProfitPct || 2.0, // 2% TP default
+        defaultStopLossPct: settings.defaultStopLossPct || 1.0, // 1% SL default
+        // User overrides
+        positionSizeOverride: settings.positionSizeOverride,
+        takeProfitOverride: settings.takeProfitOverride,
+        stopLossOverride: settings.stopLossOverride
       };
     } catch (error) {
       logger.warn({ error: error.message, userId: this.maskUserId(userId) }, 'Failed to get user settings, using defaults');
@@ -340,6 +367,8 @@ export class AutoTradeExecutor {
     researchRequestId: string;
     dryRun: boolean;
     orderType: 'market' | 'limit';
+    takeProfitPct?: number;
+    stopLossPct?: number;
   }): Promise<TradeResult> {
 
     const {
@@ -351,7 +380,9 @@ export class AutoTradeExecutor {
       userIntegrations,
       researchRequestId,
       dryRun,
-      orderType
+      orderType,
+      takeProfitPct,
+      stopLossPct
     } = params;
 
     try {
@@ -414,7 +445,7 @@ export class AutoTradeExecutor {
       const baseCurrency = symbol.replace('USDT', '').replace('USD', '');
       const quoteCurrency = symbol.includes('USDT') ? 'USDT' : 'USD';
 
-      // Place the order
+      // Place the main order
       const orderParams = {
         symbol: `${baseCurrency}${quoteCurrency}`,
         side: signal,
@@ -429,7 +460,63 @@ export class AutoTradeExecutor {
       const executedQuantity = orderResult.quantity || quantity;
       const orderId = orderResult.exchangeOrderId || orderResult.clientOrderId || `order_${Date.now()}`;
 
-      // Log the real trade
+      // Place TP/SL orders if configured
+      let tpOrderId: string | undefined;
+      let slOrderId: string | undefined;
+
+      try {
+        if (takeProfitPct && takeProfitPct > 0) {
+          const tpPrice = signal === 'BUY'
+            ? executedPrice * (1 + takeProfitPct / 100)
+            : executedPrice * (1 - takeProfitPct / 100);
+
+          const tpOrder = await binanceAdapter.placeOrder({
+            symbol: `${baseCurrency}${quoteCurrency}`,
+            side: signal === 'BUY' ? 'SELL' : 'BUY',
+            type: 'LIMIT',
+            quantity: executedQuantity,
+            price: tpPrice
+          });
+
+          tpOrderId = tpOrder.exchangeOrderId || tpOrder.clientOrderId;
+          logger.info({
+            userId: this.maskUserId(userId),
+            symbol,
+            tpPrice,
+            tpOrderId
+          }, '[AUTO-TRADE] TP order placed');
+        }
+
+        if (stopLossPct && stopLossPct > 0) {
+          const slPrice = signal === 'BUY'
+            ? executedPrice * (1 - stopLossPct / 100)
+            : executedPrice * (1 + stopLossPct / 100);
+
+          const slOrder = await binanceAdapter.placeOrder({
+            symbol: `${baseCurrency}${quoteCurrency}`,
+            side: signal === 'BUY' ? 'SELL' : 'BUY',
+            type: 'LIMIT',
+            quantity: executedQuantity,
+            price: slPrice
+          });
+
+          slOrderId = slOrder.exchangeOrderId || slOrder.clientOrderId;
+          logger.info({
+            userId: this.maskUserId(userId),
+            symbol,
+            slPrice,
+            slOrderId
+          }, '[AUTO-TRADE] SL order placed');
+        }
+      } catch (tpslError: any) {
+        logger.warn({
+          error: tpslError.message,
+          userId: this.maskUserId(userId),
+          symbol
+        }, '[AUTO-TRADE] TP/SL order placement failed, continuing with main order');
+      }
+
+      // Log the real trade with TP/SL info
       await this.logTrade({
         userId,
         symbol,
@@ -440,7 +527,11 @@ export class AutoTradeExecutor {
         researchRequestId,
         dryRun: false,
         status: 'executed',
-        exchangeOrderId: orderId
+        exchangeOrderId: orderId,
+        takeProfitOrderId: tpOrderId,
+        stopLossOrderId: slOrderId,
+        takeProfitPct,
+        stopLossPct
       });
 
       // Send notification
@@ -523,6 +614,10 @@ export class AutoTradeExecutor {
     status: string;
     exchangeOrderId?: string;
     error?: string;
+    takeProfitOrderId?: string;
+    stopLossOrderId?: string;
+    takeProfitPct?: number;
+    stopLossPct?: number;
   }): Promise<void> {
     try {
       await admin.firestore().collection('autoTrades').add({

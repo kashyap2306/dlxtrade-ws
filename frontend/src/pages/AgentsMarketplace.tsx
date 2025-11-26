@@ -124,25 +124,25 @@ export default function AgentsMarketplace() {
       </div>
 
       <Sidebar onLogout={logout} onMenuToggle={setMenuOpen} />
-      <div className="relative z-10 pt-16 lg:pt-0">
-        {/* Hero Header Section */}
-        <div className="relative overflow-hidden bg-gradient-to-br from-purple-900/30 via-pink-900/20 to-slate-900 border-b border-purple-500/20">
-          <div 
+      <div className="relative z-10 pt-16 lg:pt-0 smooth-scroll">
+        {/* Hero Header Section - Mobile Optimized */}
+        <div className="relative overflow-hidden bg-gradient-to-br from-purple-900/30 via-pink-900/20 to-slate-900 border-b border-purple-500/20 gpu-accelerated">
+          <div
             className="absolute inset-0 opacity-10"
             style={{
               backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%239C92AC' fill-opacity='0.05'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")`
             }}
           ></div>
-          <div className="relative px-4 sm:px-6 md:px-8 py-6 sm:py-8 md:py-12 lg:py-20">
-            <div className="max-w-4xl mx-auto mt-8 animate-fade-in">
-              <h1 className="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-extrabold bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent mb-4 leading-tight">
+          <div className="relative px-4 sm:px-6 md:px-8 py-8 sm:py-12 md:py-16 lg:py-20">
+            <div className="max-w-4xl mx-auto mt-4 sm:mt-8 animate-fade-in">
+              <h1 className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl xl:text-6xl font-extrabold bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent mb-4 leading-tight">
                 Discover Premium Trading Agents
               </h1>
-              {/* Glowing underline animation */}
-              <div className="relative mb-6">
-                <div className="absolute bottom-0 left-0 h-1 bg-gradient-to-r from-purple-500 via-pink-500 to-purple-500 rounded-full w-32 animate-pulse shadow-lg shadow-purple-500/50"></div>
+              {/* Glowing underline animation - Hidden on mobile */}
+              <div className="relative mb-4 sm:mb-6">
+                <div className="hidden sm:block absolute bottom-0 left-0 h-1 bg-gradient-to-r from-purple-500 via-pink-500 to-purple-500 rounded-full w-32 animate-pulse shadow-lg shadow-purple-500/50"></div>
               </div>
-              <p className="text-lg sm:text-xl text-gray-300 max-w-3xl leading-relaxed">
+              <p className="text-base sm:text-lg md:text-xl text-gray-300 max-w-3xl leading-relaxed">
                 Choose from our collection of advanced AI-powered agents designed to automate your trading and maximize profits 24/7.
               </p>
             </div>
@@ -152,36 +152,36 @@ export default function AgentsMarketplace() {
         {/* Agents Grid Section */}
         <div className="p-4 sm:p-6 md:p-8 lg:p-12">
           <div className="max-w-7xl mx-auto">
-            {/* Stats Bar */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-              <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-2xl border border-purple-500/30 rounded-2xl p-4 text-center animate-fade-in">
-                <div className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
+            {/* Stats Bar - Mobile Optimized */}
+            <div className="responsive-grid mb-6 sm:mb-8">
+              <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-2xl p-3 sm:p-4 text-center animate-fade-in touch-target">
+                <div className="text-xl sm:text-2xl md:text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
                   {agents.length}
                 </div>
-                <div className="text-xs md:text-sm text-gray-400 mt-1">Premium Agents</div>
+                <div className="text-xs sm:text-sm text-gray-400 mt-1">Premium Agents</div>
               </div>
-              <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-2xl border border-purple-500/30 rounded-2xl p-4 text-center animate-fade-in" style={{ animationDelay: '0.1s' }}>
-                <div className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
+              <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-2xl p-3 sm:p-4 text-center animate-fade-in touch-target" style={{ animationDelay: '0.1s' }}>
+                <div className="text-xl sm:text-2xl md:text-3xl font-bold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
                   24/7
                 </div>
-                <div className="text-xs md:text-sm text-gray-400 mt-1">Active Trading</div>
+                <div className="text-xs sm:text-sm text-gray-400 mt-1">Active Trading</div>
               </div>
-              <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-2xl border border-purple-500/30 rounded-2xl p-4 text-center animate-fade-in" style={{ animationDelay: '0.2s' }}>
-                <div className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-green-400 to-emerald-400 bg-clip-text text-transparent">
+              <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-2xl p-3 sm:p-4 text-center animate-fade-in touch-target" style={{ animationDelay: '0.2s' }}>
+                <div className="text-xl sm:text-2xl md:text-3xl font-bold bg-gradient-to-r from-green-400 to-emerald-400 bg-clip-text text-transparent">
                   AI
                 </div>
-                <div className="text-xs md:text-sm text-gray-400 mt-1">Powered</div>
+                <div className="text-xs sm:text-sm text-gray-400 mt-1">Powered</div>
               </div>
-              <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-2xl border border-purple-500/30 rounded-2xl p-4 text-center animate-fade-in" style={{ animationDelay: '0.3s' }}>
-                <div className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-yellow-400 to-orange-400 bg-clip-text text-transparent">
+              <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-2xl p-3 sm:p-4 text-center animate-fade-in touch-target" style={{ animationDelay: '0.3s' }}>
+                <div className="text-xl sm:text-2xl md:text-3xl font-bold bg-gradient-to-r from-yellow-400 to-orange-400 bg-clip-text text-transparent">
                   ⚡
                 </div>
-                <div className="text-xs md:text-sm text-gray-400 mt-1">Lightning Fast</div>
+                <div className="text-xs sm:text-sm text-gray-400 mt-1">Lightning Fast</div>
               </div>
             </div>
 
-            {/* Agents Grid - Using Shared AgentCard Component */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-6">
+            {/* Agents Grid - Responsive and Performance Optimized */}
+            <div className="responsive-grid">
               {agents
                 .filter((agent) => agent.enabled !== false)
                 .map((agent, index) => {

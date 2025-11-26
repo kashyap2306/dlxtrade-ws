@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useThrottle } from '../hooks/usePerformance';
 import { researchApi, settingsApi } from '../services/api';
 import { wsService } from '../services/ws';
 import Toast from '../components/Toast';
@@ -45,6 +46,9 @@ export default function ResearchPanel() {
   const [deepResearchLoading, setDeepResearchLoading] = useState(false);
   const [deepResearchResults, setDeepResearchResults] = useState<any[]>([]);
   const [cooldownSeconds, setCooldownSeconds] = useState(0);
+
+  // Throttle research results to prevent excessive re-renders
+  const throttledDeepResearchResults = useThrottle(deepResearchResults, 200);
   const [researchProgress, setResearchProgress] = useState<{
     step: string;
     status: 'pending' | 'loading' | 'success' | 'error';
@@ -320,28 +324,28 @@ export default function ResearchPanel() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#0a0f1c] via-[#101726] to-[#0a0f1c] pb-20 lg:pb-0 relative overflow-hidden">
-      {/* Modern animated background with grid pattern */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        {/* Animated gradient orbs */}
+    <div className="min-h-screen bg-gradient-to-br from-[#0a0f1c] via-[#101726] to-[#0a0f1c] pb-20 lg:pb-0 relative overflow-hidden smooth-scroll">
+      {/* Modern animated background with grid pattern - Performance optimized */}
+      <div className="fixed inset-0 overflow-hidden pointer-events-none gpu-accelerated">
+        {/* Animated gradient orbs - Reduced on mobile */}
         <div className="absolute -top-40 -right-40 w-96 h-96 bg-purple-500/30 rounded-full mix-blend-screen filter blur-3xl animate-blob"></div>
         <div className="absolute -bottom-40 -left-40 w-96 h-96 bg-cyan-500/30 rounded-full mix-blend-screen filter blur-3xl animate-blob animation-delay-2000"></div>
-        <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-pink-500/20 rounded-full mix-blend-screen filter blur-3xl animate-blob animation-delay-4000"></div>
-        
+        <div className="hidden lg:block absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-pink-500/20 rounded-full mix-blend-screen filter blur-3xl animate-blob animation-delay-4000"></div>
+
         {/* Grid pattern overlay */}
         <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px] opacity-40"></div>
-        
-        {/* Glowing lines effect */}
-        <div className="absolute top-0 left-1/4 w-px h-full bg-gradient-to-b from-transparent via-purple-500/20 to-transparent"></div>
-        <div className="absolute top-0 right-1/4 w-px h-full bg-gradient-to-b from-transparent via-cyan-500/20 to-transparent"></div>
+
+        {/* Glowing lines effect - Hidden on mobile */}
+        <div className="hidden xl:block absolute top-0 left-1/4 w-px h-full bg-gradient-to-b from-transparent via-purple-500/20 to-transparent"></div>
+        <div className="hidden xl:block absolute top-0 right-1/4 w-px h-full bg-gradient-to-b from-transparent via-cyan-500/20 to-transparent"></div>
       </div>
 
       <Sidebar onLogout={handleLogout} />
 
-      <main className="min-h-screen">
-        <div className="max-w-7xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8">
-          {/* Mobile: Sticky Research Header */}
-          <div className="lg:hidden sticky top-16 z-40 -mx-4 px-4 py-4 bg-black/40 backdrop-blur-2xl border-b border-purple-500/30 shadow-lg shadow-purple-500/10 mb-6">
+      <main className="min-h-screen smooth-scroll">
+        <div className="container py-4 sm:py-8">
+          {/* Mobile: Sticky Research Header - Performance optimized */}
+          <div className="lg:hidden sticky top-16 z-40 -mx-4 px-4 py-4 bg-black/40 backdrop-blur-sm border-b border-purple-500/30 shadow-lg shadow-purple-500/10 mb-6 gpu-accelerated">
             <h2 className="text-lg font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent mb-3">
               Research Request
             </h2>
@@ -392,13 +396,18 @@ export default function ResearchPanel() {
             <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
               <button
                 onClick={handleDeepResearch}
-                disabled={deepResearchLoading}
+                disabled={deepResearchLoading || cooldownSeconds > 0}
                 className="btn-mobile-full px-6 py-3 bg-gradient-to-r from-purple-600 via-pink-600 to-cyan-600 text-white font-semibold rounded-xl hover:from-purple-500 hover:via-pink-500 hover:to-cyan-500 transition-all duration-300 shadow-lg shadow-purple-500/40 hover:shadow-purple-500/60 disabled:opacity-50 disabled:cursor-not-allowed transform hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2"
               >
                 {deepResearchLoading ? (
                   <>
                     <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
                     Running Deep Research...
+                  </>
+                ) : cooldownSeconds > 0 ? (
+                  <>
+                    <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                    Cooldown: {cooldownSeconds}s
                   </>
                 ) : (
                   <>

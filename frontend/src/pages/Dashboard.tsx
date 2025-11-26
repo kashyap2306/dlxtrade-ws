@@ -1,15 +1,18 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import Sidebar from '../components/Sidebar';
-import AutoTradeMode from '../components/AutoTradeMode';
-import RecentTrades from '../components/RecentTrades';
-import MarketScanner from '../components/MarketScanner';
-import WalletCard from '../components/Wallet/WalletCard';
-import ExecutionSummary from '../components/ExecutionSummary';
-import PnLWidget from '../components/PnLWidget';
 import { autoTradeApi, usersApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { suppressConsoleError } from '../utils/errorHandler';
 import ExchangeAccountsSection from '../components/ExchangeAccountsSection';
+import { useThrottle, useLazyLoad } from '../hooks/usePerformance';
+
+// Lazy load heavy components for better performance
+const AutoTradeMode = lazy(() => import('../components/AutoTradeMode'));
+const RecentTrades = lazy(() => import('../components/RecentTrades'));
+const MarketScanner = lazy(() => import('../components/MarketScanner'));
+const WalletCard = lazy(() => import('../components/Wallet/WalletCard'));
+const ExecutionSummary = lazy(() => import('../components/ExecutionSummary'));
+const PnLWidget = lazy(() => import('../components/PnLWidget'));
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -17,6 +20,13 @@ export default function Dashboard() {
   const [userStats, setUserStats] = useState<any>(null);
   const [alerts, setAlerts] = useState<Array<{ type: 'warning' | 'error'; message: string }>>([]);
   const [showExchangeModal, setShowExchangeModal] = useState(false);
+
+  // Throttle data updates to prevent excessive re-renders
+  const throttledAutoTradeStatus = useThrottle(autoTradeStatus, 500);
+  const throttledUserStats = useThrottle(userStats, 500);
+
+  // Lazy load triggers for heavy components
+  const { ref: marketScannerRef, hasIntersected: marketScannerVisible } = useLazyLoad(0.1);
 
   useEffect(() => {
     if (user) {
@@ -104,26 +114,26 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#0a0f1c] via-[#101726] to-[#0a0f1c] pb-20 lg:pb-0 relative overflow-hidden">
-      {/* Modern animated background with grid pattern */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        {/* Animated gradient orbs */}
+    <div className="min-h-screen bg-gradient-to-br from-[#0a0f1c] via-[#101726] to-[#0a0f1c] pb-20 lg:pb-0 relative overflow-hidden smooth-scroll">
+      {/* Modern animated background with grid pattern - Performance optimized */}
+      <div className="fixed inset-0 overflow-hidden pointer-events-none gpu-accelerated">
+        {/* Animated gradient orbs - Reduced count on mobile */}
         <div className="absolute -top-40 -right-40 w-96 h-96 bg-purple-500/30 rounded-full mix-blend-screen filter blur-3xl animate-blob"></div>
         <div className="absolute -bottom-40 -left-40 w-96 h-96 bg-cyan-500/30 rounded-full mix-blend-screen filter blur-3xl animate-blob animation-delay-2000"></div>
-        <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-pink-500/20 rounded-full mix-blend-screen filter blur-3xl animate-blob animation-delay-4000"></div>
-        
+        <div className="hidden sm:block absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-pink-500/20 rounded-full mix-blend-screen filter blur-3xl animate-blob animation-delay-4000"></div>
+
         {/* Grid pattern overlay */}
         <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px] opacity-40"></div>
-        
-        {/* Glowing lines effect */}
-        <div className="absolute top-0 left-1/4 w-px h-full bg-gradient-to-b from-transparent via-purple-500/20 to-transparent"></div>
-        <div className="absolute top-0 right-1/4 w-px h-full bg-gradient-to-b from-transparent via-cyan-500/20 to-transparent"></div>
+
+        {/* Glowing lines effect - Hidden on mobile */}
+        <div className="hidden lg:block absolute top-0 left-1/4 w-px h-full bg-gradient-to-b from-transparent via-purple-500/20 to-transparent"></div>
+        <div className="hidden lg:block absolute top-0 right-1/4 w-px h-full bg-gradient-to-b from-transparent via-cyan-500/20 to-transparent"></div>
       </div>
 
       <Sidebar />
 
-      <main className="min-h-screen">
-        <div className="max-w-7xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8">
+      <main className="min-h-screen smooth-scroll">
+        <div className="container py-4 sm:py-8">
           {/* Header */}
           <section className="mb-6 sm:mb-8">
             <div className="space-y-2">
@@ -173,37 +183,47 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* 1. Auto-Trade Mode Section (TOP PRIORITY) */}
-          <div className="mb-6">
-            <AutoTradeMode onStatusChange={handleAutoTradeStatusChange} />
+          {/* 1. Auto-Trade Mode Section (TOP PRIORITY) - Always visible */}
+          <div className="mb-4 sm:mb-6">
+            <Suspense fallback={<div className="h-32 bg-slate-800/50 rounded-xl animate-pulse"></div>}>
+              <AutoTradeMode onStatusChange={handleAutoTradeStatusChange} />
+            </Suspense>
           </div>
 
-          {/* 2. Recent Trades (After Auto-Trade) */}
-          <div className="mb-6">
-            <RecentTrades />
+          {/* 2. Recent Trades (After Auto-Trade) - High priority */}
+          <div className="mb-4 sm:mb-6">
+            <Suspense fallback={<div className="h-48 bg-slate-800/50 rounded-xl animate-pulse"></div>}>
+              <RecentTrades />
+            </Suspense>
           </div>
 
-          {/* Main Content Grid */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-            {/* Left Column */}
-            <div className="space-y-6">
-              {/* 3. Wallet Balance Section */}
-              <WalletCard onConnectClick={handleConnectClick} />
+          {/* Main Content Grid - Responsive */}
+          <div className="responsive-grid mb-4 sm:mb-6">
+            {/* 3. Wallet Balance Section */}
+            <div className="space-y-4 sm:space-y-6">
+              <Suspense fallback={<div className="h-40 bg-slate-800/50 rounded-xl animate-pulse"></div>}>
+                <WalletCard onConnectClick={handleConnectClick} />
+              </Suspense>
 
               {/* 4. Execution Summary */}
-              <ExecutionSummary />
+              <Suspense fallback={<div className="h-32 bg-slate-800/50 rounded-xl animate-pulse"></div>}>
+                <ExecutionSummary />
+              </Suspense>
             </div>
 
-            {/* Right Column */}
-            <div className="space-y-6">
-              {/* 5. PnL & Performance */}
+            {/* 5. PnL & Performance */}
+            <Suspense fallback={<div className="h-48 bg-slate-800/50 rounded-xl animate-pulse"></div>}>
               <PnLWidget />
-            </div>
+            </Suspense>
           </div>
 
-          {/* 6. Market Scanner (Last Section) */}
-          <div className="mb-6">
-            <MarketScanner />
+          {/* 6. Market Scanner (Last Section) - Lazy loaded */}
+          <div className="mb-6" ref={marketScannerRef}>
+            {marketScannerVisible && (
+              <Suspense fallback={<div className="h-64 bg-slate-800/50 rounded-xl animate-pulse"></div>}>
+                <MarketScanner />
+              </Suspense>
+            )}
           </div>
         </div>
       </main>

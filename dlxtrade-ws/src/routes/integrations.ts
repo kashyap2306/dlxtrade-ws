@@ -3,7 +3,7 @@ import { firestoreAdapter } from '../services/firestoreAdapter';
 import { z } from 'zod';
 import { maskKey, encrypt } from '../services/keyManager';
 import { BinanceAdapter } from '../services/binanceAdapter';
-import { fetchCryptoPanicNews } from '../services/cryptoPanicAdapter';
+import { fetchNewsData } from '../services/newsDataAdapter';
 import { logger } from '../utils/logger';
 import * as admin from 'firebase-admin';
 import { getFirebaseAdmin } from '../utils/firebase';
@@ -395,7 +395,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       } else if (body.apiName === 'cryptopanic') {
         // CryptoPanic API key is optional - test with or without key
         try {
-          const newsData = await fetchCryptoPanicNews(body.apiKey);
+          const newsData = await fetchNewsData(body.apiKey);
 
           return {
             valid: true,

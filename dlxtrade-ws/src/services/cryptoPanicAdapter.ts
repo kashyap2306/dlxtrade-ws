@@ -1,7 +1,8 @@
 import { AdapterError } from '../utils/adapterErrorHandler';
 import axios from 'axios';
+import { cacheService } from './cacheService';
 
-const BASE_URL = 'https://cryptopanic.com/api/v1/posts/';
+const BASE_URL = 'https://newsdata.io/api/1/news';
 
 function calculateSentiment(articles: any[]): number {
   if (!articles.length) return 0.5;
@@ -88,6 +89,18 @@ async function attemptWithRetry(url: string): Promise<any> {
 
 export async function fetchCryptoPanicNews(apiKey?: string): Promise<any> {
   const startTime = Date.now();
+  const cacheKey = `cryptopanic_news_${apiKey || 'public'}`;
+
+  // Check cache first
+  const cached = cacheService.get('news', cacheKey);
+  if (cached) {
+    console.log('[CryptoPanic] CACHE HIT - Returning cached news');
+    return {
+      ...cached,
+      latency: Date.now() - startTime,
+      cached: true
+    };
+  }
 
   console.log('[CryptoPanic] START - Fetching news');
 
@@ -135,12 +148,17 @@ export async function fetchCryptoPanicNews(apiKey?: string): Promise<any> {
 
     console.log('[CryptoPanic] SUCCESS');
 
-    return {
+    const result = {
       success: true,
       articles,
       sentiment,
       latency
     };
+
+    // Cache the result
+    cacheService.set('news', cacheKey, result);
+
+    return result;
 
   } catch (error: any) {
     console.log('[CryptoPanic] FAILED');

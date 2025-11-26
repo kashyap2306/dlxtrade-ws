@@ -1,6 +1,6 @@
 import { logger } from '../utils/logger';
 import { firestoreAdapter } from './firestoreAdapter';
-import { fetchCryptoPanicNews } from './cryptoPanicAdapter';
+import { fetchNewsData } from './newsDataAdapter';
 import type { Orderbook, Trade } from '../types';
 
 export interface ResearchResult {
@@ -97,7 +97,7 @@ export class ResearchEngine {
 
       // Analyze CryptoPanic news data (user-provided, optional)
       try {
-        const newsData = await fetchCryptoPanicNews(integrations.cryptopanic?.apiKey);
+        const newsData = await fetchNewsData(integrations.cryptopanic?.apiKey);
         if (newsData.success && newsData.articles && newsData.articles.length > 0) {
           // CryptoPanic sentiment analysis (0-1 scale)
           if (newsData.sentiment > 0.6) {
@@ -280,7 +280,7 @@ export class ResearchEngine {
 
       // CryptoPanic news data (user-provided, optional)
       try {
-        const newsData = await fetchCryptoPanicNews(integrations.cryptopanic?.apiKey);
+        const newsData = await fetchNewsData(integrations.cryptopanic?.apiKey);
         if (newsData.success && newsData.articles && newsData.articles.length > 0) {
           // News sentiment affects accuracy (0-1 scale)
           if (newsData.sentiment > 0.6) {

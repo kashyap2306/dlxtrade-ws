@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useThrottle } from '../hooks/usePerformance';
 import { useNavigate } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
 import { autoTradeApi } from '../services/api';
@@ -74,6 +75,9 @@ export default function AutoTrade() {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [showExchangeModal, setShowExchangeModal] = useState(false);
   const [showApiRequiredModal, setShowApiRequiredModal] = useState(false);
+
+  // Throttle status updates to prevent excessive re-renders from real-time data
+  const throttledStatus = useThrottle(status, 300);
 
   useEffect(() => {
     if (user) {
@@ -235,9 +239,9 @@ export default function AutoTrade() {
 
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#0a0f1c] via-[#101726] to-[#0a0f1c] pb-20 lg:pb-0 relative overflow-hidden">
-      {/* Background effects */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+    <div className="min-h-screen bg-gradient-to-br from-[#0a0f1c] via-[#101726] to-[#0a0f1c] pb-20 lg:pb-0 relative overflow-hidden smooth-scroll">
+      {/* Background effects - Performance optimized */}
+      <div className="fixed inset-0 overflow-hidden pointer-events-none gpu-accelerated">
         <div className="absolute -top-40 -right-40 w-96 h-96 bg-purple-500/30 rounded-full mix-blend-screen filter blur-3xl animate-blob"></div>
         <div className="absolute -bottom-40 -left-40 w-96 h-96 bg-cyan-500/30 rounded-full mix-blend-screen filter blur-3xl animate-blob animation-delay-2000"></div>
         <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px] opacity-40"></div>
@@ -245,8 +249,8 @@ export default function AutoTrade() {
 
       <Sidebar onLogout={handleLogout} />
 
-      <main className="min-h-screen relative z-10">
-        <div className="max-w-7xl mx-auto py-4 sm:py-8 px-4 sm:px-6 lg:px-8">
+      <main className="min-h-screen relative z-10 smooth-scroll">
+        <div className="container py-4 sm:py-8">
           {/* Header */}
           <section className="mb-6 sm:mb-8">
             <div className="flex items-center justify-between flex-wrap gap-4">
@@ -271,8 +275,8 @@ export default function AutoTrade() {
             <WalletCard onConnectClick={() => setShowExchangeModal(true)} />
           </div>
 
-          {/* Main Dashboard Grid */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+          {/* Main Dashboard Grid - Responsive */}
+          <div className="responsive-grid mb-4 sm:mb-6">
             {/* Left Column: Configuration */}
             <div className="lg:col-span-2 space-y-6">
               {/* Status Overview */}

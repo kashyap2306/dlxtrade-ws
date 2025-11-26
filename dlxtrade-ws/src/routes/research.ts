@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { firestoreAdapter } from '../services/firestoreAdapter';
-import { fetchCryptoPanicNews } from '../services/cryptoPanicAdapter';
+import { fetchNewsData } from '../services/newsDataAdapter';
 import { adminAuthMiddleware } from '../middleware/adminAuth';
 import { z } from 'zod';
 import { logger } from '../utils/logger';
@@ -78,8 +78,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
       const userIntegrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
       console.log('[RESEARCH API] Fetched user API keys:', {
         cryptoCompare: !!userIntegrations.cryptocompare?.apiKey,
-        cryptoPanic: !!userIntegrations.cryptopanic?.apiKey,
-        coinGecko: !!userIntegrations.coinGecko?.apiKey,
+        newsData: !!userIntegrations.cryptopanic?.apiKey,
+        coinMarketCap: !!userIntegrations.coinMarketCap?.apiKey,
         googleFinance: !!userIntegrations.googleFinance?.apiKey,
         binancePublic: !!userIntegrations.binancePublic?.apiKey,
       });
@@ -143,8 +143,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
           console.log('[RESEARCH API] Provider response summaries:', {
             BinancePublic: deepResult.raw.binancePublic?.price ? 'SUCCESS' : 'FAILED',
             CryptoCompare: deepResult.raw.cryptoCompare?.price ? 'SUCCESS' : 'FAILED',
-            CoinGecko: deepResult.raw.coinGecko?.price ? 'SUCCESS' : 'FAILED',
-            CryptoPanic: deepResult.raw.cryptoPanic?.sentiment !== undefined ? 'SUCCESS' : 'FAILED',
+            CoinGecko: deepResult.raw.coinMarketCap?.price ? 'SUCCESS' : 'FAILED',
+            CryptoPanic: deepResult.raw.newsData?.sentiment !== undefined ? 'SUCCESS' : 'FAILED',
             GoogleFinance: deepResult.raw.googleFinance?.price ? 'SUCCESS' : 'FAILED',
           });
 
@@ -193,7 +193,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
       const apiCalls = {
         price: {
           success: deepResult.providersCalled.includes('BinancePublic') || deepResult.providersCalled.includes('CoinGecko'),
-          data: deepResult.raw.binancePublic?.price || deepResult.raw.coinGecko?.price,
+          data: deepResult.raw.binancePublic?.price || deepResult.raw.coinMarketCap?.price,
           latency: Math.floor(Math.random() * 200) + 50 // Simulate realistic latency 50-250ms
         },
         orderbook: {
@@ -208,17 +208,17 @@ export async function researchRoutes(fastify: FastifyInstance) {
         },
         news: {
           success: deepResult.providersCalled.includes('CryptoPanic'),
-          latency: deepResult.raw.cryptoPanic?.latency || 0,
-          articles: deepResult.raw.cryptoPanic?.articles || [],
-          sentiment: deepResult.raw.cryptoPanic?.sentiment || 0.5
+          latency: deepResult.raw.newsData?.latency || 0,
+          articles: deepResult.raw.newsData?.articles || [],
+          sentiment: deepResult.raw.newsData?.sentiment || 0.5
         }
       };
 
       // Extract market data from provider responses
       const marketData = {
-        marketCap: deepResult.raw.coinGecko?.marketCap || null,
-        volume24h: deepResult.raw.binancePublic?.volume24h || deepResult.raw.coinGecko?.volume24h || null,
-        priceChangePct24h: deepResult.raw.binancePublic?.priceChangePercent24h || deepResult.raw.coinGecko?.change24h || null,
+        marketCap: deepResult.raw.coinMarketCap?.marketCap || null,
+        volume24h: deepResult.raw.binancePublic?.volume24h || deepResult.raw.coinMarketCap?.volume24h || null,
+        priceChangePct24h: deepResult.raw.binancePublic?.priceChangePercent24h || deepResult.raw.coinMarketCap?.change24h || null,
         high24h: deepResult.raw.binancePublic?.highPrice || null,
         low24h: deepResult.raw.binancePublic?.lowPrice || null
       };
@@ -279,8 +279,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
             providersCalled: ['None'],
             raw: {
               cryptoCompare: { error: error.message },
-              cryptoPanic: { error: error.message },
-              coinGecko: { error: error.message },
+              newsData: { error: error.message },
+              coinMarketCap: { error: error.message },
               googleFinance: { error: error.message },
               binancePublic: { error: error.message }
             },
@@ -366,8 +366,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
       const userIntegrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
       console.log('[RESEARCH API] Fetched user API keys:', {
         cryptoCompare: !!userIntegrations.cryptocompare?.apiKey,
-        cryptoPanic: !!userIntegrations.cryptopanic?.apiKey,
-        coinGecko: !!userIntegrations.coinGecko?.apiKey,
+        newsData: !!userIntegrations.cryptopanic?.apiKey,
+        coinMarketCap: !!userIntegrations.coinMarketCap?.apiKey,
         googleFinance: !!userIntegrations.googleFinance?.apiKey,
         binancePublic: !!userIntegrations.binancePublic?.apiKey,
       });
@@ -385,8 +385,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
       console.log('[RESEARCH API] Provider response summaries:', {
         BinancePublic: deepResult.raw.binancePublic?.price ? 'SUCCESS' : 'FAILED',
         CryptoCompare: deepResult.raw.cryptoCompare?.price ? 'SUCCESS' : 'FAILED',
-        CoinGecko: deepResult.raw.coinGecko?.price ? 'SUCCESS' : 'FAILED',
-            CryptoPanic: deepResult.raw.cryptoPanic?.sentiment !== undefined ? 'SUCCESS' : 'FAILED',
+        CoinGecko: deepResult.raw.coinMarketCap?.price ? 'SUCCESS' : 'FAILED',
+            CryptoPanic: deepResult.raw.newsData?.sentiment !== undefined ? 'SUCCESS' : 'FAILED',
         GoogleFinance: deepResult.raw.googleFinance?.price ? 'SUCCESS' : 'FAILED',
       });
 
@@ -434,7 +434,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
       const apiCalls = {
         price: {
           success: deepResult.providersCalled.includes('BinancePublic') || deepResult.providersCalled.includes('CoinGecko'),
-          data: deepResult.raw.binancePublic?.price || deepResult.raw.coinGecko?.price,
+          data: deepResult.raw.binancePublic?.price || deepResult.raw.coinMarketCap?.price,
           latency: 100
         },
         orderbook: {
@@ -451,9 +451,9 @@ export async function researchRoutes(fastify: FastifyInstance) {
 
       // Extract market data from provider responses
       const marketData = {
-        marketCap: deepResult.raw.coinGecko?.marketCap || null,
-        volume24h: deepResult.raw.binancePublic?.volume24h || deepResult.raw.coinGecko?.volume24h || null,
-        priceChangePct24h: deepResult.raw.binancePublic?.priceChangePercent24h || deepResult.raw.coinGecko?.change24h || null,
+        marketCap: deepResult.raw.coinMarketCap?.marketCap || null,
+        volume24h: deepResult.raw.binancePublic?.volume24h || deepResult.raw.coinMarketCap?.volume24h || null,
+        priceChangePct24h: deepResult.raw.binancePublic?.priceChangePercent24h || deepResult.raw.coinMarketCap?.change24h || null,
         high24h: deepResult.raw.binancePublic?.highPrice || null,
         low24h: deepResult.raw.binancePublic?.lowPrice || null
       };
@@ -554,8 +554,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
       const userIntegrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
       console.log('[RESEARCH API] Fetched user API keys:', {
         cryptoCompare: !!userIntegrations.cryptocompare?.apiKey,
-        cryptoPanic: !!userIntegrations.cryptopanic?.apiKey,
-        coinGecko: !!userIntegrations.coinGecko?.apiKey,
+        newsData: !!userIntegrations.cryptopanic?.apiKey,
+        coinMarketCap: !!userIntegrations.coinMarketCap?.apiKey,
         googleFinance: !!userIntegrations.googleFinance?.apiKey,
         binancePublic: !!userIntegrations.binancePublic?.apiKey,
       });
@@ -572,8 +572,8 @@ export async function researchRoutes(fastify: FastifyInstance) {
       console.log('[RESEARCH API] Provider response summaries:', {
         BinancePublic: deepResult.raw.binancePublic?.price ? 'SUCCESS' : 'FAILED',
         CryptoCompare: deepResult.raw.cryptoCompare?.price ? 'SUCCESS' : 'FAILED',
-        CoinGecko: deepResult.raw.coinGecko?.price ? 'SUCCESS' : 'FAILED',
-            CryptoPanic: deepResult.raw.cryptoPanic?.sentiment !== undefined ? 'SUCCESS' : 'FAILED',
+        CoinGecko: deepResult.raw.coinMarketCap?.price ? 'SUCCESS' : 'FAILED',
+            CryptoPanic: deepResult.raw.newsData?.sentiment !== undefined ? 'SUCCESS' : 'FAILED',
         GoogleFinance: deepResult.raw.googleFinance?.price ? 'SUCCESS' : 'FAILED',
       });
 
@@ -621,7 +621,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
       const apiCalls = {
         price: {
           success: deepResult.providersCalled.includes('BinancePublic') || deepResult.providersCalled.includes('CoinGecko'),
-          data: deepResult.raw.binancePublic?.price || deepResult.raw.coinGecko?.price,
+          data: deepResult.raw.binancePublic?.price || deepResult.raw.coinMarketCap?.price,
           latency: 100
         },
         orderbook: {
@@ -638,9 +638,9 @@ export async function researchRoutes(fastify: FastifyInstance) {
 
       // Extract market data from provider responses
       const marketData = {
-        marketCap: deepResult.raw.coinGecko?.marketCap || null,
-        volume24h: deepResult.raw.binancePublic?.volume24h || deepResult.raw.coinGecko?.volume24h || null,
-        priceChangePct24h: deepResult.raw.binancePublic?.priceChangePercent24h || deepResult.raw.coinGecko?.change24h || null,
+        marketCap: deepResult.raw.coinMarketCap?.marketCap || null,
+        volume24h: deepResult.raw.binancePublic?.volume24h || deepResult.raw.coinMarketCap?.volume24h || null,
+        priceChangePct24h: deepResult.raw.binancePublic?.priceChangePercent24h || deepResult.raw.coinMarketCap?.change24h || null,
         high24h: deepResult.raw.binancePublic?.highPrice || null,
         low24h: deepResult.raw.binancePublic?.lowPrice || null
       };
