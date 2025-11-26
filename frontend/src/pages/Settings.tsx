@@ -5,11 +5,9 @@ import Sidebar from '../components/Sidebar';
 import APIIntegrationsSection from '../components/APIIntegrationsSection';
 import ExchangeAccountsSection from '../components/ExchangeAccountsSection';
 import { useAuth } from '../hooks/useAuth';
-import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
 
 export default function Settings() {
   const { user } = useAuth();
-  const { hasPremiumAgent } = useUnlockedAgents();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);

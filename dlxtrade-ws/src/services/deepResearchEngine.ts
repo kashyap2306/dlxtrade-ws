@@ -44,68 +44,81 @@ export class DeepResearchEngine {
     const providersCalled: string[] = [];
 
     try {
+      // ALWAYS EXECUTE ALL 5 PROVIDERS - regardless of user API keys
+
       // 1. Fetch CryptoCompare data (OHLC historical data)
-      if (integrations.cryptocompare?.apiKey) {
-        try {
-          const { CryptoCompareAdapter } = await import('./cryptocompareAdapter');
-          const cryptoCompareAdapter = new CryptoCompareAdapter(integrations.cryptocompare.apiKey);
+      console.log(`[CryptoCompare] START - ${symbol}`);
+      try {
+        const { CryptoCompareAdapter } = await import('./cryptocompareAdapter');
+        const cryptoCompareAdapter = new CryptoCompareAdapter(integrations.cryptocompare?.apiKey || '');
 
-          cryptoCompareData = await cryptoCompareAdapter.getMarketData(symbol);
-          const ohlcResult = await cryptoCompareAdapter.getOHLCData(symbol);
-          ohlcData = ohlcResult.ohlc;
+        cryptoCompareData = await cryptoCompareAdapter.getMarketData(symbol);
+        const ohlcResult = await cryptoCompareAdapter.getOHLCData(symbol);
+        ohlcData = ohlcResult.ohlc;
 
-          providersCalled.push('CryptoCompare');
-          logger.info({ uid, symbol }, 'CryptoCompare data fetched successfully');
-        } catch (err: any) {
-          logger.warn({ err: err.message, symbol }, 'CryptoCompare fetch failed');
-          cryptoCompareData = { error: err.message };
-        }
+        providersCalled.push('CryptoCompare');
+        console.log(`[CryptoCompare] SUCCESS - ${symbol}`);
+        logger.info({ uid, symbol }, 'CryptoCompare data fetched successfully');
+      } catch (err: any) {
+        console.log(`[CryptoCompare] FAILED: ${err.message} - ${symbol}`);
+        logger.warn({ err: err.message, symbol }, 'CryptoCompare fetch failed');
+        cryptoCompareData = { error: err.message };
       }
 
       // 2. Fetch MarketAux data (sentiment)
-      if (integrations.marketaux?.apiKey) {
-        try {
-          marketAuxData = await fetchMarketAuxData(integrations.marketaux.apiKey, symbol);
-          providersCalled.push('MarketAux');
-          logger.info({ uid, symbol }, 'MarketAux data fetched successfully');
-        } catch (err: any) {
-          logger.warn({ err: err.message, symbol }, 'MarketAux fetch failed');
-          marketAuxData = { error: err.message };
-        }
+      console.log(`[MarketAux] START - ${symbol}`);
+      try {
+        marketAuxData = await fetchMarketAuxData(integrations.marketaux?.apiKey || '', symbol);
+        providersCalled.push('MarketAux');
+        console.log(`[MarketAux] SUCCESS - ${symbol}`);
+        logger.info({ uid, symbol }, 'MarketAux data fetched successfully');
+      } catch (err: any) {
+        console.log(`[MarketAux] FAILED: ${err.message} - ${symbol}`);
+        logger.warn({ err: err.message, symbol }, 'MarketAux fetch failed');
+        marketAuxData = { error: err.message };
       }
 
       // 3. Fetch CoinGecko data
+      console.log(`[CoinGecko] START - ${symbol}`);
       try {
         const { CoinGeckoAdapter } = await import('./coingeckoAdapter');
         const coinGeckoAdapter = new CoinGeckoAdapter();
         coinGeckoData = await coinGeckoAdapter.getMarketData(symbol);
         providersCalled.push('CoinGecko');
+        console.log(`[CoinGecko] SUCCESS - ${symbol}`);
         logger.info({ uid, symbol }, 'CoinGecko data fetched successfully');
       } catch (err: any) {
+        console.log(`[CoinGecko] FAILED: ${err.message} - ${symbol}`);
         logger.warn({ err: err.message, symbol }, 'CoinGecko fetch failed');
         coinGeckoData = { error: err.message };
       }
 
       // 4. Fetch Google Finance data
+      console.log(`[GoogleFinance] START - ${symbol}`);
       try {
         const { GoogleFinanceAdapter } = await import('./googleFinanceAdapter');
         const googleFinanceAdapter = new GoogleFinanceAdapter();
         googleFinanceData = await googleFinanceAdapter.getMarketData(symbol);
         providersCalled.push('GoogleFinance');
+        console.log(`[GoogleFinance] SUCCESS - ${symbol}`);
         logger.info({ uid, symbol }, 'Google Finance data fetched successfully');
       } catch (err: any) {
+        console.log(`[GoogleFinance] FAILED: ${err.message} - ${symbol}`);
         logger.warn({ err: err.message, symbol }, 'Google Finance fetch failed');
         googleFinanceData = { error: err.message };
       }
 
       // 5. Fetch Binance Public data
+      console.log(`[BinancePublic] START - ${symbol}`);
       try {
         const { BinanceAdapter } = await import('./binanceAdapter');
         const binanceAdapter = new BinanceAdapter();
         binancePublicData = await binanceAdapter.getPublicMarketData(symbol);
         providersCalled.push('BinancePublic');
+        console.log(`[BinancePublic] SUCCESS - ${symbol}`);
         logger.info({ uid, symbol }, 'Binance Public data fetched successfully');
       } catch (err: any) {
+        console.log(`[BinancePublic] FAILED: ${err.message} - ${symbol}`);
         logger.warn({ err: err.message, symbol }, 'Binance Public fetch failed');
         binancePublicData = { error: err.message };
       }
@@ -122,16 +135,35 @@ export class DeepResearchEngine {
         );
       }
 
-      // Calculate all indicators using the trading strategies engine
+      // ALWAYS GENERATE ALL INDICATORS - even if some data is missing
+      console.log('Indicators generated: START');
       const rsi = tradingStrategies.calculateRSI(ohlcData);
+      console.log('Indicators generated: RSI calculated');
+
       const volume = tradingStrategies.calculateVolumeAnalysis(ohlcData);
+      console.log('Indicators generated: Volume calculated');
+
       const momentum = tradingStrategies.calculateMomentum(ohlcData);
+      console.log('Indicators generated: Momentum calculated');
+
       const emaTrend = tradingStrategies.calculateEMATrend(ohlcData);
+      console.log('Indicators generated: EMA Trend calculated');
+
       const smaTrend = tradingStrategies.calculateSMATrend(ohlcData);
+      console.log('Indicators generated: SMA Trend calculated');
+
       const volatility = tradingStrategies.calculateVolatility(ohlcData);
+      console.log('Indicators generated: Volatility calculated');
+
       const supportResistance = tradingStrategies.calculateSupportResistance(ohlcData);
+      console.log('Indicators generated: Support/Resistance calculated');
+
       const priceAction = tradingStrategies.calculatePriceAction(ohlcData);
+      console.log('Indicators generated: Price Action calculated');
+
       const vwap = tradingStrategies.calculateVWAP(ohlcData);
+      console.log('Indicators generated: VWAP calculated');
+      console.log('Indicators generated: ALL COMPLETE');
 
       // Combine trend indicators
       const trend: IndicatorResult = {
@@ -173,6 +205,20 @@ export class DeepResearchEngine {
           binancePublic: binancePublicData
         }
       };
+
+      console.log('DeepAnalysis generated: COMPLETE', {
+        rsi: !!result.rsi,
+        volume: !!result.volume,
+        momentum: !!result.momentum,
+        trend: !!result.trend,
+        volatility: !!result.volatility,
+        supportResistance: !!result.supportResistance,
+        priceAction: !!result.priceAction,
+        vwap: !!result.vwap,
+        signals: result.signals?.length || 0
+      });
+
+      console.log('Returning final research result now...');
 
       // Save to Firestore
       await this.saveResearchResult(uid, symbol, result);

@@ -883,5 +883,131 @@ export async function adminRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: err.message || 'Error fetching system health' });
     }
   });
+
+  // GET /api/admin/unlock-requests - Get all unlock requests
+  fastify.get('/unlock-requests', {
+    preHandler: [fastify.authenticate, fastify.adminAuth],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const db = getFirebaseAdmin().firestore();
+
+      // Get unlock requests from agentUnlockRequests collection
+      const requestsSnapshot = await db.collection('agentUnlockRequests')
+        .orderBy('submittedAt', 'desc')
+        .get();
+
+      const requests = requestsSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+        submittedAt: doc.data().submittedAt?.toDate().toISOString(),
+      }));
+
+      return { requests };
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting unlock requests');
+      return reply.code(500).send({ error: err.message || 'Error fetching unlock requests' });
+    }
+  });
+
+  // POST /api/admin/unlock-requests/:id/approve - Approve unlock request
+  fastify.post('/unlock-requests/:id/approve', {
+    preHandler: [fastify.authenticate, fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    try {
+      const { id } = request.params;
+      const adminUser = (request as any).user;
+      const db = getFirebaseAdmin().firestore();
+
+      // Get the unlock request
+      const requestRef = db.collection('agentUnlockRequests').doc(id);
+      const requestDoc = await requestRef.get();
+
+      if (!requestDoc.exists) {
+        return reply.code(404).send({ error: 'Unlock request not found' });
+      }
+
+      const requestData = requestDoc.data();
+      if (!requestData) {
+        return reply.code(404).send({ error: 'Unlock request data not found' });
+      }
+
+      // Unlock the agent for the user
+      await firestoreAdapter.unlockAgent(requestData.uid, requestData.agentName);
+
+      // Update the request status
+      await requestRef.update({
+        status: 'approved',
+        approvedAt: admin.firestore.Timestamp.now(),
+        approvedBy: adminUser.uid,
+      });
+
+      // Update user's unlockedAgents array
+      const userData = await firestoreAdapter.getUser(requestData.uid);
+      const currentUnlocked = userData?.unlockedAgents || [];
+      if (!currentUnlocked.includes(requestData.agentName)) {
+        await firestoreAdapter.createOrUpdateUser(requestData.uid, {
+          unlockedAgents: [...currentUnlocked, requestData.agentName],
+        });
+      }
+
+      // Log activity
+      await firestoreAdapter.logActivity(requestData.uid, 'AGENT_UNLOCKED_BY_ADMIN', {
+        agentName: requestData.agentName,
+        approvedBy: adminUser.uid,
+      });
+
+      logger.info({ requestId: id, agentName: requestData.agentName, userId: requestData.uid, adminUid: adminUser.uid }, 'Unlock request approved');
+      return { message: 'Unlock request approved successfully' };
+    } catch (err: any) {
+      logger.error({ err }, 'Error approving unlock request');
+      return reply.code(500).send({ error: err.message || 'Error approving unlock request' });
+    }
+  });
+
+  // POST /api/admin/unlock-requests/:id/deny - Deny unlock request
+  fastify.post('/unlock-requests/:id/deny', {
+    preHandler: [fastify.authenticate, fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Params: { id: string }; Body: { reason?: string } }>, reply: FastifyReply) => {
+    try {
+      const { id } = request.params;
+      const { reason } = request.body as any || {};
+      const adminUser = (request as any).user;
+      const db = getFirebaseAdmin().firestore();
+
+      // Get the unlock request
+      const requestRef = db.collection('agentUnlockRequests').doc(id);
+      const requestDoc = await requestRef.get();
+
+      if (!requestDoc.exists) {
+        return reply.code(404).send({ error: 'Unlock request not found' });
+      }
+
+      const requestData = requestDoc.data();
+      if (!requestData) {
+        return reply.code(404).send({ error: 'Unlock request data not found' });
+      }
+
+      // Update the request status
+      await requestRef.update({
+        status: 'denied',
+        deniedAt: admin.firestore.Timestamp.now(),
+        deniedBy: adminUser.uid,
+        denialReason: reason || 'No reason provided',
+      });
+
+      // Log activity
+      await firestoreAdapter.logActivity(requestData.uid, 'AGENT_UNLOCK_DENIED', {
+        agentName: requestData.agentName,
+        deniedBy: adminUser.uid,
+        reason: reason || 'No reason provided',
+      });
+
+      logger.info({ requestId: id, agentName: requestData.agentName, userId: requestData.uid, adminUid: adminUser.uid }, 'Unlock request denied');
+      return { message: 'Unlock request denied successfully' };
+    } catch (err: any) {
+      logger.error({ err }, 'Error denying unlock request');
+      return reply.code(500).send({ error: err.message || 'Error denying unlock request' });
+    }
+  });
 }
 

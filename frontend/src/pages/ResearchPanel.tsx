@@ -7,7 +7,6 @@ import { useError } from '../contexts/ErrorContext';
 import { useNotificationContext } from '../contexts/NotificationContext';
 import { getApiErrorMessage, suppressConsoleError } from '../utils/errorHandler';
 import { useAuth } from '../hooks/useAuth';
-import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { Link } from 'react-router-dom';
@@ -50,7 +49,6 @@ export default function ResearchPanel() {
   }[]>([]);
   const [showMoreAnalysis, setShowMoreAnalysis] = useState(false);
   const { showError } = useError();
-  const { unlockedAgents, loading: agentsLoading, hasPremiumAgent } = useUnlockedAgents();
   const { addNotification } = useNotificationContext();
   const { user } = useAuth();
   const [isAdmin, setIsAdmin] = useState(false);
@@ -238,7 +236,7 @@ export default function ResearchPanel() {
         }
       }
       
-      if (response.data?.success && response.data.results) {
+      if (response.data?.results) {
         // Add results to deep research results array (newest first)
         const resultsWithTimestamp = response.data.results.map((result: any) => ({
           ...result,
@@ -751,133 +749,788 @@ export default function ResearchPanel() {
                   <p className="text-gray-400 text-sm">No deep research results yet. Run deep research to see results here.</p>
                 </div>
               ) : (
-                <div className="space-y-6">
+                <div className="space-y-8 animate-fade-in">
                   {deepResearchResults.map((result, idx) => (
-                    <div key={result.id || idx} className="bg-black/40 backdrop-blur-sm rounded-xl p-5 border border-purple-500/30">
-                      <div className="mb-4">
-                        <div className="flex items-center justify-between mb-2">
-                          <h3 className="text-lg font-bold text-white">{result.symbol}</h3>
-                          {result.timestamp && (
-                            <span className="text-xs text-gray-400 font-mono">
-                              {new Date(result.timestamp).toLocaleString()}
-                            </span>
-                          )}
+                    <div key={result.id || idx} className="space-y-6 animate-stagger">
+                      {/* SYMBOL HEADER + PRICE CARD */}
+                      <div className="relative bg-gradient-to-br from-slate-900/90 via-slate-800/90 to-slate-900/90 backdrop-blur-xl border border-slate-700/50 rounded-2xl p-6 shadow-2xl shadow-slate-900/50 overflow-hidden">
+                        {/* Animated background */}
+                        <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 via-purple-500/5 to-cyan-500/5"></div>
+                        <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-slate-400/20 to-transparent"></div>
+
+                        <div className="relative flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
+                          {/* Symbol Info */}
+                          <div className="flex items-center gap-4">
+                            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center shadow-lg">
+                              <span className="text-white font-bold text-lg">
+                                {result.symbol?.replace('USDT', '').substring(0, 2) || 'COIN'}
+                              </span>
+                            </div>
+                            <div>
+                              <h1 className="text-2xl font-bold text-white mb-1">{result.symbol || 'BTCUSDT'}</h1>
+                              <div className="flex items-center gap-2 text-sm text-slate-400">
+                                <span>Exchange: MULTI</span>
+                                {result.requestId && <span>• ID: {result.requestId.slice(-8)}</span>}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Price Card */}
+                          <div className="flex flex-col sm:flex-row gap-4 lg:gap-6">
+                            <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-4 min-w-[200px]">
+                              <div className="text-xs text-slate-400 mb-1">Current Price</div>
+                              <div className="text-2xl font-bold text-white">
+                                ${result.apiCalls?.price?.data ? result.apiCalls.price.data.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : 'N/A'}
+                              </div>
+                              <div className={`text-sm font-medium ${(result.marketData?.priceChangePct24h || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                {(result.marketData?.priceChangePct24h || 0) >= 0 ? '+' : ''}{(result.marketData?.priceChangePct24h || 0).toFixed(2)}% (24h)
+                              </div>
+                            </div>
+
+                            <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-4 min-w-[150px]">
+                              <div className="text-xs text-slate-400 mb-1">24h Range</div>
+                              <div className="text-sm text-white">
+                                <span className="text-red-400">${result.marketData?.low24h ? result.marketData.low24h.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : 'N/A'}</span>
+                                <span className="mx-2 text-slate-500">-</span>
+                                <span className="text-green-400">${result.marketData?.high24h ? result.marketData.high24h.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : 'N/A'}</span>
+                              </div>
+                            </div>
+
+                            <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-4 min-w-[150px]">
+                              <div className="text-xs text-slate-400 mb-1">24h Volume</div>
+                              <div className="text-sm font-bold text-white">
+                                {result.marketData?.volume24h ? `$${(result.marketData.volume24h / 1000000).toFixed(1)}M` : 'N/A'}
+                              </div>
+                            </div>
+                          </div>
                         </div>
-                        <p className="text-xs text-gray-400">
-                          Exchange: <span className="text-purple-300 font-semibold">
-                            {result.exchange && result.exchange !== 'N/A' && result.exchange !== 'unknown' 
-                              ? result.exchange.toUpperCase() 
-                              : 'Unknown'}
-                          </span>
-                          {result.requestId && <span className="ml-2 text-gray-500">| Request ID: {result.requestId}</span>}
-                        </p>
+
+                        {/* Timestamp */}
+                        <div className="absolute top-4 right-4 text-xs text-slate-500 font-mono">
+                          {result.timestamp ? new Date(result.timestamp).toLocaleString('en-US', {
+                            month: 'short',
+                            day: '2-digit',
+                            year: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit'
+                          }) : 'Just now'}
+                        </div>
                       </div>
 
-                      {/* Final Analysis (new format) */}
-                      {result.finalAnalysis && (
-                        <div className="mb-4 p-4 bg-gradient-to-r from-purple-900/40 to-pink-900/40 rounded-lg border border-purple-500/30">
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="text-sm font-semibold text-purple-300">Final Analysis</span>
-                            <span className={`px-3 py-1 rounded-lg text-sm font-bold ${
-                              result.finalAnalysis.signal === 'LONG' ? 'bg-green-500/20 text-green-300 border border-green-400/30' :
-                              result.finalAnalysis.signal === 'SHORT' ? 'bg-red-500/20 text-red-300 border border-red-400/30' :
-                              'bg-gray-500/20 text-gray-300 border border-gray-400/30'
+                      {/* FINAL ANALYSIS CARD */}
+                      <div className="relative bg-gradient-to-br from-slate-900/90 via-slate-800/90 to-slate-900/90 backdrop-blur-xl border border-slate-700/50 rounded-2xl p-6 shadow-2xl shadow-slate-900/50 overflow-hidden">
+                        {/* Animated background */}
+                        <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/5 via-blue-500/5 to-purple-500/5"></div>
+                        <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-emerald-500 via-blue-500 to-purple-500"></div>
+
+                        <div className="relative">
+                          <div className="flex items-center justify-between mb-6">
+                            <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                              <svg className="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                              </svg>
+                              Final Analysis
+                            </h3>
+
+                            {/* Signal Badge */}
+                            <div className={`px-6 py-3 rounded-xl font-bold text-lg shadow-lg ${
+                              result.finalAnalysis?.signal === 'BUY'
+                                ? 'bg-gradient-to-r from-emerald-500 to-green-600 text-white shadow-emerald-500/30'
+                                : result.finalAnalysis?.signal === 'SELL'
+                                ? 'bg-gradient-to-r from-red-500 to-rose-600 text-white shadow-red-500/30'
+                                : 'bg-gradient-to-r from-amber-500 to-yellow-600 text-white shadow-amber-500/30'
                             }`}>
-                              {result.finalAnalysis.signal}
-                            </span>
+                              {result.finalAnalysis?.signal || 'HOLD'}
+                            </div>
                           </div>
-                          <div className="text-sm text-gray-300 mb-2">
-                            Confidence: <span className="font-bold text-purple-400">{result.finalAnalysis.confidencePercent}%</span>
+
+                          {/* Confidence Meter */}
+                          <div className="mb-6">
+                            <div className="flex justify-between items-center mb-2">
+                              <span className="text-sm font-medium text-slate-300">Confidence Level</span>
+                              <span className="text-lg font-bold text-white">{result.finalAnalysis?.confidencePercent || 0}%</span>
+                            </div>
+                            <div className="w-full bg-slate-700/50 rounded-full h-3 overflow-hidden">
+                              <div
+                                className={`h-full rounded-full transition-all duration-1000 ease-out ${
+                                  (result.finalAnalysis?.confidencePercent || 0) >= 80 ? 'bg-gradient-to-r from-emerald-500 to-green-500' :
+                                  (result.finalAnalysis?.confidencePercent || 0) >= 60 ? 'bg-gradient-to-r from-blue-500 to-cyan-500' :
+                                  (result.finalAnalysis?.confidencePercent || 0) >= 40 ? 'bg-gradient-to-r from-amber-500 to-yellow-500' :
+                                  'bg-gradient-to-r from-red-500 to-rose-500'
+                                }`}
+                                style={{ width: `${result.finalAnalysis?.confidencePercent || 0}%` }}
+                              ></div>
+                            </div>
                           </div>
-                          <div className="text-xs text-gray-400">
-                            {result.finalAnalysis.reasoning}
+
+                          {/* Analysis Reasoning */}
+                          <details className="group">
+                            <summary className="flex items-center justify-between cursor-pointer text-sm font-medium text-slate-300 hover:text-white transition-colors">
+                              <span>Analysis Reasoning</span>
+                              <svg className="w-4 h-4 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                              </svg>
+                            </summary>
+                            <div className="mt-3 p-4 bg-slate-800/50 rounded-lg border border-slate-600/30">
+                              <p className="text-sm text-slate-300 leading-relaxed">
+                                {result.finalAnalysis?.reasoning || 'Analysis completed with comprehensive technical indicators from multiple data providers.'}
+                              </p>
+                            </div>
+                          </details>
+                        </div>
+                      </div>
+
+                      {/* INDICATORS GRID */}
+                      <div className="relative bg-gradient-to-br from-slate-900/90 via-slate-800/90 to-slate-900/90 backdrop-blur-xl border border-slate-700/50 rounded-2xl p-6 shadow-2xl shadow-slate-900/50 overflow-hidden">
+                        {/* Animated background */}
+                        <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 via-indigo-500/5 to-purple-500/5"></div>
+                        <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500"></div>
+
+                        <div className="relative">
+                          <h3 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
+                            <svg className="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                            </svg>
+                            Technical Indicators
+                          </h3>
+
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                            {/* RSI */}
+                            <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-4 hover:bg-slate-800/70 transition-all duration-200">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs font-medium text-slate-400">RSI (14)</span>
+                                <div className={`w-2 h-2 rounded-full ${
+                                  (result.indicators?.rsi || 0) > 70 ? 'bg-red-500' :
+                                  (result.indicators?.rsi || 0) < 30 ? 'bg-green-500' :
+                                  'bg-blue-500'
+                                }`}></div>
+                              </div>
+                              <div className="text-2xl font-bold text-white mb-2">{result.indicators?.rsi?.toFixed(1) || '50.0'}</div>
+                              <div className="w-full bg-slate-700/50 rounded-full h-1.5">
+                                <div
+                                  className={`h-full rounded-full transition-all duration-500 ${
+                                    (result.indicators?.rsi || 0) > 70 ? 'bg-gradient-to-r from-red-500 to-red-600' :
+                                    (result.indicators?.rsi || 0) < 30 ? 'bg-gradient-to-r from-green-500 to-green-600' :
+                                    'bg-gradient-to-r from-blue-500 to-blue-600'
+                                  }`}
+                                  style={{ width: `${Math.min(100, Math.max(0, result.indicators?.rsi || 50))}%` }}
+                                ></div>
+                              </div>
+                              <div className="text-xs text-slate-400 mt-1">
+                                {(result.indicators?.rsi || 0) > 70 ? 'Overbought' :
+                                 (result.indicators?.rsi || 0) < 30 ? 'Oversold' :
+                                 'Neutral'}
+                              </div>
+                            </div>
+
+                            {/* MA50 */}
+                            <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-4 hover:bg-slate-800/70 transition-all duration-200">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs font-medium text-slate-400">MA50</span>
+                                <svg className={`w-3 h-3 ${
+                                  (result.indicators?.ma50 || 0) > (result.apiCalls?.price?.data || 0) ? 'text-red-400' : 'text-green-400'
+                                }`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                    d={(result.indicators?.ma50 || 0) > (result.apiCalls?.price?.data || 0) ? "M5 15l7-7 7 7" : "M19 9l-7 7-7-7"} />
+                                </svg>
+                              </div>
+                              <div className="text-lg font-bold text-white">${result.indicators?.ma50?.toFixed(2) || '0.00'}</div>
+                              <div className={`text-xs mt-1 ${
+                                (result.indicators?.ma50 || 0) > (result.apiCalls?.price?.data || 0) ? 'text-red-400' : 'text-green-400'
+                              }`}>
+                                {(result.indicators?.ma50 || 0) > (result.apiCalls?.price?.data || 0) ? 'Resistance' : 'Support'}
+                              </div>
+                            </div>
+
+                            {/* MA200 */}
+                            <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-4 hover:bg-slate-800/70 transition-all duration-200">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs font-medium text-slate-400">MA200</span>
+                                <svg className={`w-3 h-3 ${
+                                  (result.indicators?.ma200 || 0) > (result.apiCalls?.price?.data || 0) ? 'text-red-400' : 'text-green-400'
+                                }`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                    d={(result.indicators?.ma200 || 0) > (result.apiCalls?.price?.data || 0) ? "M5 15l7-7 7 7" : "M19 9l-7 7-7-7"} />
+                                </svg>
+                              </div>
+                              <div className="text-lg font-bold text-white">${result.indicators?.ma200?.toFixed(2) || '0.00'}</div>
+                              <div className={`text-xs mt-1 ${
+                                (result.indicators?.ma200 || 0) > (result.apiCalls?.price?.data || 0) ? 'text-red-400' : 'text-green-400'
+                              }`}>
+                                {(result.indicators?.ma200 || 0) > (result.apiCalls?.price?.data || 0) ? 'Resistance' : 'Support'}
+                              </div>
+                            </div>
+
+                            {/* MACD */}
+                            <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-4 hover:bg-slate-800/70 transition-all duration-200">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs font-medium text-slate-400">MACD</span>
+                                <div className={`w-2 h-2 rounded-full ${
+                                  (result.indicators?.macd?.macd || 0) > 0 ? 'bg-green-500' :
+                                  (result.indicators?.macd?.macd || 0) < 0 ? 'bg-red-500' :
+                                  'bg-slate-500'
+                                }`}></div>
+                              </div>
+                              <div className="text-lg font-bold text-white">{(result.indicators?.macd?.macd || 0).toFixed(4)}</div>
+                              <div className={`text-xs mt-1 ${
+                                (result.indicators?.macd?.macd || 0) > 0 ? 'text-green-400' :
+                                (result.indicators?.macd?.macd || 0) < 0 ? 'text-red-400' :
+                                'text-slate-400'
+                              }`}>
+                                {(result.indicators?.macd?.macd || 0) > 0 ? 'Bullish' :
+                                 (result.indicators?.macd?.macd || 0) < 0 ? 'Bearish' :
+                                 'Neutral'}
+                              </div>
+                            </div>
+
+                            {/* VWAP */}
+                            <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-4 hover:bg-slate-800/70 transition-all duration-200 md:col-span-2">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs font-medium text-slate-400">VWAP</span>
+                                <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                  (result.deepAnalysis?.vwap?.deviationPct || 0) < -0.5 ? 'bg-green-500/20 text-green-400' :
+                                  (result.deepAnalysis?.vwap?.deviationPct || 0) > 0.5 ? 'bg-red-500/20 text-red-400' :
+                                  'bg-blue-500/20 text-blue-400'
+                                }`}>
+                                  {(result.deepAnalysis?.vwap?.deviationPct || 0) < -0.5 ? 'Below VWAP' :
+                                   (result.deepAnalysis?.vwap?.deviationPct || 0) > 0.5 ? 'Above VWAP' :
+                                   'At VWAP'}
+                                </span>
+                              </div>
+                              <div className="text-lg font-bold text-white">
+                                Deviation: {(result.deepAnalysis?.vwap?.deviationPct || 0).toFixed(2)}%
+                              </div>
+                            </div>
+
+                            {/* ATR Volatility */}
+                            <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-4 hover:bg-slate-800/70 transition-all duration-200 md:col-span-2">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs font-medium text-slate-400">ATR Volatility</span>
+                                <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                  (result.deepAnalysis?.volatility?.atrPct || 0) > 3 ? 'bg-red-500/20 text-red-400' :
+                                  (result.deepAnalysis?.volatility?.atrPct || 0) > 1.5 ? 'bg-amber-500/20 text-amber-400' :
+                                  'bg-green-500/20 text-green-400'
+                                }`}>
+                                  {result.deepAnalysis?.volatility?.classification || 'Unknown'}
+                                </span>
+                              </div>
+                              <div className="text-lg font-bold text-white">
+                                {(result.deepAnalysis?.volatility?.atrPct || 0).toFixed(2)}%
+                              </div>
+                              <div className="w-full bg-slate-700/50 rounded-full h-1.5 mt-2">
+                                <div
+                                  className={`h-full rounded-full transition-all duration-500 ${
+                                    (result.deepAnalysis?.volatility?.atrPct || 0) > 3 ? 'bg-gradient-to-r from-red-500 to-red-600' :
+                                    (result.deepAnalysis?.volatility?.atrPct || 0) > 1.5 ? 'bg-gradient-to-r from-amber-500 to-amber-600' :
+                                    'bg-gradient-to-r from-green-500 to-green-600'
+                                  }`}
+                                  style={{ width: `${Math.min(100, (result.deepAnalysis?.volatility?.atrPct || 0) * 10)}%` }}
+                                ></div>
+                              </div>
+                            </div>
                           </div>
                         </div>
-                      )}
+                      </div>
 
-                      {/* Technical Indicators (support both old and new format) */}
-                      {(result.indicators || result.technicalIndicators) && (
-                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
-                          <div className="bg-black/30 rounded-lg p-3 border border-purple-500/20">
-                            <div className="text-xs text-gray-400 mb-1">RSI</div>
-                            <div className="text-lg font-bold text-white">{(result.indicators || result.technicalIndicators)?.rsi?.toFixed(2) || 'N/A'}</div>
-                          </div>
-                          <div className="bg-black/30 rounded-lg p-3 border border-purple-500/20">
-                            <div className="text-xs text-gray-400 mb-1">MA50</div>
-                            <div className="text-lg font-bold text-white">${(result.indicators || result.technicalIndicators)?.ma50?.toFixed(2) || 'N/A'}</div>
-                          </div>
-                          <div className="bg-black/30 rounded-lg p-3 border border-purple-500/20">
-                            <div className="text-xs text-gray-400 mb-1">MA200</div>
-                            <div className="text-lg font-bold text-white">${(result.indicators || result.technicalIndicators)?.ma200?.toFixed(2) || 'N/A'}</div>
-                          </div>
-                          <div className="bg-black/30 rounded-lg p-3 border border-purple-500/20">
-                            <div className="text-xs text-gray-400 mb-1">MACD</div>
-                            <div className="text-lg font-bold text-white">{((result.indicators || result.technicalIndicators)?.macd?.macd || 0).toFixed(4)}</div>
-                          </div>
-                        </div>
-                      )}
+                      {/* RAW API OUTPUT SECTION */}
+                      <div className="relative bg-gradient-to-br from-slate-900/90 via-slate-800/90 to-slate-900/90 backdrop-blur-xl border border-slate-700/50 rounded-2xl p-6 shadow-2xl shadow-slate-900/50 overflow-hidden">
+                        {/* Animated background */}
+                        <div className="absolute inset-0 bg-gradient-to-br from-violet-500/5 via-purple-500/5 to-pink-500/5"></div>
+                        <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-violet-500 via-purple-500 to-pink-500"></div>
 
-                      {/* Raw API Calls (new format) */}
-                      {result.apiCalls && (
-                        <div className="mb-4">
-                          <h4 className="text-sm font-semibold text-purple-300 mb-3">Raw API Outputs</h4>
-                          <div className="space-y-3">
-                            {/* Price API */}
-                            <details className="bg-black/20 rounded-lg border border-purple-500/20">
-                              <summary className="px-3 py-2 cursor-pointer text-sm text-gray-300 hover:text-white">
-                                Price API {result.apiCalls.price?.success ? '✅' : '❌'} {result.apiCalls.price?.latency ? `(${result.apiCalls.price.latency}ms)` : ''}
-                              </summary>
-                              <div className="px-3 pb-3 text-xs font-mono text-gray-400 overflow-x-auto">
-                                <pre>{JSON.stringify(result.apiCalls.price?.data || result.apiCalls.price?.error || 'No data', null, 2)}</pre>
-                              </div>
-                            </details>
+                        <div className="relative">
+                          <h3 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
+                            <svg className="w-5 h-5 text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                            </svg>
+                            API Data Sources
+                          </h3>
 
-                            {/* Orderbook API */}
-                            <details className="bg-black/20 rounded-lg border border-purple-500/20">
-                              <summary className="px-3 py-2 cursor-pointer text-sm text-gray-300 hover:text-white">
-                                Orderbook API {result.apiCalls.orderbook?.success ? '✅' : '❌'} {result.apiCalls.orderbook?.latency ? `(${result.apiCalls.orderbook.latency}ms)` : ''}
-                              </summary>
-                              <div className="px-3 pb-3 text-xs font-mono text-gray-400 overflow-x-auto max-h-60 overflow-y-auto">
-                                <pre>{JSON.stringify(result.apiCalls.orderbook?.data || result.apiCalls.orderbook?.error || 'No data', null, 2)}</pre>
-                              </div>
-                            </details>
-
-                            {/* Kline API */}
-                            <details className="bg-black/20 rounded-lg border border-purple-500/20">
-                              <summary className="px-3 py-2 cursor-pointer text-sm text-gray-300 hover:text-white">
-                                Kline API {result.apiCalls.kline?.success ? '✅' : '❌'} {result.apiCalls.kline?.latency ? `(${result.apiCalls.kline.latency}ms)` : ''}
-                              </summary>
-                              <div className="px-3 pb-3 text-xs font-mono text-gray-400 overflow-x-auto max-h-60 overflow-y-auto">
-                                <pre>{JSON.stringify(result.apiCalls.kline?.data || result.apiCalls.kline?.error || 'No data', null, 2)}</pre>
-                              </div>
-                            </details>
-
-                            {/* Trades API */}
-                            {result.apiCalls.trades && (
-                              <details className="bg-black/20 rounded-lg border border-purple-500/20">
-                                <summary className="px-3 py-2 cursor-pointer text-sm text-gray-300 hover:text-white">
-                                  Trades API {result.apiCalls.trades?.success ? '✅' : '❌'} {result.apiCalls.trades?.latency ? `(${result.apiCalls.trades.latency}ms)` : ''}
-                                </summary>
-                                <div className="px-3 pb-3 text-xs font-mono text-gray-400 overflow-x-auto max-h-60 overflow-y-auto">
-                                  <pre>{JSON.stringify(result.apiCalls.trades?.data || result.apiCalls.trades?.error || 'No data', null, 2)}</pre>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {/* Binance Public API */}
+                            <details className="group bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl overflow-hidden hover:bg-slate-800/70 transition-all duration-200">
+                              <summary className="flex items-center justify-between p-4 cursor-pointer">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-8 h-8 rounded-lg bg-orange-500/20 flex items-center justify-center">
+                                    <span className="text-orange-400 font-bold text-sm">B</span>
+                                  </div>
+                                  <div>
+                                    <div className="text-sm font-medium text-white">Binance Public</div>
+                                    <div className="text-xs text-slate-400">Price & Orderbook</div>
+                                  </div>
                                 </div>
-                              </details>
-                            )}
-
-                            {/* Funding Rate API */}
-                            {result.apiCalls.funding && (
-                              <details className="bg-black/20 rounded-lg border border-purple-500/20">
-                                <summary className="px-3 py-2 cursor-pointer text-sm text-gray-300 hover:text-white">
-                                  Funding Rate API {result.apiCalls.funding?.success ? '✅' : '❌'} {result.apiCalls.funding?.latency ? `(${result.apiCalls.funding.latency}ms)` : ''}
-                                </summary>
-                                <div className="px-3 pb-3 text-xs font-mono text-gray-400 overflow-x-auto">
-                                  <pre>{JSON.stringify(result.apiCalls.funding?.data || result.apiCalls.funding?.error || 'No data', null, 2)}</pre>
+                                <div className="flex items-center gap-2">
+                                  <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                    result.apiCalls?.price?.success ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
+                                  }`}>
+                                    {result.apiCalls?.price?.success ? 'Success' : 'Failed'}
+                                  </span>
+                                  <span className="text-xs text-slate-400">{result.apiCalls?.price?.latency || 0}ms</span>
+                                  <svg className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                  </svg>
                                 </div>
-                              </details>
-                            )}
+                              </summary>
+                              <div className="px-4 pb-4 border-t border-slate-600/20">
+                                <div className="mt-3 bg-slate-900/50 rounded-lg p-3 font-mono text-xs text-slate-300 max-h-48 overflow-y-auto">
+                                  <pre className="whitespace-pre-wrap break-all">
+                                    {JSON.stringify(result.apiCalls?.price?.data || result.apiCalls?.orderbook?.data || result.apiCalls?.price?.error || 'No data available', null, 2)}
+                                  </pre>
+                                </div>
+                              </div>
+                            </details>
+
+                            {/* CryptoCompare API */}
+                            <details className="group bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl overflow-hidden hover:bg-slate-800/70 transition-all duration-200">
+                              <summary className="flex items-center justify-between p-4 cursor-pointer">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center">
+                                    <span className="text-blue-400 font-bold text-sm">C</span>
+                                  </div>
+                                  <div>
+                                    <div className="text-sm font-medium text-white">CryptoCompare</div>
+                                    <div className="text-xs text-slate-400">OHLC Candles</div>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                    result.apiCalls?.kline?.success ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
+                                  }`}>
+                                    {result.apiCalls?.kline?.success ? 'Success' : 'Failed'}
+                                  </span>
+                                  <span className="text-xs text-slate-400">{result.apiCalls?.kline?.latency || 0}ms</span>
+                                  <svg className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                  </svg>
+                                </div>
+                              </summary>
+                              <div className="px-4 pb-4 border-t border-slate-600/20">
+                                <div className="mt-3 bg-slate-900/50 rounded-lg p-3 font-mono text-xs text-slate-300 max-h-48 overflow-y-auto">
+                                  <pre className="whitespace-pre-wrap break-all">
+                                    {JSON.stringify(result.apiCalls?.kline?.data || result.apiCalls?.kline?.error || 'No data available', null, 2)}
+                                  </pre>
+                                </div>
+                              </div>
+                            </details>
+
+                            {/* CoinGecko API */}
+                            <details className="group bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl overflow-hidden hover:bg-slate-800/70 transition-all duration-200">
+                              <summary className="flex items-center justify-between p-4 cursor-pointer">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-8 h-8 rounded-lg bg-cyan-500/20 flex items-center justify-center">
+                                    <span className="text-cyan-400 font-bold text-sm">G</span>
+                                  </div>
+                                  <div>
+                                    <div className="text-sm font-medium text-white">CoinGecko</div>
+                                    <div className="text-xs text-slate-400">Market Data</div>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                    result.apiCalls?.price?.success ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
+                                  }`}>
+                                    {result.apiCalls?.price?.success ? 'Success' : 'Failed'}
+                                  </span>
+                                  <span className="text-xs text-slate-400">{result.apiCalls?.price?.latency || 0}ms</span>
+                                  <svg className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                  </svg>
+                                </div>
+                              </summary>
+                              <div className="px-4 pb-4 border-t border-slate-600/20">
+                                <div className="mt-3 bg-slate-900/50 rounded-lg p-3 font-mono text-xs text-slate-300 max-h-48 overflow-y-auto">
+                                  <pre className="whitespace-pre-wrap break-all">
+                                    {JSON.stringify(result.raw?.coinGecko || result.apiCalls?.price?.error || 'No data available', null, 2)}
+                                  </pre>
+                                </div>
+                              </div>
+                            </details>
+
+                            {/* MarketAux API */}
+                            <details className="group bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl overflow-hidden hover:bg-slate-800/70 transition-all duration-200">
+                              <summary className="flex items-center justify-between p-4 cursor-pointer">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-8 h-8 rounded-lg bg-pink-500/20 flex items-center justify-center">
+                                    <span className="text-pink-400 font-bold text-sm">M</span>
+                                  </div>
+                                  <div>
+                                    <div className="text-sm font-medium text-white">MarketAux</div>
+                                    <div className="text-xs text-slate-400">News Sentiment</div>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                    result.raw?.marketAux && !result.raw.marketAux.error ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
+                                  }`}>
+                                    {result.raw?.marketAux && !result.raw.marketAux.error ? 'Success' : 'Failed'}
+                                  </span>
+                                  <span className="text-xs text-slate-400">~200ms</span>
+                                  <svg className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                  </svg>
+                                </div>
+                              </summary>
+                              <div className="px-4 pb-4 border-t border-slate-600/20">
+                                <div className="mt-3 bg-slate-900/50 rounded-lg p-3 font-mono text-xs text-slate-300 max-h-48 overflow-y-auto">
+                                  <pre className="whitespace-pre-wrap break-all">
+                                    {JSON.stringify(result.raw?.marketAux || 'No data available', null, 2)}
+                                  </pre>
+                                </div>
+                              </div>
+                            </details>
                           </div>
                         </div>
-                      )}
+                      </div>
+
+                      {/* DEEP ANALYSIS SECTION */}
+                      <div className="relative bg-gradient-to-br from-slate-900/90 via-slate-800/90 to-slate-900/90 backdrop-blur-xl border border-slate-700/50 rounded-2xl p-6 shadow-2xl shadow-slate-900/50 overflow-hidden">
+                        {/* Animated background */}
+                        <div className="absolute inset-0 bg-gradient-to-br from-rose-500/5 via-pink-500/5 to-purple-500/5"></div>
+                        <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-rose-500 via-pink-500 to-purple-500"></div>
+
+                        <div className="relative">
+                          <h3 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
+                            <svg className="w-5 h-5 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                            </svg>
+                            Deep Technical Analysis
+                          </h3>
+
+                          <div className="space-y-4">
+                            {/* RSI Analysis */}
+                            <details className="group bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl overflow-hidden hover:bg-slate-800/70 transition-all duration-200">
+                              <summary className="flex items-center justify-between p-4 cursor-pointer">
+                                <div className="flex items-center gap-3">
+                                  <div className={`w-3 h-3 rounded-full ${
+                                    (result.deepAnalysis?.rsi?.value || 0) > 70 ? 'bg-red-500' :
+                                    (result.deepAnalysis?.rsi?.value || 0) < 30 ? 'bg-green-500' :
+                                    'bg-blue-500'
+                                  }`}></div>
+                                  <span className="text-sm font-medium text-white">RSI Analysis</span>
+                                  <span className="text-lg font-bold text-white">{result.deepAnalysis?.rsi?.value?.toFixed(1) || '50.0'}</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                    (result.deepAnalysis?.rsi?.value || 0) > 70 ? 'bg-red-500/20 text-red-400' :
+                                    (result.deepAnalysis?.rsi?.value || 0) < 30 ? 'bg-green-500/20 text-green-400' :
+                                    'bg-blue-500/20 text-blue-400'
+                                  }`}>
+                                    {(result.deepAnalysis?.rsi?.value || 0) > 70 ? 'Overbought' :
+                                     (result.deepAnalysis?.rsi?.value || 0) < 30 ? 'Oversold' :
+                                     'Neutral'}
+                                  </span>
+                                  <svg className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                  </svg>
+                                </div>
+                              </summary>
+                              <div className="px-4 pb-4 border-t border-slate-600/20">
+                                <div className="grid grid-cols-2 gap-4 mt-3">
+                                  <div className="bg-slate-900/50 rounded-lg p-3">
+                                    <div className="text-xs text-slate-400 mb-1">Value</div>
+                                    <div className="text-lg font-bold text-white">{result.deepAnalysis?.rsi?.value?.toFixed(2) || '0.00'}</div>
+                                  </div>
+                                  <div className="bg-slate-900/50 rounded-lg p-3">
+                                    <div className="text-xs text-slate-400 mb-1">Strength</div>
+                                    <div className="text-lg font-bold text-white">{result.deepAnalysis?.rsi?.strength?.toFixed(2) || '0.00'}</div>
+                                  </div>
+                                </div>
+                                <div className="mt-3 text-xs text-slate-400">
+                                  RSI measures price momentum on a scale of 0-100. Values above 70 indicate overbought conditions, below 30 indicate oversold conditions.
+                                </div>
+                              </div>
+                            </details>
+
+                            {/* Volume Analysis */}
+                            <details className="group bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl overflow-hidden hover:bg-slate-800/70 transition-all duration-200">
+                              <summary className="flex items-center justify-between p-4 cursor-pointer">
+                                <div className="flex items-center gap-3">
+                                  <svg className="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" />
+                                  </svg>
+                                  <span className="text-sm font-medium text-white">Volume Analysis</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                    (result.deepAnalysis?.volume?.score || 0) > 0.6 ? 'bg-green-500/20 text-green-400' :
+                                    (result.deepAnalysis?.volume?.score || 0) < 0.4 ? 'bg-red-500/20 text-red-400' :
+                                    'bg-amber-500/20 text-amber-400'
+                                  }`}>
+                                    {result.deepAnalysis?.volume?.trend || 'neutral'}
+                                  </span>
+                                  <svg className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                  </svg>
+                                </div>
+                              </summary>
+                              <div className="px-4 pb-4 border-t border-slate-600/20">
+                                <div className="grid grid-cols-2 gap-4 mt-3">
+                                  <div className="bg-slate-900/50 rounded-lg p-3">
+                                    <div className="text-xs text-slate-400 mb-1">Volume Score</div>
+                                    <div className="text-lg font-bold text-white">{((result.deepAnalysis?.volume?.score || 0) * 100).toFixed(0)}%</div>
+                                  </div>
+                                  <div className="bg-slate-900/50 rounded-lg p-3">
+                                    <div className="text-xs text-slate-400 mb-1">Trend</div>
+                                    <div className="text-lg font-bold text-white capitalize">{result.deepAnalysis?.volume?.trend || 'Neutral'}</div>
+                                  </div>
+                                </div>
+                              </div>
+                            </details>
+
+                            {/* Momentum Analysis */}
+                            <details className="group bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl overflow-hidden hover:bg-slate-800/70 transition-all duration-200">
+                              <summary className="flex items-center justify-between p-4 cursor-pointer">
+                                <div className="flex items-center gap-3">
+                                  <svg className="w-4 h-4 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                                  </svg>
+                                  <span className="text-sm font-medium text-white">Momentum Analysis</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                    result.deepAnalysis?.momentum?.direction === 'bullish' ? 'bg-green-500/20 text-green-400' :
+                                    result.deepAnalysis?.momentum?.direction === 'bearish' ? 'bg-red-500/20 text-red-400' :
+                                    'bg-slate-500/20 text-slate-400'
+                                  }`}>
+                                    {result.deepAnalysis?.momentum?.direction || 'neutral'}
+                                  </span>
+                                  <svg className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                  </svg>
+                                </div>
+                              </summary>
+                              <div className="px-4 pb-4 border-t border-slate-600/20">
+                                <div className="grid grid-cols-2 gap-4 mt-3">
+                                  <div className="bg-slate-900/50 rounded-lg p-3">
+                                    <div className="text-xs text-slate-400 mb-1">Momentum Score</div>
+                                    <div className="text-lg font-bold text-white">{((result.deepAnalysis?.momentum?.score || 0) * 100).toFixed(0)}%</div>
+                                  </div>
+                                  <div className="bg-slate-900/50 rounded-lg p-3">
+                                    <div className="text-xs text-slate-400 mb-1">Direction</div>
+                                    <div className="text-lg font-bold text-white capitalize">{result.deepAnalysis?.momentum?.direction || 'Neutral'}</div>
+                                  </div>
+                                </div>
+                              </div>
+                            </details>
+
+                            {/* Trend Analysis */}
+                            <details className="group bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl overflow-hidden hover:bg-slate-800/70 transition-all duration-200">
+                              <summary className="flex items-center justify-between p-4 cursor-pointer">
+                                <div className="flex items-center gap-3">
+                                  <svg className="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                                  </svg>
+                                  <span className="text-sm font-medium text-white">Trend Analysis</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <div className="flex gap-1">
+                                    <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                      result.deepAnalysis?.trend?.emaTrend === 'bullish' ? 'bg-green-500/20 text-green-400' :
+                                      result.deepAnalysis?.trend?.emaTrend === 'bearish' ? 'bg-red-500/20 text-red-400' :
+                                      'bg-slate-500/20 text-slate-400'
+                                    }`}>
+                                      EMA: {result.deepAnalysis?.trend?.emaTrend || 'neutral'}
+                                    </span>
+                                    <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                      result.deepAnalysis?.trend?.smaTrend === 'bullish' ? 'bg-green-500/20 text-green-400' :
+                                      result.deepAnalysis?.trend?.smaTrend === 'bearish' ? 'bg-red-500/20 text-red-400' :
+                                      'bg-slate-500/20 text-slate-400'
+                                    }`}>
+                                      SMA: {result.deepAnalysis?.trend?.smaTrend || 'neutral'}
+                                    </span>
+                                  </div>
+                                  <svg className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                  </svg>
+                                </div>
+                              </summary>
+                              <div className="px-4 pb-4 border-t border-slate-600/20">
+                                <div className="grid grid-cols-2 gap-4 mt-3">
+                                  <div className="bg-slate-900/50 rounded-lg p-3">
+                                    <div className="text-xs text-slate-400 mb-1">EMA Trend</div>
+                                    <div className="text-sm font-bold text-white capitalize">{result.deepAnalysis?.trend?.emaTrend || 'Neutral'}</div>
+                                  </div>
+                                  <div className="bg-slate-900/50 rounded-lg p-3">
+                                    <div className="text-xs text-slate-400 mb-1">SMA Trend</div>
+                                    <div className="text-sm font-bold text-white capitalize">{result.deepAnalysis?.trend?.smaTrend || 'Neutral'}</div>
+                                  </div>
+                                </div>
+                              </div>
+                            </details>
+
+                            {/* Support & Resistance */}
+                            <details className="group bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl overflow-hidden hover:bg-slate-800/70 transition-all duration-200">
+                              <summary className="flex items-center justify-between p-4 cursor-pointer">
+                                <div className="flex items-center gap-3">
+                                  <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                                  </svg>
+                                  <span className="text-sm font-medium text-white">Support & Resistance</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                    result.deepAnalysis?.supportResistance?.nearSupport ? 'bg-green-500/20 text-green-400' :
+                                    result.deepAnalysis?.supportResistance?.nearResistance ? 'bg-red-500/20 text-red-400' :
+                                    'bg-slate-500/20 text-slate-400'
+                                  }`}>
+                                    {result.deepAnalysis?.supportResistance?.nearSupport ? 'Near Support' :
+                                     result.deepAnalysis?.supportResistance?.nearResistance ? 'Near Resistance' :
+                                     'No Key Levels'}
+                                  </span>
+                                  <svg className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                  </svg>
+                                </div>
+                              </summary>
+                              <div className="px-4 pb-4 border-t border-slate-600/20">
+                                <div className="grid grid-cols-2 gap-4 mt-3">
+                                  <div className="bg-slate-900/50 rounded-lg p-3">
+                                    <div className="text-xs text-slate-400 mb-1">Near Support</div>
+                                    <div className={`text-sm font-bold ${result.deepAnalysis?.supportResistance?.nearSupport ? 'text-green-400' : 'text-slate-400'}`}>
+                                      {result.deepAnalysis?.supportResistance?.nearSupport ? 'Yes' : 'No'}
+                                    </div>
+                                  </div>
+                                  <div className="bg-slate-900/50 rounded-lg p-3">
+                                    <div className="text-xs text-slate-400 mb-1">Near Resistance</div>
+                                    <div className={`text-sm font-bold ${result.deepAnalysis?.supportResistance?.nearResistance ? 'text-red-400' : 'text-slate-400'}`}>
+                                      {result.deepAnalysis?.supportResistance?.nearResistance ? 'Yes' : 'No'}
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="mt-3 text-xs text-slate-400">
+                                  Support levels provide buying opportunities, resistance levels provide selling opportunities.
+                                </div>
+                              </div>
+                            </details>
+
+                            {/* Price Action Patterns */}
+                            <details className="group bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl overflow-hidden hover:bg-slate-800/70 transition-all duration-200">
+                              <summary className="flex items-center justify-between p-4 cursor-pointer">
+                                <div className="flex items-center gap-3">
+                                  <svg className="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 100 4m0-4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 100 4m0-4v2m0-6V4" />
+                                  </svg>
+                                  <span className="text-sm font-medium text-white">Price Action Patterns</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                    (result.deepAnalysis?.priceAction?.confidence || 0) > 0.7 ? 'bg-emerald-500/20 text-emerald-400' :
+                                    (result.deepAnalysis?.priceAction?.confidence || 0) > 0.5 ? 'bg-blue-500/20 text-blue-400' :
+                                    'bg-slate-500/20 text-slate-400'
+                                  }`}>
+                                    {result.deepAnalysis?.priceAction?.pattern || 'none'}
+                                  </span>
+                                  <svg className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                  </svg>
+                                </div>
+                              </summary>
+                              <div className="px-4 pb-4 border-t border-slate-600/20">
+                                <div className="grid grid-cols-2 gap-4 mt-3">
+                                  <div className="bg-slate-900/50 rounded-lg p-3">
+                                    <div className="text-xs text-slate-400 mb-1">Pattern</div>
+                                    <div className="text-sm font-bold text-white capitalize">{result.deepAnalysis?.priceAction?.pattern || 'None'}</div>
+                                  </div>
+                                  <div className="bg-slate-900/50 rounded-lg p-3">
+                                    <div className="text-xs text-slate-400 mb-1">Confidence</div>
+                                    <div className="text-sm font-bold text-white">{((result.deepAnalysis?.priceAction?.confidence || 0) * 100).toFixed(0)}%</div>
+                                  </div>
+                                </div>
+                              </div>
+                            </details>
+
+                            {/* VWAP Analysis */}
+                            <details className="group bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl overflow-hidden hover:bg-slate-800/70 transition-all duration-200">
+                              <summary className="flex items-center justify-between p-4 cursor-pointer">
+                                <div className="flex items-center gap-3">
+                                  <svg className="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                  </svg>
+                                  <span className="text-sm font-medium text-white">VWAP Analysis</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                    (result.deepAnalysis?.vwap?.deviationPct || 0) < -0.5 ? 'bg-green-500/20 text-green-400' :
+                                    (result.deepAnalysis?.vwap?.deviationPct || 0) > 0.5 ? 'bg-red-500/20 text-red-400' :
+                                    'bg-blue-500/20 text-blue-400'
+                                  }`}>
+                                    {(result.deepAnalysis?.vwap?.deviationPct || 0) < -0.5 ? 'Below VWAP' :
+                                     (result.deepAnalysis?.vwap?.deviationPct || 0) > 0.5 ? 'Above VWAP' :
+                                     'At VWAP'}
+                                  </span>
+                                  <svg className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                  </svg>
+                                </div>
+                              </summary>
+                              <div className="px-4 pb-4 border-t border-slate-600/20">
+                                <div className="mt-3 bg-slate-900/50 rounded-lg p-3">
+                                  <div className="text-xs text-slate-400 mb-2">Price Deviation from VWAP</div>
+                                  <div className="flex items-center gap-4">
+                                    <div className="text-2xl font-bold text-white">
+                                      {result.deepAnalysis?.vwap?.deviationPct?.toFixed(2) || '0.00'}%
+                                    </div>
+                                    <div className={`px-3 py-1 rounded-lg text-sm font-medium ${
+                                      (result.deepAnalysis?.vwap?.deviationPct || 0) < -0.5 ? 'bg-green-500/20 text-green-400' :
+                                      (result.deepAnalysis?.vwap?.deviationPct || 0) > 0.5 ? 'bg-red-500/20 text-red-400' :
+                                      'bg-blue-500/20 text-blue-400'
+                                    }`}>
+                                      {result.deepAnalysis?.vwap?.signal || 'neutral'}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </details>
+
+                            {/* Trading Signals */}
+                            <details className="group bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl overflow-hidden hover:bg-slate-800/70 transition-all duration-200">
+                              <summary className="flex items-center justify-between p-4 cursor-pointer">
+                                <div className="flex items-center gap-3">
+                                  <svg className="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z" />
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z" />
+                                  </svg>
+                                  <span className="text-sm font-medium text-white">Trading Signals</span>
+                                  <span className="px-2 py-1 bg-slate-700/50 rounded text-xs text-slate-300">
+                                    {result.deepAnalysis?.signals?.length || 0} signals
+                                  </span>
+                                </div>
+                                <svg className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                </svg>
+                              </summary>
+                              <div className="px-4 pb-4 border-t border-slate-600/20">
+                                <div className="space-y-2 mt-3 max-h-48 overflow-y-auto">
+                                  {result.deepAnalysis?.signals && result.deepAnalysis.signals.length > 0 ? (
+                                    result.deepAnalysis.signals.slice(0, 5).map((signal: any, index: number) => (
+                                      <div key={index} className="flex items-center justify-between bg-slate-900/50 rounded-lg p-3">
+                                        <div className="flex items-center gap-3">
+                                          <span className="text-xs font-medium text-slate-400 w-16">{signal.name}</span>
+                                          <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                            signal.action === 'BUY' ? 'bg-green-500/20 text-green-400' :
+                                            signal.action === 'SELL' ? 'bg-red-500/20 text-red-400' :
+                                            'bg-slate-500/20 text-slate-400'
+                                          }`}>
+                                            {signal.action}
+                                          </span>
+                                        </div>
+                                        <span className="text-sm font-bold text-white">
+                                          {(signal.score * 100).toFixed(0)}%
+                                        </span>
+                                      </div>
+                                    ))
+                                  ) : (
+                                    <div className="text-center text-slate-400 py-4">
+                                      No trading signals generated
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </details>
+                          </div>
+                        </div>
+                      </div>
 
                       {/* Raw API Data (old format - backward compatibility) */}
                       {!result.apiCalls && result.rawApiData && (
