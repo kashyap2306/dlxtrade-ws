@@ -134,44 +134,16 @@ export const metricsApi = {
 
 // Research - routes already include /api prefix from baseURL
 export const researchApi = {
-  run: (data?: { symbol?: string; symbols?: string[] }) =>
+  run: (data?: { symbol?: string; symbols?: string[] }) => 
     api.post('/research/run', data),
   getLogs: (params?: any) => api.get('/research/logs', { params }),
   runResearch: (symbol: string) => api.post('/research/run', { symbol }),
   deepRun: (data: { symbols?: string[]; topN?: number }) => api.post('/research/deep-run', data),
   manualDeepResearch: () => api.get('/research/manual'),
-  manualDeepResearchPost: (data?: { selectedExchange?: string; symbols?: string[]; topN?: number }) =>
+  manualDeepResearchPost: (data?: { selectedExchange?: string; symbols?: string[]; topN?: number }) => 
     api.post('/research/manual', data),
-  queue: (data?: { symbol?: string; symbols?: string[]; topN?: number }) =>
+  queue: (data?: { symbol?: string; symbols?: string[]; topN?: number }) => 
     api.post('/research/queue', data),
-  // New research endpoints for Research Page
-  runDeep: (data: { symbols: string[]; options?: any }) => api.post('/research/run', data),
-  getHistory: (params?: { page?: number; size?: number }) => api.get('/research/history', { params }),
-  getStatus: () => api.get('/research/status'),
-};
-
-// Market API for Research Page
-export const marketApi = {
-  getSymbols: (query?: string) => api.get('/market/symbols', { params: { query } }),
-  getSnapshot: (symbol: string) => api.get('/market/snapshot', { params: { symbol } }),
-  getTopCoins: (limit?: number) => api.get('/market/top', { params: { limit } }),
-  getPriceHistory: (symbol: string, range?: string) => api.get('/market/price/history', { params: { symbol, range } }),
-};
-
-// News API for Research Page
-export const newsApi = {
-  getNews: (params?: { symbols?: string[]; limit?: number }) => api.get('/news', { params }),
-};
-
-// Provider status API for Research Page
-export const providerApi = {
-  getStatus: () => api.get('/provider/status'),
-};
-
-// User API keys API for Research Page
-export const userApi = {
-  saveApiKeys: (data: { provider: string; apiKey: string; secretKey?: string }) => api.post('/user/apikeys', data),
-  getApiKeys: () => api.get('/user/apikeys'),
 };
 
 // Settings - routes already include /api prefix from baseURL
