@@ -113,72 +113,17 @@ export class GoogleFinanceAdapter {
    */
   async getMarketData(symbol: string): Promise<MarketData> {
     try {
-      // Google Finance doesn't have a direct crypto API, but we can try to scrape basic data
-      // For now, we'll use a fallback approach with CoinGecko-like data structure
-      // In production, this could be enhanced with web scraping or alternative APIs
-
-      const baseSymbol = symbol.replace('USDT', '').replace('USD', '');
-
-      // For major cryptos, provide approximate current data
-      // This is a placeholder - in production, integrate with a crypto data provider
-      const cryptoData: { [key: string]: MarketData } = {
-        'BTC': {
-          price: 43000,
-          change24h: 2.1,
-          volume24h: 28500000,
-          marketCap: 850000000000,
-          priceChangePercent: 2.1
-        },
-        'ETH': {
-          price: 2650,
-          change24h: 1.8,
-          volume24h: 15200000,
-          marketCap: 320000000000,
-          priceChangePercent: 1.8
-        },
-        'BNB': {
-          price: 315,
-          change24h: -0.5,
-          volume24h: 1800000,
-          marketCap: 47000000000,
-          priceChangePercent: -0.5
-        },
-        'ADA': {
-          price: 0.45,
-          change24h: 3.2,
-          volume24h: 1200000,
-          marketCap: 16000000000,
-          priceChangePercent: 3.2
-        },
-        'SOL': {
-          price: 98,
-          change24h: 4.1,
-          volume24h: 3200000,
-          marketCap: 45000000000,
-          priceChangePercent: 4.1
-        }
+      // For now, return mock data as Google Finance doesn't provide crypto data via API
+      // In production, this would scrape Google Finance or use alternative data source
+      return {
+        price: 50000, // Mock BTC price
+        change24h: 2.5,
+        volume24h: 25000000,
+        marketCap: 1000000000000
       };
-
-      // Try to get data from the map, fallback to generic values
-      const data = cryptoData[baseSymbol.toUpperCase()] || {
-        price: 100,
-        change24h: 0,
-        volume24h: 1000000,
-        marketCap: 1000000000,
-        priceChangePercent: 0
-      };
-
-      return data;
     } catch (error: any) {
       logger.error({ error: error.message, symbol }, 'Error fetching Google Finance market data');
-      // Return safe fallback data
-      return {
-        price: 100,
-        change24h: 0,
-        volume24h: 1000000,
-        marketCap: 1000000000,
-        priceChangePercent: 0
-      };
+      throw new Error(`Google Finance market data error: ${error.message}`);
     }
   }
 }

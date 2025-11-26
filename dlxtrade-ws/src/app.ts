@@ -15,6 +15,7 @@ import { ordersRoutes } from './routes/orders';
 import { engineRoutes } from './routes/engine';
 import { metricsRoutes } from './routes/metrics';
 import { researchRoutes } from './routes/research';
+import { marketRoutes } from './routes/market';
 import { settingsRoutes } from './routes/settings';
 import { executionRoutes } from './routes/execution';
 import { integrationsRoutes } from './routes/integrations';
@@ -105,6 +106,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(ordersRoutes, { prefix: '/api' });
   await app.register(engineRoutes, { prefix: '/api/engine' });
   await app.register(metricsRoutes, { prefix: '/api' });
+  await app.register(marketRoutes, { prefix: '/api/market' });
   await app.register(researchRoutes, { prefix: '/api/research' });
   await app.register(settingsRoutes, { prefix: '/api/settings' });
   await app.register(executionRoutes, { prefix: '/api/execution' });

@@ -3,13 +3,7 @@ import { getFirebaseAdmin } from '../utils/firebase';
 import { logger } from '../utils/logger';
 import { encrypt, decrypt, maskKey } from './keyManager';
 
-const db = () => {
-  const firebaseAdmin = getFirebaseAdmin();
-  if (!firebaseAdmin) {
-    return null; // Return null when Firebase is not available
-  }
-  return admin.firestore(firebaseAdmin);
-};
+const db = () => admin.firestore(getFirebaseAdmin());
 
 export interface ApiKeyDocument {
   id?: string;
@@ -391,29 +385,24 @@ export class FirestoreAdapter {
   }
 
   async getEnabledIntegrations(uid: string): Promise<Record<string, { apiKey: string; secretKey?: string }>> {
-    try {
-      const allIntegrations = await this.getAllIntegrations(uid);
-      const enabled: Record<string, { apiKey: string; secretKey?: string }> = {};
+    const allIntegrations = await this.getAllIntegrations(uid);
+    const enabled: Record<string, { apiKey: string; secretKey?: string }> = {};
 
-      for (const [apiName, integration] of Object.entries(allIntegrations)) {
-        if (integration.enabled && integration.apiKey) {
-          try {
-            enabled[apiName] = {
-              apiKey: decrypt(integration.apiKey),
-              ...(integration.secretKey ? { secretKey: decrypt(integration.secretKey) } : {}),
-            };
-          } catch (error: any) {
-            logger.warn({ apiName, error: error.message }, 'Skipping corrupt integration due to decrypt error');
-            // Skip this integration instead of failing entirely
-          }
+    for (const [apiName, integration] of Object.entries(allIntegrations)) {
+      if (integration.enabled && integration.apiKey) {
+        try {
+          enabled[apiName] = {
+            apiKey: decrypt(integration.apiKey),
+            ...(integration.secretKey ? { secretKey: decrypt(integration.secretKey) } : {}),
+          };
+        } catch (error: any) {
+          logger.warn({ apiName, error: error.message }, 'Skipping corrupt integration due to decrypt error');
+          // Skip this integration instead of failing entirely
         }
       }
-
-      return enabled;
-    } catch (error: any) {
-      logger.warn({ uid, error: error.message }, 'Firestore unavailable for integrations - returning empty');
-      return {};
     }
+
+    return enabled;
   }
 
   // HFT Settings
@@ -589,19 +578,9 @@ export class FirestoreAdapter {
   }
 
   async getUser(uid: string): Promise<any | null> {
-    const firestoreDb = db();
-    if (!firestoreDb) {
-      logger.warn({ uid }, 'Firestore unavailable - returning default user data');
-      return { uid, unlockedAgents: [], autoTradeEnabled: false };
-    }
-    try {
-      const doc = await firestoreDb.collection('users').doc(uid).get();
-      if (!doc.exists) return null;
-      return { uid: doc.id, ...doc.data() };
-    } catch (error: any) {
-      logger.warn({ uid, error: error.message }, 'Firestore getUser failed - returning defaults');
-      return { uid, unlockedAgents: [], autoTradeEnabled: false };
-    }
+    const doc = await db().collection('users').doc(uid).get();
+    if (!doc.exists) return null;
+    return { uid: doc.id, ...doc.data() };
   }
 
   // ========== AGENTS COLLECTION METHODS ==========

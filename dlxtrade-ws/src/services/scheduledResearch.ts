@@ -1,6 +1,7 @@
 import { logger } from '../utils/logger';
 import { firestoreAdapter } from './firestoreAdapter';
 import { getFirebaseAdmin } from '../utils/firebase';
+import { deepResearchEngine } from './deepResearchEngine';
 import * as admin from 'firebase-admin';
 import { AdapterError } from '../utils/adapterErrorHandler';
 import { fetchMarketAuxData } from './marketauxAdapter';
@@ -87,19 +88,13 @@ export class ScheduledResearchService {
       logger.info('Running scheduled research for all users (Research APIs only)');
 
       try {
-        // Check Firebase availability
-        const firebaseAdmin = getFirebaseAdmin();
-        if (!firebaseAdmin) {
-          logger.warn('Firebase Admin not initialized - skipping scheduled research');
-          return; // Exit early if Firebase is not available
-        }
-
+        // Wrap Firebase access in try/catch
         let db;
         try {
-          db = firebaseAdmin.firestore();
+          db = getFirebaseAdmin().firestore();
         } catch (fbErr: any) {
-          logger.error({ error: fbErr.message, stack: fbErr.stack }, 'Failed to get Firestore in scheduled research');
-          return; // Exit early if Firestore is not available
+          logger.error({ error: fbErr.message, stack: fbErr.stack }, 'Failed to get Firebase Admin in scheduled research');
+          return; // Exit early if Firebase is not available
         }
         
         // Get all users (limit to first 100 to avoid timeout)
@@ -157,14 +152,9 @@ export class ScheduledResearchService {
       // Get user's API integrations from Firestore
       const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
 
-      // Check for the 2 required user-provided APIs (others are auto-enabled)
+      // Check for at least one of the required user-provided APIs (others are auto-enabled)
       const hasCryptoCompare = integrations.cryptocompare?.apiKey;
       const hasMarketAux = integrations.marketaux?.apiKey;
-
-      // Auto-enabled providers (Google Finance, Binance Public, CoinGecko)
-      const hasGoogleFinance = true; // Always enabled
-      const hasBinancePublic = true; // Always enabled
-      const hasCoinGecko = true; // Always enabled
 
       if (!hasCryptoCompare && !hasMarketAux) {
         // Skip users without at least one of the required APIs
@@ -184,172 +174,42 @@ export class ScheduledResearchService {
       // Default symbol to analyze
       const symbol = 'BTCUSDT';
 
-      // Track which providers were called
-      const providersCalled: string[] = [];
+      logger.info({ uid, symbol }, 'Running comprehensive deep research analysis for scheduled job');
 
-      // Collect data from allowed research APIs with proper error handling
-      const researchData: any = {
-        cryptocompare: null,
-        marketaux: null,
-        googlefinance: null,
-        binance_public: null,
-        coingecko: null,
-      };
-
-      // Track errors for detailed response
-      const adapterErrors: Array<{ adapter: string; error: string; isAuthError: boolean }> = [];
-
-      // Fetch CryptoCompare data (required user API)
-      if (hasCryptoCompare) {
-        try {
-          providersCalled.push('CryptoCompare');
-          const { CryptoCompareAdapter } = await import('./cryptocompareAdapter');
-          const adapter = new CryptoCompareAdapter(integrations.cryptocompare.apiKey);
-          researchData.cryptocompare = await adapter.getMarketData(symbol);
-          logger.debug({ uid, symbol, adapter: 'CryptoCompare' }, 'CryptoCompare data fetched successfully');
-        } catch (err: any) {
-          await this.handleAdapterError(uid, 'CryptoCompare', err, symbol, adapterErrors);
-        }
-      }
-
-      // Fetch MarketAux data (required user API)
-      if (hasMarketAux) {
-        try {
-          providersCalled.push('MarketAux');
-          researchData.marketaux = await fetchMarketAuxData(integrations.marketaux.apiKey, symbol);
-          logger.debug({ uid, symbol, adapter: 'MarketAux' }, 'MarketAux data fetched successfully');
-        } catch (err: any) {
-          await this.handleAdapterError(uid, 'MarketAux', err, symbol, adapterErrors);
-        }
-      }
-
-      // Fetch Google Finance data (auto-enabled)
-      if (hasGoogleFinance) {
-        try {
-          providersCalled.push('GoogleFinance');
-          const { GoogleFinanceAdapter } = await import('./googleFinanceAdapter');
-          const adapter = new GoogleFinanceAdapter();
-          researchData.googlefinance = await adapter.getMarketData(symbol);
-          logger.debug({ uid, symbol, adapter: 'GoogleFinance' }, 'Google Finance data fetched successfully');
-        } catch (err: any) {
-          await this.handleAdapterError(uid, 'GoogleFinance', err, symbol, adapterErrors, false);
-        }
-      }
-
-      // Fetch Binance Public API data (auto-enabled)
-      if (hasBinancePublic) {
-        try {
-          providersCalled.push('BinancePublic');
-          const { BinanceAdapter } = await import('./binanceAdapter');
-          const adapter = new BinanceAdapter(); // Public API only
-          researchData.binance_public = await adapter.getPublicMarketData(symbol);
-          logger.debug({ uid, symbol, adapter: 'BinancePublic' }, 'Binance Public API data fetched successfully');
-        } catch (err: any) {
-          await this.handleAdapterError(uid, 'BinancePublic', err, symbol, adapterErrors, false);
-        }
-      }
-
-      // Fetch CoinGecko data (auto-enabled)
-      if (hasCoinGecko) {
-        try {
-          providersCalled.push('CoinGecko');
-          const { CoinGeckoAdapter } = await import('./coingeckoAdapter');
-          const adapter = new CoinGeckoAdapter();
-          researchData.coingecko = await adapter.getMarketData(symbol);
-          logger.debug({ uid, symbol, adapter: 'CoinGecko' }, 'CoinGecko data fetched successfully');
-        } catch (err: any) {
-          await this.handleAdapterError(uid, 'CoinGecko', err, symbol, adapterErrors, false);
-        }
-      }
-      //
-      //     researchData.cryptoquant = {
-      //       onChainMetrics: await cryptoQuantAdapter.getOnChainMetrics(symbol),
-      //       exchangeFlow: await cryptoQuantAdapter.getExchangeFlow(symbol),
-      //     };
-      //
-      //     logger.info({ uid, symbol }, 'CryptoQuant: Successfully fetched research data');
-      // } catch (err: any) {
-      //     // Check if it's an auth error - if so, skip this user gracefully
-      //     const isAuthError = err instanceof AdapterError && err.details.isAuthError;
-      //
-      //     // Store error to Firestore
-      //     await this.storeAdapterError(uid, 'CryptoQuant', err, symbol);
-      //
-      //     // Track error for response
-      //     adapterErrors.push({
-      //       adapter: 'CryptoQuant',
-      //       error: err instanceof AdapterError ? err.details.errorMessage : err?.message || String(err),
-      //       isAuthError,
-      //     });
-      //
-      //     if (isAuthError) {
-      //       logger.warn({ uid, symbol, adapter: 'CryptoQuant' }, 'CryptoQuant auth error - skipping user for this run');
-      //       // Skip this user for this run (graceful skip-on-auth-failure)
-      //       await this.notifyAdminAuthError(uid, 'CryptoQuant', err);
-      //       return {
-      //         success: false,
-      //         symbol,
-      //         errors: adapterErrors,
-      //       };
-      //     }
-      //
-      //     logger.debug({ err: err.message, uid, symbol }, 'CryptoQuant fetch error (non-critical)');
-      //     // Continue with other APIs for non-auth errors
-      //   }
-      // }
-
-      // Calculate signal and accuracy based on research API data only
-      const { signal, accuracy, reasoning } = this.calculateSignalFromResearchData(researchData, symbol);
-
-      // Save to research logs with type indicator
-      const db = getFirebaseAdmin().firestore();
-      await db.collection('users').doc(uid).collection('researchLogs').add({
-        symbol,
-        signal,
-        accuracy,
-        timestamp: admin.firestore.Timestamp.now(),
-        orderbookImbalance: 0, // Not available from research APIs
-        recommendedAction: reasoning,
-        researchType: 'auto', // Mark as auto research
-        microSignals: {
-          cryptocompare: researchData.cryptocompare ? 'available' : 'unavailable',
-          marketaux: researchData.marketaux ? 'available' : 'unavailable',
-          googlefinance: researchData.googlefinance ? 'available' : 'unavailable',
-          binance_public: researchData.binance_public ? 'available' : 'unavailable',
-          coingecko: researchData.coingecko ? 'available' : 'unavailable',
-        },
-        providersCalled,
-        researchData, // Store raw research data for analysis
-        createdAt: admin.firestore.Timestamp.now(),
-      });
+      // Use the new deep research engine for full strategy analysis
+      const deepResult = await deepResearchEngine.runDeepResearch(symbol, uid);
 
       logger.info({
         uid,
         symbol,
-        signal,
-        accuracy,
-        providersCalled: providersCalled.join(', '),
-        errorCount: adapterErrors.length
-      }, 'Scheduled research completed and saved (5 allowed APIs only)');
+        signal: deepResult.combinedSignal,
+        accuracy: deepResult.accuracy,
+        providersCalled: deepResult.providersCalled.join(', '),
+        strategies: deepResult.signals.length
+      }, 'Scheduled deep research completed with full strategy analysis');
 
       return {
-        success: adapterErrors.length === 0,
+        success: true,
         symbol,
-        signal,
-        accuracy,
-        reasoning,
-        providersCalled,
-        errors: adapterErrors.length > 0 ? adapterErrors : undefined,
+        signal: deepResult.combinedSignal,
+        accuracy: deepResult.accuracy,
+        reasoning: `Full strategy analysis completed with ${deepResult.signals.length} strategies`,
+        providersCalled: deepResult.providersCalled,
+        errors: undefined,
       };
     } catch (error: any) {
-      logger.error({ error: error.message, stack: error.stack, uid }, 'Error in runResearchForUser');
+      logger.error({ error: error.message, stack: error.stack, uid }, 'Error in runResearchForUser with deep research engine');
+
+      // Return minimal fallback response
       return {
         success: false,
         symbol: 'BTCUSDT',
+        signal: 'HOLD',
+        accuracy: 0.5,
         providersCalled: [],
         errors: [{
           adapter: 'System',
-          error: error.message || 'Unknown system error',
+          error: error.message || 'Deep research engine error',
           isAuthError: false,
         }],
       };
@@ -481,165 +341,6 @@ export class ScheduledResearchService {
   /**
    * Calculate trading signal and accuracy from research API data only
    */
-  private calculateSignalFromResearchData(researchData: any, symbol: string): {
-    signal: 'BUY' | 'SELL' | 'HOLD';
-    accuracy: number;
-    reasoning: string;
-  } {
-    let accuracy = 0.5; // Base accuracy
-    let bullishSignals = 0;
-    let bearishSignals = 0;
-    const reasons: string[] = [];
-
-    // Analyze CryptoQuant data
-    if (researchData.cryptoquant) {
-      try {
-        const flowData = researchData.cryptoquant.exchangeFlow;
-        const onChainData = researchData.cryptoquant.onChainMetrics;
-
-        if (flowData?.exchangeFlow && flowData.exchangeFlow > 0) {
-          bullishSignals++;
-          accuracy += 0.05;
-          reasons.push('Positive exchange flow (CryptoQuant)');
-        } else if (flowData?.exchangeFlow && flowData.exchangeFlow < 0) {
-          bearishSignals++;
-          accuracy -= 0.03;
-          reasons.push('Negative exchange flow (CryptoQuant)');
-        }
-
-        if (onChainData?.whaleTransactions && onChainData.whaleTransactions > 10) {
-          bullishSignals++;
-          accuracy += 0.03;
-          reasons.push('High whale activity (CryptoQuant)');
-        }
-
-        if (onChainData?.activeAddresses && onChainData.activeAddresses > 100000) {
-          bullishSignals++;
-          accuracy += 0.02;
-          reasons.push('High network activity (CryptoQuant)');
-        }
-      } catch (err) {
-        // Ignore errors in data analysis
-      }
-    }
-
-    // Analyze LunarCrush sentiment data
-    if (researchData.lunarcrush) {
-      try {
-        const sentiment = researchData.lunarcrush.sentiment;
-        const socialVolume = researchData.lunarcrush.socialVolume;
-        const bullishSentiment = researchData.lunarcrush.bullishSentiment;
-
-        if (sentiment && sentiment > 0.3) {
-          bullishSignals++;
-          accuracy += 0.05;
-          reasons.push('Positive sentiment (LunarCrush)');
-        } else if (sentiment && sentiment < -0.3) {
-          bearishSignals++;
-          accuracy -= 0.03;
-          reasons.push('Negative sentiment (LunarCrush)');
-        }
-
-        if (socialVolume && socialVolume > 1000) {
-          bullishSignals++;
-          accuracy += 0.03;
-          reasons.push('High social volume (LunarCrush)');
-        }
-
-        if (bullishSentiment && bullishSentiment > 0.6) {
-          bullishSignals++;
-          accuracy += 0.02;
-          reasons.push('Bullish sentiment percentage (LunarCrush)');
-        }
-      } catch (err) {
-        // Ignore errors in data analysis
-      }
-    }
-
-    // Analyze CoinAPI Market data
-    if (researchData.coinapi_market) {
-      try {
-        const priceChange24h = researchData.coinapi_market.priceChangePercent24h;
-        const volume24h = researchData.coinapi_market.volume24h;
-
-        if (priceChange24h && priceChange24h > 2) {
-          bullishSignals++;
-          accuracy += 0.03;
-          reasons.push('Positive 24h price change (CoinAPI)');
-        } else if (priceChange24h && priceChange24h < -2) {
-          bearishSignals++;
-          accuracy -= 0.02;
-          reasons.push('Negative 24h price change (CoinAPI)');
-        }
-
-        if (volume24h && volume24h > 1000000) {
-          bullishSignals++;
-          accuracy += 0.02;
-          reasons.push('High volume (CoinAPI)');
-        }
-      } catch (err) {
-        // Ignore errors in data analysis
-      }
-    }
-
-    // Analyze CoinAPI Flatfile historical data
-    if (researchData.coinapi_flatfile?.historicalData) {
-      try {
-        const historicalData = researchData.coinapi_flatfile.historicalData;
-        if (historicalData.length >= 2) {
-          const recent = historicalData[historicalData.length - 1];
-          const previous = historicalData[historicalData.length - 2];
-          const trend = (recent.close - previous.close) / previous.close;
-
-          if (trend > 0.02) {
-            bullishSignals++;
-            accuracy += 0.03;
-            reasons.push('Uptrend from historical data (CoinAPI)');
-          } else if (trend < -0.02) {
-            bearishSignals++;
-            accuracy -= 0.02;
-            reasons.push('Downtrend from historical data (CoinAPI)');
-          }
-        }
-      } catch (err) {
-        // Ignore errors in data analysis
-      }
-    }
-
-    // Count successful API calls for accuracy boost
-    let apiSuccessCount = 0;
-    if (researchData.cryptoquant) apiSuccessCount++;
-    if (researchData.lunarcrush) apiSuccessCount++;
-    if (researchData.coinapi_market) apiSuccessCount++;
-    if (researchData.coinapi_flatfile) apiSuccessCount++;
-    if (researchData.coinapi_exchangerate) apiSuccessCount++;
-    
-    // Base accuracy boost from API success (each API adds 5%)
-    const apiBoost = Math.min(0.25, apiSuccessCount * 0.05); // Max 25% boost
-    accuracy = accuracy + apiBoost;
-    
-    // Cap accuracy between 0.55 and 0.95 (minimum 55% for all signals)
-    accuracy = Math.min(0.95, Math.max(0.55, accuracy));
-
-    // Determine signal based on signal count and accuracy
-    let signal: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
-    if (bullishSignals > bearishSignals && accuracy >= 0.55) {
-      signal = 'BUY';
-    } else if (bearishSignals > bullishSignals && accuracy >= 0.55) {
-      signal = 'SELL';
-    }
-    
-    // Ensure minimum 55% accuracy for non-neutral signals
-    if (signal !== 'HOLD' && accuracy < 0.55) {
-      accuracy = 0.55;
-    }
-
-    const reasoning = reasons.length > 0 
-      ? `${reasons.join('; ')}. Accuracy: ${(accuracy * 100).toFixed(1)}%` 
-      : `Insufficient data for signal determination. Accuracy: ${(accuracy * 100).toFixed(1)}%`;
-
-    return { signal, accuracy, reasoning };
-  }
 }
 
 export const scheduledResearchService = new ScheduledResearchService();

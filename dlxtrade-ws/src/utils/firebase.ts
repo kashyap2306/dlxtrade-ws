@@ -9,24 +9,10 @@ export function initializeFirebaseAdmin(): void {
   }
 
   try {
-    let raw = process.env.FIREBASE_SERVICE_ACCOUNT || process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
-
-    // Fallback to reading from file if env var not set
+    const raw = process.env.FIREBASE_SERVICE_ACCOUNT || process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
     if (!raw) {
-      const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || './firebase-service-account.json';
-      try {
-        const fs = require('fs');
-        if (fs.existsSync(serviceAccountPath)) {
-          raw = fs.readFileSync(serviceAccountPath, 'utf8');
-          logger.info({ path: serviceAccountPath }, 'Firebase service account loaded from file');
-        }
-      } catch (fileErr: any) {
-        logger.warn({ error: fileErr.message, path: serviceAccountPath }, 'Failed to read Firebase service account from file');
-      }
-    }
-
-    if (!raw) {
-      logger.warn('FIREBASE_SERVICE_ACCOUNT missing — Firebase Admin not initialized; skipping firebase-dependent features');
+      const error = new Error('FIREBASE_SERVICE_ACCOUNT env var is required to initialize Firebase Admin');
+      logger.warn({ error: error.message }, 'Firebase Admin initialization skipped - missing service account');
       // Don't throw - allow server to continue without Firebase (for development/testing)
       return;
     }
@@ -90,11 +76,11 @@ export async function verifyFirebaseToken(token: string): Promise<admin.auth.Dec
 	return admin.auth().verifyIdToken(token);
 }
 
-export function getFirebaseAdmin(): admin.app.App | null {
+export function getFirebaseAdmin(): admin.app.App {
 	if (!firebaseAdmin) {
 		initializeFirebaseAdmin();
 	}
-	return firebaseAdmin;
+	return firebaseAdmin!;
 }
 
 /**

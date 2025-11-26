@@ -83,13 +83,6 @@ class UserEngineManager {
   }
 
   async startUserEngine(uid: string, symbol: string, researchIntervalMs: number = 5000): Promise<void> {
-    // PREMIUM AGENT REQUIREMENT: Check if user has unlocked Premium Trading Agent
-    const userData = await firestoreAdapter.getUser(uid);
-    const unlockedAgents = userData?.unlockedAgents || [];
-    if (!unlockedAgents || !unlockedAgents.includes('Premium Trading Agent')) {
-      throw new Error('Premium Trading Agent required. Please unlock Premium Trading Agent to access trading engines.');
-    }
-
     const engine = this.userEngines.get(uid);
     if (!engine) {
       throw new Error('User engine not initialized. Call createUserEngine first.');
@@ -129,13 +122,6 @@ class UserEngineManager {
   }
 
   async startHFT(uid: string): Promise<void> {
-    // PREMIUM AGENT REQUIREMENT: Check if user has unlocked Premium Trading Agent
-    const userData = await firestoreAdapter.getUser(uid);
-    const unlockedAgents = userData?.unlockedAgents || [];
-    if (!unlockedAgents || !unlockedAgents.includes('Premium Trading Agent')) {
-      throw new Error('Premium Trading Agent required. Please unlock Premium Trading Agent to access trading engines.');
-    }
-
     // Validate Binance integration exists and is enabled
     const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
     if (!integrations.binance || !integrations.binance.apiKey || !integrations.binance.secretKey) {

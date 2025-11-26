@@ -4,36 +4,14 @@ import { logger } from '../utils/logger';
 
 let pool: Pool | null = null;
 
-export function getPool(): Pool | null {
+export function getPool(): Pool {
   if (!pool) {
-    // Check if database credentials are available
-    const hasCredentials = config.database.url ||
-      (config.database.host && config.database.user && config.database.password && config.database.database);
-
-    if (!hasCredentials) {
-      logger.warn('Postgres credentials missing (PGHOST, PGUSER, PGPASSWORD, PGDATABASE) — database operations unavailable');
-      return null;
-    }
-
-    // Use individual PostgreSQL env vars for Render (preferred)
-    // or fallback to DATABASE_URL for other providers
-    const poolConfig = config.database.url ? {
+    pool = new Pool({
       connectionString: config.database.url,
       max: 20,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 2000,
-    } : {
-      host: config.database.host,
-      port: config.database.port,
-      user: config.database.user,
-      password: config.database.password,
-      database: config.database.database,
-      max: 20,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 2000,
-    };
-
-    pool = new Pool(poolConfig);
+    });
 
     pool.on('error', (err) => {
       logger.error({ err }, 'Unexpected error on idle client');
@@ -43,70 +21,36 @@ export function getPool(): Pool | null {
 }
 
 export async function query<T = any>(text: string, params?: any[]): Promise<T[]> {
-  const pool = getPool();
-  if (!pool) {
-    logger.warn({ query: text.substring(0, 100) }, 'Postgres unavailable — returning empty results');
-    return [];
-  }
-
+  const client = await getPool().connect();
   try {
-    const client = await pool.connect();
-    try {
-      const result = await client.query(text, params);
-      return result.rows;
-    } finally {
-      client.release();
-    }
-  } catch (error: any) {
-    if (error.code === '28000') {
-      logger.warn({ query: text.substring(0, 100), code: error.code }, 'Postgres unavailable (28000) — using default values');
-      return [];
-    }
-    throw error;
+    const result = await client.query(text, params);
+    return result.rows;
+  } finally {
+    client.release();
   }
 }
 
 export async function transaction<T>(
   callback: (client: PoolClient) => Promise<T>
 ): Promise<T> {
-  const pool = getPool();
-  if (!pool) {
-    logger.warn('Postgres unavailable — transaction skipped');
-    // For transactions, we can't really provide a default, so we throw
-    throw new Error('Database unavailable');
-  }
-
+  const client = await getPool().connect();
   try {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      const result = await callback(client);
-      await client.query('COMMIT');
-      return result;
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
-  } catch (error: any) {
-    if (error.code === '28000') {
-      logger.warn({ code: error.code }, 'Postgres unavailable (28000) — transaction failed');
-      throw new Error('Database unavailable');
-    }
-    throw error;
+    await client.query('BEGIN');
+    const result = await callback(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
   }
 }
 
 export async function initDb(): Promise<void> {
   const pool = getPool();
-  if (!pool) {
-    logger.warn('Postgres unavailable — database initialization skipped');
-    return;
-  }
-
-  try {
-    // Create tables
+  
+  // Create tables
   await pool.query(`
     CREATE TABLE IF NOT EXISTS api_keys (
       id SERIAL PRIMARY KEY,
@@ -205,13 +149,6 @@ export async function initDb(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_pnl_user_id ON pnl(user_id);
   `);
 
-    logger.info('Database initialized');
-  } catch (error: any) {
-    if (error.code === '28000') {
-      logger.warn({ code: error.code }, 'Postgres unavailable (28000) — database initialization failed');
-      return;
-    }
-    throw error;
-  }
+  logger.info('Database initialized');
 }
 

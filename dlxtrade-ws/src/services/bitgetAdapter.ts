@@ -12,7 +12,7 @@ export class BitgetAdapter implements ExchangeConnector {
   private baseUrl: string;
   private httpClient: AxiosInstance;
 
-  constructor(apiKey: string, apiSecret: string, passphrase: string, testnet: boolean = false) {
+  constructor(apiKey: string, apiSecret: string, passphrase: string, testnet: boolean = true) {
     this.apiKey = apiKey;
     this.apiSecret = apiSecret;
     this.passphrase = passphrase;
