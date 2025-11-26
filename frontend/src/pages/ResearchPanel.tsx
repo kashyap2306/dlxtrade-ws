@@ -1147,36 +1147,61 @@ export default function ResearchPanel() {
                               </div>
                             </details>
 
-                            {/* MarketAux API */}
+                            {/* Crypto News */}
                             <details className="group bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl overflow-hidden hover:bg-slate-800/70 transition-all duration-200">
                               <summary className="flex items-center justify-between p-4 cursor-pointer">
                                 <div className="flex items-center gap-3">
-                                  <div className="w-8 h-8 rounded-lg bg-pink-500/20 flex items-center justify-center">
-                                    <span className="text-pink-400 font-bold text-sm">M</span>
+                                  <div className="w-8 h-8 rounded-lg bg-green-500/20 flex items-center justify-center">
+                                    <span className="text-green-400 font-bold text-sm">📰</span>
                                   </div>
                                   <div>
-                                    <div className="text-sm font-medium text-white">MarketAux</div>
-                                    <div className="text-xs text-slate-400">News Sentiment</div>
+                                    <div className="text-sm font-medium text-white">Crypto News</div>
+                                    <div className="text-xs text-slate-400 flex items-center gap-2">
+                                      Sentiment: {result.raw?.cryptoPanic?.sentiment ? `${(result.raw.cryptoPanic.sentiment * 100).toFixed(0)}%` : 'N/A'}
+                                      {result.raw?.cryptoPanic?.sentiment > 0.6 && '📈'}
+                                      {result.raw?.cryptoPanic?.sentiment < 0.4 && '📉'}
+                                      {result.raw?.cryptoPanic?.sentiment >= 0.4 && result.raw?.cryptoPanic?.sentiment <= 0.6 && '➡️'}
+                                    </div>
                                   </div>
                                 </div>
                                 <div className="flex items-center gap-2">
                                   <span className={`px-2 py-1 rounded text-xs font-medium ${
-                                    result.raw?.marketAux && !result.raw.marketAux.error ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
+                                    result.raw?.cryptoPanic && !result.raw.cryptoPanic.error ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
                                   }`}>
-                                    {result.raw?.marketAux && !result.raw.marketAux.error ? 'Success' : 'Failed'}
+                                    {result.raw?.cryptoPanic && !result.raw.cryptoPanic.error ? 'Success' : 'Failed'}
                                   </span>
-                                  <span className="text-xs text-slate-400">~200ms</span>
+                                  <span className="text-xs text-slate-400">{result.raw?.cryptoPanic?.latency ? `~${result.raw.cryptoPanic.latency}ms` : '~200ms'}</span>
                                   <svg className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                                   </svg>
                                 </div>
                               </summary>
                               <div className="px-4 pb-4 border-t border-slate-600/20">
-                                <div className="mt-3 bg-slate-900/50 rounded-lg p-3 font-mono text-xs text-slate-300 max-h-48 overflow-y-auto">
-                                  <pre className="whitespace-pre-wrap break-all">
-                                    {JSON.stringify(result.raw?.marketAux || 'No data available', null, 2)}
-                                  </pre>
-                                </div>
+                                {result.raw?.cryptoPanic?.articles && result.raw.cryptoPanic.articles.length > 0 ? (
+                                  <div className="mt-3 space-y-3 max-h-96 overflow-y-auto">
+                                    {result.raw.cryptoPanic.articles.slice(0, 5).map((article: any, index: number) => (
+                                      <div key={index} className="bg-slate-900/50 rounded-lg p-3 border border-slate-600/20">
+                                        <h4 className="text-sm font-medium text-white mb-1 line-clamp-2">{article.title}</h4>
+                                        <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
+                                          <span>{article.source}</span>
+                                          <span>{article.published_at ? new Date(article.published_at).toLocaleDateString() : 'Recent'}</span>
+                                        </div>
+                                        <a
+                                          href={article.url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="inline-flex items-center gap-1 px-3 py-1 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded text-xs font-medium transition-colors"
+                                        >
+                                          Read Full Article →
+                                        </a>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <div className="mt-3 bg-slate-900/50 rounded-lg p-4 text-center">
+                                    <p className="text-sm text-slate-400">No recent news found (normal for some assets)</p>
+                                  </div>
+                                )}
                               </div>
                             </details>
                           </div>

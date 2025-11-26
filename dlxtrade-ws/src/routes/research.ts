@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { firestoreAdapter } from '../services/firestoreAdapter';
-import { fetchMarketAuxData } from '../services/marketauxAdapter';
+import { fetchCryptoPanicNews } from '../services/cryptoPanicAdapter';
 import { adminAuthMiddleware } from '../middleware/adminAuth';
 import { z } from 'zod';
 import { logger } from '../utils/logger';
@@ -54,7 +54,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
       const userIntegrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
       console.log('[RESEARCH API] Fetched user API keys:', {
         cryptoCompare: !!userIntegrations.cryptocompare?.apiKey,
-        marketAux: !!userIntegrations.marketaux?.apiKey,
+        cryptoPanic: !!userIntegrations.cryptopanic?.apiKey,
         coinGecko: !!userIntegrations.coinGecko?.apiKey,
         googleFinance: !!userIntegrations.googleFinance?.apiKey,
         binancePublic: !!userIntegrations.binancePublic?.apiKey,
@@ -120,7 +120,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
             BinancePublic: deepResult.raw.binancePublic?.price ? 'SUCCESS' : 'FAILED',
             CryptoCompare: deepResult.raw.cryptoCompare?.price ? 'SUCCESS' : 'FAILED',
             CoinGecko: deepResult.raw.coinGecko?.price ? 'SUCCESS' : 'FAILED',
-            MarketAux: deepResult.raw.marketAux?.sentiment ? 'SUCCESS' : 'FAILED',
+            CryptoPanic: deepResult.raw.cryptoPanic?.sentiment !== undefined ? 'SUCCESS' : 'FAILED',
             GoogleFinance: deepResult.raw.googleFinance?.price ? 'SUCCESS' : 'FAILED',
           });
 
@@ -181,6 +181,12 @@ export async function researchRoutes(fastify: FastifyInstance) {
           success: deepResult.providersCalled.includes('CryptoCompare'),
           data: deepResult.raw.cryptoCompare,
           latency: Math.floor(Math.random() * 300) + 150 // Simulate realistic latency 150-450ms
+        },
+        news: {
+          success: deepResult.providersCalled.includes('CryptoPanic'),
+          latency: deepResult.raw.cryptoPanic?.latency || 0,
+          articles: deepResult.raw.cryptoPanic?.articles || [],
+          sentiment: deepResult.raw.cryptoPanic?.sentiment || 0.5
         }
       };
 
@@ -249,7 +255,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
             providersCalled: ['None'],
             raw: {
               cryptoCompare: { error: error.message },
-              marketAux: { error: error.message },
+              cryptoPanic: { error: error.message },
               coinGecko: { error: error.message },
               googleFinance: { error: error.message },
               binancePublic: { error: error.message }
@@ -312,7 +318,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
       const userIntegrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
       console.log('[RESEARCH API] Fetched user API keys:', {
         cryptoCompare: !!userIntegrations.cryptocompare?.apiKey,
-        marketAux: !!userIntegrations.marketaux?.apiKey,
+        cryptoPanic: !!userIntegrations.cryptopanic?.apiKey,
         coinGecko: !!userIntegrations.coinGecko?.apiKey,
         googleFinance: !!userIntegrations.googleFinance?.apiKey,
         binancePublic: !!userIntegrations.binancePublic?.apiKey,
@@ -332,7 +338,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
         BinancePublic: deepResult.raw.binancePublic?.price ? 'SUCCESS' : 'FAILED',
         CryptoCompare: deepResult.raw.cryptoCompare?.price ? 'SUCCESS' : 'FAILED',
         CoinGecko: deepResult.raw.coinGecko?.price ? 'SUCCESS' : 'FAILED',
-        MarketAux: deepResult.raw.marketAux?.sentiment ? 'SUCCESS' : 'FAILED',
+            CryptoPanic: deepResult.raw.cryptoPanic?.sentiment !== undefined ? 'SUCCESS' : 'FAILED',
         GoogleFinance: deepResult.raw.googleFinance?.price ? 'SUCCESS' : 'FAILED',
       });
 
@@ -500,7 +506,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
       const userIntegrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
       console.log('[RESEARCH API] Fetched user API keys:', {
         cryptoCompare: !!userIntegrations.cryptocompare?.apiKey,
-        marketAux: !!userIntegrations.marketaux?.apiKey,
+        cryptoPanic: !!userIntegrations.cryptopanic?.apiKey,
         coinGecko: !!userIntegrations.coinGecko?.apiKey,
         googleFinance: !!userIntegrations.googleFinance?.apiKey,
         binancePublic: !!userIntegrations.binancePublic?.apiKey,
@@ -519,7 +525,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
         BinancePublic: deepResult.raw.binancePublic?.price ? 'SUCCESS' : 'FAILED',
         CryptoCompare: deepResult.raw.cryptoCompare?.price ? 'SUCCESS' : 'FAILED',
         CoinGecko: deepResult.raw.coinGecko?.price ? 'SUCCESS' : 'FAILED',
-        MarketAux: deepResult.raw.marketAux?.sentiment ? 'SUCCESS' : 'FAILED',
+            CryptoPanic: deepResult.raw.cryptoPanic?.sentiment !== undefined ? 'SUCCESS' : 'FAILED',
         GoogleFinance: deepResult.raw.googleFinance?.price ? 'SUCCESS' : 'FAILED',
       });
 
@@ -726,7 +732,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
 
       // Run research for the specified user using their own API keys
       const userIntegrations = await firestoreAdapter.getEnabledIntegrations(body.uid);
-      const hasMarketAux = userIntegrations.marketaux?.apiKey;
+      const hasCryptoPanic = userIntegrations.cryptopanic?.apiKey;
       const hasCryptoCompare = userIntegrations.cryptocompare?.apiKey;
 
       let result: { symbol: string; signal: 'BUY' | 'SELL' | 'HOLD'; accuracy: number } = {
@@ -735,7 +741,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
         accuracy: 0.5,
       };
 
-      if (hasMarketAux || hasCryptoCompare) {
+      if (hasCryptoPanic || hasCryptoCompare) {
         // Perform basic analysis for the target user
         result = {
           symbol: 'BTCUSDT',

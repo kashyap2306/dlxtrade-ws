@@ -16,7 +16,7 @@ import {
   ChevronUpIcon,
 } from '@heroicons/react/24/outline';
 
-type ApiName = 'cryptocompare' | 'marketaux';
+type ApiName = 'cryptocompare' | 'cryptopanic';
 
 // Auto-enabled providers that don't require user input
 interface AutoEnabledProvider {
@@ -45,11 +45,11 @@ const API_CONFIGS: Record<ApiName, ApiConfig> = {
     icon: '📊',
     gradient: 'from-blue-500/20 via-cyan-500/20 to-teal-500/20',
   },
-  marketaux: {
-    name: 'marketaux',
-    displayName: 'MarketAux API',
+  cryptopanic: {
+    name: 'cryptopanic',
+    displayName: 'CryptoPanic API (Optional)',
     requiresSecret: false,
-    description: 'Financial market news and sentiment analysis',
+    description: 'Cryptocurrency news and market sentiment analysis',
     icon: '📰',
     gradient: 'from-green-500/20 via-emerald-500/20 to-teal-500/20',
   },
@@ -91,7 +91,7 @@ export default function APIIntegrationsSection() {
   const { user } = useAuth();
   const [integrations, setIntegrations] = useState<Record<ApiName, Integration>>({
     cryptocompare: { enabled: false, apiKey: null, secretKey: null },
-    marketaux: { enabled: false, apiKey: null, secretKey: null },
+    cryptopanic: { enabled: false, apiKey: null, secretKey: null },
   });
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -114,10 +114,10 @@ export default function APIIntegrationsSection() {
 
       const loaded: Record<ApiName, Integration> = {
         cryptocompare: { enabled: false, apiKey: null, secretKey: null },
-        marketaux: { enabled: false, apiKey: null, secretKey: null },
+        cryptopanic: { enabled: false, apiKey: null, secretKey: null },
       };
 
-      ['cryptocompare', 'marketaux'].forEach((apiName) => {
+      ['cryptocompare', 'cryptopanic'].forEach((apiName) => {
         const api = apiName as ApiName;
         if (data[api]) {
           loaded[api] = {
@@ -270,7 +270,7 @@ export default function APIIntegrationsSection() {
       <div className="border-t border-purple-500/20 pt-6 mt-6">
         <h3 className="text-lg font-semibold text-white mb-4">Research API Integration</h3>
         <p className="text-sm text-gray-400 mb-6">
-          Connect your research API credentials. Only CryptoCompare and MarketAux require user input.
+          Connect your research API credentials. Only CryptoCompare and CryptoPanic (optional) require user input.
           Google Finance, Binance Public API, and CoinGecko are automatically enabled for all users.
         </p>
 
@@ -284,7 +284,7 @@ export default function APIIntegrationsSection() {
         <div className="mb-8">
           <h4 className="text-md font-semibold text-white mb-4">Required API Credentials</h4>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
-            {(['cryptocompare', 'marketaux'] as ApiName[]).map((apiName) => {
+            {(['cryptocompare', 'cryptopanic'] as ApiName[]).map((apiName) => {
               const config = API_CONFIGS[apiName];
               const integration = integrations[apiName];
               const isExpanded = expandedApi === apiName;

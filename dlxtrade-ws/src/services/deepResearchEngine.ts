@@ -1,6 +1,7 @@
 import { logger } from '../utils/logger';
 import { firestoreAdapter } from './firestoreAdapter';
-import { fetchMarketAuxData } from './marketauxAdapter';
+import { fetchCryptoPanicNews } from './cryptoPanicAdapter';
+import { autoTradeExecutor } from './autoTradeExecutor';
 import { tradingStrategies, OHLCData, StrategyResult, IndicatorResult } from './tradingStrategies';
 import * as admin from 'firebase-admin';
 
@@ -16,10 +17,11 @@ export interface DeepResearchResult {
   signals: StrategyResult[];
   combinedSignal: 'BUY' | 'SELL' | 'HOLD';
   accuracy: number;
+  newsSentiment: number; // Aggregated sentiment score from news (0-1 scale)
   providersCalled: string[];
   raw: {
     cryptoCompare: any;
-    marketAux: any;
+    cryptoPanic: any;
     coinGecko: any;
     googleFinance: any;
     binancePublic: any;
@@ -35,7 +37,7 @@ export class DeepResearchEngine {
 
     // Initialize data containers
     let cryptoCompareData: any = {};
-    let marketAuxData: any = {};
+    let cryptoPanicData: any = {};
     let coinGeckoData: any = {};
     let googleFinanceData: any = {};
     let binancePublicData: any = {};
@@ -65,17 +67,17 @@ export class DeepResearchEngine {
         cryptoCompareData = { error: err.message };
       }
 
-      // 2. Fetch MarketAux data (sentiment)
-      console.log(`[MarketAux] START - ${symbol}`);
+      // 2. Fetch CryptoPanic news data (sentiment)
+      console.log(`[CryptoPanic] START - ${symbol}`);
       try {
-        marketAuxData = await fetchMarketAuxData(integrations.marketaux?.apiKey || '', symbol);
-        providersCalled.push('MarketAux');
-        console.log(`[MarketAux] SUCCESS - ${symbol}`);
-        logger.info({ uid, symbol }, 'MarketAux data fetched successfully');
+        cryptoPanicData = await fetchCryptoPanicNews(integrations.cryptopanic?.apiKey);
+        providersCalled.push('CryptoPanic');
+        console.log(`[CryptoPanic] SUCCESS - ${symbol}`);
+        logger.info({ uid, symbol }, 'CryptoPanic news data fetched successfully');
       } catch (err: any) {
-        console.log(`[MarketAux] FAILED: ${err.message} - ${symbol}`);
-        logger.warn({ err: err.message, symbol }, 'MarketAux fetch failed');
-        marketAuxData = { error: err.message };
+        console.log(`[CryptoPanic] FAILED: ${err.message} - ${symbol}`);
+        logger.warn({ err: err.message, symbol }, 'CryptoPanic news fetch failed');
+        cryptoPanicData = { error: err.message };
       }
 
       // 3. Fetch CoinGecko data
@@ -165,6 +167,27 @@ export class DeepResearchEngine {
       console.log('Indicators generated: VWAP calculated');
       console.log('Indicators generated: ALL COMPLETE');
 
+      // Calculate news sentiment score
+      let newsSentimentScore = 0.5; // Neutral default
+      if (cryptoPanicData && cryptoPanicData.success && cryptoPanicData.articles) {
+        const articles = cryptoPanicData.articles;
+        if (articles.length > 0) {
+          // Simple sentiment analysis based on tags (could be enhanced)
+          const bullishTags = articles.filter(a => a.tags?.some(tag =>
+            tag.toLowerCase().includes('bullish') || tag.toLowerCase().includes('positive')
+          )).length;
+          const bearishTags = articles.filter(a => a.tags?.some(tag =>
+            tag.toLowerCase().includes('bearish') || tag.toLowerCase().includes('negative')
+          )).length;
+
+          if (bullishTags + bearishTags > 0) {
+            // Calculate sentiment score: 0.5 + (bullish - bearish) / total * 0.5
+            const sentimentDiff = (bullishTags - bearishTags) / (bullishTags + bearishTags);
+            newsSentimentScore = 0.5 + (sentimentDiff * 0.5);
+          }
+        }
+      }
+
       // Combine trend indicators
       const trend: IndicatorResult = {
         emaTrend: emaTrend.emaTrend,
@@ -196,10 +219,11 @@ export class DeepResearchEngine {
         signals,
         combinedSignal: combinedResult.signal,
         accuracy: combinedResult.accuracy,
+        newsSentiment: newsSentimentScore,
         providersCalled: providersCalled.length > 0 ? providersCalled : ['Fallback'],
         raw: {
           cryptoCompare: cryptoCompareData,
-          marketAux: marketAuxData,
+          cryptoPanic: cryptoPanicData,
           coinGecko: coinGeckoData,
           googleFinance: googleFinanceData,
           binancePublic: binancePublicData
@@ -223,6 +247,44 @@ export class DeepResearchEngine {
       // Save to Firestore
       await this.saveResearchResult(uid, symbol, result);
 
+      // Check for auto-trade execution if confidence is high enough
+      if (result.accuracy >= 0.75 && (result.combinedSignal === 'BUY' || result.combinedSignal === 'SELL')) {
+        // Execute auto-trade asynchronously (don't block research response)
+        setImmediate(async () => {
+          try {
+            // Get current price from available data
+            let currentPrice = 50000; // fallback
+            if (binancePublicData?.price) currentPrice = binancePublicData.price;
+            else if (coinGeckoData?.price) currentPrice = coinGeckoData.price;
+
+            const tradeResult = await autoTradeExecutor.executeAutoTrade({
+              userId: uid,
+              symbol,
+              signal: result.combinedSignal as 'BUY' | 'SELL',
+              confidencePercent: Math.round(result.accuracy * 100),
+              researchRequestId: `deep_research_${Date.now()}_${symbol}_${uid}`,
+              currentPrice
+            });
+
+            if (tradeResult.success) {
+              logger.info({
+                userId: uid.substring(0, 8) + '...',
+                symbol,
+                signal: result.combinedSignal,
+                orderId: tradeResult.orderId,
+                dryRun: tradeResult.dryRun
+              }, 'Auto-trade executed from deep research');
+            }
+          } catch (error) {
+            logger.error({
+              error: error.message,
+              userId: uid.substring(0, 8) + '...',
+              symbol
+            }, 'Auto-trade execution failed from deep research');
+          }
+        });
+      }
+
       logger.info({ uid, symbol, signal: result.combinedSignal, accuracy: result.accuracy },
         'Deep research analysis completed successfully');
 
@@ -244,10 +306,11 @@ export class DeepResearchEngine {
         signals: [],
         combinedSignal: 'HOLD',
         accuracy: 0.5,
+        newsSentiment: 0.5,
         providersCalled: ['None'],
         raw: {
           cryptoCompare: cryptoCompareData,
-          marketAux: marketAuxData,
+          cryptoPanic: cryptoPanicData,
           coinGecko: coinGeckoData,
           googleFinance: googleFinanceData,
           binancePublic: binancePublicData
@@ -376,7 +439,7 @@ export class DeepResearchEngine {
         createdAt: admin.firestore.Timestamp.now(),
         userId: uid,
         dataSources: {
-          marketAux: result.providersCalled.includes('MarketAux'),
+          cryptoPanic: result.providersCalled.includes('CryptoPanic'),
           cryptoCompare: result.providersCalled.includes('CryptoCompare'),
           googleFinance: result.providersCalled.includes('GoogleFinance'),
           binancePublic: result.providersCalled.includes('BinancePublic'),
@@ -392,7 +455,8 @@ export class DeepResearchEngine {
           supportResistance: result.supportResistance,
           priceAction: result.priceAction,
           vwap: result.vwap,
-          signals: result.signals
+          signals: result.signals,
+          newsSentiment: result.newsSentiment
         }
       };
 

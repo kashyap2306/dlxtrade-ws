@@ -3,21 +3,21 @@ import { firestoreAdapter } from '../services/firestoreAdapter';
 import { z } from 'zod';
 import { maskKey, encrypt } from '../services/keyManager';
 import { BinanceAdapter } from '../services/binanceAdapter';
-import { fetchMarketAuxData } from '../services/marketauxAdapter';
+import { fetchCryptoPanicNews } from '../services/cryptoPanicAdapter';
 import { logger } from '../utils/logger';
 import * as admin from 'firebase-admin';
 import { getFirebaseAdmin } from '../utils/firebase';
 
 // Validation schemas - ONLY 5 research providers allowed
 const integrationUpdateSchema = z.object({
-  apiName: z.enum(['binance', 'bitget', 'bingx', 'weex', 'marketaux', 'cryptocompare', 'googlefinance', 'coingecko', 'binancepublic']),
+  apiName: z.enum(['binance', 'bitget', 'bingx', 'weex', 'cryptopanic', 'cryptocompare', 'googlefinance', 'coingecko', 'binancepublic']),
   enabled: z.boolean(),
   apiKey: z.string().optional(),
   secretKey: z.string().optional(),
 });
 
 const integrationDeleteSchema = z.object({
-  apiName: z.enum(['binance', 'bitget', 'bingx', 'weex', 'marketaux', 'cryptocompare', 'googlefinance', 'coingecko', 'binancepublic']),
+  apiName: z.enum(['binance', 'bitget', 'bingx', 'weex', 'cryptopanic', 'cryptocompare', 'googlefinance', 'coingecko', 'binancepublic']),
 });
 
 export async function integrationsRoutes(fastify: FastifyInstance) {
@@ -80,7 +80,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         });
       }
     } else if (!isAutoEnabled) {
-      // Research APIs that require user-provided keys: MarketAux, CryptoCompare
+      // Research APIs that require user-provided keys: CryptoPanic (optional), CryptoCompare
       if (body.enabled && !body.apiKey) {
         return reply.code(400).send({
           error: `${body.apiName} API requires an API key`
@@ -392,27 +392,20 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
             apiName: 'binance',
           });
         }
-      } else if (body.apiName === 'marketaux') {
-        if (!body.apiKey) {
-          return reply.code(400).send({
-            valid: false,
-            error: 'MarketAux API requires an API key',
-            apiName: 'marketaux',
-          });
-        }
-
+      } else if (body.apiName === 'cryptopanic') {
+        // CryptoPanic API key is optional - test with or without key
         try {
-          const newsData = await fetchMarketAuxData(body.apiKey, 'BTCUSDT');
+          const newsData = await fetchCryptoPanicNews(body.apiKey);
 
           return {
             valid: true,
-            apiName: 'marketaux',
+            apiName: 'cryptopanic',
           };
         } catch (error: any) {
           return reply.code(400).send({
             valid: false,
-            error: error.message || 'MarketAux API validation failed',
-            apiName: 'marketaux',
+            error: error.message || 'CryptoPanic API validation failed',
+            apiName: 'cryptopanic',
           });
         }
       } else if (body.apiName === 'cryptocompare') {

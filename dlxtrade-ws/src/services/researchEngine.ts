@@ -1,6 +1,6 @@
 import { logger } from '../utils/logger';
 import { firestoreAdapter } from './firestoreAdapter';
-import { fetchMarketAuxData } from './marketauxAdapter';
+import { fetchCryptoPanicNews } from './cryptoPanicAdapter';
 import type { Orderbook, Trade } from '../types';
 
 export interface ResearchResult {
@@ -27,7 +27,7 @@ export class ResearchEngine {
 
   async runResearch(symbol: string, uid: string): Promise<ResearchResult> {
     // This method now works ENTIRELY on the 5 allowed research APIs only:
-    // - MarketAux (user-provided)
+    // - CryptoPanic (user-provided, optional)
     // - CryptoCompare (user-provided)
     // - Google Finance (auto-enabled)
     // - Binance Public API (auto-enabled)
@@ -95,19 +95,19 @@ export class ResearchEngine {
       let bullishSignals = 0;
       let bearishSignals = 0;
 
-      // Analyze MarketAux news data (user-provided)
-      if (integrations.marketaux) {
-        try {
-          const newsData = await fetchMarketAuxData(integrations.marketaux.apiKey, symbol);
-          // MarketAux sentiment analysis
-          if (newsData.sentiment === 'bullish') {
+      // Analyze CryptoPanic news data (user-provided, optional)
+      try {
+        const newsData = await fetchCryptoPanicNews(integrations.cryptopanic?.apiKey);
+        if (newsData.success && newsData.articles && newsData.articles.length > 0) {
+          // CryptoPanic sentiment analysis (0-1 scale)
+          if (newsData.sentiment > 0.6) {
             bullishSignals++;
-          } else if (newsData.sentiment === 'bearish') {
+          } else if (newsData.sentiment < 0.4) {
             bearishSignals++;
           }
-        } catch (err) {
-          logger.debug({ err, symbol }, 'MarketAux signal analysis error (non-critical)');
         }
+      } catch (err) {
+        logger.debug({ err, symbol }, 'CryptoPanic signal analysis error (non-critical)');
       }
 
       // Analyze CryptoCompare data (user-provided)
@@ -278,22 +278,21 @@ export class ResearchEngine {
         }
       }
 
-      // MarketAux news data (user-provided)
-      if (integrations.marketaux) {
-        try {
-          const newsData = await fetchMarketAuxData(integrations.marketaux.apiKey, symbol);
-
-          // News sentiment affects accuracy
-          if (newsData.sentiment === 'bullish') {
+      // CryptoPanic news data (user-provided, optional)
+      try {
+        const newsData = await fetchCryptoPanicNews(integrations.cryptopanic?.apiKey);
+        if (newsData.success && newsData.articles && newsData.articles.length > 0) {
+          // News sentiment affects accuracy (0-1 scale)
+          if (newsData.sentiment > 0.6) {
             accuracy += 0.03;
-          } else if (newsData.sentiment === 'bearish') {
+          } else if (newsData.sentiment < 0.4) {
             accuracy -= 0.02;
           }
 
           apiSuccessCount++;
-        } catch (err) {
-          logger.debug({ err, symbol }, 'MarketAux accuracy calculation error (non-critical)');
         }
+      } catch (err) {
+        logger.debug({ err, symbol }, 'CryptoPanic accuracy calculation error (non-critical)');
       }
 
       // Google Finance data (auto-enabled)

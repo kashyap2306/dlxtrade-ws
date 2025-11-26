@@ -4,12 +4,12 @@ import { getFirebaseAdmin } from '../utils/firebase';
 import { deepResearchEngine } from './deepResearchEngine';
 import * as admin from 'firebase-admin';
 import { AdapterError } from '../utils/adapterErrorHandler';
-import { fetchMarketAuxData } from './marketauxAdapter';
+import { fetchCryptoPanicNews } from './cryptoPanicAdapter';
 
 /**
  * Scheduled Research Service
  * Runs deep research every 5 minutes for all active users
- * Uses ONLY 5 allowed research APIs: MarketAux, CryptoCompare, Google Finance, Binance Public API, CoinGecko
+ * Uses ONLY 5 allowed research APIs: CryptoPanic, CryptoCompare, Google Finance, Binance Public API, CoinGecko
  *
  * STRICTLY FORBIDDEN:
  * - NO trading exchange APIs (Binance, Bitget, BingX, WEEX) - except Binance Public API for research only
@@ -154,9 +154,9 @@ export class ScheduledResearchService {
 
       // Check for at least one of the required user-provided APIs (others are auto-enabled)
       const hasCryptoCompare = integrations.cryptocompare?.apiKey;
-      const hasMarketAux = integrations.marketaux?.apiKey;
+      const hasCryptoPanic = integrations.cryptopanic?.apiKey;
 
-      if (!hasCryptoCompare && !hasMarketAux) {
+      if (!hasCryptoCompare && !hasCryptoPanic) {
         // Skip users without at least one of the required APIs
         logger.debug({ uid }, 'Skipping user - no required research API credentials');
         return {
@@ -165,7 +165,7 @@ export class ScheduledResearchService {
           providersCalled: [],
           errors: [{
             adapter: 'Required APIs',
-            error: 'Missing CryptoCompare or MarketAux API key',
+            error: 'Missing CryptoCompare API key (CryptoPanic is optional)',
             isAuthError: true,
           }],
         };

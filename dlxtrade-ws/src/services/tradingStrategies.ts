@@ -644,7 +644,7 @@ export class TradingStrategies {
     return {
       signal,
       accuracy,
-      providersCalled: ['CryptoCompare', 'MarketAux', 'CoinGecko', 'GoogleFinance', 'BinancePublic']
+      providersCalled: ['CryptoCompare', 'CryptoPanic', 'CoinGecko', 'GoogleFinance', 'BinancePublic']
     };
   }
 }

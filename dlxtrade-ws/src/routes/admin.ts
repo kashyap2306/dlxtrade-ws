@@ -1009,5 +1009,120 @@ export async function adminRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: err.message || 'Error denying unlock request' });
     }
   });
+
+  // ===========================================
+  // AUTO-TRADE MANAGEMENT ENDPOINTS
+  // ===========================================
+
+  // GET /api/admin/auto-trades - List recent auto-trades
+  fastify.get('/auto-trades', {
+    preHandler: [fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Querystring: { limit?: number } }>, reply: FastifyReply) => {
+    try {
+      const { autoTradeExecutor } = await import('../services/autoTradeExecutor');
+      const limit = request.query.limit || 50;
+
+      const trades = await autoTradeExecutor.getAutoTrades(limit);
+
+      return {
+        success: true,
+        trades,
+        total: trades.length
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Error fetching auto-trades');
+      return reply.code(500).send({ error: err.message || 'Error fetching auto-trades' });
+    }
+  });
+
+  // POST /api/admin/auto-trades/:id/cancel - Cancel an auto-trade
+  fastify.post('/auto-trades/:id/cancel', {
+    preHandler: [fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    try {
+      const { id } = request.params;
+      const adminUser = (request as any).user;
+
+      const { autoTradeExecutor } = await import('../services/autoTradeExecutor');
+      const success = await autoTradeExecutor.cancelTrade(id, adminUser.uid);
+
+      if (!success) {
+        return reply.code(404).send({ error: 'Auto-trade not found' });
+      }
+
+      return {
+        success: true,
+        message: 'Auto-trade cancelled successfully'
+      };
+    } catch (err: any) {
+      logger.error({ err, tradeId: request.params.id }, 'Error cancelling auto-trade');
+      return reply.code(500).send({ error: err.message || 'Error cancelling auto-trade' });
+    }
+  });
+
+  // POST /api/admin/auto-trade/toggle - Toggle global auto-trade
+  fastify.post('/auto-trade/toggle', {
+    preHandler: [fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Body: { enabled: boolean } }>, reply: FastifyReply) => {
+    try {
+      const { enabled } = request.body;
+
+      const { autoTradeExecutor } = await import('../services/autoTradeExecutor');
+      await autoTradeExecutor.updateGlobalConfig({ enabled });
+
+      logger.info({ enabled, adminUid: (request as any).user.uid }, 'Global auto-trade toggled by admin');
+
+      return {
+        success: true,
+        message: `Global auto-trade ${enabled ? 'enabled' : 'disabled'}`,
+        config: autoTradeExecutor.getGlobalConfig()
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Error toggling global auto-trade');
+      return reply.code(500).send({ error: err.message || 'Error toggling global auto-trade' });
+    }
+  });
+
+  // GET /api/admin/auto-trade/config - Get global auto-trade config
+  fastify.get('/auto-trade/config', {
+    preHandler: [fastify.adminAuth],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { autoTradeExecutor } = await import('../services/autoTradeExecutor');
+      const config = autoTradeExecutor.getGlobalConfig();
+
+      return {
+        success: true,
+        config
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Error fetching auto-trade config');
+      return reply.code(500).send({ error: err.message || 'Error fetching auto-trade config' });
+    }
+  });
+
+  // POST /api/admin/auto-trade/config - Update global auto-trade config
+  fastify.post('/auto-trade/config', {
+    preHandler: [fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Body: any }>, reply: FastifyReply) => {
+    try {
+      const configUpdate = request.body;
+      const adminUser = (request as any).user;
+
+      const { autoTradeExecutor } = await import('../services/autoTradeExecutor');
+      await autoTradeExecutor.updateGlobalConfig(configUpdate);
+
+      logger.info({ configUpdate, adminUid: adminUser.uid }, 'Global auto-trade config updated by admin');
+
+      return {
+        success: true,
+        message: 'Auto-trade config updated successfully',
+        config: autoTradeExecutor.getGlobalConfig()
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Error updating auto-trade config');
+      return reply.code(500).send({ error: err.message || 'Error updating auto-trade config' });
+    }
+  });
 }
 
