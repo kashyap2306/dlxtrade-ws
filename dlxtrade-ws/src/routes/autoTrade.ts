@@ -384,4 +384,160 @@ export async function autoTradeRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: err.message || 'Error resetting circuit breaker' });
     }
   });
+
+  // GET /api/auto-trade/config - Get auto-trade configuration
+  fastify.get('/config', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const config = await firestoreAdapter.getAutoTradeConfig(user.uid);
+
+      return config || {
+        enabled: false,
+        maxConcurrentTrades: 3,
+        schedule: { start: "09:00", end: "17:00", days: [1, 2, 3, 4, 5] },
+        maxDailyLoss: 100,
+        maxTradesPerDay: 50,
+        cooldownSeconds: 30,
+        consecutiveLossPauseCount: 3,
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting auto-trade config');
+      return reply.code(500).send({ error: err.message || 'Error fetching auto-trade config' });
+    }
+  });
+
+  // POST /api/auto-trade/panic-stop - Emergency stop auto-trade
+  fastify.post('/panic-stop', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: { reason?: string } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const { reason } = request.body || {};
+
+      // Immediately disable auto-trade
+      await userEngineManager.setAutoTradeEnabled(user.uid, false);
+
+      // Log the panic stop event
+      await firestoreAdapter.logActivity(user.uid, 'PANIC_STOP', {
+        reason: reason || 'Emergency stop activated',
+        timestamp: new Date().toISOString(),
+      });
+
+      return {
+        message: 'Auto-trade emergency stop activated',
+        timestamp: new Date().toISOString(),
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Error activating panic stop');
+      return reply.code(500).send({ error: err.message || 'Error activating panic stop' });
+    }
+  });
+
+  // GET /api/auto-trade/active-trades - Get active trades
+  fastify.get('/active-trades', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Querystring: { limit?: number } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const { limit = 50 } = request.query;
+
+      const activeTrades = await firestoreAdapter.getActiveTrades(user.uid, limit);
+
+      return activeTrades.map((trade: any) => ({
+        id: trade.id,
+        symbol: trade.symbol,
+        side: trade.side,
+        entryPrice: trade.entryPrice,
+        currentPrice: trade.currentPrice || trade.entryPrice,
+        pnl: trade.pnl || 0,
+        pnlPercent: trade.pnlPercent || 0,
+        stopLoss: trade.stopLoss,
+        takeProfit: trade.takeProfit,
+        accuracyAtEntry: trade.accuracyAtEntry || 0,
+        status: trade.status || 'active',
+        entryTime: trade.entryTime?.toDate?.()?.toISOString() || trade.entryTime,
+      }));
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting active trades');
+      return reply.code(500).send({ error: err.message || 'Error fetching active trades' });
+    }
+  });
+
+  // POST /api/auto-trade/close-trade - Manually close a trade
+  fastify.post('/close-trade', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: { tradeId: string } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const { tradeId } = request.body;
+
+      if (!tradeId) {
+        return reply.code(400).send({ error: 'Trade ID is required' });
+      }
+
+      // Close the trade
+      await autoTradeEngine.closeTrade(user.uid, tradeId);
+
+      // Log the manual close
+      await firestoreAdapter.logActivity(user.uid, 'MANUAL_CLOSE', {
+        tradeId,
+        timestamp: new Date().toISOString(),
+      });
+
+      return {
+        message: 'Trade close request submitted',
+        tradeId,
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Error closing trade');
+      return reply.code(500).send({ error: err.message || 'Error closing trade' });
+    }
+  });
+
+  // GET /api/auto-trade/activity - Get activity log
+  fastify.get('/activity', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Querystring: { limit?: number } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const { limit = 50 } = request.query;
+
+      const activities = await firestoreAdapter.getActivityLogs(user.uid, limit);
+
+      return activities
+        .filter(log => log.type.startsWith('AUTO_TRADE') || ['PANIC_STOP', 'MANUAL_CLOSE', 'ENGINE_START', 'ENGINE_STOP'].includes(log.type))
+        .slice(0, limit)
+        .map(log => ({
+          ts: log.timestamp?.toDate?.()?.toISOString() || log.timestamp,
+          type: log.type,
+          text: log.details?.message || log.type.replace(/_/g, ' ').toLowerCase(),
+          meta: log.details,
+        }));
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting activity log');
+      return reply.code(500).send({ error: err.message || 'Error fetching activity log' });
+    }
+  });
+
+  // POST /api/auto-trade/force-scan - Force immediate market scan
+  fastify.post('/force-scan', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+
+      // Trigger an immediate scan
+      await autoTradeEngine.forceScan(user.uid);
+
+      return {
+        message: 'Market scan triggered',
+        timestamp: new Date().toISOString(),
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Error triggering market scan');
+      return reply.code(500).send({ error: err.message || 'Error triggering market scan' });
+    }
+  });
 }

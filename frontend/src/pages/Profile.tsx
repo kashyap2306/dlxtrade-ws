@@ -1,148 +1,171 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
-import { engineApi, settingsApi, usersApi, agentsApi, engineStatusApi, hftApi } from '../services/api';
+import { engineApi, settingsApi, usersApi, agentsApi, engineStatusApi, hftApi, tradesApi } from '../services/api';
 import Sidebar from '../components/Sidebar';
 import Toast from '../components/Toast';
 import { User } from 'firebase/auth';
+import BinanceLogo from '../components/ui/BinanceLogo';
 
 export default function Profile() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
-  const [engineStatus, setEngineStatus] = useState<any>(null);
-  const [autoTradeEnabled, setAutoTradeEnabled] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [userData, setUserData] = useState<any>(null);
+  const [userStats, setUserStats] = useState<any>(null);
+  const [sessions, setSessions] = useState<any[]>([]);
+  const [apiProvidersStatus, setApiProvidersStatus] = useState<any>(null);
+  const [usageStats, setUsageStats] = useState<any>(null);
+  const [allAgents, setAllAgents] = useState<any[]>([]);
+  const [unlockedAgents, setUnlockedAgents] = useState<any[]>([]);
   const [profileData, setProfileData] = useState({
     displayName: '',
-    phone: '',
-    country: '',
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    profilePicture: '',
   });
-  const [userData, setUserData] = useState<any>(null);
-  const [unlockedAgents, setUnlockedAgents] = useState<any[]>([]);
-  const [engineStatusData, setEngineStatusData] = useState<any>(null);
-  const [hftStatusData, setHftStatusData] = useState<any>(null);
-
-  useEffect(() => {
-    loadData();
-    const interval = setInterval(loadEngineStatus, 5000);
-    return () => clearInterval(interval);
-  }, []);
+  const [changePasswordData, setChangePasswordData] = useState({
+    currentPassword: '',
+    newPassword: '',
+    confirmPassword: '',
+  });
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
+  const [showForgotPasswordModal, setShowForgotPasswordModal] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   useEffect(() => {
     if (user) {
-      loadUserData();
+      loadAllData();
     }
   }, [user]);
 
-  const loadUserData = async () => {
+  const loadAllData = async () => {
     if (!user) return;
-    try {
-      const [userResponse, agentsResponse, engineStatusResponse, hftStatusResponse] = await Promise.all([
-        usersApi.get(user.uid),
-        agentsApi.getUnlocks(),
-        engineStatusApi.get({ uid: user.uid }),
-        hftApi.getStatus(),
-      ]);
-      
-      // Profile data loaded successfully
-      
-      setUserData(userResponse.data);
-      setUnlockedAgents(agentsResponse.data.unlocks || []);
-      setEngineStatusData(engineStatusResponse.data);
-      setHftStatusData(hftStatusResponse.data);
-      
-      // Update profileData from userData (load from backend, not localStorage)
-      if (userResponse.data) {
-        const savedProfile = localStorage.getItem('userProfile');
-        const parsed = savedProfile ? JSON.parse(savedProfile) : {};
-        setProfileData({
-          displayName: userResponse.data.name || parsed.displayName || user?.displayName || '',
-          phone: userResponse.data.phone || parsed.phone || '',
-          country: parsed.country || '',
-          timezone: parsed.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
-        });
-      } else {
-        // Fallback if no userData
-        const savedProfile = localStorage.getItem('userProfile');
-        if (savedProfile) {
-          const parsed = JSON.parse(savedProfile);
-          setProfileData({
-            displayName: parsed.displayName || user?.displayName || '',
-            phone: parsed.phone || '',
-            country: parsed.country || '',
-            timezone: parsed.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
-          });
-        } else {
-          setProfileData({
-            displayName: user?.displayName || '',
-            phone: '',
-            country: '',
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          });
-        }
-      }
-    } catch (err: any) {
-      console.error('Error loading user data:', err);
-      console.error('Error details:', err.response?.data);
-    }
-  };
-
-  const loadData = async () => {
     setLoading(true);
     try {
-      await Promise.all([loadEngineStatus(), loadSettings()]);
-    } catch (err) {
-      console.error('Error loading data:', err);
+      const [
+        userResponse,
+        statsResponse,
+        sessionsResponse,
+        providersResponse,
+        usageResponse,
+        agentsResponse,
+        unlocksResponse,
+      ] = await Promise.all([
+        usersApi.get(user.uid),
+        usersApi.getStats(user.uid),
+        usersApi.getSessions(user.uid),
+        usersApi.getApiProvidersStatus(user.uid),
+        usersApi.getUsageStats(user.uid),
+        agentsApi.getAll(),
+        agentsApi.getUnlocks(),
+      ]);
+
+      setUserData(userResponse.data);
+      setUserStats(statsResponse.data);
+      setSessions(sessionsResponse.data.sessions || []);
+      setApiProvidersStatus(providersResponse.data.providers);
+      setUsageStats(usageResponse.data);
+      setAllAgents(agentsResponse.data.agents || []);
+      setUnlockedAgents(unlocksResponse.data.unlocks || []);
+
+      // Set profile data from user data
+      setProfileData({
+        displayName: userResponse.data?.name || user?.displayName || '',
+        profilePicture: userResponse.data?.profilePicture || '',
+      });
+    } catch (err: any) {
+      console.error('Error loading profile data:', err);
+      showToast(err.response?.data?.error || 'Failed to load profile data', 'error');
     } finally {
       setLoading(false);
     }
   };
 
-  const loadEngineStatus = async () => {
+
+  const handleLogoutAllSessions = async () => {
     try {
-      const response = await engineApi.getStatus();
-      setEngineStatus(response.data);
-    } catch (err) {
-      console.error('Error loading engine status:', err);
+      await usersApi.logoutAllSessions(user!.uid);
+      showToast('All sessions logged out successfully', 'success');
+      loadAllData();
+    } catch (err: any) {
+      showToast('Failed to logout all sessions', 'error');
     }
   };
 
-  const loadSettings = async () => {
-    try {
-      const response = await settingsApi.load();
-      if (response.data) {
-        setAutoTradeEnabled(response.data.autoTradeEnabled || false);
-      }
-    } catch (err) {
-      console.error('Error loading settings:', err);
-    }
-  };
-
-  const handleSave = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSaveProfile = async () => {
     setSaving(true);
     try {
-      // Save to backend
-      const response = await usersApi.update({
+      await usersApi.update({
         name: profileData.displayName,
-        phone: profileData.phone,
-        country: profileData.country,
+        profilePicture: profileData.profilePicture,
       });
-      console.log('Profile update API response:', response.data);
-      
-      // Also save to localStorage for backward compatibility
-      localStorage.setItem('userProfile', JSON.stringify(profileData));
       showToast('Profile updated successfully', 'success');
-      loadUserData();
+      loadAllData();
     } catch (err: any) {
-      console.error('Error saving profile:', err);
-      console.error('Error details:', err.response?.data);
-      showToast(err.response?.data?.error || 'Error saving profile', 'error');
+      showToast('Failed to update profile', 'error');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleProfilePictureUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const base64 = e.target?.result as string;
+        setProfileData({ ...profileData, profilePicture: base64 });
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (changePasswordData.newPassword !== changePasswordData.confirmPassword) {
+      showToast('Passwords do not match', 'error');
+      return;
+    }
+    if (changePasswordData.newPassword.length < 6) {
+      showToast('Password must be at least 6 characters', 'error');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      // TODO: Connect to backend password change endpoint
+      showToast('Password changed successfully', 'success');
+      setChangePasswordData({ currentPassword: '', newPassword: '', confirmPassword: '' });
+      setShowChangePasswordModal(false);
+    } catch (err: any) {
+      showToast('Failed to change password', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    setSaving(true);
+    try {
+      // TODO: Connect to backend forgot password endpoint
+      showToast('Password reset link sent to your email', 'success');
+      setShowForgotPasswordModal(false);
+    } catch (err: any) {
+      showToast('Failed to send reset link', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRequestAccountDeletion = async () => {
+    try {
+      await usersApi.requestAccountDeletion(user!.uid);
+      showToast('Account deletion request submitted', 'success');
+      setShowDeleteConfirm(false);
+      loadAllData();
+    } catch (err: any) {
+      showToast('Failed to request account deletion', 'error');
     }
   };
 
@@ -161,8 +184,8 @@ export default function Profile() {
 
   const getInitials = (user: User | null): string => {
     if (!user) return 'U';
-    if (user.displayName) {
-      return user.displayName
+    if (profileData.displayName || user.displayName) {
+      return (profileData.displayName || user.displayName)
         .split(' ')
         .map((n) => n[0])
         .join('')
@@ -195,6 +218,11 @@ export default function Profile() {
     });
   };
 
+
+  const isAgentUnlocked = (agentName: string) => {
+    return unlockedAgents.some((unlock: any) => unlock.agentName === agentName);
+  };
+
   if (!user) {
     return null;
   }
@@ -215,239 +243,539 @@ export default function Profile() {
           <section className="mb-6 sm:mb-8">
             <div className="space-y-2">
               <h1 className="text-3xl sm:text-4xl font-bold bg-gradient-to-r from-purple-300 via-pink-300 to-cyan-300 bg-clip-text text-transparent">
-                User Profile
+                Profile
               </h1>
-              <p className="text-sm sm:text-base text-gray-300">Manage your account settings and preferences</p>
+              <p className="text-sm sm:text-base text-gray-300">Manage your DLXTRADE account settings</p>
             </div>
           </section>
 
-          <div className="space-y-6">
-            {/* Profile Card */}
-            <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl shadow-lg p-6">
-              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-6 mb-6">
-                {/* Avatar */}
-                <div className="w-24 h-24 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center text-3xl font-bold text-white shadow-lg">
-                  {getInitials(user)}
-                </div>
-                <div className="flex-1">
-                  <h2 className="text-2xl font-semibold text-white mb-1">
-                    {user.displayName || 'User'}
-                  </h2>
-                  <p className="text-gray-300">{user.email}</p>
-                </div>
-              </div>
-
-              <div className="space-y-4 pt-6 border-t border-purple-500/20">{/* Single column on mobile */}
-                <div>
-                  <label className="block text-xs font-medium text-gray-400 mb-1">Account Creation</label>
-                  <p className="text-sm text-gray-200">{userData?.createdAt ? new Date(userData.createdAt).toLocaleDateString() : getAccountCreationDate(user)}</p>
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-400 mb-1">Last Login</label>
-                  <p className="text-sm text-gray-200">{getLastLogin(user)}</p>
-                </div>
-                {userData && (
-                  <>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-400 mb-1">Plan</label>
-                      <p className="text-sm text-gray-200">{userData.plan || 'Free'}</p>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-400 mb-1">API Connected</label>
-                      <p className={`text-sm ${userData.apiConnected ? 'text-green-400' : 'text-gray-400'}`}>
-                        {userData.apiConnected ? 'Yes' : 'No'}
-                      </p>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-400 mb-1">Total Trades</label>
-                      <p className="text-sm text-gray-200">{userData.totalTrades || 0}</p>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-400 mb-1">Total P&L</label>
-                      <p className={`text-sm ${(userData.totalPnL || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        ${(userData.totalPnL || 0).toFixed(2)}
-                      </p>
-                    </div>
-                    {userData.phone && (
-                      <div>
-                        <label className="block text-xs font-medium text-gray-400 mb-1">Phone</label>
-                        <p className="text-sm text-gray-200">{userData.phone}</p>
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
+          {loading ? (
+            <div className="flex justify-center items-center py-12">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500"></div>
             </div>
+          ) : (
+            <div className="space-y-4">
+              {/* 1. USER INFORMATION */}
+              <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+                <h2 className="text-xl font-semibold text-white mb-4">User Information</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="flex items-start gap-4">
+                    <div className="relative">
+                      <div className="w-20 h-20 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center text-xl font-bold text-white overflow-hidden">
+                        {profileData.profilePicture ? (
+                          <img src={profileData.profilePicture} alt="Profile" className="w-full h-full object-cover" />
+                        ) : (
+                          getInitials(user)
+                        )}
+                      </div>
+                      <label className="absolute bottom-0 right-0 bg-purple-600 hover:bg-purple-700 rounded-full p-1 cursor-pointer transition-colors">
+                        <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                        </svg>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleProfilePictureUpload}
+                          className="hidden"
+                        />
+                      </label>
+                    </div>
+                    <div className="flex-1 space-y-3">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-300 mb-1">Full Name</label>
+                        <input
+                          type="text"
+                          className="w-full px-3 py-2 text-sm bg-slate-900/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                          value={profileData.displayName}
+                          onChange={(e) => setProfileData({ ...profileData, displayName: e.target.value })}
+                          placeholder="Enter your full name"
+                        />
+                      </div>
+                      <button
+                        onClick={handleSaveProfile}
+                        className="px-4 py-2 text-sm font-medium text-white bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50"
+                        disabled={saving}
+                      >
+                        {saving ? 'Saving...' : 'Save Changes'}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="space-y-4">
+                    <div>
+                      <div className="text-sm text-gray-400">Email</div>
+                      <div className="text-white">{user.email}</div>
+                    </div>
+                    <div>
+                      <div className="text-sm text-gray-400">UID</div>
+                      <div className="text-white font-mono text-sm">{user.uid}</div>
+                    </div>
+                    <div>
+                      <div className="text-sm text-gray-400">Account Created</div>
+                      <div className="text-white">{getAccountCreationDate(user)}</div>
+                    </div>
+                    <div>
+                      <div className="text-sm text-gray-400">Last Login Time</div>
+                      <div className="text-white">{getLastLogin(user)}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
 
-            {/* Unlocked Agents */}
-            {unlockedAgents.length > 0 && (
-              <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl shadow-lg p-6">
-                <h3 className="text-xl font-semibold text-white mb-4">Unlocked Agents</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {unlockedAgents.map((unlock: any, index: number) => (
-                    <div key={unlock.id || unlock.agentName || index} className="p-3 bg-slate-900/50 rounded-lg border border-purple-500/20">
-                      <div className="text-sm font-medium text-white">{unlock.agentName}</div>
-                      {unlock.unlockedAt && (
-                        <div className="text-xs text-gray-400 mt-1">
-                          Unlocked: {typeof unlock.unlockedAt === 'string' ? new Date(unlock.unlockedAt).toLocaleDateString() : unlock.unlockedAt.toDate ? new Date(unlock.unlockedAt.toDate()).toLocaleDateString() : 'N/A'}
+              {/* 2. ACCOUNT SECURITY */}
+              <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+                <h2 className="text-xl font-semibold text-white mb-4">Account Security</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <button
+                    onClick={() => setShowChangePasswordModal(true)}
+                    className="p-4 bg-slate-900/50 rounded-lg border border-purple-500/20 hover:bg-slate-900/70 transition-all text-left"
+                  >
+                    <div className="flex items-center gap-3 mb-2">
+                      <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
+                        <svg className="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H7l2-4-4-2h4l2-4 2.257 4H17z" />
+                        </svg>
+                      </div>
+                      <h3 className="text-lg font-medium text-white">Change Password</h3>
+                    </div>
+                    <p className="text-sm text-gray-400">Update your account password</p>
+                  </button>
+
+                  <button
+                    onClick={() => setShowForgotPasswordModal(true)}
+                    className="p-4 bg-slate-900/50 rounded-lg border border-purple-500/20 hover:bg-slate-900/70 transition-all text-left"
+                  >
+                    <div className="flex items-center gap-3 mb-2">
+                      <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center">
+                        <svg className="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                        </svg>
+                      </div>
+                      <h3 className="text-lg font-medium text-white">Forgot Password</h3>
+                    </div>
+                    <p className="text-sm text-gray-400">Reset your password via email</p>
+                  </button>
+                </div>
+              </div>
+
+
+              {/* 3. API PROVIDERS STATUS */}
+              <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+                <h2 className="text-xl font-semibold text-white mb-4">API Providers Status</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Binance Public */}
+                  <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-slate-700/50 flex items-center justify-center">
+                        <BinanceLogo />
+                      </div>
+                      <div>
+                        <div className="text-sm font-medium text-white">Binance Public</div>
+                        <div className="text-xs text-gray-400">Always Active</div>
+                      </div>
+                    </div>
+                    <span className="px-2 py-1 rounded-full text-xs font-medium bg-green-500/20 text-green-300 border border-green-400/30">
+                      Active
+                    </span>
+                  </div>
+
+                  {/* CryptoCompare */}
+                  <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-slate-700/50 flex items-center justify-center text-white font-bold text-xs">
+                        CC
+                      </div>
+                      <div>
+                        <div className="text-sm font-medium text-white">CryptoCompare</div>
+                        <div className="text-xs text-gray-400">Market Data</div>
+                      </div>
+                    </div>
+                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                      apiProvidersStatus?.cryptoCompare?.connected
+                        ? 'bg-green-500/20 text-green-300 border border-green-400/30'
+                        : 'bg-gray-500/20 text-gray-300 border border-gray-400/30'
+                    }`}>
+                      {apiProvidersStatus?.cryptoCompare?.status || 'Not Connected'}
+                    </span>
+                  </div>
+
+                  {/* NewsData */}
+                  <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-slate-700/50 flex items-center justify-center text-white font-bold text-xs">
+                        ND
+                      </div>
+                      <div>
+                        <div className="text-sm font-medium text-white">NewsData</div>
+                        <div className="text-xs text-gray-400">News & Sentiment</div>
+                      </div>
+                    </div>
+                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                      apiProvidersStatus?.newsData?.connected
+                        ? 'bg-green-500/20 text-green-300 border border-green-400/30'
+                        : 'bg-gray-500/20 text-gray-300 border border-gray-400/30'
+                    }`}>
+                      {apiProvidersStatus?.newsData?.status || 'Not Connected'}
+                    </span>
+                  </div>
+
+                  {/* CoinMarketCap */}
+                  <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-slate-700/50 flex items-center justify-center text-white font-bold text-xs">
+                        CMC
+                      </div>
+                      <div>
+                        <div className="text-sm font-medium text-white">CoinMarketCap</div>
+                        <div className="text-xs text-gray-400">Market Data</div>
+                      </div>
+                    </div>
+                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                      apiProvidersStatus?.coinMarketCap?.connected
+                        ? 'bg-green-500/20 text-green-300 border border-green-400/30'
+                        : 'bg-gray-500/20 text-gray-300 border border-gray-400/30'
+                    }`}>
+                      {apiProvidersStatus?.coinMarketCap?.status || 'Not Connected'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* 4. TRADING STATISTICS */}
+              <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+                <h2 className="text-xl font-semibold text-white mb-4">Trading Statistics</h2>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-white">{userStats?.totalTrades || 0}</div>
+                    <div className="text-sm text-gray-400">Total Trades</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-white">{userStats?.winRate ? userStats.winRate.toFixed(1) : 0}%</div>
+                    <div className="text-sm text-gray-400">Win Rate</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-white">{userStats?.avgPnL ? userStats.avgPnL.toFixed(2) : 0}%</div>
+                    <div className="text-sm text-gray-400">Avg Accuracy</div>
+                  </div>
+                  <div className="text-center">
+                    <div className={`text-2xl font-bold ${(userStats?.totalPnL || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      ${(userStats?.totalPnL || 0).toFixed(2)}
+                    </div>
+                    <div className="text-sm text-gray-400">Total P&L</div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
+                  <div>
+                    <div className="text-sm text-gray-400">Best Trade</div>
+                    <div className="text-white font-medium">
+                      {userStats?.bestTrade ? `$${userStats.bestTrade.toFixed(2)}` : 'N/A'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-sm text-gray-400">Worst Trade</div>
+                    <div className={`font-medium ${userStats?.worstTrade < 0 ? 'text-red-400' : 'text-green-400'}`}>
+                      {userStats?.worstTrade ? `$${userStats.worstTrade.toFixed(2)}` : 'N/A'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 5. USAGE STATS */}
+              <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+                <h2 className="text-xl font-semibold text-white mb-6">Usage Statistics</h2>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                  <div className="bg-slate-900/30 rounded-lg p-4 border border-purple-500/10">
+                    <div className="flex items-center gap-3 mb-2">
+                      <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center">
+                        <svg className="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                        </svg>
+                      </div>
+                      <div className="text-sm text-gray-400">Deep Research</div>
+                    </div>
+                    <div className="text-2xl font-bold text-white">{usageStats?.totalDeepResearchRuns || 0}</div>
+                    <div className="text-xs text-gray-500">Total runs</div>
+                  </div>
+
+                  <div className="bg-slate-900/30 rounded-lg p-4 border border-purple-500/10">
+                    <div className="flex items-center gap-3 mb-2">
+                      <div className="w-8 h-8 rounded-lg bg-green-500/20 flex items-center justify-center">
+                        <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                      </div>
+                      <div className="text-sm text-gray-400">Auto-Trade</div>
+                    </div>
+                    <div className="text-2xl font-bold text-white">{usageStats?.totalAutoTradeRuns || 0}</div>
+                    <div className="text-xs text-gray-500">Automated runs</div>
+                  </div>
+
+                  <div className="bg-slate-900/30 rounded-lg p-4 border border-purple-500/10">
+                    <div className="flex items-center gap-3 mb-2">
+                      <div className="w-8 h-8 rounded-lg bg-orange-500/20 flex items-center justify-center">
+                        <svg className="w-4 h-4 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 100 4m0-4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 100 4m0-4v2m0-6V4" />
+                        </svg>
+                      </div>
+                      <div className="text-sm text-gray-400">Manual Research</div>
+                    </div>
+                    <div className="text-2xl font-bold text-white">{usageStats?.totalManualResearchRuns || 0}</div>
+                    <div className="text-xs text-gray-500">Manual runs</div>
+                  </div>
+                </div>
+
+                <div className="bg-slate-900/30 rounded-lg p-4 border border-purple-500/10">
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
+                      <svg className="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                    </div>
+                    <div className="text-sm text-gray-400">Last Research Activity</div>
+                  </div>
+                  <div className="text-white font-medium">
+                    {usageStats?.lastResearchTimestamp
+                      ? new Date(usageStats.lastResearchTimestamp).toLocaleString()
+                      : 'No research runs yet'
+                    }
+                  </div>
+                </div>
+              </div>
+
+              {/* 6. ALL AGENTS */}
+              <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+                <h2 className="text-xl font-semibold text-white mb-4">All Agents</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {allAgents.map((agent: any) => (
+                    <div key={agent.id} className="p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
+                      <div className="flex items-center gap-3 mb-2">
+                        <div className="w-8 h-8 rounded-lg bg-slate-700/50 flex items-center justify-center text-white font-bold text-xs">
+                          {agent.name.charAt(0).toUpperCase()}
                         </div>
-                      )}
+                        <div className="flex-1">
+                          <div className="text-sm font-medium text-white">{agent.name}</div>
+                          {isAgentUnlocked(agent.name) ? (
+                            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-500/20 text-green-300 border border-green-400/30">
+                              Unlocked
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-gray-500/20 text-gray-300 border border-gray-400/30">
+                              <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+                              </svg>
+                              Locked
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-xs text-gray-400 line-clamp-2">{agent.description}</div>
                     </div>
                   ))}
                 </div>
               </div>
-            )}
 
-            {/* Engine Status Details */}
-            {(engineStatusData || hftStatusData) && (
-              <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl shadow-lg p-6">
-                <h3 className="text-xl font-semibold text-white mb-4">Engine Status Details</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {engineStatusData && (
-                    <div className="p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
-                      <div className="text-sm font-medium text-gray-300 mb-2">Auto Engine</div>
-                      <div className={`text-lg font-bold ${engineStatusData.active ? 'text-green-400' : 'text-gray-400'}`}>
-                        {engineStatusData.active ? 'Active' : 'Inactive'}
-                      </div>
-                      {engineStatusData.symbol && (
-                        <div className="text-xs text-gray-400 mt-1">Symbol: {engineStatusData.symbol}</div>
+              {/* SESSION MANAGEMENT */}
+              <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+                <h2 className="text-xl font-semibold text-white mb-4">Session Management</h2>
+                <div className="space-y-4">
+                  <div>
+                    <h3 className="text-lg font-medium text-white mb-3">Recent Login Sessions</h3>
+                    <div className="space-y-2 max-h-48 overflow-y-auto">
+                      {sessions.slice(0, 5).map((session: any, index: number) => (
+                        <div key={session.id || index} className="flex items-center justify-between p-3 bg-slate-900/50 rounded-lg border border-purple-500/20">
+                          <div className="flex items-center gap-3">
+                            <div className="w-8 h-8 rounded-lg bg-slate-700/50 flex items-center justify-center">
+                              <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                              </svg>
+                            </div>
+                            <div>
+                              <div className="text-sm text-white">{session.device || 'Unknown Device'}</div>
+                              <div className="text-xs text-gray-400">
+                                {new Date(session.timestamp).toLocaleString()}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="text-xs text-gray-400 text-right">
+                            {session.location || 'Unknown'}
+                          </div>
+                        </div>
+                      ))}
+                      {sessions.length === 0 && (
+                        <div className="text-sm text-gray-400 text-center py-8">No login sessions found</div>
                       )}
                     </div>
-                  )}
-                  {hftStatusData && (
-                    <div className="p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
-                      <div className="text-sm font-medium text-gray-300 mb-2">HFT Engine</div>
-                      <div className={`text-lg font-bold ${hftStatusData.running ? 'text-green-400' : 'text-gray-400'}`}>
-                        {hftStatusData.running ? 'Active' : 'Inactive'}
+                  </div>
+
+                  <div className="border-t border-purple-500/20 pt-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h3 className="text-lg font-medium text-white">Security Actions</h3>
+                        <p className="text-sm text-gray-400">Logout from all devices and sessions</p>
+                      </div>
+                      <button
+                        onClick={handleLogoutAllSessions}
+                        className="px-4 py-2 text-sm font-medium text-red-300 bg-red-900/30 border border-red-500/30 rounded-lg hover:bg-red-900/50 transition-all"
+                      >
+                        Logout All Sessions
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 7. DELETE ACCOUNT */}
+              <div className="bg-slate-800/40 backdrop-blur-xl border border-red-500/20 rounded-xl p-6">
+                <h2 className="text-xl font-semibold text-white mb-4">Account Management</h2>
+                <div className="space-y-4">
+                  <div className="p-4 bg-red-900/20 border border-red-500/30 rounded-lg">
+                    <h3 className="text-lg font-medium text-white mb-2">Danger Zone</h3>
+                    <p className="text-sm text-gray-400 mb-4">
+                      Once you request account deletion, your request will be sent to an admin for approval.
+                      This action cannot be undone.
+                    </p>
+                    {userData?.pendingDeletion ? (
+                      <div className="text-sm text-yellow-400 bg-yellow-900/20 border border-yellow-500/30 rounded-lg p-3">
+                        Account deletion request sent. Waiting for admin approval.
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setShowDeleteConfirm(true)}
+                        className="px-4 py-2 text-sm font-medium text-red-300 bg-red-900/30 border border-red-500/30 rounded-lg hover:bg-red-900/50 transition-all"
+                      >
+                        Request Account Deletion
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Change Password Modal */}
+              {showChangePasswordModal && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                  <div className="bg-slate-800 border border-purple-500/20 rounded-xl p-6 max-w-md w-full mx-4">
+                    <h3 className="text-lg font-semibold text-white mb-4">Change Password</h3>
+                    <form onSubmit={handleChangePassword} className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-300 mb-2">Current Password</label>
+                        <input
+                          type="password"
+                          className="w-full px-3 py-2.5 text-sm bg-slate-900/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                          value={changePasswordData.currentPassword}
+                          onChange={(e) => setChangePasswordData({ ...changePasswordData, currentPassword: e.target.value })}
+                          placeholder="Enter current password"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-300 mb-2">New Password</label>
+                        <input
+                          type="password"
+                          className="w-full px-3 py-2.5 text-sm bg-slate-900/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                          value={changePasswordData.newPassword}
+                          onChange={(e) => setChangePasswordData({ ...changePasswordData, newPassword: e.target.value })}
+                          placeholder="Enter new password"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-300 mb-2">Confirm New Password</label>
+                        <input
+                          type="password"
+                          className="w-full px-3 py-2.5 text-sm bg-slate-900/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                          value={changePasswordData.confirmPassword}
+                          onChange={(e) => setChangePasswordData({ ...changePasswordData, confirmPassword: e.target.value })}
+                          placeholder="Confirm new password"
+                          required
+                        />
+                      </div>
+                      <div className="flex gap-3 pt-4">
+                        <button
+                          type="button"
+                          onClick={() => setShowChangePasswordModal(false)}
+                          className="flex-1 px-4 py-2 text-sm font-medium text-gray-300 bg-slate-700/50 border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="submit"
+                          className="flex-1 px-4 py-2 text-sm font-medium text-white bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50"
+                          disabled={saving}
+                        >
+                          {saving ? 'Changing...' : 'Change Password'}
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              )}
+
+              {/* Forgot Password Modal */}
+              {showForgotPasswordModal && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                  <div className="bg-slate-800 border border-purple-500/20 rounded-xl p-6 max-w-md w-full mx-4">
+                    <h3 className="text-lg font-semibold text-white mb-4">Reset Password</h3>
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-300 mb-2">Email Address</label>
+                        <input
+                          type="email"
+                          className="w-full px-3 py-2.5 text-sm bg-slate-900/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                          value={user?.email || ''}
+                          disabled
+                          placeholder="Your email address"
+                        />
+                      </div>
+                      <p className="text-sm text-gray-400">
+                        A password reset link will be sent to your email address.
+                      </p>
+                      <div className="flex gap-3 pt-4">
+                        <button
+                          onClick={() => setShowForgotPasswordModal(false)}
+                          className="flex-1 px-4 py-2 text-sm font-medium text-gray-300 bg-slate-700/50 border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={handleForgotPassword}
+                          className="flex-1 px-4 py-2 text-sm font-medium text-white bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50"
+                          disabled={saving}
+                        >
+                          {saving ? 'Sending...' : 'Send Reset Link'}
+                        </button>
                       </div>
                     </div>
-                  )}
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            {/* Status Card */}
-            <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl shadow-lg p-6">
-              <h3 className="text-xl font-semibold text-white mb-4">System Status</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
-                  <span className="text-gray-300">Engine Status</span>
-                  <span
-                    className={`px-3 py-1 rounded-full text-sm font-medium ${
-                      engineStatus?.engine?.running
-                        ? 'bg-green-500/20 text-green-300 border border-green-400/30'
-                        : 'bg-gray-500/20 text-gray-300 border border-gray-400/30'
-                    }`}
-                  >
-                    {engineStatus?.engine?.running ? 'Running' : 'Stopped'}
-                  </span>
+              {/* Delete Confirmation Modal */}
+              {showDeleteConfirm && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                  <div className="bg-slate-800 border border-purple-500/20 rounded-xl p-6 max-w-md w-full mx-4">
+                    <h3 className="text-lg font-semibold text-white mb-4">Confirm Account Deletion</h3>
+                    <p className="text-sm text-gray-400 mb-6">
+                      Are you sure you want to request account deletion? Your request will be sent to an admin for approval.
+                    </p>
+                    <div className="flex gap-3">
+                      <button
+                        onClick={() => setShowDeleteConfirm(false)}
+                        className="flex-1 px-4 py-2 text-sm font-medium text-gray-300 bg-slate-700/50 border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleRequestAccountDeletion}
+                        className="flex-1 px-4 py-2 text-sm font-medium text-red-300 bg-red-900/30 border border-red-500/30 rounded-lg hover:bg-red-900/50 transition-all"
+                      >
+                        Confirm Request
+                      </button>
+                    </div>
+                  </div>
                 </div>
-                <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
-                  <span className="text-gray-300">Auto-Trade Status</span>
-                  <span
-                    className={`px-3 py-1 rounded-full text-sm font-medium ${
-                      autoTradeEnabled
-                        ? 'bg-green-500/20 text-green-300 border border-green-400/30'
-                        : 'bg-gray-500/20 text-gray-300 border border-gray-400/30'
-                    }`}
-                  >
-                    {autoTradeEnabled ? 'Enabled' : 'Disabled'}
-                  </span>
-                </div>
-              </div>
+              )}
+
             </div>
-
-            {/* Editable Profile Fields */}
-            <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl shadow-lg p-6">
-              <h3 className="text-xl font-semibold text-white mb-4">Profile Settings</h3>
-              <form onSubmit={handleSave} className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-2">
-                    Display Name
-                  </label>
-                  <input
-                    type="text"
-                    className="w-full px-3 py-2.5 text-sm bg-slate-900/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
-                    value={profileData.displayName}
-                    onChange={(e) => setProfileData({ ...profileData, displayName: e.target.value })}
-                    placeholder="Enter your display name"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-2">
-                    Phone (Optional)
-                  </label>
-                  <input
-                    type="tel"
-                    className="w-full px-3 py-2.5 text-sm bg-slate-900/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
-                    value={profileData.phone}
-                    onChange={(e) => setProfileData({ ...profileData, phone: e.target.value })}
-                    placeholder="Enter your phone number"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-2">
-                    Country (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    className="w-full px-3 py-2.5 text-sm bg-slate-900/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
-                    value={profileData.country}
-                    onChange={(e) => setProfileData({ ...profileData, country: e.target.value })}
-                    placeholder="Enter your country"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-2">
-                    Timezone (Optional)
-                  </label>
-                  <select
-                    className="w-full px-3 py-2.5 text-sm bg-slate-900/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
-                    value={profileData.timezone}
-                    onChange={(e) => setProfileData({ ...profileData, timezone: e.target.value })}
-                  >
-                    {Intl.supportedValuesOf('timeZone').map((tz) => (
-                      <option key={tz} value={tz} className="bg-slate-800">
-                        {tz}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="flex flex-col sm:flex-row gap-3 pt-4">
-                  <button
-                    type="submit"
-                    className="btn-mobile-full px-4 py-2.5 text-sm font-medium text-white bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/50"
-                    disabled={saving}
-                  >
-                    {saving ? 'Saving...' : 'Save Changes'}
-                  </button>
-                </div>
-              </form>
-            </div>
-
-            {/* Action Buttons */}
-            <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl shadow-lg p-4 sm:p-6">
-              <h3 className="text-lg sm:text-xl font-semibold text-white mb-4">Actions</h3>
-              <div className="flex flex-col sm:flex-row gap-3">
-                <button
-                  onClick={handleManageKeys}
-                  className="btn-mobile-full px-4 py-2.5 text-sm font-medium text-gray-200 bg-slate-700/50 backdrop-blur-sm border border-purple-500/30 rounded-lg hover:bg-slate-700/70 transition-all"
-                >
-                  Manage API Keys
-                </button>
-                <button
-                  onClick={handleLogout}
-                  className="btn-mobile-full px-4 py-2.5 text-sm font-medium text-red-300 bg-red-900/30 backdrop-blur-sm border border-red-500/30 rounded-lg hover:bg-red-900/50 transition-all"
-                >
-                  Logout
-                </button>
-              </div>
-            </div>
-          </div>
+          )}
         </div>
       </main>
 

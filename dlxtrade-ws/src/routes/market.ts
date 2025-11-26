@@ -108,4 +108,63 @@ export async function marketRoutes(fastify: FastifyInstance) {
       });
     }
   });
+
+  // GET /api/market/symbols - Get available trading symbols
+  fastify.get('/symbols', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const binanceAdapter = new BinanceAdapter();
+
+      // Get exchange info from Binance
+      const exchangeInfo = await binanceAdapter.getExchangeInfo();
+
+      if (!exchangeInfo || !exchangeInfo.symbols) {
+        // Fallback symbols if Binance is unavailable
+        const fallbackSymbols = [
+          { symbol: 'BTCUSDT', base: 'BTC', quote: 'USDT' },
+          { symbol: 'ETHUSDT', base: 'ETH', quote: 'USDT' },
+          { symbol: 'BNBUSDT', base: 'BNB', quote: 'USDT' },
+          { symbol: 'ADAUSDT', base: 'ADA', quote: 'USDT' },
+          { symbol: 'XRPUSDT', base: 'XRP', quote: 'USDT' },
+          { symbol: 'SOLUSDT', base: 'SOL', quote: 'USDT' },
+          { symbol: 'DOTUSDT', base: 'DOT', quote: 'USDT' },
+          { symbol: 'DOGEUSDT', base: 'DOGE', quote: 'USDT' },
+          { symbol: 'AVAXUSDT', base: 'AVAX', quote: 'USDT' },
+          { symbol: 'LTCUSDT', base: 'LTC', quote: 'USDT' },
+        ];
+
+        return fallbackSymbols;
+      }
+
+      // Filter for USDT pairs and format
+      const symbols = exchangeInfo.symbols
+        .filter((symbol: any) => symbol.quoteAsset === 'USDT' && symbol.status === 'TRADING')
+        .slice(0, 100) // Limit to 100 symbols
+        .map((symbol: any) => ({
+          symbol: symbol.symbol,
+          base: symbol.baseAsset,
+          quote: symbol.quoteAsset,
+        }));
+
+      return symbols;
+
+    } catch (error: any) {
+      logger.error({ error: error.message }, 'Error fetching symbols');
+
+      // Return fallback symbols on error
+      const fallbackSymbols = [
+        { symbol: 'BTCUSDT', base: 'BTC', quote: 'USDT' },
+        { symbol: 'ETHUSDT', base: 'ETH', quote: 'USDT' },
+        { symbol: 'BNBUSDT', base: 'BNB', quote: 'USDT' },
+        { symbol: 'ADAUSDT', base: 'ADA', quote: 'USDT' },
+        { symbol: 'XRPUSDT', base: 'XRP', quote: 'USDT' },
+        { symbol: 'SOLUSDT', base: 'SOL', quote: 'USDT' },
+        { symbol: 'DOTUSDT', base: 'DOT', quote: 'USDT' },
+        { symbol: 'DOGEUSDT', base: 'DOGE', quote: 'USDT' },
+        { symbol: 'AVAXUSDT', base: 'AVAX', quote: 'USDT' },
+        { symbol: 'LTCUSDT', base: 'LTC', quote: 'USDT' },
+      ];
+
+      return fallbackSymbols;
+    }
+  });
 }

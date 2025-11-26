@@ -134,16 +134,44 @@ export const metricsApi = {
 
 // Research - routes already include /api prefix from baseURL
 export const researchApi = {
-  run: (data?: { symbol?: string; symbols?: string[] }) => 
+  run: (data?: { symbol?: string; symbols?: string[] }) =>
     api.post('/research/run', data),
   getLogs: (params?: any) => api.get('/research/logs', { params }),
   runResearch: (symbol: string) => api.post('/research/run', { symbol }),
   deepRun: (data: { symbols?: string[]; topN?: number }) => api.post('/research/deep-run', data),
   manualDeepResearch: () => api.get('/research/manual'),
-  manualDeepResearchPost: (data?: { selectedExchange?: string; symbols?: string[]; topN?: number }) => 
+  manualDeepResearchPost: (data?: { selectedExchange?: string; symbols?: string[]; topN?: number }) =>
     api.post('/research/manual', data),
-  queue: (data?: { symbol?: string; symbols?: string[]; topN?: number }) => 
+  queue: (data?: { symbol?: string; symbols?: string[]; topN?: number }) =>
     api.post('/research/queue', data),
+  // New research endpoints for Research Page
+  runDeep: (data: { symbols: string[]; options?: any }) => api.post('/research/run', data),
+  getHistory: (params?: { page?: number; size?: number }) => api.get('/research/history', { params }),
+  getStatus: () => api.get('/research/status'),
+};
+
+// Market API for Research Page
+export const marketApi = {
+  getSymbols: (query?: string) => api.get('/market/symbols', { params: { query } }),
+  getSnapshot: (symbol: string) => api.get('/market/snapshot', { params: { symbol } }),
+  getTopCoins: (limit?: number) => api.get('/market/top', { params: { limit } }),
+  getPriceHistory: (symbol: string, range?: string) => api.get('/market/price/history', { params: { symbol, range } }),
+};
+
+// News API for Research Page
+export const newsApi = {
+  getNews: (params?: { symbols?: string[]; limit?: number }) => api.get('/news', { params }),
+};
+
+// Provider status API for Research Page
+export const providerApi = {
+  getStatus: () => api.get('/provider/status'),
+};
+
+// User API keys API for Research Page
+export const userApi = {
+  saveApiKeys: (data: { provider: string; apiKey: string; secretKey?: string }) => api.post('/user/apikeys', data),
+  getApiKeys: () => api.get('/user/apikeys'),
 };
 
 // Settings - routes already include /api prefix from baseURL
@@ -186,6 +214,12 @@ export const usersApi = {
   getAll: () => api.get('/users'),
   get: (uid: string) => api.get(`/users/${uid}/details`),
   getStats: (uid: string) => api.get(`/users/${uid}/stats`),
+  getSessions: (uid: string) => api.get(`/users/${uid}/sessions`),
+  getExchangeStatus: (uid: string) => api.get(`/users/${uid}/exchange-status`),
+  getApiProvidersStatus: (uid: string) => api.get(`/users/${uid}/api-providers-status`),
+  getUsageStats: (uid: string) => api.get(`/users/${uid}/usage-stats`),
+  logoutAllSessions: (uid: string) => api.post(`/users/${uid}/logout-all`),
+  requestAccountDeletion: (uid: string) => api.post(`/users/${uid}/request-delete`),
   create: (data: any) => api.post('/users/create', data),
   update: (data: any) => api.post('/users/update', data),
 };
@@ -250,12 +284,23 @@ export const hftLogsApi = {
 // Auto Trade - routes already include /api prefix from baseURL
 export const autoTradeApi = {
   getStatus: () => api.get('/auto-trade/status'),
-  toggle: (enabled: boolean) => api.post('/auto-trade/toggle', { enabled }),
+  getConfig: () => api.get('/auto-trade/config'),
   updateConfig: (config: any) => api.post('/auto-trade/config', config),
+  toggle: (enabled: boolean) => api.post('/auto-trade/toggle', { enabled }),
+  panicStop: (reason?: string) => api.post('/auto-trade/panic-stop', { reason }),
+  getActiveTrades: (limit?: number) => api.get('/auto-trade/active-trades', { params: { limit } }),
+  closeTrade: (tradeId: string) => api.post('/auto-trade/close-trade', { tradeId }),
+  getActivity: (limit?: number) => api.get('/auto-trade/activity', { params: { limit } }),
+  forceScan: () => api.post('/auto-trade/force-scan'),
   queue: (signal: any) => api.post('/auto-trade/queue', signal),
   run: () => api.post('/auto-trade/run'),
   execute: (data: { requestId: string; signal: any }) => api.post('/auto-trade/execute', data),
   resetCircuitBreaker: () => api.post('/auto-trade/reset-circuit-breaker'),
+};
+
+// Market - routes already include /api prefix from baseURL
+export const marketApi = {
+  getSymbols: () => api.get('/market/symbols'),
 };
 
 // Chatbot - routes already include /api prefix from baseURL
@@ -266,5 +311,22 @@ export const chatbotApi = {
 // Wallet - routes already include /api prefix from baseURL
 export const walletApi = {
   getBalances: () => api.get('/wallet/balances'),
+};
+
+// Exchange - routes already include /api prefix from baseURL
+export const exchangeApi = {
+  saveConfig: (config: { exchange: string; apiKey: string; secret: string; passphrase?: string; testnet?: boolean }) =>
+    api.post(`/users/${localStorage.getItem('firebaseUser') ? JSON.parse(localStorage.getItem('firebaseUser')!).uid : ''}/exchange-config`, config),
+  getConfig: () =>
+    api.get(`/users/${localStorage.getItem('firebaseUser') ? JSON.parse(localStorage.getItem('firebaseUser')!).uid : ''}/exchange-config`),
+  removeConfig: () =>
+    api.post(`/users/${localStorage.getItem('firebaseUser') ? JSON.parse(localStorage.getItem('firebaseUser')!).uid : ''}/exchange-config`, {
+      exchange: 'binance',
+      apiKey: '',
+      secret: '',
+      testnet: true
+    }),
+  testConnection: (config: { exchange?: string; apiKey?: string; secret?: string; passphrase?: string; testnet?: boolean }) =>
+    api.post('/exchange/test', config),
 };
 

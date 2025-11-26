@@ -1041,6 +1041,55 @@ export class FirestoreAdapter {
 
     return doc.data();
   }
+
+  // ========== AUTO-TRADE CONFIG METHODS ==========
+  async getAutoTradeConfig(uid: string): Promise<any | null> {
+    const doc = await db().collection('users').doc(uid).collection('autoTrade').doc('config').get();
+    if (!doc.exists) return null;
+    return doc.data();
+  }
+
+  async saveAutoTradeConfig(uid: string, config: any): Promise<void> {
+    const configRef = db().collection('users').doc(uid).collection('autoTrade').doc('config');
+    await configRef.set({
+      ...config,
+      updatedAt: admin.firestore.Timestamp.now(),
+    }, { merge: true });
+    logger.debug({ uid }, 'Auto-trade config saved');
+  }
+
+  // ========== ACTIVE TRADES METHODS ==========
+  async getActiveTrades(uid: string, limit: number = 50): Promise<any[]> {
+    const snapshot = await db()
+      .collection('users')
+      .doc(uid)
+      .collection('trades')
+      .where('status', 'in', ['active', 'pending'])
+      .orderBy('createdAt', 'desc')
+      .limit(limit)
+      .get();
+
+    return snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+  }
+
+  // ========== ACTIVITY LOGS FILTERED FOR AUTO-TRADE ==========
+  async getAutoTradeActivityLogs(uid: string, limit: number = 50): Promise<any[]> {
+    const snapshot = await db()
+      .collection('activityLogs')
+      .where('uid', '==', uid)
+      .where('type', 'in', ['AUTO_TRADE_START', 'AUTO_TRADE_STOP', 'TRADE_OPENED', 'TRADE_CLOSED', 'PANIC_STOP', 'CIRCUIT_BREAKER'])
+      .orderBy('timestamp', 'desc')
+      .limit(limit)
+      .get();
+
+    return snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+  }
 }
 
 export const firestoreAdapter = new FirestoreAdapter();

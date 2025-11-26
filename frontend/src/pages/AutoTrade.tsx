@@ -1,484 +1,802 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useThrottle } from '../hooks/usePerformance';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
-import { autoTradeApi } from '../services/api';
+import { autoTradeApi, marketApi, walletApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
-import { useAutoTradeMode } from '../hooks/useAutoTradeMode';
-import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
-import { useError } from '../contexts/ErrorContext';
-import { useNotificationContext } from '../contexts/NotificationContext';
-import { suppressConsoleError, getApiErrorMessage } from '../utils/errorHandler';
-import { doc, getDoc } from 'firebase/firestore';
-import { db } from '../config/firebase';
 import Toast from '../components/Toast';
-import WalletCard from '../components/Wallet/WalletCard';
-import ConfigCard from '../components/AutoTrade/ConfigCard';
-import ActivityList from '../components/AutoTrade/ActivityList';
-import ExchangeAccountsSection from '../components/ExchangeAccountsSection';
 
 interface AutoTradeConfig {
-  autoTradeEnabled: boolean;
-  perTradeRiskPct: number;
+  enabled: boolean;
   maxConcurrentTrades: number;
-  maxDailyLossPct: number;
-  stopLossPct: number;
-  takeProfitPct: number;
-  manualOverride: boolean;
+  schedule: {
+    start: string;
+    end: string;
+    days: number[];
+  };
+  maxDailyLoss: number;
+  maxTradesPerDay: number;
+  cooldownSeconds: number;
+  consecutiveLossPauseCount: number;
+  slippageBlocker: boolean;
 }
 
-interface AutoTradeStatus {
-  enabled: boolean;
-  activeTrades: number;
-  dailyPnL: number;
-  dailyTrades: number;
-  circuitBreaker: boolean;
-  manualOverride: boolean;
+interface ActiveTrade {
+  id: string;
+  symbol: string;
+  side: 'BUY' | 'SELL';
+  entryPrice: number;
+  currentPrice: number;
+  pnl: number;
+  pnlPercent: number;
+  stopLoss?: number;
+  takeProfit?: number;
+  accuracyAtEntry: number;
+  status: string;
+  entryTime: string;
+}
+
+interface ActivityLog {
+  ts: string;
+  type: string;
+  text: string;
+  meta?: any;
+}
+
+interface PortfolioSnapshot {
   equity: number;
-  engineRunning: boolean;
-  isApiConnected: boolean;
-  config?: {
-    perTradeRiskPct: number;
-    maxConcurrentTrades: number;
-    maxDailyLossPct: number;
-    stopLossPct: number;
-    takeProfitPct: number;
-  };
-  stats?: {
-    totalTrades: number;
-    winningTrades: number;
-    losingTrades: number;
-    totalPnL: number;
-    dailyPnL: number;
-    dailyTrades: number;
-  };
+  freeMargin: number;
+  usedMargin: number;
+  todayPnL: number;
+  totalPnL: number;
 }
 
 export default function AutoTrade() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const { showError } = useError();
-  const { addNotification } = useNotificationContext();
-  const { unlockedAgents, loading: agentsLoading, hasPremiumAgent } = useUnlockedAgents();
-  const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState<AutoTradeStatus | null>(null);
-  const [config, setConfig] = useState<AutoTradeConfig>({
-    autoTradeEnabled: false,
-    perTradeRiskPct: 1,
-    maxConcurrentTrades: 3,
-    maxDailyLossPct: 5,
-    stopLossPct: 1.5,
-    takeProfitPct: 3,
-    manualOverride: false,
-  });
+  const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-  const [showExchangeModal, setShowExchangeModal] = useState(false);
-  const [showApiRequiredModal, setShowApiRequiredModal] = useState(false);
 
-  // Throttle status updates to prevent excessive re-renders from real-time data
-  const throttledStatus = useThrottle(status, 300);
+  // Auto-trade state
+  const [config, setConfig] = useState<AutoTradeConfig>({
+    enabled: false,
+    maxConcurrentTrades: 3,
+    schedule: { start: "09:00", end: "17:00", days: [1, 2, 3, 4, 5] },
+    maxDailyLoss: 100,
+    maxTradesPerDay: 50,
+    cooldownSeconds: 30,
+    consecutiveLossPauseCount: 3,
+    slippageBlocker: false,
+  });
+
+  const [activeTrades, setActiveTrades] = useState<ActiveTrade[]>([]);
+  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
+  const [portfolio, setPortfolio] = useState<PortfolioSnapshot>({
+    equity: 0,
+    freeMargin: 0,
+    usedMargin: 0,
+    todayPnL: 0,
+    totalPnL: 0,
+  });
+
+  const [symbols, setSymbols] = useState<any[]>([]);
+  const [selectedSymbol, setSelectedSymbol] = useState('');
+  const [isExchangeConnected, setIsExchangeConnected] = useState(false);
+  const [engineStatus, setEngineStatus] = useState<'Running' | 'Paused' | 'Stopped' | 'Outside Hours'>('Stopped');
+
+  // Control sections state
+  const [autoTradeControls, setAutoTradeControls] = useState({
+    enabled: false,
+    maxConcurrentTrades: 3,
+    maxTradesPerDay: 50,
+  });
+
+  const [scheduleConfig, setScheduleConfig] = useState({
+    start: "09:00",
+    end: "17:00",
+    days: [1, 2, 3, 4, 5],
+    run24_7: false,
+  });
+
+  const [safetyConfig, setSafetyConfig] = useState({
+    cooldownSeconds: 30,
+    consecutiveLossPauseCount: 3,
+    slippageBlocker: false,
+  });
 
   useEffect(() => {
     if (user) {
-      checkAdmin();
-      loadStatus();
+      loadAllData();
+      // Set up polling for live data
+      const interval = setInterval(() => {
+        loadLiveData();
+      }, 3000); // 3 seconds for active trades
+      return () => clearInterval(interval);
     }
   }, [user]);
 
-  const checkAdmin = async () => {
+  const loadAllData = async () => {
     if (!user) return;
+    setLoading(true);
     try {
-      const userDoc = await getDoc(doc(db, 'users', user.uid));
-      if (userDoc.exists()) {
-        const userData: any = userDoc.data();
-        setIsAdmin(userData.role === 'admin' || userData.isAdmin === true);
-      }
-    } catch (error) {
-      console.error('Error checking admin role:', error);
+      // Load config, symbols, and initial data in parallel
+      const [configRes, symbolsRes, portfolioRes] = await Promise.all([
+        autoTradeApi.getConfig(),
+        marketApi.getSymbols(),
+        walletApi.getBalances(),
+      ]);
+
+      setConfig(configRes.data);
+      setSymbols(symbolsRes.data);
+      setPortfolio(portfolioRes.data);
+
+      // Set local state from config
+      setAutoTradeControls({
+        enabled: configRes.data.enabled,
+        maxConcurrentTrades: configRes.data.maxConcurrentTrades,
+        maxTradesPerDay: configRes.data.maxTradesPerDay,
+      });
+
+      setScheduleConfig({
+        start: configRes.data.schedule.start,
+        end: configRes.data.schedule.end,
+        days: configRes.data.schedule.days,
+        run24_7: false, // Calculate from schedule
+      });
+
+      setSafetyConfig({
+        cooldownSeconds: configRes.data.cooldownSeconds,
+        consecutiveLossPauseCount: configRes.data.consecutiveLossPauseCount,
+        slippageBlocker: configRes.data.slippageBlocker,
+      });
+
+      // Load initial live data
+      await loadLiveData();
+    } catch (error: any) {
+      console.error('Error loading auto-trade data:', error);
+      showToast('Failed to load auto-trade data', 'error');
+    } finally {
+      setLoading(false);
     }
   };
 
-  const loadStatus = useCallback(async () => {
+  const loadLiveData = async () => {
     if (!user) return;
     try {
-      const response = await autoTradeApi.getStatus();
-      setStatus(response.data);
-      if (response.data.config) {
-        setConfig(prev => ({
-          ...prev,
-          perTradeRiskPct: response.data.config?.perTradeRiskPct ?? prev.perTradeRiskPct,
-          maxConcurrentTrades: response.data.config?.maxConcurrentTrades ?? prev.maxConcurrentTrades,
-          maxDailyLossPct: response.data.config?.maxDailyLossPct ?? prev.maxDailyLossPct,
-          stopLossPct: response.data.config?.stopLossPct ?? prev.stopLossPct,
-          takeProfitPct: response.data.config?.takeProfitPct ?? prev.takeProfitPct,
-        }));
-      }
-    } catch (err: any) {
-      suppressConsoleError(err, 'loadAutoTradeStatus');
+      const [tradesRes, activityRes] = await Promise.all([
+        autoTradeApi.getActiveTrades(50),
+        autoTradeApi.getActivity(50),
+      ]);
+
+      setActiveTrades(tradesRes.data);
+      setActivityLogs(activityRes.data);
+
+      // Update engine status based on config and current time
+      updateEngineStatus();
+    } catch (error: any) {
+      // Silent fail for live data to avoid spam
     }
-  }, [user]);
+  };
 
-  // Use shared hook for Auto-Trade Mode logic
-  const autoTradeMode = useAutoTradeMode();
+  const updateEngineStatus = () => {
+    const now = new Date();
+    const currentHour = now.getHours();
+    const currentMinute = now.getMinutes();
+    const currentTime = `${currentHour.toString().padStart(2, '0')}:${currentMinute.toString().padStart(2, '0')}`;
 
-  const handleEnableToggle = useCallback(async (enabled: boolean) => {
-    if (!user) return;
-
-    // Use shared hook logic
-    if (enabled) {
-      if (!autoTradeMode.isApiConnected) {
-        setShowApiRequiredModal(true);
-        return;
-      }
-      
-      if (!autoTradeMode.allRequiredAPIsConnected) {
-        const missingNames = autoTradeMode.missingAPIs.map((m) => {
-          if (m === 'coinapi_market') return 'CoinAPI Market';
-          if (m === 'coinapi_flatfile') return 'CoinAPI Flatfile';
-          if (m === 'coinapi_exchangerate') return 'CoinAPI Exchange Rate';
-          return m.charAt(0).toUpperCase() + m.slice(1);
-        }).join(', ');
-        
-        showError(`Please submit all required APIs to enable Auto-Trade Mode. Missing: ${missingNames}`, 'validation');
-        return;
-      }
+    if (!config.enabled) {
+      setEngineStatus('Stopped');
+    } else if (scheduleConfig.run24_7) {
+      setEngineStatus('Running');
+    } else {
+      const isInSchedule = isTimeInSchedule(currentTime, scheduleConfig.days, scheduleConfig.start, scheduleConfig.end);
+      setEngineStatus(isInSchedule ? 'Running' : 'Outside Hours');
     }
+  };
 
+  const isTimeInSchedule = (currentTime: string, days: number[], start: string, end: string) => {
+    const now = new Date();
+    const dayOfWeek = now.getDay(); // 0 = Sunday, 1 = Monday, etc.
+
+    if (!days.includes(dayOfWeek)) return false;
+
+    return currentTime >= start && currentTime <= end;
+  };
+
+  const handleAutoTradeToggle = async (enabled: boolean) => {
+    if (!enabled || isExchangeConnected) {
+      setSaving(true);
+      try {
+        await autoTradeApi.toggle(enabled);
+        setAutoTradeControls(prev => ({ ...prev, enabled }));
+        setConfig(prev => ({ ...prev, enabled }));
+        showToast(`Auto-Trade ${enabled ? 'enabled' : 'disabled'}`, 'success');
+      } catch (error: any) {
+        showToast('Failed to toggle auto-trade', 'error');
+      } finally {
+        setSaving(false);
+      }
+    } else {
+      showToast('Exchange connection required', 'error');
+    }
+  };
+
+  const handleSaveAutoTradeControls = async () => {
+    setSaving(true);
     try {
-      await autoTradeMode.toggle();
-      // Refresh status to get updated enabled state
-      await loadStatus();
-      setToast({ 
-        message: enabled ? 'Auto-Trade enabled successfully' : 'Auto-Trade disabled successfully', 
-        type: 'success' 
-      });
-    } catch (err: any) {
-      const { message, type } = getApiErrorMessage(err);
-      showError(message, type);
-    }
-  }, [user, autoTradeMode, loadStatus, showError]);
-
-  const handleConfigSave = useCallback(async (updates: Partial<AutoTradeConfig>) => {
-    if (!user) return;
-    setLoading(true);
-    try {
-      await autoTradeApi.updateConfig(updates);
-      setConfig(prev => ({ ...prev, ...updates }));
-      setToast({ message: 'Trading configuration updated!', type: 'success' });
-      await loadStatus();
-    } catch (err: any) {
-      const { message, type } = getApiErrorMessage(err);
-      showError(message, type);
+      const updatedConfig = {
+        ...config,
+        enabled: autoTradeControls.enabled,
+        maxConcurrentTrades: autoTradeControls.maxConcurrentTrades,
+        maxTradesPerDay: autoTradeControls.maxTradesPerDay,
+      };
+      await autoTradeApi.updateConfig(updatedConfig);
+      setConfig(updatedConfig);
+      showToast('Auto-trade controls saved', 'success');
+    } catch (error: any) {
+      showToast('Failed to save controls', 'error');
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
-  }, [user, loadStatus, showError]);
+  };
 
-  const handleConfigUpdate = useCallback(async (updates: Partial<AutoTradeConfig>) => {
-    // For individual field updates, just update local state
-    setConfig(prev => ({ ...prev, ...updates }));
-  }, []);
-
-  const handleResetCircuitBreaker = useCallback(async () => {
-    if (!isAdmin) {
-      showError('Only admins can reset circuit breaker', 'auth');
-      return;
-    }
-    setLoading(true);
+  const handleSaveSchedule = async () => {
+    setSaving(true);
     try {
-      await autoTradeApi.resetCircuitBreaker();
-      setToast({ message: 'Circuit breaker reset successfully', type: 'success' });
-      await loadStatus();
-    } catch (err: any) {
-      const { message, type } = getApiErrorMessage(err);
-      showError(message, type);
+      const updatedConfig = {
+        ...config,
+        schedule: scheduleConfig.run24_7 ? {
+          start: "00:00",
+          end: "23:59",
+          days: [0, 1, 2, 3, 4, 5, 6]
+        } : {
+          start: scheduleConfig.start,
+          end: scheduleConfig.end,
+          days: scheduleConfig.days,
+        }
+      };
+      await autoTradeApi.updateConfig(updatedConfig);
+      setConfig(updatedConfig);
+      showToast('Schedule saved', 'success');
+    } catch (error: any) {
+      showToast('Failed to save schedule', 'error');
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
-  }, [isAdmin, loadStatus, showError]);
+  };
 
-  const showToast = useCallback((message: string, type: 'success' | 'error') => {
+  const handleSaveSafety = async () => {
+    setSaving(true);
+    try {
+      const updatedConfig = {
+        ...config,
+        cooldownSeconds: safetyConfig.cooldownSeconds,
+        consecutiveLossPauseCount: safetyConfig.consecutiveLossPauseCount,
+        slippageBlocker: safetyConfig.slippageBlocker,
+      };
+      await autoTradeApi.updateConfig(updatedConfig);
+      setConfig(updatedConfig);
+      showToast('Safety settings saved', 'success');
+    } catch (error: any) {
+      showToast('Failed to save safety settings', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handlePanicStop = async () => {
+    if (confirm('Are you sure you want to activate emergency stop? This will immediately disable auto-trading.')) {
+      setSaving(true);
+      try {
+        await autoTradeApi.panicStop('Emergency stop activated from UI');
+        setAutoTradeControls(prev => ({ ...prev, enabled: false }));
+        setConfig(prev => ({ ...prev, enabled: false }));
+        showToast('Emergency stop activated', 'success');
+      } catch (error: any) {
+        showToast('Failed to activate emergency stop', 'error');
+      } finally {
+        setSaving(false);
+      }
+    }
+  };
+
+  const handleCloseTrade = async (tradeId: string) => {
+    setSaving(true);
+    try {
+      await autoTradeApi.closeTrade(tradeId);
+      showToast('Trade close requested', 'success');
+      // Refresh active trades
+      const tradesRes = await autoTradeApi.getActiveTrades(50);
+      setActiveTrades(tradesRes.data);
+    } catch (error: any) {
+      showToast('Failed to close trade', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleForceScan = async () => {
+    setSaving(true);
+    try {
+      await autoTradeApi.forceScan();
+      showToast('Market scan triggered', 'success');
+    } catch (error: any) {
+      showToast('Failed to trigger scan', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
-  }, []);
+  };
 
-  const handleLogout = useCallback(async () => {
-    const { signOut } = await import('firebase/auth');
-    const { auth } = await import('../config/firebase');
-    await signOut(auth);
-    localStorage.removeItem('firebaseToken');
-    localStorage.removeItem('firebaseUser');
-    window.location.href = '/login';
-  }, []);
+  const handleManageExchange = () => {
+    navigate('/settings');
+  };
 
-  const winRate = useMemo(() => {
-    return status?.stats 
-      ? status.stats.totalTrades > 0 
-        ? ((status.stats.winningTrades / status.stats.totalTrades) * 100).toFixed(1)
-        : '0.0'
-      : '0.0';
-  }, [status?.stats]);
+  const getNextScheduledRun = () => {
+    if (scheduleConfig.run24_7) return 'Running 24/7';
 
-  const statusChip = useMemo(() => {
-    if (!status) return { text: 'Loading...', color: 'text-gray-400' };
-    return status.enabled
-      ? { text: 'Enabled', color: 'text-green-400' }
-      : { text: 'Disabled', color: 'text-gray-400' };
-  }, [status]);
+    const now = new Date();
+    const today = now.getDay();
 
-  const isConfigValid = useMemo(() => {
-    return (
-      config.perTradeRiskPct >= 0.1 && config.perTradeRiskPct <= 10 &&
-      config.maxConcurrentTrades >= 1 && config.maxConcurrentTrades <= 10 &&
-      config.maxDailyLossPct >= 0.5 && config.maxDailyLossPct <= 50 &&
-      config.stopLossPct >= 0.5 && config.stopLossPct <= 10 &&
-      config.takeProfitPct >= 0.5 && config.takeProfitPct <= 20
-    );
-  }, [config]);
+    // Find next trading day
+    let nextDay = today;
+    let daysAhead = 0;
+    while (!scheduleConfig.days.includes(nextDay) && daysAhead < 7) {
+      nextDay = (nextDay + 1) % 7;
+      daysAhead++;
+    }
 
+    if (daysAhead === 7) return 'No schedule set';
+
+    const nextRun = new Date(now);
+    nextRun.setDate(now.getDate() + daysAhead);
+    nextRun.setHours(parseInt(scheduleConfig.start.split(':')[0]));
+    nextRun.setMinutes(parseInt(scheduleConfig.start.split(':')[1]));
+
+    return nextRun.toLocaleString();
+  };
+
+
+  if (!user) return null;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#0a0f1c] via-[#101726] to-[#0a0f1c] pb-20 lg:pb-0 relative overflow-hidden smooth-scroll">
-      {/* Background effects - Performance optimized */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none gpu-accelerated">
-        <div className="absolute -top-40 -right-40 w-96 h-96 bg-purple-500/30 rounded-full mix-blend-screen filter blur-3xl animate-blob"></div>
-        <div className="absolute -bottom-40 -left-40 w-96 h-96 bg-cyan-500/30 rounded-full mix-blend-screen filter blur-3xl animate-blob animation-delay-2000"></div>
-        <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px] opacity-40"></div>
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 smooth-scroll">
+      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob"></div>
+        <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-blue-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-2000"></div>
       </div>
 
-      <Sidebar onLogout={handleLogout} />
+      <Sidebar onLogout={() => {}} />
 
-      <main className="min-h-screen relative z-10 smooth-scroll">
+      <main className="min-h-screen">
         <div className="container py-4 sm:py-8">
           {/* Header */}
-          <section className="mb-6 sm:mb-8">
+          <section className="mb-6">
             <div className="flex items-center justify-between flex-wrap gap-4">
-              <div className="space-y-2">
-                <h1 className="text-3xl sm:text-4xl font-bold bg-gradient-to-r from-purple-300 via-pink-300 to-cyan-300 bg-clip-text text-transparent">
+              <div>
+                <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-300 via-pink-300 to-cyan-300 bg-clip-text text-transparent">
                   Auto-Trade
                 </h1>
-                <p className="text-sm sm:text-base text-gray-300 max-w-3xl">
-                  Automated trading with risk management and safety controls
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className={`text-sm font-semibold ${statusChip.color}`}>
-                  {statusChip.text}
-                </span>
+                <p className="text-gray-300">Advanced automated trading system</p>
               </div>
             </div>
           </section>
 
-          {/* Wallet Section - Moved to Top */}
-          <div className="mb-6">
-            <WalletCard onConnectClick={() => setShowExchangeModal(true)} />
-          </div>
-
-          {/* Main Dashboard Grid - Responsive */}
-          <div className="responsive-grid mb-4 sm:mb-6">
-            {/* Left Column: Configuration */}
-            <div className="lg:col-span-2 space-y-6">
-              {/* Status Overview */}
-              <div className="bg-black/30 backdrop-blur-xl border border-purple-500/30 rounded-2xl p-6">
-                <h2 className="text-xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent mb-4">
-                  Trading Status
-                </h2>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                  <div>
-                    <div className="text-sm text-gray-400 mb-1">Active Trades</div>
-                    <div className="text-lg font-bold text-white">
-                      {status?.activeTrades || 0} / {config.maxConcurrentTrades}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-sm text-gray-400 mb-1">Daily P&L</div>
-                    <div className={`text-lg font-bold ${
-                      (status?.dailyPnL || 0) >= 0 ? 'text-green-400' : 'text-red-400'
-                    }`}>
-                      ${(status?.dailyPnL || 0).toFixed(2)}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-sm text-gray-400 mb-1">Daily Trades</div>
-                    <div className="text-lg font-bold text-white">
-                      {status?.dailyTrades || 0}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-sm text-gray-400 mb-1">Equity</div>
-                    <div className="text-lg font-bold text-white">
-                      ${(status?.equity || 0).toFixed(2)}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-sm text-gray-400 mb-1">Engine Status</div>
-                    <div className={`text-lg font-bold ${
-                      status?.engineRunning ? 'text-green-400' : 'text-gray-400'
-                    }`}>
-                      {status?.engineRunning ? '🟢 Running' : '⚪ Stopped'}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-sm text-gray-400 mb-1">API Connection</div>
-                    <div className={`text-lg font-bold ${
-                      status?.isApiConnected ? 'text-green-400' : 'text-red-400'
-                    }`}>
-                      {status?.isApiConnected ? 'Connected' : 'Disconnected'}
-                    </div>
-                  </div>
+          {/* Top Row - Engine Status & Portfolio */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+            {/* Engine & Connection Status */}
+            <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+              <h2 className="text-xl font-semibold text-white mb-4">Engine Status</h2>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-300">Status</span>
+                  <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                    engineStatus === 'Running' ? 'bg-green-500/20 text-green-300 border border-green-400/30' :
+                    engineStatus === 'Outside Hours' ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-400/30' :
+                    'bg-gray-500/20 text-gray-300 border border-gray-400/30'
+                  }`}>
+                    {engineStatus}
+                  </span>
                 </div>
 
-                {status?.circuitBreaker && (
-                  <div className="mt-4 p-3 bg-red-500/20 border border-red-500/50 rounded-lg">
-                    <div className="flex items-center justify-between">
-                      <span className="text-red-400 font-semibold">⚠️ Circuit Breaker Active</span>
-                      {isAdmin && (
-                        <button
-                          onClick={handleResetCircuitBreaker}
-                          className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700"
-                        >
-                          Reset
-                        </button>
-                      )}
-                    </div>
-                    <p className="text-xs text-red-300 mt-1">
-                      Daily loss limit exceeded. Trading paused.
-                    </p>
-                  </div>
-                )}
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-300">Auto-Trade</span>
+                  <button
+                    onClick={() => handleAutoTradeToggle(!autoTradeControls.enabled)}
+                    className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                      autoTradeControls.enabled
+                        ? 'bg-green-600 hover:bg-green-700 text-white'
+                        : 'bg-gray-600 hover:bg-gray-700 text-white'
+                    }`}
+                    disabled={saving}
+                  >
+                    {autoTradeControls.enabled ? 'ON' : 'OFF'}
+                  </button>
+                </div>
 
-                {status?.manualOverride && (
-                  <div className="mt-4 p-3 bg-yellow-500/20 border border-yellow-500/50 rounded-lg">
-                    <span className="text-yellow-400 font-semibold">⏸️ Manual Override Active</span>
-                    <p className="text-xs text-yellow-300 mt-1">Trading paused for manual review.</p>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-300">Exchange</span>
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${isExchangeConnected ? 'bg-green-400' : 'bg-red-400'}`}></span>
+                    <button
+                      onClick={handleManageExchange}
+                      className="text-purple-400 hover:text-purple-300 text-sm underline"
+                    >
+                      Manage
+                    </button>
                   </div>
-                )}
+                </div>
               </div>
-
-              {/* Statistics */}
-              {status?.stats && (
-                <div className="bg-black/30 backdrop-blur-xl border border-purple-500/30 rounded-2xl p-6">
-                  <h2 className="text-xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent mb-4">
-                    Trading Statistics
-                  </h2>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div>
-                      <div className="text-sm text-gray-400 mb-1">Total Trades</div>
-                      <div className="text-2xl font-bold text-white">{status.stats.totalTrades}</div>
-                    </div>
-                    <div>
-                      <div className="text-sm text-gray-400 mb-1">Win Rate</div>
-                      <div className="text-2xl font-bold text-green-400">{winRate}%</div>
-                    </div>
-                    <div>
-                      <div className="text-sm text-gray-400 mb-1">Total P&L</div>
-                      <div className={`text-2xl font-bold ${
-                        status.stats.totalPnL >= 0 ? 'text-green-400' : 'text-red-400'
-                      }`}>
-                        ${status.stats.totalPnL.toFixed(2)}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-sm text-gray-400 mb-1">W/L Ratio</div>
-                      <div className="text-2xl font-bold text-white">
-                        {status.stats.winningTrades}/{status.stats.losingTrades}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Configuration Card */}
-              <ConfigCard
-                config={config}
-                loading={loading}
-                isApiConnected={status?.isApiConnected ?? false}
-                onUpdate={handleConfigUpdate}
-                onSave={handleConfigSave}
-                onEnableToggle={handleEnableToggle}
-                isConfigValid={isConfigValid}
-                hasUnlockedAgents={unlockedAgents.length > 0}
-              />
-
-              {/* Activity List */}
-              <ActivityList />
             </div>
 
-            {/* Right Column: Empty for now (previously had Wallet) */}
-            <div className="space-y-6">
-              {/* Reserved for future content */}
-            </div>
-          </div>
-
-          {/* Trading Risk Disclaimer - Moved to Footer */}
-          <div className="mt-8 pt-6 border-t border-purple-500/20">
-            <div className="p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-xl">
-              <div className="flex items-start gap-3">
-                <span className="text-2xl">⚠️</span>
+            {/* Portfolio Snapshot */}
+            <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+              <h2 className="text-xl font-semibold text-white mb-4">Portfolio Snapshot</h2>
+              <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <h3 className="text-yellow-400 font-semibold mb-1">Trading Risk Disclaimer</h3>
-                  <p className="text-sm text-gray-300">
-                    Trading involves risk. Past performance is no guarantee of future results. 
-                    You may lose money when trading. Only trade with funds you can afford to lose. 
-                    This system does not guarantee profits or prevent losses.
-                  </p>
+                  <div className="text-sm text-gray-400">Equity</div>
+                  <div className="text-xl font-bold text-white">${portfolio.equity.toFixed(2)}</div>
+                </div>
+                <div>
+                  <div className="text-sm text-gray-400">Free Margin</div>
+                  <div className="text-xl font-bold text-green-400">${portfolio.freeMargin.toFixed(2)}</div>
+                </div>
+                <div>
+                  <div className="text-sm text-gray-400">Used Margin</div>
+                  <div className="text-xl font-bold text-orange-400">${portfolio.usedMargin.toFixed(2)}</div>
+                </div>
+                <div>
+                  <div className="text-sm text-gray-400">Today's P&L</div>
+                  <div className={`text-xl font-bold ${portfolio.todayPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    ${portfolio.todayPnL.toFixed(2)}
+                  </div>
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Exchange Accounts Modal */}
-          {showExchangeModal && (
-            <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-              <div className="bg-slate-800 border border-purple-500/50 rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
-                <div className="sticky top-0 bg-slate-800/95 backdrop-blur-xl border-b border-purple-500/30 px-6 py-4 flex items-center justify-between">
-                  <h3 className="text-xl font-bold text-white">Exchange Accounts</h3>
-                  <button
-                    onClick={() => {
-                      setShowExchangeModal(false);
-                      loadStatus(); // Refresh status after closing modal
-                    }}
-                    className="text-gray-400 hover:text-white transition-colors p-2 hover:bg-white/10 rounded-lg"
-                  >
-                    ✕
-                  </button>
-                </div>
-                <div className="p-6">
-                  <ExchangeAccountsSection />
-                </div>
-              </div>
-            </div>
-          )}
+          {/* Main Content - Active Trades & Controls */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+            {/* Left Column - Active Trades */}
+            <div className="lg:col-span-2">
+              <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+                <h2 className="text-xl font-semibold text-white mb-4">Active Trades ({activeTrades.length})</h2>
 
-          {/* API Required Modal */}
-          {showApiRequiredModal && (
-            <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-              <div className="bg-slate-800 border border-purple-500/50 rounded-2xl shadow-2xl max-w-md w-full p-6">
-                <h3 className="text-xl font-bold text-white mb-4">Exchange API Required</h3>
-                <p className="text-gray-300 mb-6">
-                  Please connect your exchange API before enabling Auto-Trade.
-                </p>
-                <div className="flex gap-3">
+                {loading ? (
+                  <div className="flex justify-center py-8">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500"></div>
+                  </div>
+                ) : activeTrades.length === 0 ? (
+                  <div className="text-center py-8 text-gray-400">
+                    No active trades
+                  </div>
+                ) : (
+                  <div className="space-y-3 max-h-96 overflow-y-auto">
+                    {activeTrades.map((trade) => (
+                      <div key={trade.id} className="bg-slate-900/50 rounded-lg p-4 border border-purple-500/20">
+                        <div className="grid grid-cols-2 md:grid-cols-6 gap-4 items-center">
+                          <div>
+                            <div className="text-sm text-gray-400">Symbol</div>
+                            <div className="font-medium text-white">{trade.symbol}</div>
+                          </div>
+                          <div>
+                            <div className="text-sm text-gray-400">Side</div>
+                            <div className={`font-medium ${trade.side === 'BUY' ? 'text-green-400' : 'text-red-400'}`}>
+                              {trade.side}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-sm text-gray-400">Entry</div>
+                            <div className="font-medium text-white">${trade.entryPrice.toFixed(4)}</div>
+                          </div>
+                          <div>
+                            <div className="text-sm text-gray-400">Current</div>
+                            <div className="font-medium text-white">${trade.currentPrice.toFixed(4)}</div>
+                          </div>
+                          <div>
+                            <div className="text-sm text-gray-400">P&L</div>
+                            <div className={`font-medium ${trade.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              ${trade.pnl.toFixed(2)} ({trade.pnlPercent.toFixed(2)}%)
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <button
+                              onClick={() => handleCloseTrade(trade.id)}
+                              className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white text-sm rounded transition-colors"
+                              disabled={saving}
+                            >
+                              Close
+                            </button>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-4 mt-3 pt-3 border-t border-purple-500/20">
+                          <div>
+                            <div className="text-xs text-gray-400">Accuracy</div>
+                            <div className="text-sm text-white">{(trade.accuracyAtEntry * 100).toFixed(1)}%</div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-gray-400">Time</div>
+                            <div className="text-sm text-white">{new Date(trade.entryTime).toLocaleTimeString()}</div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-gray-400">Status</div>
+                            <div className="text-sm text-green-400">{trade.status}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Right Column - Controls */}
+            <div className="space-y-6">
+              {/* Section A: Auto-Trade Controls */}
+              <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+                <h3 className="text-lg font-semibold text-white mb-4">Auto-Trade Controls</h3>
+
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-300">Enable Auto-Trade</span>
+                    <button
+                      onClick={() => setAutoTradeControls(prev => ({ ...prev, enabled: !prev.enabled }))}
+                      className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                        autoTradeControls.enabled
+                          ? 'bg-green-600 hover:bg-green-700 text-white'
+                          : 'bg-gray-600 hover:bg-gray-700 text-white'
+                      }`}
+                    >
+                      {autoTradeControls.enabled ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm text-gray-300 mb-2">Max Concurrent Trades</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10"
+                      value={autoTradeControls.maxConcurrentTrades}
+                      onChange={(e) => setAutoTradeControls(prev => ({ ...prev, maxConcurrentTrades: parseInt(e.target.value) || 1 }))}
+                      className="w-full px-3 py-2 bg-slate-900/50 border border-purple-500/30 rounded-lg text-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm text-gray-300 mb-2">Max Trades Per Day</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="100"
+                      value={autoTradeControls.maxTradesPerDay}
+                      onChange={(e) => setAutoTradeControls(prev => ({ ...prev, maxTradesPerDay: parseInt(e.target.value) || 1 }))}
+                      className="w-full px-3 py-2 bg-slate-900/50 border border-purple-500/30 rounded-lg text-white"
+                    />
+                  </div>
+
                   <button
-                    onClick={() => {
-                      setShowApiRequiredModal(false);
-                      setShowExchangeModal(true);
-                    }}
-                    className="flex-1 px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold rounded-lg hover:from-purple-500 hover:to-pink-500 transition-all"
+                    onClick={handleSaveAutoTradeControls}
+                    className="w-full px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50"
+                    disabled={saving}
                   >
-                    Connect Exchange
-                  </button>
-                  <button
-                    onClick={() => setShowApiRequiredModal(false)}
-                    className="px-4 py-2 bg-gray-700 text-gray-200 font-semibold rounded-lg hover:bg-gray-600 transition-all"
-                  >
-                    Cancel
+                    {saving ? 'Saving...' : 'Save Controls'}
                   </button>
                 </div>
               </div>
+
+              {/* Section B: Schedule */}
+              <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+                <h3 className="text-lg font-semibold text-white mb-4">Trading Schedule</h3>
+
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="run24_7"
+                      checked={scheduleConfig.run24_7}
+                      onChange={(e) => setScheduleConfig(prev => ({ ...prev, run24_7: e.target.checked }))}
+                      className="rounded"
+                    />
+                    <label htmlFor="run24_7" className="text-sm text-gray-300">Run 24/7</label>
+                  </div>
+
+                  {!scheduleConfig.run24_7 && (
+                    <>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm text-gray-300 mb-2">Start Time</label>
+                          <input
+                            type="time"
+                            value={scheduleConfig.start}
+                            onChange={(e) => setScheduleConfig(prev => ({ ...prev, start: e.target.value }))}
+                            className="w-full px-3 py-2 bg-slate-900/50 border border-purple-500/30 rounded-lg text-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm text-gray-300 mb-2">End Time</label>
+                          <input
+                            type="time"
+                            value={scheduleConfig.end}
+                            onChange={(e) => setScheduleConfig(prev => ({ ...prev, end: e.target.value }))}
+                            className="w-full px-3 py-2 bg-slate-900/50 border border-purple-500/30 rounded-lg text-white"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm text-gray-300 mb-2">Trading Days</label>
+                        <div className="grid grid-cols-7 gap-1">
+                          {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, index) => (
+                            <button
+                              key={index}
+                              onClick={() => {
+                                const newDays = scheduleConfig.days.includes(index)
+                                  ? scheduleConfig.days.filter(d => d !== index)
+                                  : [...scheduleConfig.days, index];
+                                setScheduleConfig(prev => ({ ...prev, days: newDays.sort() }));
+                              }}
+                              className={`p-2 text-sm rounded ${
+                                scheduleConfig.days.includes(index)
+                                  ? 'bg-purple-600 text-white'
+                                  : 'bg-slate-700 text-gray-400'
+                              }`}
+                            >
+                              {day}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  <div className="text-sm text-gray-400">
+                    Next scheduled run: {getNextScheduledRun()}
+                  </div>
+
+                  <button
+                    onClick={handleSaveSchedule}
+                    className="w-full px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50"
+                    disabled={saving}
+                  >
+                    {saving ? 'Saving...' : 'Save Schedule'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Section C: Safety & Risk Controls */}
+              <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+                <h3 className="text-lg font-semibold text-white mb-4">Safety & Risk Controls</h3>
+
+                <div className="space-y-4">
+                  <button
+                    onClick={handlePanicStop}
+                    className="w-full px-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-all disabled:opacity-50"
+                    disabled={saving}
+                  >
+                    🚨 PANIC STOP
+                  </button>
+
+                  <div>
+                    <label className="block text-sm text-gray-300 mb-2">Cooldown Seconds</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="300"
+                      value={safetyConfig.cooldownSeconds}
+                      onChange={(e) => setSafetyConfig(prev => ({ ...prev, cooldownSeconds: parseInt(e.target.value) || 0 }))}
+                      className="w-full px-3 py-2 bg-slate-900/50 border border-purple-500/30 rounded-lg text-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm text-gray-300 mb-2">Pause After N Losing Trades</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10"
+                      value={safetyConfig.consecutiveLossPauseCount}
+                      onChange={(e) => setSafetyConfig(prev => ({ ...prev, consecutiveLossPauseCount: parseInt(e.target.value) || 1 }))}
+                      className="w-full px-3 py-2 bg-slate-900/50 border border-purple-500/30 rounded-lg text-white"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="slippageBlocker"
+                      checked={safetyConfig.slippageBlocker}
+                      onChange={(e) => setSafetyConfig(prev => ({ ...prev, slippageBlocker: e.target.checked }))}
+                      className="rounded"
+                    />
+                    <label htmlFor="slippageBlocker" className="text-sm text-gray-300">Slippage/Spread Blocker</label>
+                  </div>
+
+                  <button
+                    onClick={handleSaveSafety}
+                    className="w-full px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50"
+                    disabled={saving}
+                  >
+                    {saving ? 'Saving...' : 'Save Safety Settings'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Section D: Manual Overrides & Info */}
+              <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+                <h3 className="text-lg font-semibold text-white mb-4">Manual Controls</h3>
+
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => handleAutoTradeToggle(true)}
+                      className="px-3 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded transition-colors"
+                      disabled={saving}
+                    >
+                      Start
+                    </button>
+                    <button
+                      onClick={() => handleAutoTradeToggle(false)}
+                      className="px-3 py-2 bg-red-600 hover:bg-red-700 text-white text-sm rounded transition-colors"
+                      disabled={saving}
+                    >
+                      Stop
+                    </button>
+                  </div>
+
+                  <button
+                    onClick={handleForceScan}
+                    className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors disabled:opacity-50"
+                    disabled={saving}
+                  >
+                    Force Market Scan
+                  </button>
+
+                  <div className="text-xs text-gray-400 mt-4">
+                    <div>Last scan: {new Date().toLocaleTimeString()}</div>
+                    <div className="mt-1 text-yellow-400">
+                      ⚠️ Trading involves risk. Use at your own discretion.
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
-          )}
+          </div>
+
+          {/* Bottom - Recent Activity */}
+          <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+            <h2 className="text-xl font-semibold text-white mb-4">Recent Activity</h2>
+
+            {activityLogs.length === 0 ? (
+              <div className="text-center py-8 text-gray-400">
+                No recent activity
+              </div>
+            ) : (
+              <div className="space-y-3 max-h-80 overflow-y-auto">
+                {activityLogs.map((activity, index) => (
+                  <div key={index} className="flex items-start gap-3 p-3 bg-slate-900/30 rounded-lg border border-purple-500/10">
+                    <div className="w-8 h-8 rounded-lg bg-slate-700/50 flex items-center justify-center text-sm">
+                      {activity.type.includes('TRADE_OPENED') && '📈'}
+                      {activity.type.includes('TRADE_CLOSED') && '📉'}
+                      {activity.type.includes('START') && '▶️'}
+                      {activity.type.includes('STOP') && '⏹️'}
+                      {activity.type.includes('PANIC') && '🚨'}
+                      {!activity.type.includes('TRADE') && !activity.type.includes('START') && !activity.type.includes('STOP') && !activity.type.includes('PANIC') && '📝'}
+                    </div>
+                    <div className="flex-1">
+                      <div className="text-sm text-white">{activity.text}</div>
+                      <div className="text-xs text-gray-400">{new Date(activity.ts).toLocaleString()}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
         </div>
       </main>
 

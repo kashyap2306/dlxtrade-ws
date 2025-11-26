@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { settingsApi, integrationsApi } from '../services/api';
+import { settingsApi, integrationsApi, exchangeApi } from '../services/api';
 import Toast from '../components/Toast';
 import Sidebar from '../components/Sidebar';
 import { useAuth } from '../hooks/useAuth';
@@ -82,16 +82,36 @@ export default function Settings() {
   const [showSuccessPopup, setShowSuccessPopup] = useState(false);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
   const [disconnectingExchange, setDisconnectingExchange] = useState(false);
+  const [marketSymbols, setMarketSymbols] = useState<string[]>([]);
+  const [symbolSearch, setSymbolSearch] = useState('');
+  const [savingTrading, setSavingTrading] = useState(false);
+  const [savingRisk, setSavingRisk] = useState(false);
+  const [loadingAll, setLoadingAll] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [globalSettings, setGlobalSettings] = useState<any>(null);
   const [settings, setSettings] = useState<any>(null);
 
   useEffect(() => {
     if (user) {
-      loadSettings();
-      loadGlobalSettings();
+      loadAllData();
     }
   }, [user]);
+
+  const loadAllData = async () => {
+    setLoadingAll(true);
+    try {
+      await Promise.all([
+        loadSettings(),
+        loadGlobalSettings(),
+        loadConnectedExchange(),
+        loadMarketSymbols()
+      ]);
+    } catch (err) {
+      console.error('Error loading data:', err);
+    } finally {
+      setLoadingAll(false);
+    }
+  };
 
 
   const loadGlobalSettings = async () => {
@@ -114,15 +134,11 @@ export default function Settings() {
       if (response.data) {
         setSettings({
           symbol: response.data.symbol || 'BTCUSDT',
-          quoteSize: response.data.quoteSize || 0.001,
-          adversePct: response.data.adversePct || 0.0002,
-          cancelMs: response.data.cancelMs || 40,
-          maxPos: response.data.maxPos || 0.01,
-          minAccuracyThreshold: response.data.minAccuracyThreshold || 0.85,
-          strategy: response.data.strategy || 'orderbook_imbalance',
-          max_loss_pct: response.data.max_loss_pct || 5,
-          max_drawdown_pct: response.data.max_drawdown_pct || 10,
-          per_trade_risk_pct: response.data.per_trade_risk_pct || 1,
+          maxPositionPercent: response.data.maxPositionPercent || 10,
+          tradeType: response.data.tradeType || 'scalping',
+          accuracyThreshold: response.data.accuracyThreshold || 85,
+          maxDailyLoss: response.data.maxDailyLoss || 5,
+          maxTradesPerDay: response.data.maxTradesPerDay || 50,
           cryptoCompareKey: response.data.cryptoCompareKey || '',
           newsDataKey: response.data.newsDataKey || '',
           coinmarketcapKey: response.data.coinmarketcapKey || '',
@@ -135,15 +151,11 @@ export default function Settings() {
         // Initialize with defaults if no settings exist
         setSettings({
           symbol: 'BTCUSDT',
-          quoteSize: 0.001,
-          adversePct: 0.0002,
-          cancelMs: 40,
-          maxPos: 0.01,
-          minAccuracyThreshold: 0.85,
-          strategy: 'orderbook_imbalance',
-          max_loss_pct: 5,
-          max_drawdown_pct: 10,
-          per_trade_risk_pct: 1,
+          maxPositionPercent: 10,
+          tradeType: 'scalping',
+          accuracyThreshold: 85,
+          maxDailyLoss: 5,
+          maxTradesPerDay: 50,
           cryptoCompareKey: '',
           newsDataKey: '',
           coinmarketcapKey: '',
@@ -159,15 +171,11 @@ export default function Settings() {
       // Set defaults on error
       setSettings({
         symbol: 'BTCUSDT',
-        quoteSize: 0.001,
-        adversePct: 0.0002,
-        cancelMs: 40,
-        maxPos: 0.01,
-        minAccuracyThreshold: 0.85,
-        strategy: 'orderbook_imbalance',
-        max_loss_pct: 5,
-        max_drawdown_pct: 10,
-        per_trade_risk_pct: 1,
+        maxPositionPercent: 10,
+        tradeType: 'scalping',
+        accuracyThreshold: 85,
+        maxDailyLoss: 5,
+        maxTradesPerDay: 50,
         cryptoCompareKey: '',
         newsDataKey: '',
         binaceKey: '',
@@ -207,6 +215,54 @@ export default function Settings() {
     }
   };
 
+  const loadConnectedExchange = async () => {
+    if (!user) return;
+    try {
+      const response = await exchangeApi.getConfig();
+      if (response.data && response.data.hasApiKey) {
+        // Map exchange names to our UI format
+        const exchangeMap: any = {
+          binance: 'binance',
+          bitget: 'bitget',
+          weex: 'weex',
+          bingx: 'bingx'
+        };
+
+        setConnectedExchange({
+          id: exchangeMap[response.data.exchange] || response.data.exchange,
+          name: response.data.exchange,
+          logo: EXCHANGES.find(e => e.id === exchangeMap[response.data.exchange])?.logo,
+          connectedAt: response.data.updatedAt,
+          lastUpdated: response.data.updatedAt
+        });
+      }
+    } catch (err: any) {
+      // Exchange not configured yet, which is fine
+      console.log('No exchange configured yet');
+    }
+  };
+
+  const loadMarketSymbols = async () => {
+    try {
+      // Try to get symbols from backend market API
+      const response = await adminApi.getMarketData();
+      if (response.data?.symbols && Array.isArray(response.data.symbols)) {
+        setMarketSymbols(response.data.symbols);
+      } else {
+        // Fallback to common symbols
+        const commonSymbols = [
+          'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT',
+          'DOTUSDT', 'LINKUSDT', 'UNIUSDT', 'AVAXUSDT', 'LTCUSDT'
+        ];
+        setMarketSymbols(commonSymbols);
+      }
+    } catch (err) {
+      console.error('Error loading market symbols:', err);
+      // Fallback to common symbols
+      setMarketSymbols(['BTCUSDT', 'ETHUSDT', 'BNBUSDT']);
+    }
+  };
+
   const handleExchangeSelect = (exchangeId: string) => {
     setSelectedExchange(exchangeId);
     setExchangeForm({ apiKey: '', secretKey: '', passphrase: '' });
@@ -229,16 +285,16 @@ export default function Settings() {
     setSavingExchange(true);
 
     try {
-      // Here you would typically call an API to save the exchange credentials
-      // For now, we'll simulate the save and show success popup
-      await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate API call
-
-      // Set connected exchange
-      setConnectedExchange({
-        ...exchange,
-        connectedAt: new Date().toISOString(),
-        lastUpdated: new Date().toISOString()
+      await exchangeApi.saveConfig({
+        exchange: selectedExchange,
+        apiKey: exchangeForm.apiKey,
+        secret: exchangeForm.secretKey,
+        passphrase: exchangeForm.passphrase || undefined,
+        testnet: true // Default to testnet
       });
+
+      // Load the connected exchange to update state
+      await loadConnectedExchange();
 
       // Show success popup
       setShowSuccessPopup(true);
@@ -246,9 +302,47 @@ export default function Settings() {
       setExchangeForm({ apiKey: '', secretKey: '', passphrase: '' });
     } catch (err: any) {
       console.error('Error saving exchange:', err);
-      showToast('Error saving exchange', 'error');
+      showToast(err.response?.data?.error || 'Error saving exchange', 'error');
     } finally {
       setSavingExchange(false);
+    }
+  };
+
+  const handleSaveTradingSettings = async () => {
+    setSavingTrading(true);
+    try {
+      // Send only trading settings fields
+      const tradingSettings = {
+        symbol: settings.symbol,
+        maxPositionPercent: settings.maxPositionPercent,
+        tradeType: settings.tradeType,
+        accuracyThreshold: settings.accuracyThreshold
+      };
+      await settingsApi.update(tradingSettings);
+      showToast('Trading settings saved successfully', 'success');
+    } catch (err: any) {
+      console.error('Error saving trading settings:', err);
+      showToast(err.response?.data?.error || 'Error saving trading settings', 'error');
+    } finally {
+      setSavingTrading(false);
+    }
+  };
+
+  const handleSaveRiskControls = async () => {
+    setSavingRisk(true);
+    try {
+      // Send only risk controls fields
+      const riskControls = {
+        maxDailyLoss: settings.maxDailyLoss,
+        maxTradesPerDay: settings.maxTradesPerDay
+      };
+      await settingsApi.update(riskControls);
+      showToast('Risk controls saved successfully', 'success');
+    } catch (err: any) {
+      console.error('Error saving risk controls:', err);
+      showToast(err.response?.data?.error || 'Error saving risk controls', 'error');
+    } finally {
+      setSavingRisk(false);
     }
   };
 
@@ -256,8 +350,7 @@ export default function Settings() {
     setDisconnectingExchange(true);
 
     try {
-      // Here you would typically call an API to delete the exchange credentials
-      await new Promise(resolve => setTimeout(resolve, 500)); // Simulate API call
+      await exchangeApi.removeConfig();
 
       setConnectedExchange(null);
       setShowDisconnectConfirm(false);
@@ -316,10 +409,14 @@ export default function Settings() {
     window.location.href = '/login';
   };
 
-  if (loading || !settings) {
+  if (loadingAll || !settings) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
-        <div className="text-lg text-white">Loading settings...</div>
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-400 mx-auto mb-4"></div>
+          <div className="text-lg text-white">Loading settings...</div>
+          <div className="text-sm text-gray-400 mt-2">Fetching exchange config, market data, and settings</div>
+        </div>
       </div>
     );
   }
@@ -351,99 +448,91 @@ export default function Settings() {
                 <p className="text-sm text-gray-400">Configure your core trading parameters</p>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-2">
                   <label className="block text-sm font-medium text-gray-300">Symbol</label>
-                  <input
-                    type="text"
-                    className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                    value={settings.symbol}
-                    onChange={(e) => setSettings({ ...settings, symbol: e.target.value.toUpperCase() })}
-                    required
-                  />
+                  <div className="relative">
+                    <input
+                      type="text"
+                      className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                      value={symbolSearch || settings.symbol}
+                      onChange={(e) => setSymbolSearch(e.target.value)}
+                      placeholder="Search symbols..."
+                    />
+                    {symbolSearch && (
+                      <div className="absolute z-10 w-full mt-1 bg-slate-800 border border-white/10 rounded-lg shadow-lg max-h-40 overflow-y-auto">
+                        {marketSymbols
+                          .filter(symbol => symbol.toLowerCase().includes(symbolSearch.toLowerCase()))
+                          .slice(0, 10)
+                          .map((symbol) => (
+                            <div
+                              key={symbol}
+                              className="px-3 py-2 hover:bg-white/10 cursor-pointer text-white"
+                              onClick={() => {
+                                setSettings({ ...settings, symbol });
+                                setSymbolSearch('');
+                              }}
+                            >
+                              {symbol}
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-400">Trading pair for analysis and execution</p>
                 </div>
 
                 <div className="space-y-2">
-                  <label className="block text-sm font-medium text-gray-300">Quote Size</label>
+                  <label className="block text-sm font-medium text-gray-300">Max Position Per Trade (%)</label>
                   <input
                     type="number"
-                    step="0.0001"
+                    step="0.1"
+                    min="0.1"
+                    max="100"
                     className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                    value={settings.quoteSize}
-                    onChange={(e) => setSettings({ ...settings, quoteSize: parseFloat(e.target.value) })}
-                    required
+                    value={settings.maxPositionPercent}
+                    onChange={(e) => setSettings({ ...settings, maxPositionPercent: parseFloat(e.target.value) })}
                   />
+                  <p className="text-xs text-gray-400">% of portfolio allocated per trade</p>
                 </div>
 
                 <div className="space-y-2">
-                  <label className="block text-sm font-medium text-gray-300">Adverse Selection %</label>
-                  <input
-                    type="number"
-                    step="0.0001"
-                    className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                    value={settings.adversePct}
-                    onChange={(e) => setSettings({ ...settings, adversePct: parseFloat(e.target.value) })}
-                    required
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-gray-300">Cancel Time (ms)</label>
-                  <input
-                    type="number"
-                    className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                    value={settings.cancelMs}
-                    onChange={(e) => setSettings({ ...settings, cancelMs: parseInt(e.target.value, 10) })}
-                    required
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-gray-300">Max Position</label>
-                  <input
-                    type="number"
-                    step="0.0001"
-                    className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                    value={settings.maxPos}
-                    onChange={(e) => setSettings({ ...settings, maxPos: parseFloat(e.target.value) })}
-                    required
-                  />
-                </div>
-
-                <div className="space-y-2 md:col-span-2 lg:col-span-1">
-                  <label className="block text-sm font-medium text-gray-300">Strategy</label>
+                  <label className="block text-sm font-medium text-gray-300">Trade Type</label>
                   <select
                     className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                    value={settings.strategy}
-                    onChange={(e) => setSettings({ ...settings, strategy: e.target.value as any })}
+                    value={settings.tradeType}
+                    onChange={(e) => setSettings({ ...settings, tradeType: e.target.value })}
                   >
-                    <option value="orderbook_imbalance">Orderbook Imbalance</option>
-                    <option value="smc_hybrid">SMC Hybrid</option>
-                    <option value="stat_arb">Statistical Arbitrage (Stub)</option>
+                    <option value="scalping">Scalping</option>
+                    <option value="intraday">Intraday</option>
+                    <option value="swing">Swing</option>
                   </select>
+                  <p className="text-xs text-gray-400">Trading timeframe and strategy</p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-gray-300">Accuracy Trigger (%)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="1"
+                    className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                    value={settings.accuracyTrigger}
+                    onChange={(e) => setSettings({ ...settings, accuracyTrigger: parseInt(e.target.value, 10) })}
+                  />
+                  <p className="text-xs text-gray-400">Minimum accuracy to trigger trades</p>
                 </div>
               </div>
 
-              {/* Min Accuracy Threshold */}
-              <div className="mt-6 space-y-3">
-                <label className="block text-sm font-medium text-gray-300">Min Accuracy Threshold</label>
-                <div className="space-y-2">
-                  <input
-                    type="range"
-                    min="0.5"
-                    max="0.99"
-                    step="0.01"
-                    className="w-full h-2 bg-white/10 rounded-lg appearance-none cursor-pointer slider"
-                    value={settings.minAccuracyThreshold}
-                    onChange={(e) => setSettings({ ...settings, minAccuracyThreshold: parseFloat(e.target.value) })}
-                  />
-                  <div className="flex justify-between text-xs text-gray-400">
-                    <span>50%</span>
-                    <span className="font-semibold text-purple-400">{(settings.minAccuracyThreshold * 100).toFixed(0)}%</span>
-                    <span>99%</span>
-                  </div>
-                </div>
-                <p className="text-xs text-gray-400">Trades will only execute if accuracy is above this threshold</p>
+              <div className="mt-6 flex justify-end">
+                <button
+                  onClick={handleSaveTradingSettings}
+                  disabled={savingTrading}
+                  className="px-6 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {savingTrading ? 'Saving...' : 'Save Trading Settings'}
+                </button>
               </div>
             </section>
 
@@ -454,7 +543,7 @@ export default function Settings() {
                 <p className="text-sm text-gray-400">Configure your risk management parameters</p>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-2">
                   <label className="block text-sm font-medium text-gray-300">Max Daily Loss (%)</label>
                   <input
@@ -463,39 +552,34 @@ export default function Settings() {
                     min="0"
                     max="100"
                     className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                    value={settings.max_loss_pct}
-                    onChange={(e) => setSettings({ ...settings, max_loss_pct: parseFloat(e.target.value) })}
+                    value={settings.maxDailyLoss}
+                    onChange={(e) => setSettings({ ...settings, maxDailyLoss: parseFloat(e.target.value) })}
                   />
                   <p className="text-xs text-gray-400">Engine pauses if daily loss exceeds this %</p>
                 </div>
 
                 <div className="space-y-2">
-                  <label className="block text-sm font-medium text-gray-300">Max Drawdown (%)</label>
+                  <label className="block text-sm font-medium text-gray-300">Max Trades Per Day</label>
                   <input
                     type="number"
-                    step="0.1"
-                    min="0"
-                    max="100"
+                    min="1"
+                    max="500"
                     className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                    value={settings.max_drawdown_pct}
-                    onChange={(e) => setSettings({ ...settings, max_drawdown_pct: parseFloat(e.target.value) })}
+                    value={settings.maxTradesPerDay}
+                    onChange={(e) => setSettings({ ...settings, maxTradesPerDay: parseInt(e.target.value, 10) })}
                   />
-                  <p className="text-xs text-gray-400">Engine pauses if drawdown exceeds this %</p>
+                  <p className="text-xs text-gray-400">Maximum trades allowed per day</p>
                 </div>
+              </div>
 
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-gray-300">Per-Trade Risk (%)</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    max="100"
-                    className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                    value={settings.per_trade_risk_pct}
-                    onChange={(e) => setSettings({ ...settings, per_trade_risk_pct: parseFloat(e.target.value) })}
-                  />
-                  <p className="text-xs text-gray-400">Maximum risk per individual trade</p>
-                </div>
+              <div className="mt-6 flex justify-end">
+                <button
+                  onClick={handleSaveRiskControls}
+                  disabled={savingRisk}
+                  className="px-6 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {savingRisk ? 'Saving...' : 'Save Risk Controls'}
+                </button>
               </div>
             </section>
 
@@ -832,3 +916,4 @@ export default function Settings() {
     </div>
   );
 }
+
