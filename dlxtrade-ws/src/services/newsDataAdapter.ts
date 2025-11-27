@@ -78,7 +78,7 @@ async function makeRequest(url: string, attempt?: number, apiKey?: string): Prom
   };
 
   if (apiKey) {
-    headers['apikey'] = apiKey;
+    headers['X-ACCESS-KEY'] = apiKey;
   }
 
   const response = await axios.get(url, {

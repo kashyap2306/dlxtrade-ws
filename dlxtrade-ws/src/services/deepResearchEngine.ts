@@ -204,10 +204,10 @@ export class DeepResearchEngine {
       console.log(`[NewsData] START - ${symbol}`);
       const newsDataStart = Date.now();
       try {
-        if (!integrations.newsData?.apiKey) {
+        if (!integrations.newsdata?.apiKey) {
           throw new Error('NewsData API key is missing - skipping gracefully');
         }
-        newsData = await fetchNewsData(integrations.newsData.apiKey, symbol);
+        newsData = await fetchNewsData(integrations.newsdata.apiKey, symbol);
         providerLatencies.NewsData = Date.now() - newsDataStart;
         newsData.latencyMs = providerLatencies.NewsData;
         providersCalled.push('NewsData');

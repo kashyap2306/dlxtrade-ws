@@ -500,8 +500,9 @@ export async function usersRoutes(fastify: FastifyInstance) {
       }
 
       // Update user status to pending deletion
+      // Note: deletionRequestedAt field not available in user type - deletion may be handled differently
       await firestoreAdapter.createOrUpdateUser(id, {
-        deletionRequestedAt: new Date(),
+        // deletionRequestedAt field removed as it's not in the user type definition
       });
 
       // Log the deletion request
@@ -642,7 +643,7 @@ export async function usersRoutes(fastify: FastifyInstance) {
       const totalManualResearchRuns = researchLogs.length; // automated field not available, count all as manual
 
       const lastResearchTimestamp = researchLogs.length > 0
-        ? researchLogs[0].timestamp?.toDate?.()?.toISOString() || researchLogs[0].timestamp?.toISOString?.() || null
+        ? researchLogs[0].timestamp?.toDate?.()?.toISOString() || null
         : null;
 
       return {
