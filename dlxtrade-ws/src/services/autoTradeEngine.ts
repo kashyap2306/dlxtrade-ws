@@ -3,7 +3,7 @@ import { firestoreAdapter } from './firestoreAdapter';
 import { BinanceAdapter } from './binanceAdapter';
 import { decrypt } from './keyManager';
 import { getFirebaseAdmin } from '../utils/firebase';
-// Dynamic import for binancePublicAdapter to avoid module resolution issues
+// import { binancePublicAdapter } from './binancepublicAdapter';
 import { CryptoCompareAdapter } from './cryptocompareAdapter';
 import { fetchNewsData } from './newsDataAdapter';
 import { fetchCoinMarketCapMarketData } from './coinMarketCapAdapter';
@@ -133,15 +133,17 @@ export class AutoTradeEngine {
     const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
 
     // Fetch data from all providers in parallel
-    const BinancePublicAdapterClass = (await import('./binancepublicAdapter')).default;
-    const binanceAdapter = new BinancePublicAdapterClass();
+    // Create local instance to avoid import issues
+    const BinanceAdapterClass = require('./binancepublicAdapter').default;
+    const localBinanceAdapter = new BinanceAdapterClass();
+
     const [binanceData, cryptocompareData, newsData, cmcData, ohlcData, orderbookData] = await Promise.allSettled([
-      binanceAdapter.getPublicMarketData(symbol),
+      localBinanceAdapter.getPublicMarketData(symbol),
       integrations.cryptocompare ? new CryptoCompareAdapter(integrations.cryptocompare.apiKey).getMarketData(symbol) : Promise.resolve(null),
       fetchNewsData(integrations.newsdata?.apiKey, symbol),
       fetchCoinMarketCapMarketData(symbol, integrations.coinmarketcap?.apiKey),
-      binanceAdapter.getOHLCData(symbol),
-      binanceAdapter.getOrderbook(symbol)
+      localBinanceAdapter.getOHLCData(symbol),
+      localBinanceAdapter.getOrderbook(symbol)
     ]);
 
     // Extract successful results
