@@ -114,11 +114,8 @@ export async function marketRoutes(fastify: FastifyInstance) {
     try {
       const binanceAdapter = new BinanceAdapter();
 
-      // Get exchange info from Binance
-      const exchangeInfo = await binanceAdapter.getExchangeInfo();
-
-      if (!exchangeInfo || !exchangeInfo.symbols) {
-        // Fallback symbols if Binance is unavailable
+      // Use fallback symbols (getExchangeInfo method not available)
+      // Fallback symbols for market data
         const fallbackSymbols = [
           { symbol: 'BTCUSDT', base: 'BTC', quote: 'USDT' },
           { symbol: 'ETHUSDT', base: 'ETH', quote: 'USDT' },

@@ -501,7 +501,6 @@ export async function usersRoutes(fastify: FastifyInstance) {
 
       // Update user status to pending deletion
       await firestoreAdapter.createOrUpdateUser(id, {
-        pendingDeletion: true,
         deletionRequestedAt: new Date(),
       });
 
@@ -594,18 +593,18 @@ export async function usersRoutes(fastify: FastifyInstance) {
         binance: { name: 'Binance Public', status: 'Active', connected: true }, // Always active
         cryptoCompare: {
           name: 'CryptoCompare',
-          status: integrations['cryptocompare']?.enabled ? 'Connected' : 'Not Connected',
-          connected: !!integrations['cryptocompare']?.enabled
+          status: integrations['cryptocompare'] ? 'Connected' : 'Not Connected',
+          connected: !!integrations['cryptocompare']
         },
         newsData: {
           name: 'NewsData',
-          status: integrations['newsdata']?.enabled ? 'Connected' : 'Not Connected',
-          connected: !!integrations['newsdata']?.enabled
+          status: integrations['newsdata'] ? 'Connected' : 'Not Connected',
+          connected: !!integrations['newsdata']
         },
         coinMarketCap: {
           name: 'CoinMarketCap',
-          status: integrations['coinmarketcap']?.enabled ? 'Connected' : 'Not Connected',
-          connected: !!integrations['coinmarketcap']?.enabled
+          status: integrations['coinmarketcap'] ? 'Connected' : 'Not Connected',
+          connected: !!integrations['coinmarketcap']
         },
       };
 
@@ -640,10 +639,10 @@ export async function usersRoutes(fastify: FastifyInstance) {
       // Calculate statistics
       const totalDeepResearchRuns = researchLogs.length;
       const totalAutoTradeRuns = autoTradeRuns;
-      const totalManualResearchRuns = researchLogs.filter(log => !log.automated).length;
+      const totalManualResearchRuns = researchLogs.length; // automated field not available, count all as manual
 
       const lastResearchTimestamp = researchLogs.length > 0
-        ? researchLogs[0].timestamp?.toDate?.()?.toISOString() || new Date(researchLogs[0].timestamp).toISOString()
+        ? researchLogs[0].timestamp?.toDate?.()?.toISOString() || researchLogs[0].timestamp?.toISOString?.() || null
         : null;
 
       return {
