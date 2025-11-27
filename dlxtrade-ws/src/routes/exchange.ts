@@ -5,6 +5,7 @@ import { ExchangeConnectorFactory, type ExchangeName, type ExchangeCredentials }
 import { encrypt, decrypt } from '../services/keyManager';
 import { logger } from '../utils/logger';
 import * as admin from 'firebase-admin';
+import { getFirebaseAdmin } from '../utils/firebase';
 
 const exchangeConfigSchema = z.object({
   exchange: z.enum(['binance', 'bitget', 'weex', 'bingx', 'cryptoquant', 'lunarcrush', 'coinapi']).optional(),
@@ -16,6 +17,48 @@ const exchangeConfigSchema = z.object({
 });
 
 export async function exchangeRoutes(fastify: FastifyInstance) {
+  // GET /api/exchange/status - Get exchange connection status
+  fastify.get('/status', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const db = getFirebaseAdmin().firestore();
+
+      // Check if user has exchange config
+      const exchangeConfigDoc = await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').get();
+
+      let status = {
+        connected: false,
+        exchange: null,
+        accountId: null,
+        lastTested: null,
+        testnet: true,
+        hasApiKey: false,
+        hasSecret: false,
+        hasPassphrase: false,
+      };
+
+      if (exchangeConfigDoc.exists) {
+        const config = exchangeConfigDoc.data();
+        if (config?.apiKeyEncrypted && config?.secretEncrypted) {
+          status.connected = true;
+          status.exchange = config.exchange || 'binance';
+          status.accountId = config.accountId || null;
+          status.testnet = config.testnet ?? true;
+          status.hasApiKey = !!config.apiKeyEncrypted;
+          status.hasSecret = !!config.secretEncrypted;
+          status.hasPassphrase = !!config.passphraseEncrypted;
+          status.lastTested = config.lastTested || null;
+        }
+      }
+
+      return status;
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting exchange status');
+      return reply.code(500).send({ error: err.message || 'Error fetching exchange status' });
+    }
+  });
   // POST /api/users/:id/exchange-config - Save exchange configuration
   fastify.post('/users/:id/exchange-config', {
     preHandler: [fastify.authenticate],

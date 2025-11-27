@@ -403,9 +403,9 @@ export class BinanceAdapter implements ExchangeConnector {
         }
 
         return {
-          price: parseFloat(response.data.lastPrice),
+          lastPrice: parseFloat(response.data.lastPrice),
           volume24h: parseFloat(response.data.volume),
-          change24h: parseFloat(response.data.priceChangePercent),
+          priceChangePercent24h: parseFloat(response.data.priceChangePercent),
           high24h: parseFloat(response.data.highPrice),
           low24h: parseFloat(response.data.lowPrice),
           count: parseInt(response.data.count)
@@ -424,9 +424,9 @@ export class BinanceAdapter implements ExchangeConnector {
       const cryptoCompareData = await adapter.getMarketData(symbol);
 
       return {
-        price: cryptoCompareData.price,
+        lastPrice: cryptoCompareData.price,
         volume24h: cryptoCompareData.volume24h || 0,
-        change24h: cryptoCompareData.priceChangePercent24h || 0,
+        priceChangePercent24h: cryptoCompareData.priceChangePercent24h || 0,
         high24h: cryptoCompareData.high24h || cryptoCompareData.price,
         low24h: cryptoCompareData.low24h || cryptoCompareData.price,
         count: 0

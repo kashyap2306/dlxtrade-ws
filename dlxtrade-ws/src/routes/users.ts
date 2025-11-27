@@ -245,7 +245,7 @@ export async function usersRoutes(fastify: FastifyInstance) {
     try {
       const { id } = request.params;
       const user = (request as any).user;
-      
+
       // Users can only view their own stats unless they're admin
       const isAdmin = await firestoreAdapter.isAdmin(user.uid);
       if (id !== user.uid && !isAdmin) {
@@ -257,18 +257,61 @@ export async function usersRoutes(fastify: FastifyInstance) {
         throw new NotFoundError('User not found');
       }
 
-      // Get trades for PnL calculation
+      // Get trades for comprehensive stats calculation
       const trades = await firestoreAdapter.getTrades(id, 1000);
       const totalPnL = trades.reduce((sum, trade) => sum + (trade.pnl || 0), 0);
       const winningTrades = trades.filter(t => (t.pnl || 0) > 0).length;
       const losingTrades = trades.filter(t => (t.pnl || 0) < 0).length;
 
+      // Calculate daily PnL (last 24 hours)
+      const oneDayAgo = new Date();
+      oneDayAgo.setDate(oneDayAgo.getDate() - 1);
+      const dailyTrades = trades.filter(trade => {
+        let tradeDate: Date;
+        if (trade.createdAt?.toDate) {
+          tradeDate = trade.createdAt.toDate();
+        } else if (trade.createdAt) {
+          tradeDate = new Date(trade.createdAt);
+        } else {
+          return false;
+        }
+        return tradeDate >= oneDayAgo;
+      });
+      const dailyPnL = dailyTrades.reduce((sum, trade) => sum + (trade.pnl || 0), 0);
+
+      // Calculate weekly PnL (last 7 days)
+      const oneWeekAgo = new Date();
+      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+      const weeklyTrades = trades.filter(trade => {
+        let tradeDate: Date;
+        if (trade.createdAt?.toDate) {
+          tradeDate = trade.createdAt.toDate();
+        } else if (trade.createdAt) {
+          tradeDate = new Date(trade.createdAt);
+        } else {
+          return false;
+        }
+        return tradeDate >= oneWeekAgo;
+      });
+      const weeklyPnL = weeklyTrades.reduce((sum, trade) => sum + (trade.pnl || 0), 0);
+
+      // Calculate win rate and accuracy (using trade accuracy if available, otherwise win rate)
+      const winRate = trades.length > 0 ? (winningTrades / trades.length) * 100 : 0;
+      // Accuracy is calculated from trades with accuracy field, or fallback to win rate
+      const tradesWithAccuracy = trades.filter(t => t.accuracy !== undefined);
+      const accuracy = tradesWithAccuracy.length > 0
+        ? tradesWithAccuracy.reduce((sum, t) => sum + (t.accuracy || 0), 0) / tradesWithAccuracy.length * 100
+        : winRate;
+
       return {
         totalPnL: userData.totalPnL || totalPnL,
+        dailyPnL,
+        weeklyPnL,
         totalTrades: userData.totalTrades || trades.length,
         winningTrades,
         losingTrades,
-        winRate: trades.length > 0 ? (winningTrades / trades.length) * 100 : 0,
+        winRate,
+        accuracy,
         avgPnL: trades.length > 0 ? totalPnL / trades.length : 0,
       };
     } catch (err: any) {

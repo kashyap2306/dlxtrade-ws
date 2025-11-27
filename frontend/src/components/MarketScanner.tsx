@@ -17,8 +17,8 @@ export default function MarketScanner() {
   const fetchTopCoins = useCallback(async () => {
     setLoading(true);
     try {
-      // Fetch from backend API which uses CoinMarketCap
-      const response = await api.get('/market/top-coins');
+      // Fetch from backend API which uses market data providers
+      const response = await api.get('/market/top-movers');
       const data = response.data || [];
       
       // Transform backend data to our format
