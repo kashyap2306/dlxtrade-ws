@@ -4,8 +4,8 @@ import { fetchCoinMarketCapMarketData } from '../services/coinMarketCapAdapter';
 import { logger } from '../utils/logger';
 
 export async function marketRoutes(fastify: FastifyInstance) {
-  // GET /api/market/top-movers - Get top movers (top 5 coins with highest price changes)
-  fastify.get('/top-movers', async (request: FastifyRequest, reply: FastifyReply) => {
+  // GET /api/market/top-coins - Get top 20 coins using available providers
+  fastify.get('/top-coins', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const binanceAdapter = new BinanceAdapter();
 
