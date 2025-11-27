@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { settingsApi, integrationsApi, exchangeApi } from '../services/api';
 import Toast from '../components/Toast';
 import Sidebar from '../components/Sidebar';
@@ -89,19 +89,31 @@ export default function Settings() {
   const [loadingAll, setLoadingAll] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [globalSettings, setGlobalSettings] = useState<any>(null);
-  const [settings, setSettings] = useState<any>(null);
+  const [settings, setSettings] = useState<any>({
+    symbol: 'BTCUSDT',
+    maxPositionPercent: 10,
+    tradeType: 'scalping',
+    accuracyThreshold: 85,
+    maxDailyLoss: 5,
+    maxTradesPerDay: 50,
+    cryptoCompareKey: '',
+    newsDataKey: '',
+    coinmarketcapKey: '',
+    enableAutoTrade: false,
+    exchanges: [],
+    backupApis: [],
+    showUnmaskedKeys: false,
+  });
+  const [integrations, setIntegrations] = useState<any>(null);
+  const isMountedRef = useRef(true);
 
-  useEffect(() => {
-    if (user) {
-      loadAllData();
-    }
-  }, [user]);
-
-  const loadAllData = async () => {
+  const loadAllData = useCallback(async () => {
+    if (!isMountedRef.current) return;
     setLoadingAll(true);
     try {
       await Promise.all([
         loadSettings(),
+        loadIntegrations(),
         loadGlobalSettings(),
         loadConnectedExchange(),
         loadMarketSymbols()
@@ -109,9 +121,24 @@ export default function Settings() {
     } catch (err) {
       console.error('Error loading data:', err);
     } finally {
-      setLoadingAll(false);
+      if (isMountedRef.current) {
+        setLoadingAll(false);
+      }
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (user) {
+      loadAllData();
+    }
+  }, [user, loadAllData]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
 
   const loadGlobalSettings = async () => {
@@ -122,6 +149,27 @@ export default function Settings() {
       // Admin can access global settings via admin panel
     } catch (err) {
       console.error('Error loading global settings:', err);
+    }
+  };
+
+  const loadIntegrations = async () => {
+    try {
+      const response = await integrationsApi.load();
+      const integrationsData = response.data || {};
+      setIntegrations(integrationsData);
+
+      // Also update settings with API keys from integrations
+      if (settings) {
+        setSettings({
+          ...settings,
+          cryptoCompareKey: integrationsData.cryptocompare?.apiKey || '',
+          newsDataKey: integrationsData.newsdata?.apiKey || '',
+          coinmarketcapKey: integrationsData.coinmarketcap?.apiKey || '',
+        });
+      }
+    } catch (err) {
+      console.error('Error loading integrations:', err);
+      setIntegrations({});
     }
   };
 
@@ -204,9 +252,30 @@ export default function Settings() {
     setSavingProvider(providerName);
 
     try {
-      const response = await settingsApi.update(settings);
+      // Map provider names to API names
+      const apiNameMap: any = {
+        'CryptoCompare': 'cryptocompare',
+        'NewsData': 'newsdata',
+        'CoinMarketCap': 'coinmarketcap'
+      };
+
+      const apiName = apiNameMap[providerName];
+      if (!apiName) {
+        throw new Error(`Unknown provider: ${providerName}`);
+      }
+
+      // Get the API key from settings
+      const apiKeyField = `${apiName}Key`;
+      const apiKey = settings[apiKeyField];
+
+      const response = await integrationsApi.update({
+        apiName,
+        enabled: !!apiKey?.trim(),
+        apiKey: apiKey?.trim() || undefined
+      });
+
       showToast(`${providerName} saved successfully`, 'success');
-      await loadSettings();
+      await loadIntegrations(); // Reload integrations instead of settings
     } catch (err: any) {
       console.error(`Error saving ${providerName}:`, err);
       showToast(err.response?.data?.error || `Error saving ${providerName}`, 'error');
@@ -383,8 +452,7 @@ export default function Settings() {
       const response = await settingsApi.update(settings);
       // Settings updated successfully
       showToast('Settings saved successfully', 'success');
-      // Reload settings to ensure sync
-      await loadSettings();
+      // No need to reload - local state is already updated
     } catch (err: any) {
       console.error('Error saving settings:', err);
       showToast(err.response?.data?.error || 'Error saving settings', 'error');
@@ -601,7 +669,7 @@ export default function Settings() {
                       <h3 className="text-white font-medium">CryptoCompare</h3>
                       <p className="text-xs text-gray-400">Market data & fundamentals</p>
                     </div>
-                    {settings.cryptoCompareKey ? (
+                    {integrations?.cryptocompare?.enabled ? (
                       <CheckCircleIcon className="w-5 h-5 text-green-400" />
                     ) : (
                       <XCircleIcon className="w-5 h-5 text-red-400" />
@@ -613,7 +681,7 @@ export default function Settings() {
                     <input
                       type="password"
                       className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                      value={settings.cryptoCompareKey}
+                      value={settings.cryptoCompareKey || ''}
                       onChange={(e) => setSettings({ ...settings, cryptoCompareKey: e.target.value })}
                       placeholder="Enter CryptoCompare API key"
                     />
@@ -638,7 +706,7 @@ export default function Settings() {
                       <h3 className="text-white font-medium">NewsData</h3>
                       <p className="text-xs text-gray-400">News sentiment analysis</p>
                     </div>
-                    {settings.newsDataKey ? (
+                    {integrations?.newsdata?.enabled ? (
                       <CheckCircleIcon className="w-5 h-5 text-green-400" />
                     ) : (
                       <XCircleIcon className="w-5 h-5 text-red-400" />
@@ -650,7 +718,7 @@ export default function Settings() {
                     <input
                       type="password"
                       className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                      value={settings.newsDataKey}
+                      value={settings.newsDataKey || ''}
                       onChange={(e) => setSettings({ ...settings, newsDataKey: e.target.value })}
                       placeholder="Enter NewsData API key"
                     />
@@ -690,7 +758,7 @@ export default function Settings() {
                       <h3 className="text-white font-medium">CoinMarketCap</h3>
                       <p className="text-xs text-gray-400">Market data backup</p>
                     </div>
-                    {settings.coinmarketcapKey ? (
+                    {integrations?.coinmarketcap?.enabled ? (
                       <CheckCircleIcon className="w-5 h-5 text-green-400" />
                     ) : (
                       <XCircleIcon className="w-5 h-5 text-gray-400" />
@@ -702,7 +770,7 @@ export default function Settings() {
                     <input
                       type="password"
                       className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                      value={settings.coinmarketcapKey}
+                      value={settings.coinmarketcapKey || ''}
                       onChange={(e) => setSettings({ ...settings, coinmarketcapKey: e.target.value })}
                       placeholder="Enter CoinMarketCap API key"
                     />

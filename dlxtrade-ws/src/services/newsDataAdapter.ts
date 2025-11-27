@@ -11,7 +11,7 @@ interface CacheEntry {
 }
 
 const newsDataCache = new Map<string, CacheEntry>();
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes default TTL for news
+const CACHE_TTL_MS = 90 * 1000; // 90 seconds TTL for news (between 60-120s)
 
 // NewsData sentiment calculation based on keywords
 function calculateNewsSentiment(articles: any[]): number {
@@ -101,38 +101,32 @@ async function makeRequest(url: string, attempt?: number, apiKey?: string): Prom
 }
 
 async function attemptWithRetry(url: string, apiKey?: string): Promise<any> {
-  // Try 1
-  try {
-    return await makeRequest(url, undefined, apiKey);
-  } catch (error: any) {
-    if (error.response?.status === 429) {
-      console.log('[NewsData] RETRY 1 - Rate limited, waiting 500ms');
-      await new Promise(resolve => setTimeout(resolve, 500));
+  const maxRetries = 3;
+  let attempt = 0;
 
-      // Try 2
-      try {
-        return await makeRequest(url, undefined, apiKey);
-      } catch (error2: any) {
-        if (error2.response?.status === 429) {
-          console.log('[NewsData] RETRY 2 - Rate limited again, waiting 1000ms');
-          await new Promise(resolve => setTimeout(resolve, 1000));
+  while (attempt < maxRetries) {
+    try {
+      return await makeRequest(url, attempt, apiKey);
+    } catch (error: any) {
+      attempt++;
 
-          // Try 3
-          try {
-            return await makeRequest(url, undefined, apiKey);
-          } catch (error3: any) {
-            if (error3.response?.status === 429) {
-              console.log('[NewsData] RETRY 3 FAILED - Rate limited, using fallback');
-              return null; // Signal to use fallback
-            }
-            throw error3;
-          }
-        }
-        throw error2;
+      if (error.response?.status === 429 && attempt < maxRetries) {
+        // Exponential backoff: 500ms, 1000ms, 2000ms
+        const delayMs = Math.pow(2, attempt - 1) * 500;
+        console.log(`[NewsData] RETRY ${attempt} - Rate limited, waiting ${delayMs}ms`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      } else if (error.response?.status === 429 && attempt >= maxRetries) {
+        console.log('[NewsData] ALL RETRIES FAILED - Rate limited, using fallback');
+        return null; // Signal to use fallback
+      } else {
+        // Non-rate-limit error, don't retry
+        throw error;
       }
     }
-    throw error;
   }
+
+  // Should not reach here, but just in case
+  return null;
 }
 
 export async function fetchNewsData(apiKey: string, symbol?: string): Promise<any> {
@@ -140,25 +134,27 @@ export async function fetchNewsData(apiKey: string, symbol?: string): Promise<an
 
   console.log('[NewsData] START - Fetching news');
 
-  if (!apiKey) {
-    throw new AdapterError({
-      adapter: 'NewsData',
-      method: 'GET',
-      url: BASE_URL,
-      errorMessage: 'NewsData API key is required',
-      statusCode: 401,
-      isAuthError: true
-    });
-  }
-
   try {
     // Check cache first
-  const cacheKey = `newsdata_${symbol || 'general'}`;
-  const cached = newsDataCache.get(cacheKey);
-  if (cached && (Date.now() - cached.timestamp) < cached.ttl) {
-    console.log('[NewsData] CACHE HIT - Returning cached news');
-    return cached.data;
-  }
+    const cacheKey = `newsdata_${symbol || 'general'}`;
+    const cached = newsDataCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp) < cached.ttl) {
+      console.log('[NewsData] CACHE HIT - Returning cached news');
+      return cached.data;
+    }
+
+    if (!apiKey) {
+      console.log('[NewsData] NO API KEY - Returning empty news');
+      return {
+        provider: 'newsdata',
+        success: false,
+        error: 'NewsData API key is required',
+        articles: [],
+        sentiment: 0.5,
+        sentimentScore: 0.5,
+        latency: Date.now() - startTime
+      };
+    }
 
     // Build NewsData query - search for crypto-related news
     let url = `${BASE_URL}?apikey=${apiKey}&category=business,technology&language=en`;
@@ -175,9 +171,11 @@ export async function fetchNewsData(apiKey: string, symbol?: string): Promise<an
       // All retries failed due to rate limiting
       console.log('[NewsData] FALLBACK - Rate limited, returning empty news');
       return {
+        provider: 'newsdata',
         success: true,
         articles: [],
         sentiment: 0.5,
+        sentimentScore: 0.5,
         latency: Date.now() - startTime,
         message: "Rate-limited, using fallback empty news"
       };
@@ -188,18 +186,18 @@ export async function fetchNewsData(apiKey: string, symbol?: string): Promise<an
 
     // Normalize the response to match expected format
     const normalizedArticles = articles.map((article: any) => ({
-      title: article.title,
-      url: article.link,
-      source: article.source_id || 'Unknown',
-      published_at: article.pubDate,
-      tags: [], // NewsData doesn't provide tags, we'll calculate sentiment differently
-      description: article.description
+      title: article.title || 'Untitled',
+      url: article.link || '',
+      publishedAt: article.pubDate || new Date().toISOString(),
+      summary: article.description || article.title || '',
+      source: article.source_id || 'Unknown'
     }));
 
     const sentiment = calculateNewsSentiment(normalizedArticles);
     const latency = Date.now() - startTime;
 
     const result = {
+      provider: 'newsdata',
       success: true,
       articles: normalizedArticles,
       sentiment,

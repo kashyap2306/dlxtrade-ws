@@ -1,4 +1,4 @@
-﻿import { useState, useEffect } from 'react';
+﻿import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { engineApi, settingsApi, usersApi, agentsApi, engineStatusApi, hftApi, tradesApi } from '../services/api';
@@ -32,15 +32,10 @@ export default function Profile() {
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
   const [showForgotPasswordModal, setShowForgotPasswordModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const isMountedRef = useRef(true);
 
-  useEffect(() => {
-    if (user) {
-      loadAllData();
-    }
-  }, [user]);
-
-  const loadAllData = async () => {
-    if (!user) return;
+  const loadAllData = useCallback(async () => {
+    if (!user || !isMountedRef.current) return;
     setLoading(true);
     try {
       const [
@@ -76,11 +71,28 @@ export default function Profile() {
       });
     } catch (err: any) {
       console.error('Error loading profile data:', err);
-      showToast(err.response?.data?.error || 'Failed to load profile data', 'error');
+      if (isMountedRef.current) {
+        showToast(err.response?.data?.error || 'Failed to load profile data', 'error');
+      }
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
-  };
+  }, [user]);
+
+  useEffect(() => {
+    if (user) {
+      loadAllData();
+    }
+  }, [user, loadAllData]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
 
   const handleLogoutAllSessions = async () => {

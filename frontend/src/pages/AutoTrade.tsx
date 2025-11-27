@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
 import { autoTradeApi, marketApi, walletApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
+import { usePolling } from '../hooks/usePerformance';
 import Toast from '../components/Toast';
 
 interface AutoTradeConfig {
@@ -56,6 +57,7 @@ export default function AutoTrade() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const isMountedRef = useRef(true);
 
   // Auto-trade state
   const [config, setConfig] = useState<AutoTradeConfig>({
@@ -84,6 +86,11 @@ export default function AutoTrade() {
   const [isExchangeConnected, setIsExchangeConnected] = useState(false);
   const [engineStatus, setEngineStatus] = useState<'Running' | 'Paused' | 'Stopped' | 'Outside Hours'>('Stopped');
 
+  // New auto-trade proposals and logs state
+  const [proposals, setProposals] = useState<any>(null);
+  const [autoTradeLogs, setAutoTradeLogs] = useState<any[]>([]);
+  const [triggering, setTriggering] = useState(false);
+
   // Control sections state
   const [autoTradeControls, setAutoTradeControls] = useState({
     enabled: false,
@@ -104,19 +111,55 @@ export default function AutoTrade() {
     slippageBlocker: false,
   });
 
-  useEffect(() => {
-    if (user) {
-      loadAllData();
-      // Set up polling for live data
-      const interval = setInterval(() => {
-        loadLiveData();
-      }, 3000); // 3 seconds for active trades
-      return () => clearInterval(interval);
+  const loadProposals = useCallback(async () => {
+    if (!user || !isMountedRef.current) return;
+    try {
+      const response = await autoTradeApi.getProposals();
+      if (isMountedRef.current) {
+        setProposals(response.data);
+      }
+    } catch (err: any) {
+      suppressConsoleError(err, 'loadProposals');
     }
   }, [user]);
 
-  const loadAllData = async () => {
-    if (!user) return;
+  const loadAutoTradeLogs = useCallback(async () => {
+    if (!user || !isMountedRef.current) return;
+    try {
+      const response = await autoTradeApi.getLogs(20);
+      if (isMountedRef.current) {
+        setAutoTradeLogs(response.data.logs || []);
+      }
+    } catch (err: any) {
+      suppressConsoleError(err, 'loadAutoTradeLogs');
+    }
+  }, [user]);
+
+  const loadLiveData = useCallback(async () => {
+    if (!user || !isMountedRef.current) return;
+    try {
+      const [tradesRes, activityRes, proposalsRes, logsRes] = await Promise.all([
+        autoTradeApi.getActiveTrades(50),
+        autoTradeApi.getActivity(50),
+        autoTradeApi.getProposals(),
+        autoTradeApi.getLogs(20),
+      ]);
+
+      if (isMountedRef.current) {
+        setActiveTrades(tradesRes.data);
+        setActivityLogs(activityRes.data);
+        setProposals(proposalsRes.data);
+        setAutoTradeLogs(logsRes.data.logs || []);
+        // Update engine status based on config and current time
+        updateEngineStatus();
+      }
+    } catch (error: any) {
+      // Silent fail for live data to avoid spam
+    }
+  }, [user]);
+
+  const loadAllData = useCallback(async () => {
+    if (!user || !isMountedRef.current) return;
     setLoading(true);
     try {
       // Load config, symbols, and initial data in parallel
@@ -126,57 +169,61 @@ export default function AutoTrade() {
         walletApi.getBalances(),
       ]);
 
-      setConfig(configRes.data);
-      setSymbols(symbolsRes.data);
-      setPortfolio(portfolioRes.data);
+      if (isMountedRef.current) {
+        setConfig(configRes.data);
+        setSymbols(symbolsRes.data);
+        setPortfolio(portfolioRes.data);
 
-      // Set local state from config
-      setAutoTradeControls({
-        enabled: configRes.data.enabled,
-        maxConcurrentTrades: configRes.data.maxConcurrentTrades,
-        maxTradesPerDay: configRes.data.maxTradesPerDay,
-      });
+        // Set local state from config
+        setAutoTradeControls({
+          enabled: configRes.data.enabled,
+          maxConcurrentTrades: configRes.data.maxConcurrentTrades,
+          maxTradesPerDay: configRes.data.maxTradesPerDay,
+        });
 
-      setScheduleConfig({
-        start: configRes.data.schedule.start,
-        end: configRes.data.schedule.end,
-        days: configRes.data.schedule.days,
-        run24_7: false, // Calculate from schedule
-      });
+        setScheduleConfig({
+          start: configRes.data.schedule.start,
+          end: configRes.data.schedule.end,
+          days: configRes.data.schedule.days,
+          run24_7: false, // Calculate from schedule
+        });
 
-      setSafetyConfig({
-        cooldownSeconds: configRes.data.cooldownSeconds,
-        consecutiveLossPauseCount: configRes.data.consecutiveLossPauseCount,
-        slippageBlocker: configRes.data.slippageBlocker,
-      });
+        setSafetyConfig({
+          cooldownSeconds: configRes.data.cooldownSeconds,
+          consecutiveLossPauseCount: configRes.data.consecutiveLossPauseCount,
+          slippageBlocker: configRes.data.slippageBlocker,
+        });
+      }
 
       // Load initial live data
       await loadLiveData();
     } catch (error: any) {
       console.error('Error loading auto-trade data:', error);
-      showToast('Failed to load auto-trade data', 'error');
+      if (isMountedRef.current) {
+        showToast('Failed to load auto-trade data', 'error');
+      }
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
-  };
+  }, [user, loadLiveData]);
 
-  const loadLiveData = async () => {
-    if (!user) return;
-    try {
-      const [tradesRes, activityRes] = await Promise.all([
-        autoTradeApi.getActiveTrades(50),
-        autoTradeApi.getActivity(50),
-      ]);
-
-      setActiveTrades(tradesRes.data);
-      setActivityLogs(activityRes.data);
-
-      // Update engine status based on config and current time
-      updateEngineStatus();
-    } catch (error: any) {
-      // Silent fail for live data to avoid spam
+  useEffect(() => {
+    if (user) {
+      loadAllData();
     }
-  };
+  }, [user, loadAllData]);
+
+  // Use centralized polling for live data (30 second intervals when visible)
+  usePolling(loadLiveData, 30000, !!user);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const updateEngineStatus = () => {
     const now = new Date();
@@ -283,6 +330,39 @@ export default function AutoTrade() {
       setSaving(false);
     }
   };
+
+  const handleTriggerAutoTrade = useCallback(async (symbol?: string, dryRun: boolean = true) => {
+    if (!user) return;
+    setTriggering(true);
+    try {
+      const response = await autoTradeApi.trigger({ symbol, dryRun });
+      const data = response.data;
+
+      if (data.success) {
+        setToast({
+          message: symbol
+            ? `Auto-trade triggered for ${symbol} (${dryRun ? 'dry run' : 'live'})`
+            : `Auto-trade cycle completed (${data.tradesExecuted || 0} trades executed)`,
+          type: 'success'
+        });
+      } else {
+        setToast({
+          message: data.reason || 'Auto-trade failed',
+          type: 'error'
+        });
+      }
+
+      // Reload data
+      await loadLiveData();
+    } catch (err: any) {
+      setToast({
+        message: err.response?.data?.error || 'Failed to trigger auto-trade',
+        type: 'error'
+      });
+    } finally {
+      setTriggering(false);
+    }
+  }, [user, loadLiveData]);
 
   const handlePanicStop = async () => {
     if (confirm('Are you sure you want to activate emergency stop? This will immediately disable auto-trading.')) {
@@ -793,6 +873,92 @@ export default function AutoTrade() {
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+          </div>
+
+          {/* Section: Auto-Trade Proposals & Logs */}
+          <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-white">Auto-Trade Analysis</h3>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => handleTriggerAutoTrade(undefined, true)}
+                  disabled={triggering}
+                  className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded disabled:opacity-50"
+                >
+                  {triggering ? 'Running...' : 'Test Cycle'}
+                </button>
+                <button
+                  onClick={() => handleTriggerAutoTrade(selectedSymbol || undefined, true)}
+                  disabled={triggering || !selectedSymbol}
+                  className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-sm rounded disabled:opacity-50"
+                >
+                  {triggering ? 'Testing...' : `Test ${selectedSymbol || 'Symbol'}`}
+                </button>
+              </div>
+            </div>
+
+            {proposals && (
+              <div className="mb-4 text-sm text-gray-300">
+                <div>Last Cycle: {proposals.lastCycle ? new Date(proposals.lastCycle).toLocaleString() : 'Never'}</div>
+                <div>Next Cycle: {proposals.nextCycle ? new Date(proposals.nextCycle).toLocaleString() : 'N/A'}</div>
+              </div>
+            )}
+
+            {/* Recent Proposals */}
+            {proposals?.recentProposals?.length > 0 && (
+              <div className="mb-6">
+                <h4 className="text-md font-medium text-white mb-2">Recent Proposals</h4>
+                <div className="space-y-2 max-h-60 overflow-y-auto">
+                  {proposals.recentProposals.map((proposal: any, index: number) => (
+                    <div key={index} className="bg-slate-700/50 rounded p-3">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <div className="text-sm text-white font-medium">
+                            {proposal.symbol} {proposal.direction} @ ${proposal.entryPrice.toFixed(2)}
+                          </div>
+                          <div className="text-xs text-gray-400">
+                            Accuracy: {proposal.accuracy.toFixed(1)}% |
+                            Size: {proposal.positionSize.toFixed(4)} |
+                            SL: ${proposal.stopLoss.toFixed(2)} |
+                            TP: ${proposal.takeProfit.toFixed(2)}
+                          </div>
+                        </div>
+                        <div className={`text-xs px-2 py-1 rounded ${
+                          proposal.executed ? 'bg-green-600' : 'bg-yellow-600'
+                        }`}>
+                          {proposal.executed ? 'Executed' : 'Proposed'}
+                        </div>
+                      </div>
+                      <div className="text-xs text-gray-500 mt-1">
+                        {new Date(proposal.timestamp).toLocaleString()}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Auto-Trade Logs */}
+            {autoTradeLogs.length > 0 && (
+              <div>
+                <h4 className="text-md font-medium text-white mb-2">Activity Logs</h4>
+                <div className="space-y-1 max-h-60 overflow-y-auto">
+                  {autoTradeLogs.slice(0, 10).map((log: any, index: number) => (
+                    <div key={index} className="text-xs bg-slate-700/30 rounded p-2">
+                      <div className="flex justify-between">
+                        <span className="text-gray-300">{log.eventType?.replace(/_/g, ' ')}</span>
+                        <span className="text-gray-500">
+                          {new Date(log.timestamp).toLocaleTimeString()}
+                        </span>
+                      </div>
+                      {log.data?.reason && (
+                        <div className="text-gray-400 mt-1">{log.data.reason}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>

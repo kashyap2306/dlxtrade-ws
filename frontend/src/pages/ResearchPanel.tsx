@@ -1230,17 +1230,51 @@ export default function ResearchPanel() {
                               icon={<span className="text-green-400 font-bold text-sm">📰</span>}
                               name="Crypto News"
                               description="Latest Articles"
-                              status={result.raw?.cryptoPanic && !result.raw.cryptoPanic.error ? 'Success' : 'Failed'}
-                              latencyMs={result.raw?.cryptoPanic?.latency || 200}
-                              sentiment={result.raw?.cryptoPanic?.sentiment}
-                              articles={result.raw?.cryptoPanic?.articles || []}
-                              jsonData={result.raw?.cryptoPanic}
+                              status={result.finalAnalysis?.raw?.news?.articles?.length > 0 ? 'Success' : 'Failed'}
+                              latencyMs={result.apiCalls?.news?.latency || result.raw?.newsData?.latency || 200}
+                              sentiment={result.finalAnalysis?.raw?.news?.sentiment || result.raw?.newsData?.sentiment}
+                              articles={result.finalAnalysis?.raw?.news?.articles || result.raw?.newsData?.articles || []}
+                              jsonData={result.finalAnalysis?.raw?.news || result.raw?.newsData}
                             >
-                              {(!result.raw?.cryptoPanic?.articles || result.raw.cryptoPanic.articles.length === 0) && (
+                              {(!result.finalAnalysis?.raw?.news?.articles && !result.raw?.newsData?.articles) && (
                                 <div className="text-center py-4">
                                   <p className="text-sm text-slate-400">No recent news found (normal for some assets)</p>
                                 </div>
                               )}
+                            </ProviderCard>
+
+                            {/* Provider Status Summary */}
+                            <ProviderCard
+                              icon={<span className="text-blue-400 font-bold text-sm">📊</span>}
+                              name="Provider Status"
+                              description="Data Sources Used"
+                              status={result.providersCalled?.length > 0 ? 'Success' : 'Failed'}
+                              jsonData={{
+                                providersCalled: result.providersCalled || [],
+                                responseSummaries: result.providerResponseSummaries || {},
+                                totalProviders: result.providersCalled?.length || 0
+                              }}
+                            >
+                              <div className="space-y-2">
+                                {result.providersCalled && result.providersCalled.length > 0 ? (
+                                  result.providersCalled.map((provider: string, idx: number) => (
+                                    <div key={idx} className="flex justify-between items-center py-1">
+                                      <span className="text-sm text-slate-300">{provider}</span>
+                                      <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                                        result.providerResponseSummaries?.[provider] === 'SUCCESS' ? 'bg-green-500/20 text-green-400' :
+                                        result.providerResponseSummaries?.[provider] === 'FAILED' ? 'bg-red-500/20 text-red-400' :
+                                        'bg-yellow-500/20 text-yellow-400'
+                                      }`}>
+                                        {result.providerResponseSummaries?.[provider] || 'UNKNOWN'}
+                                      </span>
+                                    </div>
+                                  ))
+                                ) : (
+                                  <div className="text-center py-2">
+                                    <p className="text-sm text-slate-400">No providers called</p>
+                                  </div>
+                                )}
+                              </div>
                             </ProviderCard>
                           </div>
                         </div>

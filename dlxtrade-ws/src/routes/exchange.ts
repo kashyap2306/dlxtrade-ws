@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { firestoreAdapter } from '../services/firestoreAdapter';
 import { ExchangeConnectorFactory, type ExchangeName, type ExchangeCredentials } from '../services/exchangeConnector';
 import { encrypt, decrypt } from '../services/keyManager';
+import { fetchNewsData } from '../services/newsDataAdapter';
 import { logger } from '../utils/logger';
 import * as admin from 'firebase-admin';
 import { getFirebaseAdmin } from '../utils/firebase';
@@ -17,7 +18,7 @@ const exchangeConfigSchema = z.object({
 });
 
 export async function exchangeRoutes(fastify: FastifyInstance) {
-  // GET /api/exchange/status - Get exchange connection status
+  // GET /api/exchange/status - Get exchange connection status and provider health
   fastify.get('/status', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
@@ -28,7 +29,7 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       // Check if user has exchange config
       const exchangeConfigDoc = await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').get();
 
-      let status = {
+      let exchangeStatus = {
         connected: false,
         exchange: null,
         accountId: null,
@@ -42,18 +43,81 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       if (exchangeConfigDoc.exists) {
         const config = exchangeConfigDoc.data();
         if (config?.apiKeyEncrypted && config?.secretEncrypted) {
-          status.connected = true;
-          status.exchange = config.exchange || 'binance';
-          status.accountId = config.accountId || null;
-          status.testnet = config.testnet ?? true;
-          status.hasApiKey = !!config.apiKeyEncrypted;
-          status.hasSecret = !!config.secretEncrypted;
-          status.hasPassphrase = !!config.passphraseEncrypted;
-          status.lastTested = config.lastTested || null;
+          exchangeStatus.connected = true;
+          exchangeStatus.exchange = config.exchange || 'binance';
+          exchangeStatus.accountId = config.accountId || null;
+          exchangeStatus.testnet = config.testnet ?? true;
+          exchangeStatus.hasApiKey = !!config.apiKeyEncrypted;
+          exchangeStatus.hasSecret = !!config.secretEncrypted;
+          exchangeStatus.hasPassphrase = !!config.passphraseEncrypted;
+          exchangeStatus.lastTested = config.lastTested || null;
         }
       }
 
-      return status;
+      // Check provider integrations status
+      const userIntegrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
+
+      // Test provider health with caching (30s TTL)
+      const cacheKey = `provider_status_${user.uid}`;
+      const cached = (global as any).providerStatusCache?.[cacheKey];
+      const now = Date.now();
+
+      let providerStatus;
+      if (cached && (now - cached.timestamp) < 30000) { // 30 seconds cache
+        providerStatus = cached.data;
+      } else {
+        providerStatus = {
+          binancePublic: 'OK',
+          cryptoCompare: userIntegrations.cryptocompare?.apiKey ? 'OK' : 'MISSING_KEY',
+          newsData: userIntegrations.newsdata?.apiKey ? 'OK' : 'MISSING_KEY',
+          coinMarketCap: userIntegrations.coinmarketcap?.apiKey ? 'OK' : 'MISSING_KEY',
+        };
+
+        // Test actual connectivity for providers with keys
+        try {
+          if (userIntegrations.cryptocompare?.apiKey) {
+            const { CryptoCompareAdapter } = await import('../services/cryptocompareAdapter');
+            const adapter = new CryptoCompareAdapter(userIntegrations.cryptocompare.apiKey);
+            await adapter.getMarketData('BTC');
+          }
+        } catch (error: any) {
+          providerStatus.cryptoCompare = 'FAILED';
+          logger.warn({ error: error.message }, 'CryptoCompare health check failed');
+        }
+
+        try {
+          if (userIntegrations.newsdata?.apiKey) {
+            await fetchNewsData(userIntegrations.newsdata.apiKey);
+          }
+        } catch (error: any) {
+          providerStatus.newsData = 'FAILED';
+          logger.warn({ error: error.message }, 'NewsData health check failed');
+        }
+
+        try {
+          if (userIntegrations.coinmarketcap?.apiKey) {
+            const { fetchCoinMarketCapMarketData } = await import('../services/coinMarketCapAdapter');
+            await fetchCoinMarketCapMarketData('BTC', userIntegrations.coinmarketcap.apiKey);
+          }
+        } catch (error: any) {
+          providerStatus.coinMarketCap = 'FAILED';
+          logger.warn({ error: error.message }, 'CoinMarketCap health check failed');
+        }
+
+        // Cache the result
+        if (!(global as any).providerStatusCache) {
+          (global as any).providerStatusCache = {};
+        }
+        (global as any).providerStatusCache[cacheKey] = {
+          data: providerStatus,
+          timestamp: now
+        };
+      }
+
+      return {
+        ...exchangeStatus,
+        ...providerStatus
+      };
     } catch (err: any) {
       logger.error({ err }, 'Error getting exchange status');
       return reply.code(500).send({ error: err.message || 'Error fetching exchange status' });

@@ -146,3 +146,61 @@ export function useMemoizedValue<T>(
 
   return ref.current.value;
 }
+
+// Hook for centralized polling with visibility detection
+export function usePolling(
+  callback: () => void | Promise<void>,
+  interval: number,
+  enabled: boolean = true
+) {
+  const callbackRef = useRef(callback);
+  const intervalRef = useRef<NodeJS.Timeout>();
+  const [isVisible, setIsVisible] = useState(!document.hidden);
+
+  // Update callback ref when callback changes
+  useEffect(() => {
+    callbackRef.current = callback;
+  }, [callback]);
+
+  // Handle visibility changes
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      setIsVisible(!document.hidden);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
+
+  // Manage polling
+  useEffect(() => {
+    if (enabled && isVisible) {
+      // Execute immediately
+      callbackRef.current();
+
+      // Set up interval
+      intervalRef.current = setInterval(() => {
+        callbackRef.current();
+      }, interval);
+    } else {
+      // Clear interval when disabled or not visible
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = undefined;
+      }
+    }
+
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
+    };
+  }, [enabled, isVisible, interval]);
+
+  // Manual trigger
+  const trigger = useCallback(() => {
+    callbackRef.current();
+  }, []);
+
+  return { trigger, isPolling: enabled && isVisible };
+}

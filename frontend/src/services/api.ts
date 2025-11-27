@@ -268,6 +268,10 @@ export const autoTradeApi = {
   run: () => api.post('/auto-trade/run'),
   execute: (data: { requestId: string; signal: any }) => api.post('/auto-trade/execute', data),
   resetCircuitBreaker: () => api.post('/auto-trade/reset-circuit-breaker'),
+  // New auto-trade endpoints
+  trigger: (params?: { dryRun?: boolean; symbol?: string }) => api.post('/auto-trade/trigger', {}, { params }),
+  getProposals: () => api.get('/auto-trade/proposals'),
+  getLogs: (limit?: number) => api.get('/auto-trade/logs', { params: { limit } }),
 };
 
 // Market - routes already include /api prefix from baseURL

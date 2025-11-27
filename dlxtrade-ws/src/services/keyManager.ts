@@ -13,10 +13,10 @@ const ENCRYPTED_POSITION = TAG_POSITION + TAG_LENGTH;
 
 function getEncryptionKey(): Buffer {
   const key = config.encryption.key;
-  if (key.length < 32) {
-    return crypto.scryptSync(key, 'salt', 32);
-  }
-  return Buffer.from(key.slice(0, 32));
+  // Always use scrypt to derive a consistent 32-byte key from the input
+  // This ensures the same key string always produces the same encryption key
+  // regardless of the input string length
+  return crypto.scryptSync(key, 'dlxtrade_encryption_salt_v1', 32);
 }
 
 export function encrypt(text: string): string {

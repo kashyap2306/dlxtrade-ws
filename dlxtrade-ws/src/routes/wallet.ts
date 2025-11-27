@@ -81,14 +81,20 @@ export async function walletRoutes(fastify: FastifyInstance) {
         testnet,
       });
 
-      // Fetch account info
+      // Fetch account info with timeout
       if (!adapter.getAccount) {
         return reply.code(501).send({
           error: 'Exchange adapter does not support balance fetching',
         });
       }
 
-      const accountInfo = await adapter.getAccount();
+      // Add timeout to prevent hanging
+      const accountInfo = await Promise.race([
+        adapter.getAccount(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Exchange request timeout')), 5000)
+        )
+      ]);
 
       // Process balances based on exchange
       let balances: Balance[] = [];

@@ -150,7 +150,11 @@ export async function researchRoutes(fastify: FastifyInstance) {
           const finalAnalysis = {
             signal: deepResult.combinedSignal,
             confidencePercent: Math.round(deepResult.accuracy * 100),
-            reasoning: `Analysis completed with ${deepResult.signals.length} technical indicators from ${deepResult.providersCalled.length} data providers.`
+            reasoning: `Analysis completed with ${deepResult.signals.length} technical indicators from ${deepResult.providersCalled.length} data providers.`,
+            // Include news data in final analysis
+            raw: {
+              news: deepResult.raw.newsData || { articles: [], sentiment: 0.5 }
+            }
           };
 
           // Transform indicators to frontend format - calculate actual MA values
@@ -254,6 +258,12 @@ export async function researchRoutes(fastify: FastifyInstance) {
             combinedSignal: deepResult.combinedSignal,
             accuracy: deepResult.accuracy,
             providersCalled: deepResult.providersCalled,
+            providerResponseSummaries: {
+              BinancePublic: deepResult.raw.binancePublic?.price ? 'SUCCESS' : 'FAILED',
+              CryptoCompare: deepResult.raw.cryptoCompare?.price ? 'SUCCESS' : 'FAILED',
+              CoinMarketCap: deepResult.raw.coinMarketCap?.price ? 'SUCCESS' : 'FAILED',
+              NewsData: deepResult.raw.newsData?.sentiment !== undefined ? 'SUCCESS' : 'FAILED',
+            },
             raw: deepResult.raw,
           });
 

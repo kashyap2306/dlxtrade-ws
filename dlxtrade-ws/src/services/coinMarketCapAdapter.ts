@@ -240,10 +240,13 @@ export async function fetchCoinMarketCapMarketData(symbol: string, apiKey?: stri
     if (quotesResponse === null) {
       console.log('[CoinMarketCap] FALLBACK - Rate limited during quotes request');
       return {
-        success: true,
+        provider: 'coinmarketcap',
+        success: false,
+        error: 'Rate limited',
         marketData: {},
-        latency: Date.now() - startTime,
-        message: "Rate-limited, using fallback empty market data"
+        liquidity: 0,
+        marketCap: 0,
+        latency: Date.now() - startTime
       };
     }
 
@@ -253,19 +256,27 @@ export async function fetchCoinMarketCapMarketData(symbol: string, apiKey?: stri
     if (!coinQuotes) {
       console.log('[CoinMarketCap] NO DATA - Symbol not found:', cmcSymbol);
       return {
-        success: true,
+        provider: 'coinmarketcap',
+        success: false,
+        error: `Symbol ${cmcSymbol} not found`,
         marketData: {},
-        latency: Date.now() - startTime,
-        message: `Symbol ${cmcSymbol} not found in CoinMarketCap`
+        liquidity: 0,
+        marketCap: 0,
+        latency: Date.now() - startTime
       };
     }
 
+    const marketCap = coinQuotes.quote?.USD?.market_cap || 0;
+    const volume24h = coinQuotes.quote?.USD?.volume_24h || 0;
+    const price = coinQuotes.quote?.USD?.price || 0;
+
     const result = {
+      provider: 'coinmarketcap',
       success: true,
       marketData: {
-        price: coinQuotes.quote?.USD?.price,
-        volume24h: coinQuotes.quote?.USD?.volume_24h,
-        marketCap: coinQuotes.quote?.USD?.market_cap,
+        price,
+        volume24h,
+        marketCap,
         priceChangePercent24h: coinQuotes.quote?.USD?.percent_change_24h,
         priceChangePercent7d: coinQuotes.quote?.USD?.percent_change_7d,
         priceChangePercent30d: coinQuotes.quote?.USD?.percent_change_30d,
@@ -274,7 +285,10 @@ export async function fetchCoinMarketCapMarketData(symbol: string, apiKey?: stri
         maxSupply: coinQuotes.max_supply,
         lastUpdated: coinQuotes.quote?.USD?.last_updated
       },
-      latency: Date.now() - startTime
+      liquidity: volume24h / (price * 1000000), // Volume in millions divided by price
+      marketCap,
+      latency: Date.now() - startTime,
+      timestamp: Date.now()
     };
 
     // Cache the result
@@ -302,13 +316,16 @@ export async function fetchCoinMarketCapMarketData(symbol: string, apiKey?: stri
       });
     }
 
-    // For other errors, return empty success to not break research
+    // For other errors, return success with empty data (optional provider)
     console.log('[CoinMarketCap] FALLBACK - Error occurred, returning empty market data');
     return {
-      success: true,
+      provider: 'coinmarketcap',
+      success: false,
+      error: error.message || 'Failed to fetch market data',
       marketData: {},
-      latency: Date.now() - startTime,
-      message: "Error occurred, using fallback empty market data"
+      liquidity: 0,
+      marketCap: 0,
+      latency: Date.now() - startTime
     };
   }
 }

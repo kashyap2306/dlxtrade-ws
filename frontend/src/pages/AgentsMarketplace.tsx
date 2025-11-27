@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Sidebar from '../components/Sidebar';
 import Toast from '../components/Toast';
 import { useAuth } from '../hooks/useAuth';
@@ -28,15 +28,10 @@ export default function AgentsMarketplace() {
   const [, setMenuOpen] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<AgentCardData | null>(null);
   const [showUnlockModal, setShowUnlockModal] = useState(false);
+  const isMountedRef = useRef(true);
 
-  useEffect(() => {
-    if (user) {
-      loadData();
-    }
-  }, [user]);
-
-  const loadData = async () => {
-    if (!user) return;
+  const loadData = useCallback(async () => {
+    if (!user || !isMountedRef.current) return;
     setLoading(true);
     try {
       // Load agents from backend
@@ -81,15 +76,34 @@ export default function AgentsMarketplace() {
         }
       });
       
-      setUnlockedAgents(unlockedMap);
+      if (isMountedRef.current) {
+        setUnlockedAgents(unlockedMap);
+      }
     } catch (err: any) {
       console.error('Error loading data:', err);
-      showToast(err.response?.data?.error || 'Failed to load agents', 'error');
-      setAgents([]); // Set empty array instead of fallback
+      if (isMountedRef.current) {
+        showToast(err.response?.data?.error || 'Failed to load agents', 'error');
+        setAgents([]); // Set empty array instead of fallback
+      }
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
-  };
+  }, [user]);
+
+  useEffect(() => {
+    if (user) {
+      loadData();
+    }
+  }, [user, loadData]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const handleUnlockClick = (agent: AgentCardData) => {
     setSelectedAgent(agent);

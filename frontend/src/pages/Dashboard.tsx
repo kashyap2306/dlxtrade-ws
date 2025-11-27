@@ -1,10 +1,10 @@
-import { useState, useEffect, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import Sidebar from '../components/Sidebar';
 import { autoTradeApi, usersApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { suppressConsoleError } from '../utils/errorHandler';
 import ExchangeAccountsSection from '../components/ExchangeAccountsSection';
-import { useThrottle, useLazyLoad } from '../hooks/usePerformance';
+import { useThrottle, useLazyLoad, usePolling } from '../hooks/usePerformance';
 
 // Lazy load heavy components for better performance
 const AutoTradeMode = lazy(() => import('../components/AutoTradeMode'));
@@ -20,56 +20,43 @@ export default function Dashboard() {
   const [userStats, setUserStats] = useState<any>(null);
   const [alerts, setAlerts] = useState<Array<{ type: 'warning' | 'error'; message: string }>>([]);
   const [showExchangeModal, setShowExchangeModal] = useState(false);
+  const isMountedRef = useRef(true);
 
   // Throttle data updates to prevent excessive re-renders
-  const throttledAutoTradeStatus = useThrottle(autoTradeStatus, 500);
-  const throttledUserStats = useThrottle(userStats, 500);
+  const throttledAutoTradeStatus = useThrottle(autoTradeStatus, 500, [autoTradeStatus]);
+  const throttledUserStats = useThrottle(userStats, 500, [userStats]);
 
   // Lazy load triggers for heavy components
   const { ref: marketScannerRef, hasIntersected: marketScannerVisible } = useLazyLoad(0.1);
 
-  useEffect(() => {
-    if (user) {
-      loadData();
-      // Reduced polling interval to 60 seconds to improve performance
-      const interval = setInterval(loadData, 60000);
-      return () => clearInterval(interval);
-    }
-  }, [user]);
-
-  const loadData = async () => {
-    if (!user) return;
-    try {
-      await Promise.all([loadAutoTradeStatus(), loadUserStats()]);
-      checkAlerts();
-    } catch (e) {
-      // Errors handled per call
-    }
-  };
-
-  const loadAutoTradeStatus = async () => {
-    if (!user) return;
+  const loadAutoTradeStatus = useCallback(async () => {
+    if (!user || !isMountedRef.current) return;
     try {
       const response = await autoTradeApi.getStatus();
-      setAutoTradeStatus(response.data);
+      if (isMountedRef.current) {
+        setAutoTradeStatus(response.data);
+      }
     } catch (err: any) {
       suppressConsoleError(err, 'loadAutoTradeStatus');
     }
-  };
+  }, [user]);
 
-  const loadUserStats = async () => {
-    if (!user) return;
+  const loadUserStats = useCallback(async () => {
+    if (!user || !isMountedRef.current) return;
     try {
       const response = await usersApi.getStats(user.uid);
-      setUserStats(response.data);
+      if (isMountedRef.current) {
+        setUserStats(response.data);
+      }
     } catch (err: any) {
       suppressConsoleError(err, 'loadUserStats');
     }
-  };
+  }, [user]);
 
-  const checkAlerts = () => {
+  const checkAlerts = useCallback(() => {
+    if (!isMountedRef.current) return;
     const newAlerts: Array<{ type: 'warning' | 'error'; message: string }> = [];
-    
+
     // Check API connection
     if (autoTradeStatus && !autoTradeStatus.isApiConnected) {
       newAlerts.push({
@@ -77,7 +64,7 @@ export default function Dashboard() {
         message: 'Exchange API not connected. Connect your API keys to enable auto-trading.',
       });
     }
-    
+
     // Check circuit breaker
     if (autoTradeStatus?.circuitBreaker) {
       newAlerts.push({
@@ -85,7 +72,7 @@ export default function Dashboard() {
         message: 'Auto-Trade stopped due to risk limits. Check your risk settings.',
       });
     }
-    
+
     // Check daily loss limit
     if (userStats && userStats.dailyPnl < 0 && Math.abs(userStats.dailyPnl) > (userStats.maxDailyLoss || 0)) {
       newAlerts.push({
@@ -93,15 +80,34 @@ export default function Dashboard() {
         message: 'Daily loss limit approaching. Auto-Trade may pause soon.',
       });
     }
-    
+
     setAlerts(newAlerts);
-  };
+  }, [autoTradeStatus, userStats]);
+
+  const loadData = useCallback(async () => {
+    if (!user || !isMountedRef.current) return;
+    try {
+      await Promise.all([loadAutoTradeStatus(), loadUserStats()]);
+    } catch (e) {
+      // Errors handled per call
+    }
+  }, [user, loadAutoTradeStatus, loadUserStats]);
+
+  // Use centralized polling with visibility detection
+  usePolling(loadData, 60000, !!user);
 
   useEffect(() => {
     if (autoTradeStatus && userStats) {
       checkAlerts();
     }
-  }, [autoTradeStatus, userStats]);
+  }, [autoTradeStatus, userStats, checkAlerts]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const handleConnectClick = () => {
     setShowExchangeModal(true);

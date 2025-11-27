@@ -521,6 +521,92 @@ export async function autoTradeRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // POST /api/auto-trade/trigger - Trigger auto-trade cycle (manual trigger)
+  fastify.post('/trigger', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Querystring: { dryRun?: boolean; symbol?: string } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const { dryRun = false, symbol } = request.query;
+
+      logger.info({ uid: user.uid, dryRun, symbol }, 'Manual auto-trade trigger requested');
+
+      if (symbol) {
+        // Single symbol test
+        const result = await autoTradeEngine.executeAutoTrade(user.uid, symbol.toUpperCase());
+        return {
+          success: result.success,
+          symbol: symbol.toUpperCase(),
+          trade: result.trade,
+          reason: result.reason,
+          dryRun,
+          timestamp: new Date().toISOString(),
+        };
+      } else {
+        // Full cycle
+        const result = await autoTradeEngine.runAutoTradeCycle(user.uid);
+        return {
+          ...result,
+          dryRun,
+          timestamp: new Date().toISOString(),
+        };
+      }
+    } catch (err: any) {
+      logger.error({ err, uid: (request as any).user?.uid }, 'Error triggering auto-trade');
+      return reply.code(500).send({ error: err.message || 'Error triggering auto-trade' });
+    }
+  });
+
+  // GET /api/auto-trade/proposals - Get recent proposals and cycle status
+  fastify.get('/proposals', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const proposals = await autoTradeEngine.getAutoTradeProposals(user.uid);
+
+      return {
+        lastCycle: proposals.lastCycle?.toISOString(),
+        nextCycle: proposals.nextCycle?.toISOString(),
+        recentProposals: proposals.recentProposals.map(p => ({
+          ...p,
+          timestamp: p.timestamp.toISOString(),
+        })),
+      };
+    } catch (err: any) {
+      logger.error({ err, uid: (request as any).user?.uid }, 'Error getting proposals');
+      return reply.code(500).send({ error: err.message || 'Error getting proposals' });
+    }
+  });
+
+  // GET /api/auto-trade/logs - Get auto-trade logs
+  fastify.get('/logs', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Querystring: { limit?: number } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const { limit = 50 } = request.query;
+
+      const db = getFirebaseAdmin().firestore();
+      const logsSnapshot = await db.collection('users').doc(user.uid)
+        .collection('autoTradeLogs')
+        .orderBy('timestamp', 'desc')
+        .limit(limit)
+        .get();
+
+      const logs = logsSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+        timestamp: doc.data().timestamp?.toDate?.()?.toISOString() || doc.data().timestamp,
+      }));
+
+      return { logs };
+    } catch (err: any) {
+      logger.error({ err, uid: (request as any).user?.uid }, 'Error getting auto-trade logs');
+      return reply.code(500).send({ error: err.message || 'Error getting logs' });
+    }
+  });
+
   // POST /api/auto-trade/force-scan - Force immediate market scan
   fastify.post('/force-scan', {
     preHandler: [fastify.authenticate],
