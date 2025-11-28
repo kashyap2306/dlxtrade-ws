@@ -11,9 +11,13 @@ function parseCoinMarketCapSymbol(symbol: string): string {
   // Common trading pairs - extract base symbol
   const pairs = [
     'BTCUSDT', 'BTC', 'ETHUSDT', 'ETH', 'BNBUSDT', 'BNB',
-    'ADAUSDT', 'ADA', 'SOLUSDT', 'SOL', 'DOTUSDT', 'DOT',
-    'DOGEUSDT', 'DOGE', 'AVAXUSDT', 'AVAX', 'LTCUSDT', 'LTC',
-    'LINKUSDT', 'LINK', 'UNIUSDT', 'UNI', 'ALGOUSDT', 'ALGO'
+    'ADAUSDT', 'ADA', 'SOLUSDT', 'SOL', 'XRPUSDT', 'XRP',
+    'DOTUSDT', 'DOT', 'DOGEUSDT', 'DOGE', 'AVAXUSDT', 'AVAX',
+    'LTCUSDT', 'LTC', 'LINKUSDT', 'LINK', 'UNIUSDT', 'UNI',
+    'ALGOUSDT', 'ALGO', 'VETUSDT', 'VET', 'ICPUSDT', 'ICP',
+    'FILUSDT', 'FIL', 'TRXUSDT', 'TRX', 'ETCUSDT', 'ETC',
+    'XLMUSDT', 'XLM', 'FTTUSDT', 'FTT', 'CAKEUSDT', 'CAKE',
+    'SUSHIUSDT', 'SUSHI', 'COMPUSDT', 'COMP', 'MATICUSDT', 'MATIC'
   ];
 
   // If it's already a base symbol, return as-is

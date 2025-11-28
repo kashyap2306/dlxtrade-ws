@@ -9,6 +9,8 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  base: process.env.VITE_BASE_PATH || '/',
+  appType: 'spa',
   build: {
     rollupOptions: {
       output: {
@@ -24,6 +26,7 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    historyApiFallback: true,
     proxy: {
       '/api': {
         target: process.env.VITE_API_BASE_URL?.replace('/api', '') || 'https://dlxtrade-ws-1.onrender.com',
@@ -35,6 +38,10 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+  },
+  preview: {
+    port: 4173,
+    historyApiFallback: true,
   },
 });
 

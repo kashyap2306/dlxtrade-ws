@@ -456,10 +456,10 @@ export class FirestoreAdapter {
   private tryDecryptWithCurrentKey(encryptedText: string): string | null {
     try {
       const data = Buffer.from(encryptedText, 'base64');
-      const salt = data.slice(0, 64); // SALT_LENGTH
-      const iv = data.slice(64, 80); // SALT_LENGTH + IV_LENGTH
-      const tag = data.slice(80, 96); // TAG_POSITION
-      const encrypted = data.slice(96); // ENCRYPTED_POSITION
+      const salt = data.slice(0, 32); // SALT_LENGTH
+      const iv = data.slice(32, 48); // SALT_LENGTH + IV_LENGTH
+      const tag = data.slice(48, 64); // TAG_POSITION
+      const encrypted = data.slice(64); // ENCRYPTED_POSITION
 
       const crypto = require('crypto');
       const decipher = crypto.createDecipheriv('aes-256-gcm', this.getCurrentEncryptionKey(), iv);
@@ -475,7 +475,7 @@ export class FirestoreAdapter {
   // Helper method to get current encryption key
   private getCurrentEncryptionKey(): Buffer {
     const crypto = require('crypto');
-    return crypto.scryptSync(config.encryption.key, 'dlxtrade_encryption_salt_v1', 32);
+    return crypto.scryptSync(config.encryption.key, 'dlxtrade_encryption_salt_v2', 32);
   }
 
   // HFT Settings
