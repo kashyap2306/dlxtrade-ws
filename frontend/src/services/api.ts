@@ -1,23 +1,23 @@
 import axios from 'axios';
-
-// API base URL - must include /api prefix since backend routes are prefixed
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
-if (!API_BASE) {
-  throw new Error('VITE_API_URL environment variable is not set');
-}
-// Ensure /api prefix is included
-const API_URL = API_BASE.endsWith('/api') ? API_BASE : `${API_BASE}/api`;
+import { getAuth } from 'firebase/auth';
 
 const api = axios.create({
-  baseURL: API_URL,
+  baseURL: import.meta.env.VITE_API_URL,
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
+// Warn about missing environment variables in development
+if (import.meta.env.DEV) {
+  if (!import.meta.env.VITE_API_URL) {
+    console.warn('VITE_API_URL environment variable is not set');
+  }
+}
+
 // Add Firebase token to requests
 api.interceptors.request.use(async (config) => {
-  const token = localStorage.getItem('firebaseToken');
+  const token = await getAuth().currentUser?.getIdToken();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }

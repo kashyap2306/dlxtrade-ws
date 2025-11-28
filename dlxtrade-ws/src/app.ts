@@ -271,7 +271,15 @@ export async function buildApp(): Promise<FastifyInstance> {
 
     connection.socket.on('message', (message) => {
       try {
-        const data = JSON.parse(message.toString());
+        const messageStr = message.toString();
+
+        // Handle ping/pong heartbeat
+        if (messageStr === 'ping') {
+          connection.socket.send('pong');
+          return;
+        }
+
+        const data = JSON.parse(messageStr);
         logger.debug({ data, uid }, 'WebSocket message received');
       } catch (err) {
         logger.error({ err }, 'Error parsing WebSocket message');

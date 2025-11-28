@@ -20,6 +20,12 @@ export default function Login() {
   // NotificationContext is available since NotificationProvider wraps all routes
   const { addNotification } = useNotificationContext();
 
+  // Clear stale tokens before login
+  useEffect(() => {
+    localStorage.removeItem("dlx_jwt");
+    localStorage.removeItem("token");
+  }, []);
+
   // Redirect if already logged in
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {

@@ -21,14 +21,19 @@ export default function AdminDashboard() {
     const interval = setInterval(loadStats, 10000); // Refresh every 10 seconds
 
     // Connect to admin WebSocket
-    adminWsService.connect();
-    const unsubscribe = adminWsService.subscribe('*', (event: any) => {
-      setRealtimeEvents((prev) => [event, ...prev].slice(0, 50)); // Keep last 50 events
-    });
+    let unsubscribeWs: (() => void) | null = null;
+    (async () => {
+      await adminWsService.connect();
+      unsubscribeWs = adminWsService.subscribe('*', (event: any) => {
+        setRealtimeEvents((prev) => [event, ...prev].slice(0, 50)); // Keep last 50 events
+      });
+    })();
 
     return () => {
       clearInterval(interval);
-      unsubscribe();
+      if (unsubscribeWs) {
+        unsubscribeWs();
+      }
       adminWsService.disconnect();
     };
   }, []);
