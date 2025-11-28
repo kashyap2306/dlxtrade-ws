@@ -63,9 +63,9 @@ export async function resolveExchangeConnector(
         let passphrase: string | undefined;
         
         try {
-          apiKey = decrypt(config.apiKeyEncrypted);
-          secret = decrypt(config.secretEncrypted);
-          passphrase = config.passphraseEncrypted ? decrypt(config.passphraseEncrypted) : undefined;
+          apiKey = decrypt(config.apiKeyEncrypted, { uid, field: 'apiKeyEncrypted', provider: exchange });
+          secret = decrypt(config.secretEncrypted, { uid, field: 'secretEncrypted', provider: exchange });
+          passphrase = config.passphraseEncrypted ? decrypt(config.passphraseEncrypted, { uid, field: 'passphraseEncrypted', provider: exchange }) : undefined;
         } catch (decryptErr: any) {
           logger.error({ uid, exchange, error: decryptErr.message }, 'Failed to decrypt exchange credentials');
           return null;
@@ -85,30 +85,36 @@ export async function resolveExchangeConnector(
         const testnet = config.testnet ?? true;
         
         // Create connector using factory
-        try {
-          const connector = ExchangeConnectorFactory.create(exchange, {
+        const creationResult = ExchangeConnectorFactory.create(exchange, {
+          apiKey,
+          secret,
+          passphrase,
+          testnet,
+        });
+
+        if (!creationResult.success) {
+          logger.error({
+            uid,
+            exchange,
+            error: creationResult.error?.message,
+            code: creationResult.error?.code
+          }, 'Failed to create exchange connector');
+          return null;
+        }
+
+        const connector = creationResult.connector!;
+        logger.info({ uid, exchange, testnet }, 'Exchange connector resolved from exchangeConfig');
+
+        return {
+          exchange,
+          connector,
+          credentials: {
             apiKey,
             secret,
             passphrase,
             testnet,
-          });
-          
-          logger.info({ uid, exchange, testnet }, 'Exchange connector resolved from exchangeConfig');
-          
-          return {
-            exchange,
-            connector,
-            credentials: {
-              apiKey,
-              secret,
-              passphrase,
-              testnet,
-            },
-          };
-        } catch (createErr: any) {
-          logger.error({ uid, exchange, error: createErr.message }, 'Failed to create exchange connector');
-          return null;
-        }
+          },
+        };
       } catch (parseErr: any) {
         logger.error({ uid, error: parseErr.message }, 'Error parsing exchange config');
         return null;

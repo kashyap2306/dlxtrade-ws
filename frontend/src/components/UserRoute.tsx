@@ -63,7 +63,7 @@ export default function UserRoute({ children }: { children: React.ReactNode }) {
     };
 
     run();
-  }, [loading, user, children]);
+  }, [loading, user]);
 
   return render;
 }

@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 // API base URL - must include /api prefix since backend routes are prefixed
-const API_BASE = import.meta.env.VITE_API_URL || 'https://dlxtrade-ws-1.onrender.com';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
 if (!API_BASE) {
   throw new Error('VITE_API_URL environment variable is not set');
 }

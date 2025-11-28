@@ -1,8 +1,9 @@
+import { AdapterError } from '../utils/adapterErrorHandler';
 import axios from 'axios';
 
 const BASE_URL = 'https://api.binance.com/api/v3';
 
-export class BinancePublicAdapter {
+export class TestAdapter {
   private baseUrl: string;
 
   constructor() {

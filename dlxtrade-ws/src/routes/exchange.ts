@@ -327,9 +327,9 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
         
         // Decrypt credentials
         credentials = {
-          apiKey: decrypt(config.apiKeyEncrypted),
-          secret: decrypt(config.secretEncrypted),
-          passphrase: config.passphraseEncrypted ? decrypt(config.passphraseEncrypted) : undefined,
+          apiKey: decrypt(config.apiKeyEncrypted, { uid: user.uid, field: 'apiKeyEncrypted', provider: exchange }),
+          secret: decrypt(config.secretEncrypted, { uid: user.uid, field: 'secretEncrypted', provider: exchange }),
+          passphrase: config.passphraseEncrypted ? decrypt(config.passphraseEncrypted, { uid: user.uid, field: 'passphraseEncrypted', provider: exchange }) : undefined,
           testnet: config.testnet ?? true,
         };
       }
@@ -341,7 +341,18 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       }
 
       // Create connector and test
-      const connector = ExchangeConnectorFactory.create(exchange, credentials);
+      const creationResult = ExchangeConnectorFactory.create(exchange, credentials);
+      if (!creationResult.success) {
+        const error = creationResult.error!;
+        return reply.code(400).send({
+          success: false,
+          error: error.message,
+          code: error.code,
+          requiredFields: error.requiredFields,
+        });
+      }
+
+      const connector = creationResult.connector!;
       const result = await connector.testConnection();
 
       logger.info({ uid: user.uid, exchange, success: result.success }, 'Exchange connection test');
@@ -398,12 +409,24 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       }
 
       // Create connector
-      const connector = ExchangeConnectorFactory.create(exchange, {
-        apiKey: decrypt(config.apiKeyEncrypted),
-        secret: decrypt(config.secretEncrypted),
-        passphrase: config.passphraseEncrypted ? decrypt(config.passphraseEncrypted) : undefined,
+      const creationResult = ExchangeConnectorFactory.create(exchange, {
+        apiKey: decrypt(config.apiKeyEncrypted, { uid: user.uid, field: 'apiKeyEncrypted', provider: exchange }),
+        secret: decrypt(config.secretEncrypted, { uid: user.uid, field: 'secretEncrypted', provider: exchange }),
+        passphrase: config.passphraseEncrypted ? decrypt(config.passphraseEncrypted, { uid: user.uid, field: 'passphraseEncrypted', provider: exchange }) : undefined,
         testnet: config.testnet ?? true,
       });
+
+      if (!creationResult.success) {
+        const error = creationResult.error!;
+        return reply.code(400).send({
+          success: false,
+          error: error.message,
+          code: error.code,
+          requiredFields: error.requiredFields,
+        });
+      }
+
+      const connector = creationResult.connector!;
 
       // Get symbol info to determine minimum order size
       try {

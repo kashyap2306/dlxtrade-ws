@@ -5,6 +5,47 @@ import { fetchCoinMarketCapMetadata, fetchCoinMarketCapMarketData } from './coin
 import { autoTradeExecutor } from './autoTradeExecutor';
 import { tradingStrategies, OHLCData, StrategyResult, IndicatorResult } from './tradingStrategies';
 import * as admin from 'firebase-admin';
+import { config } from '../config';
+
+/**
+ * Semaphore for concurrency control
+ */
+class Semaphore {
+  private permits: number;
+  private waiting: Array<() => void> = [];
+
+  constructor(permits: number) {
+    this.permits = permits;
+  }
+
+  async acquire(): Promise<() => void> {
+    if (this.permits > 0) {
+      this.permits--;
+      return () => this.release();
+    }
+
+    return new Promise((resolve) => {
+      this.waiting.push(() => {
+        this.permits--;
+        resolve(() => this.release());
+      });
+    });
+  }
+
+  private release(): void {
+    this.permits++;
+    if (this.waiting.length > 0) {
+      const next = this.waiting.shift()!;
+      next();
+    }
+  }
+}
+
+/**
+ * In-memory cache for symbol metadata
+ */
+const symbolCache = new Map<string, { data: string[]; timestamp: number; ttl: number }>();
+const SYMBOL_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 export interface ProviderConfirmation {
   name: string;
@@ -86,6 +127,12 @@ export interface DeepResearchResult {
     coinMarketCap: any;
     binancePublic: any;
   };
+  symbolSelection?: {
+    selectedSymbol: string;
+    expectedAccuracy: number;
+    reason: string;
+    selectionTimestamp: number;
+  };
 }
 
 export class DeepResearchEngine {
@@ -145,10 +192,353 @@ export class DeepResearchEngine {
     return score;
   }
 
+  /**
+   * Select the optimal symbol for research based on market cap and expected accuracy
+   */
+  /**
+   * Select the optimal symbol batch for research - highest accuracy coin + small batch of others
+   */
+  async selectOptimalSymbolBatch(uid: string, batchSize: number = 4): Promise<{
+    primarySymbol: string;
+    batchSymbols: string[];
+    expectedAccuracy: number;
+    reason: string
+  }> {
+    try {
+      logger.info({ uid, batchSize }, 'Starting optimal symbol batch selection');
+
+      // Get top 100 symbols by market cap from CoinMarketCap
+      const topSymbols = await this.getTopMarketCapSymbols(uid, 100);
+
+      if (topSymbols.length === 0) {
+        // Fallback to curated list without hard-coded BTC
+        const fallbackSymbols = ['ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'XRPUSDT', 'SOLUSDT'];
+        return {
+          primarySymbol: fallbackSymbols[0],
+          batchSymbols: fallbackSymbols.slice(1, batchSize),
+          expectedAccuracy: 0.5,
+          reason: 'Fallback: No market data available, using curated list'
+        };
+      }
+
+      // Calculate expected accuracy for each symbol (limit to avoid rate limiting)
+      const symbolScores = [];
+      const maxSymbolsToCheck = Math.min(30, topSymbols.length); // Check up to 30 symbols
+
+      for (let i = 0; i < maxSymbolsToCheck; i++) {
+        const symbolData = topSymbols[i];
+        try {
+          const expectedAccuracy = await this.calculateExpectedAccuracy(uid, symbolData.symbol);
+          symbolScores.push({
+            symbol: symbolData.symbol,
+            expectedAccuracy,
+            marketCap: symbolData.marketCap,
+            rank: symbolData.rank
+          });
+        } catch (error: any) {
+          logger.debug({ uid, symbol: symbolData.symbol, error: error.message }, 'Failed to calculate expected accuracy');
+          // Include with default accuracy
+          symbolScores.push({
+            symbol: symbolData.symbol,
+            expectedAccuracy: 0.5,
+            marketCap: symbolData.marketCap,
+            rank: symbolData.rank
+          });
+        }
+      }
+
+      // Sort by expected accuracy (descending)
+      symbolScores.sort((a, b) => b.expectedAccuracy - a.expectedAccuracy);
+
+      // Primary symbol is the highest accuracy one
+      const primarySymbol = symbolScores[0].symbol;
+
+      // Batch includes primary + next few highest accuracy symbols (excluding primary)
+      const batchSymbols = [primarySymbol];
+      const remainingSymbols = symbolScores.slice(1).map(s => s.symbol);
+
+      // Add symbols to batch, ensuring diversity (avoid too many similar pairs)
+      for (const symbol of remainingSymbols) {
+        if (batchSymbols.length >= batchSize) break;
+        // Simple diversity check - avoid symbols that start with same base (BTC, ETH, etc.)
+        const base = symbol.replace('USDT', '').replace('USD', '');
+        const hasSimilar = batchSymbols.some(s => s.replace('USDT', '').replace('USD', '').startsWith(base.substring(0, 2)));
+        if (!hasSimilar) {
+          batchSymbols.push(symbol);
+        }
+      }
+
+      // If we don't have enough diverse symbols, add more
+      for (const symbol of remainingSymbols) {
+        if (batchSymbols.length >= batchSize) break;
+        if (!batchSymbols.includes(symbol)) {
+          batchSymbols.push(symbol);
+        }
+      }
+
+      const reason = `Selected ${primarySymbol} (highest accuracy: ${(symbolScores[0].expectedAccuracy * 100).toFixed(1)}%) + ${batchSymbols.length - 1} others from ${symbolScores.length} candidates`;
+
+      logger.info({
+        uid,
+        primarySymbol,
+        batchSymbols,
+        batchSize: batchSymbols.length,
+        expectedAccuracy: symbolScores[0].expectedAccuracy,
+        candidatesProcessed: symbolScores.length,
+        reason
+      }, 'Optimal symbol batch selected');
+
+      return {
+        primarySymbol,
+        batchSymbols,
+        expectedAccuracy: symbolScores[0].expectedAccuracy,
+        reason
+      };
+    } catch (error: any) {
+      logger.error({ uid, error: error.message }, 'Failed to select optimal symbol batch, using fallback');
+      const fallbackSymbols = ['ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'XRPUSDT'];
+      return {
+        primarySymbol: fallbackSymbols[0],
+        batchSymbols: fallbackSymbols.slice(0, batchSize),
+        expectedAccuracy: 0.5,
+        reason: `Error: ${error.message}, using fallback`
+      };
+    }
+  }
+
+  /**
+   * Legacy method for backward compatibility
+   */
+  async selectOptimalSymbol(uid: string): Promise<{ symbol: string; expectedAccuracy: number; reason: string }> {
+    const result = await this.selectOptimalSymbolBatch(uid, 1);
+    return {
+      symbol: result.primarySymbol,
+      expectedAccuracy: result.expectedAccuracy,
+      reason: result.reason
+    };
+  }
+
+  /**
+   * Get top N symbols by market capitalization
+   */
+  private async getTopMarketCapSymbols(uid: string, limit: number): Promise<Array<{ symbol: string; marketCap: number; rank: number }>> {
+    try {
+      // Get user's CoinMarketCap integration
+      const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
+
+      if (!integrations.coinmarketcap?.apiKey) {
+        logger.warn({ uid }, 'No CoinMarketCap API key available for market cap data');
+        return [];
+      }
+
+      const { fetchCoinMarketCapListings } = await import('./coinMarketCapAdapter');
+      const listings = await fetchCoinMarketCapListings(integrations.coinmarketcap.apiKey, limit);
+
+      return listings
+        .filter(item => item.symbol && item.quote?.USD?.market_cap)
+        .map((item, index) => ({
+          symbol: `${item.symbol}USDT`, // Convert to trading pair format
+          marketCap: item.quote.USD.market_cap,
+          rank: index + 1
+        }));
+
+    } catch (error: any) {
+      logger.warn({ uid, error: error.message }, 'Failed to fetch market cap data');
+      return [];
+    }
+  }
+
+  /**
+   * Calculate expected accuracy for a symbol based on historical performance
+   */
+  private async calculateExpectedAccuracy(uid: string, symbol: string): Promise<number> {
+    try {
+      // Get recent research logs for this symbol (last 50 entries)
+      const researchLogs = await firestoreAdapter.getResearchLogs(uid, 50);
+
+      // Filter logs for this symbol
+      const symbolLogs = researchLogs.filter(log => log.symbol === symbol);
+
+      if (symbolLogs.length === 0) {
+        // No historical data, use base accuracy
+        return 0.5;
+      }
+
+      // Calculate average accuracy from recent logs (weighted by recency)
+      let totalWeight = 0;
+      let weightedAccuracy = 0;
+
+      symbolLogs.forEach((log, index) => {
+        const weight = Math.max(0.1, 1 - (index * 0.02)); // Recent logs have higher weight
+        weightedAccuracy += log.accuracy * weight;
+        totalWeight += weight;
+      });
+
+      const expectedAccuracy = weightedAccuracy / totalWeight;
+
+      // Add small boost for symbols with more data points
+      const dataBoost = Math.min(0.1, symbolLogs.length * 0.005);
+
+      return Math.min(0.95, expectedAccuracy + dataBoost);
+
+    } catch (error: any) {
+      logger.debug({ uid, symbol, error: error.message }, 'Failed to calculate expected accuracy');
+      return 0.5; // Default accuracy
+    }
+  }
+
+  /**
+   * Get comprehensive symbol list for research processing
+   */
+  async getResearchSymbolList(uid: string, limit: number = 50): Promise<string[]> {
+    const cacheKey = `symbols_${limit}`;
+    const cached = symbolCache.get(cacheKey);
+    const now = Date.now();
+
+    if (cached && (now - cached.timestamp) < cached.ttl) {
+      logger.debug({ uid, symbolCount: cached.data.length }, 'Using cached symbol list');
+      return cached.data;
+    }
+
+    try {
+      logger.info({ uid, limit }, 'Getting comprehensive symbol list for research');
+
+      // Try to get top symbols from CoinMarketCap first
+      const topSymbols = await this.getTopMarketCapSymbols(uid, limit);
+      if (topSymbols.length > 0) {
+        const symbols = topSymbols.map(s => s.symbol);
+        logger.info({ uid, symbolCount: symbols.length }, 'Using CoinMarketCap symbol list');
+
+        // Cache the result
+        symbolCache.set(cacheKey, { data: symbols, timestamp: now, ttl: SYMBOL_CACHE_TTL_MS });
+        return symbols;
+      }
+
+      // Fallback: Use a curated list of major symbols
+      const majorSymbols = [
+        'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'XRPUSDT',
+        'SOLUSDT', 'DOTUSDT', 'DOGEUSDT', 'AVAXUSDT', 'LTCUSDT',
+        'MATICUSDT', 'ALGOUSDT', 'VETUSDT', 'ICPUSDT', 'FILUSDT',
+        'TRXUSDT', 'ETCUSDT', 'XLMUSDT', 'THETAUSDT', 'FTTUSDT',
+        'LINKUSDT', 'UNIUSDT', 'CAKEUSDT', 'SUSHIUSDT', 'COMPUSDT'
+      ].slice(0, limit);
+
+      logger.info({ uid, symbolCount: majorSymbols.length }, 'Using major symbols list');
+
+      // Cache the result
+      symbolCache.set(cacheKey, { data: majorSymbols, timestamp: now, ttl: SYMBOL_CACHE_TTL_MS });
+      return majorSymbols;
+
+    } catch (error: any) {
+      logger.error({ uid, error: error.message }, 'Failed to get symbol list, using minimal fallback');
+      const fallbackSymbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'];
+
+      // Cache even the fallback
+      symbolCache.set(cacheKey, { data: fallbackSymbols, timestamp: now, ttl: SYMBOL_CACHE_TTL_MS / 10 }); // Shorter TTL for fallback
+      return fallbackSymbols;
+    }
+  }
+
+  /**
+   * Run deep research on multiple symbols with concurrency control
+   */
+  async runDeepResearchBatch(uid: string, symbols?: string[], concurrency: number = 5): Promise<any[]> {
+    const batchStartTime = Date.now();
+
+    try {
+      // Get optimal symbol batch if not provided
+      if (!symbols || symbols.length === 0) {
+        const { batchSymbols } = await this.selectOptimalSymbolBatch(uid, 5); // Get primary + 4 others
+        symbols = batchSymbols;
+      }
+
+      logger.info({ uid, symbolCount: symbols.length, concurrency }, 'Starting batch deep research');
+
+      const results = [];
+      const semaphore = new Semaphore(concurrency);
+
+      // Process symbols concurrently with semaphore
+      const promises = symbols.map(async (symbol) => {
+        const symbolStartTime = Date.now();
+        const release = await semaphore.acquire();
+        try {
+          const result = await this.runDeepResearchInternal(symbol, uid);
+          const duration = Date.now() - symbolStartTime;
+          results.push({
+            symbol,
+            result: result.legacyResult,
+            timestamp: Date.now(),
+            durationMs: duration
+          });
+          logger.info({ uid, symbol, durationMs: duration }, 'Completed batch research for symbol');
+        } catch (error: any) {
+          const duration = Date.now() - symbolStartTime;
+          logger.error({ uid, symbol, error: error.message, durationMs: duration }, 'Failed batch research for symbol');
+          results.push({
+            symbol,
+            error: error.message,
+            timestamp: Date.now(),
+            durationMs: duration
+          });
+        } finally {
+          release();
+        }
+      });
+
+      await Promise.allSettled(promises); // Use allSettled to prevent one failure from stopping others
+
+      const totalDuration = Date.now() - batchStartTime;
+      const successful = results.filter(r => r.result).length;
+      const failed = results.filter(r => r.error).length;
+
+      logger.info({
+        uid,
+        processedCount: results.length,
+        successful,
+        failed,
+        totalDurationMs: totalDuration,
+        avgDurationMs: results.length > 0 ? totalDuration / results.length : 0
+      }, 'Completed batch deep research');
+
+      return results;
+    } catch (error: any) {
+      logger.error({ uid, error: error.message, batchDurationMs: Date.now() - batchStartTime }, 'Batch deep research failed catastrophically');
+      return [{
+        symbol: 'SYSTEM_ERROR',
+        error: error.message,
+        timestamp: Date.now()
+      }];
+    }
+  }
+
   async runDeepResearch(symbol: string, uid: string): Promise<DeepResearchResult> {
     // For backward compatibility, run the legacy method and return legacy format
     const result = await this.runDeepResearchInternal(symbol, uid);
     return result.legacyResult;
+  }
+
+  /**
+   * Run deep research with automatic symbol selection
+   */
+  async runDeepResearchAuto(uid: string): Promise<DeepResearchResult> {
+    // Select optimal symbol
+    const { symbol, expectedAccuracy, reason } = await this.selectOptimalSymbol(uid);
+
+    logger.info({ uid, selectedSymbol: symbol, expectedAccuracy, reason }, 'Running auto deep research');
+
+    // Run research on selected symbol
+    const result = await this.runDeepResearchInternal(symbol, uid);
+    const legacyResult = result.legacyResult;
+
+    // Add symbol selection metadata
+    (legacyResult as any).symbolSelection = {
+      selectedSymbol: symbol,
+      expectedAccuracy,
+      reason,
+      selectionTimestamp: Date.now()
+    };
+
+    return legacyResult;
   }
 
   async runNormalizedDeepResearch(symbol: string, uid: string): Promise<NormalizedDeepResearchResult> {
@@ -160,6 +550,7 @@ export class DeepResearchEngine {
     legacyResult: DeepResearchResult;
     normalizedResult: NormalizedDeepResearchResult;
   }> {
+    const startTime = Date.now();
     logger.info({ uid, symbol }, 'Starting comprehensive deep research analysis');
 
     // Get user integrations
@@ -183,7 +574,12 @@ export class DeepResearchEngine {
       const cryptoCompareStart = Date.now();
       try {
         const { CryptoCompareAdapter } = await import('./cryptocompareAdapter');
-        const cryptoCompareAdapter = new CryptoCompareAdapter(integrations.cryptocompare?.apiKey || '');
+        // Use user API key if available, otherwise fallback to service-level key
+        const apiKey = integrations.cryptocompare?.apiKey || config.research.cryptocompare.apiKey;
+        if (!apiKey) {
+          throw new Error('No CryptoCompare API key available (user or service-level)');
+        }
+        const cryptoCompareAdapter = new CryptoCompareAdapter(apiKey);
 
         cryptoCompareData = await cryptoCompareAdapter.getMarketData(symbol);
         const ohlcResult = await cryptoCompareAdapter.getOHLCData(symbol);
@@ -204,10 +600,12 @@ export class DeepResearchEngine {
       console.log(`[NewsData] START - ${symbol}`);
       const newsDataStart = Date.now();
       try {
-        if (!integrations.newsdata?.apiKey) {
-          throw new Error('NewsData API key is missing - skipping gracefully');
+        // Use user API key if available, otherwise fallback to service-level key
+        const apiKey = integrations.newsdata?.apiKey || config.research.newsdata.apiKey;
+        if (!apiKey) {
+          throw new Error('No NewsData API key available (user or service-level) - skipping gracefully');
         }
-        newsData = await fetchNewsData(integrations.newsdata.apiKey, symbol);
+        newsData = await fetchNewsData(apiKey, symbol);
         providerLatencies.NewsData = Date.now() - newsDataStart;
         newsData.latencyMs = providerLatencies.NewsData;
         providersCalled.push('NewsData');
@@ -223,7 +621,9 @@ export class DeepResearchEngine {
       console.log(`[CoinMarketCap] START - ${symbol}`);
       const coinMarketCapStart = Date.now();
       try {
-        coinMarketCapData = await fetchCoinMarketCapMarketData(symbol, integrations.coinmarketcap?.apiKey);
+        // Use user API key if available, otherwise fallback to service-level key
+        const cmcApiKey = integrations.coinmarketcap?.apiKey || config.research.coinmarketcap.apiKey;
+        coinMarketCapData = await fetchCoinMarketCapMarketData(symbol, cmcApiKey || undefined);
         providerLatencies.CoinMarketCap = Date.now() - coinMarketCapStart;
         coinMarketCapData.latencyMs = providerLatencies.CoinMarketCap;
         providersCalled.push('CoinMarketCap');
@@ -419,8 +819,16 @@ export class DeepResearchEngine {
         });
       }
 
-      logger.info({ uid, symbol, signal: legacyResult.combinedSignal, accuracy: legacyResult.accuracy },
-        'Deep research analysis completed successfully');
+            const totalDuration = Date.now() - startTime;
+            logger.info({
+              uid,
+              symbol,
+              signal: legacyResult.combinedSignal,
+              accuracy: legacyResult.accuracy,
+              durationMs: totalDuration,
+              providersCalled: providersCalled.length,
+              successfulProviders: providersCalled.length
+            }, 'Deep research analysis completed successfully');
 
       return { legacyResult, normalizedResult };
 

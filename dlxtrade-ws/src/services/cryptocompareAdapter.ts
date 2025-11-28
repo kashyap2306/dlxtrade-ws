@@ -1,4 +1,5 @@
 import { AdapterError, extractAdapterError } from '../utils/adapterErrorHandler';
+import { retryWithBackoff, rateLimiters } from '../utils/rateLimiter';
 import axios from 'axios';
 
 // Simple in-memory cache for CryptoCompare data
@@ -17,6 +18,31 @@ export class CryptoCompareAdapter {
 
   constructor(apiKey: string) {
     this.apiKey = apiKey;
+  }
+
+  /**
+   * Test connectivity and API key validity
+   */
+  async testConnection(): Promise<{ success: boolean; message: string }> {
+    try {
+      const response = await axios.get(`${this.baseUrl}pricemultifull`, {
+        params: {
+          fsyms: 'BTC',
+          tsyms: 'USD',
+          api_key: this.apiKey
+        },
+        timeout: 5000,
+      });
+
+      if (response.status === 200 && response.data && !response.data.Response?.includes('Error')) {
+        return { success: true, message: 'CryptoCompare API accessible and key valid' };
+      } else {
+        const errorMsg = response.data?.Message || `HTTP ${response.status}`;
+        return { success: false, message: `API validation failed: ${errorMsg}` };
+      }
+    } catch (error: any) {
+      return { success: false, message: `Connection failed: ${error.message}` };
+    }
   }
 
   /**
@@ -52,23 +78,32 @@ export class CryptoCompareAdapter {
     const cacheKey = `market_${symbol}`;
     return this.getCachedData(cacheKey, async () => {
       const url = `${this.baseUrl}/pricemultifull`;
+      const baseSymbol = symbol.replace('USDT', '').replace('USD', '');
 
       try {
-        const response = await axios.get(url, {
-          params: {
-            fsyms: symbol.replace('USDT', '').replace('USD', ''),
-            tsyms: 'USD',
-            api_key: this.apiKey
+        const response = await retryWithBackoff(
+          async () => {
+            const response = await axios.get(url, {
+              params: {
+                fsyms: baseSymbol,
+                tsyms: 'USD',
+                api_key: this.apiKey
+              },
+              timeout: 5000
+            });
+
+            if (response.status !== 200) {
+              const errorDetails = extractAdapterError('CryptoCompare', 'GET', url, { response });
+              throw new AdapterError(errorDetails);
+            }
+
+            return response;
           },
-          timeout: 5000
-        });
+          3, // max retries
+          1000, // base delay
+          rateLimiters.cryptocompare // rate limiter
+        );
 
-        if (response.status !== 200) {
-          const errorDetails = extractAdapterError('CryptoCompare', 'GET', url, { response });
-          throw new AdapterError(errorDetails);
-        }
-
-        const baseSymbol = symbol.replace('USDT', '').replace('USD', '');
         const data = response.data.RAW?.[baseSymbol]?.USD;
 
         if (!data) {

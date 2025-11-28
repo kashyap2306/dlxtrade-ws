@@ -34,9 +34,16 @@ export function encrypt(text: string): string {
   return Buffer.concat([salt, iv, tag, encrypted]).toString('base64');
 }
 
-export function decrypt(encryptedText: string): string | null {
+export function decrypt(encryptedText: string, context?: { uid?: string; field?: string; provider?: string }): string | null {
   // Safety check: return null if encrypted value is missing or empty
   if (!encryptedText || encryptedText.trim() === '') {
+    if (context?.field) {
+      logger.warn({
+        uid: context.uid,
+        field: context.field,
+        provider: context.provider
+      }, 'Decrypt called with empty/null encrypted text');
+    }
     return null;
   }
 
@@ -52,8 +59,16 @@ export function decrypt(encryptedText: string): string | null {
 
     return decipher.update(encrypted) + decipher.final('utf8');
   } catch (error: any) {
-    // Return null instead of throwing error for safety
-    console.warn('Decrypt failed, returning null:', error.message);
+    // Log detailed error context without exposing plaintext
+    logger.warn({
+      uid: context?.uid,
+      field: context?.field,
+      provider: context?.provider,
+      errorType: error.name,
+      errorMessage: error.message,
+      encryptedLength: encryptedText?.length || 0
+    }, 'Decrypt failed, returning null');
+
     return null;
   }
 }

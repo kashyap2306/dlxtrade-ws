@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { firestoreAdapter } from '../services/firestoreAdapter';
-import { ExchangeConnectorFactory, type ExchangeName } from '../services/exchangeConnector';
+import { ExchangeConnectorFactory, type ExchangeName, type ExchangeCreationResult } from '../services/exchangeConnector';
 import { decrypt } from '../services/keyManager';
 import { logger } from '../utils/logger';
 import { getFirebaseAdmin } from '../utils/firebase';
@@ -57,10 +57,10 @@ export async function walletRoutes(fastify: FastifyInstance) {
       }
 
       // Decrypt credentials (server-side only, never expose)
-      const apiKey = decrypt(exchangeConfig.apiKeyEncrypted);
-      const secret = decrypt(exchangeConfig.secretEncrypted);
+      const apiKey = decrypt(exchangeConfig.apiKeyEncrypted, { uid: user.uid, field: 'apiKeyEncrypted', provider: exchange });
+      const secret = decrypt(exchangeConfig.secretEncrypted, { uid: user.uid, field: 'secretEncrypted', provider: exchange });
       const passphrase = exchangeConfig.passphraseEncrypted
-        ? decrypt(exchangeConfig.passphraseEncrypted)
+        ? decrypt(exchangeConfig.passphraseEncrypted, { uid: user.uid, field: 'passphraseEncrypted', provider: exchange })
         : undefined;
       const testnet = exchangeConfig.testnet ?? true;
 
@@ -74,12 +74,32 @@ export async function walletRoutes(fastify: FastifyInstance) {
       }, 'Fetching wallet balances');
 
       // Create exchange adapter
-      const adapter = ExchangeConnectorFactory.create(exchange, {
+      const creationResult = ExchangeConnectorFactory.create(exchange, {
         apiKey,
         secret,
         passphrase,
         testnet,
       });
+
+      if (!creationResult.success) {
+        const error = creationResult.error!;
+        if (error.code === 'MISSING_PASSPHRASE') {
+          return reply.code(400).send({
+            success: false,
+            error: "Bitget passphrase missing. Update exchange-config.",
+            code: error.code,
+            requiredFields: error.requiredFields,
+          });
+        } else {
+          return reply.code(400).send({
+            success: false,
+            error: error.message,
+            code: error.code,
+          });
+        }
+      }
+
+      const adapter = creationResult.connector!;
 
       // Fetch account info with timeout
       if (!adapter.getAccount) {

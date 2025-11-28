@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { settingsApi, integrationsApi, exchangeApi } from '../services/api';
+import { settingsApi, integrationsApi, exchangeApi, adminApi, marketApi } from '../services/api';
 import Toast from '../components/Toast';
 import Sidebar from '../components/Sidebar';
 import { useAuth } from '../hooks/useAuth';
@@ -314,9 +314,11 @@ export default function Settings() {
   const loadMarketSymbols = async () => {
     try {
       // Try to get symbols from backend market API
-      const response = await adminApi.getMarketData();
-      if (response.data?.symbols && Array.isArray(response.data.symbols)) {
-        setMarketSymbols(response.data.symbols);
+      const response = await marketApi.getSymbols();
+      if (response.data && Array.isArray(response.data)) {
+        // Extract symbol names from the response
+        const symbols = response.data.map((item: any) => item.symbol || item);
+        setMarketSymbols(symbols);
       } else {
         // Fallback to common symbols
         const commonSymbols = [
@@ -586,7 +588,7 @@ export default function Settings() {
                     max="100"
                     step="1"
                     className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                    value={settings.accuracyTrigger}
+                    value={settings.accuracyThreshold}
                     onChange={(e) => setSettings({ ...settings, accuracyTrigger: parseInt(e.target.value, 10) })}
                   />
                   <p className="text-xs text-gray-400">Minimum accuracy to trigger trades</p>

@@ -5,6 +5,7 @@ import { deepResearchEngine } from './deepResearchEngine';
 import { autoTradeExecutor } from './autoTradeExecutor';
 import * as admin from 'firebase-admin';
 import { AdapterError } from '../utils/adapterErrorHandler';
+import { config } from '../config';
 
 /**
  * Scheduled Research Service
@@ -209,10 +210,14 @@ export class ScheduledResearchService {
    */
   async runResearchForUser(uid: string): Promise<{
     success: boolean;
-    symbol: string;
-    signal?: 'BUY' | 'SELL' | 'HOLD';
-    accuracy?: number;
-    reasoning?: string;
+    symbolsProcessed: number;
+    results?: Array<{
+      symbol: string;
+      signal?: 'BUY' | 'SELL' | 'HOLD';
+      accuracy?: number;
+      success: boolean;
+      error?: string;
+    }>;
     errors?: Array<{ adapter: string; error: string; isAuthError: boolean }>;
     providersCalled?: string[];
   }> {
@@ -220,69 +225,79 @@ export class ScheduledResearchService {
       // Get user's API integrations from Firestore
       const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
 
-      // Check for required APIs: CryptoCompare and NewsData are mandatory
-      const hasCryptoCompare = integrations.cryptocompare?.apiKey;
-      const hasNewsData = integrations.newsData?.apiKey;
+      // Check for at least one research API (more lenient than before)
+      const hasAnyApi = integrations.cryptocompare?.apiKey || integrations.newsdata?.apiKey ||
+                        integrations.coinmarketcap?.apiKey || config.research.cryptocompare.apiKey ||
+                        config.research.newsdata.apiKey || config.research.coinmarketcap.apiKey;
 
-      if (!hasCryptoCompare || !hasNewsData) {
-        // Skip users without required APIs
-        logger.debug({ uid, hasCryptoCompare, hasNewsData }, 'Skipping user - missing required research API credentials');
+      if (!hasAnyApi) {
+        // Skip users without any research APIs
+        logger.debug({ uid }, 'Skipping user - no research API credentials available');
         return {
           success: false,
-          symbol: 'BTCUSDT',
+          symbolsProcessed: 0,
           providersCalled: [],
           errors: [{
-            adapter: 'Required APIs',
-            error: 'Missing required API keys: CryptoCompare and NewsData.io are mandatory',
+            adapter: 'Research APIs',
+            error: 'No research API keys available (user or service-level)',
             isAuthError: true,
           }],
         };
       }
 
-      // Default symbol to analyze
-      const symbol = 'BTCUSDT';
+      logger.info({ uid }, 'Running batch deep research analysis for scheduled job');
 
-      logger.info({ uid, symbol }, 'Running comprehensive deep research analysis for scheduled job');
+      // Use batch research processing for multiple symbols
+      const batchResults = await deepResearchEngine.runDeepResearchBatch(uid, undefined, 3); // 3 concurrent requests
 
-      // Use the new deep research engine for full strategy analysis
-      const deepResult = await deepResearchEngine.runDeepResearch(symbol, uid);
+      // Process results
+      const successfulResults = batchResults.filter(r => r.result && !r.error);
+      const failedResults = batchResults.filter(r => r.error);
 
       logger.info({
         uid,
-        symbol,
-        signal: deepResult.combinedSignal,
-        accuracy: deepResult.accuracy,
-        providersCalled: deepResult.providersCalled.join(', '),
-        strategies: deepResult.signals.length
-      }, 'Scheduled deep research completed with full strategy analysis');
+        totalSymbols: batchResults.length,
+        successful: successfulResults.length,
+        failed: failedResults.length,
+        symbolsProcessed: successfulResults.map(r => r.symbol).join(', ')
+      }, 'Scheduled batch deep research completed');
 
-      // Check for auto-trading if accuracy >= 75% and user has auto-trade enabled
-      if (deepResult.accuracy >= 0.75 && (deepResult.combinedSignal === 'BUY' || deepResult.combinedSignal === 'SELL')) {
-        await this.executeAutoTradeIfEnabled(uid, symbol, deepResult);
+      // Check for auto-trading on high-confidence results
+      for (const result of successfulResults) {
+        if (result.result.accuracy >= 0.75 &&
+            (result.result.combinedSignal === 'BUY' || result.result.combinedSignal === 'SELL')) {
+          await this.executeAutoTradeIfEnabled(uid, result.symbol, result.result);
+        }
       }
 
       return {
-        success: true,
-        symbol,
-        signal: deepResult.combinedSignal,
-        accuracy: deepResult.accuracy,
-        reasoning: `Full strategy analysis completed with ${deepResult.signals.length} strategies`,
-        providersCalled: deepResult.providersCalled,
-        errors: undefined,
+        success: successfulResults.length > 0,
+        symbolsProcessed: batchResults.length,
+        results: batchResults.map(r => ({
+          symbol: r.symbol,
+          signal: r.result?.combinedSignal,
+          accuracy: r.result?.accuracy,
+          success: !r.error,
+          error: r.error
+        })),
+        providersCalled: successfulResults.flatMap(r => r.result?.providersCalled || []),
+        errors: failedResults.map(r => ({
+          adapter: 'Research',
+          error: r.error || 'Unknown error',
+          isAuthError: false,
+        })),
       };
     } catch (error: any) {
-      logger.error({ error: error.message, stack: error.stack, uid }, 'Error in runResearchForUser with deep research engine');
+      logger.error({ error: error.message, stack: error.stack, uid }, 'Error in runResearchForUser with batch deep research');
 
       // Return minimal fallback response
       return {
         success: false,
-        symbol: 'BTCUSDT',
-        signal: 'HOLD',
-        accuracy: 0.5,
+        symbolsProcessed: 0,
         providersCalled: [],
         errors: [{
           adapter: 'System',
-          error: error.message || 'Deep research engine error',
+          error: error.message || 'Batch deep research engine error',
           isAuthError: false,
         }],
       };

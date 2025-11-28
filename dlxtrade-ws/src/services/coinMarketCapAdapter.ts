@@ -1,5 +1,7 @@
 import { AdapterError } from '../utils/adapterErrorHandler';
+import { retryWithBackoff, rateLimiters } from '../utils/rateLimiter';
 import axios from 'axios';
+import { logger } from '../utils/logger';
 
 const BASE_URL = 'https://pro-api.coinmarketcap.com/v1';
 
@@ -46,6 +48,40 @@ interface CacheEntry {
 const coinMarketCapCache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours for metadata
 
+export class CoinMarketCapAdapter {
+  private apiKey?: string;
+  private baseUrl = BASE_URL;
+
+  constructor(apiKey?: string) {
+    this.apiKey = apiKey;
+  }
+
+  /**
+   * Test connectivity and API key validity
+   */
+  async testConnection(): Promise<{ success: boolean; message: string }> {
+    try {
+      const response = await axios.get(`${this.baseUrl}cryptocurrency/quotes/latest`, {
+        params: {
+          symbol: 'BTC',
+          convert: 'USD'
+        },
+        headers: this.apiKey ? { 'X-CMC_PRO_API_KEY': this.apiKey } : {},
+        timeout: 5000,
+      });
+
+      if (response.status === 200 && response.data && !response.data.status?.error_code) {
+        return { success: true, message: 'CoinMarketCap API accessible and key valid' };
+      } else {
+        const errorMsg = response.data?.status?.error_message || `HTTP ${response.status}`;
+        return { success: false, message: `API validation failed: ${errorMsg}` };
+      }
+    } catch (error: any) {
+      return { success: false, message: `Connection failed: ${error.message}` };
+    }
+  }
+}
+
 function makeRequest(url: string, apiKey?: string): Promise<any> {
   const headers: any = {
     'Accept': 'application/json',
@@ -63,35 +99,17 @@ function makeRequest(url: string, apiKey?: string): Promise<any> {
 }
 
 async function attemptWithRetry(url: string, apiKey?: string): Promise<any> {
-  // Try 1
   try {
-    return await makeRequest(url, apiKey);
+    return await retryWithBackoff(
+      async () => await makeRequest(url, apiKey),
+      3, // max retries
+      500, // base delay
+      rateLimiters.coinmarketcap // rate limiter
+    );
   } catch (error: any) {
     if (error.response?.status === 429) {
-      console.log('[CoinMarketCap] RETRY 1 - Rate limited, waiting 500ms');
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      // Try 2
-      try {
-        return await makeRequest(url, apiKey);
-      } catch (error2: any) {
-        if (error2.response?.status === 429) {
-          console.log('[CoinMarketCap] RETRY 2 - Rate limited again, waiting 1000ms');
-          await new Promise(resolve => setTimeout(resolve, 1000));
-
-          // Try 3
-          try {
-            return await makeRequest(url, apiKey);
-          } catch (error3: any) {
-            if (error3.response?.status === 429) {
-              console.log('[CoinMarketCap] RETRY 3 FAILED - Rate limited, using fallback');
-              return null; // Signal to use fallback
-            }
-            throw error3;
-          }
-        }
-        throw error2;
-      }
+      console.log('[CoinMarketCap] ALL RETRIES FAILED - Rate limited, using fallback');
+      return null; // Signal to use fallback
     }
     throw error;
   }
@@ -214,6 +232,23 @@ export async function fetchCoinMarketCapMetadata(symbol: string, apiKey?: string
       latency: Date.now() - startTime,
       message: "Error occurred, using fallback empty metadata"
     };
+  }
+}
+
+export async function fetchCoinMarketCapListings(apiKey: string, limit: number = 100): Promise<any[]> {
+  try {
+    const url = `${BASE_URL}cryptocurrency/listings/latest`;
+    const response = await makeRequest(url, apiKey);
+
+    if (response.status?.error_code) {
+      throw new Error(`CoinMarketCap API error: ${response.status.error_message}`);
+    }
+
+    // Return top N cryptocurrencies by market cap
+    return (response.data || []).slice(0, limit);
+  } catch (error: any) {
+    logger.error({ error: error.message, limit }, 'Failed to fetch CoinMarketCap listings');
+    return [];
   }
 }
 

@@ -480,5 +480,131 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       });
     }
   });
+
+  // POST /api/integrations/upsert - Create or update integration (admin only)
+  fastify.post('/upsert', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: {
+    userId?: string;
+    apiName: string;
+    enabled: boolean;
+    apiKey?: string;
+    secretKey?: string;
+    apiType?: string;
+  } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const { userId, apiName, enabled, apiKey, secretKey, apiType } = request.body;
+
+      // Allow admin to specify userId, otherwise use current user
+      const targetUserId = userId || user.uid;
+
+      // Check if user has admin permissions to modify other users
+      if (userId && userId !== user.uid) {
+        const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+        if (!isAdmin) {
+          return reply.code(403).send({ error: 'Admin permission required to modify other users' });
+        }
+      }
+
+      await firestoreAdapter.saveIntegration(targetUserId, apiName, {
+        enabled,
+        apiKey,
+        secretKey,
+        apiType
+      });
+
+      logger.info({
+        uid: user.uid,
+        targetUid: targetUserId,
+        apiName,
+        enabled,
+        hasApiKey: !!apiKey,
+        hasSecretKey: !!secretKey
+      }, 'Integration upserted');
+
+      return {
+        success: true,
+        apiName,
+        enabled,
+        message: 'Integration updated successfully'
+      };
+    } catch (err: any) {
+      logger.error({ err, uid: (request as any).user?.uid }, 'Error upserting integration');
+      return reply.code(500).send({ error: err.message || 'Error upserting integration' });
+    }
+  });
+
+  // POST /api/integrations/setup-exchange - Setup exchange configuration (admin only)
+  fastify.post('/setup-exchange', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: {
+    userId?: string;
+    exchange: string;
+    apiKey: string;
+    secret: string;
+    passphrase?: string;
+    testnet?: boolean;
+  } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const { userId, exchange, apiKey, secret, passphrase, testnet = true } = request.body;
+
+      // Allow admin to specify userId, otherwise use current user
+      const targetUserId = userId || user.uid;
+
+      // Check if user has admin permissions to modify other users
+      if (userId && userId !== user.uid) {
+        const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+        if (!isAdmin) {
+          return reply.code(403).send({ error: 'Admin permission required to modify other users' });
+        }
+      }
+
+      // Validate required fields
+      if (!apiKey || !secret) {
+        return reply.code(400).send({ error: 'API key and secret are required' });
+      }
+
+      const db = getFirebaseAdmin().firestore();
+      const docRef = db
+        .collection('users')
+        .doc(targetUserId)
+        .collection('exchangeConfig')
+        .doc('current');
+
+      const configData: any = {
+        exchange,
+        apiKeyEncrypted: encrypt(apiKey),
+        secretEncrypted: encrypt(secret),
+        testnet,
+        updatedAt: admin.firestore.Timestamp.now(),
+      };
+
+      if (passphrase) {
+        configData.passphraseEncrypted = encrypt(passphrase);
+      }
+
+      await docRef.set(configData, { merge: true });
+
+      logger.info({
+        uid: user.uid,
+        targetUid: targetUserId,
+        exchange,
+        hasPassphrase: !!passphrase,
+        testnet
+      }, 'Exchange configuration setup');
+
+      return {
+        success: true,
+        exchange,
+        testnet,
+        message: 'Exchange configuration updated successfully'
+      };
+    } catch (err: any) {
+      logger.error({ err, uid: (request as any).user?.uid }, 'Error setting up exchange configuration');
+      return reply.code(500).send({ error: err.message || 'Error setting up exchange configuration' });
+    }
+  });
 }
 

@@ -133,21 +133,29 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
             }
             
             // Create connector
-            let connector;
-            try {
-              connector = ExchangeConnectorFactory.create(exchangeName, {
-                apiKey,
-                secret,
-                passphrase,
-                testnet,
-              });
-            } catch (createErr: any) {
-              logger.error({ err: createErr, exchange: exchangeName }, 'Failed to create exchange connector');
-              return reply.code(500).send({
+            const creationResult = ExchangeConnectorFactory.create(exchangeName, {
+              apiKey,
+              secret,
+              passphrase,
+              testnet,
+            });
+
+            if (!creationResult.success) {
+              const error = creationResult.error!;
+              logger.error({
+                exchange: exchangeName,
+                error: error.message,
+                code: error.code
+              }, 'Failed to create exchange connector');
+              return reply.code(400).send({
                 success: false,
-                error: `Failed to initialize ${exchangeName} adapter: ${createErr.message || 'Unknown error'}`,
+                error: error.message,
+                code: error.code,
+                requiredFields: error.requiredFields,
               });
             }
+
+            const connector = creationResult.connector!;
 
             // Validate adapter is initialized
             if (!connector) {
@@ -228,6 +236,164 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
         error: error.message || 'Diagnostic test failed',
         latency: Date.now() - startTime,
       });
+    }
+  });
+
+  // POST /api/diagnostics/test-providers - Test provider API validity
+  fastify.post('/test-providers', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const results = [];
+
+      // Get user's enabled integrations
+      const enabledIntegrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
+
+      // Test Binance Public (no auth required)
+      const startTimeBinance = Date.now();
+      try {
+        const response = await fetch('https://api.binance.com/api/v3/ping');
+        const responseTime = Date.now() - startTimeBinance;
+        if (response.ok) {
+          results.push({
+            provider: 'binancePublic',
+            status: 'success',
+            message: 'Binance Public API accessible',
+            responseTime,
+            hasApiKey: false
+          });
+        } else {
+          results.push({
+            provider: 'binancePublic',
+            status: 'failed',
+            message: `HTTP ${response.status}: ${response.statusText}`,
+            responseTime,
+            hasApiKey: false
+          });
+        }
+      } catch (error: any) {
+        results.push({
+          provider: 'binancePublic',
+          status: 'error',
+          message: `Connection failed: ${error.message}`,
+          responseTime: Date.now() - startTimeBinance,
+          hasApiKey: false
+        });
+      }
+
+      // Test CryptoCompare
+      if (enabledIntegrations.cryptocompare?.apiKey) {
+        const startTime = Date.now();
+        try {
+          const { CryptoCompareAdapter } = await import('../services/cryptocompareAdapter');
+          const adapter = new CryptoCompareAdapter(enabledIntegrations.cryptocompare.apiKey);
+          const result = await adapter.testConnection();
+          results.push({
+            provider: 'cryptocompare',
+            status: result.success ? 'success' : 'failed',
+            message: result.message,
+            responseTime: Date.now() - startTime,
+            hasApiKey: true
+          });
+        } catch (error: any) {
+          results.push({
+            provider: 'cryptocompare',
+            status: 'error',
+            message: `Adapter error: ${error.message}`,
+            responseTime: Date.now() - startTime,
+            hasApiKey: true
+          });
+        }
+      } else {
+        results.push({
+          provider: 'cryptocompare',
+          status: 'skipped',
+          message: 'No API key configured',
+          hasApiKey: false
+        });
+      }
+
+      // Test NewsData
+      if (enabledIntegrations.newsdata?.apiKey) {
+        const startTime = Date.now();
+        try {
+          const { NewsDataAdapter } = await import('../services/newsDataAdapter');
+          const adapter = new NewsDataAdapter(enabledIntegrations.newsdata.apiKey);
+          const result = await adapter.testConnection();
+          results.push({
+            provider: 'newsdata',
+            status: result.success ? 'success' : 'failed',
+            message: result.message,
+            responseTime: Date.now() - startTime,
+            hasApiKey: true
+          });
+        } catch (error: any) {
+          results.push({
+            provider: 'newsdata',
+            status: 'error',
+            message: `Adapter error: ${error.message}`,
+            responseTime: Date.now() - startTime,
+            hasApiKey: true
+          });
+        }
+      } else {
+        results.push({
+          provider: 'newsdata',
+          status: 'skipped',
+          message: 'No API key configured',
+          hasApiKey: false
+        });
+      }
+
+      // Test CoinMarketCap
+      if (enabledIntegrations.coinmarketcap?.apiKey) {
+        const startTime = Date.now();
+        try {
+          const { CoinMarketCapAdapter } = await import('../services/coinMarketCapAdapter');
+          const adapter = new CoinMarketCapAdapter(enabledIntegrations.coinmarketcap.apiKey);
+          const result = await adapter.testConnection();
+          results.push({
+            provider: 'coinmarketcap',
+            status: result.success ? 'success' : 'failed',
+            message: result.message,
+            responseTime: Date.now() - startTime,
+            hasApiKey: true
+          });
+        } catch (error: any) {
+          results.push({
+            provider: 'coinmarketcap',
+            status: 'error',
+            message: `Adapter error: ${error.message}`,
+            responseTime: Date.now() - startTime,
+            hasApiKey: true
+          });
+        }
+      } else {
+        results.push({
+          provider: 'coinmarketcap',
+          status: 'skipped',
+          message: 'No API key configured',
+          hasApiKey: false
+        });
+      }
+
+      logger.info({ uid: user.uid, resultsCount: results.length }, 'Provider API tests completed');
+
+      return {
+        success: true,
+        results,
+        summary: {
+          total: results.length,
+          successful: results.filter(r => r.status === 'success').length,
+          failed: results.filter(r => r.status === 'failed').length,
+          errors: results.filter(r => r.status === 'error').length,
+          skipped: results.filter(r => r.status === 'skipped').length
+        }
+      };
+    } catch (err: any) {
+      logger.error({ err, uid: (request as any).user?.uid }, 'Error testing provider APIs');
+      return reply.code(500).send({ error: err.message || 'Error testing provider APIs' });
     }
   });
 }

@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
 import ErrorPopup, { ErrorType } from '../components/ui/ErrorPopup';
 
 interface ErrorContextType {
@@ -27,6 +27,33 @@ export function ErrorProvider({ children }: ErrorProviderProps) {
   const handleClose = useCallback(() => {
     setError(null);
   }, []);
+
+  // Global error boundary for unhandled promise rejections
+  useEffect(() => {
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      console.error('Unhandled promise rejection:', event.reason);
+      // Prevent the default browser behavior (logging to console)
+      event.preventDefault();
+      // Show a user-friendly error instead
+      showError('An unexpected error occurred. Please refresh the page.', 'critical');
+    };
+
+    const handleError = (event: ErrorEvent) => {
+      console.error('Unhandled error:', event.error);
+      // Show a user-friendly error instead
+      showError('An unexpected error occurred. Please refresh the page.', 'critical');
+    };
+
+    // Add global error handlers
+    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+    window.addEventListener('error', handleError);
+
+    return () => {
+      // Clean up event listeners
+      window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+      window.removeEventListener('error', handleError);
+    };
+  }, [showError]);
 
   return (
     <ErrorContext.Provider value={{ showError, showSuccess }}>

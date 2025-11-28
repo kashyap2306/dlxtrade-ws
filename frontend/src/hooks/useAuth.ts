@@ -9,37 +9,54 @@ export function useAuth() {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
-        const token = await firebaseUser.getIdToken();
-        localStorage.setItem('firebaseToken', token);
-        localStorage.setItem('firebaseUser', JSON.stringify({
-          uid: firebaseUser.uid,
-          email: firebaseUser.email,
-        }));
-        setUser(firebaseUser);
-      } else {
-        // Only clear if we're sure there's no user
-        // Don't clear on initial load if token exists
-        const token = localStorage.getItem('firebaseToken');
-        if (!token) {
-          localStorage.removeItem('firebaseToken');
-          localStorage.removeItem('firebaseUser');
-          setUser(null);
+      try {
+        if (firebaseUser) {
+          const token = await firebaseUser.getIdToken();
+          localStorage.setItem('firebaseToken', token);
+          localStorage.setItem('firebaseUser', JSON.stringify({
+            uid: firebaseUser.uid,
+            email: firebaseUser.email,
+          }));
+          setUser(firebaseUser);
+        } else {
+          // Only clear if we're sure there's no user
+          // Don't clear on initial load if token exists
+          const token = localStorage.getItem('firebaseToken');
+          if (!token) {
+            localStorage.removeItem('firebaseToken');
+            localStorage.removeItem('firebaseUser');
+            setUser(null);
+          }
         }
+      } catch (error) {
+        console.error('Error in auth state change:', error);
+        // On error, clear auth state to prevent infinite loading
+        localStorage.removeItem('firebaseToken');
+        localStorage.removeItem('firebaseUser');
+        setUser(null);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     });
 
     // Refresh token periodically
     const tokenRefreshInterval = setInterval(async () => {
-      if (auth.currentUser) {
-        const token = await auth.currentUser.getIdToken(true);
-        localStorage.setItem('firebaseToken', token);
+      try {
+        if (auth.currentUser) {
+          const token = await auth.currentUser.getIdToken(true);
+          localStorage.setItem('firebaseToken', token);
+        }
+      } catch (error) {
+        console.error('Error refreshing token:', error);
       }
     }, 55 * 60 * 1000); // Refresh every 55 minutes (tokens expire in 1 hour)
 
     return () => {
-      unsubscribe();
+      try {
+        unsubscribe();
+      } catch (error) {
+        console.error('Error unsubscribing from auth:', error);
+      }
       clearInterval(tokenRefreshInterval);
     };
   }, []);

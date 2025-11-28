@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useThrottle } from '../hooks/usePerformance';
-import { researchApi, settingsApi } from '../services/api';
+import { researchApi, settingsApi, adminApi } from '../services/api';
 import { wsService } from '../services/ws';
 import Toast from '../components/Toast';
 import Sidebar from '../components/Sidebar';
@@ -109,17 +109,39 @@ export default function ResearchPanel() {
     if (!user) return;
     setAnalysisLoading(true);
     try {
-      const response = await researchApi.getLogs({ limit: 50 });
-      if (response.data && Array.isArray(response.data)) {
+      // Fetch research logs
+      const logsResponse = await researchApi.getLogs({ limit: 50 });
+      if (logsResponse.data && Array.isArray(logsResponse.data)) {
         // Filter only auto research (researchType === 'auto' or undefined/not 'manual')
-        const autoLogs = response.data.filter((log: ResearchLog) => 
+        const autoLogs = logsResponse.data.filter((log: ResearchLog) =>
           log.researchType !== 'manual'
         );
-        // Process logs into analysis report
+
+        // Get unique symbols from logs
+        const symbols = [...new Set(autoLogs.map(log => log.symbol))];
+
+        // Fetch market data for prices
+        let marketData: any[] = [];
+        try {
+          const marketResponse = await adminApi.getMarketData();
+          marketData = marketResponse.data || [];
+        } catch (marketErr) {
+          console.warn('Failed to fetch market data for prices:', marketErr);
+        }
+
+        // Create price map
+        const priceMap = new Map<string, number>();
+        marketData.forEach((coin: any) => {
+          if (coin.symbol && coin.price) {
+            priceMap.set(coin.symbol, coin.price);
+          }
+        });
+
+        // Process logs into analysis report with prices
         const report: AnalysisReportItem[] = autoLogs.map((log: ResearchLog) => ({
           id: log.id,
           symbol: log.symbol,
-          price: null,
+          price: priceMap.get(log.symbol) || null,
           longSignals: log.signal === 'BUY' ? 1 : 0,
           accuracy: log.accuracy,
           timestamp: log.timestamp,
@@ -199,7 +221,7 @@ export default function ResearchPanel() {
     
     try {
       // Start API call immediately (don't wait for animation)
-      const apiCallPromise = researchApi.run({ symbol: 'BTCUSDT' });
+      const apiCallPromise = researchApi.run();
       
       // Animate steps
       for (let i = 0; i < steps.length; i++) {
@@ -214,69 +236,26 @@ export default function ResearchPanel() {
         new Promise(resolve => setTimeout(resolve, PROCESSING_DURATION))
       ]);
       
-      // Update progress based on actual response data
+      // Update progress - simplified for clean API
       if (response.data?.results && response.data.results.length > 0) {
-        const result = response.data.results[0];
-        
-        // Update progress based on available data
-        if (result.cryptoQuant && !result.cryptoQuant.error) {
-          updateProgress(1, 'success'); // on-chain metrics
-        } else if (result.cryptoQuant?.error) {
-          updateProgress(1, 'error', result.cryptoQuant.error);
-        }
-        
-        
-        if (result.coinApi?.marketData && !result.coinApi.marketData.error) {
-          updateProgress(0, 'success'); // market data
-        } else if (result.coinApi?.marketData?.error) {
-          updateProgress(0, 'error', result.coinApi.marketData.error);
-        }
-        
-        // Whale activity (from CryptoQuant)
-        if (result.cryptoQuant && !result.cryptoQuant.error && result.cryptoQuant.whaleTransactions) {
-          updateProgress(2, 'success');
-        } else {
-          updateProgress(2, 'success'); // Mark as success even if no whale data
-        }
-        
-        if (result.indicators) {
-          updateProgress(4, 'success'); // combining indicators
-        }
-        
-        if (result.finalAnalysis) {
-          updateProgress(5, 'success'); // final score
-        }
-      } else {
-        // Fallback: mark all as success if we got a response
+        // Mark all steps as successful for clean API
         for (let i = 0; i < steps.length; i++) {
           updateProgress(i, 'success');
         }
-      }
-      
-      if (response.data?.results) {
-        // Add results to deep research results array (newest first)
-        const resultsWithTimestamp = response.data.results.map((result: any) => ({
+
+        // Add clean results to deep research results array
+        const cleanResults = response.data.results.map((result: any) => ({
           ...result,
-          timestamp: new Date().toISOString(),
           id: `deep_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         }));
-        setDeepResearchResults((prev) => [...resultsWithTimestamp, ...prev]);
-        
-        const result = response.data.results[0];
+        setDeepResearchResults((prev) => [...cleanResults, ...prev]);
+
+        const topResult = response.data.results[0];
         await addNotification({
           title: 'Deep Research Completed',
-          message: `Analyzed ${response.data.totalAnalyzed || response.data.results.length} symbol(s) with ${result?.finalAnalysis?.confidencePercent || 0}% accuracy`,
+          message: `Analyzed ${response.data.successfulAnalyses} symbol(s). Best: ${topResult.symbol} (${(topResult.accuracy * 100).toFixed(1)}% accuracy)`,
           type: 'success',
         });
-      } else if (response.data?.results && response.data.results.length > 0) {
-        // Partial success
-        const resultsWithTimestamp = response.data.results.map((result: any) => ({
-          ...result,
-          timestamp: new Date().toISOString(),
-          id: `deep_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        }));
-        setDeepResearchResults((prev) => [...resultsWithTimestamp, ...prev]);
-        showToast('Deep research completed with some API errors', 'success');
       } else {
         showError('No research data received from server. Please try again.', 'api');
         updateProgress(5, 'error', 'No data received');

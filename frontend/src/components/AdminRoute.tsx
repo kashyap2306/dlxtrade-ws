@@ -33,7 +33,6 @@ export default function AdminRoute({ children }: { children: React.ReactNode }) 
         const data: any = (snap.exists() && snap.data()) || {};
         if (data.isAdmin === true || data.role === 'admin') {
           setRender(<AdminLayout>{children}</AdminLayout>);
-          setRender(<AdminLayout>{children}</AdminLayout>);
           return;
         }
       } catch {}
@@ -43,7 +42,7 @@ export default function AdminRoute({ children }: { children: React.ReactNode }) 
     };
 
     run();
-  }, [loading, children]);
+  }, [loading]);
 
   return render;
 }

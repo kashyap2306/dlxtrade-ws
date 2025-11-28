@@ -32,22 +32,67 @@ export interface ExchangeConnector {
   }): Promise<any>;
 }
 
+export interface ExchangeCreationResult {
+  success: boolean;
+  connector?: ExchangeConnector;
+  error?: {
+    code: string;
+    message: string;
+    requiredFields?: string[];
+  };
+}
+
 export class ExchangeConnectorFactory {
-  static create(exchange: ExchangeName, credentials: ExchangeCredentials): ExchangeConnector {
-    switch (exchange) {
-      case 'binance':
-        return new BinanceAdapter(credentials.apiKey, credentials.secret, credentials.testnet ?? true);
-      case 'bitget':
-        if (!credentials.passphrase) {
-          throw new Error('Passphrase is required for Bitget');
+  static create(exchange: ExchangeName, credentials: ExchangeCredentials): ExchangeCreationResult {
+    try {
+      switch (exchange) {
+        case 'binance':
+          return {
+            success: true,
+            connector: new BinanceAdapter(credentials.apiKey, credentials.secret, credentials.testnet ?? true)
+          };
+        case 'bitget':
+          if (!credentials.passphrase) {
+            return {
+              success: false,
+              error: {
+                code: 'MISSING_PASSPHRASE',
+                message: 'Passphrase is required for Bitget',
+                requiredFields: ['passphrase']
+              }
+            };
+          }
+          return {
+            success: true,
+            connector: new BitgetAdapter(credentials.apiKey, credentials.secret, credentials.passphrase, credentials.testnet ?? true)
+          };
+        case 'weex':
+          return {
+            success: true,
+            connector: new WeexAdapter(credentials.apiKey, credentials.secret, credentials.passphrase, credentials.testnet ?? true)
+          };
+        case 'bingx':
+          return {
+            success: true,
+            connector: new BingXAdapter(credentials.apiKey, credentials.secret, credentials.testnet ?? true)
+          };
+        default:
+          return {
+            success: false,
+            error: {
+              code: 'UNSUPPORTED_EXCHANGE',
+              message: `Unsupported exchange: ${exchange}`
+            }
+          };
+      }
+    } catch (error: any) {
+      return {
+        success: false,
+        error: {
+          code: 'CREATION_FAILED',
+          message: error.message
         }
-        return new BitgetAdapter(credentials.apiKey, credentials.secret, credentials.passphrase, credentials.testnet ?? true);
-      case 'weex':
-        return new WeexAdapter(credentials.apiKey, credentials.secret, credentials.passphrase, credentials.testnet ?? true);
-      case 'bingx':
-        return new BingXAdapter(credentials.apiKey, credentials.secret, credentials.testnet ?? true);
-      default:
-        throw new Error(`Unsupported exchange: ${exchange}`);
+      };
     }
   }
 

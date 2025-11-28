@@ -1,4 +1,5 @@
 import { AdapterError } from '../utils/adapterErrorHandler';
+import { retryWithBackoff, rateLimiters } from '../utils/rateLimiter';
 import axios from 'axios';
 
 const BASE_URL = 'https://newsdata.io/api/1/news';
@@ -51,24 +52,41 @@ function calculateSentiment(articles: any[]): number {
 
   let bullish = 0;
   let bearish = 0;
+}
 
-  articles.forEach(article => {
-    const tags = article.tags || [];
-    tags.forEach((tag: string) => {
-      const tagLower = tag.toLowerCase();
-      if (tagLower.includes('bullish') || tagLower.includes('positive') || tagLower.includes('bull')) {
-        bullish++;
-      } else if (tagLower.includes('bearish') || tagLower.includes('negative') || tagLower.includes('bear')) {
-        bearish++;
+export class NewsDataAdapter {
+  private apiKey: string;
+  private baseUrl = BASE_URL;
+
+  constructor(apiKey: string) {
+    this.apiKey = apiKey;
+  }
+
+  /**
+   * Test connectivity and API key validity
+   */
+  async testConnection(): Promise<{ success: boolean; message: string }> {
+    try {
+      const response = await axios.get(this.baseUrl, {
+        params: {
+          apikey: this.apiKey,
+          q: 'bitcoin',
+          language: 'en',
+          size: 1
+        },
+        timeout: 5000,
+      });
+
+      if (response.status === 200 && response.data && response.data.status !== 'error') {
+        return { success: true, message: 'NewsData API accessible and key valid' };
+      } else {
+        const errorMsg = response.data?.message || response.data?.results?.message || `HTTP ${response.status}`;
+        return { success: false, message: `API validation failed: ${errorMsg}` };
       }
-    });
-  });
-
-  if (bullish + bearish === 0) return 0.5;
-
-  // Calculate sentiment: 0.5 + (bullish - bearish) / total * 0.5
-  const sentimentDiff = (bullish - bearish) / (bullish + bearish);
-  return Math.max(0, Math.min(1, 0.5 + (sentimentDiff * 0.5)));
+    } catch (error: any) {
+      return { success: false, message: `Connection failed: ${error.message}` };
+    }
+  }
 }
 
 async function makeRequest(url: string, attempt?: number, apiKey?: string): Promise<any> {
@@ -101,32 +119,20 @@ async function makeRequest(url: string, attempt?: number, apiKey?: string): Prom
 }
 
 async function attemptWithRetry(url: string, apiKey?: string): Promise<any> {
-  const maxRetries = 3;
-  let attempt = 0;
-
-  while (attempt < maxRetries) {
-    try {
-      return await makeRequest(url, attempt, apiKey);
-    } catch (error: any) {
-      attempt++;
-
-      if (error.response?.status === 429 && attempt < maxRetries) {
-        // Exponential backoff: 500ms, 1000ms, 2000ms
-        const delayMs = Math.pow(2, attempt - 1) * 500;
-        console.log(`[NewsData] RETRY ${attempt} - Rate limited, waiting ${delayMs}ms`);
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-      } else if (error.response?.status === 429 && attempt >= maxRetries) {
-        console.log('[NewsData] ALL RETRIES FAILED - Rate limited, using fallback');
-        return null; // Signal to use fallback
-      } else {
-        // Non-rate-limit error, don't retry
-        throw error;
-      }
+  try {
+    return await retryWithBackoff(
+      async () => await makeRequest(url, 0, apiKey),
+      3, // max retries
+      500, // base delay
+      rateLimiters.newsdata // rate limiter
+    );
+  } catch (error: any) {
+    if (error.response?.status === 429) {
+      console.log('[NewsData] ALL RETRIES FAILED - Rate limited, using fallback');
+      return null; // Signal to use fallback
     }
+    throw error;
   }
-
-  // Should not reach here, but just in case
-  return null;
 }
 
 export async function fetchNewsData(apiKey: string, symbol?: string): Promise<any> {

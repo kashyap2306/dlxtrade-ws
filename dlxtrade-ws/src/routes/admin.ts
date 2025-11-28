@@ -1124,5 +1124,257 @@ export async function adminRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: err.message || 'Error updating auto-trade config' });
     }
   });
+
+  // ===========================================
+  // ENCRYPTION MANAGEMENT ENDPOINTS
+  // ===========================================
+
+  // POST /api/admin/encryption/test - Test encryption cycle
+  fastify.post('/encryption/test', {
+    preHandler: [fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Body: { testString: string } }>, reply: FastifyReply) => {
+    try {
+      const { testString } = request.body;
+
+      if (!testString) {
+        return reply.code(400).send({ error: 'testString is required' });
+      }
+
+      // Test encryption cycle
+      const encrypted = encrypt(testString);
+      const decrypted = decrypt(encrypted);
+
+      const success = decrypted === testString;
+
+      logger.info({ adminUid: (request as any).user.uid, success }, 'Encryption test performed');
+
+      return {
+        success,
+        original: testString,
+        encrypted: encrypted.substring(0, 20) + '...', // Only show partial encrypted
+        decrypted,
+        encryptedLength: encrypted.length
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Error testing encryption');
+      return reply.code(500).send({ error: err.message || 'Error testing encryption' });
+    }
+  });
+
+  // POST /api/admin/encryption/re-encrypt-all - Re-encrypt all keys with current key
+  fastify.post('/encryption/re-encrypt-all', {
+    preHandler: [fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Body: { dryRun?: boolean } }>, reply: FastifyReply) => {
+    try {
+      const { dryRun = false } = request.body;
+      const adminUser = (request as any).user;
+      const db = admin.firestore(getFirebaseAdmin());
+
+      logger.info({ adminUid: adminUser.uid, dryRun }, 'Starting re-encryption process');
+
+      let stats = { processed: 0, skipped: 0, failed: 0, errors: [] as string[] };
+
+      // Re-encrypt integrations
+      const usersSnapshot = await db.collection('users').get();
+
+      for (const userDoc of usersSnapshot.docs) {
+        const uid = userDoc.id;
+
+        // Get integrations
+        const integrationsSnapshot = await db
+          .collection('users')
+          .doc(uid)
+          .collection('integrations')
+          .get();
+
+        for (const integrationDoc of integrationsSnapshot.docs) {
+          const integrationData = integrationDoc.data();
+
+          // Re-encrypt apiKey
+          if (integrationData.apiKey) {
+            try {
+              const decrypted = decrypt(integrationData.apiKey, { uid, field: 'apiKey', provider: integrationDoc.id });
+              if (decrypted) {
+                if (!dryRun) {
+                  await integrationDoc.ref.update({
+                    apiKey: encrypt(decrypted),
+                    updatedAt: admin.firestore.Timestamp.now()
+                  });
+                }
+                stats.processed++;
+              } else {
+                stats.skipped++;
+              }
+            } catch (error: any) {
+              stats.failed++;
+              stats.errors.push(`${uid}/${integrationDoc.id}/apiKey: ${error.message}`);
+            }
+          }
+
+          // Re-encrypt secretKey
+          if (integrationData.secretKey) {
+            try {
+              const decrypted = decrypt(integrationData.secretKey, { uid, field: 'secretKey', provider: integrationDoc.id });
+              if (decrypted) {
+                if (!dryRun) {
+                  await integrationDoc.ref.update({
+                    secretKey: encrypt(decrypted),
+                    updatedAt: admin.firestore.Timestamp.now()
+                  });
+                }
+                stats.processed++;
+              } else {
+                stats.skipped++;
+              }
+            } catch (error: any) {
+              stats.failed++;
+              stats.errors.push(`${uid}/${integrationDoc.id}/secretKey: ${error.message}`);
+            }
+          }
+        }
+
+        // Re-encrypt exchange configs
+        const exchangeConfigDoc = await db
+          .collection('users')
+          .doc(uid)
+          .collection('exchangeConfig')
+          .doc('current')
+          .get();
+
+        if (exchangeConfigDoc.exists) {
+          const config = exchangeConfigDoc.data();
+          const updates: any = { updatedAt: admin.firestore.Timestamp.now() };
+
+          // Re-encrypt apiKey
+          if (config?.apiKeyEncrypted) {
+            try {
+              const decrypted = decrypt(config.apiKeyEncrypted, { uid, field: 'apiKeyEncrypted', provider: config.exchange });
+              if (decrypted) {
+                updates.apiKeyEncrypted = encrypt(decrypted);
+                stats.processed++;
+              } else {
+                stats.skipped++;
+              }
+            } catch (error: any) {
+              stats.failed++;
+              stats.errors.push(`${uid}/exchangeConfig/apiKeyEncrypted: ${error.message}`);
+            }
+          }
+
+          // Re-encrypt secret
+          if (config?.secretEncrypted) {
+            try {
+              const decrypted = decrypt(config.secretEncrypted, { uid, field: 'secretEncrypted', provider: config.exchange });
+              if (decrypted) {
+                updates.secretEncrypted = encrypt(decrypted);
+                stats.processed++;
+              } else {
+                stats.skipped++;
+              }
+            } catch (error: any) {
+              stats.failed++;
+              stats.errors.push(`${uid}/exchangeConfig/secretEncrypted: ${error.message}`);
+            }
+          }
+
+          // Re-encrypt passphrase
+          if (config?.passphraseEncrypted) {
+            try {
+              const decrypted = decrypt(config.passphraseEncrypted, { uid, field: 'passphraseEncrypted', provider: config.exchange });
+              if (decrypted) {
+                updates.passphraseEncrypted = encrypt(decrypted);
+                stats.processed++;
+              } else {
+                stats.skipped++;
+              }
+            } catch (error: any) {
+              stats.failed++;
+              stats.errors.push(`${uid}/exchangeConfig/passphraseEncrypted: ${error.message}`);
+            }
+          }
+
+          if (!dryRun && Object.keys(updates).length > 1) {
+            await exchangeConfigDoc.ref.update(updates);
+          }
+        }
+      }
+
+      logger.info({ adminUid: adminUser.uid, stats, dryRun }, 'Re-encryption completed');
+
+      return {
+        success: true,
+        dryRun,
+        stats,
+        message: dryRun ? 'Dry run completed' : 'Re-encryption completed'
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Error during re-encryption');
+      return reply.code(500).send({ error: err.message || 'Error during re-encryption' });
+    }
+  });
+
+  // POST /api/admin/bitget/migrate-passphrases - Notify users missing Bitget passphrases
+  fastify.post('/bitget/migrate-passphrases', {
+    preHandler: [fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Body: { dryRun?: boolean } }>, reply: FastifyReply) => {
+    try {
+      const { dryRun = false } = request.body;
+      const adminUser = (request as any).user;
+      const db = admin.firestore(getFirebaseAdmin());
+
+      logger.info({ adminUid: adminUser.uid, dryRun }, 'Starting Bitget passphrase migration');
+
+      let processed = 0;
+      let notified = 0;
+
+      const usersSnapshot = await db.collection('users').get();
+
+      for (const userDoc of usersSnapshot.docs) {
+        processed++;
+        const uid = userDoc.id;
+
+        // Check exchange config
+        const exchangeConfigDoc = await db
+          .collection('users')
+          .doc(uid)
+          .collection('exchangeConfig')
+          .doc('current')
+          .get();
+
+        if (exchangeConfigDoc.exists) {
+          const config = exchangeConfigDoc.data();
+
+          if (config?.exchange === 'bitget' && !config.passphraseEncrypted) {
+            if (!dryRun) {
+              // Send notification
+              await firestoreAdapter.createNotification(uid, {
+                title: 'Bitget Configuration Incomplete',
+                message: 'Your Bitget exchange configuration is missing the required passphrase. Please update your exchange settings to enable wallet functionality.',
+                type: 'warning',
+                metadata: {
+                  action: 'update_exchange_config',
+                  exchange: 'bitget',
+                  missingField: 'passphrase',
+                }
+              });
+            }
+            notified++;
+          }
+        }
+      }
+
+      logger.info({ adminUid: adminUser.uid, processed, notified, dryRun }, 'Bitget passphrase migration completed');
+
+      return {
+        success: true,
+        dryRun,
+        stats: { processed, notified },
+        message: dryRun ? 'Dry run completed' : `Sent ${notified} notifications`
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Error during Bitget passphrase migration');
+      return reply.code(500).send({ error: err.message || 'Error during migration' });
+    }
+  });
 }
 
