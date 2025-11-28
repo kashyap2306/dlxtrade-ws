@@ -190,10 +190,11 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       }
     }
 
-    return { 
-      message: 'Integration updated', 
+    return {
+      message: 'Integration updated',
       apiName: body.apiName,
       enabled: true,
+      saved: true,
     };
   });
 
@@ -350,10 +351,11 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       }
     }
 
-    return { 
-      message: 'API connected successfully', 
+    return {
+      message: 'API connected successfully',
       apiName: body.apiName,
       enabled: true,
+      saved: true,
     };
   });
 

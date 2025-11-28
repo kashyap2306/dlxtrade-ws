@@ -88,6 +88,8 @@ export default function Settings() {
   const [savingRisk, setSavingRisk] = useState(false);
   const [loadingAll, setLoadingAll] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [integrationsLoaded, setIntegrationsLoaded] = useState(false);
+  const [integrationsLoading, setIntegrationsLoading] = useState(false);
   const [globalSettings, setGlobalSettings] = useState<any>(null);
   const [settings, setSettings] = useState<any>({
     symbol: 'BTCUSDT',
@@ -153,23 +155,31 @@ export default function Settings() {
   };
 
   const loadIntegrations = async () => {
+    // Prevent multiple simultaneous calls
+    if (integrationsLoading) return;
+
+    setIntegrationsLoading(true);
+
     try {
       const response = await integrationsApi.load();
       const integrationsData = response.data || {};
       setIntegrations(integrationsData);
+      setIntegrationsLoaded(true);
 
-      // Also update settings with API keys from integrations
+      // Also update settings with API keys from integrations (only masked keys for UI)
       if (settings) {
         setSettings({
           ...settings,
-          cryptoCompareKey: integrationsData.cryptocompare?.apiKey || '',
-          newsDataKey: integrationsData.newsdata?.apiKey || '',
-          coinmarketcapKey: integrationsData.coinmarketcap?.apiKey || '',
+          cryptoCompareKey: '', // Clear any entered keys - they'll be masked from integrations
+          newsDataKey: '',
+          coinmarketcapKey: '',
         });
       }
     } catch (err) {
       console.error('Error loading integrations:', err);
       setIntegrations({});
+    } finally {
+      setIntegrationsLoading(false);
     }
   };
 
@@ -266,16 +276,38 @@ export default function Settings() {
 
       // Get the API key from settings
       const apiKeyField = `${apiName}Key`;
-      const apiKey = settings[apiKeyField];
+      const apiKey = settings[apiKeyField]?.trim();
 
+      // Call backend API - this encrypts and saves to Firestore
       const response = await integrationsApi.update({
         apiName,
-        enabled: !!apiKey?.trim(),
-        apiKey: apiKey?.trim() || undefined
+        enabled: !!apiKey,
+        apiKey: apiKey || undefined
       });
 
-      showToast(`${providerName} saved successfully`, 'success');
-      await loadIntegrations(); // Reload integrations instead of settings
+      // Check if save was successful
+      if (response.data?.saved) {
+        // Update UI state immediately without waiting for reload
+        setIntegrations(prev => ({
+          ...prev,
+          [apiName]: {
+            enabled: true,
+            apiKey: apiKey ? '••••••••••••••••' : null, // Masked key
+            updatedAt: new Date().toISOString(),
+          }
+        }));
+
+        // Clear the input field
+        setSettings(prev => ({
+          ...prev,
+          [apiKeyField]: ''
+        }));
+
+        showToast(`${providerName} connected successfully`, 'success');
+      } else {
+        throw new Error('Save operation did not complete successfully');
+      }
+
     } catch (err: any) {
       console.error(`Error saving ${providerName}:`, err);
       showToast(err.response?.data?.error || `Error saving ${providerName}`, 'error');
@@ -671,31 +703,51 @@ export default function Settings() {
                       <h3 className="text-white font-medium">CryptoCompare</h3>
                       <p className="text-xs text-gray-400">Market data & fundamentals</p>
                     </div>
-                    {integrations?.cryptocompare?.enabled ? (
-                      <CheckCircleIcon className="w-5 h-5 text-green-400" />
-                    ) : (
-                      <XCircleIcon className="w-5 h-5 text-red-400" />
-                    )}
                   </div>
 
-                  <div className="space-y-2">
-                    <label className="block text-xs font-medium text-gray-400">API Key</label>
-                    <input
-                      type="password"
-                      className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                      value={settings.cryptoCompareKey || ''}
-                      onChange={(e) => setSettings({ ...settings, cryptoCompareKey: e.target.value })}
-                      placeholder="Enter CryptoCompare API key"
-                    />
-                  </div>
+                  {integrations?.cryptocompare?.enabled ? (
+                    // Connected state
+                    <div className="space-y-3">
+                      <div className="flex items-center space-x-2">
+                        <CheckCircleIcon className="w-5 h-5 text-green-400" />
+                        <span className="text-green-400 text-sm font-medium">Connected</span>
+                      </div>
+                      <button
+                        onClick={() => {
+                          // Clear the connected state to show input fields again
+                          setIntegrations(prev => ({
+                            ...prev,
+                            cryptocompare: { ...prev.cryptocompare, enabled: false }
+                          }));
+                        }}
+                        className="w-full px-4 py-2 bg-gray-600 text-white font-medium rounded-lg hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all text-sm"
+                      >
+                        Change API Key
+                      </button>
+                    </div>
+                  ) : (
+                    // Not connected state - show input fields
+                    <>
+                      <div className="space-y-2">
+                        <label className="block text-xs font-medium text-gray-400">API Key</label>
+                        <input
+                          type="password"
+                          className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                          value={settings.cryptoCompareKey || ''}
+                          onChange={(e) => setSettings({ ...settings, cryptoCompareKey: e.target.value })}
+                          placeholder="Enter CryptoCompare API key"
+                        />
+                      </div>
 
-                  <button
-                    onClick={() => handleSaveProvider('CryptoCompare', ['cryptoCompareKey'])}
-                    disabled={savingProvider === 'CryptoCompare'}
-                    className="w-full px-4 py-2 bg-blue-500 text-white font-medium rounded-lg hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-                  >
-                    {savingProvider === 'CryptoCompare' ? 'Saving...' : 'Save CryptoCompare'}
-                  </button>
+                      <button
+                        onClick={() => handleSaveProvider('CryptoCompare', ['cryptoCompareKey'])}
+                        disabled={savingProvider === 'CryptoCompare'}
+                        className="w-full px-4 py-2 bg-blue-500 text-white font-medium rounded-lg hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                      >
+                        {savingProvider === 'CryptoCompare' ? 'Connecting...' : 'Connect CryptoCompare'}
+                      </button>
+                    </>
+                  )}
                 </div>
 
                 {/* NewsData */}
@@ -708,31 +760,51 @@ export default function Settings() {
                       <h3 className="text-white font-medium">NewsData</h3>
                       <p className="text-xs text-gray-400">News sentiment analysis</p>
                     </div>
-                    {integrations?.newsdata?.enabled ? (
-                      <CheckCircleIcon className="w-5 h-5 text-green-400" />
-                    ) : (
-                      <XCircleIcon className="w-5 h-5 text-red-400" />
-                    )}
                   </div>
 
-                  <div className="space-y-2">
-                    <label className="block text-xs font-medium text-gray-400">API Key</label>
-                    <input
-                      type="password"
-                      className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                      value={settings.newsDataKey || ''}
-                      onChange={(e) => setSettings({ ...settings, newsDataKey: e.target.value })}
-                      placeholder="Enter NewsData API key"
-                    />
-                  </div>
+                  {integrations?.newsdata?.enabled ? (
+                    // Connected state
+                    <div className="space-y-3">
+                      <div className="flex items-center space-x-2">
+                        <CheckCircleIcon className="w-5 h-5 text-green-400" />
+                        <span className="text-green-400 text-sm font-medium">Connected</span>
+                      </div>
+                      <button
+                        onClick={() => {
+                          // Clear the connected state to show input fields again
+                          setIntegrations(prev => ({
+                            ...prev,
+                            newsdata: { ...prev.newsdata, enabled: false }
+                          }));
+                        }}
+                        className="w-full px-4 py-2 bg-gray-600 text-white font-medium rounded-lg hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all text-sm"
+                      >
+                        Change API Key
+                      </button>
+                    </div>
+                  ) : (
+                    // Not connected state - show input fields
+                    <>
+                      <div className="space-y-2">
+                        <label className="block text-xs font-medium text-gray-400">API Key</label>
+                        <input
+                          type="password"
+                          className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                          value={settings.newsDataKey || ''}
+                          onChange={(e) => setSettings({ ...settings, newsDataKey: e.target.value })}
+                          placeholder="Enter NewsData API key"
+                        />
+                      </div>
 
-                  <button
-                    onClick={() => handleSaveProvider('NewsData', ['newsDataKey'])}
-                    disabled={savingProvider === 'NewsData'}
-                    className="w-full px-4 py-2 bg-green-500 text-white font-medium rounded-lg hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-                  >
-                    {savingProvider === 'NewsData' ? 'Saving...' : 'Save NewsData'}
-                  </button>
+                      <button
+                        onClick={() => handleSaveProvider('NewsData', ['newsDataKey'])}
+                        disabled={savingProvider === 'NewsData'}
+                        className="w-full px-4 py-2 bg-green-500 text-white font-medium rounded-lg hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                      >
+                        {savingProvider === 'NewsData' ? 'Connecting...' : 'Connect NewsData'}
+                      </button>
+                    </>
+                  )}
                 </div>
 
                 {/* Binance Public */}
@@ -760,31 +832,51 @@ export default function Settings() {
                       <h3 className="text-white font-medium">CoinMarketCap</h3>
                       <p className="text-xs text-gray-400">Market data backup</p>
                     </div>
-                    {integrations?.coinmarketcap?.enabled ? (
-                      <CheckCircleIcon className="w-5 h-5 text-green-400" />
-                    ) : (
-                      <XCircleIcon className="w-5 h-5 text-gray-400" />
-                    )}
                   </div>
 
-                  <div className="space-y-2">
-                    <label className="block text-xs font-medium text-gray-400">API Key (Optional)</label>
-                    <input
-                      type="password"
-                      className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                      value={settings.coinmarketcapKey || ''}
-                      onChange={(e) => setSettings({ ...settings, coinmarketcapKey: e.target.value })}
-                      placeholder="Enter CoinMarketCap API key"
-                    />
-                  </div>
+                  {integrations?.coinmarketcap?.enabled ? (
+                    // Connected state
+                    <div className="space-y-3">
+                      <div className="flex items-center space-x-2">
+                        <CheckCircleIcon className="w-5 h-5 text-green-400" />
+                        <span className="text-green-400 text-sm font-medium">Connected</span>
+                      </div>
+                      <button
+                        onClick={() => {
+                          // Clear the connected state to show input fields again
+                          setIntegrations(prev => ({
+                            ...prev,
+                            coinmarketcap: { ...prev.coinmarketcap, enabled: false }
+                          }));
+                        }}
+                        className="w-full px-4 py-2 bg-gray-600 text-white font-medium rounded-lg hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all text-sm"
+                      >
+                        Change API Key
+                      </button>
+                    </div>
+                  ) : (
+                    // Not connected state - show input fields
+                    <>
+                      <div className="space-y-2">
+                        <label className="block text-xs font-medium text-gray-400">API Key (Optional)</label>
+                        <input
+                          type="password"
+                          className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                          value={settings.coinmarketcapKey || ''}
+                          onChange={(e) => setSettings({ ...settings, coinmarketcapKey: e.target.value })}
+                          placeholder="Enter CoinMarketCap API key"
+                        />
+                      </div>
 
-                  <button
-                    onClick={() => handleSaveProvider('CoinMarketCap')}
-                    disabled={savingProvider === 'CoinMarketCap'}
-                    className="w-full px-4 py-2 bg-purple-500 text-white font-medium rounded-lg hover:bg-purple-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-                  >
-                    {savingProvider === 'CoinMarketCap' ? 'Saving...' : 'Save CoinMarketCap'}
-                  </button>
+                      <button
+                        onClick={() => handleSaveProvider('CoinMarketCap')}
+                        disabled={savingProvider === 'CoinMarketCap'}
+                        className="w-full px-4 py-2 bg-purple-500 text-white font-medium rounded-lg hover:bg-purple-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                      >
+                        {savingProvider === 'CoinMarketCap' ? 'Connecting...' : 'Connect CoinMarketCap'}
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             </section>
