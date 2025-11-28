@@ -556,6 +556,13 @@ export class DeepResearchEngine {
     // Get user integrations
     const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
 
+    // Log which keys are available
+    console.log("DEEP-KEY", {
+      cryptocompare: !!integrations.cryptocompare?.apiKey,
+      newsdata: !!integrations.newsdata?.apiKey,
+      coinmarketcap: !!integrations.coinmarketcap?.apiKey
+    });
+
     // Initialize data containers with latency tracking
     let cryptoCompareData: any = {};
     let newsData: any = {};
@@ -575,10 +582,22 @@ export class DeepResearchEngine {
       try {
         const { CryptoCompareAdapter } = await import('./cryptocompareAdapter');
         // Use user API key if available, otherwise fallback to service-level key
-        const apiKey = integrations.cryptocompare?.apiKey || config.research.cryptocompare.apiKey;
+        const userApiKey = integrations.cryptocompare?.apiKey;
+        const serviceApiKey = config.research.cryptocompare.apiKey;
+        const apiKey = userApiKey || serviceApiKey;
+
         if (!apiKey) {
           throw new Error('No CryptoCompare API key available (user or service-level)');
         }
+
+        if (userApiKey) {
+          console.log("USING-KEY", { provider: 'CryptoCompare', source: 'user' });
+        } else if (serviceApiKey) {
+          console.log("USING-KEY", { provider: 'CryptoCompare', source: 'service' });
+        } else {
+          logger.warn({ uid, provider: 'CryptoCompare' }, 'No CryptoCompare API key available');
+        }
+
         const cryptoCompareAdapter = new CryptoCompareAdapter(apiKey);
 
         cryptoCompareData = await cryptoCompareAdapter.getMarketData(symbol);
@@ -601,10 +620,22 @@ export class DeepResearchEngine {
       const newsDataStart = Date.now();
       try {
         // Use user API key if available, otherwise fallback to service-level key
-        const apiKey = integrations.newsdata?.apiKey || config.research.newsdata.apiKey;
+        const userApiKey = integrations.newsdata?.apiKey;
+        const serviceApiKey = config.research.newsdata.apiKey;
+        const apiKey = userApiKey || serviceApiKey;
+
         if (!apiKey) {
           throw new Error('No NewsData API key available (user or service-level) - skipping gracefully');
         }
+
+        if (userApiKey) {
+          console.log("USING-KEY", { provider: 'NewsData', source: 'user' });
+        } else if (serviceApiKey) {
+          console.log("USING-KEY", { provider: 'NewsData', source: 'service' });
+        } else {
+          logger.warn({ uid, provider: 'NewsData' }, 'No NewsData API key available');
+        }
+
         newsData = await fetchNewsData(apiKey, symbol);
         providerLatencies.NewsData = Date.now() - newsDataStart;
         newsData.latencyMs = providerLatencies.NewsData;
@@ -622,7 +653,18 @@ export class DeepResearchEngine {
       const coinMarketCapStart = Date.now();
       try {
         // Use user API key if available, otherwise fallback to service-level key
-        const cmcApiKey = integrations.coinmarketcap?.apiKey || config.research.coinmarketcap.apiKey;
+        const userCmcApiKey = integrations.coinmarketcap?.apiKey;
+        const serviceCmcApiKey = config.research.coinmarketcap.apiKey;
+        const cmcApiKey = userCmcApiKey || serviceCmcApiKey;
+
+        if (userCmcApiKey) {
+          console.log("USING-KEY", { provider: 'CoinMarketCap', source: 'user' });
+        } else if (serviceCmcApiKey) {
+          console.log("USING-KEY", { provider: 'CoinMarketCap', source: 'service' });
+        } else {
+          logger.info({ uid, provider: 'CoinMarketCap' }, 'No CoinMarketCap API key available');
+        }
+
         coinMarketCapData = await fetchCoinMarketCapMarketData(symbol, cmcApiKey || undefined);
         providerLatencies.CoinMarketCap = Date.now() - coinMarketCapStart;
         coinMarketCapData.latencyMs = providerLatencies.CoinMarketCap;

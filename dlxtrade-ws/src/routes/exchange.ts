@@ -78,7 +78,7 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
           if (userIntegrations.cryptocompare?.apiKey) {
             const { CryptoCompareAdapter } = await import('../services/cryptocompareAdapter');
             const adapter = new CryptoCompareAdapter(userIntegrations.cryptocompare.apiKey);
-            await adapter.getMarketData('BTC');
+            await adapter.getMarketData('ETH');
           }
         } catch (error: any) {
           providerStatus.cryptoCompare = 'FAILED';
@@ -97,7 +97,7 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
         try {
           if (userIntegrations.coinmarketcap?.apiKey) {
             const { fetchCoinMarketCapMarketData } = await import('../services/coinMarketCapAdapter');
-            await fetchCoinMarketCapMarketData('BTC', userIntegrations.coinmarketcap.apiKey);
+            await fetchCoinMarketCapMarketData('ETH', userIntegrations.coinmarketcap.apiKey);
           }
         } catch (error: any) {
           providerStatus.coinMarketCap = 'FAILED';
@@ -380,7 +380,7 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
     try {
       const body = z.object({
         exchange: z.enum(['binance', 'bitget', 'weex', 'bingx']).optional(),
-        symbol: z.string().optional().default('BTCUSDT'),
+        symbol: z.string().optional().default('ETHUSDT'),
         side: z.enum(['BUY', 'SELL']).optional().default('BUY'),
         quantity: z.number().positive().optional().default(0.001),
       }).parse(request.body || {});

@@ -274,8 +274,14 @@ export default function Settings() {
         throw new Error(`Unknown provider: ${providerName}`);
       }
 
-      // Get the API key from settings
-      const apiKeyField = `${apiName}Key`;
+      // Get the API key from settings (handle field name mapping)
+      const fieldNameMap: any = {
+        'cryptocompare': 'cryptoCompareKey',
+        'newsdata': 'newsDataKey',
+        'coinmarketcap': 'coinmarketcapKey'
+      };
+
+      const apiKeyField = fieldNameMap[apiName] || `${apiName}Key`;
       const apiKey = settings[apiKeyField]?.trim();
 
       // Add required logging
@@ -303,7 +309,7 @@ export default function Settings() {
         // Clear the input field
         setSettings(prev => ({
           ...prev,
-          [apiKeyField]: ''
+          [fieldNameMap[apiName] || `${apiName}Key`]: ''
         }));
 
         showToast(`${providerName} connected successfully`, 'success');

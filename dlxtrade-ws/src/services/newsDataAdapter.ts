@@ -162,6 +162,9 @@ export async function fetchNewsData(apiKey: string, symbol?: string): Promise<an
       };
     }
 
+    // Add required logging
+    console.log("PROVIDER-CALL", { provider: 'NewsData', symbol: symbol || 'general', usingKeySource: apiKey ? 'user_or_service' : 'none' });
+
     // Build NewsData query - search for crypto-related news
     let url = `${BASE_URL}?apikey=${apiKey}&category=business,technology&language=en`;
 

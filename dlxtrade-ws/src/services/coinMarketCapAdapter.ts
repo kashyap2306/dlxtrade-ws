@@ -268,6 +268,9 @@ export async function fetchCoinMarketCapMarketData(symbol: string, apiKey?: stri
   }
 
   try {
+    // Add required logging
+    console.log("PROVIDER-CALL", { provider: 'CoinMarketCap', symbol, usingKeySource: apiKey ? 'user_or_service' : 'none' });
+
     // Get latest quotes
     const quotesUrl = `${BASE_URL}/cryptocurrency/quotes/latest?symbol=${cmcSymbol}&convert=USD`;
     const quotesResponse = await attemptWithRetry(quotesUrl, apiKey);

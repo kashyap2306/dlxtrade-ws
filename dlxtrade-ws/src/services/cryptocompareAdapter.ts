@@ -27,7 +27,7 @@ export class CryptoCompareAdapter {
     try {
       const response = await axios.get(`${this.baseUrl}pricemultifull`, {
         params: {
-          fsyms: 'BTC',
+          fsyms: 'ETH',
           tsyms: 'USD',
           api_key: this.apiKey
         },
@@ -81,6 +81,9 @@ export class CryptoCompareAdapter {
       const baseSymbol = symbol.replace('USDT', '').replace('USD', '');
 
       try {
+        // Add required logging
+        console.log("PROVIDER-CALL", { provider: 'CryptoCompare', symbol, usingKeySource: this.apiKey ? 'user_or_service' : 'none' });
+
         const response = await retryWithBackoff(
           async () => {
             const response = await axios.get(url, {

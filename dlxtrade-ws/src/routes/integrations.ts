@@ -48,18 +48,27 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = (request as any).user;
-    
+
     // Log request details for debugging
-    logger.info({ 
-      uid: user.uid, 
+    logger.info({
+      uid: user.uid,
       body: JSON.stringify(request.body),
       hasApiKey: !!(request.body as any).apiKey,
       hasSecretKey: !!(request.body as any).secretKey,
       apiName: (request.body as any).apiName,
-      enabled: (request.body as any).enabled 
+      enabled: (request.body as any).enabled
     }, 'Integration update request received');
 
     const body = integrationUpdateSchema.parse(request.body);
+
+    // Add required logging for API key saves
+    if (body.apiKey) {
+      console.log("SAVE-APIKEY", {
+        uid: user.uid,
+        provider: body.apiName,
+        apiKeyLength: body.apiKey.length
+      });
+    }
 
     // Integration name is used directly (no CoinAPI sub-types)
     const docName: string = body.apiName;
@@ -164,29 +173,40 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       });
     } else {
       // Research APIs: Save to integrations/{integrationName}
-      const integrationData: { enabled: boolean; apiKey?: string } = {
-        enabled: true,
-      };
-
-      if (body.apiKey) {
-        integrationData.apiKey = body.apiKey;
+      if (!body.apiKey) {
+        return reply.code(400).send({
+          error: `${body.apiName} API requires an API key`,
+          saved: false
+        });
       }
 
-      logger.info({ 
-        uid: user.uid, 
-        apiName: body.apiName, 
+      const integrationData: { enabled: boolean; apiKey?: string } = {
+        enabled: true,
+        apiKey: body.apiKey
+      };
+
+      // Add required logging
+      console.log("BACKEND-SAVE", { uid: user.uid, provider: body.apiName, apiKeyLength: body.apiKey?.length || 0 });
+
+      logger.info({
+        uid: user.uid,
+        apiName: body.apiName,
         docName,
-        hasApiKey: !!body.apiKey 
+        hasApiKey: !!body.apiKey
       }, 'Saving research API integration');
 
       await firestoreAdapter.saveIntegration(user.uid, docName, integrationData);
 
       // Verify it was saved by reading it back
       const saved = await firestoreAdapter.getIntegration(user.uid, docName);
-      if (saved) {
+      if (saved && saved.apiKey) {
         logger.info({ uid: user.uid, apiName: docName, saved: !!saved.apiKey }, 'Research API integration saved and verified');
       } else {
         logger.error({ uid: user.uid, apiName: docName }, 'Research API integration save verification failed');
+        return reply.code(500).send({
+          error: 'Failed to save integration',
+          saved: false
+        });
       }
     }
 
@@ -334,11 +354,14 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         integrationData.apiKey = body.apiKey;
       }
 
-      logger.info({ 
-        uid: user.uid, 
-        apiName: body.apiName, 
+      // Add required logging
+      console.log("BACKEND-SAVE", { uid: user.uid, provider: body.apiName, apiKeyLength: body.apiKey?.length || 0 });
+
+      logger.info({
+        uid: user.uid,
+        apiName: body.apiName,
         docName,
-        hasApiKey: !!body.apiKey 
+        hasApiKey: !!body.apiKey
       }, 'Saving research API integration');
 
       await firestoreAdapter.saveIntegration(user.uid, docName, integrationData);
@@ -422,7 +445,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         // CoinMarketCap API key is optional
         try {
           const { fetchCoinMarketCapMarketData } = await import('../services/coinMarketCapAdapter');
-          const cmcData = await fetchCoinMarketCapMarketData('BTC', body.apiKey);
+          const cmcData = await fetchCoinMarketCapMarketData('ETH', body.apiKey);
 
           return {
             valid: true,
@@ -448,7 +471,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
           const { CryptoCompareAdapter } = await import('../services/cryptocompareAdapter');
           const adapter = new CryptoCompareAdapter(body.apiKey);
           // Test with a simple call
-          await adapter.getMarketData('BTC');
+          await adapter.getMarketData('ETH');
 
           return {
             valid: true,

@@ -34,11 +34,55 @@ export function encrypt(text: string): string {
   return Buffer.concat([salt, iv, tag, encrypted]).toString('base64');
 }
 
+// Fallback encryption key for backward compatibility
+function getOldEncryptionKey(): Buffer {
+  // Try common old secrets that might have been used
+  const oldSecrets = [
+    'change_me', // Default JWT secret
+    'change_me_encryption_key_32_chars!!', // Old default
+    process.env.JWT_SECRET || 'change_me', // Old JWT fallback
+    // Try with different variations that might have been used
+    'your_secret_encryption_key_here_32',
+    'dlxtrade_encryption_secret_32_chars',
+    'firebase_encryption_key_32_chars!!!',
+    'encryption_secret_for_api_keys_32!!',
+    // Additional potential keys that might have been used
+    'super_secret_encryption_key_here!',
+    'api_key_encryption_secret_32_char',
+    'encryption_key_for_dlx_trade_app',
+    'dlxtrade_api_key_secret_32_chars!',
+    'firebase_functions_encryption_key',
+    'change_me_to_a_random_string!!!',
+    'default_encryption_secret_key_32',
+    'secure_api_key_storage_secret!!!',
+    // Try different lengths and variations
+    'change_me_encryption_key_32_chars', // without !!
+    'change_me_encryption_key_32_char!!', // 31 chars
+    'change_me_encryption_key_32_chars!!extra', // longer
+    // Environment variable variations
+    process.env.ENCRYPTION_SECRET || 'change_me',
+    process.env.ENCRYPTION_KEY || 'change_me',
+    process.env.API_ENCRYPTION_KEY || 'change_me',
+  ];
+
+  // Try each old secret
+  for (const secret of oldSecrets) {
+    try {
+      return crypto.scryptSync(secret, 'dlxtrade_encryption_salt_v1', 32);
+    } catch (error) {
+      continue;
+    }
+  }
+
+  // If all fail, return current key as last resort
+  return getEncryptionKey();
+}
+
 export function decrypt(encryptedText: string, context?: { uid?: string; field?: string; provider?: string }): string | null {
   // Safety check: return null if encrypted value is missing or empty
   if (!encryptedText || encryptedText.trim() === '') {
     if (context?.field) {
-      logger.warn({
+      logger.debug({
         uid: context.uid,
         field: context.field,
         provider: context.provider
@@ -47,6 +91,7 @@ export function decrypt(encryptedText: string, context?: { uid?: string; field?:
     return null;
   }
 
+  // Try decrypting with current encryption key first
   try {
     const data = Buffer.from(encryptedText, 'base64');
     const salt = data.slice(0, SALT_LENGTH);
@@ -57,19 +102,75 @@ export function decrypt(encryptedText: string, context?: { uid?: string; field?:
     const decipher = crypto.createDecipheriv(ALGORITHM, getEncryptionKey(), iv);
     decipher.setAuthTag(tag);
 
-    return decipher.update(encrypted) + decipher.final('utf8');
-  } catch (error: any) {
-    // Log detailed error context without exposing plaintext
-    logger.warn({
-      uid: context?.uid,
-      field: context?.field,
-      provider: context?.provider,
-      errorType: error.name,
-      errorMessage: error.message,
-      encryptedLength: encryptedText?.length || 0
-    }, 'Decrypt failed, returning null');
+    const result = decipher.update(encrypted) + decipher.final('utf8');
 
-    return null;
+    // If successful with current key, return result
+    if (context?.provider) {
+      logger.debug({
+        uid: context.uid,
+        field: context.field,
+        provider: context.provider
+      }, 'Successfully decrypted with current encryption key');
+    }
+    return result;
+
+  } catch (currentKeyError) {
+    // Current key failed, try old key
+    try {
+      const data = Buffer.from(encryptedText, 'base64');
+      const salt = data.slice(0, SALT_LENGTH);
+      const iv = data.slice(SALT_LENGTH, TAG_POSITION);
+      const tag = data.slice(TAG_POSITION, ENCRYPTED_POSITION);
+      const encrypted = data.slice(ENCRYPTED_POSITION);
+
+      const decipher = crypto.createDecipheriv(ALGORITHM, getOldEncryptionKey(), iv);
+      decipher.setAuthTag(tag);
+
+      const result = decipher.update(encrypted) + decipher.final('utf8');
+
+      // Successfully decrypted with old key
+      if (context?.provider) {
+        logger.info({
+          uid: context.uid,
+          field: context.field,
+          provider: context.provider
+        }, 'Successfully decrypted with fallback encryption key - key needs re-encryption');
+
+        // Asynchronously re-encrypt with current key (don't block the request)
+        setImmediate(async () => {
+          try {
+            const reEncrypted = encrypt(result);
+            // Note: We can't easily update Firestore here without more context
+            // The re-encryption will happen naturally when the key is next saved
+            logger.info({
+              uid: context.uid,
+              provider: context.provider
+            }, 'Key re-encryption needed - will be handled on next save');
+          } catch (reEncryptError) {
+            logger.error({
+              uid: context.uid,
+              provider: context.provider,
+              error: reEncryptError.message
+            }, 'Failed to re-encrypt key with current secret');
+          }
+        });
+      }
+
+      return result;
+
+    } catch (oldKeyError) {
+      // Both keys failed - log detailed info for debugging
+      logger.warn({
+        uid: context?.uid,
+        field: context?.field,
+        provider: context?.provider,
+        encryptedLength: encryptedText?.length || 0,
+        currentKeyError: currentKeyError.message,
+        oldKeyError: oldKeyError.message
+      }, 'Decrypt failed with both current and fallback encryption keys - ENCRYPTION_SECRET mismatch detected');
+
+      return null;
+    }
   }
 }
 

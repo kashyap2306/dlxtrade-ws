@@ -2,6 +2,7 @@ import * as admin from 'firebase-admin';
 import { getFirebaseAdmin } from '../utils/firebase';
 import { logger } from '../utils/logger';
 import { encrypt, decrypt, maskKey } from './keyManager';
+import { config } from '../config';
 
 const db = () => admin.firestore(getFirebaseAdmin());
 
@@ -375,13 +376,13 @@ export class FirestoreAdapter {
     }
 
     await docRef.set(docData, { merge: true });
-    logger.info({ 
-      uid, 
-      apiName, 
+    logger.info({
+      uid,
+      apiName,
       enabled: data.enabled,
       hasApiKey: !!data.apiKey,
       hasSecretKey: !!data.secretKey,
-      hasCreatedAt: !existingDoc.exists 
+      hasCreatedAt: !existingDoc.exists
     }, 'Integration saved to Firestore');
   }
 
@@ -406,21 +407,75 @@ export class FirestoreAdapter {
           const decryptedApiKey = decrypt(integration.apiKey, { uid, field: 'apiKey', provider: apiName });
           const decryptedSecretKey = integration.secretKey ? decrypt(integration.secretKey, { uid, field: 'secretKey', provider: apiName }) : null;
 
-          // Only include if we have a valid decrypted API key
+          // If we successfully decrypted (even with fallback), include the integration
           if (decryptedApiKey) {
             enabled[apiName] = {
               apiKey: decryptedApiKey,
               ...(decryptedSecretKey ? { secretKey: decryptedSecretKey } : {}),
             };
+
+            // Add required logging
+            console.log("FIRESTORE-LOAD", { provider: apiName, decrypted: !!decryptedApiKey });
+
+            // Asynchronously check if re-encryption is needed
+            // Don't block the response for this
+            setImmediate(async () => {
+              try {
+                // Try to decrypt with current key only (no fallback)
+                const currentKeyDecrypt = this.tryDecryptWithCurrentKey(integration.apiKey);
+                if (!currentKeyDecrypt) {
+                  // Current key decryption failed, but fallback worked - re-encrypt
+                  console.log("RE-ENCRYPT", { provider: apiName });
+
+                  await this.saveIntegration(uid, apiName, {
+                    enabled: integration.enabled,
+                    apiKey: decryptedApiKey,
+                    secretKey: decryptedSecretKey,
+                  });
+
+                  logger.info({ uid, apiName }, 'Successfully re-encrypted API key with current key');
+                }
+              } catch (reEncryptError) {
+                logger.warn({ uid, apiName, error: reEncryptError.message }, 'Failed to re-encrypt API key');
+              }
+            });
+          } else {
+            // Decryption completely failed - log but don't include unusable integration
+            logger.warn({ uid, apiName }, 'API key decryption failed completely - integration unusable');
           }
         } catch (error: any) {
           logger.warn({ uid, apiName, error: error.message }, 'Skipping corrupt integration due to decrypt error');
-          // Skip this integration instead of failing entirely
         }
       }
     }
 
     return enabled;
+  }
+
+  // Helper method to try decryption with current key only (no fallback)
+  private tryDecryptWithCurrentKey(encryptedText: string): string | null {
+    try {
+      const data = Buffer.from(encryptedText, 'base64');
+      const salt = data.slice(0, 64); // SALT_LENGTH
+      const iv = data.slice(64, 80); // SALT_LENGTH + IV_LENGTH
+      const tag = data.slice(80, 96); // TAG_POSITION
+      const encrypted = data.slice(96); // ENCRYPTED_POSITION
+
+      const crypto = require('crypto');
+      const decipher = crypto.createDecipheriv('aes-256-gcm', this.getCurrentEncryptionKey(), iv);
+      decipher.setAuthTag(tag);
+
+      const result = decipher.update(encrypted) + decipher.final('utf8');
+      return result;
+    } catch (error) {
+      return null; // Failed with current key
+    }
+  }
+
+  // Helper method to get current encryption key
+  private getCurrentEncryptionKey(): Buffer {
+    const crypto = require('crypto');
+    return crypto.scryptSync(config.encryption.key, 'dlxtrade_encryption_salt_v1', 32);
   }
 
   // HFT Settings
