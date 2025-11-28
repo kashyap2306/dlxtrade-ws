@@ -278,6 +278,9 @@ export default function Settings() {
       const apiKeyField = `${apiName}Key`;
       const apiKey = settings[apiKeyField]?.trim();
 
+      // Add required logging
+      console.log("FRONTEND-SAVE", { provider: apiName, apiKeyLength: apiKey?.length || 0 });
+
       // Call backend API - this encrypts and saves to Firestore
       const response = await integrationsApi.update({
         apiName,
