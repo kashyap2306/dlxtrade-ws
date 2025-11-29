@@ -25,7 +25,7 @@ export class MarketMakingHFTStrategy implements Strategy {
 
   async init(uid: string, config: StrategyConfig): Promise<void> {
     this.userConfigs.set(uid, config);
-    logger.info({ uid, strategy: this.name }, 'Market Making HFT strategy initialized');
+    logger.info({ uid, strategy: this.name }, 'Market! Making HFT strategy initialized');
   }
 
   setAdapter(uid: string, adapter: BinanceAdapter): void {
