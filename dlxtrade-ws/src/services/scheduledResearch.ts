@@ -1,82 +1,26 @@
 import { logger } from '../utils/logger';
 import { firestoreAdapter } from './firestoreAdapter';
 import { getFirebaseAdmin } from '../utils/firebase';
-import { deepResearchEngine } from './deepResearchEngine';
-import { autoTradeExecutor } from './autoTradeExecutor';
 import * as admin from 'firebase-admin';
 import { AdapterError } from '../utils/adapterErrorHandler';
-import { config } from '../config';
 
 /**
  * Scheduled Research Service
  * Runs deep research every 5 minutes for all active users
- * Uses ONLY 4 allowed research APIs: NewsData, CryptoCompare, Binance Public API, CoinMarketCap
- *
+ * Uses ONLY research APIs: CryptoQuant, LunarCrush, CoinAPI
+ * 
  * STRICTLY FORBIDDEN:
- * - NO trading exchange APIs (Binance, Bitget, BingX, WEEX) - except Binance Public API for research only
- * - NO LunarCrush, CoinAPI, CryptoQuant calls (removed)
+ * - NO trading exchange APIs (Binance, Bitget, BingX, WEEX)
  * - NO getOrderbook() calls
  * - NO getKlines() calls
- * - NO getTicker() calls for trading
- * - NO exchangeConfig/current access for trading
- * - NO resolveExchangeConnector() calls for trading
- *
+ * - NO getTicker() calls
+ * - NO exchangeConfig/current access
+ * - NO resolveExchangeConnector() calls
+ * - NO WeexAdapter, BinanceAdapter, BitgetAdapter, BingXAdapter usage
+ * 
  * This service is completely independent of trading exchange adapters.
  */
 export class ScheduledResearchService {
-  /**
-   * Check if currently in a maintenance window
-   */
-  private async isMaintenanceWindow(): Promise<boolean> {
-    try {
-      // Check environment variable for maintenance mode
-      const maintenanceMode = process.env.MAINTENANCE_MODE === 'true';
-      if (maintenanceMode) {
-        return true;
-      }
-
-      // Check for scheduled maintenance windows (e.g., weekends 2-4 AM UTC)
-      const now = new Date();
-      const utcHour = now.getUTCHours();
-      const utcDay = now.getUTCDay(); // 0 = Sunday, 6 = Saturday
-
-      // Maintenance window: Saturdays and Sundays, 2-4 AM UTC
-      if ((utcDay === 0 || utcDay === 6) && (utcHour >= 2 && utcHour < 4)) {
-        return true;
-      }
-
-      return false;
-    } catch (error: any) {
-      logger.error({ error: error.message }, 'Error checking maintenance window');
-      return false; // Default to allowing research
-    }
-  }
-
-  /**
-   * Check if providers are in a degraded state
-   */
-  private async areProvidersDegraded(): Promise<boolean> {
-    try {
-      // Import the usage tracker to check provider status
-      const { apiUsageTracker } = await import('./apiUsageTracker');
-
-      const stats = apiUsageTracker.getUsageStats();
-
-      // If more than 50% of providers are exhausted, consider it degraded
-      const totalProviders = 4; // binance, cryptocompare, coinmarketcap, newsdata
-      const exhaustedCount = stats.exhaustedProviders.length;
-
-      if (exhaustedCount > totalProviders * 0.5) {
-        logger.warn({ exhaustedCount, totalProviders }, 'Provider chain degraded - too many exhausted providers');
-        return true;
-      }
-
-      return false;
-    } catch (error: any) {
-      logger.error({ error: error.message }, 'Error checking provider degradation');
-      return false; // Default to allowing research
-    }
-  }
   private intervalId: NodeJS.Timeout | null = null;
   private isRunning = false;
 
@@ -133,21 +77,6 @@ export class ScheduledResearchService {
    */
   private async runScheduledResearch() {
     try {
-      // Check for maintenance windows
-      if (await this.isMaintenanceWindow()) {
-        logger.info('Skipping scheduled research due to maintenance window');
-        return;
-      }
-
-      // Check provider health
-      if (await this.areProvidersDegraded()) {
-        logger.warn('Skipping scheduled research due to degraded provider chain');
-        return;
-      }
-    } catch (error: any) {
-      logger.error({ error: error.message }, 'Error checking maintenance/provider status, proceeding with research');
-    }
-    try {
       if (this.isRunning) {
         logger.warn('Scheduled research already running, skipping');
         return;
@@ -182,15 +111,11 @@ export class ScheduledResearchService {
           }
         }
 
-        const totalUsers = usersSnapshot.size;
-        const successfulUsers = results.filter(r => r.status === 'success').length;
-        const failedUsers = results.filter(r => r.status === 'error').length;
-
-        logger.info({
-          totalUsers,
-          successful: successfulUsers,
-          failed: failedUsers
-        }, 'Scheduled research completed — totalUsers: ${totalUsers}, successful: ${successfulUsers}, failed: ${failedUsers}');
+        logger.info({ 
+          totalUsers: usersSnapshot.size, 
+          successful: results.filter(r => r.status === 'success').length,
+          failed: results.filter(r => r.status === 'error').length,
+        }, 'Scheduled research completed');
       } catch (error: any) {
         logger.error({ error: error.message, stack: error.stack }, 'Error in scheduled research service');
       } finally {
@@ -205,192 +130,360 @@ export class ScheduledResearchService {
   }
 
   /**
-   * Run research for a specific user using ONLY 5 allowed research APIs
+   * Run research for a specific user using ONLY research APIs
    * Public method for manual triggering via API endpoint
    */
   async runResearchForUser(uid: string): Promise<{
     success: boolean;
-    symbolsProcessed: number;
-    results?: Array<{
-      symbol: string;
-      signal?: 'BUY' | 'SELL' | 'HOLD';
-      accuracy?: number;
-      success: boolean;
-      error?: string;
-    }>;
+    symbol: string;
+    signal?: 'BUY' | 'SELL' | 'HOLD';
+    accuracy?: number;
+    reasoning?: string;
     errors?: Array<{ adapter: string; error: string; isAuthError: boolean }>;
-    providersCalled?: string[];
   }> {
     try {
-      // Get user's API integrations from Firestore
+      // Get enabled research integrations (NO trading exchange credentials needed)
       const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
-
-      // Check for at least one research API (more lenient than before)
-      const hasAnyApi = integrations.cryptocompare?.apiKey || integrations.newsdata?.apiKey ||
-                        integrations.coinmarketcap?.apiKey || config.research.cryptocompare.apiKey ||
-                        config.research.newsdata.apiKey || config.research.coinmarketcap.apiKey;
-
-      if (!hasAnyApi) {
-        // Skip users without any research APIs
-        logger.debug({ uid }, 'Skipping user - no research API credentials available');
+      
+      // Check if at least one research API is configured
+      const hasCryptoQuant = integrations.cryptoquant?.apiKey;
+      const hasLunarCrush = integrations.lunarcrush?.apiKey;
+      const hasCoinAPIMarket = integrations['coinapi_market']?.apiKey;
+      const hasCoinAPIFlatfile = integrations['coinapi_flatfile']?.apiKey;
+      const hasCoinAPIExchangerate = integrations['coinapi_exchangerate']?.apiKey;
+      
+      if (!hasCryptoQuant && !hasLunarCrush && !hasCoinAPIMarket && !hasCoinAPIFlatfile && !hasCoinAPIExchangerate) {
+        // Silently skip users without research API credentials (no log spam)
         return {
           success: false,
-          symbolsProcessed: 0,
-          providersCalled: [],
+          symbol: 'BTCUSDT',
           errors: [{
-            adapter: 'Research APIs',
-            error: 'No research API keys available (user or service-level)',
-            isAuthError: true,
+            adapter: 'All',
+            error: 'No research API credentials configured',
+            isAuthError: false,
           }],
         };
       }
 
-      logger.info({ uid }, 'Running batch deep research analysis for scheduled job');
+      // Default symbol to analyze
+      const symbol = 'BTCUSDT';
 
-      // Use batch research processing for multiple symbols
-      const batchResults = await deepResearchEngine.runDeepResearchBatch(uid, undefined, 3); // 3 concurrent requests
+      // Collect data from research APIs with proper error handling
+      const researchData: any = {
+        cryptoquant: null,
+        lunarcrush: null,
+        coinapi_market: null,
+        coinapi_flatfile: null,
+        coinapi_exchangerate: null,
+      };
 
-      // Process results
-      const successfulResults = batchResults.filter(r => r.result && !r.error);
-      const failedResults = batchResults.filter(r => r.error);
+      // Track errors for detailed response
+      const adapterErrors: Array<{ adapter: string; error: string; isAuthError: boolean }> = [];
 
-      logger.info({
-        uid,
-        totalSymbols: batchResults.length,
-        successful: successfulResults.length,
-        failed: failedResults.length,
-        symbolsProcessed: successfulResults.map(r => r.symbol).join(', ')
-      }, 'Scheduled batch deep research completed');
-
-      // Check for auto-trading on high-confidence results
-      for (const result of successfulResults) {
-        if (result.result.accuracy >= 0.75 &&
-            (result.result.combinedSignal === 'BUY' || result.result.combinedSignal === 'SELL')) {
-          await this.executeAutoTradeIfEnabled(uid, result.symbol, result.result);
+      // Fetch CryptoQuant data (if available)
+      if (hasCryptoQuant) {
+        try {
+          // Log API key status before creating adapter (for debugging)
+          const cryptoquantApiKey = integrations.cryptoquant.apiKey;
+          logger.info({ 
+            uid, 
+            symbol,
+            hasApiKey: !!cryptoquantApiKey,
+            apiKeyLength: cryptoquantApiKey?.length || 0,
+            apiKeyPrefix: cryptoquantApiKey?.substring(0, 4) || 'N/A',
+          }, 'CryptoQuant: Loading adapter with API key');
+          
+          const { CryptoQuantAdapter } = await import('./cryptoquantAdapter');
+          const cryptoQuantAdapter = new CryptoQuantAdapter(cryptoquantApiKey);
+          
+          logger.debug({ uid, symbol }, 'CryptoQuant: Fetching on-chain metrics and exchange flow');
+          
+          researchData.cryptoquant = {
+            onChainMetrics: await cryptoQuantAdapter.getOnChainMetrics(symbol),
+            exchangeFlow: await cryptoQuantAdapter.getExchangeFlow(symbol),
+          };
+          
+          logger.info({ uid, symbol }, 'CryptoQuant: Successfully fetched research data');
+      } catch (err: any) {
+          // Check if it's an auth error - if so, skip this user gracefully
+          const isAuthError = err instanceof AdapterError && err.details.isAuthError;
+          
+          // Store error to Firestore
+          await this.storeAdapterError(uid, 'CryptoQuant', err, symbol);
+          
+          // Track error for response
+          adapterErrors.push({
+            adapter: 'CryptoQuant',
+            error: err instanceof AdapterError ? err.details.errorMessage : err?.message || String(err),
+            isAuthError,
+          });
+          
+          if (isAuthError) {
+            logger.warn({ uid, symbol, adapter: 'CryptoQuant' }, 'CryptoQuant auth error - skipping user for this run');
+            // Skip this user for this run (graceful skip-on-auth-failure)
+            await this.notifyAdminAuthError(uid, 'CryptoQuant', err);
+            return {
+              success: false,
+              symbol,
+              errors: adapterErrors,
+            };
+          }
+          
+          logger.debug({ err: err.message, uid, symbol }, 'CryptoQuant fetch error (non-critical)');
+          // Continue with other APIs for non-auth errors
         }
       }
 
+      // Fetch LunarCrush data (if available)
+      if (hasLunarCrush) {
+        try {
+          const { LunarCrushAdapter } = await import('./lunarcrushAdapter');
+          const lunarcrushAdapter = new LunarCrushAdapter(integrations.lunarcrush.apiKey);
+          researchData.lunarcrush = await lunarcrushAdapter.getCoinData(symbol);
+      } catch (err: any) {
+          const isAuthError = err instanceof AdapterError && err.isAuthError;
+          
+          await this.storeAdapterError(uid, 'LunarCrush', err, symbol);
+          
+          adapterErrors.push({
+            adapter: 'LunarCrush',
+            error: err instanceof AdapterError ? err.details.errorMessage : err?.message || String(err),
+            isAuthError,
+          });
+          
+          if (isAuthError) {
+            logger.warn({ uid, symbol, adapter: 'LunarCrush' }, 'LunarCrush auth error - skipping user for this run');
+            await this.notifyAdminAuthError(uid, 'LunarCrush', err);
+            return {
+              success: false,
+              symbol,
+              errors: adapterErrors,
+            };
+          }
+          
+          logger.debug({ err: err.message, uid, symbol }, 'LunarCrush fetch error (non-critical)');
+        }
+      }
+
+      // Fetch CoinAPI Market data (if available)
+      if (hasCoinAPIMarket) {
+        try {
+          const { CoinAPIAdapter } = await import('./coinapiAdapter');
+          const marketAdapter = new CoinAPIAdapter(integrations['coinapi_market'].apiKey, 'market');
+          researchData.coinapi_market = await marketAdapter.getMarketData(symbol);
+        } catch (err: any) {
+          const isAuthError = err instanceof AdapterError && err.isAuthError;
+          
+          await this.storeAdapterError(uid, 'CoinAPI_market', err, symbol);
+          
+          adapterErrors.push({
+            adapter: 'CoinAPI_market',
+            error: err instanceof AdapterError ? err.details.errorMessage : err?.message || String(err),
+            isAuthError,
+          });
+          
+          if (isAuthError) {
+            logger.warn({ uid, symbol, adapter: 'CoinAPI_market' }, 'CoinAPI Market auth error - skipping user for this run');
+            await this.notifyAdminAuthError(uid, 'CoinAPI_market', err);
+            return {
+              success: false,
+              symbol,
+              errors: adapterErrors,
+            };
+          }
+          
+          logger.debug({ err: err.message, uid, symbol }, 'CoinAPI Market fetch error (non-critical)');
+        }
+      }
+
+      // Fetch CoinAPI Flatfile data (if available)
+      if (hasCoinAPIFlatfile) {
+        try {
+          const { CoinAPIAdapter } = await import('./coinapiAdapter');
+          const flatfileAdapter = new CoinAPIAdapter(integrations['coinapi_flatfile'].apiKey, 'flatfile');
+          researchData.coinapi_flatfile = await flatfileAdapter.getHistoricalData(symbol, 7);
+      } catch (err: any) {
+          const isAuthError = err instanceof AdapterError && err.isAuthError;
+          
+          await this.storeAdapterError(uid, 'CoinAPI_flatfile', err, symbol);
+          
+          adapterErrors.push({
+            adapter: 'CoinAPI_flatfile',
+            error: err instanceof AdapterError ? err.details.errorMessage : err?.message || String(err),
+            isAuthError,
+          });
+          
+          if (isAuthError) {
+            logger.warn({ uid, symbol, adapter: 'CoinAPI_flatfile' }, 'CoinAPI Flatfile auth error - skipping user for this run');
+            await this.notifyAdminAuthError(uid, 'CoinAPI_flatfile', err);
+            return {
+              success: false,
+              symbol,
+              errors: adapterErrors,
+            };
+          }
+          
+          logger.debug({ err: err.message, uid, symbol }, 'CoinAPI Flatfile fetch error (non-critical)');
+        }
+      }
+
+      // Fetch CoinAPI Exchange Rate data (if available)
+      if (hasCoinAPIExchangerate) {
+        try {
+          const { CoinAPIAdapter } = await import('./coinapiAdapter');
+          const baseAsset = symbol.replace('USDT', '').replace('USD', '');
+          const exchangerateAdapter = new CoinAPIAdapter(integrations['coinapi_exchangerate'].apiKey, 'exchangerate');
+          researchData.coinapi_exchangerate = await exchangerateAdapter.getExchangeRate(baseAsset, 'USD');
+        } catch (err: any) {
+          const isAuthError = err instanceof AdapterError && err.isAuthError;
+          
+          await this.storeAdapterError(uid, 'CoinAPI_exchangerate', err, symbol);
+          
+          adapterErrors.push({
+            adapter: 'CoinAPI_exchangerate',
+            error: err instanceof AdapterError ? err.details.errorMessage : err?.message || String(err),
+            isAuthError,
+          });
+          
+          if (isAuthError) {
+            logger.warn({ uid, symbol, adapter: 'CoinAPI_exchangerate' }, 'CoinAPI ExchangeRate auth error - skipping user for this run');
+            await this.notifyAdminAuthError(uid, 'CoinAPI_exchangerate', err);
+            return {
+              success: false,
+              symbol,
+              errors: adapterErrors,
+            };
+          }
+          
+          logger.debug({ err: err.message, uid, symbol }, 'CoinAPI ExchangeRate fetch error (non-critical)');
+        }
+      }
+
+      // Calculate signal and accuracy based on research API data only
+      const { signal, accuracy, reasoning } = this.calculateSignalFromResearchData(researchData, symbol);
+
+      // Save to research logs with type indicator
+      const db = getFirebaseAdmin().firestore();
+      await db.collection('users').doc(uid).collection('researchLogs').add({
+        symbol,
+        signal,
+        accuracy,
+        timestamp: admin.firestore.Timestamp.now(),
+        orderbookImbalance: 0, // Not available from research APIs
+        recommendedAction: reasoning,
+        researchType: 'auto', // Mark as auto research
+        microSignals: {
+          cryptoquant: researchData.cryptoquant ? 'available' : 'unavailable',
+          lunarcrush: researchData.lunarcrush ? 'available' : 'unavailable',
+          coinapi_market: researchData.coinapi_market ? 'available' : 'unavailable',
+          coinapi_flatfile: researchData.coinapi_flatfile ? 'available' : 'unavailable',
+          coinapi_exchangerate: researchData.coinapi_exchangerate ? 'available' : 'unavailable',
+        },
+        researchData, // Store raw research data for analysis
+        createdAt: admin.firestore.Timestamp.now(),
+      });
+
+      logger.info({ uid, symbol, signal, accuracy }, 'Scheduled research completed and saved (Research APIs only)');
+      
       return {
-        success: successfulResults.length > 0,
-        symbolsProcessed: batchResults.length,
-        results: batchResults.map(r => ({
-          symbol: r.symbol,
-          signal: r.result?.combinedSignal,
-          accuracy: r.result?.accuracy,
-          success: !r.error,
-          error: r.error
-        })),
-        providersCalled: successfulResults.flatMap(r => r.result?.providersCalled || []),
-        errors: failedResults.map(r => ({
-          adapter: 'Research',
-          error: r.error || 'Unknown error',
-          isAuthError: false,
-        })),
+        success: true,
+        symbol,
+        signal,
+        accuracy,
+        reasoning,
+        errors: adapterErrors.length > 0 ? adapterErrors : undefined,
       };
     } catch (error: any) {
-      logger.error({ error: error.message, stack: error.stack, uid }, 'Error in runResearchForUser with batch deep research');
-
-      // Return minimal fallback response
+      // Log error but don't throw - let the service continue
+      logger.error({ error: error.message, uid }, 'Error running research for user (non-critical)');
+      
+      // Store error if it's an AdapterError
+      if (error instanceof AdapterError) {
+        await this.storeAdapterError(uid, error.adapter, error, 'BTCUSDT');
+      }
+      
       return {
         success: false,
-        symbolsProcessed: 0,
-        providersCalled: [],
+        symbol: 'BTCUSDT',
         errors: [{
-          adapter: 'System',
-          error: error.message || 'Batch deep research engine error',
-          isAuthError: false,
+          adapter: error instanceof AdapterError ? error.adapter : 'Unknown',
+          error: error?.message || String(error),
+          isAuthError: error instanceof AdapterError ? error.isAuthError : false,
         }],
       };
     }
   }
 
   /**
-   * Handle adapter errors with improved logging and Firestore storage
+   * Store adapter error to Firestore for debugging
    */
-  private async handleAdapterError(
-    uid: string,
-    adapterName: string,
-    error: any,
-    symbol: string,
-    adapterErrors: Array<{ adapter: string; error: string; isAuthError: boolean }>,
-    isUserProvidedApi: boolean = true
-  ): Promise<void> {
-    const isAuthError = error instanceof AdapterError && error.details?.isAuthError;
-    const isNetworkError = error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED';
-
-    // Generate short error ID for Firestore (not full stack traces)
-    const errorId = `${adapterName}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-    // Store concise error in Firestore
-    await this.storeAdapterError(uid, adapterName, errorId, symbol, isAuthError, isNetworkError);
-
-    // Track error for response
-    adapterErrors.push({
-      adapter: adapterName,
-      error: this.getShortErrorMessage(error),
-      isAuthError,
-    });
-
-    // Handle auth errors for user-provided APIs
-    if (isAuthError && isUserProvidedApi) {
-      logger.warn({ uid, symbol, adapter: adapterName }, `${adapterName} auth error - skipping user`);
-      await this.notifyAdminAuthError(uid, adapterName, error);
-      throw new Error(`${adapterName} authentication failed`);
-    }
-
-    // Log network errors without stack traces
-    if (isNetworkError) {
-      logger.debug({ uid, symbol, adapter: adapterName, errorId }, `${adapterName} network error (non-critical)`);
-    } else {
-      logger.debug({ error: error.message, uid, symbol, adapter: adapterName }, `${adapterName} fetch error (non-critical)`);
-    }
-  }
-
-  /**
-   * Get short error message without stack traces
-   */
-  private getShortErrorMessage(error: any): string {
-    if (error instanceof AdapterError) {
-      return error.details?.errorMessage || error.message;
-    }
-
-    if (error.code === 'ENOTFOUND') return 'DNS resolution failed';
-    if (error.code === 'ECONNREFUSED') return 'Connection refused';
-    if (error.code === 'ETIMEDOUT') return 'Request timeout';
-
-    return error?.message || 'Unknown error';
-  }
-
-  /**
-   * Store adapter error to Firestore for debugging (short error IDs only)
-   */
-  private async storeAdapterError(
-    uid: string,
-    adapter: string,
-    errorId: string,
-    symbol: string,
-    isAuthError: boolean = false,
-    isNetworkError: boolean = false
-  ): Promise<void> {
+  private async storeAdapterError(uid: string, adapter: string, error: any, symbol: string): Promise<void> {
     try {
       const db = getFirebaseAdmin().firestore();
       const timestamp = admin.firestore.Timestamp.now();
-
-      // Store concise error information only (no stack traces)
+      const errorId = `error_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      // Extract error details
+      let statusCode: number | undefined;
+      let responseSnippet: string | undefined;
+      let errorMessage: string;
+      let stack: string | undefined;
+      let isAuthError = false;
+      
+      if (error instanceof AdapterError) {
+        statusCode = error.details.statusCode;
+        responseSnippet = error.details.responseSnippet?.substring(0, 2000); // First 2000 chars
+        errorMessage = error.details.errorMessage;
+        stack = error.stack;
+        isAuthError = error.details.isAuthError;
+      } else {
+        errorMessage = error?.message || String(error);
+        stack = error?.stack;
+        statusCode = error?.response?.status || error?.statusCode;
+        if (error?.response?.data) {
+          try {
+            responseSnippet = JSON.stringify(error.response.data).substring(0, 2000);
+          } catch (e) {
+            responseSnippet = String(error.response.data).substring(0, 2000);
+          }
+        }
+        // Check if it's an auth error
+        const errorStr = errorMessage.toLowerCase();
+        isAuthError = 
+          statusCode === 401 || 
+          statusCode === 403 ||
+          errorStr.includes('unsupported state') ||
+          errorStr.includes('unable to authenticate') ||
+          errorStr.includes('authentication') ||
+          errorStr.includes('unauthorized');
+      }
+      
+      // Store to logs/researchErrors/{uid}/{timestamp}
       await db.collection('logs').doc('researchErrors')
         .collection(uid)
         .doc(errorId)
         .set({
           adapter,
           symbol,
-          errorType: isAuthError ? 'auth' : isNetworkError ? 'network' : 'other',
-          timestamp: admin.firestore.Timestamp.now(),
-          // No full error messages or stack traces stored
+          statusCode,
+          responseSnippet,
+          errorMessage,
+          stack,
+          isAuthError,
+          timestamp,
+          createdAt: timestamp,
         });
-
-      logger.debug({ uid, adapter, errorId, symbol }, 'Adapter error stored in Firestore');
+      
+      // Increment researchErrorCount and update lastErrorAt
+      const userRef = db.collection('users').doc(uid);
+      await userRef.update({
+        researchErrorCount: admin.firestore.FieldValue.increment(1),
+        lastErrorAt: timestamp,
+      });
+      
+      logger.info({ uid, adapter, errorId, isAuthError }, 'Adapter error stored to Firestore');
     } catch (storeError: any) {
-      logger.error({ error: storeError.message, uid, adapter }, 'Failed to store adapter error');
+      logger.error({ err: storeError, uid, adapter }, 'Failed to store adapter error to Firestore');
     }
   }
 
@@ -427,100 +520,167 @@ export class ScheduledResearchService {
   }
 
   /**
-   * Execute auto-trade if user has auto-trading enabled and meets accuracy threshold
-   */
-  private async executeAutoTradeIfEnabled(uid: string, symbol: string, deepResult: any): Promise<void> {
-    try {
-      // Get user settings to check if auto-trade is enabled
-      const db = getFirebaseAdmin().firestore();
-      const userDoc = await db.collection('users').doc(uid).get();
-
-      if (!userDoc.exists) {
-        logger.debug({ uid }, 'User not found for auto-trade check');
-        return;
-      }
-
-      const userData = userDoc.data();
-      const settings = userData?.settings || {};
-
-      // Check if auto-trade is enabled and user has required exchanges
-      if (!settings.enableAutoTrade || !settings.exchanges || settings.exchanges.length === 0) {
-        logger.debug({ uid }, 'Auto-trade not enabled or no exchanges configured');
-        return;
-      }
-
-      // Get current price from research data
-      let currentPrice = 50000; // fallback
-      if (deepResult.raw?.binancePublic?.price) {
-        currentPrice = deepResult.raw.binancePublic.price;
-      } else if (deepResult.raw?.coinMarketCap?.marketData?.price) {
-        currentPrice = deepResult.raw.coinMarketCap.marketData.price;
-      }
-
-      logger.info({
-        uid,
-        symbol,
-        signal: deepResult.combinedSignal,
-        accuracy: deepResult.accuracy,
-        confidencePercent: Math.round(deepResult.accuracy * 100),
-        currentPrice,
-        exchanges: settings.exchanges
-      }, 'Executing auto-trade for user');
-
-      // Execute trade on user's configured exchanges
-      for (const exchange of settings.exchanges) {
-        try {
-          const tradeResult = await autoTradeExecutor.executeAutoTrade({
-            userId: uid,
-            symbol,
-            signal: deepResult.combinedSignal as 'BUY' | 'SELL',
-            confidencePercent: Math.round(deepResult.accuracy * 100),
-            researchRequestId: `auto_trade_${Date.now()}_${symbol}_${uid}`,
-            currentPrice,
-            exchangeName: exchange
-          });
-
-          if (tradeResult.success) {
-            logger.info({
-              uid,
-              symbol,
-              exchange,
-              signal: deepResult.combinedSignal,
-              orderId: tradeResult.orderId,
-              confidencePercent: Math.round(deepResult.accuracy * 100)
-            }, 'Auto-trade executed successfully');
-          } else {
-            logger.warn({
-              uid,
-              symbol,
-              exchange,
-              signal: deepResult.combinedSignal,
-              error: tradeResult.error
-            }, 'Auto-trade execution failed');
-          }
-        } catch (tradeError: any) {
-          logger.error({
-            error: tradeError.message,
-            uid,
-            symbol,
-            exchange,
-            signal: deepResult.combinedSignal
-          }, 'Auto-trade execution error');
-        }
-      }
-    } catch (error: any) {
-      logger.error({
-        error: error.message,
-        uid,
-        symbol,
-        signal: deepResult.combinedSignal
-      }, 'Error in auto-trade execution');
-    }
-  }
-
-  /**
    * Calculate trading signal and accuracy from research API data only
    */
+  private calculateSignalFromResearchData(researchData: any, symbol: string): {
+    signal: 'BUY' | 'SELL' | 'HOLD';
+    accuracy: number;
+    reasoning: string;
+  } {
+    let accuracy = 0.5; // Base accuracy
+    let bullishSignals = 0;
+    let bearishSignals = 0;
+    const reasons: string[] = [];
+
+    // Analyze CryptoQuant data
+    if (researchData.cryptoquant) {
+      try {
+        const flowData = researchData.cryptoquant.exchangeFlow;
+        const onChainData = researchData.cryptoquant.onChainMetrics;
+
+        if (flowData?.exchangeFlow && flowData.exchangeFlow > 0) {
+          bullishSignals++;
+          accuracy += 0.05;
+          reasons.push('Positive exchange flow (CryptoQuant)');
+        } else if (flowData?.exchangeFlow && flowData.exchangeFlow < 0) {
+          bearishSignals++;
+          accuracy -= 0.03;
+          reasons.push('Negative exchange flow (CryptoQuant)');
+        }
+
+        if (onChainData?.whaleTransactions && onChainData.whaleTransactions > 10) {
+          bullishSignals++;
+          accuracy += 0.03;
+          reasons.push('High whale activity (CryptoQuant)');
+        }
+
+        if (onChainData?.activeAddresses && onChainData.activeAddresses > 100000) {
+          bullishSignals++;
+          accuracy += 0.02;
+          reasons.push('High network activity (CryptoQuant)');
+        }
+      } catch (err) {
+        // Ignore errors in data analysis
+      }
+    }
+
+    // Analyze LunarCrush sentiment data
+    if (researchData.lunarcrush) {
+      try {
+        const sentiment = researchData.lunarcrush.sentiment;
+        const socialVolume = researchData.lunarcrush.socialVolume;
+        const bullishSentiment = researchData.lunarcrush.bullishSentiment;
+
+        if (sentiment && sentiment > 0.3) {
+          bullishSignals++;
+          accuracy += 0.05;
+          reasons.push('Positive sentiment (LunarCrush)');
+        } else if (sentiment && sentiment < -0.3) {
+          bearishSignals++;
+          accuracy -= 0.03;
+          reasons.push('Negative sentiment (LunarCrush)');
+        }
+
+        if (socialVolume && socialVolume > 1000) {
+          bullishSignals++;
+          accuracy += 0.03;
+          reasons.push('High social volume (LunarCrush)');
+        }
+
+        if (bullishSentiment && bullishSentiment > 0.6) {
+          bullishSignals++;
+          accuracy += 0.02;
+          reasons.push('Bullish sentiment percentage (LunarCrush)');
+        }
+      } catch (err) {
+        // Ignore errors in data analysis
+      }
+    }
+
+    // Analyze CoinAPI Market data
+    if (researchData.coinapi_market) {
+      try {
+        const priceChange24h = researchData.coinapi_market.priceChangePercent24h;
+        const volume24h = researchData.coinapi_market.volume24h;
+
+        if (priceChange24h && priceChange24h > 2) {
+          bullishSignals++;
+          accuracy += 0.03;
+          reasons.push('Positive 24h price change (CoinAPI)');
+        } else if (priceChange24h && priceChange24h < -2) {
+          bearishSignals++;
+          accuracy -= 0.02;
+          reasons.push('Negative 24h price change (CoinAPI)');
+        }
+
+        if (volume24h && volume24h > 1000000) {
+          bullishSignals++;
+          accuracy += 0.02;
+          reasons.push('High volume (CoinAPI)');
+        }
+      } catch (err) {
+        // Ignore errors in data analysis
+      }
+    }
+
+    // Analyze CoinAPI Flatfile historical data
+    if (researchData.coinapi_flatfile?.historicalData) {
+      try {
+        const historicalData = researchData.coinapi_flatfile.historicalData;
+        if (historicalData.length >= 2) {
+          const recent = historicalData[historicalData.length - 1];
+          const previous = historicalData[historicalData.length - 2];
+          const trend = (recent.close - previous.close) / previous.close;
+
+          if (trend > 0.02) {
+            bullishSignals++;
+            accuracy += 0.03;
+            reasons.push('Uptrend from historical data (CoinAPI)');
+          } else if (trend < -0.02) {
+            bearishSignals++;
+            accuracy -= 0.02;
+            reasons.push('Downtrend from historical data (CoinAPI)');
+          }
+        }
+      } catch (err) {
+        // Ignore errors in data analysis
+      }
+    }
+
+    // Count successful API calls for accuracy boost
+    let apiSuccessCount = 0;
+    if (researchData.cryptoquant) apiSuccessCount++;
+    if (researchData.lunarcrush) apiSuccessCount++;
+    if (researchData.coinapi_market) apiSuccessCount++;
+    if (researchData.coinapi_flatfile) apiSuccessCount++;
+    if (researchData.coinapi_exchangerate) apiSuccessCount++;
+    
+    // Base accuracy boost from API success (each API adds 5%)
+    const apiBoost = Math.min(0.25, apiSuccessCount * 0.05); // Max 25% boost
+    accuracy = accuracy + apiBoost;
+    
+    // Cap accuracy between 0.55 and 0.95 (minimum 55% for all signals)
+    accuracy = Math.min(0.95, Math.max(0.55, accuracy));
+
+    // Determine signal based on signal count and accuracy
+    let signal: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
+    if (bullishSignals > bearishSignals && accuracy >= 0.55) {
+      signal = 'BUY';
+    } else if (bearishSignals > bullishSignals && accuracy >= 0.55) {
+      signal = 'SELL';
+    }
+    
+    // Ensure minimum 55% accuracy for non-neutral signals
+    if (signal !== 'HOLD' && accuracy < 0.55) {
+      accuracy = 0.55;
+    }
+
+    const reasoning = reasons.length > 0 
+      ? `${reasons.join('; ')}. Accuracy: ${(accuracy * 100).toFixed(1)}%` 
+      : `Insufficient data for signal determination. Accuracy: ${(accuracy * 100).toFixed(1)}%`;
+
+    return { signal, accuracy, reasoning };
+  }
 }
 
 export const scheduledResearchService = new ScheduledResearchService();

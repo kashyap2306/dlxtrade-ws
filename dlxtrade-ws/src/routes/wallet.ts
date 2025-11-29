@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { firestoreAdapter } from '../services/firestoreAdapter';
-import { ExchangeConnectorFactory, type ExchangeName, type ExchangeCreationResult } from '../services/exchangeConnector';
+import { ExchangeConnectorFactory, type ExchangeName } from '../services/exchangeConnector';
 import { decrypt } from '../services/keyManager';
 import { logger } from '../utils/logger';
 import { getFirebaseAdmin } from '../utils/firebase';
@@ -57,10 +57,10 @@ export async function walletRoutes(fastify: FastifyInstance) {
       }
 
       // Decrypt credentials (server-side only, never expose)
-      const apiKey = decrypt(exchangeConfig.apiKeyEncrypted, { uid: user.uid, field: 'apiKeyEncrypted', provider: exchange });
-      const secret = decrypt(exchangeConfig.secretEncrypted, { uid: user.uid, field: 'secretEncrypted', provider: exchange });
+      const apiKey = decrypt(exchangeConfig.apiKeyEncrypted);
+      const secret = decrypt(exchangeConfig.secretEncrypted);
       const passphrase = exchangeConfig.passphraseEncrypted
-        ? decrypt(exchangeConfig.passphraseEncrypted, { uid: user.uid, field: 'passphraseEncrypted', provider: exchange })
+        ? decrypt(exchangeConfig.passphraseEncrypted)
         : undefined;
       const testnet = exchangeConfig.testnet ?? true;
 
@@ -74,47 +74,21 @@ export async function walletRoutes(fastify: FastifyInstance) {
       }, 'Fetching wallet balances');
 
       // Create exchange adapter
-      const creationResult = ExchangeConnectorFactory.create(exchange, {
+      const adapter = ExchangeConnectorFactory.create(exchange, {
         apiKey,
         secret,
         passphrase,
         testnet,
       });
 
-      if (!creationResult.success) {
-        const error = creationResult.error!;
-        if (error.code === 'MISSING_PASSPHRASE') {
-          return reply.code(400).send({
-            success: false,
-            error: "Bitget passphrase missing. Update exchange-config.",
-            code: error.code,
-            requiredFields: error.requiredFields,
-          });
-        } else {
-          return reply.code(400).send({
-            success: false,
-            error: error.message,
-            code: error.code,
-          });
-        }
-      }
-
-      const adapter = creationResult.connector!;
-
-      // Fetch account info with timeout
+      // Fetch account info
       if (!adapter.getAccount) {
         return reply.code(501).send({
           error: 'Exchange adapter does not support balance fetching',
         });
       }
 
-      // Add timeout to prevent hanging
-      const accountInfo = await Promise.race([
-        adapter.getAccount(),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Exchange request timeout')), 5000)
-        )
-      ]);
+      const accountInfo = await adapter.getAccount();
 
       // Process balances based on exchange
       let balances: Balance[] = [];

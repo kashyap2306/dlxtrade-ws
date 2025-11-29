@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+<<<<<<< HEAD
 .pnp
 .pnp.js
 
@@ -8,25 +9,38 @@ coverage/
 *.log
 
 # Production
-build/
 dist/
+build/
 *.local
+=======
+package-lock.json
+
+# Build output
+dist/
+>>>>>>> 9636cc16c78c77b9f0c35101a040dc5c414846c5
 
 # Environment variables
 .env
 .env.local
 .env.production
 
-# Firebase service account keys (sensitive)
-serviceAccountKey.json
-**/serviceAccountKey.json
-*.serviceAccount.json
+<<<<<<< HEAD
+=======
+# Logs
+*.log
+npm-debug.log*
 
+# OS files
+.DS_Store
+Thumbs.db
+
+>>>>>>> 9636cc16c78c77b9f0c35101a040dc5c414846c5
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+<<<<<<< HEAD
 *~
 
 # OS
@@ -57,4 +71,9 @@ pnpm-debug.log*
 .cache/
 .temp/
 .tmp/
+=======
+
+# Test coverage
+coverage/
+>>>>>>> 9636cc16c78c77b9f0c35101a040dc5c414846c5
 

@@ -165,8 +165,3 @@ export function isValidBinanceSymbol(symbol: string): boolean {
 export function getValidSymbols(): string[] {
     return loadValidSymbols();
 }
-
-
-
-
-

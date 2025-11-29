@@ -3,10 +3,8 @@ import { z } from 'zod';
 import { firestoreAdapter } from '../services/firestoreAdapter';
 import { ExchangeConnectorFactory, type ExchangeName, type ExchangeCredentials } from '../services/exchangeConnector';
 import { encrypt, decrypt } from '../services/keyManager';
-import { fetchNewsData } from '../services/newsDataAdapter';
 import { logger } from '../utils/logger';
 import * as admin from 'firebase-admin';
-import { getFirebaseAdmin } from '../utils/firebase';
 
 const exchangeConfigSchema = z.object({
   exchange: z.enum(['binance', 'bitget', 'weex', 'bingx', 'cryptoquant', 'lunarcrush', 'coinapi']).optional(),
@@ -18,111 +16,6 @@ const exchangeConfigSchema = z.object({
 });
 
 export async function exchangeRoutes(fastify: FastifyInstance) {
-  // GET /api/exchange/status - Get exchange connection status and provider health
-  fastify.get('/status', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest, reply: FastifyReply) => {
-    try {
-      const user = (request as any).user;
-      const db = getFirebaseAdmin().firestore();
-
-      // Check if user has exchange config
-      const exchangeConfigDoc = await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').get();
-
-      let exchangeStatus = {
-        connected: false,
-        exchange: null,
-        accountId: null,
-        lastTested: null,
-        testnet: true,
-        hasApiKey: false,
-        hasSecret: false,
-        hasPassphrase: false,
-      };
-
-      if (exchangeConfigDoc.exists) {
-        const config = exchangeConfigDoc.data();
-        if (config?.apiKeyEncrypted && config?.secretEncrypted) {
-          exchangeStatus.connected = true;
-          exchangeStatus.exchange = config.exchange || 'binance';
-          exchangeStatus.accountId = config.accountId || null;
-          exchangeStatus.testnet = config.testnet ?? true;
-          exchangeStatus.hasApiKey = !!config.apiKeyEncrypted;
-          exchangeStatus.hasSecret = !!config.secretEncrypted;
-          exchangeStatus.hasPassphrase = !!config.passphraseEncrypted;
-          exchangeStatus.lastTested = config.lastTested || null;
-        }
-      }
-
-      // Check provider integrations status
-      const userIntegrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
-
-      // Test provider health with caching (30s TTL)
-      const cacheKey = `provider_status_${user.uid}`;
-      const cached = (global as any).providerStatusCache?.[cacheKey];
-      const now = Date.now();
-
-      let providerStatus;
-      if (cached && (now - cached.timestamp) < 30000) { // 30 seconds cache
-        providerStatus = cached.data;
-      } else {
-        providerStatus = {
-          binancePublic: 'OK',
-          cryptoCompare: userIntegrations.cryptocompare?.apiKey ? 'OK' : 'MISSING_KEY',
-          newsData: userIntegrations.newsdata?.apiKey ? 'OK' : 'MISSING_KEY',
-          coinMarketCap: userIntegrations.coinmarketcap?.apiKey ? 'OK' : 'MISSING_KEY',
-        };
-
-        // Test actual connectivity for providers with keys
-        try {
-          if (userIntegrations.cryptocompare?.apiKey) {
-            const { CryptoCompareAdapter } = await import('../services/cryptocompareAdapter');
-            const adapter = new CryptoCompareAdapter(userIntegrations.cryptocompare.apiKey);
-            await adapter.getMarketData('ETH');
-          }
-        } catch (error: any) {
-          providerStatus.cryptoCompare = 'FAILED';
-          logger.warn({ error: error.message }, 'CryptoCompare health check failed');
-        }
-
-        try {
-          if (userIntegrations.newsdata?.apiKey) {
-            await fetchNewsData(userIntegrations.newsdata.apiKey);
-          }
-        } catch (error: any) {
-          providerStatus.newsData = 'FAILED';
-          logger.warn({ error: error.message }, 'NewsData health check failed');
-        }
-
-        try {
-          if (userIntegrations.coinmarketcap?.apiKey) {
-            const { fetchCoinMarketCapMarketData } = await import('../services/coinMarketCapAdapter');
-            await fetchCoinMarketCapMarketData('ETH', userIntegrations.coinmarketcap.apiKey);
-          }
-        } catch (error: any) {
-          providerStatus.coinMarketCap = 'FAILED';
-          logger.warn({ error: error.message }, 'CoinMarketCap health check failed');
-        }
-
-        // Cache the result
-        if (!(global as any).providerStatusCache) {
-          (global as any).providerStatusCache = {};
-        }
-        (global as any).providerStatusCache[cacheKey] = {
-          data: providerStatus,
-          timestamp: now
-        };
-      }
-
-      return {
-        ...exchangeStatus,
-        ...providerStatus
-      };
-    } catch (err: any) {
-      logger.error({ err }, 'Error getting exchange status');
-      return reply.code(500).send({ error: err.message || 'Error fetching exchange status' });
-    }
-  });
   // POST /api/users/:id/exchange-config - Save exchange configuration
   fastify.post('/users/:id/exchange-config', {
     preHandler: [fastify.authenticate],
@@ -251,34 +144,13 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       const data = doc.data()!;
       
       // Return masked configuration
-      let updatedAt: string | undefined;
-      try {
-        if (data.updatedAt) {
-          // Handle Firestore Timestamp
-          if (typeof data.updatedAt.toISOString === 'function') {
-            updatedAt = data.updatedAt.toISOString();
-          } else if (data.updatedAt instanceof Date) {
-            updatedAt = data.updatedAt.toISOString();
-          } else if (typeof data.updatedAt === 'string') {
-            const date = new Date(data.updatedAt);
-            if (!isNaN(date.getTime())) {
-              updatedAt = date.toISOString();
-            }
-          }
-        }
-      } catch (error) {
-        logger.warn({ error: (error as Error).message }, 'Failed to parse updatedAt timestamp');
-        // Fall back to current time if parsing fails
-        updatedAt = new Date().toISOString();
-      }
-
       return {
         exchange: data.exchange,
         testnet: data.testnet ?? true,
         hasApiKey: !!data.apiKeyEncrypted,
         hasSecret: !!data.secretEncrypted,
         hasPassphrase: !!data.passphraseEncrypted,
-        updatedAt,
+        updatedAt: data.updatedAt?.toISOString?.() || new Date(data.updatedAt).toISOString(),
       };
     } catch (err: any) {
       logger.error({ err }, 'Error getting exchange config');
@@ -327,9 +199,9 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
         
         // Decrypt credentials
         credentials = {
-          apiKey: decrypt(config.apiKeyEncrypted, { uid: user.uid, field: 'apiKeyEncrypted', provider: exchange }),
-          secret: decrypt(config.secretEncrypted, { uid: user.uid, field: 'secretEncrypted', provider: exchange }),
-          passphrase: config.passphraseEncrypted ? decrypt(config.passphraseEncrypted, { uid: user.uid, field: 'passphraseEncrypted', provider: exchange }) : undefined,
+          apiKey: decrypt(config.apiKeyEncrypted),
+          secret: decrypt(config.secretEncrypted),
+          passphrase: config.passphraseEncrypted ? decrypt(config.passphraseEncrypted) : undefined,
           testnet: config.testnet ?? true,
         };
       }
@@ -341,18 +213,7 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       }
 
       // Create connector and test
-      const creationResult = ExchangeConnectorFactory.create(exchange, credentials);
-      if (!creationResult.success) {
-        const error = creationResult.error!;
-        return reply.code(400).send({
-          success: false,
-          error: error.message,
-          code: error.code,
-          requiredFields: error.requiredFields,
-        });
-      }
-
-      const connector = creationResult.connector!;
+      const connector = ExchangeConnectorFactory.create(exchange, credentials);
       const result = await connector.testConnection();
 
       logger.info({ uid: user.uid, exchange, success: result.success }, 'Exchange connection test');
@@ -380,7 +241,7 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
     try {
       const body = z.object({
         exchange: z.enum(['binance', 'bitget', 'weex', 'bingx']).optional(),
-        symbol: z.string().optional().default('ETHUSDT'),
+        symbol: z.string().optional().default('BTCUSDT'),
         side: z.enum(['BUY', 'SELL']).optional().default('BUY'),
         quantity: z.number().positive().optional().default(0.001),
       }).parse(request.body || {});
@@ -409,24 +270,12 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       }
 
       // Create connector
-      const creationResult = ExchangeConnectorFactory.create(exchange, {
-        apiKey: decrypt(config.apiKeyEncrypted, { uid: user.uid, field: 'apiKeyEncrypted', provider: exchange }),
-        secret: decrypt(config.secretEncrypted, { uid: user.uid, field: 'secretEncrypted', provider: exchange }),
-        passphrase: config.passphraseEncrypted ? decrypt(config.passphraseEncrypted, { uid: user.uid, field: 'passphraseEncrypted', provider: exchange }) : undefined,
+      const connector = ExchangeConnectorFactory.create(exchange, {
+        apiKey: decrypt(config.apiKeyEncrypted),
+        secret: decrypt(config.secretEncrypted),
+        passphrase: config.passphraseEncrypted ? decrypt(config.passphraseEncrypted) : undefined,
         testnet: config.testnet ?? true,
       });
-
-      if (!creationResult.success) {
-        const error = creationResult.error!;
-        return reply.code(400).send({
-          success: false,
-          error: error.message,
-          code: error.code,
-          requiredFields: error.requiredFields,
-        });
-      }
-
-      const connector = creationResult.connector!;
 
       // Get symbol info to determine minimum order size
       try {
