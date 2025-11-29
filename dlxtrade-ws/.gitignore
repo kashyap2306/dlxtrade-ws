@@ -8,14 +8,19 @@ coverage/
 *.log
 
 # Production
-dist/
 build/
+dist/
 *.local
 
 # Environment variables
 .env
 .env.local
 .env.production
+
+# Firebase service account keys (sensitive)
+serviceAccountKey.json
+**/serviceAccountKey.json
+*.serviceAccount.json
 
 # IDE
 .vscode/
