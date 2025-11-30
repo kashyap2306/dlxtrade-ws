@@ -3,7 +3,7 @@ import { getAuth } from 'firebase/auth';
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || 'https://dlxtrade-ws-1.onrender.com',
-  withCredentials: true,
+  withCredentials: false,
   timeout: 20000,
   headers: {
     'Content-Type': 'application/json',
@@ -165,7 +165,18 @@ export const executionApi = {
 
 // Integrations - routes already include /api prefix from baseURL
 export const integrationsApi = {
-  load: () => api.get('/integrations/load'),
+  load: async () => {
+    const res = await api.get('/integrations/load');
+    // Frontend fix: Ignore corrupted values
+    if (res.data) {
+      Object.keys(res.data).forEach(key => {
+        if (res.data[key] && res.data[key].apiKey && res.data[key].apiKey.length < 5) {
+          res.data[key].apiKey = "";
+        }
+      });
+    }
+    return res;
+  },
   update: (data: { apiName: string; enabled: boolean; apiKey?: string; secretKey?: string; apiType?: string; passphrase?: string }) => 
     api.post('/integrations/update', data),
   connect: (data: { apiName: string; enabled: boolean; apiKey?: string; secretKey?: string; apiType?: string; passphrase?: string }) => 
