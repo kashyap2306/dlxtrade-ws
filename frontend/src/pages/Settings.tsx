@@ -3,6 +3,10 @@ import { settingsApi, integrationsApi, exchangeApi, adminApi, marketApi } from '
 import Toast from '../components/Toast';
 import Sidebar from '../components/Sidebar';
 import { useAuth } from '../hooks/useAuth';
+import { ErrorBoundary } from '../components/ErrorBoundary';
+import { LoadingState } from '../components/LoadingState';
+import { ErrorState } from '../components/ErrorState';
+import { suppressConsoleError } from '../utils/errorHandler';
 import {
   CheckCircleIcon,
   XCircleIcon,
@@ -87,6 +91,8 @@ export default function Settings() {
   const [savingTrading, setSavingTrading] = useState(false);
   const [savingRisk, setSavingRisk] = useState(false);
   const [loadingAll, setLoadingAll] = useState(true);
+  const [error, setError] = useState<any>(null);
+  const [retryCount, setRetryCount] = useState(0);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [integrationsLoaded, setIntegrationsLoaded] = useState(false);
   const [integrationsLoading, setIntegrationsLoading] = useState(false);
@@ -111,17 +117,44 @@ export default function Settings() {
 
   const loadAllData = useCallback(async () => {
     if (!isMountedRef.current) return;
+
     setLoadingAll(true);
+    setError(null);
+
     try {
-      await Promise.all([
+      // Load all settings data in parallel with Promise.allSettled for resilience
+      const [settingsResult, integrationsResult, globalSettingsResult, exchangeResult, symbolsResult] = await Promise.allSettled([
         loadSettings(),
         loadIntegrations(),
         loadGlobalSettings(),
         loadConnectedExchange(),
         loadMarketSymbols()
       ]);
-    } catch (err) {
-      console.error('Error loading data:', err);
+
+      // Log any failures but don't fail the whole load
+      if (settingsResult.status === 'rejected') {
+        suppressConsoleError(settingsResult.reason, 'loadSettings');
+      }
+      if (integrationsResult.status === 'rejected') {
+        suppressConsoleError(integrationsResult.reason, 'loadIntegrations');
+      }
+      if (globalSettingsResult.status === 'rejected') {
+        suppressConsoleError(globalSettingsResult.reason, 'loadGlobalSettings');
+      }
+      if (exchangeResult.status === 'rejected') {
+        suppressConsoleError(exchangeResult.reason, 'loadConnectedExchange');
+      }
+      if (symbolsResult.status === 'rejected') {
+        suppressConsoleError(symbolsResult.reason, 'loadMarketSymbols');
+      }
+
+      setRetryCount(0); // Reset retry count on successful load
+
+    } catch (err: any) {
+      suppressConsoleError(err, 'loadSettingsData');
+      if (isMountedRef.current) {
+        setError(err);
+      }
     } finally {
       if (isMountedRef.current) {
         setLoadingAll(false);
@@ -511,6 +544,11 @@ export default function Settings() {
     setTimeout(() => setToast(null), 3000);
   };
 
+  const handleRetry = useCallback(async () => {
+    setRetryCount(prev => prev + 1);
+    await loadAllData();
+  }, [loadAllData]);
+
   const handleLogout = async () => {
     const { signOut } = await import('firebase/auth');
     const { auth } = await import('../config/firebase');
@@ -520,20 +558,41 @@ export default function Settings() {
     window.location.href = '/login';
   };
 
-  if (loadingAll || !settings) {
+  // Show loading state
+  if ((loadingAll || !settings) && retryCount === 0) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-400 mx-auto mb-4"></div>
-          <div className="text-lg text-white">Loading settings...</div>
-          <div className="text-sm text-gray-400 mt-2">Fetching exchange config, market data, and settings</div>
-        </div>
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+        <Sidebar onLogout={handleLogout} />
+        <main className="min-h-screen smooth-scroll">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <LoadingState message="Loading settings..." />
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // Show error state with retry option
+  if (error && !loadingAll) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+        <Sidebar onLogout={handleLogout} />
+        <main className="min-h-screen smooth-scroll">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <ErrorState
+              error={error}
+              onRetry={handleRetry}
+              message={`Failed to load settings${retryCount > 0 ? ` (attempt ${retryCount + 1})` : ''}`}
+            />
+          </div>
+        </main>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 pb-20 lg:pb-0 smooth-scroll">
+    <ErrorBoundary>
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 pb-20 lg:pb-0 smooth-scroll">
       {/* Animated background elements - Performance optimized */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none gpu-accelerated">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob"></div>
@@ -1084,7 +1143,8 @@ export default function Settings() {
         </div>
       )}
 
-    </div>
+      </div>
+    </ErrorBoundary>
   );
 }
 

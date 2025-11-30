@@ -6,12 +6,18 @@ import Sidebar from '../components/Sidebar';
 import Toast from '../components/Toast';
 import { User } from 'firebase/auth';
 import BinanceLogo from '../components/ui/BinanceLogo';
+import { ErrorBoundary } from '../components/ErrorBoundary';
+import { LoadingState } from '../components/LoadingState';
+import { ErrorState } from '../components/ErrorState';
+import { suppressConsoleError } from '../utils/errorHandler';
 
 export default function Profile() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<any>(null);
+  const [retryCount, setRetryCount] = useState(0);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [userData, setUserData] = useState<any>(null);
   const [userStats, setUserStats] = useState<any>(null);
@@ -36,8 +42,12 @@ export default function Profile() {
 
   const loadAllData = useCallback(async () => {
     if (!user || !isMountedRef.current) return;
+
     setLoading(true);
+    setError(null);
+
     try {
+      // Load all profile data in parallel with Promise.allSettled for resilience
       const [
         userResponse,
         statsResponse,
@@ -46,7 +56,7 @@ export default function Profile() {
         usageResponse,
         agentsResponse,
         unlocksResponse,
-      ] = await Promise.all([
+      ] = await Promise.allSettled([
         usersApi.get(user.uid),
         usersApi.getStats(user.uid),
         usersApi.getSessions(user.uid),
@@ -56,22 +66,68 @@ export default function Profile() {
         agentsApi.getUnlocks(),
       ]);
 
-      setUserData(userResponse.data);
-      setUserStats(statsResponse.data);
-      setSessions(sessionsResponse.data.sessions || []);
-      setApiProvidersStatus(providersResponse.data.providers);
-      setUsageStats(usageResponse.data);
-      setAllAgents(agentsResponse.data.agents || []);
-      setUnlockedAgents(unlocksResponse.data.unlocks || []);
+      // Handle results - continue even if some APIs fail
+      if (userResponse.status === 'fulfilled' && isMountedRef.current) {
+        setUserData(userResponse.value.data);
+        // Set profile data from user data
+        setProfileData({
+          displayName: userResponse.value.data?.name || user?.displayName || '',
+          profilePicture: userResponse.value.data?.profilePicture || '',
+        });
+      } else if (userResponse.status === 'rejected') {
+        suppressConsoleError(userResponse.reason, 'loadUserData');
+        // User data is critical, so we might want to show an error
+        throw userResponse.reason;
+      }
 
-      // Set profile data from user data
-      setProfileData({
-        displayName: userResponse.data?.name || user?.displayName || '',
-        profilePicture: userResponse.data?.profilePicture || '',
-      });
+      if (statsResponse.status === 'fulfilled' && isMountedRef.current) {
+        setUserStats(statsResponse.value.data);
+      } else if (statsResponse.status === 'rejected') {
+        suppressConsoleError(statsResponse.reason, 'loadUserStats');
+        setUserStats(null);
+      }
+
+      if (sessionsResponse.status === 'fulfilled' && isMountedRef.current) {
+        setSessions(sessionsResponse.value.data.sessions || []);
+      } else if (sessionsResponse.status === 'rejected') {
+        suppressConsoleError(sessionsResponse.reason, 'loadUserSessions');
+        setSessions([]);
+      }
+
+      if (providersResponse.status === 'fulfilled' && isMountedRef.current) {
+        setApiProvidersStatus(providersResponse.value.data.providers);
+      } else if (providersResponse.status === 'rejected') {
+        suppressConsoleError(providersResponse.reason, 'loadApiProvidersStatus');
+        setApiProvidersStatus(null);
+      }
+
+      if (usageResponse.status === 'fulfilled' && isMountedRef.current) {
+        setUsageStats(usageResponse.value.data);
+      } else if (usageResponse.status === 'rejected') {
+        suppressConsoleError(usageResponse.reason, 'loadUsageStats');
+        setUsageStats(null);
+      }
+
+      if (agentsResponse.status === 'fulfilled' && isMountedRef.current) {
+        setAllAgents(agentsResponse.value.data.agents || []);
+      } else if (agentsResponse.status === 'rejected') {
+        suppressConsoleError(agentsResponse.reason, 'loadAllAgents');
+        setAllAgents([]);
+      }
+
+      if (unlocksResponse.status === 'fulfilled' && isMountedRef.current) {
+        setUnlockedAgents(unlocksResponse.value.data.unlocks || []);
+      } else if (unlocksResponse.status === 'rejected') {
+        suppressConsoleError(unlocksResponse.reason, 'loadUnlockedAgents');
+        setUnlockedAgents([]);
+      }
+
+      setRetryCount(0); // Reset retry count on successful load
+
     } catch (err: any) {
-      console.error('Error loading profile data:', err);
+      suppressConsoleError(err, 'loadProfileData');
       if (isMountedRef.current) {
+        setError(err);
         showToast(err.response?.data?.error || 'Failed to load profile data', 'error');
       }
     } finally {
@@ -194,6 +250,11 @@ export default function Profile() {
     setTimeout(() => setToast(null), 3000);
   };
 
+  const handleRetry = useCallback(async () => {
+    setRetryCount(prev => prev + 1);
+    await loadAllData();
+  }, [loadAllData]);
+
   const getInitials = (user: User | null): string => {
     if (!user) return 'U';
     if (profileData.displayName || user.displayName) {
@@ -239,8 +300,41 @@ export default function Profile() {
     return null;
   }
 
+  // Show loading state
+  if (loading && retryCount === 0) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 smooth-scroll">
+        <Sidebar onLogout={handleLogout} />
+        <main className="min-h-screen smooth-scroll">
+          <div className="container py-4 sm:py-8">
+            <LoadingState message="Loading profile data..." />
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // Show error state with retry option
+  if (error && !loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 smooth-scroll">
+        <Sidebar onLogout={handleLogout} />
+        <main className="min-h-screen smooth-scroll">
+          <div className="container py-4 sm:py-8">
+            <ErrorState
+              error={error}
+              onRetry={handleRetry}
+              message={`Failed to load profile data${retryCount > 0 ? ` (attempt ${retryCount + 1})` : ''}`}
+            />
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 smooth-scroll">
+    <ErrorBoundary>
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 smooth-scroll">
       {/* Animated background elements - Performance optimized */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none gpu-accelerated">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob"></div>
@@ -792,7 +886,8 @@ export default function Profile() {
       </main>
 
       {toast && <Toast message={toast.message} type={toast.type} />}
-    </div>
+      </div>
+    </ErrorBoundary>
   );
 }
 

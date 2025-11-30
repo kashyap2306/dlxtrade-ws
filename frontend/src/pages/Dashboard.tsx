@@ -5,6 +5,9 @@ import { useAuth } from '../hooks/useAuth';
 import { suppressConsoleError } from '../utils/errorHandler';
 import ExchangeAccountsSection from '../components/ExchangeAccountsSection';
 import { useThrottle, useLazyLoad, usePolling } from '../hooks/usePerformance';
+import { ErrorBoundary } from '../components/ErrorBoundary';
+import { LoadingState, CardSkeleton } from '../components/LoadingState';
+import { ErrorState, InlineError } from '../components/ErrorState';
 
 // Lazy load heavy components for better performance
 const AutoTradeMode = lazy(() => import('../components/AutoTradeMode'));
@@ -20,6 +23,9 @@ export default function Dashboard() {
   const [userStats, setUserStats] = useState<any>(null);
   const [alerts, setAlerts] = useState<Array<{ type: 'warning' | 'error'; message: string }>>([]);
   const [showExchangeModal, setShowExchangeModal] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<any>(null);
+  const [retryCount, setRetryCount] = useState(0);
   const isMountedRef = useRef(true);
 
   // Throttle data updates to prevent excessive re-renders
@@ -35,9 +41,14 @@ export default function Dashboard() {
       const response = await autoTradeApi.getStatus();
       if (isMountedRef.current) {
         setAutoTradeStatus(response.data);
+        setError(null); // Clear any previous errors
       }
     } catch (err: any) {
       suppressConsoleError(err, 'loadAutoTradeStatus');
+      if (isMountedRef.current) {
+        // Don't set error state for individual API failures to avoid breaking the UI
+        setAutoTradeStatus(null);
+      }
     }
   }, [user]);
 
@@ -47,9 +58,14 @@ export default function Dashboard() {
       const response = await usersApi.getStats(user.uid);
       if (isMountedRef.current) {
         setUserStats(response.data);
+        setError(null); // Clear any previous errors
       }
     } catch (err: any) {
       suppressConsoleError(err, 'loadUserStats');
+      if (isMountedRef.current) {
+        // Don't set error state for individual API failures to avoid breaking the UI
+        setUserStats(null);
+      }
     }
   }, [user]);
 
@@ -86,15 +102,38 @@ export default function Dashboard() {
 
   const loadData = useCallback(async () => {
     if (!user || !isMountedRef.current) return;
+
+    setLoading(true);
+    setError(null);
+
     try {
-      await Promise.all([loadAutoTradeStatus(), loadUserStats()]);
-    } catch (e) {
-      // Errors handled per call
+      await Promise.allSettled([loadAutoTradeStatus(), loadUserStats()]);
+      // Promise.allSettled ensures all promises complete regardless of individual failures
+      if (isMountedRef.current) {
+        setRetryCount(0); // Reset retry count on successful load
+      }
+    } catch (err: any) {
+      // This should rarely happen with Promise.allSettled, but handle it just in case
+      if (isMountedRef.current) {
+        setError(err);
+        suppressConsoleError(err, 'loadDashboardData');
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
   }, [user, loadAutoTradeStatus, loadUserStats]);
 
-  // Use centralized polling with visibility detection
-  usePolling(loadData, 60000, !!user);
+  // Initial data load
+  useEffect(() => {
+    if (user) {
+      loadData();
+    }
+  }, [user, loadData]);
+
+  // Use centralized polling with visibility detection (reduced frequency)
+  usePolling(loadData, 120000, !!user && !loading); // 2 minutes instead of 1
 
   useEffect(() => {
     if (autoTradeStatus && userStats) {
@@ -119,8 +158,64 @@ export default function Dashboard() {
     await loadUserStats();
   };
 
+  const handleRetry = useCallback(async () => {
+    setRetryCount(prev => prev + 1);
+    await loadData();
+  }, [loadData]);
+
+  // Show loading state
+  if (loading && retryCount === 0) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
+        <Sidebar />
+        <main className="min-h-screen">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
+            <div className="mb-8">
+              <h1 className="text-4xl lg:text-5xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
+                Dashboard
+              </h1>
+            </div>
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+              <div className="space-y-8">
+                <CardSkeleton />
+                <CardSkeleton />
+              </div>
+              <div>
+                <CardSkeleton />
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // Show error state with retry option
+  if (error && !loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
+        <Sidebar />
+        <main className="min-h-screen">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
+            <div className="mb-8">
+              <h1 className="text-4xl lg:text-5xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
+                Dashboard
+              </h1>
+            </div>
+            <ErrorState
+              error={error}
+              onRetry={handleRetry}
+              message={`Failed to load dashboard data${retryCount > 0 ? ` (attempt ${retryCount + 1})` : ''}`}
+            />
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 relative overflow-hidden">
+    <ErrorBoundary>
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 relative overflow-hidden">
       {/* Subtle animated background */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500/10 rounded-full blur-3xl"></div>
@@ -405,6 +500,7 @@ export default function Dashboard() {
           </div>
         </div>
       )}
-    </div>
+      </div>
+    </ErrorBoundary>
   );
 }

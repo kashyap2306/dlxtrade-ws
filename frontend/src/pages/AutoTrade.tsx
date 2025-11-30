@@ -5,6 +5,10 @@ import { autoTradeApi, marketApi, walletApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { usePolling } from '../hooks/usePerformance';
 import Toast from '../components/Toast';
+import { ErrorBoundary } from '../components/ErrorBoundary';
+import { LoadingState } from '../components/LoadingState';
+import { ErrorState } from '../components/ErrorState';
+import { suppressConsoleError } from '../utils/errorHandler';
 
 interface AutoTradeConfig {
   enabled: boolean;
@@ -56,6 +60,8 @@ export default function AutoTrade() {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<any>(null);
+  const [retryCount, setRetryCount] = useState(0);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const isMountedRef = useRef(true);
 
@@ -160,46 +166,72 @@ export default function AutoTrade() {
 
   const loadAllData = useCallback(async () => {
     if (!user || !isMountedRef.current) return;
+
     setLoading(true);
+    setError(null);
+
     try {
-      // Load config, symbols, and initial data in parallel
-      const [configRes, symbolsRes, portfolioRes] = await Promise.all([
+      // Load config, symbols, and initial data in parallel with Promise.allSettled
+      const [configRes, symbolsRes, portfolioRes] = await Promise.allSettled([
         autoTradeApi.getConfig(),
         marketApi.getSymbols(),
         walletApi.getBalances(),
       ]);
 
-      if (isMountedRef.current) {
-        setConfig(configRes.data);
-        setSymbols(symbolsRes.data);
-        setPortfolio(portfolioRes.data);
+      // Handle results - continue even if some APIs fail
+      if (configRes.status === 'fulfilled' && isMountedRef.current) {
+        setConfig(configRes.value.data);
 
         // Set local state from config
         setAutoTradeControls({
-          enabled: configRes.data.enabled,
-          maxConcurrentTrades: configRes.data.maxConcurrentTrades,
-          maxTradesPerDay: configRes.data.maxTradesPerDay,
+          enabled: configRes.value.data.enabled,
+          maxConcurrentTrades: configRes.value.data.maxConcurrentTrades,
+          maxTradesPerDay: configRes.value.data.maxTradesPerDay,
         });
 
         setScheduleConfig({
-          start: configRes.data.schedule.start,
-          end: configRes.data.schedule.end,
-          days: configRes.data.schedule.days,
+          start: configRes.value.data.schedule.start,
+          end: configRes.value.data.schedule.end,
+          days: configRes.value.data.schedule.days,
           run24_7: false, // Calculate from schedule
         });
 
         setSafetyConfig({
-          cooldownSeconds: configRes.data.cooldownSeconds,
-          consecutiveLossPauseCount: configRes.data.consecutiveLossPauseCount,
-          slippageBlocker: configRes.data.slippageBlocker,
+          cooldownSeconds: configRes.value.data.cooldownSeconds,
+          consecutiveLossPauseCount: configRes.value.data.consecutiveLossPauseCount,
+          slippageBlocker: configRes.value.data.slippageBlocker,
         });
+      } else if (configRes.status === 'rejected') {
+        suppressConsoleError(configRes.reason, 'loadAutoTradeConfig');
       }
 
-      // Load initial live data
-      await loadLiveData();
+      if (symbolsRes.status === 'fulfilled' && isMountedRef.current) {
+        setSymbols(symbolsRes.value.data);
+      } else if (symbolsRes.status === 'rejected') {
+        suppressConsoleError(symbolsRes.reason, 'loadMarketSymbols');
+        setSymbols([]); // Fallback to empty array
+      }
+
+      if (portfolioRes.status === 'fulfilled' && isMountedRef.current) {
+        setPortfolio(portfolioRes.value.data);
+      } else if (portfolioRes.status === 'rejected') {
+        suppressConsoleError(portfolioRes.reason, 'loadWalletBalances');
+        setPortfolio({ equity: 0, freeMargin: 0, usedMargin: 0, todayPnL: 0, totalPnL: 0 }); // Fallback
+      }
+
+      // Try to load initial live data, but don't fail the whole load if it fails
+      try {
+        await loadLiveData();
+      } catch (liveDataError) {
+        suppressConsoleError(liveDataError, 'loadInitialLiveData');
+      }
+
+      setRetryCount(0); // Reset retry count on successful load
+
     } catch (error: any) {
-      console.error('Error loading auto-trade data:', error);
+      suppressConsoleError(error, 'loadAutoTradeData');
       if (isMountedRef.current) {
+        setError(error);
         showToast('Failed to load auto-trade data', 'error');
       }
     } finally {
@@ -412,6 +444,11 @@ export default function AutoTrade() {
     setTimeout(() => setToast(null), 3000);
   };
 
+  const handleRetry = useCallback(async () => {
+    setRetryCount(prev => prev + 1);
+    await loadAllData();
+  }, [loadAllData]);
+
   const handleManageExchange = () => {
     navigate('/settings');
   };
@@ -443,8 +480,41 @@ export default function AutoTrade() {
 
   if (!user) return null;
 
+  // Show loading state
+  if (loading && retryCount === 0) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 smooth-scroll">
+        <Sidebar onLogout={() => {}} />
+        <main className="min-h-screen">
+          <div className="container py-4 sm:py-8">
+            <LoadingState message="Loading auto-trade data..." />
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // Show error state with retry option
+  if (error && !loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 smooth-scroll">
+        <Sidebar onLogout={() => {}} />
+        <main className="min-h-screen">
+          <div className="container py-4 sm:py-8">
+            <ErrorState
+              error={error}
+              onRetry={handleRetry}
+              message={`Failed to load auto-trade data${retryCount > 0 ? ` (attempt ${retryCount + 1})` : ''}`}
+            />
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 smooth-scroll">
+    <ErrorBoundary>
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 smooth-scroll">
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob"></div>
         <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-blue-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-2000"></div>
@@ -967,6 +1037,7 @@ export default function AutoTrade() {
       </main>
 
       {toast && <Toast message={toast.message} type={toast.type} />}
-    </div>
+      </div>
+    </ErrorBoundary>
   );
 }

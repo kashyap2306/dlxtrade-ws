@@ -9,6 +9,7 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  envPrefix: 'VITE_',
   base: process.env.VITE_BASE_PATH || '/',
   appType: 'spa',
   build: {
@@ -29,7 +30,7 @@ export default defineConfig({
     historyApiFallback: true,
     proxy: {
       '/api': {
-        target: process.env.VITE_API_BASE_URL?.replace('/api', ''),
+        target: process.env.VITE_API_URL?.replace('/api', ''),
         changeOrigin: true,
       },
       '/ws': {

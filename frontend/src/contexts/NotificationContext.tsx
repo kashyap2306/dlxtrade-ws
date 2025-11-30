@@ -40,10 +40,10 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       setLoading(true);
       const response = await api.get('/notifications', { params: { limit: 50 } });
       // Handle both response formats: { notifications, unreadCount } or array
-      const fetchedNotifications = Array.isArray(response.data) 
-        ? response.data 
+      const fetchedNotifications = Array.isArray(response.data)
+        ? response.data
         : (response.data?.notifications || []);
-      
+
       // Check for new notifications
       const currentIds = new Set(fetchedNotifications.map((n: Notification) => n.id));
       const newNotifications = fetchedNotifications.filter(
@@ -58,7 +58,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
       // Check if we just logged in (to prevent showing login success on refresh)
       const justLoggedIn = sessionStorage.getItem('justLoggedIn') === 'true';
-      
+
       // Clear the flag after first use
       if (justLoggedIn) {
         sessionStorage.removeItem('justLoggedIn');
@@ -88,6 +88,17 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     } catch (err: any) {
       // Silent fail - don't show errors for notification loading
       console.debug('Error loading notifications:', err);
+
+      // If we get persistent errors, reduce polling frequency or stop polling
+      // This prevents spamming the logs with notification errors
+      if (err.response?.status === 401 || err.response?.status === 403) {
+        // Auth issues - stop polling
+        console.warn('Notification polling stopped due to auth issues');
+        if (pollingIntervalRef.current) {
+          clearInterval(pollingIntervalRef.current);
+          pollingIntervalRef.current = null;
+        }
+      }
     } finally {
       setLoading(false);
     }

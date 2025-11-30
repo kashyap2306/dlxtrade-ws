@@ -8,6 +8,14 @@ React + Vite + TypeScript frontend for the HFT trading agent.
 pnpm install
 ```
 
+### Environment Variables
+
+Create a `.env` file in the root directory with the following:
+
+```env
+VITE_API_URL=https://dlxtrade-ws-1.onrender.com/api
+```
+
 ## Development
 
 ```bash
