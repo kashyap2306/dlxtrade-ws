@@ -390,10 +390,23 @@ export class FirestoreAdapter {
 
     for (const [apiName, integration] of Object.entries(allIntegrations)) {
       if (integration.enabled && integration.apiKey) {
-        enabled[apiName] = {
-          apiKey: decrypt(integration.apiKey),
-          ...(integration.secretKey ? { secretKey: decrypt(integration.secretKey) } : {}),
-        };
+        try {
+          const decryptedApiKey = decrypt(integration.apiKey);
+          const decryptedSecretKey = integration.secretKey ? decrypt(integration.secretKey) : undefined;
+
+          // Only include integrations with valid (non-empty) decrypted keys
+          if (decryptedApiKey && decryptedApiKey.trim() !== '') {
+            enabled[apiName] = {
+              apiKey: decryptedApiKey,
+              ...(decryptedSecretKey && decryptedSecretKey.trim() !== '' ? { secretKey: decryptedSecretKey } : {}),
+            };
+          } else {
+            logger.warn({ uid, apiName }, 'Skipping integration with invalid/empty decrypted API key');
+          }
+        } catch (error: any) {
+          logger.error({ error: error.message, uid, apiName }, 'Failed to decrypt integration keys, skipping');
+          // Continue to next integration instead of breaking the entire operation
+        }
       }
     }
 

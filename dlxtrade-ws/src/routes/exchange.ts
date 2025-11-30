@@ -6,6 +6,12 @@ import { encrypt, decrypt } from '../services/keyManager';
 import { logger } from '../utils/logger';
 import * as admin from 'firebase-admin';
 
+function safeDate(value: any) {
+  if (!value) return null;
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 const exchangeConfigSchema = z.object({
   exchange: z.enum(['binance', 'bitget', 'weex', 'bingx']).optional(),
   type: z.enum(['binance', 'bitget', 'weex', 'bingx']).optional(),
@@ -138,23 +144,35 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       const doc = await db.collection('users').doc(id).collection('exchangeConfig').doc('current').get();
 
       if (!doc.exists) {
-        return reply.code(404).send({ error: 'Exchange configuration not found' });
+        return reply.send({
+          success: false,
+          error: "Exchange configuration not found",
+          config: null
+        });
       }
 
       const data = doc.data()!;
-      
+
       // Return masked configuration
       return {
-        exchange: data.exchange,
-        testnet: data.testnet ?? true,
-        hasApiKey: !!data.apiKeyEncrypted,
-        hasSecret: !!data.secretEncrypted,
-        hasPassphrase: !!data.passphraseEncrypted,
-        updatedAt: data.updatedAt?.toISOString?.() || new Date(data.updatedAt).toISOString(),
+        success: true,
+        config: {
+          exchange: data.exchange,
+          testnet: data.testnet ?? true,
+          hasApiKey: !!data.apiKeyEncrypted,
+          hasSecret: !!data.secretEncrypted,
+          hasPassphrase: !!data.passphraseEncrypted,
+          updatedAt: safeDate(data.updatedAt),
+          createdAt: safeDate(data.createdAt),
+        }
       };
     } catch (err: any) {
       logger.error({ err }, 'Error getting exchange config');
-      return reply.code(500).send({ error: err.message || 'Error fetching exchange configuration' });
+      return reply.send({
+        success: false,
+        error: "Invalid exchange config data",
+        config: null
+      });
     }
   });
 
@@ -293,7 +311,7 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
 
         // Update last tested timestamp
         await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').update({
-          lastTested: new Date().toISOString(),
+          lastTested: safeDate(new Date()),
         });
 
         logger.info({ 

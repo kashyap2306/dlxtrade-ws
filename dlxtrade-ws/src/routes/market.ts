@@ -3,6 +3,12 @@ import { BinanceAdapter } from '../services/binanceAdapter';
 import { fetchCoinMarketCapMarketData } from '../services/coinMarketCapAdapter';
 import { logger } from '../utils/logger';
 
+function safeDate(value: any) {
+  if (!value) return null;
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 export async function marketRoutes(fastify: FastifyInstance) {
   // GET /api/market/top-coins - Get top 20 coins using available providers
   fastify.get('/top-coins', async (request: FastifyRequest, reply: FastifyReply) => {
@@ -96,7 +102,7 @@ export async function marketRoutes(fastify: FastifyInstance) {
         success: true,
         data: results,
         count: results.length,
-        timestamp: new Date().toISOString(),
+        timestamp: safeDate(new Date()),
       };
 
     } catch (error: any) {
@@ -245,7 +251,7 @@ export async function marketRoutes(fastify: FastifyInstance) {
         success: true,
         data: topMovers,
         count: topMovers.length,
-        timestamp: new Date().toISOString(),
+        timestamp: safeDate(new Date()),
       };
 
     } catch (error: any) {
