@@ -158,6 +158,29 @@ export class BinanceAdapter implements ExchangeConnector {
     }
   }
 
+  async getPublicMarketData(symbol: string): Promise<any> {
+    try {
+      const tickerData = await this.request('GET', '/api/v3/ticker/24hr', {
+        symbol: symbol.toUpperCase(),
+      });
+
+      if (tickerData) {
+        return {
+          lastPrice: parseFloat(tickerData.lastPrice || '0'),
+          volume24h: parseFloat(tickerData.volume || '0'),
+          priceChangePercent24h: parseFloat(tickerData.priceChangePercent || '0'),
+          high24h: parseFloat(tickerData.highPrice || '0'),
+          low24h: parseFloat(tickerData.lowPrice || '0'),
+          symbol: tickerData.symbol,
+        };
+      }
+      return null;
+    } catch (error) {
+      logger.error({ error, symbol }, 'Failed to get public market data from Binance');
+      return null;
+    }
+  }
+
   async getKlines(symbol: string, interval: string = '1m', limit: number = 100): Promise<any[]> {
     const data = await this.request('GET', '/api/v3/klines', {
       symbol: symbol.toUpperCase(),

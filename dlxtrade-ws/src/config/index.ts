@@ -55,5 +55,17 @@ export const config = {
     projectId: process.env.FIREBASE_PROJECT_ID || 'dlx-trading',
     serviceAccountKey: process.env.FIREBASE_SERVICE_ACCOUNT_KEY,
   },
+
+  research: {
+    cryptocompare: {
+      apiKey: process.env.CRYPTOCOMPARE_API_KEY || '',
+    },
+    newsdata: {
+      apiKey: process.env.NEWSDATA_API_KEY || '',
+    },
+    coinmarketcap: {
+      apiKey: process.env.COINMARKETCAP_API_KEY || '',
+    },
+  },
 };
 

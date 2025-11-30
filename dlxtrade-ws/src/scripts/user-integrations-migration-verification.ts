@@ -180,7 +180,7 @@ class UserIntegrationsMigrationVerifier {
     // Check if we have encrypted keys
     if (integration.apiKey) {
       try {
-        decryptedApiKey = decrypt(integration.apiKey, { uid, field: 'apiKey', provider });
+        decryptedApiKey = decrypt(integration.apiKey);
         // If we got here, decryption worked (either with current or fallback key)
         // The keyManager automatically re-encrypts with current key during normal save operations
         // For migration, we need to check if this was decrypted with a fallback key
@@ -196,7 +196,7 @@ class UserIntegrationsMigrationVerifier {
     // Check secret key if it exists
     if (integration.secretKey) {
       try {
-        decryptedSecretKey = decrypt(integration.secretKey, { uid, field: 'secretKey', provider });
+        decryptedSecretKey = decrypt(integration.secretKey);
         needsReEncryption = true;
       } catch (error: any) {
         console.log(`      ❌ ${provider} (secret): UNRECOVERABLE - ${error.message}`);

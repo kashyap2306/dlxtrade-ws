@@ -968,6 +968,32 @@ export class FirestoreAdapter {
     logger.debug({ uid }, 'UI preferences updated');
   }
 
+  // ========== API USAGE TRACKING METHODS ==========
+  async getApiUsage(userId: string): Promise<any | null> {
+    try {
+      const doc = await db().collection('apiUsage').doc(userId).get();
+      if (!doc.exists) return null;
+      return { userId: doc.id, ...doc.data() };
+    } catch (error: any) {
+      logger.error({ error: error.message, userId }, 'Failed to get API usage');
+      return null;
+    }
+  }
+
+  async saveApiUsage(userId: string, usage: any): Promise<void> {
+    try {
+      const usageRef = db().collection('apiUsage').doc(userId);
+      await usageRef.set({
+        ...usage,
+        updatedAt: admin.firestore.Timestamp.now(),
+      });
+      logger.debug({ userId }, 'API usage saved');
+    } catch (error: any) {
+      logger.error({ error: error.message, userId }, 'Failed to save API usage');
+      throw error;
+    }
+  }
+
   // ========== GLOBAL STATS COLLECTION METHODS ==========
   async getGlobalStats(): Promise<any | null> {
     // PART A: Use 'main' as doc ID

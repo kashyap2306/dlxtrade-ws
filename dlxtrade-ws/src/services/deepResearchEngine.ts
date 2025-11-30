@@ -682,7 +682,7 @@ export class DeepResearchEngine {
       const binancePublicStart = Date.now();
       try {
         const { BinanceAdapter } = await import('./binanceAdapter');
-        const binanceAdapter = new BinanceAdapter();
+        const binanceAdapter = new BinanceAdapter('', '', true);
         binancePublicData = await binanceAdapter.getPublicMarketData(symbol);
         providerLatencies.BinancePublic = Date.now() - binancePublicStart;
         binancePublicData.latencyMs = providerLatencies.BinancePublic;

@@ -7,7 +7,7 @@ export async function marketRoutes(fastify: FastifyInstance) {
   // GET /api/market/top-coins - Get top 20 coins using available providers
   fastify.get('/top-coins', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      const binanceAdapter = new BinanceAdapter();
+      const binanceAdapter = new BinanceAdapter('', '', true);
 
       const topCoins = [
         'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'XRPUSDT',
@@ -151,7 +151,7 @@ export async function marketRoutes(fastify: FastifyInstance) {
   // GET /api/market/top-movers - Get top 5 movers (highest absolute price changes)
   fastify.get('/top-movers', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      const binanceAdapter = new BinanceAdapter();
+      const binanceAdapter = new BinanceAdapter('', '', true);
 
       const topCoins = [
         'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'XRPUSDT',
