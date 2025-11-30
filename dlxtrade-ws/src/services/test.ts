@@ -22,7 +22,7 @@ export class TestAdapter {
         return { success: false, message: `Unexpected response: ${response.status}` };
       }
     } catch (error: any) {
-      return { success: false, message: `Connection failed: ${error.message}` };
+      return { success: false, message: `Connection failed try again: ${error.message}` };
     }
   }
 }
