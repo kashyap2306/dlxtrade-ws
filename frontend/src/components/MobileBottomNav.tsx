@@ -1,4 +1,4 @@
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, Link } from 'react-router-dom';
 import { HomeIcon, SparklesIcon, ChartBarIcon, UserIcon } from '@heroicons/react/24/outline';
 import { HomeIcon as HomeIconSolid, SparklesIcon as SparklesIconSolid, ChartBarIcon as ChartBarIconSolid, UserIcon as UserIconSolid } from '@heroicons/react/24/solid';
 import { useChatbot } from '../contexts/ChatbotContext';
@@ -19,7 +19,6 @@ const navItems: NavItem[] = [
 
 export default function MobileBottomNav() {
   const location = useLocation();
-  const navigate = useNavigate();
   const { isOpen: chatbotOpen } = useChatbot();
 
   // Hide bottom nav when chatbot is open
@@ -35,9 +34,9 @@ export default function MobileBottomNav() {
           const Icon = isActive ? item.iconSolid : item.icon;
 
           return (
-            <button
+            <Link
               key={item.path}
-              onClick={() => navigate(item.path)}
+              to={item.path}
               className={`flex flex-col items-center justify-center gap-1 px-4 py-2 rounded-lg transition-all flex-1 ${
                 isActive
                   ? 'text-purple-400 bg-purple-500/10'
@@ -46,7 +45,7 @@ export default function MobileBottomNav() {
             >
               <Icon className="w-6 h-6" />
               <span className="text-xs font-medium">{item.label}</span>
-            </button>
+            </Link>
           );
         })}
       </div>

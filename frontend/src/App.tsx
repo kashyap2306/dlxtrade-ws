@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, BrowserRouter, Outlet } from 'react-router-dom';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Dashboard from './pages/Dashboard';
@@ -35,6 +35,16 @@ import { wsService } from './services/ws';
 import { useAuth } from './hooks/useAuth';
 import { useEffect } from 'react';
 
+// Layout component that includes TopNavigation and renders page content via Outlet
+function Layout() {
+  return (
+    <>
+      <TopNavigation />
+      <Outlet />
+    </>
+  );
+}
+
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
 
@@ -46,12 +56,7 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
     );
   }
 
-  return user ? (
-    <>
-      <TopNavigation />
-      {children}
-    </>
-  ) : <Navigate to="/login" />;
+  return user ? children : <Navigate to="/login" />;
 }
 
 // AdminRoute moved to components/AdminRoute with simplified logic
@@ -70,186 +75,85 @@ function App() {
   }, [user]);
 
   return (
-    <ErrorProvider>
-      <NotificationProvider>
-        <ChatbotProvider>
-          <NotificationToast />
-          <BroadcastPopup />
-          <Chatbot />
-          <Routes>
-      <Route path="/login" element={<Login />} />
-      <Route path="/signup" element={<Signup />} />
-      <Route path="/onboarding" element={<Onboarding />} />
-      <Route path="/admin-login" element={<AdminLogin />} />
-      <Route
-        path="/"
-        element={<Home />}
-      />
-      <Route
-        path="/dashboard"
-        element={
-          <UserRoute>
-            <Dashboard />
-          </UserRoute>
-        }
-      />
-      <Route
-        path="/engine"
-        element={
-          <UserRoute>
-            <EngineControl />
-          </UserRoute>
-        }
-      />
-      <Route
-        path="/research"
-        element={
-          <UserRoute>
-            <ResearchPanel />
-          </UserRoute>
-        }
-      />
-      <Route
-        path="/auto-trade"
-        element={
-          <UserRoute>
-            <AutoTrade />
-          </UserRoute>
-        }
-      />
-      <Route
-        path="/settings"
-        element={
-          <UserRoute>
-            <Settings />
-          </UserRoute>
-        }
-      />
-      <Route
-        path="/profile"
-        element={
-          <UserRoute>
-            <Profile />
-          </UserRoute>
-        }
-      />
-      <Route
-        path="/agents"
-        element={
-          <UserRoute>
-            <AgentsMarketplace />
-          </UserRoute>
-        }
-      />
-      <Route
-        path="/agents/:agentId"
-        element={
-          <UserRoute>
-            <AgentDetails />
-          </UserRoute>
-        }
-      />
-      <Route
-        path="/agent/:agentId"
-        element={
-          <UserRoute>
-            <AgentFeature />
-          </UserRoute>
-        }
-      />
-      <Route
-        path="/hft/settings"
-        element={
-          <UserRoute>
-            <HFTSettings />
-          </UserRoute>
-        }
-      />
-      <Route
-        path="/hft/logs"
-        element={
-          <UserRoute>
-            <HFTLogs />
-          </UserRoute>
-        }
-      />
-      {/* Admin Routes */}
-      <Route
-        path="/admin"
-        element={
-          <AdminRoute>
-            <AdminDashboard />
-          </AdminRoute>
-        }
-      />
-      <Route
-        path="/admin/users"
-        element={
-          <AdminRoute>
-            <AdminUsersList />
-          </AdminRoute>
-        }
-      />
-      <Route
-        path="/admin/user/:uid"
-        element={
-          <AdminRoute>
-            <AdminUserDetail />
-          </AdminRoute>
-        }
-      />
-      <Route
-        path="/admin/agents"
-        element={
-          <AdminRoute>
-            <AdminAgentsManager />
-          </AdminRoute>
-        }
-      />
-      <Route
-        path="/admin/unlock-requests"
-        element={
-          <AdminRoute>
-            <AdminUnlockRequests />
-          </AdminRoute>
-        }
-      />
-      <Route
-        path="/admin/broadcast-popup"
-        element={
-          <AdminRoute>
-            <AdminBroadcastPopup />
-          </AdminRoute>
-        }
-      />
-      <Route
-        path="/admin/settings"
-        element={
-          <AdminRoute>
-            <AdminDashboard />
-          </AdminRoute>
-        }
-      />
-      <Route
-        path="/admin/logs"
-        element={
-          <AdminRoute>
-            <AdminDashboard />
-          </AdminRoute>
-        }
-      />
-      <Route
-        path="/admin-token"
-        element={
-          <PrivateRoute>
-            <AdminToken />
-          </PrivateRoute>
-        }
-      />
-    </Routes>
-        </ChatbotProvider>
-      </NotificationProvider>
-    </ErrorProvider>
+    <BrowserRouter>
+      <ErrorProvider>
+        <NotificationProvider>
+          <ChatbotProvider>
+            <NotificationToast />
+            <BroadcastPopup />
+            <Chatbot />
+            <Routes>
+              {/* Public Routes */}
+              <Route path="/login" element={<Login />} />
+              <Route path="/signup" element={<Signup />} />
+              <Route path="/onboarding" element={<Onboarding />} />
+              <Route path="/admin-login" element={<AdminLogin />} />
+
+              {/* Home route - redirect to dashboard for authenticated users */}
+              <Route
+                path="/"
+                element={
+                  <PrivateRoute>
+                    <Navigate to="/dashboard" replace />
+                  </PrivateRoute>
+                }
+              />
+
+              {/* Protected Routes with Layout */}
+              <Route
+                path="/"
+                element={
+                  <PrivateRoute>
+                    <Layout />
+                  </PrivateRoute>
+                }
+              >
+                <Route path="dashboard" element={<Dashboard />} />
+                <Route path="engine" element={<EngineControl />} />
+                <Route path="research" element={<ResearchPanel />} />
+                <Route path="auto-trade" element={<AutoTrade />} />
+                <Route path="settings" element={<Settings />} />
+                <Route path="profile" element={<Profile />} />
+                <Route path="agents" element={<AgentsMarketplace />} />
+                <Route path="agents/:agentId" element={<AgentDetails />} />
+                <Route path="agent/:agentId" element={<AgentFeature />} />
+                <Route path="hft/settings" element={<HFTSettings />} />
+                <Route path="hft/logs" element={<HFTLogs />} />
+              </Route>
+
+              {/* Admin Routes with Layout */}
+              <Route
+                path="/admin"
+                element={
+                  <AdminRoute>
+                    <Layout />
+                  </AdminRoute>
+                }
+              >
+                <Route index element={<AdminDashboard />} />
+                <Route path="users" element={<AdminUsersList />} />
+                <Route path="user/:uid" element={<AdminUserDetail />} />
+                <Route path="agents" element={<AdminAgentsManager />} />
+                <Route path="unlock-requests" element={<AdminUnlockRequests />} />
+                <Route path="broadcast-popup" element={<AdminBroadcastPopup />} />
+                <Route path="settings" element={<AdminDashboard />} />
+                <Route path="logs" element={<AdminDashboard />} />
+              </Route>
+
+              {/* Special Admin Token Route */}
+              <Route
+                path="/admin-token"
+                element={
+                  <PrivateRoute>
+                    <AdminToken />
+                  </PrivateRoute>
+                }
+              />
+            </Routes>
+          </ChatbotProvider>
+        </NotificationProvider>
+      </ErrorProvider>
+    </BrowserRouter>
   );
 }
 
