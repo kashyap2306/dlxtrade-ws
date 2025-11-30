@@ -12,16 +12,8 @@ class WebSocketService {
   private maxReconnectDelay: number = 30000; // 30 seconds max
 
   async connect(): Promise<void> {
-    // Use environment variable for WebSocket URL
-    const WS_URL = import.meta.env.VITE_WS_URL;
-    if (!WS_URL) {
-      if (import.meta.env.DEV) {
-        console.warn('VITE_WS_URL environment variable is not set');
-      } else {
-        console.error('VITE_WS_URL environment variable is not set');
-      }
-      return;
-    }
+    // Use Render WebSocket URL
+    const WS_URL = 'wss://dlxtrade-ws-1.onrender.com/ws';
 
     try {
       // Get fresh Firebase token

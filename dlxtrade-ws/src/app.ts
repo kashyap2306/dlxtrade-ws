@@ -47,6 +47,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     origin: (origin, cb) => {
       const allowed = [
         'https://dlx-trading.web.app',
+        'https://dlxtrade-ws-1.onrender.com', // Render frontend domain
         'http://localhost:5173',
         process.env.FRONTEND_URL || '',
       ].filter(Boolean);

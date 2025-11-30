@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "build": "tsc -p ./tsconfig.json",
+    "build": "rm -rf dist && tsc",
     "start": "node dist/server.js",
     "verify:ws": "node -e \"require('@fastify/websocket'); require('ws'); console.log('ws-ok')\"",
     "postinstall": "npm run verify:ws"

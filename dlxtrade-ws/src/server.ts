@@ -8,6 +8,9 @@ import { initializeFirestoreCollections } from './utils/firestoreInitializer';
 import { seedFirestoreData } from './utils/firestoreSeed';
 import { migrateFirestoreDocuments } from './utils/firestoreMigration';
 
+// Force Render to rebuild fresh container
+console.log("🔥 FORCE DEPLOY CHECK:", Date.now());
+
 // Global error handlers to catch all errors and prevent crashes
 process.on('uncaughtException', (error) => {
   console.error('UNCAUGHT EXCEPTION:', error);

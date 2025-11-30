@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { createUserWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, GithubAuthProvider, updateProfile } from 'firebase/auth';
 import { auth } from '../config/firebase';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, collection, getDocs } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import Toast from '../components/Toast';
 import { useError } from '../contexts/ErrorContext';
@@ -44,6 +44,46 @@ export default function Signup() {
       return 'Password must contain at least one number';
     }
     return null;
+  };
+
+  // Debug function to test Firestore paths creation after signup
+  const debugFirestorePaths = async (uid: string) => {
+    console.log('🔍 DEBUG: Checking Firestore paths for new user:', uid);
+
+    const pathsToCheck = [
+      { path: `users/${uid}`, description: 'User document' },
+      { path: `users/${uid}/integration/binance`, description: 'Binance integration' },
+      { path: `users/${uid}/integration/cryptocompare`, description: 'CryptoCompare integration' },
+      { path: `users/${uid}/integration/newsdata`, description: 'NewsData integration' },
+      { path: `users/${uid}/integration/coinmarketcap`, description: 'CoinMarketCap integration' },
+      { path: `users/${uid}/agents/default`, description: 'Default agent' },
+      { path: `users/${uid}/settings/profile`, description: 'Profile settings' },
+      { path: `users/${uid}/keys`, description: 'Encrypted API keys' },
+    ];
+
+    for (const { path, description } of pathsToCheck) {
+      try {
+        // Handle different path formats
+        if (path.includes('/')) {
+          const parts = path.split('/');
+          if (parts.length === 2) {
+            // Root collection document: users/{uid}
+            const docRef = doc(db, parts[0], parts[1]);
+            const docSnap = await getDoc(docRef);
+            console.log(docSnap.exists() ? `✔ exists: ${path} (${description})` : `✘ missing: ${path} (${description})`);
+          } else if (parts.length === 4) {
+            // Subcollection document: users/{uid}/integration/binance
+            const docRef = doc(db, parts[0], parts[1], parts[2], parts[3]);
+            const docSnap = await getDoc(docRef);
+            console.log(docSnap.exists() ? `✔ exists: ${path} (${description})` : `✘ missing: ${path} (${description})`);
+          }
+        }
+      } catch (error) {
+        console.log(`❌ error checking: ${path} (${description}) - ${error}`);
+      }
+    }
+
+    console.log('🔍 DEBUG: Firestore paths check completed');
   };
 
   const handleAfterSignUp = async (userCredential: any, phoneNumber?: string) => {
@@ -94,7 +134,10 @@ export default function Signup() {
       }
       
       const authData = await authResponse.json();
-      
+
+      // DEBUG: Check if all required Firestore paths are created
+      await debugFirestorePaths(userCredential.user.uid);
+
       // New users always go to onboarding
       navigate('/onboarding');
     } catch (err: any) {

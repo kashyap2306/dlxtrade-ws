@@ -347,7 +347,7 @@ export async function ensureUser(
 
     // users/{uid}/integrations: create default disabled docs for RESEARCH APIs only
     // Trading exchanges (binance, bitget, bingx, weex) are stored in exchangeConfig/current, NOT in integrations
-    const integrations = ['lunarcrush', 'cryptoquant', 'coinapi_market', 'coinapi_flatfile', 'coinapi_exchangerate'];
+    const integrations = ['binance', 'cryptocompare', 'newsdata', 'coinmarketcap', 'lunarcrush', 'cryptoquant', 'coinapi_market', 'coinapi_flatfile', 'coinapi_exchangerate'];
     for (const apiName of integrations) {
       const ref = userDocRef.collection('integrations').doc(apiName);
       const doc = await ref.get();
@@ -525,6 +525,10 @@ export async function ensureUser(
     const createdDocs = [];
     if (createdNew) {
       createdDocs.push(`users/${uid}`);
+      createdDocs.push(`users/${uid}/integrations/binance`);
+      createdDocs.push(`users/${uid}/integrations/cryptocompare`);
+      createdDocs.push(`users/${uid}/integrations/newsdata`);
+      createdDocs.push(`users/${uid}/integrations/coinmarketcap`);
       createdDocs.push(`users/${uid}/integrations/lunarcrush`);
       createdDocs.push(`users/${uid}/integrations/cryptoquant`);
       createdDocs.push(`users/${uid}/integrations/coinapi_market`);
@@ -542,6 +546,10 @@ export async function ensureUser(
       createdDocs: createdDocs.length > 0 ? createdDocs : undefined,
       requiredDocs: [
         `users/${uid}`,
+        `users/${uid}/integrations/binance`,
+        `users/${uid}/integrations/cryptocompare`,
+        `users/${uid}/integrations/newsdata`,
+        `users/${uid}/integrations/coinmarketcap`,
         `users/${uid}/integrations/lunarcrush`,
         `users/${uid}/integrations/cryptoquant`,
         `users/${uid}/integrations/coinapi_market`,
