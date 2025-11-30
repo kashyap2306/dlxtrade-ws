@@ -47,6 +47,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     origin: "*",
     allowedHeaders: ["Content-Type", "Authorization"],
     methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
+    credentials: true,
   });
 
   // Rate limiting with user-aware keys and local allow list
@@ -255,19 +256,24 @@ export async function buildApp(): Promise<FastifyInstance> {
       logger.debug({ uid }, 'WebSocket connected but user engines not initialized yet');
     }
 
-    connection.socket.on('message', (message) => {
-      const messageStr = message.toString();
-      if (messageStr === "ping" || messageStr.startsWith("ping")) {
-        // Ignore ping messages from frontend heartbeat
+    connection.socket.on('message', (raw) => {
+      const text = raw.toString().trim();
+
+      // Ignore all ping messages immediately
+      if (text === "ping" || text.startsWith("ping")) {
+        connection.socket.send("pong");
         return;
       }
 
+      let data;
       try {
-        const data = JSON.parse(messageStr);
-        logger.debug({ data, uid }, 'WebSocket message received');
-      } catch (err) {
-        logger.error({ err }, 'Error parsing WebSocket message');
+        data = JSON.parse(text);
+      } catch {
+        console.warn("WS: Non-JSON message ignored:", text);
+        return;
       }
+
+      logger.debug({ data, uid }, 'WebSocket message received');
     });
 
     connection.socket.on('close', () => {

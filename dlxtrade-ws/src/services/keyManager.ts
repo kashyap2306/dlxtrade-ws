@@ -34,35 +34,27 @@ export function encrypt(text: string): string {
   return Buffer.concat([salt, iv, tag, encrypted]).toString('base64');
 }
 
-export function decrypt(encryptedText: string): string {
+export function decrypt(cipherText: string): string {
+  if (!cipherText) return "";
+
+  const buf = Buffer.from(cipherText, "base64");
+
+  // Must be at least 17 bytes (16 IV + 1 data)
+  if (buf.length < 17) {
+    throw new Error("Encrypted data is too short");
+  }
+
+  const iv = buf.subarray(0, 16);
+  const payload = buf.subarray(16);
+
   try {
-    const data = Buffer.from(encryptedText, 'base64');
-
-    // Ensure we have enough data for all components
-    if (data.length < ENCRYPTED_POSITION) {
-      throw new Error('Encrypted data is too short');
-    }
-
-    const salt = data.slice(0, SALT_LENGTH);
-    const iv = data.slice(SALT_LENGTH, TAG_POSITION);
-    const tag = data.slice(TAG_POSITION, ENCRYPTED_POSITION);
-    const encrypted = data.slice(ENCRYPTED_POSITION);
-
-    // Validate IV length - must be exactly 16 bytes
-    if (iv.length !== IV_LENGTH) {
-      throw new Error(`Invalid IV length: ${iv.length}, expected ${IV_LENGTH}`);
-    }
-
-    const decipher = crypto.createDecipheriv(ALGORITHM, getEncryptionKey(), iv);
-    decipher.setAuthTag(tag);
-
-    return decipher.update(encrypted) + decipher.final('utf8');
-  } catch (error: any) {
-    // If decryption fails due to invalid IV or other format issues,
-    // this indicates corrupted data. We cannot recover the original value.
-    // Log the error and re-throw to let caller handle it.
-    logger.error({ error: error.message }, 'Decryption failed - data may be corrupted');
-    throw new Error('Failed to decrypt data: ' + error.message);
+    const decipher = crypto.createDecipheriv("aes-256-cbc", getEncryptionKey(), iv);
+    let decrypted = decipher.update(payload, undefined, "utf8");
+    decrypted += decipher.final("utf8");
+    return decrypted;
+  } catch (err) {
+    console.error("Decryption failed:", err);
+    throw new Error("Failed to decrypt data: " + err.message);
   }
 }
 
