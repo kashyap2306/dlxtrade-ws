@@ -8,8 +8,7 @@ import { initializeFirestoreCollections } from './utils/firestoreInitializer';
 import { seedFirestoreData } from './utils/firestoreSeed';
 import { migrateFirestoreDocuments } from './utils/firestoreMigration';
 
-// Force Render to rebuild fresh container
-console.log("🔥 FORCE DEPLOY CHECK:", Date.now());
+// FORCE_DEPLOY_CHECK: 2025-11-30
 
 // Global error handlers to catch all errors and prevent crashes
 process.on('uncaughtException', (error) => {
@@ -213,6 +212,3 @@ async function start() {
 }
 
 start();
-
-/ /   F O R C E   D E P L O Y   1 1 / 3 0 / 2 0 2 5   1 0 : 1 3 : 4 7  
- 
