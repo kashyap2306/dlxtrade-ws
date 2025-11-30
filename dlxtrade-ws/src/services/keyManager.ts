@@ -35,16 +35,35 @@ export function encrypt(text: string): string {
 }
 
 export function decrypt(encryptedText: string): string {
-  const data = Buffer.from(encryptedText, 'base64');
-  const salt = data.slice(0, SALT_LENGTH);
-  const iv = data.slice(SALT_LENGTH, TAG_POSITION);
-  const tag = data.slice(TAG_POSITION, ENCRYPTED_POSITION);
-  const encrypted = data.slice(ENCRYPTED_POSITION);
-  
-  const decipher = crypto.createDecipheriv(ALGORITHM, getEncryptionKey(), iv);
-  decipher.setAuthTag(tag);
-  
-  return decipher.update(encrypted) + decipher.final('utf8');
+  try {
+    const data = Buffer.from(encryptedText, 'base64');
+
+    // Ensure we have enough data for all components
+    if (data.length < ENCRYPTED_POSITION) {
+      throw new Error('Encrypted data is too short');
+    }
+
+    const salt = data.slice(0, SALT_LENGTH);
+    const iv = data.slice(SALT_LENGTH, TAG_POSITION);
+    const tag = data.slice(TAG_POSITION, ENCRYPTED_POSITION);
+    const encrypted = data.slice(ENCRYPTED_POSITION);
+
+    // Validate IV length - must be exactly 16 bytes
+    if (iv.length !== IV_LENGTH) {
+      throw new Error(`Invalid IV length: ${iv.length}, expected ${IV_LENGTH}`);
+    }
+
+    const decipher = crypto.createDecipheriv(ALGORITHM, getEncryptionKey(), iv);
+    decipher.setAuthTag(tag);
+
+    return decipher.update(encrypted) + decipher.final('utf8');
+  } catch (error: any) {
+    // If decryption fails due to invalid IV or other format issues,
+    // this indicates corrupted data. We cannot recover the original value.
+    // Log the error and re-throw to let caller handle it.
+    logger.error({ error: error.message }, 'Decryption failed - data may be corrupted');
+    throw new Error('Failed to decrypt data: ' + error.message);
+  }
 }
 
 export async function listKeys(): Promise<Omit<ApiKey, 'apiKey' | 'apiSecret'>[]> {

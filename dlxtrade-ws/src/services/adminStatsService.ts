@@ -141,7 +141,7 @@ export class AdminStatsService {
       
       // Check research APIs from integrations collection
       const integrations = await firestoreAdapter.getAllIntegrations(uid);
-      const researchApis = ['cryptoquant', 'lunarcrush', 'coinapi_market', 'coinapi_flatfile', 'coinapi_exchangerate'];
+      const researchApis = ['cryptocompare', 'newsdata', 'coinmarketcap'];
       for (const apiName of researchApis) {
         const integration = integrations[apiName];
         if (integration) {

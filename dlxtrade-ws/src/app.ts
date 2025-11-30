@@ -42,24 +42,11 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   // Security
   await app.register(fastifyHelmet);
-  // CORS - allow all origins in development, specific origin in production
+  // CORS configuration
   await app.register(fastifyCors, {
-    origin: (origin, cb) => {
-      const allowed = [
-        'https://dlx-trading.web.app',
-        'https://dlxtrade-ws-1.onrender.com', // Render frontend domain
-        'http://localhost:5173',
-        process.env.FRONTEND_URL || '',
-      ].filter(Boolean);
-      if (!origin || allowed.includes(origin)) {
-        cb(null, true);
-      } else {
-        cb(null, false);
-      }
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-setup'],
+    origin: "*",
+    allowedHeaders: ["Content-Type", "Authorization"],
+    methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
   });
 
   // Rate limiting with user-aware keys and local allow list
@@ -269,8 +256,14 @@ export async function buildApp(): Promise<FastifyInstance> {
     }
 
     connection.socket.on('message', (message) => {
+      const messageStr = message.toString();
+      if (messageStr === "ping" || messageStr.startsWith("ping")) {
+        // Ignore ping messages from frontend heartbeat
+        return;
+      }
+
       try {
-        const data = JSON.parse(message.toString());
+        const data = JSON.parse(messageStr);
         logger.debug({ data, uid }, 'WebSocket message received');
       } catch (err) {
         logger.error({ err }, 'Error parsing WebSocket message');

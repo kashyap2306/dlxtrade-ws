@@ -2,7 +2,9 @@ import axios from 'axios';
 import { getAuth } from 'firebase/auth';
 
 const api = axios.create({
-  baseURL: 'https://dlxtrade-ws-1.onrender.com/api',
+  baseURL: import.meta.env.VITE_API_BASE_URL || 'https://dlxtrade-ws-1.onrender.com',
+  withCredentials: true,
+  timeout: 20000,
   headers: {
     'Content-Type': 'application/json',
   },

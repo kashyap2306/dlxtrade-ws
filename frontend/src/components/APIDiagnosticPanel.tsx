@@ -6,7 +6,7 @@ import { useAuth } from '../hooks/useAuth';
 import { getApiErrorMessage, suppressConsoleError } from '../utils/errorHandler';
 import { ArrowPathIcon, ChevronDownIcon, XMarkIcon } from '@heroicons/react/24/outline';
 
-type APIKey = 'coinapi' | 'cryptoquant' | 'exchange';
+type APIKey = 'cryptocompare' | 'newsdata' | 'coinmarketcap' | 'exchange';
 type ExchangeName = 'binance' | 'bitget' | 'bingx' | 'weex';
 
 interface APIOption {
@@ -19,11 +19,12 @@ interface APIOption {
 }
 
 const API_OPTIONS: APIOption[] = [
-  { key: 'coinapi', name: 'CoinAPI', icon: '🪙' },
-  { key: 'cryptoquant', name: 'CryptoQuant', icon: '📊' },
-  { 
-    key: 'exchange', 
-    name: 'Exchange API', 
+  { key: 'cryptocompare', name: 'CryptoCompare', icon: '📊' },
+  { key: 'newsdata', name: 'NewsData', icon: '📰' },
+  { key: 'coinmarketcap', name: 'CoinMarketCap', icon: '🪙' },
+  {
+    key: 'exchange',
+    name: 'Exchange API',
     icon: '⚡',
     requiresSecret: true,
     requiresPassphrase: true,

@@ -7,8 +7,8 @@ import { logger } from '../utils/logger';
 import * as admin from 'firebase-admin';
 
 const exchangeConfigSchema = z.object({
-  exchange: z.enum(['binance', 'bitget', 'weex', 'bingx', 'cryptoquant', 'lunarcrush', 'coinapi']).optional(),
-  type: z.enum(['binance', 'bitget', 'weex', 'bingx', 'cryptoquant', 'lunarcrush', 'coinapi']).optional(),
+  exchange: z.enum(['binance', 'bitget', 'weex', 'bingx']).optional(),
+  type: z.enum(['binance', 'bitget', 'weex', 'bingx']).optional(),
   apiKey: z.string().min(1),
   secret: z.string().min(1).optional(),
   passphrase: z.string().optional(),

@@ -175,7 +175,7 @@ export class AccuracyEngine {
     const startTime = Date.now();
 
     // Run research with this user's adapter
-    const research = await researchEngine.runResearch(symbol, this.uid, this.adapter);
+    const research = await researchEngine.runResearch(symbol, this.uid);
 
     // Get settings
     const settings = await firestoreAdapter.getSettings(this.uid);

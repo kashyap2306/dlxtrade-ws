@@ -23,12 +23,9 @@ export function useAutoTradeMode(): UseAutoTradeModeReturn {
   const [enabled, setEnabled] = useState(false);
   const [isApiConnected, setIsApiConnected] = useState(false);
   const [integrations, setIntegrations] = useState<any>({
-    cryptoquant: { enabled: false, apiKey: null },
-    coinapi: {
-      market: { enabled: false, apiKey: null },
-      flatfile: { enabled: false, apiKey: null },
-      exchangerate: { enabled: false, apiKey: null },
-    },
+    cryptocompare: { enabled: false, apiKey: null },
+    newsdata: { enabled: false, apiKey: null },
+    coinmarketcap: { enabled: false, apiKey: null },
   });
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -51,12 +48,9 @@ export function useAutoTradeMode(): UseAutoTradeModeReturn {
       const data = response.data || {};
       
       const loaded: any = {
-        cryptoquant: data.cryptoquant || { enabled: false, apiKey: null },
-        coinapi: {
-          market: data.coinapi?.market || { enabled: false, apiKey: null },
-          flatfile: data.coinapi?.flatfile || { enabled: false, apiKey: null },
-          exchangerate: data.coinapi?.exchangerate || { enabled: false, apiKey: null },
-        },
+        cryptocompare: data.cryptocompare || { enabled: false, apiKey: null },
+        newsdata: data.newsdata || { enabled: false, apiKey: null },
+        coinmarketcap: data.coinmarketcap || { enabled: false, apiKey: null },
       };
       
       setIntegrations(loaded);
@@ -67,23 +61,19 @@ export function useAutoTradeMode(): UseAutoTradeModeReturn {
 
   const checkRequiredAPIs = useCallback((): { allConnected: boolean; missing: string[] } => {
     const missing: string[] = [];
-    
-    if (!integrations.cryptoquant || !integrations.cryptoquant.apiKey || !integrations.cryptoquant.enabled) {
-      missing.push('cryptoquant');
+
+    if (!integrations.cryptocompare || !integrations.cryptocompare.apiKey || !integrations.cryptocompare.enabled) {
+      missing.push('cryptocompare');
     }
-    
-    
-    const coinapi = integrations.coinapi as any;
-    if (!coinapi?.market || !coinapi.market.apiKey || !coinapi.market.enabled) {
-      missing.push('coinapi_market');
+
+    if (!integrations.newsdata || !integrations.newsdata.apiKey || !integrations.newsdata.enabled) {
+      missing.push('newsdata');
     }
-    if (!coinapi?.flatfile || !coinapi.flatfile.apiKey || !coinapi.flatfile.enabled) {
-      missing.push('coinapi_flatfile');
+
+    if (!integrations.coinmarketcap || !integrations.coinmarketcap.apiKey || !integrations.coinmarketcap.enabled) {
+      missing.push('coinmarketcap');
     }
-    if (!coinapi?.exchangerate || !coinapi.exchangerate.apiKey || !coinapi.exchangerate.enabled) {
-      missing.push('coinapi_exchangerate');
-    }
-    
+
     return {
       allConnected: missing.length === 0,
       missing,
@@ -117,9 +107,9 @@ export function useAutoTradeMode(): UseAutoTradeModeReturn {
       const { allConnected, missing } = checkRequiredAPIs();
       if (!allConnected) {
         const missingNames = missing.map((m) => {
-          if (m === 'coinapi_market') return 'CoinAPI Market';
-          if (m === 'coinapi_flatfile') return 'CoinAPI Flatfile';
-          if (m === 'coinapi_exchangerate') return 'CoinAPI Exchange Rate';
+          if (m === 'cryptocompare') return 'CryptoCompare';
+          if (m === 'newsdata') return 'NewsData';
+          if (m === 'coinmarketcap') return 'CoinMarketCap';
           return m.charAt(0).toUpperCase() + m.slice(1);
         }).join(', ');
         

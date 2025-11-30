@@ -347,21 +347,21 @@ export async function ensureUser(
 
     // users/{uid}/integrations: create default disabled docs for RESEARCH APIs only
     // Trading exchanges (binance, bitget, bingx, weex) are stored in exchangeConfig/current, NOT in integrations
-    const integrations = ['binance', 'cryptocompare', 'newsdata', 'coinmarketcap', 'lunarcrush', 'cryptoquant', 'coinapi_market', 'coinapi_flatfile', 'coinapi_exchangerate'];
+    const integrations = [
+      "binance",
+      "cryptocompare",
+      "newsdata",
+      "coinmarketcap"
+    ];
     for (const apiName of integrations) {
       const ref = userDocRef.collection('integrations').doc(apiName);
       const doc = await ref.get();
       if (!doc.exists) {
         const integrationData: any = {
           enabled: false,
-          createdAt: now,
-          updatedAt: now,
+          apiKey: "",
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         };
-        
-        // Add apiType only for CoinAPI sub-types
-        if (apiName.startsWith('coinapi_')) {
-          integrationData.apiType = apiName.replace('coinapi_', '');
-        }
         
         await ref.set(integrationData);
         logger.info({ uid, apiName, path: `users/${uid}/integrations/${apiName}` }, `✅ Research integration doc created: users/{uid}/integrations/${apiName}`);
@@ -529,11 +529,6 @@ export async function ensureUser(
       createdDocs.push(`users/${uid}/integrations/cryptocompare`);
       createdDocs.push(`users/${uid}/integrations/newsdata`);
       createdDocs.push(`users/${uid}/integrations/coinmarketcap`);
-      createdDocs.push(`users/${uid}/integrations/lunarcrush`);
-      createdDocs.push(`users/${uid}/integrations/cryptoquant`);
-      createdDocs.push(`users/${uid}/integrations/coinapi_market`);
-      createdDocs.push(`users/${uid}/integrations/coinapi_flatfile`);
-      createdDocs.push(`users/${uid}/integrations/coinapi_exchangerate`);
       createdDocs.push(`users/${uid}/exchangeConfig/current`);
     }
     
@@ -550,11 +545,6 @@ export async function ensureUser(
         `users/${uid}/integrations/cryptocompare`,
         `users/${uid}/integrations/newsdata`,
         `users/${uid}/integrations/coinmarketcap`,
-        `users/${uid}/integrations/lunarcrush`,
-        `users/${uid}/integrations/cryptoquant`,
-        `users/${uid}/integrations/coinapi_market`,
-        `users/${uid}/integrations/coinapi_flatfile`,
-        `users/${uid}/integrations/coinapi_exchangerate`,
         `users/${uid}/exchangeConfig/current`
       ]
     }, '✅ User onboarding completed successfully - all required Firestore documents created/verified');
