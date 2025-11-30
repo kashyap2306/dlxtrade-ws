@@ -55,8 +55,17 @@ const logRequest = (config: InternalAxiosRequestConfig, context: string) => {
 };
 
 const logResponse = (response: AxiosResponse, context: string) => {
+  const duration = response.config.metadata?.startTime
+    ? Date.now() - response.config.metadata.startTime
+    : 0;
+
   if (import.meta.env.DEV) {
-    console.log(`[API ${context}]`, `${response.status} ${response.config.method?.toUpperCase()} ${response.config.url}`);
+    console.log(`[API ${context}]`, `${response.status} ${response.config.method?.toUpperCase()} ${response.config.url} (${duration}ms)`);
+  } else {
+    // In production, log slow requests and errors
+    if (duration > 5000) {
+      console.warn(`[API SLOW] ${response.config.method?.toUpperCase()} ${response.config.url} took ${duration}ms`);
+    }
   }
 };
 

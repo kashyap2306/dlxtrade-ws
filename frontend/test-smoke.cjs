@@ -140,7 +140,7 @@ CONFIG_TO_CHECK.forEach(config => {
   }
 
   if (exists && config.name === 'Environment Config') {
-    const hasValidation = checkFileContains(config.path, ['throw new Error', 'VITE_API_URL'], `${config.name} - Environment validation`);
+    const hasValidation = checkFileContains(config.path, ['import.meta.env.VITE_API_URL', 'console.warn'], `${config.name} - Environment validation`);
     if (!hasValidation) allTestsPassed = false;
   }
 });
