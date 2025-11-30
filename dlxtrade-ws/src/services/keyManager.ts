@@ -4,57 +4,97 @@ import { query } from '../db';
 import { logger } from '../utils/logger';
 import type { ApiKey } from '../types';
 
-const ALGORITHM = 'aes-256-gcm';
+const ALGORITHM = 'aes-256-cbc';
 const IV_LENGTH = 16;
-const SALT_LENGTH = 64;
-const TAG_LENGTH = 16;
-const TAG_POSITION = SALT_LENGTH + IV_LENGTH;
-const ENCRYPTED_POSITION = TAG_POSITION + TAG_LENGTH;
+const KEY_LENGTH = 32;
 
+// Validate and prepare encryption key
 function getEncryptionKey(): Buffer {
-  const key = config.encryption.key;
-  if (key.length < 32) {
-    return crypto.scryptSync(key, 'salt', 32);
+  const keyString = config.encryption.key;
+
+  if (!keyString) {
+    throw new Error('ENCRYPTION_KEY environment variable is not set');
   }
-  return Buffer.from(key.slice(0, 32));
+
+  if (keyString.length < KEY_LENGTH) {
+    throw new Error(`ENCRYPTION_KEY must be at least ${KEY_LENGTH} characters long`);
+  }
+
+  // Take exactly 32 bytes
+  return Buffer.from(keyString.slice(0, KEY_LENGTH), 'utf8');
+}
+
+// Validate and prepare IV
+function getIV(): Buffer {
+  return crypto.randomBytes(IV_LENGTH);
 }
 
 export function encrypt(text: string): string {
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const salt = crypto.randomBytes(SALT_LENGTH);
-  const cipher = crypto.createCipheriv(ALGORITHM, getEncryptionKey(), iv);
-  
-  const encrypted = Buffer.concat([
-    cipher.update(text, 'utf8'),
-    cipher.final(),
-  ]);
-  
-  const tag = cipher.getAuthTag();
-  
-  return Buffer.concat([salt, iv, tag, encrypted]).toString('base64');
+  if (!text) return '';
+
+  try {
+    const key = getEncryptionKey();
+    const iv = getIV();
+    const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+
+    let encrypted = cipher.update(text, 'utf8', 'base64');
+    encrypted += cipher.final('base64');
+
+    // Combine IV and encrypted data: IV (16 bytes) + encrypted (base64)
+    const ivBase64 = iv.toString('base64');
+    return `${ivBase64}:${encrypted}`;
+  } catch (error) {
+    logger.error({ error: (error as Error).message }, 'Encryption failed');
+    throw new Error('Failed to encrypt data');
+  }
 }
 
 export function decrypt(cipherText: string): string {
-  if (!cipherText) return "";
-
-  const buf = Buffer.from(cipherText, "base64");
-
-  // Must be at least 17 bytes (16 IV + 1 data)
-  if (buf.length < 17) {
-    throw new Error("Encrypted data is too short");
-  }
-
-  const iv = buf.subarray(0, 16);
-  const payload = buf.subarray(16);
+  if (!cipherText) return '';
 
   try {
-    const decipher = crypto.createDecipheriv("aes-256-cbc", getEncryptionKey(), iv);
-    let decrypted = decipher.update(payload, undefined, "utf8");
-    decrypted += decipher.final("utf8");
+    const key = getEncryptionKey();
+
+    // Split IV and encrypted data
+    const parts = cipherText.split(':');
+    if (parts.length !== 2) {
+      // Try legacy format (just encrypted data with IV prepended)
+      try {
+        const buf = Buffer.from(cipherText, 'base64');
+        if (buf.length < IV_LENGTH + 1) {
+          logger.warn('Invalid encrypted data format - returning empty');
+          return '';
+        }
+        const iv = buf.subarray(0, IV_LENGTH);
+        const payload = buf.subarray(IV_LENGTH);
+
+        const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+        let decrypted = decipher.update(payload, undefined, 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+      } catch (legacyError) {
+        logger.warn({ error: (legacyError as Error).message }, 'Legacy decryption failed - returning empty');
+        return '';
+      }
+    }
+
+    const [ivBase64, encryptedBase64] = parts;
+    const iv = Buffer.from(ivBase64, 'base64');
+
+    if (iv.length !== IV_LENGTH) {
+      logger.warn('Invalid IV length - returning empty');
+      return '';
+    }
+
+    const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+    let decrypted = decipher.update(encryptedBase64, 'base64', 'utf8');
+    decrypted += decipher.final('utf8');
+
     return decrypted;
-  } catch (err) {
-    console.error("Decryption failed:", err);
-    throw new Error("Failed to decrypt data: " + err.message);
+  } catch (error) {
+    logger.error({ error: (error as Error).message }, 'Decryption failed');
+    // Return empty string instead of throwing to prevent crashes
+    return '';
   }
 }
 

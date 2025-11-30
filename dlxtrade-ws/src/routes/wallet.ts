@@ -57,11 +57,37 @@ export async function walletRoutes(fastify: FastifyInstance) {
       }
 
       // Decrypt credentials (server-side only, never expose)
-      const apiKey = decrypt(exchangeConfig.apiKeyEncrypted);
-      const secret = decrypt(exchangeConfig.secretEncrypted);
-      const passphrase = exchangeConfig.passphraseEncrypted
-        ? decrypt(exchangeConfig.passphraseEncrypted)
-        : undefined;
+      let apiKey: string;
+      let secret: string;
+      let passphrase: string | undefined;
+
+      try {
+        apiKey = decrypt(exchangeConfig.apiKeyEncrypted);
+        secret = decrypt(exchangeConfig.secretEncrypted);
+        passphrase = exchangeConfig.passphraseEncrypted
+          ? decrypt(exchangeConfig.passphraseEncrypted)
+          : undefined;
+
+        // Validate decrypted values
+        if (!apiKey || apiKey.trim() === '') {
+          return reply.code(400).send({
+            error: 'Failed to decrypt API key',
+            connected: false,
+          });
+        }
+        if (!secret || secret.trim() === '') {
+          return reply.code(400).send({
+            error: 'Failed to decrypt API secret',
+            connected: false,
+          });
+        }
+      } catch (decryptErr: any) {
+        logger.error({ uid: user.uid, exchange, error: decryptErr.message }, 'Failed to decrypt wallet credentials');
+        return reply.code(500).send({
+          error: 'Failed to decrypt credentials',
+          connected: false,
+        });
+      }
       const testnet = exchangeConfig.testnet ?? true;
 
       // Log metadata only (no keys)

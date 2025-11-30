@@ -42,7 +42,7 @@ export const config = {
   },
   
   encryption: {
-    algorithm: 'aes-256-gcm',
+    algorithm: 'aes-256-cbc',
     key: process.env.ENCRYPTION_KEY || process.env.JWT_SECRET || 'change_me_encryption_key_32_chars!!',
   },
   
