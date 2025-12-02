@@ -47,46 +47,43 @@ export default function Dashboard() {
   const [portfolioHistory, setPortfolioHistory] = useState<any[]>([]);
 
   // Throttle data updates to prevent excessive re-renders
-  const throttledDashboardData = useThrottle(dashboardData, 500, [dashboardData]);
-  const throttledAutoTradeStatus = useThrottle(autoTradeStatus, 500, [autoTradeStatus]);
-  const throttledUserStats = useThrottle(userStats, 500, [userStats]);
+  const throttledDashboardData = useThrottle(dashboardData, 500);
+  const throttledAutoTradeStatus = useThrottle(autoTradeStatus, 500);
+  const throttledUserStats = useThrottle(userStats, 500);
 
   // Lazy load triggers for heavy components
   const { ref: marketScannerRef, hasIntersected: marketScannerVisible } = useLazyLoad(0.1);
 
   const loadDashboardData = useCallback(async () => {
-    if (!user || !isMountedRef.current || hasLoaded) return;
+    if (!user || !isMountedRef.current || hasLoaded || loading) return;
     console.log('loadDashboardData called for user:', user?.uid);
 
-    // Prevent multiple concurrent loads
-    if (loading) return;
     setLoading(true);
 
     try {
-      // Load multiple dashboard APIs in parallel with safe fallbacks
-      const [globalStatsRes, engineStatusRes, agentsUnlockedRes, settingsRes, notificationsRes] = await Promise.all([
-        globalStatsApi.get(),
-        engineStatusApi.get(),
-        agentsApi.getUnlocked(),
-        settingsApi.load(),
-        notificationsApi.get({ limit: 20 })
+      // Load multiple dashboard APIs in parallel with individual error handling
+      const results = await Promise.allSettled([
+        globalStatsApi.get().catch(err => ({ error: err, data: {} })),
+        engineStatusApi.get().catch(err => ({ error: err, data: {} })),
+        agentsApi.getUnlocked().catch(err => ({ error: err, data: { unlocked: [] } })),
+        settingsApi.load().catch(err => ({ error: err, data: {} })),
+        notificationsApi.get({ limit: 20 }).catch(err => ({ error: err, data: [] }))
       ]);
 
-      console.log('Dashboard API responses:', {
-        globalStats: globalStatsRes?.data,
-        engineStatus: engineStatusRes?.data,
-        agentsUnlocked: agentsUnlockedRes?.data,
-        settings: settingsRes?.data,
-        notifications: notificationsRes?.data
-      });
+      console.log('Dashboard API results:', results.map((result, index) => ({
+        api: ['globalStats', 'engineStatus', 'agentsUnlocked', 'settings', 'notifications'][index],
+        status: result.status,
+        data: result.status === 'fulfilled' ? result.value?.data : result.reason?.data || {},
+        error: result.status === 'rejected' ? result.reason : null
+      })));
 
-      // Safe data extraction with fallbacks
+      // Extract data with safe fallbacks
       const dashboardData = {
-        globalStats: globalStatsRes?.data || {},
-        engineStatus: engineStatusRes?.data || {},
-        agentsUnlocked: agentsUnlockedRes?.data?.unlocked || [],
-        settings: settingsRes?.data || {},
-        notifications: notificationsRes?.data || []
+        globalStats: results[0].status === 'fulfilled' ? results[0].value?.data || {} : {},
+        engineStatus: results[1].status === 'fulfilled' ? results[1].value?.data || {} : {},
+        agentsUnlocked: results[2].status === 'fulfilled' ? results[2].value?.data?.unlocked || [] : [],
+        settings: results[3].status === 'fulfilled' ? results[3].value?.data || {} : {},
+        notifications: results[4].status === 'fulfilled' ? results[4].value?.data || [] : []
       };
 
       if (isMountedRef.current) {
@@ -131,7 +128,7 @@ export default function Dashboard() {
         setPortfolioHistory([]);
       }
     }
-  }, [user, loading, hasLoaded]);
+  }, [user]);
 
   // Legacy functions for backward compatibility (will be removed)
   const loadAutoTradeStatus = useCallback(async () => {
@@ -273,7 +270,7 @@ export default function Dashboard() {
   }, [autoTradeStatus, userStats]);
 
   const loadData = useCallback(async () => {
-    if (!user || !isMountedRef.current) return;
+    if (!user || !isMountedRef.current || hasLoaded || loading) return;
 
     setLoading(true);
     setError(null);
@@ -296,17 +293,47 @@ export default function Dashboard() {
         setLoading(false);
       }
     }
-  }, [user, loadAutoTradeStatus, loadUserStats, loadActiveTrades, loadAISignals, loadPerformanceStats, loadPortfolioHistory]);
+  }, [user, hasLoaded, loading, loadDashboardData]);
 
-  // Initial data load
+  // Initial data load - prevent multiple calls
   useEffect(() => {
-    if (user) {
+    if (user && !hasLoaded && !loading) {
       loadData();
     }
-  }, [user, loadData]);
+  }, [user, hasLoaded, loading, loadData]);
+
+  // Force load after 10 seconds if still loading (fallback for slow APIs)
+  useEffect(() => {
+    if (loading && !hasLoaded) {
+      const timeout = setTimeout(() => {
+        console.log('[Dashboard] Forcing load completion after timeout');
+        if (isMountedRef.current) {
+          setLoading(false);
+          setHasLoaded(true);
+          setDashboardData({
+            globalStats: {},
+            engineStatus: {},
+            agentsUnlocked: [],
+            settings: {},
+            notifications: []
+          });
+          setAutoTradeStatus({});
+          setUserStats({});
+          setWalletBalances([]);
+          setActiveTrades([]);
+          setAiSignals([]);
+          setPerformanceStats({});
+          setPortfolioHistory([]);
+        }
+      }, 10000); // 10 second timeout
+
+      return () => clearTimeout(timeout);
+    }
+  }, [loading, hasLoaded]);
 
   // Use centralized polling with visibility detection (reduced frequency)
-  usePolling(loadData, 120000, !!user && !loading); // 2 minutes instead of 1
+  // Only poll if data is loaded and not currently loading
+  usePolling(loadData, 120000, !!user && hasLoaded && !loading); // 2 minutes instead of 1
 
   useEffect(() => {
     if (autoTradeStatus && userStats) {
@@ -395,7 +422,8 @@ export default function Dashboard() {
   }
 
   // Show data not available state if no data and not loading/error
-  if (!loading && !error && (!dashboardData || Object.keys(dashboardData || {}).length === 0)) {
+  // Only show this if we haven't loaded yet AND there's no dashboardData at all
+  if (!loading && !error && !hasLoaded && (!dashboardData || Object.keys(dashboardData || {}).length === 0)) {
     return (
       <ErrorBoundary>
         <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 relative overflow-hidden">
@@ -890,10 +918,11 @@ export default function Dashboard() {
           {/* Auto-Trade Mode Section */}
           <div className="mb-8">
             <Suspense fallback={
-              <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-2xl p-8 animate-pulse">
+              <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-2xl p-8">
                 <div className="h-8 bg-slate-700/50 rounded-lg mb-4 w-1/3"></div>
                 <div className="h-4 bg-slate-700/50 rounded w-2/3 mb-6"></div>
                 <div className="h-12 bg-slate-700/50 rounded-xl w-full"></div>
+                <div className="text-slate-400 text-sm mt-4">Loading Auto-Trade Mode...</div>
               </div>
             }>
               <AutoTradeMode onStatusChange={handleAutoTradeStatusChange} />

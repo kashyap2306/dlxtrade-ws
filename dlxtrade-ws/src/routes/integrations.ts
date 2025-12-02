@@ -55,7 +55,8 @@ export async function getUserIntegrations(uid: string) {
         } else if (apiName === 'bitget' && integration.apiKey && integration.secretKey) {
           result.bitget.apiKey = decrypt(integration.apiKey) || '';
           result.bitget.secret = decrypt(integration.secretKey) || '';
-          result.bitget.passphrase = integration.passphrase ? decrypt(integration.passphrase) || '' : '';
+          // Note: passphrase is stored in exchangeConfig, not integrations
+          result.bitget.passphrase = '';
         } else if (apiName === 'bingx' && integration.apiKey && integration.secretKey) {
           result.bingx.apiKey = decrypt(integration.apiKey) || '';
           result.bingx.secret = decrypt(integration.secretKey) || '';
@@ -701,8 +702,10 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
 
         try {
           // Import and validate CoinGecko API
-          const { fetchCoinGeckoMarketData } = await import('../services/coinGeckoAdapter');
-          const coinGeckoData = await fetchCoinGeckoMarketData('bitcoin', body.apiKey);
+          // TODO: Fix CoinGecko adapter module resolution issue
+          // const { fetchCoinGeckoMarketData } = await import('../services/coinGeckoAdapter');
+          // const coinGeckoData = await fetchCoinGeckoMarketData('bitcoin', body.apiKey);
+          throw new Error('CoinGecko adapter temporarily disabled due to module resolution issue');
 
           return {
             valid: true,

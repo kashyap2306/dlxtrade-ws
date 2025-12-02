@@ -27,7 +27,7 @@ export function useThrottle<T>(value: T, delay: number): T {
 export function useLazyLoad(threshold = 0.1) {
   const [isIntersecting, setIsIntersecting] = useState(false);
   const [hasIntersected, setHasIntersected] = useState(false);
-  const ref = useRef<HTMLElement>(null);
+  const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const element = ref.current;

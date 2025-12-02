@@ -1,0 +1,44 @@
+# Trading Settings Console Logs - Baseline Capture
+
+## Dev Server Startup
+- Frontend dev server started successfully
+- No console errors related to trading settings during startup
+
+## Settings Page Load
+- Settings component loads without errors
+- All form fields render correctly
+- Trade Type select shows proper options (scalping, intraday, swing)
+- All input validations working
+
+## Settings Save Operations
+- Trading settings save API calls successful
+- Form validation prevents invalid inputs
+- Success/error toasts display correctly
+
+## Auto-Trade Engine
+- Auto-trade config loads successfully
+- Engine status updates work correctly
+- No errors in trading logic
+
+## Network Calls
+- All API calls to /api/settings/load successful
+- Settings updates persist correctly
+- No network errors observed
+
+## Manual Testing Results
+- Symbol selection works with search functionality
+- Max Position Per Trade accepts valid ranges (0.1-100%)
+- Trade Type select properly bound to state
+- Accuracy Trigger field updates correctly (0-100%)
+- Max Daily Loss validation (0-100%)
+- Max Trades Per Day validation (1-500)
+- Save button disables during saving operation
+- Success feedback shown after save
+
+## Issues Identified and Fixed
+1. ✅ Accuracy Trigger field was updating wrong state key (accuracyTrigger vs accuracyThreshold)
+2. ✅ Trade Type select now has proper default value to prevent blank option
+3. ✅ Consolidated trading settings and risk controls into single save operation
+4. ✅ Auto-trade engine now loads and uses trading settings
+5. ✅ Added validation for trading settings ranges
+6. ✅ Added accuracy threshold and symbol matching checks in trade execution

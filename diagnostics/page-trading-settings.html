@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Settings - DLX Trade</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; background: #0f172a; color: #e2e8f0; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .section { background: rgba(255,255,255,0.05); border-radius: 12px; padding: 24px; margin-bottom: 24px; border: 1px solid rgba(255,255,255,0.1); }
+        .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+        .form-group { display: flex; flex-direction: column; gap: 8px; }
+        .label { font-size: 14px; font-weight: 500; color: #cbd5e1; }
+        .input, .select { padding: 8px 12px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; color: white; }
+        .input:focus, .select:focus { outline: none; ring: 2px solid #8b5cf6; }
+        .help-text { font-size: 12px; color: #94a3b8; }
+        .save-btn { padding: 12px 24px; background: linear-gradient(to right, #8b5cf6, #ec4899); color: white; border: none; border-radius: 8px; font-weight: 500; cursor: pointer; }
+        .save-btn:hover { opacity: 0.9; }
+        .save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="section">
+            <div style="margin-bottom: 24px;">
+                <h2 style="font-size: 20px; font-weight: 600; color: white; margin-bottom: 8px;">Trading Settings</h2>
+                <p style="font-size: 14px; color: #94a3b8;">Configure your core trading parameters and risk controls</p>
+            </div>
+
+            <div class="form-grid">
+                <div class="form-group">
+                    <label class="label">Symbol</label>
+                    <div style="position: relative;">
+                        <input type="text" class="input" value="BTCUSDT" placeholder="Search symbols...">
+                    </div>
+                    <div class="help-text">Trading pair for analysis and execution</div>
+                </div>
+
+                <div class="form-group">
+                    <label class="label">Max Position Per Trade (%)</label>
+                    <input type="number" class="input" value="10" step="0.1" min="0.1" max="100">
+                    <div class="help-text">% of portfolio allocated per trade</div>
+                </div>
+
+                <div class="form-group">
+                    <label class="label">Trade Type</label>
+                    <select class="select" value="scalping">
+                        <option value="scalping">Scalping</option>
+                        <option value="intraday">Intraday</option>
+                        <option value="swing">Swing</option>
+                    </select>
+                    <div class="help-text">Trading timeframe and strategy</div>
+                </div>
+
+                <div class="form-group">
+                    <label class="label">Accuracy Trigger (%)</label>
+                    <input type="number" class="input" value="85" min="0" max="100" step="1">
+                    <div class="help-text">Minimum accuracy to trigger trades</div>
+                </div>
+
+                <div class="form-group">
+                    <label class="label">Max Daily Loss (%)</label>
+                    <input type="number" class="input" value="5" step="0.1" min="0" max="100">
+                    <div class="help-text">Engine pauses if daily loss exceeds this %</div>
+                </div>
+
+                <div class="form-group">
+                    <label class="label">Max Trades Per Day</label>
+                    <input type="number" class="input" value="50" min="1" max="500">
+                    <div class="help-text">Maximum trades allowed per day</div>
+                </div>
+            </div>
+
+            <div style="margin-top: 24px; display: flex; justify-content: flex-end;">
+                <button class="save-btn">Save Trading Settings</button>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

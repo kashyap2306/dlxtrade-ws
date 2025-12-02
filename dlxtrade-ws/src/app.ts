@@ -35,6 +35,8 @@ import { diagnosticsRoutes } from './routes/diagnostics';
 import { chatbotRoutes } from './routes/chatbot';
 import { walletRoutes } from './routes/wallet';
 import { marketRoutes } from './routes/market';
+import { telegramRoutes } from './routes/telegram';
+import { backgroundResearchRoutes } from './routes/backgroundResearch';
 
 // Environment checks
 console.log("ENV: VITE_API_URL set?", !!process.env.VITE_API_URL);
@@ -120,6 +122,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(chatbotRoutes, { prefix: '/api' });
   await app.register(walletRoutes, { prefix: '/api/wallet' });
   await app.register(marketRoutes, { prefix: '/api/market' });
+  await app.register(telegramRoutes, { prefix: '/api/telegram' });
+  await app.register(backgroundResearchRoutes, { prefix: '/api/background-research' });
 
   console.log('✅ All routes registered:');
   console.log('  - /api/auth/*');
