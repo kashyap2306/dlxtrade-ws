@@ -245,10 +245,11 @@ console.log("[RENDER ENV] Build timestamp:", Date.now());
     }
 
     // Register WebSocket to user's engines if they exist (don't let failures block research)
+    let hftEngine: any = null;
     try {
       const { userEngineManager } = await import('./services/userEngineManager');
       const accuracyEngine = userEngineManager.getAccuracyEngine(uid!);
-      const hftEngine = userEngineManager.getHFTEngine(uid!);
+      hftEngine = userEngineManager.getHFTEngine(uid!);
 
       if (uid && accuracyEngine) {
         accuracyEngine.registerWebSocketClient(connection.socket);
