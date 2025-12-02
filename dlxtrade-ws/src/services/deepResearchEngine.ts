@@ -59,25 +59,25 @@ export interface FreeModeDeepResearchResult {
     sentiment: 'bullish' | 'bearish' | 'neutral';
   }>;
   raw: {
-    binance: any;
+    marketData: any;
     cryptocompare: any;
-    cmc: any;
+    metadata: any;
     news: any;
   };
   providers: {
-    binance: {
+    marketData: {
+      success: boolean;
+      latency: number;
+      data?: any;
+      error?: string;
+    };
+    metadata: {
       success: boolean;
       latency: number;
       data?: any;
       error?: string;
     };
     cryptocompare: {
-      success: boolean;
-      latency: number;
-      data?: any;
-      error?: string;
-    };
-    cmc: {
       success: boolean;
       latency: number;
       data?: any;
@@ -151,6 +151,9 @@ export interface ProviderConfirmation {
 
 
 export class DeepResearchEngine {
+  constructor() {
+    console.log("[DR ENGINE LOADED] Version X.Y - Deep Research Provider Fixes");
+  }
 
   /**
    * Get CryptoCompare OHLC data for indicator calculation when Binance fails
@@ -597,17 +600,17 @@ export class DeepResearchEngine {
     // Skip Firebase integration fetching for provided integrations
 
     // Execute all providers with backup logic
-    const [binanceResult, ccResult, cmcResult, newsResult] = await Promise.all([
-      this.executeBinanceProvider(symbol, providerConfigs.binance, userIntegrations),
-      this.executeCryptoCompareProvider(symbol, providerConfigs.cryptocompare, userIntegrations),
-      this.executeCMCProvider(symbol, providerConfigs.cmc, userIntegrations),
-      this.executeNewsProvider(symbol, providerConfigs.news, userIntegrations)
+    const [marketDataResult, ccResult, cmcResult, newsResult] = await Promise.all([
+      this.executeMarketDataProvider(symbol, providerConfigs?.binance || { primary: 'cryptocompare', backups: [] }, userIntegrations),
+      this.executeCryptoCompareProvider(symbol, providerConfigs?.cryptocompare || { primary: 'cryptocompare', backups: [] }, userIntegrations),
+      this.executeCMCProvider(symbol, providerConfigs?.cmc || { primary: 'coingecko', backups: [] }, userIntegrations),
+      this.executeNewsProvider(symbol, providerConfigs?.news || { primary: 'newsdata', backups: [] }, userIntegrations)
     ]);
 
     // Combine results using FREE MODE logic v1.5
     const result = await this.combineFreeModeResults(
       symbol,
-      binanceResult,
+      marketDataResult,
       ccResult,
       cmcResult,
       newsResult
@@ -620,7 +623,7 @@ export class DeepResearchEngine {
       accuracy: result.accuracy,
       durationMs: Date.now() - startTime,
       providers: {
-        binance: binanceResult.success ? binanceResult.provider : 'failed',
+        marketData: marketDataResult.success ? marketDataResult.provider : 'failed',
         cryptocompare: ccResult.success ? ccResult.provider : 'failed',
         cmc: cmcResult.success ? cmcResult.provider : 'failed',
         news: newsResult.success ? newsResult.provider : 'failed'
@@ -631,51 +634,79 @@ export class DeepResearchEngine {
   }
 
   /**
-   * Execute Binance provider with backups (Bybit, OKX, KuCoin)
+   * Execute Market Data provider with backups (CryptoCompare, CoinGecko, KuCoin, Bybit, OKX, Bitget)
    */
-  private async executeBinanceProvider(
+  private async executeMarketDataProvider(
     symbol: string,
     config: ProviderBackupConfig,
     integrations: any
   ): Promise<FreeModeProviderResult> {
-    console.log('🔄 EXECUTE BINANCE PROVIDER: Called for symbol', symbol);
-    return this.executeProviderWithBackups(
-      config,
-      async (provider: string) => {
-        console.log('🔄 BINANCE EXECUTE FN: Called for provider', provider);
-        const startTime = Date.now();
+    console.log('🔄 EXECUTE MARKET DATA PROVIDER: Called for symbol', symbol);
 
-        try {
-          switch (provider) {
-            case 'binance':
-              console.log('🔄 BINANCE CASE: About to call fetchBinancePublicData');
-              return await this.fetchBinancePublicData(symbol, integrations);
+    // Direct failover chain - try each provider in order
+    const providers = ['cryptocompare', 'coingecko', 'kucoin', 'bybit', 'okx', 'bitget'];
 
-            case 'bybit':
-              return await this.fetchBybitPublicData(symbol);
+    for (const provider of providers) {
+      const startTime = Date.now();
+      try {
+        console.log(`🔄 MARKET DATA: Trying ${provider} for ${symbol}`);
+        const result = await this.fetchMarketDataFromProvider(provider, symbol, integrations);
 
-            case 'okx':
-              return await this.fetchOKXPublicData(symbol);
-
-            case 'kucoin':
-              return await this.fetchKuCoinPublicData(symbol);
-
-            default:
-              throw new Error(`Unknown Binance backup provider: ${provider}`);
-          }
-        } catch (error: any) {
-          return {
-            success: false,
-            data: null,
-            latencyMs: Date.now() - startTime,
-            provider,
-            error: error.message
-          };
+        if (result.success) {
+          console.log(`✅ MARKET DATA: ${provider} succeeded in ${Date.now() - startTime}ms`);
+          result.latencyMs = Date.now() - startTime;
+          return result;
+        } else {
+          console.log(`⚠️ MARKET DATA: ${provider} returned success=false: ${result.error}`);
         }
-      },
-      'Binance',
-      integrations
-    );
+      } catch (error: any) {
+        console.error(`❌ MARKET DATA: ${provider} failed:`, error.message);
+      }
+    }
+
+    // All providers failed
+    return {
+      success: false,
+      data: null,
+      latencyMs: Date.now() - Date.now(), // Will be 0 since all failed instantly
+      provider: 'none',
+      error: 'All market data providers failed'
+    };
+  }
+
+  /**
+   * Fetch market data from a specific provider
+   */
+  private async fetchMarketDataFromProvider(
+    provider: string,
+    symbol: string,
+    integrations: any
+  ): Promise<FreeModeProviderResult> {
+    const baseSymbol = symbol.replace('USDT', '').replace('USD', '');
+    const usdtSymbol = `${baseSymbol}USDT`;
+
+    switch (provider) {
+      case 'cryptocompare':
+        return await this.fetchCryptoCompareMarketData(baseSymbol, integrations);
+
+      case 'coingecko':
+        return await this.fetchCoinGeckoMarketData(baseSymbol);
+
+      case 'kucoin':
+        return await this.fetchKuCoinMarketData(usdtSymbol);
+
+      case 'bybit':
+        return await this.fetchBybitMarketData(usdtSymbol);
+
+      case 'okx':
+        return await this.fetchOKXMarketData(usdtSymbol);
+
+      case 'bitget':
+        return await this.fetchBitgetMarketData(usdtSymbol);
+
+      default:
+        throw new Error(`Unknown market data provider: ${provider}`);
+    }
   }
 
   /**
@@ -721,84 +752,131 @@ export class DeepResearchEngine {
   }
 
   /**
-   * Execute CoinMarketCap provider with backup (CoinGecko)
+   * Execute Metadata provider with backups (CoinGecko, CoinPaprika)
    */
   private async executeCMCProvider(
     symbol: string,
     config: ProviderBackupConfig,
     integrations: any
   ): Promise<FreeModeProviderResult> {
-    return this.executeProviderWithBackups(
-      config,
-      async (provider: string) => {
-        const startTime = Date.now();
+    console.log('🔄 EXECUTE METADATA PROVIDER: Called for symbol', symbol);
 
-        try {
-          switch (provider) {
-            case 'coinmarketcap':
-              return await this.fetchCoinMarketCapFreeMetadata(symbol, integrations);
+    // Direct failover chain - try each provider in order
+    const providers = ['coingecko', 'coinpaprika'];
 
-            case 'coingecko':
-              return await this.fetchCoinGeckoMetadata(symbol);
+    for (const provider of providers) {
+      const startTime = Date.now();
+      try {
+        console.log(`🔄 METADATA: Trying ${provider} for ${symbol}`);
+        const result = await this.fetchMetadataFromProvider(provider, symbol, integrations);
 
-            default:
-              throw new Error(`Unknown CMC backup provider: ${provider}`);
-          }
-        } catch (error: any) {
-          return {
-            success: false,
-            data: null,
-            latencyMs: Date.now() - startTime,
-            provider,
-            error: error.message
-          };
+        if (result.success) {
+          console.log(`✅ METADATA: ${provider} succeeded in ${Date.now() - startTime}ms`);
+          result.latencyMs = Date.now() - startTime;
+          return result;
+        } else {
+          console.log(`⚠️ METADATA: ${provider} returned success=false: ${result.error}`);
         }
-      },
-      'CMC',
-      integrations
-    );
+      } catch (error: any) {
+        console.error(`❌ METADATA: ${provider} failed:`, error.message);
+      }
+    }
+
+    // All providers failed
+    return {
+      success: false,
+      data: null,
+      latencyMs: Date.now() - Date.now(), // Will be 0 since all failed instantly
+      provider: 'none',
+      error: 'All metadata providers failed'
+    };
   }
 
   /**
-   * Execute News provider with backups (CryptoPanic, Reddit)
+   * Fetch metadata from a specific provider
+   */
+  private async fetchMetadataFromProvider(
+    provider: string,
+    symbol: string,
+    integrations: any
+  ): Promise<FreeModeProviderResult> {
+    switch (provider) {
+      case 'coingecko':
+        return await this.fetchCoinGeckoMetadata(symbol);
+
+      case 'coinpaprika':
+        return await this.fetchCoinPaprikaMetadata(symbol);
+
+      default:
+        throw new Error(`Unknown metadata provider: ${provider}`);
+    }
+  }
+
+  /**
+   * Execute News provider with backups (NewsData, CryptoPanic, Reddit, GNews)
    */
   private async executeNewsProvider(
     symbol: string,
     config: ProviderBackupConfig,
     integrations: any
   ): Promise<FreeModeProviderResult> {
-    return this.executeProviderWithBackups(
-      config,
-      async (provider: string) => {
-        const startTime = Date.now();
+    console.log('🔄 EXECUTE NEWS PROVIDER: Called for symbol', symbol);
 
-        try {
-          switch (provider) {
-            case 'newsdata':
-              return await this.fetchNewsDataFree(symbol, integrations);
+    // Direct failover chain - try each provider in order
+    const providers = ['newsdata', 'cryptopanic', 'reddit', 'gnews'];
 
-            case 'cryptopanic':
-              return await this.fetchCryptoPanicFree(symbol);
+    for (const provider of providers) {
+      const startTime = Date.now();
+      try {
+        console.log(`🔄 NEWS: Trying ${provider} for ${symbol}`);
+        const result = await this.fetchNewsFromProvider(provider, symbol, integrations);
 
-            case 'reddit':
-              return await this.fetchRedditNews(symbol);
-
-            default:
-              throw new Error(`Unknown News backup provider: ${provider}`);
-          }
-        } catch (error: any) {
-          return {
-            success: false,
-            data: null,
-            latencyMs: Date.now() - startTime,
-            provider,
-            error: error.message
-          };
+        if (result.success) {
+          console.log(`✅ NEWS: ${provider} succeeded in ${Date.now() - startTime}ms`);
+          result.latencyMs = Date.now() - startTime;
+          return result;
+        } else {
+          console.log(`⚠️ NEWS: ${provider} returned success=false: ${result.error}`);
         }
-      },
-      'News',
-      integrations
-    );
+      } catch (error: any) {
+        console.error(`❌ NEWS: ${provider} failed:`, error.message);
+      }
+    }
+
+    // All providers failed
+    return {
+      success: false,
+      data: null,
+      latencyMs: Date.now() - Date.now(), // Will be 0 since all failed instantly
+      provider: 'none',
+      error: 'All news providers failed'
+    };
+  }
+
+  /**
+   * Fetch news from a specific provider
+   */
+  private async fetchNewsFromProvider(
+    provider: string,
+    symbol: string,
+    integrations: any
+  ): Promise<FreeModeProviderResult> {
+    switch (provider) {
+      case 'newsdata':
+        return await this.fetchNewsDataFree(symbol, integrations);
+
+      case 'cryptopanic':
+        return await this.fetchCryptoPanicFree(symbol, integrations);
+
+      case 'reddit':
+        return await this.fetchRedditNews(symbol);
+
+      case 'gnews':
+        return await this.fetchGNews(symbol);
+
+      default:
+        throw new Error(`Unknown news provider: ${provider}`);
+    }
   }
 
   /**
@@ -1229,17 +1307,31 @@ export class DeepResearchEngine {
    * Fetch CoinGecko Metadata (Backup for CMC)
    */
   private async fetchCoinGeckoMetadata(symbol: string): Promise<FreeModeProviderResult> {
-    const startTime = Date.now();
-
     try {
-      const baseSymbol = symbol.toLowerCase().replace('usdt', '').replace('usd', '');
+      // Convert symbol to CoinGecko ID mapping
+      const coingeckoIds: { [key: string]: string } = {
+        'BTC': 'bitcoin',
+        'ETH': 'ethereum',
+        'BNB': 'binancecoin',
+        'ADA': 'cardano',
+        'SOL': 'solana',
+        'XRP': 'ripple',
+        'DOT': 'polkadot',
+        'DOGE': 'dogecoin',
+        'AVAX': 'avalanche-2',
+        'LTC': 'litecoin'
+      };
 
-      const response = await fetch(`https://api.coingecko.com/api/v3/coins/${baseSymbol}`);
+      const coingeckoId = coingeckoIds[symbol] || symbol.toLowerCase();
+
+      console.log("[HTTP-REQ]", "CoinGecko", `https://api.coingecko.com/api/v3/coins/${coingeckoId}`);
+      const response = await fetch(`https://api.coingecko.com/api/v3/coins/${coingeckoId}`);
 
       if (!response.ok) {
         throw new Error(`CoinGecko API error: ${response.status}`);
       }
 
+      console.log("[HTTP-RES]", "CoinGecko", `https://api.coingecko.com/api/v3/coins/${coingeckoId}`, "status", response.status);
       const data = await response.json();
 
       return {
@@ -1254,19 +1346,74 @@ export class DeepResearchEngine {
             circulating: data.market_data?.circulating_supply || 0,
             total: data.market_data?.total_supply || 0
           },
-          description: data.description?.en || ''
+          description: data.description?.en || '',
+          logo: data.image?.large || '',
+          market_cap: data.market_data?.market_cap?.usd || 0,
+          links: data.links || {}
         },
-        latencyMs: Date.now() - startTime,
+        latencyMs: 0,
         provider: 'coingecko'
       };
     } catch (error: any) {
-      return {
-        success: false,
-        data: null,
-        latencyMs: Date.now() - startTime,
-        provider: 'coingecko',
-        error: error.message
+      console.error("[HTTP-ERR]", "CoinGecko", `https://api.coingecko.com/api/v3/coins/${symbol}`, error.message, error.stack);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch CoinPaprika Metadata (Backup)
+   */
+  private async fetchCoinPaprikaMetadata(symbol: string): Promise<FreeModeProviderResult> {
+    try {
+      // Convert symbol to CoinPaprika ID mapping (simplified)
+      const paprikaIds: { [key: string]: string } = {
+        'BTC': 'btc-bitcoin',
+        'ETH': 'eth-ethereum',
+        'BNB': 'bnb-binance-coin',
+        'ADA': 'ada-cardano',
+        'SOL': 'sol-solana',
+        'XRP': 'xrp-xrp',
+        'DOT': 'dot-polkadot',
+        'DOGE': 'doge-dogecoin',
+        'AVAX': 'avax-avalanche',
+        'LTC': 'ltc-litecoin'
       };
+
+      const paprikaId = paprikaIds[symbol] || `${symbol.toLowerCase()}-${symbol.toLowerCase()}`;
+
+      console.log("[HTTP-REQ]", "CoinPaprika", `https://api.coinpaprika.com/v1/coins/${paprikaId}`);
+      const response = await fetch(`https://api.coinpaprika.com/v1/coins/${paprikaId}`);
+
+      if (!response.ok) {
+        throw new Error(`CoinPaprika API error: ${response.status}`);
+      }
+
+      console.log("[HTTP-RES]", "CoinPaprika", `https://api.coinpaprika.com/v1/coins/${paprikaId}`, "status", response.status);
+      const data = await response.json();
+
+      return {
+        success: true,
+        data: {
+          name: data.name || '',
+          symbol: data.symbol || '',
+          category: data.type || '',
+          tags: data.tags || [],
+          rank: data.rank || 0,
+          supply: {
+            circulating: 0, // CoinPaprika doesn't provide this in basic endpoint
+            total: 0
+          },
+          description: data.description || '',
+          logo: data.logo || '',
+          market_cap: 0,
+          links: data.links || {}
+        },
+        latencyMs: 0,
+        provider: 'coinpaprika'
+      };
+    } catch (error: any) {
+      console.error("[HTTP-ERR]", "CoinPaprika", `https://api.coinpaprika.com/v1/coins/${symbol}`, error.message, error.stack);
+      throw error;
     }
   }
 
@@ -1293,7 +1440,7 @@ export class DeepResearchEngine {
         source: article.source || '',
         url: article.url || '',
         published_at: article.published_at || new Date().toISOString(),
-        sentiment: this.analyzeNewsSentiment(article.title + ' ' + (article.description || ''))
+        sentiment: this.calculateUnifiedSentiment(article.title + ' ' + (article.description || ''))
       }));
 
       return {
@@ -1326,17 +1473,19 @@ export class DeepResearchEngine {
   /**
    * Fetch CryptoPanic FREE News (Backup for NewsData)
    */
-  private async fetchCryptoPanicFree(symbol: string): Promise<FreeModeProviderResult> {
-    const startTime = Date.now();
-
+  private async fetchCryptoPanicFree(symbol: string, integrations: any): Promise<FreeModeProviderResult> {
     try {
       const baseSymbol = symbol.toLowerCase().replace('usdt', '').replace('usd', '');
-      const response = await fetch(`https://cryptopanic.com/api/v3/posts/?auth_token=free&currencies=${baseSymbol}&kind=news`);
+      const authToken = integrations?.cryptopanic?.apiKey || 'free';
+
+      console.log("[HTTP-REQ]", "CryptoPanic", `https://cryptopanic.com/api/v3/posts/`);
+      const response = await fetch(`https://cryptopanic.com/api/v3/posts/?auth_token=${authToken}&currencies=${baseSymbol}&kind=news`);
 
       if (!response.ok) {
         throw new Error(`CryptoPanic API error: ${response.status}`);
       }
 
+      console.log("[HTTP-RES]", "CryptoPanic", `https://cryptopanic.com/api/v3/posts/`, "status", response.status);
       const data = await response.json();
 
       // Transform CryptoPanic data
@@ -1345,26 +1494,21 @@ export class DeepResearchEngine {
         source: 'CryptoPanic',
         url: post.url || '',
         published_at: post.published_at || new Date().toISOString(),
-        sentiment: this.analyzeNewsSentiment(post.title + ' ' + (post.description || ''))
+        sentiment: this.calculateUnifiedSentiment(post.title + ' ' + (post.description || ''))
       }));
 
       return {
         success: true,
         data: {
           articles,
-          sentimentScore: this.calculateOverallSentiment(articles)
+          sentimentScore: this.calculateWeightedSentiment(articles)
         },
-        latencyMs: Date.now() - startTime,
+        latencyMs: 0,
         provider: 'cryptopanic'
       };
     } catch (error: any) {
-      return {
-        success: false,
-        data: null,
-        latencyMs: Date.now() - startTime,
-        provider: 'cryptopanic',
-        error: error.message
-      };
+      console.error("[HTTP-ERR]", "CryptoPanic", `https://cryptopanic.com/api/v3/posts/`, error.message, error.stack);
+      throw error;
     }
   }
 
@@ -1372,8 +1516,6 @@ export class DeepResearchEngine {
    * Fetch Reddit News via scraping (Backup for News)
    */
   private async fetchRedditNews(symbol: string): Promise<FreeModeProviderResult> {
-    const startTime = Date.now();
-
     try {
       const baseSymbol = symbol.toLowerCase().replace('usdt', '').replace('usd', '');
 
@@ -1383,6 +1525,7 @@ export class DeepResearchEngine {
 
       for (const subreddit of subreddits) {
         try {
+          console.log("[HTTP-REQ]", "Reddit", `https://www.reddit.com/r/${subreddit}/search.json`);
           const response = await fetch(`https://www.reddit.com/r/${subreddit}/search.json?q=${baseSymbol}&sort=new&limit=5&t=day`, {
             headers: {
               'User-Agent': 'DLXTrade/1.0'
@@ -1390,6 +1533,7 @@ export class DeepResearchEngine {
           });
 
           if (response.ok) {
+            console.log("[HTTP-RES]", "Reddit", `https://www.reddit.com/r/${subreddit}/search.json`, "status", response.status);
             const data = await response.json();
             const posts = data.data?.children || [];
 
@@ -1399,13 +1543,15 @@ export class DeepResearchEngine {
                 source: `Reddit r/${subreddit}`,
                 url: `https://reddit.com${post.data.permalink}`,
                 published_at: new Date(post.data.created_utc * 1000).toISOString(),
-                sentiment: this.analyzeNewsSentiment(post.data.title + ' ' + (post.data.selftext || ''))
+                sentiment: this.calculateUnifiedSentiment(post.data.title + ' ' + (post.data.selftext || ''))
               });
             }
+          } else {
+            console.error("[HTTP-ERR]", "Reddit", `https://www.reddit.com/r/${subreddit}/search.json`, `HTTP ${response.status}`, response.status);
           }
         } catch (subError) {
+          console.error("[HTTP-ERR]", "Reddit", `https://www.reddit.com/r/${subreddit}/search.json`, subError.message, subError.stack);
           // Continue with other subreddits
-          logger.debug({ subreddit, error: subError.message }, 'Reddit subreddit fetch failed');
         }
       }
 
@@ -1413,87 +1559,366 @@ export class DeepResearchEngine {
         success: true,
         data: {
           articles: articles.slice(0, 5), // Limit total articles
-          sentimentScore: this.calculateOverallSentiment(articles)
+          sentimentScore: this.calculateWeightedSentiment(articles)
         },
-        latencyMs: Date.now() - startTime,
+        latencyMs: 0,
         provider: 'reddit'
       };
     } catch (error: any) {
-      return {
-        success: false,
-        data: null,
-        latencyMs: Date.now() - startTime,
-        provider: 'reddit',
-        error: error.message
-      };
+      console.error("[HTTP-ERR]", "Reddit", "General error", error.message, error.stack);
+      throw error;
     }
   }
 
   /**
-   * Analyze sentiment of news text
+   * Fetch GNews (Backup)
    */
-  private analyzeNewsSentiment(text: string): 'bullish' | 'bearish' | 'neutral' {
-    const lowerText = text.toLowerCase();
+  private async fetchGNews(symbol: string): Promise<FreeModeProviderResult> {
+    try {
+      const baseSymbol = symbol.toLowerCase().replace('usdt', '').replace('usd', '');
 
-    const bullishWords = ['bull', 'rise', 'gain', 'surge', 'rally', 'up', 'bullish', 'moon', 'pump', 'breakthrough', 'adoption'];
-    const bearishWords = ['bear', 'fall', 'drop', 'crash', 'decline', 'down', 'bearish', 'dump', 'sell-off', 'correction'];
+      console.log("[HTTP-REQ]", "GNews", `https://gnews.io/api/v4/search`);
+      const response = await fetch(`https://gnews.io/api/v4/search?q=${baseSymbol}&token=demo&max=5`);
 
-    let bullishCount = 0;
-    let bearishCount = 0;
+      if (!response.ok) {
+        throw new Error(`GNews API error: ${response.status}`);
+      }
 
-    bullishWords.forEach(word => {
-      if (lowerText.includes(word)) bullishCount++;
-    });
+      console.log("[HTTP-RES]", "GNews", `https://gnews.io/api/v4/search`, "status", response.status);
+      const data = await response.json();
 
-    bearishWords.forEach(word => {
-      if (lowerText.includes(word)) bearishCount++;
-    });
+      // Transform GNews data
+      const articles = (data.articles || []).slice(0, 5).map((article: any) => ({
+        title: article.title || '',
+        source: article.source?.name || 'GNews',
+        url: article.url || '',
+        published_at: article.publishedAt || new Date().toISOString(),
+        sentiment: this.calculateUnifiedSentiment(article.title + ' ' + (article.description || ''))
+      }));
 
-    if (bullishCount > bearishCount) return 'bullish';
-    if (bearishCount > bullishCount) return 'bearish';
-    return 'neutral';
+      return {
+        success: true,
+        data: {
+          articles,
+          sentimentScore: this.calculateWeightedSentiment(articles)
+        },
+        latencyMs: 0,
+        provider: 'gnews'
+      };
+    } catch (error: any) {
+      console.error("[HTTP-ERR]", "GNews", `https://gnews.io/api/v4/search`, error.message, error.stack);
+      throw error;
+    }
   }
 
   /**
-   * Calculate overall sentiment score from articles
+   * Calculate unified sentiment score (-1 to 1)
+   * positive: +1, negative: -1, neutral: 0
    */
-  private calculateOverallSentiment(articles: any[]): number {
-    if (articles.length === 0) return 0.5;
+  private calculateUnifiedSentiment(text: string): number {
+    const lowerText = text.toLowerCase();
 
-    let bullish = 0;
-    let bearish = 0;
+    const positiveWords = ['bull', 'rise', 'gain', 'surge', 'rally', 'up', 'bullish', 'moon', 'pump', 'breakthrough', 'adoption', 'growth', 'success', 'profit', 'increase', 'high', 'strong', 'positive'];
+    const negativeWords = ['bear', 'fall', 'drop', 'crash', 'decline', 'down', 'bearish', 'dump', 'sell-off', 'correction', 'loss', 'decrease', 'low', 'weak', 'negative', 'fail', 'crash', 'dump'];
 
-    articles.forEach(article => {
-      if (article.sentiment === 'bullish') bullish++;
-      else if (article.sentiment === 'bearish') bearish++;
+    let positiveCount = 0;
+    let negativeCount = 0;
+
+    positiveWords.forEach(word => {
+      if (lowerText.includes(word)) positiveCount++;
     });
 
-    const total = articles.length;
-    if (total === 0) return 0.5;
+    negativeWords.forEach(word => {
+      if (lowerText.includes(word)) negativeCount++;
+    });
 
-    // Return sentiment score between 0-1 (0.5 = neutral)
-    return 0.5 + ((bullish - bearish) / total) * 0.5;
+    if (positiveCount > negativeCount) return 1; // positive
+    if (negativeCount > positiveCount) return -1; // negative
+    return 0; // neutral
   }
 
+  /**
+   * Calculate weighted sentiment score (0-1 scale with neutral at 0.5)
+   */
+  private calculateWeightedSentiment(articles: any[]): number {
+    if (articles.length === 0) return 0.5;
+
+    const sentiments = articles.map(article => article.sentiment || 0);
+    const averageSentiment = sentiments.reduce((sum, sentiment) => sum + sentiment, 0) / sentiments.length;
+
+    // Convert from -1/+1 scale to 0-1 scale (0.5 = neutral)
+    return (averageSentiment + 1) / 2;
+  }
+
+  /**
+   * Fetch CryptoCompare Market Data (Primary)
+   */
+  private async fetchCryptoCompareMarketData(symbol: string, integrations: any): Promise<FreeModeProviderResult> {
+    try {
+      console.log("[HTTP-REQ]", "CryptoCompare", `https://min-api.cryptocompare.com/data/price`);
+      const response = await fetch(`https://min-api.cryptocompare.com/data/price?fsym=${symbol}&tsyms=USD&api_key=${integrations?.cryptocompare?.apiKey || ''}`);
+
+      if (!response.ok) {
+        throw new Error(`CryptoCompare API error: ${response.status}`);
+      }
+
+      console.log("[HTTP-RES]", "CryptoCompare", `https://min-api.cryptocompare.com/data/price`, "status", response.status);
+      const data = await response.json();
+
+      if (!data.USD) {
+        throw new Error('No USD price data from CryptoCompare');
+      }
+
+      return {
+        success: true,
+        data: {
+          hasData: true,
+          price: data.USD,
+          volume24h: 0, // CryptoCompare basic API doesn't provide volume
+          change24h: 0,
+          high24h: 0,
+          low24h: 0
+        },
+        latencyMs: 0,
+        provider: 'cryptocompare'
+      };
+    } catch (error: any) {
+      console.error("[HTTP-ERR]", "CryptoCompare", `https://min-api.cryptocompare.com/data/price`, error.message, error.stack);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch CoinGecko Market Data (Backup)
+   */
+  private async fetchCoinGeckoMarketData(symbol: string): Promise<FreeModeProviderResult> {
+    try {
+      // Convert symbol to CoinGecko ID mapping (simplified)
+      const coingeckoIds: { [key: string]: string } = {
+        'BTC': 'bitcoin',
+        'ETH': 'ethereum',
+        'BNB': 'binancecoin',
+        'ADA': 'cardano',
+        'SOL': 'solana',
+        'XRP': 'ripple',
+        'DOT': 'polkadot',
+        'DOGE': 'dogecoin',
+        'AVAX': 'avalanche-2',
+        'LTC': 'litecoin'
+      };
+
+      const coingeckoId = coingeckoIds[symbol] || symbol.toLowerCase();
+
+      console.log("[HTTP-REQ]", "CoinGecko", `https://api.coingecko.com/api/v3/simple/price`);
+      const response = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${coingeckoId}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true`);
+
+      if (!response.ok) {
+        throw new Error(`CoinGecko API error: ${response.status}`);
+      }
+
+      console.log("[HTTP-RES]", "CoinGecko", `https://api.coingecko.com/api/v3/simple/price`, "status", response.status);
+      const data = await response.json();
+
+      if (!data[coingeckoId]) {
+        throw new Error('No price data from CoinGecko');
+      }
+
+      const coinData = data[coingeckoId];
+
+      return {
+        success: true,
+        data: {
+          hasData: true,
+          price: coinData.usd || 0,
+          volume24h: coinData.usd_24h_vol || 0,
+          change24h: coinData.usd_24h_change || 0,
+          high24h: 0, // CoinGecko basic API doesn't provide high/low
+          low24h: 0
+        },
+        latencyMs: 0,
+        provider: 'coingecko'
+      };
+    } catch (error: any) {
+      console.error("[HTTP-ERR]", "CoinGecko", `https://api.coingecko.com/api/v3/simple/price`, error.message, error.stack);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch KuCoin Market Data (Backup)
+   */
+  private async fetchKuCoinMarketData(symbol: string): Promise<FreeModeProviderResult> {
+    try {
+      console.log("[HTTP-REQ]", "KuCoin", `https://api.kucoin.com/api/v1/market/stats`);
+      const response = await fetch(`https://api.kucoin.com/api/v1/market/stats?symbol=${symbol}`);
+
+      if (!response.ok) {
+        throw new Error(`KuCoin API error: ${response.status}`);
+      }
+
+      console.log("[HTTP-RES]", "KuCoin", `https://api.kucoin.com/api/v1/market/stats`, "status", response.status);
+      const data = await response.json();
+
+      if (!data.data) {
+        throw new Error('No market data from KuCoin');
+      }
+
+      const marketData = data.data;
+
+      return {
+        success: true,
+        data: {
+          hasData: true,
+          price: parseFloat(marketData.last || '0'),
+          volume24h: parseFloat(marketData.vol || '0'),
+          change24h: parseFloat(marketData.changeRate || '0') * 100,
+          high24h: parseFloat(marketData.high || '0'),
+          low24h: parseFloat(marketData.low || '0')
+        },
+        latencyMs: 0,
+        provider: 'kucoin'
+      };
+    } catch (error: any) {
+      console.error("[HTTP-ERR]", "KuCoin", `https://api.kucoin.com/api/v1/market/stats`, error.message, error.stack);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch Bybit Market Data (Backup)
+   */
+  private async fetchBybitMarketData(symbol: string): Promise<FreeModeProviderResult> {
+    try {
+      console.log("[HTTP-REQ]", "Bybit", `https://api.bybit.com/v5/market/tickers`);
+      const response = await fetch(`https://api.bybit.com/v5/market/tickers?category=spot&symbol=${symbol}`);
+
+      if (!response.ok) {
+        throw new Error(`Bybit API error: ${response.status}`);
+      }
+
+      console.log("[HTTP-RES]", "Bybit", `https://api.bybit.com/v5/market/tickers`, "status", response.status);
+      const data = await response.json();
+
+      const ticker = data.result?.list?.[0];
+      if (!ticker) {
+        throw new Error('No ticker data from Bybit');
+      }
+
+      return {
+        success: true,
+        data: {
+          hasData: true,
+          price: parseFloat(ticker.lastPrice || '0'),
+          volume24h: parseFloat(ticker.volume24h || '0'),
+          change24h: parseFloat(ticker.price24hPcnt || '0') * 100,
+          high24h: parseFloat(ticker.highPrice24h || '0'),
+          low24h: parseFloat(ticker.lowPrice24h || '0')
+        },
+        latencyMs: 0,
+        provider: 'bybit'
+      };
+    } catch (error: any) {
+      console.error("[HTTP-ERR]", "Bybit", `https://api.bybit.com/v5/market/tickers`, error.message, error.stack);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch OKX Market Data (Backup)
+   */
+  private async fetchOKXMarketData(symbol: string): Promise<FreeModeProviderResult> {
+    try {
+      console.log("[HTTP-REQ]", "OKX", `https://www.okx.com/api/v5/market/ticker`);
+      const response = await fetch(`https://www.okx.com/api/v5/market/ticker?instId=${symbol}`);
+
+      if (!response.ok) {
+        throw new Error(`OKX API error: ${response.status}`);
+      }
+
+      console.log("[HTTP-RES]", "OKX", `https://www.okx.com/api/v5/market/ticker`, "status", response.status);
+      const data = await response.json();
+
+      const ticker = data.data?.[0];
+      if (!ticker) {
+        throw new Error('No ticker data from OKX');
+      }
+
+      return {
+        success: true,
+        data: {
+          hasData: true,
+          price: parseFloat(ticker.last || '0'),
+          volume24h: parseFloat(ticker.vol24h || '0'),
+          change24h: ((parseFloat(ticker.last || '0') - parseFloat(ticker.open24h || '0')) / parseFloat(ticker.open24h || '0')) * 100,
+          high24h: parseFloat(ticker.high24h || '0'),
+          low24h: parseFloat(ticker.low24h || '0')
+        },
+        latencyMs: 0,
+        provider: 'okx'
+      };
+    } catch (error: any) {
+      console.error("[HTTP-ERR]", "OKX", `https://www.okx.com/api/v5/market/ticker`, error.message, error.stack);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch Bitget Market Data (Backup)
+   */
+  private async fetchBitgetMarketData(symbol: string): Promise<FreeModeProviderResult> {
+    try {
+      console.log("[HTTP-REQ]", "Bitget", `https://api.bitget.com/api/spot/v1/market/ticker`);
+      const response = await fetch(`https://api.bitget.com/api/spot/v1/market/ticker?symbol=${symbol}`);
+
+      if (!response.ok) {
+        throw new Error(`Bitget API error: ${response.status}`);
+      }
+
+      console.log("[HTTP-RES]", "Bitget", `https://api.bitget.com/api/spot/v1/market/ticker`, "status", response.status);
+      const data = await response.json();
+
+      const ticker = data.data?.[0];
+      if (!ticker) {
+        throw new Error('No ticker data from Bitget');
+      }
+
+      return {
+        success: true,
+        data: {
+          hasData: true,
+          price: parseFloat(ticker.close || '0'),
+          volume24h: parseFloat(ticker.usdtVol || '0'),
+          change24h: parseFloat(ticker.change || '0'),
+          high24h: parseFloat(ticker.high24h || '0'),
+          low24h: parseFloat(ticker.low24h || '0')
+        },
+        latencyMs: 0,
+        provider: 'bitget'
+      };
+    } catch (error: any) {
+      console.error("[HTTP-ERR]", "Bitget", `https://api.bitget.com/api/spot/v1/market/ticker`, error.message, error.stack);
+      throw error;
+    }
+  }
 
   /**
    * Combine FREE MODE v1.5 results from all providers
    */
   private async combineFreeModeResults(
     symbol: string,
-    binanceResult: FreeModeProviderResult,
+    marketDataResult: FreeModeProviderResult,
     ccResult: FreeModeProviderResult,
     cmcResult: FreeModeProviderResult,
     newsResult: FreeModeProviderResult
   ): Promise<FreeModeDeepResearchResult> {
 
-    console.log("FreeMode active, integrations:", { binance: binanceResult.success, cryptocompare: ccResult.success, cmc: cmcResult.success, news: newsResult.success });
+    console.log("FreeMode active, integrations:", { marketData: marketDataResult.success, cryptocompare: ccResult.success, cmc: cmcResult.success, news: newsResult.success });
 
-    let primaryData = binanceResult;
-    let dataSource = 'binance';
+    let primaryData = marketDataResult;
+    let dataSource = 'marketData';
 
-    // Always attempt Binance first, then always attempt CryptoCompare OHLC second
-    console.log('Always attempting CryptoCompare OHLC fallback regardless of Binance result');
+    // Always attempt market data first, then always attempt CryptoCompare OHLC second for indicators
+    console.log('Always attempting CryptoCompare OHLC fallback for technical indicators');
     try {
       const ccOHLC = await this.getCryptoCompareOHLCForIndicators(symbol);
       if (ccOHLC && ccOHLC.ohlc && ccOHLC.ohlc.length >= 20) {
@@ -1655,29 +2080,29 @@ export class DeepResearchEngine {
       metadata,
       news,
       raw: {
-        binance: binanceResult.data,
+        marketData: marketDataResult.data,
         cryptocompare: ccResult.data,
-        cmc: cmcResult.data,
+        metadata: cmcResult.data,
         news: newsResult.data
       },
       providers: {
-        binance: {
-          success: binanceResult.success,
-          latency: binanceResult.latencyMs,
-          data: binanceResult.data,
-          error: binanceResult.error
+        marketData: {
+          success: marketDataResult.success,
+          latency: marketDataResult.latencyMs,
+          data: marketDataResult.data,
+          error: marketDataResult.error
+        },
+        metadata: {
+          success: cmcResult.success,
+          latency: cmcResult.latencyMs,
+          data: cmcResult.data,
+          error: cmcResult.error
         },
         cryptocompare: {
           success: ccResult.success,
           latency: ccResult.latencyMs,
           data: ccResult.data,
           error: ccResult.error
-        },
-        cmc: {
-          success: cmcResult.success,
-          latency: cmcResult.latencyMs,
-          data: cmcResult.data,
-          error: cmcResult.error
         },
         news: {
           success: newsResult.success,

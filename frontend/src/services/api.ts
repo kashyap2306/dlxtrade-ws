@@ -94,8 +94,8 @@ export const researchApi = {
 
 // Settings - routes already include /api prefix from baseURL
 export const settingsApi = {
-  load: () => cachedApi.get('/settings/load'),
-  update: (settings: any) => api.post('/settings/update', settings),
+  load: () => cachedApi.get('/settings/load').catch(() => ({ data: {} })),
+  update: (settings: any) => api.post('/settings/update', settings).catch(() => ({ data: { success: false } })),
   // Removed: saveApiKeys and getApiKeys - use exchange-config endpoint instead
 };
 
@@ -154,13 +154,13 @@ export const usersApi = {
 
 // Agents - routes already include /api prefix from baseURL
 export const agentsApi = {
-  getAll: () => cachedApi.get('/agents'),
-  get: (id: string) => api.get(`/agents/${id}`),
-  unlock: (agentName: string) => api.post('/agents/unlock', { agentName }),
-  getUnlocked: () => cachedApi.get('/agents/unlocked'),
+  getAll: () => cachedApi.get('/agents').catch(() => ({ data: { agents: [] } })),
+  get: (id: string) => api.get(`/agents/${id}`).catch(() => ({ data: null })),
+  unlock: (agentName: string) => api.post('/agents/unlock', { agentName }).catch(() => ({ data: { success: false } })),
+  getUnlocked: () => cachedApi.get('/agents/unlocked').catch(() => ({ data: { unlocked: [] } })),
   submitUnlockRequest: (data: { agentId: string; agentName: string; fullName: string; phoneNumber: string; email: string }) =>
-    api.post('/agents/submit-unlock-request', data),
-  updateAgentSettings: (agentId: string, settings: any) => api.put(`/agents/${agentId}/settings`, settings),
+    api.post('/agents/submit-unlock-request', data).catch(() => ({ data: { success: false } })),
+  updateAgentSettings: (agentId: string, settings: any) => api.put(`/agents/${agentId}/settings`, settings).catch(() => ({ data: { success: false } })),
   // Removed: getUnlocks (endpoint doesn't exist)
 };
 
@@ -177,10 +177,10 @@ export const tradesApi = {
 
 // Notifications - routes already include /api prefix from baseURL
 export const notificationsApi = {
-  get: (params?: { limit?: number }) => cachedApi.get('/notifications', { params }),
-  markRead: (notificationId: string) => api.post('/notifications/mark-read', { notificationId }),
+  get: (params?: { limit?: number }) => cachedApi.get('/notifications', { params }).catch(() => ({ data: [] })),
+  markRead: (notificationId: string) => api.post('/notifications/mark-read', { notificationId }).catch(() => ({ data: { success: false } })),
   push: (data: { uid: string; type: 'success' | 'error' | 'info' | 'warning'; title: string; message: string; timestamp?: number }) =>
-    api.post('/notifications/push', data),
+    api.post('/notifications/push', data).catch(() => ({ data: { success: false } })),
 };
 
 // System Logs - routes already include /api prefix from baseURL
@@ -196,12 +196,12 @@ export const uiPreferencesApi = {
 
 // Global Stats - routes already include /api prefix from baseURL
 export const globalStatsApi = {
-  get: () => api.get('/global-stats'),
+  get: () => api.get('/global-stats').catch(() => ({ data: {} })),
 };
 
 // Engine Status - routes already include /api prefix from baseURL
 export const engineStatusApi = {
-  get: (params?: { uid?: string }) => api.get('/engine-status/status', { params }),
+  get: (params?: { uid?: string }) => api.get('/engine-status/status', { params }).catch(() => ({ data: {} })),
 };
 
 // HFT Logs - routes already include /api prefix from baseURL

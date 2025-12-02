@@ -284,6 +284,46 @@ export async function researchRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // Build info endpoint for deployment verification
+  fastify.get('/build-info', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+
+      // Try to get git hash from .git/HEAD
+      let gitHash = 'unknown';
+      try {
+        const gitHead = path.join(process.cwd(), '.git', 'HEAD');
+        if (fs.existsSync(gitHead)) {
+          const headContent = fs.readFileSync(gitHead, 'utf8').trim();
+          if (headContent.startsWith('ref: ')) {
+            const refPath = path.join(process.cwd(), '.git', headContent.substring(5));
+            if (fs.existsSync(refPath)) {
+              gitHash = fs.readFileSync(refPath, 'utf8').trim().substring(0, 8);
+            }
+          }
+        }
+      } catch (gitError) {
+        // Ignore git errors
+      }
+
+      return {
+        version: "deep-research-v2",
+        timestamp: Date.now(),
+        gitHash: gitHash,
+        buildTime: new Date().toISOString(),
+        serverPath: __dirname,
+        nodeVersion: process.version,
+        environment: process.env.NODE_ENV || 'production'
+      };
+    } catch (error: any) {
+      return reply.code(500).send({
+        error: 'Build info failed',
+        reason: error.message
+      });
+    }
+  });
+
   // Test endpoint to verify API calls work on Render
   fastify.get('/test/providers', async (request: FastifyRequest, reply: FastifyReply) => {
     try {

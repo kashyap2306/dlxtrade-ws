@@ -34,6 +34,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<any>(null);
   const [retryCount, setRetryCount] = useState(0);
+  const [hasLoaded, setHasLoaded] = useState(false);
   const isMountedRef = useRef(true);
 
   // Legacy state for backward compatibility (will be removed)
@@ -54,16 +55,21 @@ export default function Dashboard() {
   const { ref: marketScannerRef, hasIntersected: marketScannerVisible } = useLazyLoad(0.1);
 
   const loadDashboardData = useCallback(async () => {
-    if (!user || !isMountedRef.current) return;
-    console.log('loadDashboardData called for user:', user.uid);
+    if (!user || !isMountedRef.current || hasLoaded) return;
+    console.log('loadDashboardData called for user:', user?.uid);
+
+    // Prevent multiple concurrent loads
+    if (loading) return;
+    setLoading(true);
+
     try {
-      // Load multiple dashboard APIs in parallel using only valid endpoints
+      // Load multiple dashboard APIs in parallel with safe fallbacks
       const [globalStatsRes, engineStatusRes, agentsUnlockedRes, settingsRes, notificationsRes] = await Promise.all([
-        globalStatsApi.get().catch(() => ({ data: {} })),
-        engineStatusApi.get().catch(() => ({ data: {} })),
-        agentsApi.getUnlocked().catch(() => ({ data: [] })),
-        settingsApi.load().catch(() => ({ data: {} })),
-        notificationsApi.get({ limit: 20 }).catch(() => ({ data: [] }))
+        globalStatsApi.get(),
+        engineStatusApi.get(),
+        agentsApi.getUnlocked(),
+        settingsApi.load(),
+        notificationsApi.get({ limit: 20 })
       ]);
 
       console.log('Dashboard API responses:', {
@@ -74,6 +80,7 @@ export default function Dashboard() {
         notifications: notificationsRes?.data
       });
 
+      // Safe data extraction with fallbacks
       const dashboardData = {
         globalStats: globalStatsRes?.data || {},
         engineStatus: engineStatusRes?.data || {},
@@ -85,34 +92,46 @@ export default function Dashboard() {
       if (isMountedRef.current) {
         setDashboardData(dashboardData);
         setError(null); // Clear any previous errors
+        setLoading(false);
+        setHasLoaded(true); // Mark as loaded to prevent re-renders
 
-        // For backward compatibility, also set legacy state variables
-        setAutoTradeStatus(dashboardData?.engineStatus || null);
-        setUserStats(dashboardData?.globalStats || null);
+        // For backward compatibility, also set legacy state variables with safe fallbacks
+        setAutoTradeStatus(dashboardData?.engineStatus || {});
+        setUserStats(dashboardData?.globalStats || {});
         setWalletBalances([]); // Wallet data not available from current endpoints
-        setActiveTrades(dashboardData?.hftLogs || []);
-        setAiSignals(dashboardData?.activityLogs || []);
-        setPerformanceStats(dashboardData?.globalStats || null);
-        setPortfolioHistory(dashboardData?.trades || []);
+        setActiveTrades(dashboardData?.globalStats?.hftLogs || []);
+        setAiSignals(dashboardData?.globalStats?.activityLogs || []);
+        setPerformanceStats(dashboardData?.globalStats || {});
+        setPortfolioHistory(dashboardData?.globalStats?.trades || []);
       }
     } catch (err: any) {
-      console.error('loadDashboardData error:', err);
-      suppressConsoleError(err, 'loadDashboardData');
+      console.warn('[Dashboard] API failed: loadDashboardData', err);
       if (isMountedRef.current) {
-        // Set error state for unified dashboard failure
+        // Set safe fallback data instead of crashing
+        const safeDashboardData = {
+          globalStats: {},
+          engineStatus: {},
+          agentsUnlocked: [],
+          settings: {},
+          notifications: []
+        };
+
+        setDashboardData(safeDashboardData);
         setError(err);
-        setDashboardData(null);
-        // Clear legacy state on error
-        setAutoTradeStatus(null);
-        setUserStats(null);
-        setWalletBalances(null);
+        setLoading(false);
+        setHasLoaded(true); // Mark as loaded even on error to prevent infinite retries
+
+        // Clear legacy state with safe defaults
+        setAutoTradeStatus({});
+        setUserStats({});
+        setWalletBalances([]);
         setActiveTrades([]);
         setAiSignals([]);
-        setPerformanceStats(null);
+        setPerformanceStats({});
         setPortfolioHistory([]);
       }
     }
-  }, [user]);
+  }, [user, loading, hasLoaded]);
 
   // Legacy functions for backward compatibility (will be removed)
   const loadAutoTradeStatus = useCallback(async () => {
@@ -375,6 +394,45 @@ export default function Dashboard() {
     );
   }
 
+  // Show data not available state if no data and not loading/error
+  if (!loading && !error && (!dashboardData || Object.keys(dashboardData || {}).length === 0)) {
+    return (
+      <ErrorBoundary>
+        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 relative overflow-hidden">
+          <Sidebar />
+          <main className="min-h-screen">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
+              <div className="mb-8">
+                <h1 className="text-4xl lg:text-5xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
+                  Dashboard
+                </h1>
+              </div>
+              <div className="text-center py-12">
+                <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-2xl p-8 max-w-md mx-auto">
+                  <div className="text-slate-400 mb-4">
+                    <svg className="w-12 h-12 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                    </svg>
+                  </div>
+                  <h3 className="text-lg font-semibold text-white mb-2">Dashboard Data Not Available</h3>
+                  <p className="text-slate-400 text-sm">
+                    Unable to load dashboard information. Please check your connection and try again.
+                  </p>
+                  <button
+                    onClick={() => window.location.reload()}
+                    className="mt-4 px-4 py-2 bg-slate-700/50 border border-slate-600/50 text-slate-300 rounded-lg hover:bg-slate-600/50 transition-colors text-sm font-medium"
+                  >
+                    Reload Dashboard
+                  </button>
+                </div>
+              </div>
+            </div>
+          </main>
+        </div>
+      </ErrorBoundary>
+    );
+  }
+
   return (
     <ErrorBoundary>
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 relative overflow-hidden">
@@ -429,23 +487,23 @@ export default function Dashboard() {
                   Exchange API Status
                 </h3>
                 <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${
-                  autoTradeStatus?.isApiConnected
+                  autoTradeStatus?.isApiConnected === true
                     ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30'
                     : 'bg-red-500/10 text-red-300 border border-red-500/30'
                 }`}>
                   <div className={`w-2 h-2 rounded-full ${
-                    autoTradeStatus?.isApiConnected ? 'bg-emerald-400' : 'bg-red-400'
+                    autoTradeStatus?.isApiConnected === true ? 'bg-emerald-400' : 'bg-red-400'
                   }`}></div>
-                  {autoTradeStatus?.isApiConnected ? 'Connected' : 'Not Connected'}
+                  {autoTradeStatus?.isApiConnected === true ? 'Connected' : 'Not Connected'}
                 </div>
               </div>
               <p className="text-slate-400 text-sm">
-                {autoTradeStatus?.isApiConnected
+                {autoTradeStatus?.isApiConnected === true
                   ? 'Your exchange API is connected and ready for trading.'
                   : 'Connect your exchange API keys to enable auto-trading features.'
                 }
               </p>
-              {!autoTradeStatus?.isApiConnected && (
+              {autoTradeStatus?.isApiConnected !== true && (
                 <button
                   onClick={handleConnectClick}
                   className="mt-4 px-4 py-2 bg-slate-700/50 border border-slate-600/50 text-slate-300 rounded-lg hover:bg-slate-600/50 transition-colors text-sm font-medium"
@@ -558,13 +616,13 @@ export default function Dashboard() {
                   Portfolio Balance
                 </h3>
                 <div className="flex items-center gap-2">
-                  {(dashboardData?.metrics?.portfolioHistory || []).length > 1 && (
+                  {(dashboardData?.globalStats?.portfolioHistory || []).length > 1 && (
                     <div className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${
-                      ((dashboardData?.metrics?.portfolioHistory || [])[(dashboardData?.metrics?.portfolioHistory || []).length - 1]?.value || 0) >= ((dashboardData?.metrics?.portfolioHistory || [])[(dashboardData?.metrics?.portfolioHistory || []).length - 2]?.value || 0)
+                      ((dashboardData?.globalStats?.portfolioHistory || [])[(dashboardData?.globalStats?.portfolioHistory || []).length - 1]?.value || 0) >= ((dashboardData?.globalStats?.portfolioHistory || [])[(dashboardData?.globalStats?.portfolioHistory || []).length - 2]?.value || 0)
                         ? 'bg-emerald-500/10 text-emerald-300'
                         : 'bg-red-500/10 text-red-300'
                     }`}>
-                      {((dashboardData?.metrics?.portfolioHistory || [])[(dashboardData?.metrics?.portfolioHistory || []).length - 1]?.value || 0) >= ((dashboardData?.metrics?.portfolioHistory || [])[(dashboardData?.metrics?.portfolioHistory || []).length - 2]?.value || 0) ? (
+                      {((dashboardData?.globalStats?.portfolioHistory || [])[(dashboardData?.globalStats?.portfolioHistory || []).length - 1]?.value || 0) >= ((dashboardData?.globalStats?.portfolioHistory || [])[(dashboardData?.globalStats?.portfolioHistory || []).length - 2]?.value || 0) ? (
                         <ArrowTrendingUpIcon className="w-3 h-3" />
                       ) : (
                         <ArrowTrendingDownIcon className="w-3 h-3" />
@@ -656,7 +714,7 @@ export default function Dashboard() {
 
                 <div className="text-sm text-slate-400 mb-6 space-y-1">
                   <div>Agents: {dashboardData?.stats?.user?.agentsUnlocked || 0} total</div>
-                  <div>Last execution: {dashboardData?.hftLogs?.lastExecution ? new Date(dashboardData.hftLogs.lastExecution).toLocaleTimeString() : 'Never'}</div>
+                  <div>Last execution: {dashboardData?.engineStatus?.lastExecution ? new Date(dashboardData.engineStatus.lastExecution).toLocaleTimeString() : 'Never'}</div>
                 </div>
 
                 <button

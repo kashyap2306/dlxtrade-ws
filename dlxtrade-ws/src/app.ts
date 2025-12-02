@@ -151,15 +151,18 @@ export async function buildApp(): Promise<FastifyInstance> {
   console.log('  - /ws/admin (Admin WebSocket)');
   console.log('  - / (Root WebSocket - unauthenticated, for Render WS health)');
 
-  // Test route to verify server is running (no auth required)
-  app.get('/api/test', async (request, reply) => {
-    return { status: 'ok', message: 'Backend is running', timestamp: new Date().toISOString() };
-  });
+// Test route to verify server is running (no auth required)
+app.get('/api/test', async (request, reply) => {
+  return { status: 'ok', message: 'Backend is running', timestamp: new Date().toISOString() };
+});
 
-  // Health check route (no auth required)
-  app.get('/health', async (request, reply) => {
-    return { status: 'ok', timestamp: new Date().toISOString() };
-  });
+// Health check route (no auth required)
+app.get('/health', async (request, reply) => {
+  return { status: 'ok', timestamp: new Date().toISOString() };
+});
+
+// Add diagnostic log for build verification
+console.log("[RENDER ENV] Build timestamp:", Date.now());
 
 
   // Admin WebSocket endpoint for real-time admin events

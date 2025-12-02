@@ -339,8 +339,8 @@ class UserIntegrationsMigrationVerifier {
 
         // Extract sample prices from FREE MODE result
         const samplePrices: Record<string, number> = {};
-        if (result.raw?.binance?.price > 0) {
-          samplePrices[symbol] = result.raw.binance.price;
+        if (result.raw?.marketData?.price > 0) {
+          samplePrices[symbol] = result.raw.marketData.price;
         }
 
         // Determine which providers were used vs missing

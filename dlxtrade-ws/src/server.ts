@@ -10,6 +10,9 @@ import { migrateFirestoreDocuments } from './utils/firestoreMigration';
 
 // FORCE_DEPLOY_CHECK: 2025-11-30
 
+// Add high-level diagnostic log
+console.log("[RENDER BUILD CHECK] server.js loaded from:", __dirname);
+
 // Global error handlers to catch all errors and prevent crashes
 process.on('uncaughtException', (error) => {
   console.error('UNCAUGHT EXCEPTION:', error);

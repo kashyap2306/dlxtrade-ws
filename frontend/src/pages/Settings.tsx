@@ -581,13 +581,13 @@ export default function Settings() {
     e.preventDefault();
     if (!settings) return;
 
-    // Validate required API keys
+    // Validate required API keys for new provider architecture
     if (!settings.cryptoCompareKey?.trim()) {
-      showToast('CryptoCompare API key is required', 'error');
+      showToast('CryptoCompare API key is required for market data', 'error');
       return;
     }
     if (!settings.newsDataKey?.trim()) {
-      showToast('NewsData.io API key is required', 'error');
+      showToast('NewsData API key is required for news analysis', 'error');
       return;
     }
 
@@ -830,246 +830,79 @@ export default function Settings() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* CryptoCompare */}
+                {/* CryptoCompare - Required for Market Data */}
                 <div className="space-y-4">
                   <div className="flex items-center space-x-3">
                     <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center">
-                      <span className="text-white font-bold text-sm">CC</span>
+                      <span className="text-white font-bold text-sm">📊</span>
                     </div>
                     <div>
-                      <h3 className="text-white font-medium">CryptoCompare</h3>
-                      <p className="text-xs text-gray-400">Market data & fundamentals</p>
+                      <h3 className="text-white font-medium">CryptoCompare API Key</h3>
+                      <p className="text-xs text-gray-400">Required for market data (primary provider)</p>
                     </div>
                   </div>
 
-                  {integrations?.cryptocompare?.enabled ? (
-                    // Connected state
-                    <div className="space-y-3">
-                      <div className="flex items-center space-x-2">
-                        <CheckCircleIcon className="w-5 h-5 text-green-400" />
-                        <span className="text-green-400 text-sm font-medium">Connected</span>
-                      </div>
-                      <div className="flex space-x-2">
-                        <button
-                          onClick={() => {
-                            // Clear the connected state to show input fields again
-                            setIntegrations(prev => ({
-                              ...prev,
-                              cryptocompare: { ...prev.cryptocompare, enabled: false }
-                            }));
-                          }}
-                          className="flex-1 px-4 py-2 bg-gray-600 text-white font-medium rounded-lg hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all text-sm"
-                        >
-                          Change API Key
-                        </button>
-                        <button
-                          onClick={() => openBackupModal('CryptoCompare')}
-                          className="px-3 py-2 bg-purple-600 text-white font-medium rounded-lg hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all text-sm"
-                          title="Add Backup APIs"
-                        >
-                          +
-                        </button>
-                      </div>
-
-                      {/* Backup APIs List */}
-                      {settings.backupApis?.cryptocompare && settings.backupApis.cryptocompare.length > 0 && (
-                        <div className="mt-3 p-3 bg-gray-800/50 rounded-lg">
-                          <p className="text-xs text-gray-400 mb-2">Backup APIs:</p>
-                          <div className="space-y-1">
-                            {settings.backupApis.cryptocompare.map((backup: any, index: number) => (
-                              <div key={index} className="flex items-center justify-between text-xs">
-                                <span className="text-gray-300">{backup.name}</span>
-                                <span className={`px-2 py-0.5 rounded text-xs ${
-                                  backup.active ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-                                }`}>
-                                  {backup.active ? 'Active' : 'Inactive'}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    // Not connected state - show input fields
-                    <>
-                      <div className="space-y-2">
-                        <label className="block text-xs font-medium text-gray-400">API Key</label>
-                        <input
-                          type="password"
-                          className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                          value={settings.cryptoCompareKey || ''}
-                          onChange={(e) => setSettings({ ...settings, cryptoCompareKey: e.target.value })}
-                          placeholder="Enter CryptoCompare API key"
-                        />
-                      </div>
-
-                      <button
-                        onClick={() => handleSaveProvider('CryptoCompare', ['cryptoCompareKey'])}
-                        disabled={savingProvider === 'CryptoCompare'}
-                        className="w-full px-4 py-2 bg-blue-500 text-white font-medium rounded-lg hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-                      >
-                        {savingProvider === 'CryptoCompare' ? 'Connecting...' : 'Connect CryptoCompare'}
-                      </button>
-                    </>
-                  )}
+                  <div className="space-y-2">
+                    <label className="block text-xs font-medium text-gray-400">API Key</label>
+                    <input
+                      type="password"
+                      className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                      value={settings.cryptoCompareKey || ''}
+                      onChange={(e) => setSettings({ ...settings, cryptoCompareKey: e.target.value })}
+                      placeholder="Enter CryptoCompare API key"
+                    />
+                    <p className="text-xs text-gray-500">Backups: CoinGecko, KuCoin, Bybit, OKX, Bitget (free/no key)</p>
+                  </div>
                 </div>
 
-                {/* NewsData */}
+                {/* NewsData - Required for News Analysis */}
                 <div className="space-y-4">
                   <div className="flex items-center space-x-3">
                     <div className="w-8 h-8 bg-green-500 rounded-lg flex items-center justify-center">
                       <span className="text-white font-bold text-sm">📰</span>
                     </div>
                     <div>
-                      <h3 className="text-white font-medium">NewsData</h3>
-                      <p className="text-xs text-gray-400">News sentiment analysis</p>
+                      <h3 className="text-white font-medium">NewsData API Key</h3>
+                      <p className="text-xs text-gray-400">Required for news sentiment analysis</p>
                     </div>
                   </div>
 
-                  {integrations?.newsdata?.enabled ? (
-                    // Connected state
-                    <div className="space-y-3">
-                      <div className="flex items-center space-x-2">
-                        <CheckCircleIcon className="w-5 h-5 text-green-400" />
-                        <span className="text-green-400 text-sm font-medium">Connected</span>
-                      </div>
-                      <div className="flex space-x-2">
-                        <button
-                          onClick={() => {
-                            // Clear the connected state to show input fields again
-                            setIntegrations(prev => ({
-                              ...prev,
-                              newsdata: { ...prev.newsdata, enabled: false }
-                            }));
-                          }}
-                          className="flex-1 px-4 py-2 bg-gray-600 text-white font-medium rounded-lg hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all text-sm"
-                        >
-                          Change API Key
-                        </button>
-                        <button
-                          onClick={() => openBackupModal('NewsData')}
-                          className="px-3 py-2 bg-purple-600 text-white font-medium rounded-lg hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all text-sm"
-                          title="Add Backup APIs"
-                        >
-                          +
-                        </button>
-                      </div>
-
-                      {/* Backup APIs List */}
-                      {settings.backupApis?.newsdata && settings.backupApis.newsdata.length > 0 && (
-                        <div className="mt-3 p-3 bg-gray-800/50 rounded-lg">
-                          <p className="text-xs text-gray-400 mb-2">Backup APIs:</p>
-                          <div className="space-y-1">
-                            {settings.backupApis.newsdata.map((backup: any, index: number) => (
-                              <div key={index} className="flex items-center justify-between text-xs">
-                                <span className="text-gray-300">{backup.name}</span>
-                                <span className={`px-2 py-0.5 rounded text-xs ${
-                                  backup.active ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-                                }`}>
-                                  {backup.active ? 'Active' : 'Inactive'}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    // Not connected state - show input fields
-                    <>
-                      <div className="space-y-2">
-                        <label className="block text-xs font-medium text-gray-400">API Key</label>
-                        <input
-                          type="password"
-                          className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                          value={settings.newsDataKey || ''}
-                          onChange={(e) => setSettings({ ...settings, newsDataKey: e.target.value })}
-                          placeholder="Enter NewsData API key"
-                        />
-                      </div>
-
-                      <button
-                        onClick={() => handleSaveProvider('NewsData', ['newsDataKey'])}
-                        disabled={savingProvider === 'NewsData'}
-                        className="w-full px-4 py-2 bg-green-500 text-white font-medium rounded-lg hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-                      >
-                        {savingProvider === 'NewsData' ? 'Connecting...' : 'Connect NewsData'}
-                      </button>
-                    </>
-                  )}
+                  <div className="space-y-2">
+                    <label className="block text-xs font-medium text-gray-400">API Key</label>
+                    <input
+                      type="password"
+                      className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                      value={settings.newsDataKey || ''}
+                      onChange={(e) => setSettings({ ...settings, newsDataKey: e.target.value })}
+                      placeholder="Enter NewsData API key"
+                    />
+                    <p className="text-xs text-gray-500">Backups: CryptoPanic, Reddit, GNews (free/no key)</p>
+                  </div>
                 </div>
 
-                {/* Binance Public */}
+                {/* CryptoPanic - Optional for Enhanced News */}
                 <div className="space-y-4">
                   <div className="flex items-center space-x-3">
-                    <div className="w-8 h-8 bg-yellow-500 rounded-lg flex items-center justify-center">
-                      <span className="text-white font-bold text-sm">🪙</span>
+                    <div className="w-8 h-8 bg-orange-500 rounded-lg flex items-center justify-center">
+                      <span className="text-white font-bold text-sm">🔔</span>
                     </div>
                     <div>
-                      <h3 className="text-white font-medium">Binance Public</h3>
-                      <p className="text-xs text-gray-400">Auto-enabled public API</p>
-                    </div>
-                    <CheckCircleIcon className="w-5 h-5 text-green-400" />
-                  </div>
-                  <p className="text-xs text-gray-500">No configuration required - automatically enabled</p>
-                </div>
-
-                {/* CoinMarketCap */}
-                <div className="space-y-4">
-                  <div className="flex items-center space-x-3">
-                    <div className="w-8 h-8 bg-purple-500 rounded-lg flex items-center justify-center">
-                      <span className="text-white font-bold text-sm">💎</span>
-                    </div>
-                    <div>
-                      <h3 className="text-white font-medium">CoinMarketCap</h3>
-                      <p className="text-xs text-gray-400">Market data backup</p>
+                      <h3 className="text-white font-medium">CryptoPanic API Key (Optional)</h3>
+                      <p className="text-xs text-gray-400">Enhanced news sentiment analysis</p>
                     </div>
                   </div>
 
-                  {integrations?.coinmarketcap?.enabled ? (
-                    // Connected state
-                    <div className="space-y-3">
-                      <div className="flex items-center space-x-2">
-                        <CheckCircleIcon className="w-5 h-5 text-green-400" />
-                        <span className="text-green-400 text-sm font-medium">Connected</span>
-                      </div>
-                      <button
-                        onClick={() => {
-                          // Clear the connected state to show input fields again
-                          setIntegrations(prev => ({
-                            ...prev,
-                            coinmarketcap: { ...prev.coinmarketcap, enabled: false }
-                          }));
-                        }}
-                        className="w-full px-4 py-2 bg-gray-600 text-white font-medium rounded-lg hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all text-sm"
-                      >
-                        Change API Key
-                      </button>
-                    </div>
-                  ) : (
-                    // Not connected state - show input fields
-                    <>
-                      <div className="space-y-2">
-                        <label className="block text-xs font-medium text-gray-400">API Key (Optional)</label>
-                        <input
-                          type="password"
-                          className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                          value={settings.coinmarketcapKey || ''}
-                          onChange={(e) => setSettings({ ...settings, coinmarketcapKey: e.target.value })}
-                          placeholder="Enter CoinMarketCap API key"
-                        />
-                      </div>
-
-                      <button
-                        onClick={() => handleSaveProvider('CoinMarketCap')}
-                        disabled={savingProvider === 'CoinMarketCap'}
-                        className="w-full px-4 py-2 bg-purple-500 text-white font-medium rounded-lg hover:bg-purple-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-                      >
-                        {savingProvider === 'CoinMarketCap' ? 'Connecting...' : 'Connect CoinMarketCap'}
-                      </button>
-                    </>
-                  )}
+                  <div className="space-y-2">
+                    <label className="block text-xs font-medium text-gray-400">API Key (Optional)</label>
+                    <input
+                      type="password"
+                      className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                      value={settings.cryptoPanicKey || ''}
+                      onChange={(e) => setSettings({ ...settings, cryptoPanicKey: e.target.value })}
+                      placeholder="Enter CryptoPanic API key (optional)"
+                    />
+                    <p className="text-xs text-gray-500">Leave empty for free tier access</p>
+                  </div>
                 </div>
               </div>
             </section>
