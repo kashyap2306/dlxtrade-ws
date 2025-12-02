@@ -64,6 +64,32 @@ export interface FreeModeDeepResearchResult {
     cmc: any;
     news: any;
   };
+  providers: {
+    binance: {
+      success: boolean;
+      latency: number;
+      data?: any;
+      error?: string;
+    };
+    cryptocompare: {
+      success: boolean;
+      latency: number;
+      data?: any;
+      error?: string;
+    };
+    cmc: {
+      success: boolean;
+      latency: number;
+      data?: any;
+      error?: string;
+    };
+    news: {
+      success: boolean;
+      latency: number;
+      data?: any;
+      error?: string;
+    };
+  };
 }
 
 /**
@@ -136,29 +162,62 @@ export class DeepResearchEngine {
   ): Promise<FreeModeProviderResult> {
     const startTime = Date.now();
 
-    // Try primary provider first
-    try {
-      logger.info({ provider: providerName, primary: providerConfig.primary }, 'Trying primary provider');
-      const result = await executeFn(providerConfig.primary);
-      if (result.success) {
-        result.latencyMs = Date.now() - startTime;
-        return result;
+    // Function to try a provider with retries
+    const tryProviderWithRetries = async (provider: string, isPrimary: boolean = false): Promise<FreeModeProviderResult | null> => {
+      const maxRetries = 2; // 2 retries per provider
+      const retryDelay = 1000; // 1 second delay between retries
+
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          if (attempt > 0) {
+            console.log(`🔄 ${providerName.toUpperCase()}: Retrying ${provider} (attempt ${attempt}/${maxRetries})`);
+            await new Promise(resolve => setTimeout(resolve, retryDelay));
+          }
+
+          console.log(`🔄 ${providerName.toUpperCase()}: Executing ${isPrimary ? 'PRIMARY' : 'BACKUP'} provider ${provider}`);
+          const result = await executeFn(provider);
+
+          if (result.success) {
+            console.log(`✅ ${providerName.toUpperCase()}: ${provider} succeeded on attempt ${attempt + 1}`);
+            return result;
+          } else {
+            console.log(`⚠️ ${providerName.toUpperCase()}: ${provider} returned success=false on attempt ${attempt + 1}:`, result.error);
+          }
+        } catch (error: any) {
+          console.log(`⚠️ ${providerName.toUpperCase()}: ${provider} threw error on attempt ${attempt + 1}:`, error.message);
+          if (attempt === maxRetries) {
+            console.error(`❌ ${providerName.toUpperCase()}: ${provider} failed after ${maxRetries + 1} attempts:`, error.message);
+          }
+        }
       }
-    } catch (error: any) {
-      logger.warn({ provider: providerName, primary: providerConfig.primary, error: error.message }, 'Primary provider failed');
+      return null;
+    };
+
+    // Try primary provider first with retries
+    console.log(`🔄 ${providerName.toUpperCase()}: Starting provider execution with retries`);
+    const primaryResult = await tryProviderWithRetries(providerConfig.primary, true);
+    if (primaryResult) {
+      primaryResult.latencyMs = Date.now() - startTime;
+      return primaryResult;
     }
 
-    // Try backup providers sequentially
+    // For Binance, don't use backups since they don't provide OHLC data
+    if (providerName === 'Binance') {
+      return {
+        success: false,
+        data: null,
+        latencyMs: Date.now() - startTime,
+        provider: 'none',
+        error: 'Binance failed and no suitable backups available'
+      };
+    }
+
+    // Try backup providers sequentially with retries
     for (const backupProvider of providerConfig.backups) {
-      try {
-        logger.info({ provider: providerName, backup: backupProvider }, 'Trying backup provider');
-        const result = await executeFn(backupProvider);
-        if (result.success) {
-          result.latencyMs = Date.now() - startTime;
-          return result;
-        }
-      } catch (error: any) {
-        logger.warn({ provider: providerName, backup: backupProvider, error: error.message }, 'Backup provider failed');
+      const backupResult = await tryProviderWithRetries(backupProvider, false);
+      if (backupResult) {
+        backupResult.latencyMs = Date.now() - startTime;
+        return backupResult;
       }
     }
 
@@ -247,14 +306,17 @@ export class DeepResearchEngine {
     config: ProviderBackupConfig,
     integrations: any
   ): Promise<FreeModeProviderResult> {
+    console.log('🔄 EXECUTE BINANCE PROVIDER: Called for symbol', symbol);
     return this.executeProviderWithBackups(
       config,
       async (provider: string) => {
+        console.log('🔄 BINANCE EXECUTE FN: Called for provider', provider);
         const startTime = Date.now();
 
         try {
           switch (provider) {
             case 'binance':
+              console.log('🔄 BINANCE CASE: About to call fetchBinancePublicData');
               return await this.fetchBinancePublicData(symbol, integrations);
 
             case 'bybit':
@@ -407,16 +469,29 @@ export class DeepResearchEngine {
    * Fetch Binance Public Data (FREE MODE - Price, OHLC, Volume, Indicators)
    */
   private async fetchBinancePublicData(symbol: string, integrations: any): Promise<FreeModeProviderResult> {
+    console.log('🔄 BINANCE PROVIDER: Method called with symbol:', symbol);
     const startTime = Date.now();
 
     try {
+      console.log('🔄 BINANCE PROVIDER: Starting fetch for', symbol, '- API Key present:', !!(integrations.binance?.apiKey));
+      console.log('🔄 BINANCE PROVIDER: Attempting fetch for BINANCE API...');
+
       const binanceAdapter = new BinanceAdapter('', '', true); // Public API only
+      console.log('🔄 BINANCE PROVIDER: Created BinanceAdapter instance');
 
       // Get comprehensive public market data
+      console.log('🔄 BINANCE PROVIDER: Making HTTP request to Binance API endpoints...');
       const marketData = await binanceAdapter.getPublicMarketData(symbol);
+      console.log('🔄 BINANCE PROVIDER: Got response from BinanceAdapter:', typeof marketData, marketData ? 'has data' : 'null/undefined');
+
+      if (marketData) {
+        console.log('🔄 BINANCE PROVIDER: Response keys:', Object.keys(marketData));
+        console.log('🔄 BINANCE PROVIDER: hasData:', marketData.hasData);
+        console.log('🔄 BINANCE PROVIDER: Full response:', JSON.stringify(marketData).substring(0, 200) + '...');
+      }
 
       if (!marketData || !marketData.hasData) {
-        throw new Error('No market data available');
+        throw new Error('No market data available from Binance');
       }
 
       // Calculate indicators using OHLC data
@@ -450,12 +525,19 @@ export class DeepResearchEngine {
         provider: 'binance'
       };
     } catch (error: any) {
+      console.error('❌ BINANCE PROVIDER ERROR:', {
+        symbol,
+        error: error.message,
+        stack: error.stack,
+        latencyMs: Date.now() - startTime
+      });
+
       return {
         success: false,
         data: null,
         latencyMs: Date.now() - startTime,
         provider: 'binance',
-        error: error.message
+        error: error.message + ' | Stack: ' + error.stack
       };
     }
   }
@@ -602,12 +684,19 @@ export class DeepResearchEngine {
     const startTime = Date.now();
 
     try {
+      console.log('🔄 CRYPTOCOMPARE PROVIDER: Starting fetch for', symbol, '- API Key present:', !!(integrations.cryptocompare?.apiKey));
+      console.log('🔄 CRYPTOCOMPARE PROVIDER: Attempting fetch for CRYPTOCOMPARE API...');
+
       const baseSymbol = symbol.replace('USDT', '').replace('USD', '');
+      console.log('🔄 CRYPTOCOMPARE PROVIDER: Converted symbol', symbol, 'to', baseSymbol);
+
       const ccAdapter = new CryptoCompareAdapter(integrations.cryptocompare?.apiKey || '');
 
       // Get 1h and 1d candle data for trend analysis
+      console.log('🔄 CRYPTOCOMPARE PROVIDER: Making HTTP request to CryptoCompare API for', `${baseSymbol}USDT`);
       const histoHour = await ccAdapter.getOHLCData(`${baseSymbol}USDT`);
       const histoDay = await ccAdapter.getOHLCData(`${baseSymbol}USDT`);
+      console.log('🔄 CRYPTOCOMPARE PROVIDER: Response received - hour data points:', histoHour.ohlc?.length, 'day data points:', histoDay.ohlc?.length);
 
       // Calculate simple trends
       const hour1Trend = histoHour.ohlc?.length >= 2 ?
@@ -627,12 +716,19 @@ export class DeepResearchEngine {
         provider: 'cryptocompare'
       };
     } catch (error: any) {
+      console.error('❌ CRYPTOCOMPARE PROVIDER ERROR:', {
+        symbol,
+        error: error.message,
+        stack: error.stack,
+        latencyMs: Date.now() - startTime
+      });
+
       return {
         success: false,
         data: null,
         latencyMs: Date.now() - startTime,
         provider: 'cryptocompare',
-        error: error.message
+        error: error.message + ' | Stack: ' + error.stack
       };
     }
   }
@@ -748,7 +844,11 @@ export class DeepResearchEngine {
     const startTime = Date.now();
 
     try {
+      console.log('🔄 COINMARKETCAP PROVIDER: Starting fetch for', symbol, '- API Key present:', !!(integrations.cmc?.apiKey));
+      console.log('🔄 COINMARKETCAP PROVIDER: Attempting fetch for COINMARKETCAP API...');
+
       const metadata = await fetchCoinMarketCapMetadata(symbol, integrations.cmc?.apiKey);
+      console.log('🔄 COINMARKETCAP PROVIDER: Response received - success:', metadata?.success, 'name:', metadata?.metadata?.name);
 
       if (!metadata || !metadata.success) {
         throw new Error('Failed to fetch CMC metadata');
@@ -772,12 +872,19 @@ export class DeepResearchEngine {
         provider: 'coinmarketcap'
       };
     } catch (error: any) {
+      console.error('❌ COINMARKETCAP PROVIDER ERROR:', {
+        symbol,
+        error: error.message,
+        stack: error.stack,
+        latencyMs: Date.now() - startTime
+      });
+
       return {
         success: false,
         data: null,
         latencyMs: Date.now() - startTime,
         provider: 'coinmarketcap',
-        error: error.message
+        error: error.message + ' | Stack: ' + error.stack
       };
     }
   }
@@ -834,7 +941,11 @@ export class DeepResearchEngine {
     const startTime = Date.now();
 
     try {
+      console.log('🔄 NEWSDATA PROVIDER: Starting fetch for', symbol, '- API Key present:', !!(integrations.newsdata?.apiKey));
+      console.log('🔄 NEWSDATA PROVIDER: Attempting fetch for NEWSDATA API...');
+
       const newsData = await fetchNewsData(integrations.newsdata?.apiKey || '', symbol);
+      console.log('🔄 NEWSDATA PROVIDER: Response received - success:', newsData?.success, 'article count:', newsData?.articles?.length);
 
       if (!newsData || !newsData.success) {
         throw new Error('Failed to fetch news data');
@@ -859,12 +970,19 @@ export class DeepResearchEngine {
         provider: 'newsdata'
       };
     } catch (error: any) {
+      console.error('❌ NEWSDATA PROVIDER ERROR:', {
+        symbol,
+        error: error.message,
+        stack: error.stack,
+        latencyMs: Date.now() - startTime
+      });
+
       return {
         success: false,
         data: null,
         latencyMs: Date.now() - startTime,
         provider: 'newsdata',
-        error: error.message
+        error: error.message + ' | Stack: ' + error.stack
       };
     }
   }
@@ -1173,6 +1291,32 @@ export class DeepResearchEngine {
         cryptocompare: ccResult.data,
         cmc: cmcResult.data,
         news: newsResult.data
+      },
+      providers: {
+        binance: {
+          success: binanceResult.success,
+          latency: binanceResult.latencyMs,
+          data: binanceResult.data,
+          error: binanceResult.error
+        },
+        cryptocompare: {
+          success: ccResult.success,
+          latency: ccResult.latencyMs,
+          data: ccResult.data,
+          error: ccResult.error
+        },
+        cmc: {
+          success: cmcResult.success,
+          latency: cmcResult.latencyMs,
+          data: cmcResult.data,
+          error: cmcResult.error
+        },
+        news: {
+          success: newsResult.success,
+          latency: newsResult.latencyMs,
+          data: newsResult.data,
+          error: newsResult.error
+        }
       }
     };
   }

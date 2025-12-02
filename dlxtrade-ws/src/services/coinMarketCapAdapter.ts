@@ -5,12 +5,18 @@ import { logger } from '../utils/logger';
 
 const BASE_URL = 'https://pro-api.coinmarketcap.com/v1';
 
-// Convert symbol to CoinMarketCap ID
-function getCoinMarketCapId(symbol: string): string {
+// Parse symbol for CoinMarketCap (BTCUSDT → BTC)
+function parseCoinMarketCapSymbol(symbol: string): string {
   // Extract base symbol first
   let baseSymbol = symbol.toUpperCase();
   baseSymbol = baseSymbol.replace(/USDT$/, '');
   baseSymbol = baseSymbol.replace(/USD$/, '');
+  return baseSymbol;
+}
+
+// Convert symbol to CoinMarketCap ID
+function getCoinMarketCapId(symbol: string): string {
+  const baseSymbol = parseCoinMarketCapSymbol(symbol);
 
   // Common cryptocurrency ID mappings
   const symbolToId: { [key: string]: string } = {
@@ -72,7 +78,7 @@ export class CoinMarketCapAdapter {
           convert: 'USD'
         },
         headers: this.apiKey ? { 'X-CMC_PRO_API_KEY': this.apiKey } : {},
-        timeout: 5000,
+        timeout: 15000, // Increased for Render startup
       });
 
       if (response.status === 200 && response.data && !response.data.status?.error_code) {
@@ -294,12 +300,12 @@ export async function fetchCoinMarketCapMarketData(symbol: string, apiKey?: stri
     const listingsUrl = `${BASE_URL}/cryptocurrency/listings/latest?limit=500&convert=USD`;
     const listingsResponse = await attemptWithRetry(listingsUrl, apiKey);
 
-    if (quotesResponse === null) {
-      console.log('[CoinMarketCap] FALLBACK - Rate limited during quotes request');
+    if (!listingsResponse || !listingsResponse.data) {
+      console.log('[CoinMarketCap] FALLBACK - Failed to get listings response');
       return {
         provider: 'coinmarketcap',
         success: false,
-        error: 'Rate limited',
+        error: 'Failed to get listings data',
         marketData: {},
         liquidity: 0,
         marketCap: 0,
@@ -311,6 +317,7 @@ export async function fetchCoinMarketCapMarketData(symbol: string, apiKey?: stri
 
     // Find the matching symbol in the listings
     const coinListings = listingsData?.data;
+    const cmcSymbol = parseCoinMarketCapSymbol(symbol);
     const coinData = coinListings?.find((coin: any) =>
       coin.symbol.toUpperCase() === cmcSymbol.toUpperCase() ||
       coin.name.toUpperCase() === cmcSymbol.toUpperCase()

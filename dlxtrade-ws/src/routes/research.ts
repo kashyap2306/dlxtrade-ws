@@ -1,6 +1,7 @@
 ﻿import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { firestoreAdapter } from '../services/firestoreAdapter';
 import { runFreeModeDeepResearch, deepResearchEngine } from '../services/deepResearchEngine';
+import { getUserIntegrations } from './integrations';
 import { z } from 'zod';
 import { logger } from '../utils/logger';
 
@@ -77,8 +78,20 @@ export async function researchRoutes(fastify: FastifyInstance) {
         try {
           logger.info({ uid, symbol, requestId, mode }, 'Running FREE MODE deep research for symbol');
 
-          // Run FREE MODE Deep Research v1.5
-          const result = await runFreeModeDeepResearch(uid, symbol);
+          // Get user integrations for API keys
+          const userIntegrations = await getUserIntegrations(uid);
+          console.log("🔑 DEEP RESEARCH - Integrations Loaded:", {
+            uid,
+            symbol,
+            hasBinanceKey: !!(userIntegrations.binance?.apiKey),
+            hasCryptoCompareKey: !!(userIntegrations.cryptocompare?.apiKey),
+            hasCMCKey: !!(userIntegrations.cmc?.apiKey),
+            hasNewsDataKey: !!(userIntegrations.newsdata?.apiKey),
+            integrations: userIntegrations
+          });
+
+          // Run FREE MODE Deep Research v1.5 with user integrations
+          const result = await runFreeModeDeepResearch(uid, symbol, undefined, userIntegrations);
 
           results.push({
             symbol,
@@ -147,8 +160,11 @@ export async function researchRoutes(fastify: FastifyInstance) {
         try {
           logger.info({ uid, symbol, requestId }, 'Running FREE MODE deep research for symbol');
 
-          // Call FREE MODE Deep Research v1.5
-          const result = await runFreeModeDeepResearch(uid, symbol);
+          // Get user integrations for API keys
+          const userIntegrations = await getUserIntegrations(uid);
+
+          // Call FREE MODE Deep Research v1.5 with user integrations
+          const result = await runFreeModeDeepResearch(uid, symbol, undefined, userIntegrations);
 
           results.push({
             symbol,

@@ -31,7 +31,7 @@ export class CryptoCompareAdapter {
           tsyms: 'USD',
           api_key: this.apiKey
         },
-        timeout: 5000,
+        timeout: 15000, // Increased for Render startup
       });
 
       if (response.status === 200 && response.data && !response.data.Response?.includes('Error')) {

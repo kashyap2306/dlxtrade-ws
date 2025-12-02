@@ -158,10 +158,6 @@ export async function buildApp(): Promise<FastifyInstance> {
     return { status: 'ok', timestamp: new Date().toISOString() };
   });
 
-  // API Health check route (no auth required)
-  app.get('/api/health', async (request, reply) => {
-    return { status: 'ok' };
-  });
 
   // Admin WebSocket endpoint for real-time admin events
   app.get('/ws/admin', { websocket: true }, async (connection, req) => {

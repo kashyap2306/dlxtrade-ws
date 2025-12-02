@@ -258,24 +258,39 @@ export default function ResearchPanel() {
         }
 
         // Add clean results to deep research results array (FREE MODE format)
-        const cleanResults = response.data.results.map((result: any) => ({
-          ...result,
-          id: `free_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          // Map FREE MODE response to existing UI format
-          signal: result.result?.signal || 'HOLD',
-          accuracy: result.result?.accuracy || 0,
-          price: result.result?.raw?.binance?.price || 0,
-          volume24h: result.result?.raw?.binance?.volume24h || 0,
-          high24h: result.result?.raw?.binance?.high24h || 0,
-          low24h: result.result?.raw?.binance?.low24h || 0,
-          marketCap: result.result?.metadata?.supply?.circulating || 0,
-          vwapDeviation: 0, // Not available in FREE MODE
-          indicators: result.result?.indicators || {},
-          metadata: result.result?.metadata || {},
-          news: result.result?.news || [],
-          raw: result.result?.raw || {},
-          mode: 'free'
-        }));
+        const cleanResults = response.data.results.map((result: any) => {
+          // Add debugging logs for provider results
+          console.log('🔍 DEEP RESEARCH RESULT:', {
+            symbol: result.symbol,
+            signal: result.signal,
+            accuracy: result.accuracy,
+            providers: result.providers,
+            indicators: result.indicators,
+            metadata: result.metadata
+          });
+
+          console.log("Frontend received research result:", result);
+
+          return {
+            ...result,
+            id: `free_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            // Map FREE MODE response to existing UI format (result is now direct, not nested)
+            signal: result.signal || 'HOLD',
+            accuracy: result.accuracy || 0,
+            price: result.raw?.binance?.price || 0,
+            volume24h: result.raw?.binance?.volume24h || 0,
+            high24h: result.raw?.binance?.high24h || 0,
+            low24h: result.raw?.binance?.low24h || 0,
+            marketCap: result.metadata?.supply?.circulating || 0,
+            vwapDeviation: 0, // Not available in FREE MODE
+            indicators: result.indicators || {},
+            metadata: result.metadata || {},
+            news: result.news || [],
+            raw: result.raw || {},
+            providers: result.providers || {}, // Add providers info to result
+            mode: 'free'
+          };
+        });
         setDeepResearchResults((prev) => [...cleanResults, ...prev]);
 
         const topResult = response.data.results[0];
@@ -969,25 +984,25 @@ export default function ResearchPanel() {
                               <div className="flex items-center justify-between mb-2">
                                 <span className="text-xs font-medium text-slate-400">RSI (14)</span>
                                 <div className={`w-2 h-2 rounded-full ${
-                                  (result.indicators?.rsi || 0) > 70 ? 'bg-red-500' :
-                                  (result.indicators?.rsi || 0) < 30 ? 'bg-green-500' :
+                                  (result.indicators?.rsi?.value || 0) > 70 ? 'bg-red-500' :
+                                  (result.indicators?.rsi?.value || 0) < 30 ? 'bg-green-500' :
                                   'bg-blue-500'
                                 }`}></div>
                               </div>
-                              <div className="text-2xl font-bold text-white mb-2">{result.indicators?.rsi?.toFixed(1) || '50.0'}</div>
+                              <div className="text-2xl font-bold text-white mb-2">{result.indicators?.rsi?.value?.toFixed(1) || '50.0'}</div>
                               <div className="w-full bg-slate-700/50 rounded-full h-1.5">
                                 <div
                                   className={`h-full rounded-full transition-all duration-500 ${
-                                    (result.indicators?.rsi || 0) > 70 ? 'bg-gradient-to-r from-red-500 to-red-600' :
-                                    (result.indicators?.rsi || 0) < 30 ? 'bg-gradient-to-r from-green-500 to-green-600' :
+                                    (result.indicators?.rsi?.value || 0) > 70 ? 'bg-gradient-to-r from-red-500 to-red-600' :
+                                    (result.indicators?.rsi?.value || 0) < 30 ? 'bg-gradient-to-r from-green-500 to-green-600' :
                                     'bg-gradient-to-r from-blue-500 to-blue-600'
                                   }`}
-                                  style={{ width: `${Math.min(100, Math.max(0, result.indicators?.rsi || 50))}%` }}
+                                  style={{ width: `${Math.min(100, Math.max(0, result.indicators?.rsi?.value || 50))}%` }}
                                 ></div>
                               </div>
                               <div className="text-xs text-slate-400 mt-1">
-                                {(result.indicators?.rsi || 0) > 70 ? 'Overbought' :
-                                 (result.indicators?.rsi || 0) < 30 ? 'Oversold' :
+                                {(result.indicators?.rsi?.value || 0) > 70 ? 'Overbought' :
+                                 (result.indicators?.rsi?.value || 0) < 30 ? 'Oversold' :
                                  'Neutral'}
                               </div>
                             </div>
@@ -995,38 +1010,76 @@ export default function ResearchPanel() {
                             {/* MA50 */}
                             <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-4 hover:bg-slate-800/70 transition-all duration-200">
                               <div className="flex items-center justify-between mb-2">
-                                <span className="text-xs font-medium text-slate-400">MA50</span>
+                                <span className="text-xs font-medium text-slate-400">SMA50</span>
                                 <svg className={`w-3 h-3 ${
-                                  (result.indicators?.ma50 || 0) > (result.raw?.binance?.price || 0) ? 'text-red-400' : 'text-green-400'
+                                  (result.indicators?.sma?.sma50 || 0) > (result.raw?.binance?.price || 0) ? 'text-red-400' : 'text-green-400'
                                 }`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                    d={(result.indicators?.ma50 || 0) > (result.raw?.binance?.price || 0) ? "M5 15l7-7 7 7" : "M19 9l-7 7-7-7"} />
+                                    d={(result.indicators?.sma?.sma50 || 0) > (result.raw?.binance?.price || 0) ? "M5 15l7-7 7 7" : "M19 9l-7 7-7-7"} />
                                 </svg>
                               </div>
-                              <div className="text-lg font-bold text-white">${result.result?.indicators?.ma50?.toFixed(2) || 'N/A'}</div>
+                              <div className="text-lg font-bold text-white">${result.indicators?.sma?.sma50?.toFixed(2) || 'N/A'}</div>
                               <div className={`text-xs mt-1 ${
-                                (result.indicators?.ma50 || 0) > (result.raw?.binance?.price || 0) ? 'text-red-400' : 'text-green-400'
+                                (result.indicators?.sma?.sma50 || 0) > (result.raw?.binance?.price || 0) ? 'text-red-400' : 'text-green-400'
                               }`}>
-                                {(result.indicators?.ma50 || 0) > (result.raw?.binance?.price || 0) ? 'Resistance' : 'Support'}
+                                {(result.indicators?.sma?.sma50 || 0) > (result.raw?.binance?.price || 0) ? 'Resistance' : 'Support'}
                               </div>
                             </div>
 
-                            {/* MA200 */}
+                            {/* SMA200 */}
                             <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-4 hover:bg-slate-800/70 transition-all duration-200">
                               <div className="flex items-center justify-between mb-2">
-                                <span className="text-xs font-medium text-slate-400">MA200</span>
+                                <span className="text-xs font-medium text-slate-400">SMA200</span>
                                 <svg className={`w-3 h-3 ${
-                                  (result.indicators?.ma200 || 0) > (result.raw?.binance?.price || 0) ? 'text-red-400' : 'text-green-400'
+                                  (result.indicators?.sma?.sma200 || 0) > (result.raw?.binance?.price || 0) ? 'text-red-400' : 'text-green-400'
                                 }`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                    d={(result.indicators?.ma200 || 0) > (result.raw?.binance?.price || 0) ? "M5 15l7-7 7 7" : "M19 9l-7 7-7-7"} />
+                                    d={(result.indicators?.sma?.sma200 || 0) > (result.raw?.binance?.price || 0) ? "M5 15l7-7 7 7" : "M19 9l-7 7-7-7"} />
                                 </svg>
                               </div>
-                              <div className="text-lg font-bold text-white">${result.result?.indicators?.ma200?.toFixed(2) || 'N/A'}</div>
+                              <div className="text-lg font-bold text-white">${result.indicators?.sma?.sma200?.toFixed(2) || 'N/A'}</div>
                               <div className={`text-xs mt-1 ${
-                                (result.indicators?.ma200 || 0) > (result.raw?.binance?.price || 0) ? 'text-red-400' : 'text-green-400'
+                                (result.indicators?.sma?.sma200 || 0) > (result.raw?.binance?.price || 0) ? 'text-red-400' : 'text-green-400'
                               }`}>
-                                {(result.indicators?.ma200 || 0) > (result.raw?.binance?.price || 0) ? 'Resistance' : 'Support'}
+                                {(result.indicators?.sma?.sma200 || 0) > (result.raw?.binance?.price || 0) ? 'Resistance' : 'Support'}
+                              </div>
+                            </div>
+
+                            {/* EMA50 */}
+                            <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-4 hover:bg-slate-800/70 transition-all duration-200">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs font-medium text-slate-400">EMA50</span>
+                                <svg className={`w-3 h-3 ${
+                                  (result.indicators?.ema?.ema50 || 0) > (result.raw?.binance?.price || 0) ? 'text-red-400' : 'text-green-400'
+                                }`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                    d={(result.indicators?.ema?.ema50 || 0) > (result.raw?.binance?.price || 0) ? "M5 15l7-7 7 7" : "M19 9l-7 7-7-7"} />
+                                </svg>
+                              </div>
+                              <div className="text-lg font-bold text-white">${result.indicators?.ema?.ema50?.toFixed(2) || 'N/A'}</div>
+                              <div className={`text-xs mt-1 ${
+                                (result.indicators?.ema?.ema50 || 0) > (result.raw?.binance?.price || 0) ? 'text-red-400' : 'text-green-400'
+                              }`}>
+                                {(result.indicators?.ema?.ema50 || 0) > (result.raw?.binance?.price || 0) ? 'Resistance' : 'Support'}
+                              </div>
+                            </div>
+
+                            {/* EMA200 */}
+                            <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-4 hover:bg-slate-800/70 transition-all duration-200">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs font-medium text-slate-400">EMA200</span>
+                                <svg className={`w-3 h-3 ${
+                                  (result.indicators?.ema?.ema200 || 0) > (result.raw?.binance?.price || 0) ? 'text-red-400' : 'text-green-400'
+                                }`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                    d={(result.indicators?.ema?.ema200 || 0) > (result.raw?.binance?.price || 0) ? "M5 15l7-7 7 7" : "M19 9l-7 7-7-7"} />
+                                </svg>
+                              </div>
+                              <div className="text-lg font-bold text-white">${result.indicators?.ema?.ema200?.toFixed(2) || 'N/A'}</div>
+                              <div className={`text-xs mt-1 ${
+                                (result.indicators?.ema?.ema200 || 0) > (result.raw?.binance?.price || 0) ? 'text-red-400' : 'text-green-400'
+                              }`}>
+                                {(result.indicators?.ema?.ema200 || 0) > (result.raw?.binance?.price || 0) ? 'Resistance' : 'Support'}
                               </div>
                             </div>
 
@@ -1035,19 +1088,19 @@ export default function ResearchPanel() {
                               <div className="flex items-center justify-between mb-2">
                                 <span className="text-xs font-medium text-slate-400">MACD</span>
                                 <div className={`w-2 h-2 rounded-full ${
-                                  (result.indicators?.macd?.macd || 0) > 0 ? 'bg-green-500' :
-                                  (result.indicators?.macd?.macd || 0) < 0 ? 'bg-red-500' :
+                                  (result.indicators?.macd?.value || 0) > 0 ? 'bg-green-500' :
+                                  (result.indicators?.macd?.value || 0) < 0 ? 'bg-red-500' :
                                   'bg-slate-500'
                                 }`}></div>
                               </div>
-                              <div className="text-lg font-bold text-white">{(result.indicators?.macd?.macd || 0).toFixed(4)}</div>
+                              <div className="text-lg font-bold text-white">{(result.indicators?.macd?.value || 0).toFixed(4)}</div>
                               <div className={`text-xs mt-1 ${
-                                (result.indicators?.macd?.macd || 0) > 0 ? 'text-green-400' :
-                                (result.indicators?.macd?.macd || 0) < 0 ? 'text-red-400' :
+                                (result.indicators?.macd?.value || 0) > 0 ? 'text-green-400' :
+                                (result.indicators?.macd?.value || 0) < 0 ? 'text-red-400' :
                                 'text-slate-400'
                               }`}>
-                                {(result.indicators?.macd?.macd || 0) > 0 ? 'Bullish' :
-                                 (result.indicators?.macd?.macd || 0) < 0 ? 'Bearish' :
+                                {(result.indicators?.macd?.value || 0) > 0 ? 'Bullish' :
+                                 (result.indicators?.macd?.value || 0) < 0 ? 'Bearish' :
                                  'Neutral'}
                               </div>
                             </div>
@@ -1057,17 +1110,20 @@ export default function ResearchPanel() {
                               <div className="flex items-center justify-between mb-2">
                                 <span className="text-xs font-medium text-slate-400">VWAP</span>
                                 <span className={`px-2 py-1 rounded text-xs font-medium ${
-                                  (result.deepAnalysis?.vwap?.deviationPct || 0) < -0.5 ? 'bg-green-500/20 text-green-400' :
-                                  (result.deepAnalysis?.vwap?.deviationPct || 0) > 0.5 ? 'bg-red-500/20 text-red-400' :
+                                  (result.indicators?.vwap?.signal === 'bullish') ? 'bg-green-500/20 text-green-400' :
+                                  (result.indicators?.vwap?.signal === 'bearish') ? 'bg-red-500/20 text-red-400' :
                                   'bg-blue-500/20 text-blue-400'
                                 }`}>
-                                  {(result.deepAnalysis?.vwap?.deviationPct || 0) < -0.5 ? 'Below VWAP' :
-                                   (result.deepAnalysis?.vwap?.deviationPct || 0) > 0.5 ? 'Above VWAP' :
-                                   'At VWAP'}
+                                  {result.indicators?.vwap?.signal === 'bullish' ? 'Bullish' :
+                                   result.indicators?.vwap?.signal === 'bearish' ? 'Bearish' :
+                                   'Neutral'}
                                 </span>
                               </div>
                               <div className="text-lg font-bold text-white">
-                                Deviation: {result.result?.indicators?.vwap?.deviationPct?.toFixed(2) || 'N/A'}%
+                                Signal: {result.indicators?.vwap?.signal || 'N/A'}
+                              </div>
+                              <div className="text-sm text-slate-400 mt-1">
+                                Deviation: {result.indicators?.vwap?.deviation?.toFixed(4) || 'N/A'}
                               </div>
                             </div>
 
@@ -1076,24 +1132,26 @@ export default function ResearchPanel() {
                               <div className="flex items-center justify-between mb-2">
                                 <span className="text-xs font-medium text-slate-400">ATR Volatility</span>
                                 <span className={`px-2 py-1 rounded text-xs font-medium ${
-                                  (result.deepAnalysis?.volatility?.atrPct || 0) > 3 ? 'bg-red-500/20 text-red-400' :
-                                  (result.deepAnalysis?.volatility?.atrPct || 0) > 1.5 ? 'bg-amber-500/20 text-amber-400' :
+                                  (result.indicators?.atr?.value || 0) > 3 ? 'bg-red-500/20 text-red-400' :
+                                  (result.indicators?.atr?.value || 0) > 1.5 ? 'bg-amber-500/20 text-amber-400' :
                                   'bg-green-500/20 text-green-400'
                                 }`}>
-                                  {result.deepAnalysis?.volatility?.classification || 'Unknown'}
+                                  {(result.indicators?.atr?.value || 0) > 3 ? 'High Volatility' :
+                                   (result.indicators?.atr?.value || 0) > 1.5 ? 'Medium Volatility' :
+                                   'Low Volatility'}
                                 </span>
                               </div>
                               <div className="text-lg font-bold text-white">
-                                {(result.deepAnalysis?.volatility?.atrPct || 0).toFixed(2)}%
+                                {result.indicators?.atr?.value?.toFixed(2) || 'N/A'}
                               </div>
                               <div className="w-full bg-slate-700/50 rounded-full h-1.5 mt-2">
                                 <div
                                   className={`h-full rounded-full transition-all duration-500 ${
-                                    (result.deepAnalysis?.volatility?.atrPct || 0) > 3 ? 'bg-gradient-to-r from-red-500 to-red-600' :
-                                    (result.deepAnalysis?.volatility?.atrPct || 0) > 1.5 ? 'bg-gradient-to-r from-amber-500 to-amber-600' :
+                                    (result.indicators?.atr?.value || 0) > 3 ? 'bg-gradient-to-r from-red-500 to-red-600' :
+                                    (result.indicators?.atr?.value || 0) > 1.5 ? 'bg-gradient-to-r from-amber-500 to-amber-600' :
                                     'bg-gradient-to-r from-green-500 to-green-600'
                                   }`}
-                                  style={{ width: `${Math.min(100, (result.deepAnalysis?.volatility?.atrPct || 0) * 10)}%` }}
+                                  style={{ width: `${Math.min(100, (result.indicators?.atr?.value || 0) * 10)}%` }}
                                 ></div>
                               </div>
                             </div>
@@ -1121,9 +1179,9 @@ export default function ResearchPanel() {
                               icon={<span className="text-orange-400 font-bold text-sm">B</span>}
                               name="Binance Public"
                               description="Price & Orderbook"
-                              status={result.providers?.binance?.hasData ? 'Success' : 'Failed'}
-                              latencyMs={result.providers?.binance?.latencyMs || 0}
-                              jsonData={result.providers?.binance?.raw || {}}
+                              status={result.providers?.binance?.success ? 'Success' : 'Failed'}
+                              latencyMs={result.providers?.binance?.latency || 0}
+                              jsonData={result.providers?.binance?.data || {}}
                             />
 
                             {/* CryptoCompare API */}
@@ -1131,9 +1189,9 @@ export default function ResearchPanel() {
                               icon={<span className="text-blue-400 font-bold text-sm">🟦</span>}
                               name="CryptoCompare"
                               description="OHLC Candles"
-                              status={result.raw?.cryptocompare ? 'Success' : 'Failed'}
-                              latencyMs={0}
-                              jsonData={result.raw?.cryptocompare || {}}
+                              status={result.providers?.cryptocompare?.success ? 'Success' : 'Failed'}
+                              latencyMs={result.providers?.cryptocompare?.latency || 0}
+                              jsonData={result.providers?.cryptocompare?.data || {}}
                             >
                               <div className="space-y-2">
                                 {result.raw?.cryptocompare && (
@@ -1175,9 +1233,9 @@ export default function ResearchPanel() {
                               icon={<span className="text-cyan-400 font-bold text-sm">🪙</span>}
                               name="CoinMarketCap"
                               description="Market Data"
-                              status={result.raw?.cmc ? 'Success' : 'Failed'}
-                              latencyMs={0}
-                              jsonData={result.raw?.cmc || {}}
+                              status={result.providers?.cmc?.success ? 'Success' : 'Failed'}
+                              latencyMs={result.providers?.cmc?.latency || 0}
+                              jsonData={result.providers?.cmc?.data || {}}
                             >
                               <div className="space-y-2">
                                 {result.metadata && (
@@ -1216,11 +1274,11 @@ export default function ResearchPanel() {
                               icon={<span className="text-green-400 font-bold text-sm">📰</span>}
                               name="Crypto News"
                               description="Latest Articles"
-                              status={result.raw?.news ? 'Success' : 'Failed'}
-                              latencyMs={0}
-                              sentiment={result.raw?.news?.sentimentScore}
+                              status={result.providers?.news?.success ? 'Success' : 'Failed'}
+                              latencyMs={result.providers?.news?.latency || 0}
+                              sentiment={result.providers?.news?.data?.sentimentScore}
                               articles={result.news?.articles || []}
-                              jsonData={result.raw?.news || {}}
+                              jsonData={result.providers?.news?.data || {}}
                             >
                               {(!result.raw?.news || !result.news?.articles?.length) && (
                                 <div className="text-center py-4">
@@ -1234,49 +1292,70 @@ export default function ResearchPanel() {
                               icon={<span className="text-blue-400 font-bold text-sm">📊</span>}
                               name="Provider Status"
                               description="Data Sources Used"
-                              status={result.raw ? 'Success' : 'Failed'}
+                              status={result.providers ? 'Success' : 'Failed'}
+                              latencyMs={0}
                               jsonData={{
-                                binance: result.raw?.binance ? 'Available' : 'Failed',
-                                cryptocompare: result.raw?.cryptocompare ? 'Available' : 'Failed',
-                                cmc: result.raw?.cmc ? 'Available' : 'Failed',
-                                news: result.raw?.news ? 'Available' : 'Failed'
+                                binance: result.providers?.binance?.success ? `Success (${result.providers.binance.latency}ms)` : `Failed: ${result.providers?.binance?.error || 'Unknown error'}`,
+                                cryptocompare: result.providers?.cryptocompare?.success ? `Success (${result.providers.cryptocompare.latency}ms)` : `Failed: ${result.providers?.cryptocompare?.error || 'Unknown error'}`,
+                                cmc: result.providers?.cmc?.success ? `Success (${result.providers.cmc.latency}ms)` : `Failed: ${result.providers?.cmc?.error || 'Unknown error'}`,
+                                news: result.providers?.news?.success ? `Success (${result.providers.news.latency}ms)` : `Failed: ${result.providers?.news?.error || 'Unknown error'}`
                               }}
                             >
                               <div className="space-y-2">
                                 <div className="flex justify-between items-center py-1">
                                   <span className="text-sm text-slate-300">Binance (Primary)</span>
                                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                                    result.raw?.binance ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                                    result.providers?.binance?.success ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
                                   }`}>
-                                    {result.raw?.binance ? 'Success' : 'Failed'}
+                                    {result.providers?.binance?.success ? `${result.providers.binance.latency}ms` : `Failed: ${result.providers?.binance?.error || 'Unknown'}`}
                                   </span>
                                 </div>
                                 <div className="flex justify-between items-center py-1">
                                   <span className="text-sm text-slate-300">CryptoCompare</span>
                                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                                    result.raw?.cryptocompare ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                                    result.providers?.cryptocompare?.success ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
                                   }`}>
-                                    {result.raw?.cryptocompare ? 'Success' : 'Failed'}
+                                    {result.providers?.cryptocompare?.success ? `${result.providers.cryptocompare.latency}ms` : `Failed: ${result.providers?.cryptocompare?.error || 'Unknown'}`}
                                   </span>
                                 </div>
                                 <div className="flex justify-between items-center py-1">
                                   <span className="text-sm text-slate-300">CoinMarketCap</span>
                                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                                    result.raw?.cmc ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                                    result.providers?.cmc?.success ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
                                   }`}>
-                                    {result.raw?.cmc ? 'Success' : 'Failed'}
+                                    {result.providers?.cmc?.success ? `${result.providers.cmc.latency}ms` : `Failed: ${result.providers?.cmc?.error || 'Unknown'}`}
                                   </span>
                                 </div>
                                 <div className="flex justify-between items-center py-1">
                                   <span className="text-sm text-slate-300">News Data</span>
                                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                                    result.raw?.news ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                                    result.providers?.news?.success ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
                                   }`}>
-                                    {result.raw?.news ? 'Success' : 'Failed'}
+                                    {result.providers?.news?.success ? `${result.providers.news.latency}ms` : `Failed: ${result.providers?.news?.error || 'Unknown'}`}
                                   </span>
                                 </div>
                               </div>
                             </ProviderCard>
+
+                            {/* Raw JSON Viewer */}
+                            <ProviderCard
+                              icon={<span className="text-purple-400 font-bold text-sm">🔧</span>}
+                              name="Raw Data"
+                              description="Complete Backend Response"
+                              status="Success"
+                              latencyMs={0}
+                              jsonData={{
+                                providers: result.providers,
+                                indicators: result.indicators,
+                                metadata: result.metadata,
+                                news: result.news,
+                                signals: {
+                                  signal: result.signal,
+                                  accuracy: result.accuracy,
+                                  price: result.price
+                                }
+                              }}
+                            />
                           </div>
                         </div>
                       </div>
@@ -1301,21 +1380,21 @@ export default function ResearchPanel() {
                               <summary className="flex items-center justify-between p-4 cursor-pointer">
                                 <div className="flex items-center gap-3">
                                   <div className={`w-3 h-3 rounded-full ${
-                                    (result.deepAnalysis?.rsi?.value || 0) > 70 ? 'bg-red-500' :
-                                    (result.deepAnalysis?.rsi?.value || 0) < 30 ? 'bg-green-500' :
+                                    (result.indicators?.rsi?.value || 0) > 70 ? 'bg-red-500' :
+                                    (result.indicators?.rsi?.value || 0) < 30 ? 'bg-green-500' :
                                     'bg-blue-500'
                                   }`}></div>
                                   <span className="text-sm font-medium text-white">RSI Analysis</span>
-                                  <span className="text-lg font-bold text-white">{result.deepAnalysis?.rsi?.value?.toFixed(1) || '50.0'}</span>
+                                  <span className="text-lg font-bold text-white">{result.indicators?.rsi?.value?.toFixed(1) || '50.0'}</span>
                                 </div>
                                 <div className="flex items-center gap-2">
                                   <span className={`px-2 py-1 rounded text-xs font-medium ${
-                                    (result.deepAnalysis?.rsi?.value || 0) > 70 ? 'bg-red-500/20 text-red-400' :
-                                    (result.deepAnalysis?.rsi?.value || 0) < 30 ? 'bg-green-500/20 text-green-400' :
+                                    (result.indicators?.rsi?.value || 0) > 70 ? 'bg-red-500/20 text-red-400' :
+                                    (result.indicators?.rsi?.value || 0) < 30 ? 'bg-green-500/20 text-green-400' :
                                     'bg-blue-500/20 text-blue-400'
                                   }`}>
-                                    {(result.deepAnalysis?.rsi?.value || 0) > 70 ? 'Overbought' :
-                                     (result.deepAnalysis?.rsi?.value || 0) < 30 ? 'Oversold' :
+                                    {(result.indicators?.rsi?.value || 0) > 70 ? 'Overbought' :
+                                     (result.indicators?.rsi?.value || 0) < 30 ? 'Oversold' :
                                      'Neutral'}
                                   </span>
                                   <svg className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1327,11 +1406,11 @@ export default function ResearchPanel() {
                                 <div className="grid grid-cols-2 gap-4 mt-3">
                                   <div className="bg-slate-900/50 rounded-lg p-3">
                                     <div className="text-xs text-slate-400 mb-1">Value</div>
-                                    <div className="text-lg font-bold text-white">{result.result?.indicators?.rsi?.value?.toFixed(2) || 'N/A'}</div>
+                                    <div className="text-lg font-bold text-white">{result.indicators?.rsi?.value?.toFixed(2) || 'N/A'}</div>
                                   </div>
                                   <div className="bg-slate-900/50 rounded-lg p-3">
                                     <div className="text-xs text-slate-400 mb-1">Strength</div>
-                                    <div className="text-lg font-bold text-white">{result.result?.indicators?.rsi?.strength?.toFixed(2) || 'N/A'}</div>
+                                    <div className="text-lg font-bold text-white">{result.indicators?.rsi?.strength?.toFixed(2) || 'N/A'}</div>
                                   </div>
                                 </div>
                                 <div className="mt-3 text-xs text-slate-400">
@@ -1351,11 +1430,11 @@ export default function ResearchPanel() {
                                 </div>
                                 <div className="flex items-center gap-2">
                                   <span className={`px-2 py-1 rounded text-xs font-medium ${
-                                    (result.deepAnalysis?.volume?.score || 0) > 0.6 ? 'bg-green-500/20 text-green-400' :
-                                    (result.deepAnalysis?.volume?.score || 0) < 0.4 ? 'bg-red-500/20 text-red-400' :
+                                    (result.indicators?.volume?.score || 0) > 0.6 ? 'bg-green-500/20 text-green-400' :
+                                    (result.indicators?.volume?.score || 0) < 0.4 ? 'bg-red-500/20 text-red-400' :
                                     'bg-amber-500/20 text-amber-400'
                                   }`}>
-                                    {result.deepAnalysis?.volume?.trend || 'neutral'}
+                                    {result.indicators?.volume?.trend || 'neutral'}
                                   </span>
                                   <svg className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -1366,11 +1445,11 @@ export default function ResearchPanel() {
                                 <div className="grid grid-cols-2 gap-4 mt-3">
                                   <div className="bg-slate-900/50 rounded-lg p-3">
                                     <div className="text-xs text-slate-400 mb-1">Volume Score</div>
-                                    <div className="text-lg font-bold text-white">{((result.deepAnalysis?.volume?.score || 0) * 100).toFixed(0)}%</div>
+                                    <div className="text-lg font-bold text-white">{((result.indicators?.volume?.score || 0) * 100).toFixed(0)}%</div>
                                   </div>
                                   <div className="bg-slate-900/50 rounded-lg p-3">
                                     <div className="text-xs text-slate-400 mb-1">Trend</div>
-                                    <div className="text-lg font-bold text-white capitalize">{result.deepAnalysis?.volume?.trend || 'Neutral'}</div>
+                                    <div className="text-lg font-bold text-white capitalize">{result.indicators?.volume?.trend || 'Neutral'}</div>
                                   </div>
                                 </div>
                               </div>

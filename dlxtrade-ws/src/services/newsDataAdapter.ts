@@ -74,7 +74,7 @@ export class NewsDataAdapter {
           language: 'en',
           size: 1
         },
-        timeout: 5000,
+        timeout: 15000, // Increased for Render startup
       });
 
       if (response.status === 200 && response.data && response.data.status !== 'error') {

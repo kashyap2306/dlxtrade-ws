@@ -178,7 +178,7 @@ export class BinanceAdapter implements ExchangeConnector {
         try {
           const publicClient = axios.create({
             baseURL: baseUrl,
-            timeout: 10000,
+            timeout: 15000, // Increased to 15 seconds for Render startup
           });
 
           // Try ticker/24hr endpoint first, fallback to ticker/price
@@ -200,13 +200,42 @@ export class BinanceAdapter implements ExchangeConnector {
           }
 
           if (tickerData.data && tickerData.data.lastPrice) {
+            // Also fetch OHLC data for technical analysis
+            let ohlcData = [];
+            try {
+              const klinesData = await publicClient.get('/api/v3/klines', {
+                params: {
+                  symbol: symbol.toUpperCase(),
+                  interval: '1h',
+                  limit: 100
+                }
+              });
+
+              if (klinesData.data && Array.isArray(klinesData.data)) {
+                ohlcData = klinesData.data.map((kline: any[]) => ({
+                  timestamp: parseInt(kline[0]),
+                  open: parseFloat(kline[1]),
+                  high: parseFloat(kline[2]),
+                  low: parseFloat(kline[3]),
+                  close: parseFloat(kline[4]),
+                  volume: parseFloat(kline[5])
+                }));
+              }
+            } catch (klinesError: any) {
+              console.warn('Failed to fetch OHLC data from Binance:', klinesError.message);
+              // Continue without OHLC data
+            }
+
             return {
+              hasData: true,
               lastPrice: parseFloat(tickerData.data.lastPrice || '0'),
               volume24h: parseFloat(tickerData.data.volume || '0'),
               priceChangePercent24h: parseFloat(tickerData.data.priceChangePercent || '0'),
               high24h: parseFloat(tickerData.data.highPrice || '0'),
               low24h: parseFloat(tickerData.data.lowPrice || '0'),
               symbol: tickerData.data.symbol,
+              ohlc: ohlcData,
+              orderbook: [] // Placeholder for orderbook data
             };
           }
 
