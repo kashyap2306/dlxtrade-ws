@@ -50,20 +50,14 @@ export default function Profile() {
       // Load all profile data in parallel with Promise.allSettled for resilience
       const [
         userResponse,
-        statsResponse,
         sessionsResponse,
-        providersResponse,
-        usageResponse,
         agentsResponse,
-        unlocksResponse,
+        unlockedAgentsResponse,
       ] = await Promise.allSettled([
         usersApi.get(user.uid),
-        usersApi.getStats(user.uid),
         usersApi.getSessions(user.uid),
-        researchApi.run({ symbols: ['BTCUSDT'], type: 'manual' }),
-        usersApi.getUsageStats(user.uid),
         agentsApi.getAll(),
-        agentsApi.getUnlocks(),
+        agentsApi.getUnlocked(),
       ]);
 
       // Handle results - continue even if some APIs fail
@@ -80,13 +74,6 @@ export default function Profile() {
         throw userResponse.reason;
       }
 
-      if (statsResponse.status === 'fulfilled' && isMountedRef.current) {
-        setUserStats(statsResponse.value.data);
-      } else if (statsResponse.status === 'rejected') {
-        suppressConsoleError(statsResponse.reason, 'loadUserStats');
-        setUserStats(null);
-      }
-
       if (sessionsResponse.status === 'fulfilled' && isMountedRef.current) {
         setSessions(sessionsResponse.value.data.sessions || []);
       } else if (sessionsResponse.status === 'rejected') {
@@ -94,59 +81,14 @@ export default function Profile() {
         setSessions([]);
       }
 
-      // Parse real provider status from research API response
-      if (providersResponse.status === 'fulfilled' && isMountedRef.current) {
-        const researchData = providersResponse.value.data;
-        if (researchData.results && researchData.results[0] && researchData.results[0].result) {
-          const providerData = researchData.results[0].result.raw || {};
-
-          setApiProvidersStatus({
-            cryptoCompare: {
-              connected: !providerData.cryptoCompare?.error,
-              status: providerData.cryptoCompare?.error ? 'Missing API Key' : 'Connected',
-              hasData: !providerData.cryptoCompare?.error,
-              latencyMs: providerData.cryptoCompare?.latencyMs
-            },
-            newsData: {
-              connected: !providerData.newsData?.failed,
-              status: providerData.newsData?.failed ? 'Missing API Key' : 'Connected',
-              hasData: !providerData.newsData?.failed,
-              latencyMs: providerData.newsData?.latencyMs
-            },
-            coinMarketCap: {
-              connected: !providerData.coinMarketCap?.failed,
-              status: providerData.coinMarketCap?.failed ? 'Missing API Key' : 'Connected',
-              hasData: !providerData.coinMarketCap?.failed,
-              latencyMs: providerData.coinMarketCap?.latencyMs
-            },
-            binancePublic: {
-              connected: true, // Binance public API doesn't require keys
-              status: 'Active',
-              hasData: !!providerData.binancePublic?.lastPrice,
-              price: providerData.binancePublic?.lastPrice,
-              volume24h: providerData.binancePublic?.volume24h,
-              high24h: providerData.binancePublic?.high24h,
-              low24h: providerData.binancePublic?.low24h,
-              latencyMs: providerData.binancePublic?.latencyMs
-            }
-          });
-        }
-      } else if (providersResponse.status === 'rejected') {
-        suppressConsoleError(providersResponse.reason, 'loadProviderStatus');
-        // Set default status if API fails
+      // Set default provider status (no real provider data available from valid endpoints)
+      if (isMountedRef.current) {
         setApiProvidersStatus({
-          cryptoCompare: { connected: false, status: 'API Error' },
-          newsData: { connected: false, status: 'API Error' },
-          coinMarketCap: { connected: false, status: 'API Error' },
-          binancePublic: { connected: true, status: 'Active' }
+          cryptoCompare: { connected: false, status: 'API Key Required', hasData: false, latencyMs: 0 },
+          newsData: { connected: false, status: 'API Key Required', hasData: false, latencyMs: 0 },
+          coinMarketCap: { connected: false, status: 'API Key Required', hasData: false, latencyMs: 0 },
+          binancePublic: { connected: true, status: 'Active', hasData: true, latencyMs: 0 }
         });
-      }
-
-      if (usageResponse.status === 'fulfilled' && isMountedRef.current) {
-        setUsageStats(usageResponse.value.data);
-      } else if (usageResponse.status === 'rejected') {
-        suppressConsoleError(usageResponse.reason, 'loadUsageStats');
-        setUsageStats(null);
       }
 
       if (agentsResponse.status === 'fulfilled' && isMountedRef.current) {
@@ -156,10 +98,10 @@ export default function Profile() {
         setAllAgents([]);
       }
 
-      if (unlocksResponse.status === 'fulfilled' && isMountedRef.current) {
-        setUnlockedAgents(unlocksResponse.value.data.unlocks || []);
-      } else if (unlocksResponse.status === 'rejected') {
-        suppressConsoleError(unlocksResponse.reason, 'loadUnlockedAgents');
+      if (unlockedAgentsResponse.status === 'fulfilled' && isMountedRef.current) {
+        setUnlockedAgents(unlockedAgentsResponse.value.data.unlocked || []);
+      } else if (unlockedAgentsResponse.status === 'rejected') {
+        suppressConsoleError(unlockedAgentsResponse.reason, 'loadUnlockedAgents');
         setUnlockedAgents([]);
       }
 

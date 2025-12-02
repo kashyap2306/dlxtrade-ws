@@ -2,8 +2,8 @@ import axios, { AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'ax
 import { getAuth } from 'firebase/auth';
 import { API_BASE_URL } from './env';
 
-// Construct API base URL with /api path and trailing slash
-const baseURL = `${API_BASE_URL}/api/`;
+// Construct API base URL with /api path
+const baseURL = `${API_BASE_URL}/api`;
 
 // Circuit breaker state
 interface CircuitBreakerState {
@@ -283,7 +283,7 @@ class HealthPingService {
     console.log('[API] Starting background health ping service (every 60s)');
     this.intervalId = setInterval(async () => {
       try {
-        const response = await axios.get(`${import.meta.env.VITE_API_URL}/health`, {
+        const response = await axios.get(`${API_BASE_URL}/health`, {
           timeout: 5000, // Short timeout for health checks
         });
 

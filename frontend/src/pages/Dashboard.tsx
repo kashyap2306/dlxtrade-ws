@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import Sidebar from '../components/Sidebar';
-import { autoTradeApi, usersApi, walletApi, researchApi } from '../services/api';
+import { autoTradeApi, usersApi, researchApi, globalStatsApi, engineStatusApi, settingsApi, notificationsApi, agentsApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { suppressConsoleError } from '../utils/errorHandler';
 import ExchangeAccountsSection from '../components/ExchangeAccountsSection';
@@ -12,27 +12,7 @@ import { useNavigate } from 'react-router-dom';
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
 import { ArrowTrendingUpIcon, ArrowTrendingDownIcon, WalletIcon, ChartBarIcon, BoltIcon, CpuChipIcon } from '@heroicons/react/24/outline';
 
-// --- Begin: safe wallet balances helper ---
-const getWalletBalancesSafe = async () => {
-  try {
-    // If loadWalletBalances is defined somewhere and exported, use it.
-    if (typeof loadWalletBalances === 'function') {
-      return await loadWalletBalances();
-    }
-    // Otherwise fallback to existing backend API endpoint
-    const resp = await fetch('/api/wallet/balances', { method: 'GET', headers: { 'Content-Type': 'application/json' } });
-    if (!resp.ok) {
-      console.warn('Fallback wallet balances API returned non-ok', resp.status);
-      return [];
-    }
-    const json = await resp.json();
-    return json?.data ?? json ?? [];
-  } catch (err) {
-    console.error('getWalletBalancesSafe error', err);
-    return [];
-  }
-};
-// --- End: safe wallet balances helper ---
+// Wallet balances are now loaded from global-stats endpoint
 
 // Lazy load heavy components for better performance
 const AutoTradeMode = lazy(() => import('../components/AutoTradeMode'));
@@ -77,32 +57,29 @@ export default function Dashboard() {
     if (!user || !isMountedRef.current) return;
     console.log('loadDashboardData called for user:', user.uid);
     try {
-      // Load multiple dashboard APIs in parallel
-      const [globalStatsRes, engineStatusRes, agentsUnlockedRes, hftLogsRes, tradesRes, activityLogsRes] = await Promise.all([
-        usersApi.getStats(user.uid).catch(() => ({ data: {} })),
-        usersApi.getExchangeStatus(user.uid).catch(() => ({ data: {} })),
+      // Load multiple dashboard APIs in parallel using only valid endpoints
+      const [globalStatsRes, engineStatusRes, agentsUnlockedRes, settingsRes, notificationsRes] = await Promise.all([
+        globalStatsApi.get().catch(() => ({ data: {} })),
+        engineStatusApi.get().catch(() => ({ data: {} })),
         agentsApi.getUnlocked().catch(() => ({ data: [] })),
-        usersApi.getUsageStats(user.uid).catch(() => ({ data: [] })),
-        tradesApi.get({ uid: user.uid, limit: 20 }).catch(() => ({ data: [] })),
-        activityLogsApi.get({ uid: user.uid, limit: 50 }).catch(() => ({ data: [] }))
+        settingsApi.load().catch(() => ({ data: {} })),
+        notificationsApi.get({ limit: 20 }).catch(() => ({ data: [] }))
       ]);
 
       console.log('Dashboard API responses:', {
         globalStats: globalStatsRes?.data,
         engineStatus: engineStatusRes?.data,
         agentsUnlocked: agentsUnlockedRes?.data,
-        hftLogs: hftLogsRes?.data,
-        trades: tradesRes?.data,
-        activityLogs: activityLogsRes?.data
+        settings: settingsRes?.data,
+        notifications: notificationsRes?.data
       });
 
       const dashboardData = {
         globalStats: globalStatsRes?.data || {},
         engineStatus: engineStatusRes?.data || {},
-        agentsUnlocked: agentsUnlockedRes?.data || [],
-        hftLogs: hftLogsRes?.data || [],
-        trades: tradesRes?.data || [],
-        activityLogs: activityLogsRes?.data || []
+        agentsUnlocked: agentsUnlockedRes?.data?.unlocked || [],
+        settings: settingsRes?.data || {},
+        notifications: notificationsRes?.data || []
       };
 
       if (isMountedRef.current) {
@@ -112,7 +89,7 @@ export default function Dashboard() {
         // For backward compatibility, also set legacy state variables
         setAutoTradeStatus(dashboardData?.engineStatus || null);
         setUserStats(dashboardData?.globalStats || null);
-        setWalletBalances(dashboardData?.globalStats?.wallet || null);
+        setWalletBalances([]); // Wallet data not available from current endpoints
         setActiveTrades(dashboardData?.hftLogs || []);
         setAiSignals(dashboardData?.activityLogs || []);
         setPerformanceStats(dashboardData?.globalStats || null);
@@ -218,7 +195,7 @@ export default function Dashboard() {
       // Generate mock 7-day portfolio history for demo
       // In production, this would come from a dedicated endpoint
       const history = [];
-      const baseValue = walletBalances?.totalUsdValue || 10000;
+      const baseValue = 10000; // Default portfolio value since wallet data not available
       let currentValue = baseValue;
 
       for (let i = 6; i >= 0; i--) {
@@ -243,7 +220,7 @@ export default function Dashboard() {
         setPortfolioHistory([]);
       }
     }
-  }, [user, walletBalances]);
+  }, [user]); // Removed walletBalances dependency since it's no longer dynamic
 
   const checkAlerts = useCallback(() => {
     if (!isMountedRef.current) return;
@@ -645,10 +622,8 @@ export default function Dashboard() {
                 <div className="flex flex-col justify-center">
                   <div className="text-center">
                     {Array.isArray(walletBalances) && walletBalances.length ? (
-                      <div className={`text-2xl font-bold mb-2 ${
-                        walletBalances?.change24h >= 0 ? 'text-emerald-400' : 'text-red-400'
-                      }`}>
-                        {walletBalances?.change24h >= 0 ? '+' : ''}{walletBalances?.change24h?.toFixed(2) || '0.00'}%
+                      <div className="text-2xl font-bold mb-2 text-slate-400">
+                        Data not available
                       </div>
                     ) : (
                       <div className="text-2xl font-bold mb-2 text-slate-400">

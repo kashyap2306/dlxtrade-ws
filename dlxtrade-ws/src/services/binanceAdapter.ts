@@ -184,16 +184,22 @@ export class BinanceAdapter implements ExchangeConnector {
           // Try ticker/24hr endpoint first, fallback to ticker/price
           let tickerData;
           try {
+            console.log("[HTTP-REQ]", "BinanceAdapter", `${baseUrl}/api/v3/ticker/24hr`);
             tickerData = await publicClient.get('/api/v3/ticker/24hr', {
               params: { symbol: symbol.toUpperCase() }
             });
+            console.log("[HTTP-RES]", "BinanceAdapter", `${baseUrl}/api/v3/ticker/24hr`, "status", tickerData.status);
           } catch (ticker24hError: any) {
+            console.error("[HTTP-ERR]", "BinanceAdapter", `${baseUrl}/api/v3/ticker/24hr`, ticker24hError.message, ticker24hError.stack);
             // Auto fallback to ticker/price if 24hr fails
             try {
+              console.log("[HTTP-REQ]", "BinanceAdapter", `${baseUrl}/api/v3/ticker/price`);
               tickerData = await publicClient.get('/api/v3/ticker/price', {
                 params: { symbol: symbol.toUpperCase() }
               });
+              console.log("[HTTP-RES]", "BinanceAdapter", `${baseUrl}/api/v3/ticker/price`, "status", tickerData.status);
             } catch (tickerPriceError: any) {
+              console.error("[HTTP-ERR]", "BinanceAdapter", `${baseUrl}/api/v3/ticker/price`, tickerPriceError.message, tickerPriceError.stack);
               // Both endpoints failed for this baseUrl
               throw tickerPriceError;
             }
@@ -203,6 +209,7 @@ export class BinanceAdapter implements ExchangeConnector {
             // Also fetch OHLC data for technical analysis
             let ohlcData = [];
             try {
+              console.log("[HTTP-REQ]", "BinanceAdapter", `${baseUrl}/api/v3/klines`);
               const klinesData = await publicClient.get('/api/v3/klines', {
                 params: {
                   symbol: symbol.toUpperCase(),
@@ -210,6 +217,7 @@ export class BinanceAdapter implements ExchangeConnector {
                   limit: 100
                 }
               });
+              console.log("[HTTP-RES]", "BinanceAdapter", `${baseUrl}/api/v3/klines`, "status", klinesData.status);
 
               if (klinesData.data && Array.isArray(klinesData.data)) {
                 ohlcData = klinesData.data.map((kline: any[]) => ({

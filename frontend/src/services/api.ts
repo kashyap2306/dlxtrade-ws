@@ -144,14 +144,12 @@ export const hftApi = {
 export const usersApi = {
   getAll: () => api.get('/users'),
   get: (uid: string) => api.get(`/users/${uid}/details`),
-  getStats: (uid: string) => api.get(`/users/${uid}/stats`),
   getSessions: (uid: string) => api.get(`/users/${uid}/sessions`),
-  getExchangeStatus: (uid: string) => api.get(`/users/${uid}/exchange-status`),
-  getUsageStats: (uid: string) => api.get(`/users/${uid}/usage-stats`),
   logoutAllSessions: (uid: string) => api.post(`/users/${uid}/logout-all`),
   requestAccountDeletion: (uid: string) => api.post(`/users/${uid}/request-delete`),
   create: (data: any) => api.post('/users/create', data),
   update: (data: any) => api.post('/users/update', data),
+  // Removed: getStats, getExchangeStatus, getUsageStats (endpoints don't exist)
 };
 
 // Agents - routes already include /api prefix from baseURL
@@ -159,11 +157,11 @@ export const agentsApi = {
   getAll: () => cachedApi.get('/agents'),
   get: (id: string) => api.get(`/agents/${id}`),
   unlock: (agentName: string) => api.post('/agents/unlock', { agentName }),
-  getUnlocks: () => api.get('/agents/unlocks'),
   getUnlocked: () => cachedApi.get('/agents/unlocked'),
   submitUnlockRequest: (data: { agentId: string; agentName: string; fullName: string; phoneNumber: string; email: string }) =>
     api.post('/agents/submit-unlock-request', data),
   updateAgentSettings: (agentId: string, settings: any) => api.put(`/agents/${agentId}/settings`, settings),
+  // Removed: getUnlocks (endpoint doesn't exist)
 };
 
 // Activity Logs - routes already include /api prefix from baseURL
@@ -242,10 +240,10 @@ export const chatbotApi = {
   sendMessage: (data: { message: string }) => api.post('/chatbot', data),
 };
 
-// Wallet - routes already include /api prefix from baseURL
-export const walletApi = {
-  getBalances: () => api.get('/wallet/balances'),
-};
+// Wallet - removed, endpoints don't exist
+// export const walletApi = {
+//   getBalances: () => api.get('/wallet/balances'),
+// };
 
 // Exchange - routes already include /api prefix from baseURL
 export const exchangeApi = {

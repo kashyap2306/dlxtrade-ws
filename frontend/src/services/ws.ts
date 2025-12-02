@@ -1,4 +1,5 @@
 import { getAuth, onIdTokenChanged } from 'firebase/auth';
+import { API_BASE_URL } from '@/config/env';
 
 type Timeout = ReturnType<typeof setTimeout>;
 
@@ -15,8 +16,6 @@ class WebSocketService {
   private healthCheckPassed: boolean = false;
 
   async connect(): Promise<void> {
-    const WS_URL = `${import.meta.env.VITE_WS_URL || 'ws://localhost:4000'}/ws`;
-
     // Import healthPingService dynamically to avoid circular dependency
     const { healthPingService } = await import('@/config/axios');
 
@@ -41,13 +40,12 @@ class WebSocketService {
     try {
       // Get fresh Firebase token
       const token = await getAuth().currentUser?.getIdToken();
-      const wsUrl = token ? `${WS_URL}?token=${token}` : WS_URL;
+      const wsUrl = `${API_BASE_URL.replace('/api', '')}/ws?token=${token}`;
 
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
-        console.log('WebSocket connection successful.');
-        console.debug('[WS] readyState=', this.ws?.readyState);
+        console.log('[WS] WebSocket connection successful - readyState:', this.ws?.readyState);
 
         // Reset reconnect attempts on successful connection
         this.reconnectAttempts = 0;
@@ -80,11 +78,15 @@ class WebSocketService {
       };
 
       this.ws.onclose = (ev) => {
-        console.log('WebSocket disconnected');
-        console.debug('[WS] close code=', ev.code, 'reason=', ev.reason, 'wasClean=', ev.wasClean);
+        console.log('[WS] WebSocket disconnected - code:', ev.code, 'reason:', ev.reason, 'wasClean:', ev.wasClean);
 
         // Stop heartbeat
         this.stopHeartbeat();
+
+        // Check for authentication failure
+        if (ev.code === 1008 || (ev.code >= 4000 && ev.code < 5000)) {
+          console.error('[WS] Authentication failed - check token validity');
+        }
 
         // Auto retry on specific close codes or if before handshake
         if (ev.code === 1006 || ev.code === 1000 || this.reconnectAttempts < this.maxReconnectAttempts) {
@@ -162,7 +164,10 @@ class WebSocketService {
     this.reconnectAttempts++;
 
     console.log(`[WS] Scheduling reconnect in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-    this.reconnectTimer = setTimeout(() => this.connect(), delay);
+    this.reconnectTimer = setTimeout(() => {
+      console.log('[WS] Attempting to reconnect...');
+      this.connect();
+    }, delay);
   }
 
   private reconnectWebSocket(): void {

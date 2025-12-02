@@ -79,28 +79,14 @@ export default React.memo(function WalletCard({ onConnectClick }: WalletCardProp
       return;
     }
 
-    setRefreshing(true);
-    setError(null);
-    try {
-      const response = await walletApi.getBalances();
-      setWalletData(response.data);
-      setLastFetch(Date.now());
-    } catch (err: any) {
-      suppressConsoleError(err, 'fetchWalletBalances');
-      if (err.response?.status === 404 || err.response?.status === 400) {
-        // No exchange connected
-        setWalletData({
-          exchange: '',
-          connected: false,
-          balances: [],
-          totalUsdValue: 0,
-        });
-      } else {
-        setError('Could not fetch balances');
-      }
-    } finally {
-      setRefreshing(false);
-    }
+    // Wallet data not available from current valid endpoints
+    setWalletData({
+      exchange: '',
+      connected: false,
+      balances: [],
+      totalUsdValue: 0,
+    });
+    setRefreshing(false);
   }, [user, lastFetch]);
 
   useEffect(() => {

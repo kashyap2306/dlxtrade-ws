@@ -2,6 +2,8 @@
 import { firestoreAdapter } from '../services/firestoreAdapter';
 import { runFreeModeDeepResearch, deepResearchEngine } from '../services/deepResearchEngine';
 import { getUserIntegrations } from './integrations';
+import { BinanceAdapter } from '../services/binanceAdapter';
+import { CryptoCompareAdapter } from '../services/cryptocompareAdapter';
 import { z } from 'zod';
 import { logger } from '../utils/logger';
 
@@ -78,20 +80,21 @@ export async function researchRoutes(fastify: FastifyInstance) {
         try {
           logger.info({ uid, symbol, requestId, mode }, 'Running FREE MODE deep research for symbol');
 
-          // Get user integrations for API keys
-          const userIntegrations = await getUserIntegrations(uid);
-          console.log("🔑 DEEP RESEARCH - Integrations Loaded:", {
-            uid,
-            symbol,
-            hasBinanceKey: !!(userIntegrations.binance?.apiKey),
-            hasCryptoCompareKey: !!(userIntegrations.cryptocompare?.apiKey),
-            hasCMCKey: !!(userIntegrations.cmc?.apiKey),
-            hasNewsDataKey: !!(userIntegrations.newsdata?.apiKey),
-            integrations: userIntegrations
-          });
+          // ALWAYS load user integrations for API keys
+          const integrations = await getUserIntegrations(uid);
+          console.log("[DR] Integrations for", uid, integrations);
+
+          // Check if integrations are empty - log but continue with FreeMode
+          const hasAnyIntegrations = Object.values(integrations || {}).some((provider: any) =>
+            provider?.apiKey || provider?.secret
+          );
+
+          if (!integrations || !hasAnyIntegrations) {
+            console.log("No user API keys found → running FreeMode without premium providers.");
+          }
 
           // Run FREE MODE Deep Research v1.5 with user integrations
-          const result = await runFreeModeDeepResearch(uid, symbol, undefined, userIntegrations);
+          const result = await runFreeModeDeepResearch(uid, symbol, undefined, integrations);
 
           results.push({
             symbol,
@@ -277,6 +280,38 @@ export async function researchRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({
         error: 'Test FREE MODE deep research failed',
         reason: error.message || 'Unknown error occurred',
+      });
+    }
+  });
+
+  // Test endpoint to verify API calls work on Render
+  fastify.get('/test/providers', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      console.log('🔄 TEST ENDPOINT: Testing provider API calls...');
+
+      // Test Binance public API
+      const binanceAdapter = new BinanceAdapter('', '', true); // Public API only
+      const binanceResult = await binanceAdapter.getPublicMarketData('BTCUSDT');
+
+      // Test CryptoCompare API
+      const ccAdapter = new CryptoCompareAdapter('');
+      const ccResult = await ccAdapter.getOHLCData('BTCUSDT');
+
+      console.log('✅ TEST ENDPOINT: Both providers called successfully');
+      console.log('Binance result hasData:', binanceResult?.hasData);
+      console.log('CryptoCompare OHLC length:', ccResult?.ohlc?.length);
+
+      return {
+        binance: binanceResult,
+        cryptocompare: ccResult,
+        timestamp: new Date().toISOString()
+      };
+    } catch (error: any) {
+      console.error('❌ TEST ENDPOINT ERROR:', error.message, error.stack);
+      return reply.code(500).send({
+        error: 'Provider test failed',
+        reason: error.message,
+        stack: error.stack
       });
     }
   });

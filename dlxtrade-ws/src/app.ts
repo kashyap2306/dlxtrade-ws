@@ -36,6 +36,9 @@ import { chatbotRoutes } from './routes/chatbot';
 import { walletRoutes } from './routes/wallet';
 import { marketRoutes } from './routes/market';
 
+// Environment checks
+console.log("ENV: VITE_API_URL set?", !!process.env.VITE_API_URL);
+
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
     logger: logger.child({ component: 'fastify' }),
@@ -229,6 +232,7 @@ export async function buildApp(): Promise<FastifyInstance> {
         const { verifyFirebaseToken } = await import('./utils/firebase');
         const decoded = await verifyFirebaseToken(token);
         uid = decoded.uid;
+        console.log("WS uid:", uid);
         (req as any).user = { uid: decoded.uid, email: decoded.email };
       } catch (err) {
         logger.warn({ err }, 'WebSocket auth failed; continuing unauthenticated');
@@ -237,43 +241,53 @@ export async function buildApp(): Promise<FastifyInstance> {
       logger.info('WebSocket connection without token (unauthenticated)');
     }
 
-    // Register WebSocket to user's engines if they exist
-    const { userEngineManager } = await import('./services/userEngineManager');
-    const accuracyEngine = userEngineManager.getAccuracyEngine(uid!);
-    const hftEngine = userEngineManager.getHFTEngine(uid!);
-    
-    if (uid && accuracyEngine) {
-      accuracyEngine.registerWebSocketClient(connection.socket);
-      logger.info({ uid }, 'WebSocket connection registered to AI engine');
-    }
-    
-    if (uid && hftEngine) {
-      hftEngine.registerWebSocketClient(connection.socket);
-      logger.info({ uid }, 'WebSocket connection registered to HFT engine');
-    }
-    
-    if (uid && !accuracyEngine && !hftEngine) {
-      logger.debug({ uid }, 'WebSocket connected but user engines not initialized yet');
+    // Register WebSocket to user's engines if they exist (don't let failures block research)
+    try {
+      const { userEngineManager } = await import('./services/userEngineManager');
+      const accuracyEngine = userEngineManager.getAccuracyEngine(uid!);
+      const hftEngine = userEngineManager.getHFTEngine(uid!);
+
+      if (uid && accuracyEngine) {
+        accuracyEngine.registerWebSocketClient(connection.socket);
+        logger.info({ uid }, 'WebSocket connection registered to AI engine');
+      }
+
+      if (uid && hftEngine) {
+        hftEngine.registerWebSocketClient(connection.socket);
+        logger.info({ uid }, 'WebSocket connection registered to HFT engine');
+      }
+
+      if (uid && !accuracyEngine && !hftEngine) {
+        logger.debug({ uid }, 'WebSocket connected but user engines not initialized yet');
+      }
+    } catch (error: any) {
+      console.error("WS: Error registering WebSocket to engines:", error.message);
+      // Don't let WebSocket registration errors affect research functionality
     }
 
     connection.socket.on('message', (raw) => {
-      const text = raw.toString().trim();
-
-      // Ignore all ping messages immediately
-      if (text === "ping" || text.startsWith("ping")) {
-        connection.socket.send("pong");
-        return;
-      }
-
-      let data;
       try {
-        data = JSON.parse(text);
-      } catch {
-        console.warn("WS: Non-JSON message ignored:", text);
-        return;
-      }
+        const text = raw.toString().trim();
 
-      logger.debug({ data, uid }, 'WebSocket message received');
+        // Ignore all ping messages immediately
+        if (text === "ping" || text.startsWith("ping")) {
+          connection.socket.send("pong");
+          return;
+        }
+
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch {
+          console.warn("WS: Non-JSON message ignored:", text);
+          return;
+        }
+
+        logger.debug({ data, uid }, 'WebSocket message received');
+      } catch (error: any) {
+        console.error("WS: Error handling message:", error.message);
+        // Don't let WebSocket errors affect other operations
+      }
     });
 
     connection.socket.on('close', () => {

@@ -43,10 +43,10 @@ export default function AgentsMarketplace() {
     setError(null);
 
     try {
-      // Load agents and unlocks in parallel with Promise.allSettled for resilience
-      const [agentsResult, unlocksResult] = await Promise.allSettled([
+      // Load agents and unlocked agents
+      const [agentsResult, unlockedResult] = await Promise.allSettled([
         agentsApi.getAll(),
-        agentsApi.getUnlocks()
+        agentsApi.getUnlocked()
       ]);
 
       // Handle agents loading
@@ -77,13 +77,13 @@ export default function AgentsMarketplace() {
         const sortedAgents = mappedAgents.sort((a, b) => (a.displayOrder || 999) - (b.displayOrder || 999));
         setAgents(sortedAgents);
 
-        // Handle unlocks loading
-        if (unlocksResult.status === 'fulfilled') {
-          const unlocks = unlocksResult.value.data.unlocks || [];
+        // Handle unlocked agents loading
+        if (unlockedResult.status === 'fulfilled') {
+          const unlocked = unlockedResult.value.data.unlocked || [];
           const unlockedMap: Record<string, boolean> = {};
 
-          unlocks.forEach((unlock: any) => {
-            const agent = mappedAgents.find(a => a.name === unlock.agentName);
+          unlocked.forEach((agentIdOrName: string) => {
+            const agent = mappedAgents.find(a => a.id === agentIdOrName || a.name === agentIdOrName);
             if (agent) {
               unlockedMap[agent.id] = true;
             }
@@ -91,8 +91,8 @@ export default function AgentsMarketplace() {
 
           setUnlockedAgents(unlockedMap);
         } else {
-          // Unlocks failed, but agents loaded - still show agents
-          suppressConsoleError(unlocksResult.reason, 'loadAgentUnlocks');
+          // Unlocked agents failed, but agents loaded - still show agents
+          suppressConsoleError(unlockedResult.reason, 'loadUnlockedAgents');
           setUnlockedAgents({});
         }
       } else {

@@ -53,9 +53,9 @@ export default function AgentDetails() {
         setAgent(mappedAgent);
 
         // Check if unlocked
-        const unlocksResponse = await agentsApi.getUnlocks();
-        const unlocks = unlocksResponse.data.unlocks || [];
-        const isUnlocked = unlocks.some((unlock: any) => unlock.agentName === foundAgent.name);
+        const unlockedResponse = await agentsApi.getUnlocked();
+        const unlocked = unlockedResponse.data.unlocked || [];
+        const isUnlocked = unlocked.some((agentIdOrName: string) => agentIdOrName === foundAgent.id || agentIdOrName === foundAgent.name);
         setIsUnlocked(isUnlocked);
       } else {
         showToast('Agent not found', 'error');

@@ -99,12 +99,14 @@ async function makeRequest(url: string, attempt?: number, apiKey?: string): Prom
     headers['X-ACCESS-KEY'] = apiKey;
   }
 
+  console.log("[HTTP-REQ]", "NewsDataAdapter", url);
   const response = await axios.get(url, {
     timeout: 10000,
     headers
   });
 
   if (response.status !== 200) {
+    console.error("[HTTP-ERR]", "NewsDataAdapter", url, `HTTP ${response.status}`, response.status);
     throw new AdapterError({
       adapter: 'NewsData',
       method: 'GET',
@@ -115,6 +117,7 @@ async function makeRequest(url: string, attempt?: number, apiKey?: string): Prom
     });
   }
 
+  console.log("[HTTP-RES]", "NewsDataAdapter", url, "status", response.status);
   return response;
 }
 

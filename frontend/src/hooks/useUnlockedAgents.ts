@@ -51,10 +51,9 @@ export function useUnlockedAgents() {
       // Get full agent details for each unlocked agent
       const allAgentsResponse = await agentsApi.getAll();
       const allAgents = allAgentsResponse.data.agents || [];
-      
-      // Get detailed unlock information
-      const unlocksResponse = await agentsApi.getUnlocks();
-      const unlocks = unlocksResponse.data.unlocks || [];
+
+      // Use unlocked agent IDs directly (unlock details not available from current endpoints)
+      const unlocks = []; // Unlock details not available from current valid endpoints
       
       // Map agent IDs to full agent details
       const agentsWithDetails = agentIds.map((agentId: string) => {

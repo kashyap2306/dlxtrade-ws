@@ -103,10 +103,19 @@ function makeRequest(url: string, apiKey?: string): Promise<any> {
     headers['X-CMC_PRO_API_KEY'] = apiKey;
   }
 
-  return axios.get(url, {
+  console.log("[HTTP-REQ]", "CoinMarketCapAdapter", url);
+  const response = axios.get(url, {
     timeout: 10000,
     headers
   });
+
+  response.then(res => {
+    console.log("[HTTP-RES]", "CoinMarketCapAdapter", url, "status", res.status);
+  }).catch(err => {
+    console.error("[HTTP-ERR]", "CoinMarketCapAdapter", url, err.message, err.stack);
+  });
+
+  return response;
 }
 
 async function attemptWithRetry(url: string, apiKey?: string): Promise<any> {

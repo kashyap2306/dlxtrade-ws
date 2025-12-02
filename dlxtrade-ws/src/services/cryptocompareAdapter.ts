@@ -309,6 +309,7 @@ export class CryptoCompareAdapter {
     const url = `${this.baseUrl}/histohour`;
 
     try {
+      console.log("[HTTP-REQ]", "CryptoCompareAdapter", url);
       const response = await axios.get(url, {
         params: {
           fsym: symbol.replace('USDT', ''),
@@ -318,6 +319,7 @@ export class CryptoCompareAdapter {
         },
         timeout: 15000
       });
+      console.log("[HTTP-RES]", "CryptoCompareAdapter", url, "status", response.status);
 
       if (response.status !== 200) {
         throw new Error(`HTTP ${response.status}`);
@@ -325,6 +327,7 @@ export class CryptoCompareAdapter {
 
       return response.data.Data || [];
     } catch (error: any) {
+      console.error("[HTTP-ERR]", "CryptoCompareAdapter", url, error.message, error.stack);
       console.warn(`CryptoCompare historical data fetch failed for ${symbol}:`, error.message);
       return [];
     }

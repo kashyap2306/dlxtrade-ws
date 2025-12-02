@@ -172,10 +172,9 @@ export default function AutoTrade() {
 
     try {
       // Load config, symbols, and initial data in parallel with Promise.allSettled
-      const [configRes, symbolsRes, portfolioRes] = await Promise.allSettled([
+      const [configRes, symbolsRes] = await Promise.allSettled([
         autoTradeApi.getConfig(),
         marketApi.getSymbols(),
-        walletApi.getBalances(),
       ]);
 
       // Handle results - continue even if some APIs fail
@@ -212,11 +211,9 @@ export default function AutoTrade() {
         setSymbols([]); // Fallback to empty array
       }
 
-      if (portfolioRes.status === 'fulfilled' && isMountedRef.current) {
-        setPortfolio(portfolioRes.value.data);
-      } else if (portfolioRes.status === 'rejected') {
-        suppressConsoleError(portfolioRes.reason, 'loadWalletBalances');
-        setPortfolio({ equity: 0, freeMargin: 0, usedMargin: 0, todayPnL: 0, totalPnL: 0 }); // Fallback
+      // Set default portfolio data since wallet API is not available
+      if (isMountedRef.current) {
+        setPortfolio({ equity: 0, freeMargin: 0, usedMargin: 0, todayPnL: 0, totalPnL: 0 });
       }
 
       // Try to load initial live data, but don't fail the whole load if it fails

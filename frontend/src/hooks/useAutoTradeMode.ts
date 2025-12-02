@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { autoTradeApi, integrationsApi } from '../services/api';
+import { autoTradeApi, integrationsApi, settingsApi } from '../services/api';
 import { useAuth } from './useAuth';
 import { suppressConsoleError } from '../utils/errorHandler';
 
@@ -33,29 +33,40 @@ export function useAutoTradeMode(): UseAutoTradeModeReturn {
   const loadStatus = useCallback(async () => {
     if (!user) return;
     try {
-      const response = await autoTradeApi.getStatus();
-      setEnabled(response.data?.autoTradeEnabled || false);
-      setIsApiConnected(response.data?.isApiConnected || false);
+      // Auto-trade status not available from current valid endpoints
+      // Set defaults and load from settings
+      const settingsResponse = await settingsApi.load();
+      setEnabled(settingsResponse.data?.autoTradeEnabled || false);
+      setIsApiConnected(settingsResponse.data?.isApiConnected || false);
     } catch (err: any) {
       suppressConsoleError(err, 'loadAutoTradeStatus');
+      // Set safe defaults
+      setEnabled(false);
+      setIsApiConnected(false);
     }
   }, [user]);
 
   const loadIntegrations = useCallback(async () => {
     if (!user) return;
     try {
-      const response = await integrationsApi.load();
+      const response = await settingsApi.load();
       const data = response.data || {};
-      
+
       const loaded: any = {
         cryptocompare: data.cryptocompare || { enabled: false, apiKey: null },
         newsdata: data.newsdata || { enabled: false, apiKey: null },
         coinmarketcap: data.coinmarketcap || { enabled: false, apiKey: null },
       };
-      
+
       setIntegrations(loaded);
     } catch (err: any) {
       suppressConsoleError(err, 'loadIntegrations');
+      // Set safe defaults
+      setIntegrations({
+        cryptocompare: { enabled: false, apiKey: null },
+        newsdata: { enabled: false, apiKey: null },
+        coinmarketcap: { enabled: false, apiKey: null },
+      });
     }
   }, [user]);
 
