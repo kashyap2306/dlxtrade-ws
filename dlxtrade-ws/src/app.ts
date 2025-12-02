@@ -294,7 +294,7 @@ console.log("[RENDER ENV] Build timestamp:", Date.now());
     });
 
     connection.socket.on('close', () => {
-      if (hftEngine) {
+      if (hftEngine?.unregisterWebSocketClient) {
         hftEngine.unregisterWebSocketClient(connection.socket);
       }
       logger.info({ uid }, 'WebSocket connection closed');
