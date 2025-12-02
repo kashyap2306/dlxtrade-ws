@@ -93,7 +93,7 @@ export default function AutoTrade() {
   const [engineStatus, setEngineStatus] = useState<'Running' | 'Paused' | 'Stopped' | 'Outside Hours'>('Stopped');
 
   // New auto-trade proposals and logs state
-  const [proposals, setProposals] = useState<any>(null);
+  const [proposals, setProposals] = useState<{ recentProposals?: any[] } | null>(null);
   const [autoTradeLogs, setAutoTradeLogs] = useState<any[]>([]);
   const [triggering, setTriggering] = useState(false);
 
@@ -122,7 +122,7 @@ export default function AutoTrade() {
     try {
       const response = await autoTradeApi.getProposals();
       if (isMountedRef.current) {
-        setProposals(response.data);
+        setProposals(response.data && typeof response.data === 'object' ? response.data : { recentProposals: [] });
       }
     } catch (err: any) {
       suppressConsoleError(err, 'loadProposals');
@@ -152,9 +152,9 @@ export default function AutoTrade() {
       ]);
 
       if (isMountedRef.current) {
-        setActiveTrades(tradesRes.data);
-        setActivityLogs(activityRes.data);
-        setProposals(proposalsRes.data);
+        setActiveTrades(Array.isArray(tradesRes.data) ? tradesRes.data : []);
+        setActivityLogs(Array.isArray(activityRes.data) ? activityRes.data : []);
+        setProposals(proposalsRes.data && typeof proposalsRes.data === 'object' ? proposalsRes.data : { recentProposals: [] });
         setAutoTradeLogs(logsRes.data.logs || []);
         // Update engine status based on config and current time
         updateEngineStatus();
@@ -617,7 +617,7 @@ export default function AutoTrade() {
                   <div className="flex justify-center py-8">
                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500"></div>
                   </div>
-                ) : activeTrades.length === 0 ? (
+                ) : !Array.isArray(activeTrades) || activeTrades.length === 0 ? (
                   <div className="text-center py-8 text-gray-400">
                     No active trades
                   </div>
@@ -918,7 +918,7 @@ export default function AutoTrade() {
           <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
             <h2 className="text-xl font-semibold text-white mb-4">Recent Activity</h2>
 
-            {activityLogs.length === 0 ? (
+            {!Array.isArray(activityLogs) || activityLogs.length === 0 ? (
               <div className="text-center py-8 text-gray-400">
                 No recent activity
               </div>
@@ -974,7 +974,7 @@ export default function AutoTrade() {
             )}
 
             {/* Recent Proposals */}
-            {proposals?.recentProposals?.length > 0 && (
+            {Array.isArray(proposals?.recentProposals) && proposals.recentProposals.length > 0 && (
               <div className="mb-6">
                 <h4 className="text-md font-medium text-white mb-2">Recent Proposals</h4>
                 <div className="space-y-2 max-h-60 overflow-y-auto">
@@ -1008,7 +1008,7 @@ export default function AutoTrade() {
             )}
 
             {/* Auto-Trade Logs */}
-            {autoTradeLogs.length > 0 && (
+            {Array.isArray(autoTradeLogs) && autoTradeLogs.length > 0 && (
               <div>
                 <h4 className="text-md font-medium text-white mb-2">Activity Logs</h4>
                 <div className="space-y-1 max-h-60 overflow-y-auto">
