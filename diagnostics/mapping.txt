@@ -1,0 +1,35 @@
+LEGACY PROVIDER MAPPING LOG
+===========================
+
+Applied Mappings:
+----------------
+
+1. cryptocompare-freemode-1 → coinmarketcap-free
+   - Legacy CryptoCompare-FreeMode-1 entries mapped to new CoinMarketCap Free provider
+   - Reason: Invalid provider replaced with valid free alternative (CoinMarketCap)
+
+2. cryptocompare-freemode-2 → coinmarketcap-free (if no existing mapping)
+   - Legacy CryptoCompare-FreeMode-2 entries mapped to CoinMarketCap Free provider
+   - If both legacy entries exist, prefers the first one (cryptocompare-freemode-1)
+   - Reason: Invalid provider replaced with valid free alternative (CoinMarketCap)
+
+Settings Field Mappings:
+-----------------------
+
+- cryptoCompareFreeMode1Key → coinmarketcapBackupKey
+- cryptoCompareFreeMode1Enabled → coinmarketcapBackupEnabled
+- cryptoCompareFreeMode2Key → coinmarketcapBackupKey (fallback)
+- cryptoCompareFreeMode2Enabled → coinmarketcapBackupEnabled (fallback)
+
+New Provider: CoinMarketCap Free
+- API Name: coinmarketcap-free
+- Type: api (requires free API key)
+- Rate Limit: 10K calls/month
+- Source: https://coinmarketcap.com/api/pricing/
+
+Migration Notes:
+---------------
+- Legacy providers automatically mapped on loadIntegrations()
+- Settings fields migrated during loadSettings()
+- No data loss - all existing configurations preserved
+- Invalid providers replaced with valid alternatives

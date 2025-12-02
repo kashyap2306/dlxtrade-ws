@@ -48,6 +48,23 @@ export const adminApi = {
     // Agent purchases
     getPurchases: (params?: { status?: string; limit?: number }) => api.get('/admin/agents/purchases', { params }),
     approvePurchase: (purchaseId: string) => api.post(`/admin/agents/purchases/${purchaseId}/approve`),
+
+  // Background Research
+  backgroundResearch: {
+    getSettings: () => api.get('/background-research/settings/get'),
+    saveSettings: (data: {
+      backgroundResearchEnabled: boolean;
+      telegramBotToken?: string;
+      telegramChatId?: string;
+      researchFrequencyMinutes: number;
+      accuracyTrigger: number;
+    }) => api.post('/background-research/settings/save', data),
+  },
+
+  // Telegram
+  telegram: {
+    test: (data: { botToken: string; chatId: string }) => api.post('/telegram/test', data),
+  },
     rejectPurchase: (purchaseId: string, reason?: string) => api.post(`/admin/agents/purchases/${purchaseId}/reject`, { reason }),
     // Broadcast Popup
     broadcastPopup: (data: any) => api.post('/admin/popup-broadcast', data),

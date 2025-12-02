@@ -187,7 +187,7 @@ export default function AgentsMarketplace() {
       </div>
 
       <Sidebar onLogout={logout} onMenuToggle={setMenuOpen} />
-      <div className="relative z-10 pt-16 lg:pt-0 smooth-scroll">
+      <div className="relative z-10 smooth-scroll">
         {/* Hero Header Section - Mobile Optimized */}
         <div className="relative overflow-hidden bg-gradient-to-br from-purple-900/30 via-pink-900/20 to-slate-900 border-b border-purple-500/20 gpu-accelerated">
           <div
@@ -213,29 +213,28 @@ export default function AgentsMarketplace() {
         </div>
 
         {/* Agents Grid Section */}
-        <div className="p-4 sm:p-6 md:p-8 lg:p-12">
-          <div className="max-w-7xl mx-auto">
+        <div className="max-w-7xl mx-auto px-4 py-6 md:py-8 lg:py-12">
             {/* Stats Bar - Mobile Optimized */}
-            <div className="responsive-grid mb-6 sm:mb-8">
-              <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-2xl p-3 sm:p-4 text-center animate-fade-in touch-target">
+            <div className="grid grid-cols-2 gap-2 md:flex md:space-x-4 mb-6 sm:mb-8">
+              <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-xl p-3 sm:p-4 text-center animate-fade-in touch-target hover:scale-[1.01] transition-all duration-200 shadow-lg hover:shadow-purple-500/20">
                 <div className="text-xl sm:text-2xl md:text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
                   {agents.length}
                 </div>
                 <div className="text-xs sm:text-sm text-gray-400 mt-1">Premium Agents</div>
               </div>
-              <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-2xl p-3 sm:p-4 text-center animate-fade-in touch-target" style={{ animationDelay: '0.1s' }}>
+              <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-xl p-3 sm:p-4 text-center animate-fade-in touch-target hover:scale-[1.01] transition-all duration-200 shadow-lg hover:shadow-purple-500/20" style={{ animationDelay: '0.1s' }}>
                 <div className="text-xl sm:text-2xl md:text-3xl font-bold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
                   24/7
                 </div>
                 <div className="text-xs sm:text-sm text-gray-400 mt-1">Active Trading</div>
               </div>
-              <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-2xl p-3 sm:p-4 text-center animate-fade-in touch-target" style={{ animationDelay: '0.2s' }}>
+              <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-xl p-3 sm:p-4 text-center animate-fade-in touch-target hover:scale-[1.01] transition-all duration-200 shadow-lg hover:shadow-purple-500/20" style={{ animationDelay: '0.2s' }}>
                 <div className="text-xl sm:text-2xl md:text-3xl font-bold bg-gradient-to-r from-green-400 to-emerald-400 bg-clip-text text-transparent">
                   AI
                 </div>
                 <div className="text-xs sm:text-sm text-gray-400 mt-1">Powered</div>
               </div>
-              <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-2xl p-3 sm:p-4 text-center animate-fade-in touch-target" style={{ animationDelay: '0.3s' }}>
+              <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-xl p-3 sm:p-4 text-center animate-fade-in touch-target hover:scale-[1.01] transition-all duration-200 shadow-lg hover:shadow-purple-500/20" style={{ animationDelay: '0.3s' }}>
                 <div className="text-xl sm:text-2xl md:text-3xl font-bold bg-gradient-to-r from-yellow-400 to-orange-400 bg-clip-text text-transparent">
                   ⚡
                 </div>
@@ -244,7 +243,7 @@ export default function AgentsMarketplace() {
             </div>
 
             {/* Agents Grid - Responsive and Performance Optimized */}
-            <div className="responsive-grid">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
               {agents
                 .filter((agent) => agent.enabled !== false)
                 .map((agent, index) => {
@@ -270,7 +269,6 @@ export default function AgentsMarketplace() {
         isOpen={showUnlockModal}
         onClose={handleCloseModal}
       />
-      </div>
     </ErrorBoundary>
   );
 }

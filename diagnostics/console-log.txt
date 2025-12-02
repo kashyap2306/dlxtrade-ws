@@ -1,0 +1,20 @@
+CONSOLE LOGS - Initial Load
+===========================
+
+[APP] Initializing DLXTRADE frontend...
+[APP] App initialized in 14.10ms
+[PERF] First Contentful Paint: 868ms
+
+API Requests during load:
+- GET /agents/unlocked
+- GET /settings/load
+- GET /integrations/load
+- GET /users/QZKe6lcZ4dWv2kxg4rLL8razOQK2/exchange-config
+- GET /market/symbols
+- GET /notifications
+- GET /agents
+
+All API calls returned 200 OK status codes.
+WebSocket connections established successfully.
+
+User appears to be logged in (user ID: QZKe6lcZ4dWv2kxg4rLL8razOQK2)

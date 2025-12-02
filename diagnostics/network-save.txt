@@ -1,0 +1,14 @@
+NETWORK REQUESTS - Initial Settings Page Load
+==============================================
+
+API Endpoints Called:
+- GET /settings/load (2 calls - both 200 OK)
+- GET /integrations/load (200 OK)
+- GET /users/{userId}/exchange-config (200 OK)
+- GET /market/symbols (200 OK)
+- GET /notifications (200 OK)
+- GET /agents/unlocked (2 calls - both 200 OK)
+- GET /agents (200 OK)
+
+All requests return 200 OK status codes.
+No failed requests observed during initial load.

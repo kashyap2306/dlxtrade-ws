@@ -208,6 +208,19 @@ async function start() {
           logger.error({ error: scheduledErr.message, stack: scheduledErr.stack }, 'Scheduled research service failed to start');
           // Don't throw - allow server to continue
         }
+
+        // Start Background Research Scheduler
+        try {
+          console.log('Starting background research scheduler...');
+          const { backgroundResearchScheduler } = await import('./services/backgroundResearchScheduler');
+          backgroundResearchScheduler.start();
+          console.log('✅ Background research scheduler started');
+        } catch (bgResearchErr: any) {
+          console.error('⚠️ Background research scheduler failed to start:', bgResearchErr.message);
+          console.error('STACK:', bgResearchErr.stack);
+          logger.error({ error: bgResearchErr.message, stack: bgResearchErr.stack }, 'Background research scheduler failed to start');
+          // Don't throw - allow server to continue
+        }
       } catch (firebaseError: any) {
         console.error('❌ INIT ERROR (Firebase):', firebaseError.message);
         console.error('❌ FIREBASE STACK:', firebaseError.stack);

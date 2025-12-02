@@ -130,6 +130,379 @@ const PROVIDER_CONFIG = {
   }
 };
 
+// Background Research Wizard Component
+function BackgroundResearchWizard() {
+  const [bgResearchEnabled, setBgResearchEnabled] = useState(false);
+  const [currentStep, setCurrentStep] = useState(1);
+  const [telegramBotToken, setTelegramBotToken] = useState('');
+  const [telegramChatId, setTelegramChatId] = useState('');
+  const [researchFrequency, setResearchFrequency] = useState(5);
+  const [accuracyTrigger, setAccuracyTrigger] = useState(80);
+  const [testingTelegram, setTestingTelegram] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [loadingSettings, setLoadingSettings] = useState(true);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+  // Load existing settings on component mount
+  useEffect(() => {
+    loadBackgroundResearchSettings();
+  }, []);
+
+  const loadBackgroundResearchSettings = async () => {
+    try {
+      setLoadingSettings(true);
+      const response = await settingsApi.backgroundResearch.getSettings();
+      const data = response.data;
+      setBgResearchEnabled(data.backgroundResearchEnabled || false);
+      setTelegramBotToken(data.telegramBotToken || '');
+      setTelegramChatId(data.telegramChatId || '');
+      setResearchFrequency(data.researchFrequencyMinutes || 5);
+      setAccuracyTrigger(data.accuracyTrigger || 80);
+    } catch (error) {
+      console.error('Error loading background research settings:', error);
+    } finally {
+      setLoadingSettings(false);
+    }
+  };
+
+  const testTelegramConnection = async () => {
+    if (!telegramBotToken.trim() || !telegramChatId.trim()) {
+      showToast('Please fill in both Bot Token and Chat ID', 'error');
+      return;
+    }
+
+    setTestingTelegram(true);
+    try {
+      await settingsApi.telegram.test({ botToken: telegramBotToken, chatId: telegramChatId });
+      showToast('Test message sent successfully!', 'success');
+    } catch (error: any) {
+      console.error('Error testing Telegram:', error);
+      showToast(error.response?.data?.error || 'Failed to send test message', 'error');
+    } finally {
+      setTestingTelegram(false);
+    }
+  };
+
+  const saveBackgroundResearchSettings = async () => {
+    setSavingSettings(true);
+    try {
+      await settingsApi.backgroundResearch.saveSettings({
+        backgroundResearchEnabled: bgResearchEnabled,
+        telegramBotToken: bgResearchEnabled ? telegramBotToken : undefined,
+        telegramChatId: bgResearchEnabled ? telegramChatId : undefined,
+        researchFrequencyMinutes: researchFrequency,
+        accuracyTrigger: accuracyTrigger,
+      });
+      showToast('Background research settings saved successfully!', 'success');
+      setCurrentStep(1); // Reset to first step
+    } catch (error: any) {
+      console.error('Error saving background research settings:', error);
+      showToast(error.response?.data?.error || 'Failed to save settings', 'error');
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  const showToast = (message: string, type: 'success' | 'error') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  const nextStep = () => {
+    if (currentStep < 4) {
+      setCurrentStep(currentStep + 1);
+    }
+  };
+
+  const prevStep = () => {
+    if (currentStep > 1) {
+      setCurrentStep(currentStep - 1);
+    }
+  };
+
+  const canProceedToStep2 = bgResearchEnabled;
+  const canProceedToStep3 = telegramBotToken.trim() && telegramChatId.trim();
+  const canProceedToStep4 = true; // Always allow proceeding to confirmation
+
+  if (loadingSettings) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500"></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Enable/Disable Toggle */}
+      <div className="flex items-center justify-between p-4 bg-slate-800/30 rounded-lg">
+        <div>
+          <label className="text-sm font-medium text-gray-300">Enable Background Research</label>
+          <p className="text-xs text-gray-400">Run automatic deep research with Telegram alerts</p>
+        </div>
+        <label className="relative inline-flex items-center cursor-pointer">
+          <input
+            type="checkbox"
+            className="sr-only peer"
+            checked={bgResearchEnabled}
+            onChange={(e) => setBgResearchEnabled(e.target.checked)}
+          />
+          <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-500"></div>
+        </label>
+      </div>
+
+      {/* Multi-step Wizard */}
+      {bgResearchEnabled && (
+        <div className="space-y-6">
+          {/* Step Indicator */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              {[1, 2, 3, 4].map((step) => (
+                <div
+                  key={step}
+                  className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
+                    step <= currentStep
+                      ? 'bg-purple-500 text-white'
+                      : 'bg-slate-700 text-gray-400'
+                  }`}
+                >
+                  {step}
+                </div>
+              ))}
+            </div>
+            <span className="text-sm text-gray-400">
+              Step {currentStep} of 4
+            </span>
+          </div>
+
+          {/* Step Content */}
+          {currentStep === 1 && (
+            <div className="space-y-4">
+              <h3 className="text-lg font-medium text-white">Telegram Setup</h3>
+              <p className="text-sm text-gray-400">
+                Configure your Telegram bot to receive research alerts.
+              </p>
+
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-gray-300">
+                    Telegram Bot Token
+                  </label>
+                  <input
+                    type="password"
+                    className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                    value={telegramBotToken}
+                    onChange={(e) => setTelegramBotToken(e.target.value)}
+                    placeholder="Enter your Telegram bot token"
+                  />
+                  <p className="text-xs text-gray-400">
+                    Get this from @BotFather on Telegram
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-gray-300">
+                    Telegram Chat ID
+                  </label>
+                  <input
+                    type="text"
+                    className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                    value={telegramChatId}
+                    onChange={(e) => setTelegramChatId(e.target.value)}
+                    placeholder="Enter your Telegram chat ID"
+                  />
+                  <p className="text-xs text-gray-400">
+                    Send /start to your bot and check bot logs, or use @userinfobot
+                  </p>
+                </div>
+
+                <button
+                  onClick={testTelegramConnection}
+                  disabled={testingTelegram || !telegramBotToken.trim() || !telegramChatId.trim()}
+                  className="px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 text-white font-medium rounded-lg hover:from-blue-600 hover:to-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {testingTelegram ? 'Sending Test...' : 'Send Test Message'}
+                </button>
+              </div>
+
+              <div className="flex justify-end">
+                <button
+                  onClick={nextStep}
+                  disabled={!canProceedToStep2}
+                  className="px-6 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+
+          {currentStep === 2 && (
+            <div className="space-y-4">
+              <h3 className="text-lg font-medium text-white">Research Frequency</h3>
+              <p className="text-sm text-gray-400">
+                How often should we run deep research in the background?
+              </p>
+
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                {[1, 3, 5, 10, 15, 30].map((minutes) => (
+                  <label
+                    key={minutes}
+                    className={`relative flex items-center justify-center p-3 rounded-lg border cursor-pointer transition-all ${
+                      researchFrequency === minutes
+                        ? 'border-purple-500 bg-purple-500/20 text-white'
+                        : 'border-white/10 bg-white/5 text-gray-300 hover:border-white/20'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="frequency"
+                      value={minutes}
+                      checked={researchFrequency === minutes}
+                      onChange={(e) => setResearchFrequency(parseInt(e.target.value))}
+                      className="sr-only"
+                    />
+                    <span className="text-sm font-medium">
+                      {minutes} min{minutes > 1 ? 's' : ''}
+                    </span>
+                  </label>
+                ))}
+              </div>
+
+              <div className="flex justify-between">
+                <button
+                  onClick={prevStep}
+                  className="px-6 py-2 bg-white/10 text-white font-medium rounded-lg hover:bg-white/20 focus:outline-none focus:ring-2 focus:ring-white/50 transition-all"
+                >
+                  Back
+                </button>
+                <button
+                  onClick={nextStep}
+                  className="px-6 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+
+          {currentStep === 3 && (
+            <div className="space-y-4">
+              <h3 className="text-lg font-medium text-white">Accuracy Trigger</h3>
+              <p className="text-sm text-gray-400">
+                Only send alerts when research accuracy meets this threshold.
+              </p>
+
+              <div className="space-y-3">
+                {[
+                  { label: '60% - 75%', value: 60 },
+                  { label: '75% - 85%', value: 75 },
+                  { label: '85% - 95%', value: 85 },
+                  { label: 'Above 95%', value: 95 },
+                ].map(({ label, value }) => (
+                  <label
+                    key={value}
+                    className={`flex items-center p-3 rounded-lg border cursor-pointer transition-all ${
+                      accuracyTrigger === value
+                        ? 'border-purple-500 bg-purple-500/20 text-white'
+                        : 'border-white/10 bg-white/5 text-gray-300 hover:border-white/20'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="accuracy"
+                      value={value}
+                      checked={accuracyTrigger === value}
+                      onChange={(e) => setAccuracyTrigger(parseInt(e.target.value))}
+                      className="sr-only"
+                    />
+                    <span className="text-sm font-medium">{label}</span>
+                  </label>
+                ))}
+              </div>
+
+              <div className="flex justify-between">
+                <button
+                  onClick={prevStep}
+                  className="px-6 py-2 bg-white/10 text-white font-medium rounded-lg hover:bg-white/20 focus:outline-none focus:ring-2 focus:ring-white/50 transition-all"
+                >
+                  Back
+                </button>
+                <button
+                  onClick={nextStep}
+                  className="px-6 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+
+          {currentStep === 4 && (
+            <div className="space-y-4">
+              <h3 className="text-lg font-medium text-white">Confirmation</h3>
+              <p className="text-sm text-gray-400">
+                Review your settings before saving.
+              </p>
+
+              <div className="bg-slate-800/30 rounded-lg p-4 space-y-3">
+                <div className="flex justify-between">
+                  <span className="text-sm text-gray-300">Background Research:</span>
+                  <span className="text-sm text-white">{bgResearchEnabled ? 'Enabled' : 'Disabled'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-sm text-gray-300">Telegram Bot:</span>
+                  <span className="text-sm text-white">
+                    {telegramBotToken ? 'Configured' : 'Not configured'}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-sm text-gray-300">Research Frequency:</span>
+                  <span className="text-sm text-white">{researchFrequency} minutes</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-sm text-gray-300">Accuracy Trigger:</span>
+                  <span className="text-sm text-white">
+                    {accuracyTrigger === 60 ? '60% - 75%' :
+                     accuracyTrigger === 75 ? '75% - 85%' :
+                     accuracyTrigger === 85 ? '85% - 95%' :
+                     'Above 95%'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex justify-between">
+                <button
+                  onClick={prevStep}
+                  className="px-6 py-2 bg-white/10 text-white font-medium rounded-lg hover:bg-white/20 focus:outline-none focus:ring-2 focus:ring-white/50 transition-all"
+                >
+                  Back
+                </button>
+                <button
+                  onClick={saveBackgroundResearchSettings}
+                  disabled={savingSettings}
+                  className="px-6 py-2 bg-gradient-to-r from-green-500 to-green-600 text-white font-medium rounded-lg hover:from-green-600 hover:to-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {savingSettings ? 'Saving...' : 'Save Settings'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      {toast && (
+        <div className={`fixed bottom-4 right-4 px-4 py-2 rounded-lg text-white text-sm font-medium z-50 ${
+          toast.type === 'success' ? 'bg-green-500' : 'bg-red-500'
+        }`}>
+          {toast.message}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Settings() {
   const { user } = useAuth();
   const [loading, setLoading] = useState(false);
@@ -149,7 +522,6 @@ export default function Settings() {
   const [marketSymbols, setMarketSymbols] = useState<string[]>([]);
   const [symbolSearch, setSymbolSearch] = useState('');
   const [savingTrading, setSavingTrading] = useState(false);
-  const [savingRisk, setSavingRisk] = useState(false);
   const [loadingAll, setLoadingAll] = useState(true);
   const [error, setError] = useState<any>(null);
   const [retryCount, setRetryCount] = useState(0);
@@ -411,10 +783,6 @@ export default function Settings() {
           okxBackupEnabled: false,
           bitgetBackupKey: '',
           bitgetBackupEnabled: false,
-          cryptoCompareFreeMode1Key: '',
-          cryptoCompareFreeMode1Enabled: false,
-          cryptoCompareFreeMode2Key: '',
-          cryptoCompareFreeMode2Enabled: false,
           cryptoCompareFreeMode1Key: '',
           cryptoCompareFreeMode1Enabled: false,
           cryptoCompareFreeMode2Key: '',
@@ -747,12 +1115,14 @@ export default function Settings() {
   const handleSaveTradingSettings = async () => {
     setSavingTrading(true);
     try {
-      // Send only trading settings fields
+      // Send all trading settings and risk controls together
       const tradingSettings = {
         symbol: settings.symbol,
         maxPositionPercent: settings.maxPositionPercent,
         tradeType: settings.tradeType,
-        accuracyThreshold: settings.accuracyThreshold
+        accuracyThreshold: settings.accuracyThreshold,
+        maxDailyLoss: settings.maxDailyLoss,
+        maxTradesPerDay: settings.maxTradesPerDay
       };
       await settingsApi.update(tradingSettings);
       showToast('Trading settings saved successfully', 'success');
@@ -764,23 +1134,6 @@ export default function Settings() {
     }
   };
 
-  const handleSaveRiskControls = async () => {
-    setSavingRisk(true);
-    try {
-      // Send only risk controls fields
-      const riskControls = {
-        maxDailyLoss: settings.maxDailyLoss,
-        maxTradesPerDay: settings.maxTradesPerDay
-      };
-      await settingsApi.update(riskControls);
-      showToast('Risk controls saved successfully', 'success');
-    } catch (err: any) {
-      console.error('Error saving risk controls:', err);
-      showToast(err.response?.data?.error || 'Error saving risk controls', 'error');
-    } finally {
-      setSavingRisk(false);
-    }
-  };
 
   const handleDisconnectExchange = async () => {
     setDisconnectingExchange(true);
@@ -910,7 +1263,7 @@ export default function Settings() {
             <section className="bg-white/5 backdrop-blur-sm rounded-xl border border-white/10 p-6">
               <div className="mb-6">
                 <h2 className="text-xl font-semibold text-white mb-2">Trading Settings</h2>
-                <p className="text-sm text-gray-400">Configure your core trading parameters</p>
+                <p className="text-sm text-gray-400">Configure your core trading parameters and risk controls</p>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -965,7 +1318,7 @@ export default function Settings() {
                   <label className="block text-sm font-medium text-gray-300">Trade Type</label>
                   <select
                     className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                    value={settings.tradeType}
+                    value={settings.tradeType || 'scalping'}
                     onChange={(e) => setSettings({ ...settings, tradeType: e.target.value })}
                   >
                     <option value="scalping">Scalping</option>
@@ -984,31 +1337,11 @@ export default function Settings() {
                     step="1"
                     className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                     value={settings.accuracyThreshold}
-                    onChange={(e) => setSettings({ ...settings, accuracyTrigger: parseInt(e.target.value, 10) })}
+                    onChange={(e) => setSettings({ ...settings, accuracyThreshold: parseInt(e.target.value, 10) })}
                   />
                   <p className="text-xs text-gray-400">Minimum accuracy to trigger trades</p>
                 </div>
-              </div>
 
-              <div className="mt-6 flex justify-end">
-                <button
-                  onClick={handleSaveTradingSettings}
-                  disabled={savingTrading}
-                  className="px-6 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {savingTrading ? 'Saving...' : 'Save Trading Settings'}
-                </button>
-              </div>
-            </section>
-
-            {/* Risk Controls Section */}
-            <section className="bg-white/5 backdrop-blur-sm rounded-xl border border-white/10 p-6">
-              <div className="mb-6">
-                <h2 className="text-xl font-semibold text-white mb-2">Risk Controls</h2>
-                <p className="text-sm text-gray-400">Configure your risk management parameters</p>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-2">
                   <label className="block text-sm font-medium text-gray-300">Max Daily Loss (%)</label>
                   <input
@@ -1039,11 +1372,11 @@ export default function Settings() {
 
               <div className="mt-6 flex justify-end">
                 <button
-                  onClick={handleSaveRiskControls}
-                  disabled={savingRisk}
+                  onClick={handleSaveTradingSettings}
+                  disabled={savingTrading}
                   className="px-6 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {savingRisk ? 'Saving...' : 'Save Risk Controls'}
+                  {savingTrading ? 'Saving...' : 'Save Trading Settings'}
                 </button>
               </div>
             </section>
@@ -1146,6 +1479,16 @@ export default function Settings() {
                   </div>
                 ))}
               </div>
+            </section>
+
+            {/* Background Deep Research Alerts Section */}
+            <section className="bg-white/5 backdrop-blur-sm rounded-xl border border-white/10 p-6">
+              <div className="mb-6">
+                <h2 className="text-xl font-semibold text-white mb-2">Background Deep Research Alerts</h2>
+                <p className="text-sm text-gray-400">Configure automatic deep research with Telegram notifications</p>
+              </div>
+
+              <BackgroundResearchWizard />
             </section>
 
             {/* Add Exchange Section */}

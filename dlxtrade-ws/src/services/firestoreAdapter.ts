@@ -777,6 +777,34 @@ export class FirestoreAdapter {
     return { uid: doc.id, ...doc.data() };
   }
 
+  // ========== BACKGROUND RESEARCH SETTINGS METHODS ==========
+  async saveBackgroundResearchSettings(uid: string, settings: {
+    backgroundResearchEnabled: boolean;
+    telegramBotToken?: string;
+    telegramChatId?: string;
+    researchFrequencyMinutes: number;
+    accuracyTrigger: number;
+    lastResearchRun: admin.firestore.Timestamp | null;
+  }): Promise<void> {
+    const docRef = db().collection('users').doc(uid).collection('settings').doc('backgroundResearch');
+    await docRef.set({
+      ...settings,
+      updatedAt: admin.firestore.Timestamp.now(),
+    }, { merge: true });
+    logger.info({ uid }, 'Background research settings saved to Firestore');
+  }
+
+  async getBackgroundResearchSettings(uid: string): Promise<any | null> {
+    const doc = await db()
+      .collection('users')
+      .doc(uid)
+      .collection('settings')
+      .doc('backgroundResearch')
+      .get();
+    if (!doc.exists) return null;
+    return doc.data();
+  }
+
   async getAllEngineStatuses(): Promise<any[]> {
     const snapshot = await db().collection('engineStatus').get();
     return snapshot.docs.map((doc) => ({ uid: doc.id, ...doc.data() }));
