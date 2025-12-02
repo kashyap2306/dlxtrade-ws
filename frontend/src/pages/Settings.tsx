@@ -87,7 +87,9 @@ const PROVIDER_CONFIG = {
       { name: "KuCoin Public", key: "kucoinBackupKey", enabledKey: "kucoinBackupEnabled", type: "api", placeholder: "Enter KuCoin API key" },
       { name: "Bybit Public", key: "bybitBackupKey", enabledKey: "bybitBackupEnabled", type: "api", placeholder: "Enter Bybit API key" },
       { name: "OKX Public", key: "okxBackupKey", enabledKey: "okxBackupEnabled", type: "api", placeholder: "Enter OKX API key" },
-      { name: "Bitget Public", key: "bitgetBackupKey", enabledKey: "bitgetBackupEnabled", type: "api", placeholder: "Enter Bitget API key" }
+      { name: "Bitget Public", key: "bitgetBackupKey", enabledKey: "bitgetBackupEnabled", type: "api", placeholder: "Enter Bitget API key" },
+      { name: "CryptoCompare-FreeMode-1", key: "cryptoCompareFreeMode1Key", enabledKey: "cryptoCompareFreeMode1Enabled", type: "free", placeholder: "No key required" },
+      { name: "CryptoCompare-FreeMode-2", key: "cryptoCompareFreeMode2Key", enabledKey: "cryptoCompareFreeMode2Enabled", type: "free", placeholder: "No key required" }
     ]
   },
   metadata: {
@@ -175,6 +177,11 @@ export default function Settings() {
     okxBackupEnabled: false,
     bitgetBackupKey: '',
     bitgetBackupEnabled: false,
+    // Free mode providers
+    cryptoCompareFreeMode1Key: '',
+    cryptoCompareFreeMode1Enabled: false,
+    cryptoCompareFreeMode2Key: '',
+    cryptoCompareFreeMode2Enabled: false,
     // Metadata Providers
     coinGeckoKey: '',
     coinmarketcapKey: '',
@@ -351,6 +358,10 @@ export default function Settings() {
           okxBackupEnabled: response.data.okxBackupEnabled || false,
           bitgetBackupKey: response.data.bitgetBackupKey || '',
           bitgetBackupEnabled: response.data.bitgetBackupEnabled || false,
+          cryptoCompareFreeMode1Key: response.data.cryptoCompareFreeMode1Key || '',
+          cryptoCompareFreeMode1Enabled: response.data.cryptoCompareFreeMode1Enabled || false,
+          cryptoCompareFreeMode2Key: response.data.cryptoCompareFreeMode2Key || '',
+          cryptoCompareFreeMode2Enabled: response.data.cryptoCompareFreeMode2Enabled || false,
           // Metadata Providers
           coinGeckoKey: response.data.coinGeckoKey || '',
           coinmarketcapKey: response.data.coinmarketcapKey || '',
@@ -400,6 +411,14 @@ export default function Settings() {
           okxBackupEnabled: false,
           bitgetBackupKey: '',
           bitgetBackupEnabled: false,
+          cryptoCompareFreeMode1Key: '',
+          cryptoCompareFreeMode1Enabled: false,
+          cryptoCompareFreeMode2Key: '',
+          cryptoCompareFreeMode2Enabled: false,
+          cryptoCompareFreeMode1Key: '',
+          cryptoCompareFreeMode1Enabled: false,
+          cryptoCompareFreeMode2Key: '',
+          cryptoCompareFreeMode2Enabled: false,
           // Metadata Providers
           coinGeckoKey: '',
           coinmarketcapKey: '',
@@ -503,11 +522,13 @@ export default function Settings() {
       // Map provider names to API names
       const apiNameMap: any = {
         'CryptoCompare': 'cryptocompare',
-        'Binance Public': 'binance',
-        'KuCoin Public': 'kucoin',
-        'Bybit Public': 'bybit',
-        'OKX Public': 'okx',
-        'Bitget Public': 'bitget',
+        'Binance Public': 'binancepublic',
+        'KuCoin Public': 'kucoinpublic',
+        'Bybit Public': 'bybitpublic',
+        'OKX Public': 'okxpublic',
+        'Bitget Public': 'bitgetpublic',
+        'CryptoCompare-FreeMode-1': 'cryptocompare-freemode-1',
+        'CryptoCompare-FreeMode-2': 'cryptocompare-freemode-2',
         'CoinGecko': 'coingecko',
         'CoinMarketCap': 'coinmarketcap',
         'CoinPaprika': 'coinpaprika',
@@ -530,11 +551,13 @@ export default function Settings() {
       // Get the API key from settings (handle field name mapping)
       const fieldNameMap: any = {
         'cryptocompare': 'cryptoCompareKey',
-        'binance': 'binanceBackupKey',
-        'kucoin': 'kucoinBackupKey',
-        'bybit': 'bybitBackupKey',
-        'okx': 'okxBackupKey',
-        'bitget': 'bitgetBackupKey',
+        'binancepublic': 'binanceBackupKey',
+        'kucoinpublic': 'kucoinBackupKey',
+        'bybitpublic': 'bybitBackupKey',
+        'okxpublic': 'okxBackupKey',
+        'bitgetpublic': 'bitgetBackupKey',
+        'cryptocompare-freemode-1': 'cryptoCompareFreeMode1Key',
+        'cryptocompare-freemode-2': 'cryptoCompareFreeMode2Key',
         'coingecko': 'coinGeckoKey',
         'coinmarketcap': 'coinmarketcapKey',
         'coinpaprika': 'coinpaprikaKey',
@@ -551,11 +574,13 @@ export default function Settings() {
 
       // Get enabled state for backup providers
       const enabledFieldMap: any = {
-        'binance': 'binanceBackupEnabled',
-        'kucoin': 'kucoinBackupEnabled',
-        'bybit': 'bybitBackupEnabled',
-        'okx': 'okxBackupEnabled',
-        'bitget': 'bitgetBackupEnabled',
+        'binancepublic': 'binanceBackupEnabled',
+        'kucoinpublic': 'kucoinBackupEnabled',
+        'bybitpublic': 'bybitBackupEnabled',
+        'okxpublic': 'okxBackupEnabled',
+        'bitgetpublic': 'bitgetBackupEnabled',
+        'cryptocompare-freemode-1': 'cryptoCompareFreeMode1Enabled',
+        'cryptocompare-freemode-2': 'cryptoCompareFreeMode2Enabled',
         'coinmarketcap': 'coinmarketcapEnabled',
         'coinpaprika': 'coinpaprikaEnabled',
         'nomics': 'nomicsEnabled',
@@ -579,12 +604,19 @@ export default function Settings() {
       // Add required logging
       console.log("FRONTEND-SAVE", { provider: apiName, apiKeyLength: apiKey?.length || 0, enabled });
 
-      // Call backend API - this encrypts and saves to Firestore
-      const response = await integrationsApi.update({
+      // Prepare payload and remove null/undefined values
+      const payload: any = {
         apiName,
-        enabled,
-        apiKey: apiKey || undefined
-      });
+        enabled
+      };
+
+      // Only include apiKey if it's not empty and not null/undefined
+      if (apiKey && apiKey.trim() !== '') {
+        payload.apiKey = apiKey.trim();
+      }
+
+      // Call backend API - this encrypts and saves to Firestore
+      const response = await integrationsApi.update(payload);
 
       // Check if save was successful
       if (response.data?.saved) {

@@ -15,24 +15,101 @@ export async function getUserIntegrations(uid: string) {
   const allIntegrations = await firestoreAdapter.getAllIntegrations(uid);
 
   const result: any = {
+    // Trading exchanges
     binance: { apiKey: '', secret: '' },
+    bitget: { apiKey: '', secret: '', passphrase: '' },
+    bingx: { apiKey: '', secret: '' },
+    weex: { apiKey: '', secret: '' },
+    // Market data providers
     cryptocompare: { apiKey: '' },
-    cmc: { apiKey: '' },
-    newsdata: { apiKey: '' }
+    binancepublic: { apiKey: '' },
+    kucoinpublic: { apiKey: '' },
+    bybitpublic: { apiKey: '' },
+    okxpublic: { apiKey: '' },
+    bitgetpublic: { apiKey: '' },
+    'cryptocompare-freemode-1': { apiKey: '' },
+    'cryptocompare-freemode-2': { apiKey: '' },
+    // Metadata providers
+    coingecko: { apiKey: '' },
+    coinmarketcap: { apiKey: '' },
+    coinpaprika: { apiKey: '' },
+    nomics: { apiKey: '' },
+    messari: { apiKey: '' },
+    cryptorank: { apiKey: '' },
+    // News providers
+    newsdata: { apiKey: '' },
+    cryptopanic: { apiKey: '' },
+    gnews: { apiKey: '' },
+    reddit: { apiKey: '' },
+    twitter: { apiKey: '' },
+    alternativeme: { apiKey: '' }
   };
 
   for (const [apiName, integration] of Object.entries(allIntegrations)) {
     try {
       if (integration.enabled) {
+        // Trading exchanges
         if (apiName === 'binance' && integration.apiKey && integration.secretKey) {
           result.binance.apiKey = decrypt(integration.apiKey) || '';
           result.binance.secret = decrypt(integration.secretKey) || '';
-        } else if (apiName === 'cryptocompare' && integration.apiKey) {
+        } else if (apiName === 'bitget' && integration.apiKey && integration.secretKey) {
+          result.bitget.apiKey = decrypt(integration.apiKey) || '';
+          result.bitget.secret = decrypt(integration.secretKey) || '';
+          result.bitget.passphrase = integration.passphrase ? decrypt(integration.passphrase) || '' : '';
+        } else if (apiName === 'bingx' && integration.apiKey && integration.secretKey) {
+          result.bingx.apiKey = decrypt(integration.apiKey) || '';
+          result.bingx.secret = decrypt(integration.secretKey) || '';
+        } else if (apiName === 'weex' && integration.apiKey && integration.secretKey) {
+          result.weex.apiKey = decrypt(integration.apiKey) || '';
+          result.weex.secret = decrypt(integration.secretKey) || '';
+        }
+        // Market data providers
+        else if (apiName === 'cryptocompare' && integration.apiKey) {
           result.cryptocompare.apiKey = decrypt(integration.apiKey) || '';
+        } else if (apiName === 'binancepublic' && integration.apiKey) {
+          result.binancepublic.apiKey = decrypt(integration.apiKey) || '';
+        } else if (apiName === 'kucoinpublic' && integration.apiKey) {
+          result.kucoinpublic.apiKey = decrypt(integration.apiKey) || '';
+        } else if (apiName === 'bybitpublic' && integration.apiKey) {
+          result.bybitpublic.apiKey = decrypt(integration.apiKey) || '';
+        } else if (apiName === 'okxpublic' && integration.apiKey) {
+          result.okxpublic.apiKey = decrypt(integration.apiKey) || '';
+        } else if (apiName === 'bitgetpublic' && integration.apiKey) {
+          result.bitgetpublic.apiKey = decrypt(integration.apiKey) || '';
+        } else if (apiName === 'cryptocompare-freemode-1') {
+          // No API key required for free mode providers
+          result['cryptocompare-freemode-1'].apiKey = 'FREE_MODE';
+        } else if (apiName === 'cryptocompare-freemode-2') {
+          // No API key required for free mode providers
+          result['cryptocompare-freemode-2'].apiKey = 'FREE_MODE';
+        }
+        // Metadata providers
+        else if (apiName === 'coingecko' && integration.apiKey) {
+          result.coingecko.apiKey = decrypt(integration.apiKey) || '';
         } else if (apiName === 'coinmarketcap' && integration.apiKey) {
-          result.cmc.apiKey = decrypt(integration.apiKey) || '';
-        } else if (apiName === 'newsdata' && integration.apiKey) {
+          result.coinmarketcap.apiKey = decrypt(integration.apiKey) || '';
+        } else if (apiName === 'coinpaprika' && integration.apiKey) {
+          result.coinpaprika.apiKey = decrypt(integration.apiKey) || '';
+        } else if (apiName === 'nomics' && integration.apiKey) {
+          result.nomics.apiKey = decrypt(integration.apiKey) || '';
+        } else if (apiName === 'messari' && integration.apiKey) {
+          result.messari.apiKey = decrypt(integration.apiKey) || '';
+        } else if (apiName === 'cryptorank' && integration.apiKey) {
+          result.cryptorank.apiKey = decrypt(integration.apiKey) || '';
+        }
+        // News providers
+        else if (apiName === 'newsdata' && integration.apiKey) {
           result.newsdata.apiKey = decrypt(integration.apiKey) || '';
+        } else if (apiName === 'cryptopanic' && integration.apiKey) {
+          result.cryptopanic.apiKey = decrypt(integration.apiKey) || '';
+        } else if (apiName === 'gnews' && integration.apiKey) {
+          result.gnews.apiKey = decrypt(integration.apiKey) || '';
+        } else if (apiName === 'reddit' && integration.apiKey) {
+          result.reddit.apiKey = decrypt(integration.apiKey) || '';
+        } else if (apiName === 'twitter' && integration.apiKey) {
+          result.twitter.apiKey = decrypt(integration.apiKey) || '';
+        } else if (apiName === 'alternativeme' && integration.apiKey) {
+          result.alternativeme.apiKey = decrypt(integration.apiKey) || '';
         }
       }
     } catch (error: any) {
@@ -44,16 +121,36 @@ export async function getUserIntegrations(uid: string) {
   return result;
 }
 
-// Validation schemas - ONLY 5 research providers allowed
+// Validation schemas - ALL providers including new ones
 const integrationUpdateSchema = z.object({
-  apiName: z.enum(['binance', 'bitget', 'bingx', 'weex', 'cryptocompare', 'newsdata', 'coinmarketcap', 'binancepublic']),
+  apiName: z.enum([
+    // Trading exchanges
+    'binance', 'bitget', 'bingx', 'weex',
+    // Market data providers
+    'cryptocompare', 'binancepublic', 'kucoinpublic', 'bybitpublic', 'okxpublic', 'bitgetpublic',
+    'cryptocompare-freemode-1', 'cryptocompare-freemode-2',
+    // Metadata providers
+    'coingecko', 'coinmarketcap', 'coinpaprika', 'nomics', 'messari', 'cryptorank',
+    // News providers
+    'newsdata', 'cryptopanic', 'gnews', 'reddit', 'twitter', 'alternativeme'
+  ]),
   enabled: z.boolean(),
   apiKey: z.string().optional(),
   secretKey: z.string().optional(),
 });
 
 const integrationDeleteSchema = z.object({
-  apiName: z.enum(['binance', 'bitget', 'bingx', 'weex', 'cryptocompare', 'newsdata', 'coinmarketcap', 'binancepublic']),
+  apiName: z.enum([
+    // Trading exchanges
+    'binance', 'bitget', 'bingx', 'weex',
+    // Market data providers
+    'cryptocompare', 'binancepublic', 'kucoinpublic', 'bybitpublic', 'okxpublic', 'bitgetpublic',
+    'cryptocompare-freemode-1', 'cryptocompare-freemode-2',
+    // Metadata providers
+    'coingecko', 'coinmarketcap', 'coinpaprika', 'nomics', 'messari', 'cryptorank',
+    // News providers
+    'newsdata', 'cryptopanic', 'gnews', 'reddit', 'twitter', 'alternativeme'
+  ]),
 });
 
 export async function integrationsRoutes(fastify: FastifyInstance) {
@@ -113,9 +210,13 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     const tradingExchanges = ['binance', 'bitget', 'bingx', 'weex'];
     const isTradingExchange = tradingExchanges.includes(body.apiName);
 
-    // Check if this is an auto-enabled research API (Binance Public)
-    const autoEnabledAPIs = ['binancepublic'];
+    // Check if this is an auto-enabled research API (Binance Public, Free mode providers)
+    const autoEnabledAPIs = ['binancepublic', 'cryptocompare-freemode-1', 'cryptocompare-freemode-2'];
     const isAutoEnabled = autoEnabledAPIs.includes(body.apiName);
+
+    // Check if this is a free provider that doesn't require API keys
+    const freeProviders = ['cryptocompare-freemode-1', 'cryptocompare-freemode-2'];
+    const isFreeProvider = freeProviders.includes(body.apiName);
 
     // Validate required fields based on API type
     if (isTradingExchange) {
@@ -124,9 +225,13 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
           error: `${body.apiName} API requires both API key and secret key`
         });
       }
+    } else if (isFreeProvider) {
+      // Free providers don't require API keys
+      // Continue without validation
     } else if (!isAutoEnabled) {
-      // Research APIs that require user-provided keys: NewsData (required), CryptoCompare (required)
-      if (body.enabled && !body.apiKey) {
+      // Research APIs that require user-provided keys: NewsData, CryptoCompare, CoinGecko, etc.
+      const primaryProviders = ['cryptocompare', 'coingecko', 'newsdata'];
+      if (body.enabled && primaryProviders.includes(body.apiName) && !body.apiKey) {
         return reply.code(400).send({
           error: `${body.apiName} API requires an API key`
         });
@@ -209,17 +314,20 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       });
     } else {
       // Research APIs: Save to integrations/{integrationName}
-      if (!body.apiKey) {
+      const integrationData: { enabled: boolean; apiKey?: string } = {
+        enabled: true
+      };
+
+      // Only set API key for providers that require it
+      if (!isFreeProvider && body.apiKey) {
+        integrationData.apiKey = body.apiKey;
+      } else if (!isFreeProvider && !body.apiKey) {
         return reply.code(400).send({
           error: `${body.apiName} API requires an API key`,
           saved: false
         });
       }
-
-      const integrationData: { enabled: boolean; apiKey?: string } = {
-        enabled: true,
-        apiKey: body.apiKey
-      };
+      // For free providers, no API key is needed
 
       // Add required logging
       console.log("BACKEND-SAVE", { uid: user.uid, provider: body.apiName, apiKeyLength: body.apiKey?.length || 0 });
@@ -295,17 +403,30 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     const tradingExchanges = ['binance', 'bitget', 'bingx', 'weex'];
     const isTradingExchange = tradingExchanges.includes(body.apiName);
 
+    // Check if this is an auto-enabled research API (Binance Public, Free mode providers)
+    const autoEnabledAPIs = ['binancepublic', 'cryptocompare-freemode-1', 'cryptocompare-freemode-2'];
+    const isAutoEnabled = autoEnabledAPIs.includes(body.apiName);
+
+    // Check if this is a free provider that doesn't require API keys
+    const freeProviders = ['cryptocompare-freemode-1', 'cryptocompare-freemode-2'];
+    const isFreeProvider = freeProviders.includes(body.apiName);
+
     // Validate required fields based on API type
     if (isTradingExchange) {
       if (body.enabled && (!body.apiKey || !body.secretKey)) {
-        return reply.code(400).send({ 
-          error: `${body.apiName} API requires both API key and secret key` 
+        return reply.code(400).send({
+          error: `${body.apiName} API requires both API key and secret key`
         });
       }
-    } else {
-      if (body.enabled && !body.apiKey) {
-        return reply.code(400).send({ 
-          error: `${body.apiName} API requires an API key` 
+    } else if (isFreeProvider) {
+      // Free providers don't require API keys
+      // Continue without validation
+    } else if (!isAutoEnabled) {
+      // Research APIs that require user-provided keys: NewsData, CryptoCompare, CoinGecko, etc.
+      const primaryProviders = ['cryptocompare', 'coingecko', 'newsdata'];
+      if (body.enabled && primaryProviders.includes(body.apiName) && !body.apiKey) {
+        return reply.code(400).send({
+          error: `${body.apiName} API requires an API key`
         });
       }
     }
@@ -386,9 +507,16 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         enabled: true,
       };
 
-      if (body.apiKey) {
+      // Only set API key for providers that require it
+      if (!isFreeProvider && body.apiKey) {
         integrationData.apiKey = body.apiKey;
+      } else if (!isFreeProvider && !body.apiKey) {
+        return reply.code(400).send({
+          error: `${body.apiName} API requires an API key`,
+          saved: false
+        });
       }
+      // For free providers, no API key is needed
 
       // Add required logging
       console.log("BACKEND-SAVE", { uid: user.uid, provider: body.apiName, apiKeyLength: body.apiKey?.length || 0 });
@@ -527,6 +655,254 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
           apiName: 'binancepublic',
           note: 'Binance Public API is auto-enabled and does not require API keys',
         };
+      } else if (body.apiName === 'cryptocompare-freemode-1' || body.apiName === 'cryptocompare-freemode-2') {
+        // CryptoCompare Free Mode providers are auto-enabled, no validation needed
+        return {
+          valid: true,
+          apiName: body.apiName,
+          note: 'CryptoCompare Free Mode is auto-enabled and does not require API keys',
+        };
+      } else if (body.apiName === 'kucoinpublic') {
+        // KuCoin Public API is auto-enabled, no validation needed
+        return {
+          valid: true,
+          apiName: 'kucoinpublic',
+          note: 'KuCoin Public API is auto-enabled and does not require API keys',
+        };
+      } else if (body.apiName === 'bybitpublic') {
+        // Bybit Public API is auto-enabled, no validation needed
+        return {
+          valid: true,
+          apiName: 'bybitpublic',
+          note: 'Bybit Public API is auto-enabled and does not require API keys',
+        };
+      } else if (body.apiName === 'okxpublic') {
+        // OKX Public API is auto-enabled, no validation needed
+        return {
+          valid: true,
+          apiName: 'okxpublic',
+          note: 'OKX Public API is auto-enabled and does not require API keys',
+        };
+      } else if (body.apiName === 'bitgetpublic') {
+        // Bitget Public API is auto-enabled, no validation needed
+        return {
+          valid: true,
+          apiName: 'bitgetpublic',
+          note: 'Bitget Public API is auto-enabled and does not require API keys',
+        };
+      } else if (body.apiName === 'coingecko') {
+        if (!body.apiKey) {
+          return reply.code(400).send({
+            valid: false,
+            error: 'CoinGecko API requires an API key',
+            apiName: 'coingecko',
+          });
+        }
+
+        try {
+          // Import and validate CoinGecko API
+          const { fetchCoinGeckoMarketData } = await import('../services/coinGeckoAdapter');
+          const coinGeckoData = await fetchCoinGeckoMarketData('bitcoin', body.apiKey);
+
+          return {
+            valid: true,
+            apiName: 'coingecko',
+          };
+        } catch (error: any) {
+          return reply.code(400).send({
+            valid: false,
+            error: error.message || 'CoinGecko API validation failed',
+            apiName: 'coingecko',
+          });
+        }
+      } else if (body.apiName === 'coinpaprika') {
+        // CoinPaprika can work without API key for basic functionality
+        try {
+          const { fetchCoinPaprikaMarketData } = await import('../services/coinPaprikaAdapter');
+          const paprikaData = await fetchCoinPaprikaMarketData('btc-bitcoin');
+
+          return {
+            valid: true,
+            apiName: 'coinpaprika',
+          };
+        } catch (error: any) {
+          return reply.code(400).send({
+            valid: false,
+            error: error.message || 'CoinPaprika API validation failed',
+            apiName: 'coinpaprika',
+          });
+        }
+      } else if (body.apiName === 'nomics') {
+        if (!body.apiKey) {
+          return reply.code(400).send({
+            valid: false,
+            error: 'Nomics API requires an API key',
+            apiName: 'nomics',
+          });
+        }
+
+        try {
+          const { fetchNomicsMarketData } = await import('../services/nomicsAdapter');
+          const nomicsData = await fetchNomicsMarketData('BTC', body.apiKey);
+
+          return {
+            valid: true,
+            apiName: 'nomics',
+          };
+        } catch (error: any) {
+          return reply.code(400).send({
+            valid: false,
+            error: error.message || 'Nomics API validation failed',
+            apiName: 'nomics',
+          });
+        }
+      } else if (body.apiName === 'messari') {
+        if (!body.apiKey) {
+          return reply.code(400).send({
+            valid: false,
+            error: 'Messari API requires an API key',
+            apiName: 'messari',
+          });
+        }
+
+        try {
+          const { fetchMessariMarketData } = await import('../services/messariAdapter');
+          const messariData = await fetchMessariMarketData('bitcoin', body.apiKey);
+
+          return {
+            valid: true,
+            apiName: 'messari',
+          };
+        } catch (error: any) {
+          return reply.code(400).send({
+            valid: false,
+            error: error.message || 'Messari API validation failed',
+            apiName: 'messari',
+          });
+        }
+      } else if (body.apiName === 'cryptorank') {
+        // CryptoRank can work without API key for basic functionality
+        try {
+          const { fetchCryptoRankMarketData } = await import('../services/cryptoRankAdapter');
+          const rankData = await fetchCryptoRankMarketData();
+
+          return {
+            valid: true,
+            apiName: 'cryptorank',
+          };
+        } catch (error: any) {
+          return reply.code(400).send({
+            valid: false,
+            error: error.message || 'CryptoRank API validation failed',
+            apiName: 'cryptorank',
+          });
+        }
+      } else if (body.apiName === 'cryptopanic') {
+        if (!body.apiKey) {
+          return reply.code(400).send({
+            valid: false,
+            error: 'CryptoPanic API requires an API key',
+            apiName: 'cryptopanic',
+          });
+        }
+
+        try {
+          const { fetchCryptoPanicNews } = await import('../services/cryptoPanicAdapter');
+          const panicData = await fetchCryptoPanicNews(body.apiKey);
+
+          return {
+            valid: true,
+            apiName: 'cryptopanic',
+          };
+        } catch (error: any) {
+          return reply.code(400).send({
+            valid: false,
+            error: error.message || 'CryptoPanic API validation failed',
+            apiName: 'cryptopanic',
+          });
+        }
+      } else if (body.apiName === 'gnews') {
+        if (!body.apiKey) {
+          return reply.code(400).send({
+            valid: false,
+            error: 'GNews API requires an API key',
+            apiName: 'gnews',
+          });
+        }
+
+        try {
+          const { fetchGNews } = await import('../services/gnewsAdapter');
+          const gnewsData = await fetchGNews('bitcoin', body.apiKey);
+
+          return {
+            valid: true,
+            apiName: 'gnews',
+          };
+        } catch (error: any) {
+          return reply.code(400).send({
+            valid: false,
+            error: error.message || 'GNews API validation failed',
+            apiName: 'gnews',
+          });
+        }
+      } else if (body.apiName === 'reddit') {
+        // Reddit API can work without explicit API key for basic functionality
+        try {
+          const { fetchRedditCryptoNews } = await import('../services/redditAdapter');
+          const redditData = await fetchRedditCryptoNews();
+
+          return {
+            valid: true,
+            apiName: 'reddit',
+          };
+        } catch (error: any) {
+          return reply.code(400).send({
+            valid: false,
+            error: error.message || 'Reddit API validation failed',
+            apiName: 'reddit',
+          });
+        }
+      } else if (body.apiName === 'twitter') {
+        if (!body.apiKey) {
+          return reply.code(400).send({
+            valid: false,
+            error: 'Twitter API requires an API key',
+            apiName: 'twitter',
+          });
+        }
+
+        try {
+          const { fetchTwitterCryptoNews } = await import('../services/twitterAdapter');
+          const twitterData = await fetchTwitterCryptoNews(body.apiKey);
+
+          return {
+            valid: true,
+            apiName: 'twitter',
+          };
+        } catch (error: any) {
+          return reply.code(400).send({
+            valid: false,
+            error: error.message || 'Twitter API validation failed',
+            apiName: 'twitter',
+          });
+        }
+      } else if (body.apiName === 'alternativeme') {
+        // Alternative.me API works without API key
+        try {
+          const { fetchAlternativeMeNews } = await import('../services/alternativeMeAdapter');
+          const altData = await fetchAlternativeMeNews();
+
+          return {
+            valid: true,
+            apiName: 'alternativeme',
+          };
+        } catch (error: any) {
+          return reply.code(400).send({
+            valid: false,
+            error: error.message || 'Alternative.me API validation failed',
+            apiName: 'alternativeme',
+          });
+        }
       } else {
         return reply.code(400).send({
           valid: false,
