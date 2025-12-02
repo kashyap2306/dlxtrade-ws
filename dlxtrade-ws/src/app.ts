@@ -294,9 +294,6 @@ console.log("[RENDER ENV] Build timestamp:", Date.now());
     });
 
     connection.socket.on('close', () => {
-      if (accuracyEngine) {
-        accuracyEngine.unregisterWebSocketClient(connection.socket);
-      }
       if (hftEngine) {
         hftEngine.unregisterWebSocketClient(connection.socket);
       }
