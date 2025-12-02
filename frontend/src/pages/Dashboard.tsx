@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import Sidebar from '../components/Sidebar';
-import { autoTradeApi, usersApi, researchApi, globalStatsApi, engineStatusApi, settingsApi, notificationsApi, agentsApi } from '../services/api';
+import { autoTradeApi, usersApi, globalStatsApi, engineStatusApi, settingsApi, notificationsApi, agentsApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { suppressConsoleError } from '../utils/errorHandler';
 import ExchangeAccountsSection from '../components/ExchangeAccountsSection';
 import { useThrottle, useLazyLoad, usePolling } from '../hooks/usePerformance';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { LoadingState, CardSkeleton } from '../components/LoadingState';
-import { ErrorState, InlineError } from '../components/ErrorState';
+import { ErrorState } from '../components/ErrorState';
 import { useNavigate } from 'react-router-dom';
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
 import { ArrowTrendingUpIcon, ArrowTrendingDownIcon, WalletIcon, ChartBarIcon, BoltIcon, CpuChipIcon } from '@heroicons/react/24/outline';

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { settingsApi, integrationsApi, exchangeApi, adminApi, marketApi } from '../services/api';
+import { settingsApi, integrationsApi, exchangeApi, marketApi } from '../services/api';
 import Toast from '../components/Toast';
 import Sidebar from '../components/Sidebar';
 import { useAuth } from '../hooks/useAuth';
@@ -70,6 +70,64 @@ const EXCHANGES = [
   }
 ];
 
+// Dynamic Provider Configuration according to new architecture
+const PROVIDER_CONFIG = {
+  marketData: {
+    icon: "📊",
+    bgColor: "bg-blue-500",
+    title: "Market Data Providers",
+    description: "Real-time price, volume, and OHLC data",
+    primary: {
+      name: "CryptoCompare",
+      key: "cryptoCompareKey",
+      placeholder: "Enter CryptoCompare API key"
+    },
+    backups: [
+      { name: "Binance Public", key: "binanceBackupKey", enabledKey: "binanceBackupEnabled", type: "api", placeholder: "Enter Binance API key" },
+      { name: "KuCoin Public", key: "kucoinBackupKey", enabledKey: "kucoinBackupEnabled", type: "api", placeholder: "Enter KuCoin API key" },
+      { name: "Bybit Public", key: "bybitBackupKey", enabledKey: "bybitBackupEnabled", type: "api", placeholder: "Enter Bybit API key" },
+      { name: "OKX Public", key: "okxBackupKey", enabledKey: "okxBackupEnabled", type: "api", placeholder: "Enter OKX API key" },
+      { name: "Bitget Public", key: "bitgetBackupKey", enabledKey: "bitgetBackupEnabled", type: "api", placeholder: "Enter Bitget API key" }
+    ]
+  },
+  metadata: {
+    icon: "📈",
+    bgColor: "bg-purple-500",
+    title: "Metadata Providers",
+    description: "Market cap, supply, and asset information",
+    primary: {
+      name: "CoinGecko",
+      key: "coinGeckoKey",
+      placeholder: "Enter CoinGecko API key"
+    },
+    backups: [
+      { name: "CoinMarketCap", key: "coinmarketcapKey", enabledKey: "coinmarketcapEnabled", type: "api", placeholder: "Enter CoinMarketCap API key" },
+      { name: "CoinPaprika", key: "coinpaprikaKey", enabledKey: "coinpaprikaEnabled", type: "free", placeholder: "No key required" },
+      { name: "Nomics", key: "nomicsKey", enabledKey: "nomicsEnabled", type: "api", placeholder: "Enter Nomics API key" },
+      { name: "Messari", key: "messariKey", enabledKey: "messariEnabled", type: "api", placeholder: "Enter Messari API key" },
+      { name: "CryptoRank", key: "cryptorankKey", enabledKey: "cryptorankEnabled", type: "free", placeholder: "No key required" }
+    ]
+  },
+  news: {
+    icon: "📰",
+    bgColor: "bg-green-500",
+    title: "News Providers",
+    description: "Sentiment analysis and market news",
+    primary: {
+      name: "NewsData",
+      key: "newsDataKey",
+      placeholder: "Enter NewsData API key"
+    },
+    backups: [
+      { name: "CryptoPanic", key: "cryptoPanicKey", enabledKey: "cryptoPanicEnabled", type: "api", placeholder: "Enter CryptoPanic API key" },
+      { name: "GNews", key: "gnewsKey", enabledKey: "gnewsEnabled", type: "api", placeholder: "Enter GNews API key" },
+      { name: "Reddit Crypto", key: "redditKey", enabledKey: "redditEnabled", type: "free", placeholder: "No key required" },
+      { name: "Twitter/X", key: "twitterKey", enabledKey: "twitterEnabled", type: "api", placeholder: "Enter Twitter/X API key" },
+      { name: "Alternative.me", key: "alternativemeKey", enabledKey: "alternativemeEnabled", type: "free", placeholder: "No key required" }
+    ]
+  }
+};
+
 export default function Settings() {
   const { user } = useAuth();
   const [loading, setLoading] = useState(false);
@@ -96,14 +154,6 @@ export default function Settings() {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [integrationsLoaded, setIntegrationsLoaded] = useState(false);
 
-  // Backup API Modal State
-  const [backupModalOpen, setBackupModalOpen] = useState(false);
-  const [backupModalProvider, setBackupModalProvider] = useState<string>('');
-  const [backupForm, setBackupForm] = useState({
-    name: '',
-    apiKey: '',
-    endpoint: ''
-  });
   const [integrationsLoading, setIntegrationsLoading] = useState(false);
   const [globalSettings, setGlobalSettings] = useState<any>(null);
   const [settings, setSettings] = useState<any>({
@@ -113,12 +163,44 @@ export default function Settings() {
     accuracyThreshold: 85,
     maxDailyLoss: 5,
     maxTradesPerDay: 50,
+    // Market Data Providers
     cryptoCompareKey: '',
-    newsDataKey: '',
+    binanceBackupKey: '',
+    binanceBackupEnabled: false,
+    kucoinBackupKey: '',
+    kucoinBackupEnabled: false,
+    bybitBackupKey: '',
+    bybitBackupEnabled: false,
+    okxBackupKey: '',
+    okxBackupEnabled: false,
+    bitgetBackupKey: '',
+    bitgetBackupEnabled: false,
+    // Metadata Providers
+    coinGeckoKey: '',
     coinmarketcapKey: '',
+    coinmarketcapEnabled: false,
+    coinpaprikaKey: '',
+    coinpaprikaEnabled: false,
+    nomicsKey: '',
+    nomicsEnabled: false,
+    messariKey: '',
+    messariEnabled: false,
+    cryptorankKey: '',
+    cryptorankEnabled: false,
+    // News Providers
+    newsDataKey: '',
+    cryptoPanicKey: '',
+    cryptoPanicEnabled: false,
+    gnewsKey: '',
+    gnewsEnabled: false,
+    redditKey: '',
+    redditEnabled: false,
+    twitterKey: '',
+    twitterEnabled: false,
+    alternativemeKey: '',
+    alternativemeEnabled: false,
     enableAutoTrade: false,
     exchanges: [],
-    backupApis: [],
     showUnmaskedKeys: false,
   });
   const [integrations, setIntegrations] = useState<any>(null);
@@ -210,24 +292,29 @@ export default function Settings() {
 
       // Also update settings with API keys from integrations (only masked keys for UI)
       if (settings) {
-        // Extract backup APIs from integrations data
-        const backupApis: any = {};
-        Object.keys(integrationsData).forEach(providerKey => {
-          if (integrationsData[providerKey]?.backupApis) {
-            backupApis[providerKey] = integrationsData[providerKey].backupApis.map((backup: any) => ({
-              name: backup.name,
-              active: backup.active,
-              endpoint: backup.endpoint
-            }));
-          }
-        });
-
         setSettings({
           ...settings,
+          // Market Data Providers
           cryptoCompareKey: '', // Clear any entered keys - they'll be masked from integrations
-          newsDataKey: '',
+          binanceBackupKey: '',
+          kucoinBackupKey: '',
+          bybitBackupKey: '',
+          okxBackupKey: '',
+          bitgetBackupKey: '',
+          // Metadata Providers
+          coinGeckoKey: '',
           coinmarketcapKey: '',
-          backupApis: backupApis,
+          coinpaprikaKey: '',
+          nomicsKey: '',
+          messariKey: '',
+          cryptorankKey: '',
+          // News Providers
+          newsDataKey: '',
+          gnewsKey: '',
+          cryptoPanicKey: '',
+          redditKey: '',
+          twitterKey: '',
+          alternativemeKey: '',
         });
       }
     } catch (err) {
@@ -252,12 +339,44 @@ export default function Settings() {
           accuracyThreshold: response.data.accuracyThreshold || 85,
           maxDailyLoss: response.data.maxDailyLoss || 5,
           maxTradesPerDay: response.data.maxTradesPerDay || 50,
+          // Market Data Providers
           cryptoCompareKey: response.data.cryptoCompareKey || '',
-          newsDataKey: response.data.newsDataKey || '',
+          binanceBackupKey: response.data.binanceBackupKey || '',
+          binanceBackupEnabled: response.data.binanceBackupEnabled || false,
+          kucoinBackupKey: response.data.kucoinBackupKey || '',
+          kucoinBackupEnabled: response.data.kucoinBackupEnabled || false,
+          bybitBackupKey: response.data.bybitBackupKey || '',
+          bybitBackupEnabled: response.data.bybitBackupEnabled || false,
+          okxBackupKey: response.data.okxBackupKey || '',
+          okxBackupEnabled: response.data.okxBackupEnabled || false,
+          bitgetBackupKey: response.data.bitgetBackupKey || '',
+          bitgetBackupEnabled: response.data.bitgetBackupEnabled || false,
+          // Metadata Providers
+          coinGeckoKey: response.data.coinGeckoKey || '',
           coinmarketcapKey: response.data.coinmarketcapKey || '',
+          coinmarketcapEnabled: response.data.coinmarketcapEnabled || false,
+          coinpaprikaKey: response.data.coinpaprikaKey || '',
+          coinpaprikaEnabled: response.data.coinpaprikaEnabled || false,
+          nomicsKey: response.data.nomicsKey || '',
+          nomicsEnabled: response.data.nomicsEnabled || false,
+          messariKey: response.data.messariKey || '',
+          messariEnabled: response.data.messariEnabled || false,
+          cryptorankKey: response.data.cryptorankKey || '',
+          cryptorankEnabled: response.data.cryptorankEnabled || false,
+          // News Providers
+          newsDataKey: response.data.newsDataKey || '',
+          cryptoPanicKey: response.data.cryptoPanicKey || '',
+          cryptoPanicEnabled: response.data.cryptoPanicEnabled || false,
+          gnewsKey: response.data.gnewsKey || '',
+          gnewsEnabled: response.data.gnewsEnabled || false,
+          redditKey: response.data.redditKey || '',
+          redditEnabled: response.data.redditEnabled || false,
+          twitterKey: response.data.twitterKey || '',
+          twitterEnabled: response.data.twitterEnabled || false,
+          alternativemeKey: response.data.alternativemeKey || '',
+          alternativemeEnabled: response.data.alternativemeEnabled || false,
           enableAutoTrade: response.data.enableAutoTrade || false,
           exchanges: response.data.exchanges || [],
-          backupApis: response.data.backupApis || [],
           showUnmaskedKeys: response.data.showUnmaskedKeys || false,
         });
       } else {
@@ -269,12 +388,44 @@ export default function Settings() {
           accuracyThreshold: 85,
           maxDailyLoss: 5,
           maxTradesPerDay: 50,
+          // Market Data Providers
           cryptoCompareKey: '',
-          newsDataKey: '',
+          binanceBackupKey: '',
+          binanceBackupEnabled: false,
+          kucoinBackupKey: '',
+          kucoinBackupEnabled: false,
+          bybitBackupKey: '',
+          bybitBackupEnabled: false,
+          okxBackupKey: '',
+          okxBackupEnabled: false,
+          bitgetBackupKey: '',
+          bitgetBackupEnabled: false,
+          // Metadata Providers
+          coinGeckoKey: '',
           coinmarketcapKey: '',
+          coinmarketcapEnabled: false,
+          coinpaprikaKey: '',
+          coinpaprikaEnabled: false,
+          nomicsKey: '',
+          nomicsEnabled: false,
+          messariKey: '',
+          messariEnabled: false,
+          cryptorankKey: '',
+          cryptorankEnabled: false,
+          // News Providers
+          newsDataKey: '',
+          cryptoPanicKey: '',
+          cryptoPanicEnabled: false,
+          gnewsKey: '',
+          gnewsEnabled: false,
+          redditKey: '',
+          redditEnabled: false,
+          twitterKey: '',
+          twitterEnabled: false,
+          alternativemeKey: '',
+          alternativemeEnabled: false,
           enableAutoTrade: false,
           exchanges: [],
-          backupApis: [],
           showUnmaskedKeys: false,
         });
       }
@@ -289,13 +440,44 @@ export default function Settings() {
         accuracyThreshold: 85,
         maxDailyLoss: 5,
         maxTradesPerDay: 50,
+        // Market Data Providers
         cryptoCompareKey: '',
-        newsDataKey: '',
-        binaceKey: '',
+        binanceBackupKey: '',
+        binanceBackupEnabled: false,
+        kucoinBackupKey: '',
+        kucoinBackupEnabled: false,
+        bybitBackupKey: '',
+        bybitBackupEnabled: false,
+        okxBackupKey: '',
+        okxBackupEnabled: false,
+        bitgetBackupKey: '',
+        bitgetBackupEnabled: false,
+        // Metadata Providers
+        coinGeckoKey: '',
         coinmarketcapKey: '',
+        coinmarketcapEnabled: false,
+        coinpaprikaKey: '',
+        coinpaprikaEnabled: false,
+        nomicsKey: '',
+        nomicsEnabled: false,
+        messariKey: '',
+        messariEnabled: false,
+        cryptorankKey: '',
+        cryptorankEnabled: false,
+        // News Providers
+        newsDataKey: '',
+        cryptoPanicKey: '',
+        cryptoPanicEnabled: false,
+        gnewsKey: '',
+        gnewsEnabled: false,
+        redditKey: '',
+        redditEnabled: false,
+        twitterKey: '',
+        twitterEnabled: false,
+        alternativemeKey: '',
+        alternativemeEnabled: false,
         enableAutoTrade: false,
         exchanges: [],
-        backupApis: [],
         showUnmaskedKeys: false,
       });
     } finally {
@@ -303,52 +485,6 @@ export default function Settings() {
     }
   };
 
-  // Backup API Modal Functions
-  const openBackupModal = (provider: string) => {
-    setBackupModalProvider(provider);
-    setBackupModalOpen(true);
-    setBackupForm({ name: '', apiKey: '', endpoint: '' });
-  };
-
-  const closeBackupModal = () => {
-    setBackupModalOpen(false);
-    setBackupModalProvider('');
-    setBackupForm({ name: '', apiKey: '', endpoint: '' });
-  };
-
-  const handleAddBackupApi = async () => {
-    if (!backupForm.name.trim() || !backupForm.apiKey.trim()) {
-      setToast({ message: 'Name and API Key are required', type: 'error' });
-      return;
-    }
-
-    try {
-      const providerKey = backupModalProvider.toLowerCase();
-      const newBackup = {
-        name: backupForm.name.trim(),
-        apiKey: backupForm.apiKey.trim(),
-        endpoint: backupForm.endpoint.trim() || undefined,
-        active: true
-      };
-
-      // Update local settings
-      setSettings(prev => ({
-        ...prev,
-        backupApis: {
-          ...prev.backupApis,
-          [providerKey]: [...(prev.backupApis?.[providerKey] || []), newBackup]
-        }
-      }));
-
-      // Save to backend (integrations)
-      await integrationsApi.saveBackupApi(backupModalProvider, newBackup);
-
-      setToast({ message: 'Backup API added successfully', type: 'success' });
-      closeBackupModal();
-    } catch (error: any) {
-      setToast({ message: `Failed to add backup API: ${error.message}`, type: 'error' });
-    }
-  };
 
   const handleSaveProvider = async (providerName: string, requiredFields: string[] = []) => {
     if (!settings) return;
@@ -367,8 +503,23 @@ export default function Settings() {
       // Map provider names to API names
       const apiNameMap: any = {
         'CryptoCompare': 'cryptocompare',
+        'Binance Public': 'binance',
+        'KuCoin Public': 'kucoin',
+        'Bybit Public': 'bybit',
+        'OKX Public': 'okx',
+        'Bitget Public': 'bitget',
+        'CoinGecko': 'coingecko',
+        'CoinMarketCap': 'coinmarketcap',
+        'CoinPaprika': 'coinpaprika',
+        'Nomics': 'nomics',
+        'Messari': 'messari',
+        'CryptoRank': 'cryptorank',
         'NewsData': 'newsdata',
-        'CoinMarketCap': 'coinmarketcap'
+        'CryptoPanic': 'cryptopanic',
+        'GNews': 'gnews',
+        'Reddit Crypto': 'reddit',
+        'Twitter/X': 'twitter',
+        'Alternative.me': 'alternativeme'
       };
 
       const apiName = apiNameMap[providerName];
@@ -379,20 +530,59 @@ export default function Settings() {
       // Get the API key from settings (handle field name mapping)
       const fieldNameMap: any = {
         'cryptocompare': 'cryptoCompareKey',
+        'binance': 'binanceBackupKey',
+        'kucoin': 'kucoinBackupKey',
+        'bybit': 'bybitBackupKey',
+        'okx': 'okxBackupKey',
+        'bitget': 'bitgetBackupKey',
+        'coingecko': 'coinGeckoKey',
+        'coinmarketcap': 'coinmarketcapKey',
+        'coinpaprika': 'coinpaprikaKey',
+        'nomics': 'nomicsKey',
+        'messari': 'messariKey',
+        'cryptorank': 'cryptorankKey',
         'newsdata': 'newsDataKey',
-        'coinmarketcap': 'coinmarketcapKey'
+        'cryptopanic': 'cryptoPanicKey',
+        'gnews': 'gnewsKey',
+        'reddit': 'redditKey',
+        'twitter': 'twitterKey',
+        'alternativeme': 'alternativemeKey'
+      };
+
+      // Get enabled state for backup providers
+      const enabledFieldMap: any = {
+        'binance': 'binanceBackupEnabled',
+        'kucoin': 'kucoinBackupEnabled',
+        'bybit': 'bybitBackupEnabled',
+        'okx': 'okxBackupEnabled',
+        'bitget': 'bitgetBackupEnabled',
+        'coinmarketcap': 'coinmarketcapEnabled',
+        'coinpaprika': 'coinpaprikaEnabled',
+        'nomics': 'nomicsEnabled',
+        'messari': 'messariEnabled',
+        'cryptorank': 'cryptorankEnabled',
+        'cryptopanic': 'cryptoPanicEnabled',
+        'gnews': 'gnewsEnabled',
+        'reddit': 'redditEnabled',
+        'twitter': 'twitterEnabled',
+        'alternativeme': 'alternativemeEnabled'
       };
 
       const apiKeyField = fieldNameMap[apiName] || `${apiName}Key`;
       const apiKey = settings[apiKeyField]?.trim();
 
+      // For backup providers, check if enabled; for primary providers, always enabled
+      const isPrimary = ['cryptocompare', 'coingecko', 'newsdata'].includes(apiName);
+      const enabledField = enabledFieldMap[apiName];
+      const enabled = isPrimary ? true : (enabledField ? settings[enabledField] : !!apiKey);
+
       // Add required logging
-      console.log("FRONTEND-SAVE", { provider: apiName, apiKeyLength: apiKey?.length || 0 });
+      console.log("FRONTEND-SAVE", { provider: apiName, apiKeyLength: apiKey?.length || 0, enabled });
 
       // Call backend API - this encrypts and saves to Firestore
       const response = await integrationsApi.update({
         apiName,
-        enabled: !!apiKey,
+        enabled,
         apiKey: apiKey || undefined
       });
 
@@ -402,7 +592,7 @@ export default function Settings() {
         setIntegrations(prev => ({
           ...prev,
           [apiName]: {
-            enabled: true,
+            enabled,
             apiKey: apiKey ? '••••••••••••••••' : null, // Masked key
             updatedAt: new Date().toISOString(),
           }
@@ -414,7 +604,7 @@ export default function Settings() {
           [fieldNameMap[apiName] || `${apiName}Key`]: ''
         }));
 
-        showToast(`${providerName} connected successfully`, 'success');
+        showToast(`${providerName} ${enabled ? 'connected' : 'disabled'} successfully`, 'success');
       } else {
         throw new Error('Save operation did not complete successfully');
       }
@@ -584,6 +774,10 @@ export default function Settings() {
     // Validate required API keys for new provider architecture
     if (!settings.cryptoCompareKey?.trim()) {
       showToast('CryptoCompare API key is required for market data', 'error');
+      return;
+    }
+    if (!settings.coinGeckoKey?.trim()) {
+      showToast('CoinGecko API key is required for metadata', 'error');
       return;
     }
     if (!settings.newsDataKey?.trim()) {
@@ -822,88 +1016,103 @@ export default function Settings() {
               </div>
             </section>
 
-            {/* API Integrations Section */}
+            {/* API Provider Categories */}
             <section className="bg-white/5 backdrop-blur-sm rounded-xl border border-white/10 p-6">
               <div className="mb-6">
-                <h2 className="text-xl font-semibold text-white mb-2">API Integrations</h2>
-                <p className="text-sm text-gray-400">Connect your data provider API keys</p>
+                <h2 className="text-xl font-semibold text-white mb-2">API Provider Configuration</h2>
+                <p className="text-sm text-gray-400">Configure primary and backup data providers for comprehensive market analysis</p>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* CryptoCompare - Required for Market Data */}
-                <div className="space-y-4">
-                  <div className="flex items-center space-x-3">
-                    <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center">
-                      <span className="text-white font-bold text-sm">📊</span>
+              <div className="space-y-8">
+                {/* Dynamic Provider Categories */}
+                {Object.entries(PROVIDER_CONFIG).map(([categoryKey, config]) => (
+                  <div key={categoryKey} className="space-y-4">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-10 h-10 ${config.bgColor} rounded-lg flex items-center justify-center`}>
+                        <span className="text-white font-bold text-lg">{config.icon}</span>
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-semibold text-white">{config.title}</h3>
+                        <p className="text-sm text-gray-400">{config.description}</p>
+                      </div>
                     </div>
-                    <div>
-                      <h3 className="text-white font-medium">CryptoCompare API Key</h3>
-                      <p className="text-xs text-gray-400">Required for market data (primary provider)</p>
-                    </div>
-                  </div>
 
-                  <div className="space-y-2">
-                    <label className="block text-xs font-medium text-gray-400">API Key</label>
-                    <input
-                      type="password"
-                      className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                      value={settings.cryptoCompareKey || ''}
-                      onChange={(e) => setSettings({ ...settings, cryptoCompareKey: e.target.value })}
-                      placeholder="Enter CryptoCompare API key"
-                    />
-                    <p className="text-xs text-gray-500">Backups: CoinGecko, KuCoin, Bybit, OKX, Bitget (free/no key)</p>
-                  </div>
-                </div>
-
-                {/* NewsData - Required for News Analysis */}
-                <div className="space-y-4">
-                  <div className="flex items-center space-x-3">
-                    <div className="w-8 h-8 bg-green-500 rounded-lg flex items-center justify-center">
-                      <span className="text-white font-bold text-sm">📰</span>
+                    {/* Primary Provider */}
+                    <div className="ml-13 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-green-400">PRIMARY:</span>
+                        <span className="text-sm text-white">{config.primary.name}</span>
+                      </div>
+                      <div className="flex gap-2">
+                        <input
+                          type="password"
+                          className="flex-1 px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                          value={settings[config.primary.key] || ''}
+                          onChange={(e) => setSettings({ ...settings, [config.primary.key]: e.target.value })}
+                          placeholder={config.primary.placeholder}
+                        />
+                        <button
+                          onClick={() => handleSaveProvider(config.primary.name)}
+                          disabled={savingProvider === config.primary.name}
+                          className="px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                        >
+                          {savingProvider === config.primary.name ? 'Saving...' : 'Save'}
+                        </button>
+                      </div>
                     </div>
-                    <div>
-                      <h3 className="text-white font-medium">NewsData API Key</h3>
-                      <p className="text-xs text-gray-400">Required for news sentiment analysis</p>
-                    </div>
-                  </div>
 
-                  <div className="space-y-2">
-                    <label className="block text-xs font-medium text-gray-400">API Key</label>
-                    <input
-                      type="password"
-                      className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                      value={settings.newsDataKey || ''}
-                      onChange={(e) => setSettings({ ...settings, newsDataKey: e.target.value })}
-                      placeholder="Enter NewsData API key"
-                    />
-                    <p className="text-xs text-gray-500">Backups: CryptoPanic, Reddit, GNews (free/no key)</p>
+                    {/* Backup Providers Accordion */}
+                    <details className="group ml-13">
+                      <summary className="flex items-center gap-2 cursor-pointer text-sm text-gray-400 hover:text-white transition-colors">
+                        <ChevronDownIcon className="w-4 h-4 group-open:rotate-180 transition-transform" />
+                        Backup Providers ({config.backups.length} available)
+                      </summary>
+                      <div className="mt-4 space-y-3">
+                        {config.backups.map((backup) => (
+                          <div key={backup.key} className="flex items-center justify-between p-3 bg-slate-800/30 rounded-lg">
+                            <div className="flex items-center gap-3">
+                              <label className="relative inline-flex items-center cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  className="sr-only peer"
+                                  checked={settings[backup.enabledKey] || false}
+                                  onChange={(e) => setSettings({ ...settings, [backup.enabledKey]: e.target.checked })}
+                                />
+                                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-500"></div>
+                              </label>
+                              <span className={`text-xs ${backup.type === 'free' ? 'text-green-400' : 'text-amber-400'}`}>
+                                {backup.type === 'free' ? 'FREE' : 'API KEY'}
+                              </span>
+                              <span className="text-sm text-white">{backup.name}</span>
+                            </div>
+                            {settings[backup.enabledKey] && (
+                              backup.type === 'free' ? (
+                                <span className="text-xs text-gray-400">{backup.placeholder}</span>
+                              ) : (
+                                <div className="flex gap-2">
+                                  <input
+                                    type="password"
+                                    className="px-2 py-1 bg-slate-700/50 border border-slate-600/50 rounded text-xs text-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                                    placeholder="API Key"
+                                    value={settings[backup.key] || ''}
+                                    onChange={(e) => setSettings({ ...settings, [backup.key]: e.target.value })}
+                                  />
+                                  <button
+                                    onClick={() => handleSaveProvider(backup.name)}
+                                    disabled={savingProvider === backup.name}
+                                    className="px-3 py-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded text-xs hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    {savingProvider === backup.name ? '...' : 'Save'}
+                                  </button>
+                                </div>
+                              )
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
                   </div>
-                </div>
-
-                {/* CryptoPanic - Optional for Enhanced News */}
-                <div className="space-y-4">
-                  <div className="flex items-center space-x-3">
-                    <div className="w-8 h-8 bg-orange-500 rounded-lg flex items-center justify-center">
-                      <span className="text-white font-bold text-sm">🔔</span>
-                    </div>
-                    <div>
-                      <h3 className="text-white font-medium">CryptoPanic API Key (Optional)</h3>
-                      <p className="text-xs text-gray-400">Enhanced news sentiment analysis</p>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="block text-xs font-medium text-gray-400">API Key (Optional)</label>
-                    <input
-                      type="password"
-                      className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                      value={settings.cryptoPanicKey || ''}
-                      onChange={(e) => setSettings({ ...settings, cryptoPanicKey: e.target.value })}
-                      placeholder="Enter CryptoPanic API key (optional)"
-                    />
-                    <p className="text-xs text-gray-500">Leave empty for free tier access</p>
-                  </div>
-                </div>
+                ))}
               </div>
             </section>
 
@@ -1103,91 +1312,6 @@ export default function Settings() {
 
       </div>
 
-      {/* Backup API Modal */}
-      {backupModalOpen && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 rounded-xl border border-white/10 p-6 w-full max-w-md">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-lg font-semibold text-white">
-                Add Backup API - {backupModalProvider}
-              </h3>
-              <button
-                onClick={closeBackupModal}
-                className="text-gray-400 hover:text-white transition-colors"
-              >
-                <XCircleIcon className="w-6 h-6" />
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              {/* Provider Suggestions */}
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-gray-300">Select Provider</label>
-                <select
-                  value={backupForm.name}
-                  onChange={(e) => setBackupForm({ ...backupForm, name: e.target.value })}
-                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
-                >
-                  <option value="">Choose a backup provider...</option>
-                  {backupModalProvider === 'CryptoCompare' && (
-                    <>
-                      <option value="AlphaVantage">AlphaVantage</option>
-                      <option value="CoinGecko">CoinGecko</option>
-                    </>
-                  )}
-                  {backupModalProvider === 'NewsData' && (
-                    <>
-                      <option value="CryptoPanic">CryptoPanic</option>
-                      <option value="Reddit">Reddit</option>
-                    </>
-                  )}
-                  <option value="Custom">Custom Provider</option>
-                </select>
-              </div>
-
-              {/* API Key */}
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-gray-300">API Key</label>
-                <input
-                  type="password"
-                  value={backupForm.apiKey}
-                  onChange={(e) => setBackupForm({ ...backupForm, apiKey: e.target.value })}
-                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500"
-                  placeholder="Enter API key"
-                />
-              </div>
-
-              {/* Custom Endpoint (Optional) */}
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-gray-300">Custom Endpoint (Optional)</label>
-                <input
-                  type="text"
-                  value={backupForm.endpoint}
-                  onChange={(e) => setBackupForm({ ...backupForm, endpoint: e.target.value })}
-                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500"
-                  placeholder="https://api.example.com"
-                />
-              </div>
-            </div>
-
-            {/* Action Buttons */}
-            <div className="flex space-x-3 mt-6">
-              <button
-                onClick={handleAddBackupApi}
-                className="flex-1 px-4 py-2 bg-purple-500 text-white font-medium rounded-lg hover:bg-purple-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all"
-              >
-                Add Backup API
-              </button>
-              <button
-                onClick={closeBackupModal}
-                className="px-4 py-2 bg-white/10 text-white font-medium rounded-lg hover:bg-white/20 focus:outline-none focus:ring-2 focus:ring-white/50 transition-all"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
     </ErrorBoundary>
   );

@@ -1,24 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-// Hook to detect user's reduced motion preference
-export function useReducedMotion(): boolean {
-  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
-
-  useEffect(() => {
-    const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
-    setPrefersReducedMotion(mediaQuery.matches);
-
-    const handleChange = (event: MediaQueryListEvent) => {
-      setPrefersReducedMotion(event.matches);
-    };
-
-    mediaQuery.addEventListener('change', handleChange);
-    return () => mediaQuery.removeEventListener('change', handleChange);
-  }, []);
-
-  return prefersReducedMotion;
-}
-
 // Hook for throttling rapid updates (useful for websocket data)
 export function useThrottle<T>(value: T, delay: number): T {
   const [throttledValue, setThrottledValue] = useState<T>(value);
@@ -40,23 +21,6 @@ export function useThrottle<T>(value: T, delay: number): T {
   }, [value, delay]);
 
   return throttledValue;
-}
-
-// Hook for debouncing rapid updates (useful for search inputs)
-export function useDebounce<T>(value: T, delay: number): T {
-  const [debouncedValue, setDebouncedValue] = useState<T>(value);
-
-  useEffect(() => {
-    const handler = setTimeout(() => {
-      setDebouncedValue(value);
-    }, delay);
-
-    return () => {
-      clearTimeout(handler);
-    };
-  }, [value, delay]);
-
-  return debouncedValue;
 }
 
 // Hook for lazy loading with intersection observer
@@ -87,64 +51,6 @@ export function useLazyLoad(threshold = 0.1) {
   }, [threshold, hasIntersected]);
 
   return { ref, isIntersecting, hasIntersected };
-}
-
-// Hook for batching state updates
-export function useBatchedState<T>(initialState: T) {
-  const [state, setState] = useState(initialState);
-  const batchedUpdates = useRef<Partial<T>[]>([]);
-  const timeoutRef = useRef<NodeJS.Timeout>();
-
-  const batchUpdate = useCallback((update: Partial<T>) => {
-    batchedUpdates.current.push(update);
-
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-    }
-
-    timeoutRef.current = setTimeout(() => {
-      setState(prevState => {
-        let newState = { ...prevState };
-        batchedUpdates.current.forEach(update => {
-          newState = { ...newState, ...update };
-        });
-        batchedUpdates.current = [];
-        return newState;
-      });
-    }, 16); // ~60fps
-  }, []);
-
-  const immediateUpdate = useCallback((update: Partial<T>) => {
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-    }
-    batchedUpdates.current = [];
-    setState(prevState => ({ ...prevState, ...update }));
-  }, []);
-
-  return [state, batchUpdate, immediateUpdate] as const;
-}
-
-// Hook for memoizing expensive computations
-export function useMemoizedValue<T>(
-  factory: () => T,
-  deps: React.DependencyList,
-  compare?: (prev: T, next: T) => boolean
-): T {
-  const ref = useRef<{ value: T; deps: React.DependencyList }>();
-
-  if (
-    !ref.current ||
-    ref.current.deps.length !== deps.length ||
-    ref.current.deps.some((dep, index) => dep !== deps[index])
-  ) {
-    const newValue = factory();
-    if (!ref.current || !compare || !compare(ref.current.value, newValue)) {
-      ref.current = { value: newValue, deps };
-    }
-  }
-
-  return ref.current.value;
 }
 
 // Hook for centralized polling with visibility detection
