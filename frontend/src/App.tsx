@@ -1,4 +1,4 @@
-import React, { Suspense } from 'react';
+import React, { Suspense, useState, useEffect } from 'react';
 import { Routes, Route, Navigate, BrowserRouter, Outlet } from 'react-router-dom';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
@@ -34,7 +34,8 @@ import BroadcastPopup from './components/BroadcastPopup';
 import Chatbot from './components/Chatbot';
 import { wsService } from './services/ws';
 import { useAuth } from './hooks/useAuth';
-import { useEffect } from 'react';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { LoadingState } from './components/LoadingState';
 
 // Layout component that includes TopNavigation and renders page content via Outlet
 function Layout() {
@@ -52,6 +53,71 @@ function LoadingScreen() {
     <div className="min-h-screen flex items-center justify-center">
       <div className="text-lg">Loading...</div>
     </div>
+  );
+}
+
+// API-safe route wrapper that prevents blank screens on API failures
+function SafeRoute({ children, fallbackMessage = "Content temporarily unavailable" }: { children: React.ReactNode, fallbackMessage?: string }) {
+  const [hasError, setHasError] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    // Set a timeout to ensure content renders even if APIs are slow
+    const timeout = setTimeout(() => {
+      setIsLoading(false);
+    }, 5000); // 5 second timeout
+
+    return () => clearTimeout(timeout);
+  }, []);
+
+  if (hasError) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center">
+        <div className="max-w-md mx-auto text-center p-8 bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-2xl">
+          <div className="text-slate-400 mb-4">
+            <svg className="w-12 h-12 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+            </svg>
+          </div>
+          <h3 className="text-lg font-semibold text-white mb-2">Content Unavailable</h3>
+          <p className="text-slate-400 text-sm mb-4">{fallbackMessage}</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 bg-slate-700/50 border border-slate-600/50 text-slate-300 rounded-lg hover:bg-slate-600/50 transition-colors text-sm font-medium"
+          >
+            Reload Page
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <ErrorBoundary
+      fallback={
+        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center">
+          <div className="max-w-md mx-auto text-center p-8 bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-2xl">
+            <div className="text-slate-400 mb-4">
+              <svg className="w-12 h-12 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+              </svg>
+            </div>
+            <h3 className="text-lg font-semibold text-white mb-2">Something went wrong</h3>
+            <p className="text-slate-400 text-sm mb-4">This page encountered an error but you can still use other features.</p>
+            <button
+              onClick={() => window.location.reload()}
+              className="px-4 py-2 bg-slate-700/50 border border-slate-600/50 text-slate-300 rounded-lg hover:bg-slate-600/50 transition-colors text-sm font-medium"
+            >
+              Reload Page
+            </button>
+          </div>
+        </div>
+      }
+    >
+      <Suspense fallback={<LoadingState message="Loading page content..." />}>
+        {children}
+      </Suspense>
+    </ErrorBoundary>
   );
 }
 
@@ -119,17 +185,17 @@ function App() {
                     </PrivateRoute>
                   }
                 >
-                  <Route path="dashboard" element={<Dashboard />} />
-                  <Route path="engine" element={<EngineControl />} />
-                  <Route path="research" element={<ResearchPanel />} />
-                  <Route path="auto-trade" element={<AutoTrade />} />
-                  <Route path="settings" element={<Settings />} />
-                  <Route path="profile" element={<Profile />} />
-                  <Route path="agents" element={<AgentsMarketplace />} />
-                  <Route path="agents/:agentId" element={<AgentDetails />} />
-                  <Route path="agent/:agentId" element={<AgentFeature />} />
-                  <Route path="hft/settings" element={<HFTSettings />} />
-                  <Route path="hft/logs" element={<HFTLogs />} />
+                  <Route path="dashboard" element={<SafeRoute><Dashboard /></SafeRoute>} />
+                  <Route path="engine" element={<SafeRoute><EngineControl /></SafeRoute>} />
+                  <Route path="research" element={<SafeRoute><ResearchPanel /></SafeRoute>} />
+                  <Route path="auto-trade" element={<SafeRoute><AutoTrade /></SafeRoute>} />
+                  <Route path="settings" element={<SafeRoute><Settings /></SafeRoute>} />
+                  <Route path="profile" element={<SafeRoute><Profile /></SafeRoute>} />
+                  <Route path="agents" element={<SafeRoute><AgentsMarketplace /></SafeRoute>} />
+                  <Route path="agents/:agentId" element={<SafeRoute><AgentDetails /></SafeRoute>} />
+                  <Route path="agent/:agentId" element={<SafeRoute><AgentFeature /></SafeRoute>} />
+                  <Route path="hft/settings" element={<SafeRoute><HFTSettings /></SafeRoute>} />
+                  <Route path="hft/logs" element={<SafeRoute><HFTLogs /></SafeRoute>} />
                 </Route>
 
                 {/* Admin Routes with Layout */}
@@ -141,14 +207,14 @@ function App() {
                     </AdminRoute>
                   }
                 >
-                  <Route index element={<AdminDashboard />} />
-                  <Route path="users" element={<AdminUsersList />} />
-                  <Route path="user/:uid" element={<AdminUserDetail />} />
-                  <Route path="agents" element={<AdminAgentsManager />} />
-                  <Route path="unlock-requests" element={<AdminUnlockRequests />} />
-                  <Route path="broadcast-popup" element={<AdminBroadcastPopup />} />
-                  <Route path="settings" element={<AdminDashboard />} />
-                  <Route path="logs" element={<AdminDashboard />} />
+                  <Route index element={<SafeRoute><AdminDashboard /></SafeRoute>} />
+                  <Route path="users" element={<SafeRoute><AdminUsersList /></SafeRoute>} />
+                  <Route path="user/:uid" element={<SafeRoute><AdminUserDetail /></SafeRoute>} />
+                  <Route path="agents" element={<SafeRoute><AdminAgentsManager /></SafeRoute>} />
+                  <Route path="unlock-requests" element={<SafeRoute><AdminUnlockRequests /></SafeRoute>} />
+                  <Route path="broadcast-popup" element={<SafeRoute><AdminBroadcastPopup /></SafeRoute>} />
+                  <Route path="settings" element={<SafeRoute><AdminDashboard /></SafeRoute>} />
+                  <Route path="logs" element={<SafeRoute><AdminDashboard /></SafeRoute>} />
                 </Route>
 
                 {/* Special Admin Token Route */}
@@ -156,7 +222,9 @@ function App() {
                   path="/admin-token"
                   element={
                     <PrivateRoute>
-                      <AdminToken />
+                      <SafeRoute>
+                        <AdminToken />
+                      </SafeRoute>
                     </PrivateRoute>
                   }
                 />

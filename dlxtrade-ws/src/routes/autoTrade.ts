@@ -87,6 +87,58 @@ export async function autoTradeRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // GET /api/auto-trade/config - Get user auto-trade configuration
+  fastify.get('/config', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+
+      const config = await autoTradeEngine.loadConfig(user.uid);
+      const status = await autoTradeEngine.getStatus(user.uid);
+
+      // Check if user has exchange API keys configured
+      const db = getFirebaseAdmin().firestore();
+      const exchangeConfigDoc = await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').get();
+      const hasExchangeConfig = exchangeConfigDoc.exists && exchangeConfigDoc.data()?.apiKeyEncrypted && exchangeConfigDoc.data()?.secretEncrypted;
+
+      // Get available integrations for required APIs check
+      const integrations = await firestoreAdapter.getAllIntegrations(user.uid);
+
+      // Check which APIs are required and available
+      const requiredAPIs = ['cryptocompare', 'coingecko'];
+      const requiredApis = [];
+      const missingApis = [];
+
+      for (const api of requiredAPIs) {
+        if (integrations[api]?.enabled) {
+          requiredApis.push(api);
+        } else {
+          missingApis.push(api);
+        }
+      }
+
+      return {
+        enabled: config.autoTradeEnabled || false,
+        accuracyThreshold: 75, // Default threshold
+        mode: config.mode || 'disabled',
+        requiredApis,
+        missingApis,
+        exchange: {
+          connected: hasExchangeConfig || false,
+        },
+        stats: {
+          executed: status.activeTrades || 0,
+          skipped: 0, // Not available in current status
+          signals: status.dailyTrades || 0,
+        },
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting auto-trade config');
+      return reply.code(500).send({ error: err.message || 'Error fetching auto-trade config' });
+    }
+  });
+
   // POST /api/auto-trade/config - Update user auto-trade configuration
   fastify.post('/config', {
     preHandler: [fastify.authenticate],

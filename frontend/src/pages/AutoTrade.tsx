@@ -134,7 +134,7 @@ export default function AutoTrade() {
     try {
       const response = await autoTradeApi.getLogs(20);
       if (isMountedRef.current) {
-        setAutoTradeLogs(response.data.logs || []);
+        setAutoTradeLogs(Array.isArray(response.data?.logs) ? response.data.logs : []);
       }
     } catch (err: any) {
       suppressConsoleError(err, 'loadAutoTradeLogs');
@@ -155,7 +155,7 @@ export default function AutoTrade() {
         setActiveTrades(Array.isArray(tradesRes.data) ? tradesRes.data : []);
         setActivityLogs(Array.isArray(activityRes.data) ? activityRes.data : []);
         setProposals(proposalsRes.data && typeof proposalsRes.data === 'object' ? proposalsRes.data : { recentProposals: [] });
-        setAutoTradeLogs(logsRes.data.logs || []);
+        setAutoTradeLogs(Array.isArray(logsRes.data?.logs) ? logsRes.data.logs : []);
         // Update engine status based on config and current time
         updateEngineStatus();
       }
