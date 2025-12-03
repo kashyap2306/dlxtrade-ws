@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, useRef, lazy, Suspense, useMemo } from 'react';
 import Sidebar from '../components/Sidebar';
 import { autoTradeApi, usersApi, globalStatsApi, engineStatusApi, settingsApi, notificationsApi, agentsApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
@@ -22,43 +22,150 @@ const WalletCard = lazy(() => import('../components/Wallet/WalletCard'));
 const ExecutionSummary = lazy(() => import('../components/ExecutionSummary'));
 const PnLWidget = lazy(() => import('../components/PnLWidget'));
 
+// Debounce utility for API calls
+function useDebounce<T extends (...args: any[]) => any>(callback: T, delay: number): T {
+  const timeoutRef = useRef<NodeJS.Timeout>();
+
+  return useCallback((...args: Parameters<T>) => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
+    timeoutRef.current = setTimeout(() => callback(...args), delay);
+  }, [callback, delay]) as T;
+}
+
+// Safe async loader wrapper to prevent blinking
+function SafeAsyncLoader({ children, loading: externalLoading, error: externalError }: {
+  children: React.ReactNode;
+  loading?: boolean;
+  error?: any;
+}) {
+  const [internalLoading, setInternalLoading] = useState(true);
+  const [internalError, setInternalError] = useState<any>(null);
+
+  useEffect(() => {
+    // Set internal loading state with a minimum delay to prevent flicker
+    if (externalLoading !== undefined) {
+      if (externalLoading) {
+        setInternalLoading(true);
+      } else {
+        // Add small delay before showing content to prevent flicker
+        const timeout = setTimeout(() => setInternalLoading(false), 100);
+        return () => clearTimeout(timeout);
+      }
+    } else {
+      // Auto-resolve after 3 seconds if no external loading state
+      const timeout = setTimeout(() => setInternalLoading(false), 3000);
+      return () => clearTimeout(timeout);
+    }
+  }, [externalLoading]);
+
+  useEffect(() => {
+    if (externalError) {
+      setInternalError(externalError);
+      setInternalLoading(false);
+    } else if (externalError === null) {
+      setInternalError(null);
+    }
+  }, [externalError]);
+
+  if (internalLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
+        <Sidebar />
+        <main className="min-h-screen">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
+            <div className="mb-8">
+              <h1 className="text-4xl lg:text-5xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
+                Dashboard
+              </h1>
+            </div>
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+              <div className="space-y-8">
+                <CardSkeleton />
+                <CardSkeleton />
+              </div>
+              <div>
+                <CardSkeleton />
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  if (internalError) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
+        <Sidebar />
+        <main className="min-h-screen">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
+            <div className="mb-8">
+              <h1 className="text-4xl lg:text-5xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
+                Dashboard
+              </h1>
+            </div>
+            <ErrorState
+              error={internalError}
+              onRetry={() => window.location.reload()}
+              message="Failed to load dashboard data"
+            />
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  return <>{children}</>;
+}
+
 export default function Dashboard() {
-  console.log('Dashboard mounted — safe wallet helper active');
   const { user, loading: loadingUser } = useAuth();
   const navigate = useNavigate();
 
-  // Unified dashboard state
-  const [dashboardData, setDashboardData] = useState<any>(null);
-  const [alerts, setAlerts] = useState<Array<{ type: 'warning' | 'error'; message: string }>>([]);
+  // Unified dashboard state - consolidated to reduce re-renders
+  const [dashboardState, setDashboardState] = useState({
+    data: null as any,
+    alerts: [] as Array<{ type: 'warning' | 'error'; message: string }>,
+    loading: true,
+    error: null as any,
+    retryCount: 0,
+    hasLoaded: false,
+    // Legacy state consolidated
+    autoTradeStatus: null as any,
+    userStats: null as any,
+    walletBalances: [] as any[],
+    activeTrades: [] as any[],
+    aiSignals: [] as any[],
+    performanceStats: null as any,
+    portfolioHistory: [] as any[],
+  });
+
   const [showExchangeModal, setShowExchangeModal] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<any>(null);
-  const [retryCount, setRetryCount] = useState(0);
-  const [hasLoaded, setHasLoaded] = useState(false);
   const isMountedRef = useRef(true);
-
-  // Legacy state for backward compatibility (will be removed)
-  const [autoTradeStatus, setAutoTradeStatus] = useState<any>(null);
-  const [userStats, setUserStats] = useState<any>(null);
-  const [walletBalances, setWalletBalances] = useState<any>(null);
-  const [activeTrades, setActiveTrades] = useState<any[]>([]);
-  const [aiSignals, setAiSignals] = useState<any[]>([]);
-  const [performanceStats, setPerformanceStats] = useState<any>(null);
-  const [portfolioHistory, setPortfolioHistory] = useState<any[]>([]);
-
-  // Throttle data updates to prevent excessive re-renders
-  const throttledDashboardData = useThrottle(dashboardData, 500);
-  const throttledAutoTradeStatus = useThrottle(autoTradeStatus, 500);
-  const throttledUserStats = useThrottle(userStats, 500);
+  const loadingRef = useRef(false); // Prevent concurrent API calls
 
   // Lazy load triggers for heavy components
   const { ref: marketScannerRef, hasIntersected: marketScannerVisible } = useLazyLoad(0.1);
 
-  const loadDashboardData = useCallback(async () => {
-    if (!user || !isMountedRef.current || hasLoaded || loading) return;
-    console.log('loadDashboardData called for user:', user?.uid);
+  // Memoized state getters to prevent unnecessary re-renders
+  const dashboardData = useMemo(() => dashboardState.data, [dashboardState.data]);
+  const alerts = useMemo(() => dashboardState.alerts, [dashboardState.alerts]);
+  const loading = useMemo(() => dashboardState.loading, [dashboardState.loading]);
+  const error = useMemo(() => dashboardState.error, [dashboardState.error]);
+  const hasLoaded = useMemo(() => dashboardState.hasLoaded, [dashboardState.hasLoaded]);
+  const autoTradeStatus = useMemo(() => dashboardState.autoTradeStatus, [dashboardState.autoTradeStatus]);
+  const userStats = useMemo(() => dashboardState.userStats, [dashboardState.userStats]);
+  const activeTrades = useMemo(() => dashboardState.activeTrades, [dashboardState.activeTrades]);
+  const aiSignals = useMemo(() => dashboardState.aiSignals, [dashboardState.aiSignals]);
 
-    setLoading(true);
+  // Debounced dashboard data loading (200ms debounce as requested)
+  const debouncedLoadDashboardData = useDebounce(useCallback(async () => {
+    if (!user || !isMountedRef.current || dashboardState.hasLoaded || loadingRef.current) return;
+
+    loadingRef.current = true;
+    console.log('loadDashboardData called for user:', user?.uid);
 
     try {
       // Load multiple dashboard APIs in parallel with individual error handling
@@ -70,13 +177,6 @@ export default function Dashboard() {
         notificationsApi.get({ limit: 20 }).catch(err => ({ error: err, data: [] }))
       ]);
 
-      console.log('Dashboard API results:', results.map((result, index) => ({
-        api: ['globalStats', 'engineStatus', 'agentsUnlocked', 'settings', 'notifications'][index],
-        status: result.status,
-        data: result.status === 'fulfilled' ? result.value?.data : result.reason?.data || {},
-        error: result.status === 'rejected' ? result.reason : null
-      })));
-
       // Extract data with safe fallbacks
       const dashboardData = {
         globalStats: results[0].status === 'fulfilled' ? results[0].value?.data || {} : {},
@@ -87,24 +187,25 @@ export default function Dashboard() {
       };
 
       if (isMountedRef.current) {
-        setDashboardData(dashboardData);
-        setError(null); // Clear any previous errors
-        setLoading(false);
-        setHasLoaded(true); // Mark as loaded to prevent re-renders
-
-        // For backward compatibility, also set legacy state variables with safe fallbacks
-        setAutoTradeStatus(dashboardData?.engineStatus || {});
-        setUserStats(dashboardData?.globalStats || {});
-        setWalletBalances([]); // Wallet data not available from current endpoints
-        setActiveTrades(dashboardData?.globalStats?.hftLogs || []);
-        setAiSignals(dashboardData?.globalStats?.activityLogs || []);
-        setPerformanceStats(dashboardData?.globalStats || {});
-        setPortfolioHistory(dashboardData?.globalStats?.trades || []);
+        setDashboardState(prev => ({
+          ...prev,
+          data: dashboardData,
+          error: null,
+          loading: false,
+          hasLoaded: true,
+          // Legacy state
+          autoTradeStatus: dashboardData?.engineStatus || {},
+          userStats: dashboardData?.globalStats || {},
+          walletBalances: [],
+          activeTrades: dashboardData?.globalStats?.hftLogs || [],
+          aiSignals: dashboardData?.globalStats?.activityLogs || [],
+          performanceStats: dashboardData?.globalStats || {},
+          portfolioHistory: dashboardData?.globalStats?.trades || [],
+        }));
       }
     } catch (err: any) {
       console.warn('[Dashboard] API failed: loadDashboardData', err);
       if (isMountedRef.current) {
-        // Set safe fallback data instead of crashing
         const safeDashboardData = {
           globalStats: {},
           engineStatus: {},
@@ -113,22 +214,31 @@ export default function Dashboard() {
           notifications: []
         };
 
-        setDashboardData(safeDashboardData);
-        setError(err);
-        setLoading(false);
-        setHasLoaded(true); // Mark as loaded even on error to prevent infinite retries
-
-        // Clear legacy state with safe defaults
-        setAutoTradeStatus({});
-        setUserStats({});
-        setWalletBalances([]);
-        setActiveTrades([]);
-        setAiSignals([]);
-        setPerformanceStats({});
-        setPortfolioHistory([]);
+        setDashboardState(prev => ({
+          ...prev,
+          data: safeDashboardData,
+          error: err,
+          loading: false,
+          hasLoaded: true,
+          // Safe defaults
+          autoTradeStatus: {},
+          userStats: {},
+          walletBalances: [],
+          activeTrades: [],
+          aiSignals: [],
+          performanceStats: {},
+          portfolioHistory: [],
+        }));
       }
+    } finally {
+      loadingRef.current = false;
     }
-  }, [user]);
+  }, [user]), 200);
+
+  // Stable reference for loadDashboardData
+  const loadDashboardData = useCallback(() => {
+    debouncedLoadDashboardData();
+  }, [debouncedLoadDashboardData]);
 
   // Legacy functions for backward compatibility (will be removed)
   const loadAutoTradeStatus = useCallback(async () => {
@@ -239,7 +349,6 @@ export default function Dashboard() {
   }, [user]); // Removed walletBalances dependency since it's no longer dynamic
 
   const checkAlerts = useCallback(() => {
-    if (!isMountedRef.current) return;
     const newAlerts: Array<{ type: 'warning' | 'error'; message: string }> = [];
 
     // Check API connection
@@ -266,80 +375,77 @@ export default function Dashboard() {
       });
     }
 
-    setAlerts(newAlerts);
+    return newAlerts;
   }, [autoTradeStatus, userStats]);
 
   const loadData = useCallback(async () => {
-    if (!user || !isMountedRef.current || hasLoaded || loading) return;
+    if (!user || !isMountedRef.current || dashboardState.hasLoaded || dashboardState.loading) return;
 
-    setLoading(true);
-    setError(null);
+    setDashboardState(prev => ({ ...prev, loading: true, error: null }));
 
     try {
       // Load unified dashboard data
       await loadDashboardData();
-      // Promise.allSettled ensures all promises complete regardless of individual failures
       if (isMountedRef.current) {
-        setRetryCount(0); // Reset retry count on successful load
+        setDashboardState(prev => ({ ...prev, retryCount: 0 }));
       }
     } catch (err: any) {
-      // This should rarely happen with Promise.allSettled, but handle it just in case
       if (isMountedRef.current) {
-        setError(err);
+        setDashboardState(prev => ({ ...prev, error: err }));
         suppressConsoleError(err, 'loadDashboardData');
       }
-    } finally {
-      if (isMountedRef.current) {
-        setLoading(false);
-      }
     }
-  }, [user, hasLoaded, loading, loadDashboardData]);
+  }, [user, loadDashboardData]);
 
   // Initial data load - prevent multiple calls
   useEffect(() => {
-    if (user && !hasLoaded && !loading) {
+    if (user && !dashboardState.hasLoaded && !dashboardState.loading) {
       loadData();
     }
-  }, [user, hasLoaded, loading, loadData]);
+  }, [user, dashboardState.hasLoaded, dashboardState.loading, loadData]);
 
   // Force load after 10 seconds if still loading (fallback for slow APIs)
   useEffect(() => {
-    if (loading && !hasLoaded) {
+    if (dashboardState.loading && !dashboardState.hasLoaded) {
       const timeout = setTimeout(() => {
         console.log('[Dashboard] Forcing load completion after timeout');
         if (isMountedRef.current) {
-          setLoading(false);
-          setHasLoaded(true);
-          setDashboardData({
-            globalStats: {},
-            engineStatus: {},
-            agentsUnlocked: [],
-            settings: {},
-            notifications: []
-          });
-          setAutoTradeStatus({});
-          setUserStats({});
-          setWalletBalances([]);
-          setActiveTrades([]);
-          setAiSignals([]);
-          setPerformanceStats({});
-          setPortfolioHistory([]);
+          setDashboardState(prev => ({
+            ...prev,
+            loading: false,
+            hasLoaded: true,
+            data: {
+              globalStats: {},
+              engineStatus: {},
+              agentsUnlocked: [],
+              settings: {},
+              notifications: []
+            },
+            autoTradeStatus: {},
+            userStats: {},
+            walletBalances: [],
+            activeTrades: [],
+            aiSignals: [],
+            performanceStats: {},
+            portfolioHistory: [],
+          }));
         }
-      }, 10000); // 10 second timeout
+      }, 10000);
 
       return () => clearTimeout(timeout);
     }
-  }, [loading, hasLoaded]);
+  }, [dashboardState.loading, dashboardState.hasLoaded]);
 
   // Use centralized polling with visibility detection (reduced frequency)
   // Only poll if data is loaded and not currently loading
-  usePolling(loadData, 120000, !!user && hasLoaded && !loading); // 2 minutes instead of 1
+  usePolling(loadData, 120000, !!user && dashboardState.hasLoaded && !dashboardState.loading);
 
   useEffect(() => {
     if (autoTradeStatus && userStats) {
-      checkAlerts();
+      const newAlerts = checkAlerts();
+      setDashboardState(prev => ({ ...prev, alerts: newAlerts }));
     }
-  }, [autoTradeStatus, userStats, checkAlerts]);
+  }, [autoTradeStatus, userStats]);
 
   // Load AI signals when auto-trade status changes
   useEffect(() => {
@@ -358,7 +464,7 @@ export default function Dashboard() {
   }, []);
 
   const handleRetry = useCallback(async () => {
-    setRetryCount(prev => prev + 1);
+    setDashboardState(prev => ({ ...prev, retryCount: prev.retryCount + 1, hasLoaded: false, error: null }));
     await loadData();
   }, [loadData]);
 
@@ -371,99 +477,11 @@ export default function Dashboard() {
     await loadDashboardData();
   };
 
-  // Show loading state
-  if (loading && retryCount === 0) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
-        <Sidebar />
-        <main className="min-h-screen">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
-            <div className="mb-8">
-              <h1 className="text-4xl lg:text-5xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
-                Dashboard
-              </h1>
-            </div>
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-              <div className="space-y-8">
-                <CardSkeleton />
-                <CardSkeleton />
-              </div>
-              <div>
-                <CardSkeleton />
-              </div>
-            </div>
-          </div>
-        </main>
-      </div>
-    );
-  }
-
-  // Show error state with retry option
-  if (error && !loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
-        <Sidebar />
-        <main className="min-h-screen">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
-            <div className="mb-8">
-              <h1 className="text-4xl lg:text-5xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
-                Dashboard
-              </h1>
-            </div>
-            <ErrorState
-              error={error}
-              onRetry={handleRetry}
-              message={`Failed to load dashboard data${retryCount > 0 ? ` (attempt ${retryCount + 1})` : ''}`}
-            />
-          </div>
-        </main>
-      </div>
-    );
-  }
-
-  // Show data not available state if no data and not loading/error
-  // Only show this if we haven't loaded yet AND there's no dashboardData at all
-  if (!loading && !error && !hasLoaded && (!dashboardData || Object.keys(dashboardData || {}).length === 0)) {
-    return (
-      <ErrorBoundary>
-        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 relative overflow-hidden">
-          <Sidebar />
-          <main className="min-h-screen">
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
-              <div className="mb-8">
-                <h1 className="text-4xl lg:text-5xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
-                  Dashboard
-                </h1>
-              </div>
-              <div className="text-center py-12">
-                <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-2xl p-8 max-w-md mx-auto">
-                  <div className="text-slate-400 mb-4">
-                    <svg className="w-12 h-12 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                    </svg>
-                  </div>
-                  <h3 className="text-lg font-semibold text-white mb-2">Dashboard Data Not Available</h3>
-                  <p className="text-slate-400 text-sm">
-                    Unable to load dashboard information. Please check your connection and try again.
-                  </p>
-                  <button
-                    onClick={() => window.location.reload()}
-                    className="mt-4 px-4 py-2 bg-slate-700/50 border border-slate-600/50 text-slate-300 rounded-lg hover:bg-slate-600/50 transition-colors text-sm font-medium"
-                  >
-                    Reload Dashboard
-                  </button>
-                </div>
-              </div>
-            </div>
-          </main>
-        </div>
-      </ErrorBoundary>
-    );
-  }
 
   return (
-    <ErrorBoundary>
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 relative overflow-hidden">
+    <SafeAsyncLoader loading={loading} error={error}>
+      <ErrorBoundary>
+        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 relative overflow-hidden">
       {/* Subtle animated background */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500/10 rounded-full blur-3xl"></div>
@@ -877,6 +895,7 @@ export default function Dashboard() {
         </div>
       )}
       </div>
-    </ErrorBoundary>
+      </ErrorBoundary>
+    </SafeAsyncLoader>
   );
 }
