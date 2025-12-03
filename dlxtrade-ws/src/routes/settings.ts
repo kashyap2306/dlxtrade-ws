@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { firestoreAdapter } from '../services/firestoreAdapter';
 import { z } from 'zod';
+import { accuracyEngine } from '../services/accuracyEngine';
 
 const settingsSchema = z.object({
   symbol: z.string().optional(),
@@ -26,7 +27,8 @@ const positionSizingMapItemSchema = z.object({
 });
 
 const tradingSettingsSchema = z.object({
-  symbol: z.string().min(1),
+  mode: z.enum(['MANUAL', 'TOP_100', 'TOP_10']),
+  manualCoins: z.array(z.string()).min(1),
   maxPositionPerTrade: z.number().min(0.1).max(100),
   tradeType: z.enum(['Scalping', 'Swing', 'Position']),
   accuracyTrigger: z.number().min(0).max(100),
@@ -48,7 +50,7 @@ const tradingSettingsSchema = z.object({
 
 export async function settingsRoutes(fastify: FastifyInstance) {
   // Load user settings
-  fastify.get('/load', {
+  fastify.get('/settings/load', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = (request as any).user;
@@ -79,7 +81,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
   });
 
   // Update user settings
-  fastify.post('/update', {
+  fastify.post('/settings/update', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = (request as any).user;
@@ -101,7 +103,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
   });
 
   // Load global settings (admin only)
-  fastify.get('/global/load', {
+  fastify.get('/settings/global/load', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
@@ -119,7 +121,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
   });
 
   // Update global settings (admin only)
-  fastify.post('/global/update', {
+  fastify.post('/settings/global/update', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
@@ -142,79 +144,17 @@ export async function settingsRoutes(fastify: FastifyInstance) {
   // GET /api/trading/settings - Load trading settings
   fastify.get('/trading/settings', {
     preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest, reply: FastifyReply) => {
-    try {
-      const user = (request as any).user;
-      const settings = await firestoreAdapter.getTradingSettings(user.uid);
-
-      // ALWAYS return a complete settings object with defaults injected
-      const defaultSettings = {
-        symbol: 'BTCUSDT',
-        maxPositionPerTrade: 10,
-        tradeType: 'Scalping',
-        accuracyTrigger: 85,
-        maxDailyLoss: 5,
-        maxTradesPerDay: 50,
-        positionSizingMap: [
-          { min: 0, max: 84, percent: 0 },
-          { min: 85, max: 89, percent: 3 },
-          { min: 90, max: 94, percent: 6 },
-          { min: 95, max: 99, percent: 8.5 },
-          { min: 100, max: 100, percent: 10 }
-        ]
-      };
-
-      // Merge with defaults to ensure all keys exist
-      const safeSettings = { ...defaultSettings, ...settings };
-
-      return safeSettings;
-    } catch (err: any) {
-      // Return success: false with error on Firestore failure
-      return {
-        success: false,
-        error: 'SETTINGS_LOAD_FAILURE',
-        message: 'Failed to load trading settings from database',
-        details: err.message
-      };
-    }
+  }, async (req, reply) => {
+    const data = await firestoreAdapter.getTradingSettings((req as any).user.uid);
+    return { success: true, data };
   });
 
   // POST /api/trading/settings - Update trading settings
   fastify.post('/trading/settings', {
     preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest, reply: FastifyReply) => {
-    try {
-      const user = (request as any).user;
-      const body = tradingSettingsSchema.parse(request.body);
-
-      // Log settings change for audit
-      await firestoreAdapter.logActivity(user.uid, 'TRADING_SETTINGS_UPDATED', {
-        oldSettings: await firestoreAdapter.getTradingSettings(user.uid),
-        newSettings: body,
-        timestamp: new Date().toISOString(),
-      });
-
-      const savedSettings = await firestoreAdapter.saveTradingSettings(user.uid, body);
-
-      return { message: 'Trading settings updated successfully', settings: savedSettings };
-    } catch (err: any) {
-      if (err instanceof z.ZodError) {
-        return {
-          success: false,
-          error: 'VALIDATION_ERROR',
-          message: 'Invalid trading settings data',
-          details: err.errors
-        };
-      }
-
-      // Return success: false with error on Firestore failure
-      return {
-        success: false,
-        error: 'SETTINGS_SAVE_FAILURE',
-        message: 'Failed to save trading settings to database',
-        details: err.message
-      };
-    }
+  }, async (req, reply) => {
+    const saved = await firestoreAdapter.saveTradingSettings((req as any).user.uid, (req as any).body);
+    return { success: true, data: saved };
   });
 
   // POST /api/trading/autotrade/toggle - Toggle auto-trade ON/OFF
@@ -266,6 +206,93 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       };
     } catch (err: any) {
       return reply.code(500).send({ error: err.message || 'Error getting auto-trade status' });
+    }
+  });
+
+  // Analytics Routes for Accuracy Engine
+  // GET /api/analytics/accuracy/snapshot - Get accuracy snapshot by requestId
+  fastify.get('/analytics/accuracy/snapshot', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Querystring: { requestId: string } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const { requestId } = request.query;
+
+      if (!requestId) {
+        return reply.code(400).send({ error: 'requestId is required' });
+      }
+
+      const snapshot = await firestoreAdapter.getPredictionSnapshot(requestId);
+
+      if (!snapshot) {
+        return reply.code(404).send({ error: 'Snapshot not found' });
+      }
+
+      // Check if user owns this snapshot
+      if (snapshot.userId !== user.uid) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      return {
+        snapshot,
+        requestId,
+        retrievedAt: new Date().toISOString()
+      };
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error retrieving accuracy snapshot' });
+    }
+  });
+
+  // GET /api/analytics/accuracy/history - Get rolling accuracy stats
+  fastify.get('/analytics/accuracy/history', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Querystring: { strategy?: string; symbol?: string; limit?: number } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const { strategy, symbol, limit = 100 } = request.query;
+
+      const stats = await firestoreAdapter.getAccuracyHistory(user.uid, {
+        strategy,
+        symbol,
+        limit: Math.min(limit, 500) // Cap at 500
+      });
+
+      return {
+        stats,
+        filters: { strategy, symbol, limit },
+        retrievedAt: new Date().toISOString()
+      };
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error retrieving accuracy history' });
+    }
+  });
+
+  // POST /api/analytics/accuracy/outcome - Record prediction outcome
+  fastify.post('/analytics/accuracy/outcome', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: { requestId: string; win: boolean; pnl: number; durationSeconds?: number } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const { requestId, win, pnl, durationSeconds } = request.body;
+
+      if (!requestId || typeof win !== 'boolean' || typeof pnl !== 'number') {
+        return reply.code(400).send({ error: 'requestId, win (boolean), and pnl (number) are required' });
+      }
+
+      await accuracyEngine.recordPredictionOutcome(requestId, {
+        win,
+        pnl,
+        durationSeconds
+      });
+
+      return {
+        success: true,
+        message: 'Prediction outcome recorded successfully',
+        requestId,
+        recordedAt: new Date().toISOString()
+      };
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error recording prediction outcome' });
     }
   });
 }

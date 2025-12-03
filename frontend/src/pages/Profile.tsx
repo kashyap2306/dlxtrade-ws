@@ -51,11 +51,13 @@ export default function Profile() {
       const [
         userResponse,
         sessionsResponse,
+        integrationsResponse,
         agentsResponse,
         unlockedAgentsResponse,
       ] = await Promise.allSettled([
         usersApi.get(user.uid),
         usersApi.getSessions(user.uid),
+        integrationsApi.load(),
         agentsApi.getAll(),
         agentsApi.getUnlocked(),
       ]);
@@ -81,14 +83,45 @@ export default function Profile() {
         setSessions([]);
       }
 
-      // Set default provider status (no real provider data available from valid endpoints)
-      if (isMountedRef.current) {
+      // Set API providers status from integrations data
+      if (integrationsResponse.status === 'fulfilled' && isMountedRef.current) {
+        const integrations = integrationsResponse.value.data || {};
         setApiProvidersStatus({
-          cryptoCompare: { connected: false, status: 'API Key Required', hasData: false, latencyMs: 0 },
-          newsData: { connected: false, status: 'API Key Required', hasData: false, latencyMs: 0 },
-          coinMarketCap: { connected: false, status: 'API Key Required', hasData: false, latencyMs: 0 },
-          binancePublic: { connected: true, status: 'Active', hasData: true, latencyMs: 0 }
+          cryptoCompare: {
+            connected: !!(integrations.cryptocompare?.apiKey),
+            status: integrations.cryptocompare?.apiKey ? 'Active' : 'Not Set',
+            hasData: true,
+            latencyMs: 0
+          },
+          newsData: {
+            connected: !!(integrations.newsdata?.apiKey),
+            status: integrations.newsdata?.apiKey ? 'Active' : 'Not Set',
+            hasData: true,
+            latencyMs: 0
+          },
+          coinGecko: {
+            connected: !!(integrations.coingecko?.apiKey),
+            status: integrations.coingecko?.apiKey ? 'Active' : 'Not Set',
+            hasData: true,
+            latencyMs: 0
+          },
+          binancePublic: {
+            connected: !!(integrations.binancepublic?.enabled),
+            status: integrations.binancepublic?.enabled ? 'Active' : 'Not Set',
+            hasData: true,
+            latencyMs: 0
+          }
         });
+      } else if (integrationsResponse.status === 'rejected') {
+        suppressConsoleError(integrationsResponse.reason, 'loadIntegrations');
+        if (isMountedRef.current) {
+          setApiProvidersStatus({
+            cryptoCompare: { connected: false, status: 'Not Set', hasData: false, latencyMs: 0 },
+            newsData: { connected: false, status: 'Not Set', hasData: false, latencyMs: 0 },
+            coinGecko: { connected: false, status: 'Not Set', hasData: false, latencyMs: 0 },
+            binancePublic: { connected: false, status: 'Not Set', hasData: false, latencyMs: 0 }
+          });
+        }
       }
 
       if (agentsResponse.status === 'fulfilled' && isMountedRef.current) {
@@ -451,39 +484,14 @@ export default function Profile() {
               <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
                 <h2 className="text-xl font-semibold text-white mb-4">API Providers Status</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* Binance Public */}
-                  <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-slate-700/50 flex items-center justify-center">
-                        <BinanceLogo />
-                      </div>
-                      <div>
-                        <div className="text-sm font-medium text-white">Binance Public</div>
-                        <div className="text-xs text-gray-400">
-                          {apiProvidersStatus?.binancePublic?.price
-                            ? `$${apiProvidersStatus.binancePublic.price.toLocaleString()}`
-                            : 'Market Data'
-                          }
-                        </div>
-                      </div>
-                    </div>
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                      apiProvidersStatus?.binancePublic?.connected
-                        ? 'bg-green-500/20 text-green-300 border border-green-400/30'
-                        : 'bg-red-500/20 text-red-300 border border-red-400/30'
-                    }`}>
-                      {apiProvidersStatus?.binancePublic?.status || 'Loading...'}
-                    </span>
-                  </div>
-
-                  {/* CryptoCompare */}
+                  {/* CryptoCompare API */}
                   <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
                     <div className="flex items-center gap-3">
                       <div className="w-8 h-8 rounded-lg bg-slate-700/50 flex items-center justify-center text-white font-bold text-xs">
                         CC
                       </div>
                       <div>
-                        <div className="text-sm font-medium text-white">CryptoCompare</div>
+                        <div className="text-sm font-medium text-white">CryptoCompare API</div>
                         <div className="text-xs text-gray-400">Market Data</div>
                       </div>
                     </div>
@@ -516,23 +524,23 @@ export default function Profile() {
                     </span>
                   </div>
 
-                  {/* CoinMarketCap */}
+                  {/* CoinGecko API */}
                   <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
                     <div className="flex items-center gap-3">
                       <div className="w-8 h-8 rounded-lg bg-slate-700/50 flex items-center justify-center text-white font-bold text-xs">
-                        CMC
+                        CG
                       </div>
                       <div>
-                        <div className="text-sm font-medium text-white">CoinMarketCap</div>
-                        <div className="text-xs text-gray-400">Market Data</div>
+                        <div className="text-sm font-medium text-white">CoinGecko API</div>
+                        <div className="text-xs text-gray-400">Metadata</div>
                       </div>
                     </div>
                     <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                      apiProvidersStatus?.coinMarketCap?.connected
+                      apiProvidersStatus?.coinGecko?.connected
                         ? 'bg-green-500/20 text-green-300 border border-green-400/30'
                         : 'bg-red-500/20 text-red-300 border border-red-400/30'
                     }`}>
-                      {apiProvidersStatus?.coinMarketCap?.status || 'Loading...'}
+                      {apiProvidersStatus?.coinGecko?.status || 'Loading...'}
                     </span>
                   </div>
                 </div>

@@ -903,65 +903,6 @@ export default function ResearchPanel() {
                               </div>
                             </div>
 
-                            {/* AI Confidence Score */}
-                            <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-4">
-                              <div className="text-sm text-slate-400 mb-2">AI Confidence Score</div>
-                              <div className={`text-xl font-bold ${
-                                (() => {
-                                  const accuracy = result.result?.accuracy || 0;
-                                  // Calculate indicator alignment (simplified: count bullish indicators)
-                                  const indicators = result.result?.indicators || {};
-                                  let bullishCount = 0;
-                                  let totalIndicators = 0;
-
-                                  // Check MACD
-                                  if (indicators.macd?.value > 0) bullishCount++;
-                                  if (indicators.macd) totalIndicators++;
-
-                                  // Check RSI (not overbought)
-                                  if (indicators.rsi?.value && indicators.rsi.value < 70) bullishCount++;
-                                  if (indicators.rsi) totalIndicators++;
-
-                                  // Check moving averages
-                                  if (indicators.ma50?.value && indicators.ma200?.value) {
-                                    const price = result.result?.raw?.marketData?.price || 0;
-                                    if (price > indicators.ma50.value && indicators.ma50.value > indicators.ma200.value) bullishCount++;
-                                    totalIndicators++;
-                                  }
-
-                                  const alignment = totalIndicators > 0 ? bullishCount / totalIndicators : 0;
-                                  const confidence = accuracy * alignment * 100;
-
-                                  return confidence >= 70 ? 'text-green-400' :
-                                         confidence >= 40 ? 'text-yellow-400' :
-                                         'text-red-400';
-                                })()
-                              }`}>
-                                {(() => {
-                                  const accuracy = result.result?.accuracy || 0;
-                                  const indicators = result.result?.indicators || {};
-                                  let bullishCount = 0;
-                                  let totalIndicators = 0;
-
-                                  if (indicators.macd?.value > 0) bullishCount++;
-                                  if (indicators.macd) totalIndicators++;
-
-                                  if (indicators.rsi?.value && indicators.rsi.value < 70) bullishCount++;
-                                  if (indicators.rsi) totalIndicators++;
-
-                                  if (indicators.ma50?.value && indicators.ma200?.value) {
-                                    const price = result.result?.raw?.marketData?.price || 0;
-                                    if (price > indicators.ma50.value && indicators.ma50.value > indicators.ma200.value) bullishCount++;
-                                    totalIndicators++;
-                                  }
-
-                                  const alignment = totalIndicators > 0 ? bullishCount / totalIndicators : 0;
-                                  const confidence = accuracy * alignment * 100;
-
-                                  return confidence.toFixed(1);
-                                })()}%
-                              </div>
-                            </div>
 
                             {/* Market Regime */}
                             <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-4">

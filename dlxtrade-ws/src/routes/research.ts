@@ -24,6 +24,16 @@ const researchQuerySchema = z.object({
 });
 
 export async function researchRoutes(fastify: FastifyInstance) {
+  fastify.get("/background-research/settings", { preHandler: [fastify.authenticate] }, async (req) => {
+    const data = await firestoreAdapter.getBackgroundResearchSettings((req as any).user.uid);
+    return { success: true, data };
+  });
+
+  fastify.post("/background-research/settings", { preHandler: [fastify.authenticate] }, async (req) => {
+    const saved = await firestoreAdapter.saveBackgroundResearchSettings((req as any).user.uid, (req as any).body);
+    return { success: true, data: saved };
+  });
+
   fastify.get('/logs', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Querystring: any }>, reply: FastifyReply) => {

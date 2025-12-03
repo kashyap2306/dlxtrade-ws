@@ -9,6 +9,7 @@ import { CryptoCompareAdapter } from './cryptocompareAdapter';
 import * as admin from 'firebase-admin';
 import { config } from '../config';
 import { getUserIntegrations } from '../routes/integrations';
+import { accuracyEngine, AccuracyResult } from './accuracyEngine';
 
 // FREE MODE Deep Research v1.5 interfaces
 export interface ProviderBackupConfig {
@@ -27,6 +28,16 @@ export interface FreeModeProviderResult {
 export interface FreeModeDeepResearchResult {
   signal: 'BUY' | 'SELL' | 'HOLD';
   accuracy: number;
+  snapshotAccuracy: number;
+  accuracyBreakdown: {
+    indicatorScore: number;
+    marketStructureScore: number;
+    momentumScore: number;
+    volumeScore: number;
+    newsScore: number;
+    riskPenalty: number;
+  };
+  accuracyWeightsUsed: Record<string, number>;
   indicators: {
     rsi: IndicatorResult;
     ma50: IndicatorResult;
@@ -609,6 +620,7 @@ export class DeepResearchEngine {
 
     // Combine results using FREE MODE logic v1.5
     const result = await this.combineFreeModeResults(
+      uid,
       symbol,
       marketDataResult,
       ccResult,
@@ -1213,10 +1225,34 @@ export class DeepResearchEngine {
     const startTime = Date.now();
 
     try {
-      const baseSymbol = symbol.toLowerCase().replace('usdt', '').replace('usd', '');
+      // CoinGecko symbol to ID mapping
+      const COINGECKO_MAP: Record<string, string> = {
+        BTCUSDT: "bitcoin",
+        ETHUSDT: "ethereum",
+        SOLUSDT: "solana",
+        BNBUSDT: "binancecoin",
+        XRPUSDT: "ripple",
+        ADAUSDT: "cardano",
+        DOGEUSDT: "dogecoin",
+        TRXUSDT: "tron",
+        DOTUSDT: "polkadot",
+        MATICUSDT: "matic-network",
+        LTCUSDT: "litecoin",
+        BCHUSDT: "bitcoin-cash",
+        LINKUSDT: "chainlink",
+        UNIUSDT: "uniswap",
+        XLMUSDT: "stellar",
+        ATOMUSDT: "cosmos",
+        XMRUSDT: "monero",
+        FILUSDT: "filecoin",
+        IMXUSDT: "immutable-x",
+      };
+
+      // Convert symbol to valid CoinGecko ID
+      const id = COINGECKO_MAP[symbol] || symbol.toLowerCase().replace('usdt', '').replace('usd', '');
 
       // CoinGecko free API for price data
-      const response = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${baseSymbol}&vs_currencies=usd&include_24hr_change=true`);
+      const response = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd&include_24hr_change=true`);
 
       if (!response.ok) {
         throw new Error(`CoinGecko API error: ${response.status}`);
@@ -1224,11 +1260,11 @@ export class DeepResearchEngine {
 
       const data = await response.json();
 
-      if (!data[baseSymbol]) {
+      if (!data[id]) {
         throw new Error('No price data available');
       }
 
-      const priceData = data[baseSymbol];
+      const priceData = data[id];
       const trend1d = priceData.usd_24h_change > 0 ? 'bullish' : 'bearish';
 
       return {
@@ -1308,30 +1344,40 @@ export class DeepResearchEngine {
    */
   private async fetchCoinGeckoMetadata(symbol: string): Promise<FreeModeProviderResult> {
     try {
-      // Convert symbol to CoinGecko ID mapping
-      const coingeckoIds: { [key: string]: string } = {
-        'BTC': 'bitcoin',
-        'ETH': 'ethereum',
-        'BNB': 'binancecoin',
-        'ADA': 'cardano',
-        'SOL': 'solana',
-        'XRP': 'ripple',
-        'DOT': 'polkadot',
-        'DOGE': 'dogecoin',
-        'AVAX': 'avalanche-2',
-        'LTC': 'litecoin'
+      // CoinGecko symbol to ID mapping
+      const COINGECKO_MAP: Record<string, string> = {
+        BTCUSDT: "bitcoin",
+        ETHUSDT: "ethereum",
+        SOLUSDT: "solana",
+        BNBUSDT: "binancecoin",
+        XRPUSDT: "ripple",
+        ADAUSDT: "cardano",
+        DOGEUSDT: "dogecoin",
+        TRXUSDT: "tron",
+        DOTUSDT: "polkadot",
+        MATICUSDT: "matic-network",
+        LTCUSDT: "litecoin",
+        BCHUSDT: "bitcoin-cash",
+        LINKUSDT: "chainlink",
+        UNIUSDT: "uniswap",
+        XLMUSDT: "stellar",
+        ATOMUSDT: "cosmos",
+        XMRUSDT: "monero",
+        FILUSDT: "filecoin",
+        IMXUSDT: "immutable-x",
       };
 
-      const coingeckoId = coingeckoIds[symbol] || symbol.toLowerCase();
+      // Convert symbol to valid CoinGecko ID
+      const id = COINGECKO_MAP[symbol] || symbol.toLowerCase();
 
-      console.log("[HTTP-REQ]", "CoinGecko", `https://api.coingecko.com/api/v3/coins/${coingeckoId}`);
-      const response = await fetch(`https://api.coingecko.com/api/v3/coins/${coingeckoId}`);
+      console.log("[HTTP-REQ]", "CoinGecko", `https://api.coingecko.com/api/v3/coins/${id}`);
+      const response = await fetch(`https://api.coingecko.com/api/v3/coins/${id}`);
 
       if (!response.ok) {
         throw new Error(`CoinGecko API error: ${response.status}`);
       }
 
-      console.log("[HTTP-RES]", "CoinGecko", `https://api.coingecko.com/api/v3/coins/${coingeckoId}`, "status", response.status);
+      console.log("[HTTP-RES]", "CoinGecko", `https://api.coingecko.com/api/v3/coins/${id}`, "status", response.status);
       const data = await response.json();
 
       return {
@@ -1693,24 +1739,34 @@ export class DeepResearchEngine {
    */
   private async fetchCoinGeckoMarketData(symbol: string): Promise<FreeModeProviderResult> {
     try {
-      // Convert symbol to CoinGecko ID mapping (simplified)
-      const coingeckoIds: { [key: string]: string } = {
-        'BTC': 'bitcoin',
-        'ETH': 'ethereum',
-        'BNB': 'binancecoin',
-        'ADA': 'cardano',
-        'SOL': 'solana',
-        'XRP': 'ripple',
-        'DOT': 'polkadot',
-        'DOGE': 'dogecoin',
-        'AVAX': 'avalanche-2',
-        'LTC': 'litecoin'
+      // CoinGecko symbol to ID mapping
+      const COINGECKO_MAP: Record<string, string> = {
+        BTCUSDT: "bitcoin",
+        ETHUSDT: "ethereum",
+        SOLUSDT: "solana",
+        BNBUSDT: "binancecoin",
+        XRPUSDT: "ripple",
+        ADAUSDT: "cardano",
+        DOGEUSDT: "dogecoin",
+        TRXUSDT: "tron",
+        DOTUSDT: "polkadot",
+        MATICUSDT: "matic-network",
+        LTCUSDT: "litecoin",
+        BCHUSDT: "bitcoin-cash",
+        LINKUSDT: "chainlink",
+        UNIUSDT: "uniswap",
+        XLMUSDT: "stellar",
+        ATOMUSDT: "cosmos",
+        XMRUSDT: "monero",
+        FILUSDT: "filecoin",
+        IMXUSDT: "immutable-x",
       };
 
-      const coingeckoId = coingeckoIds[symbol] || symbol.toLowerCase();
+      // Convert symbol to valid CoinGecko ID
+      const id = COINGECKO_MAP[symbol] || symbol.toLowerCase();
 
       console.log("[HTTP-REQ]", "CoinGecko", `https://api.coingecko.com/api/v3/simple/price`);
-      const response = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${coingeckoId}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true`);
+      const response = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true`);
 
       if (!response.ok) {
         throw new Error(`CoinGecko API error: ${response.status}`);
@@ -1719,11 +1775,11 @@ export class DeepResearchEngine {
       console.log("[HTTP-RES]", "CoinGecko", `https://api.coingecko.com/api/v3/simple/price`, "status", response.status);
       const data = await response.json();
 
-      if (!data[coingeckoId]) {
+      if (!data[id]) {
         throw new Error('No price data from CoinGecko');
       }
 
-      const coinData = data[coingeckoId];
+      const coinData = data[id];
 
       return {
         success: true,
@@ -1902,9 +1958,213 @@ export class DeepResearchEngine {
   }
 
   /**
+   * Calculate comprehensive accuracy score based on multi-factor analysis
+   */
+  private calculateAccuracyScore(
+    signal: 'BUY' | 'SELL' | 'HOLD',
+    indicators: any,
+    marketData: any,
+    ccData: any,
+    metadata: any,
+    newsData: any,
+    strategy?: string
+  ): number {
+    // 1. INDICATOR ALIGNMENT SCORE (0-100) - Weight: 40%
+    let indicatorScore = 50; // Start at neutral
+
+    // MACD strength alignment (+10 if matches signal)
+    if (indicators.macd?.signal === 'bullish' && signal === 'BUY') indicatorScore += 10;
+    else if (indicators.macd?.signal === 'bearish' && signal === 'SELL') indicatorScore += 10;
+
+    // Price vs Moving Averages alignment
+    const currentPrice = marketData?.price || indicators?.latest?.price || 0;
+    const ema20 = indicators.ema20?.value || currentPrice;
+    const sma50 = indicators.ma50?.value || currentPrice;
+    const sma200 = indicators.ma200?.value || currentPrice;
+
+    if (signal === 'BUY') {
+      // For BUY signals, price should be above key averages
+      if (currentPrice > ema20) indicatorScore += 3;
+      if (currentPrice > sma50) indicatorScore += 3;
+      if (currentPrice > sma200) indicatorScore += 4;
+      // Bonus for trend alignment (EMA20 > SMA50 > SMA200)
+      if (ema20 > sma50 && sma50 > sma200) indicatorScore += 5;
+    } else if (signal === 'SELL') {
+      // For SELL signals, price should be below key averages
+      if (currentPrice < ema20) indicatorScore += 3;
+      if (currentPrice < sma50) indicatorScore += 3;
+      if (currentPrice < sma200) indicatorScore += 4;
+      // Bonus for trend alignment (EMA20 < SMA50 < SMA200)
+      if (ema20 < sma50 && sma50 < sma200) indicatorScore += 5;
+    }
+
+    // RSI support (+5 if supports direction, -10 if extreme against)
+    const rsi = indicators.rsi?.value || 50;
+    if (signal === 'BUY' && rsi < 70) indicatorScore += 5; // RSI supports BUY (not overbought)
+    else if (signal === 'SELL' && rsi > 30) indicatorScore += 5; // RSI supports SELL (not oversold)
+    else if (signal === 'BUY' && rsi > 80) indicatorScore -= 10; // RSI extreme against BUY
+    else if (signal === 'SELL' && rsi < 20) indicatorScore -= 10; // RSI extreme against SELL
+
+    // VWAP alignment (+5)
+    if (indicators.vwap?.signal === 'bullish' && signal === 'BUY') indicatorScore += 5;
+    else if (indicators.vwap?.signal === 'bearish' && signal === 'SELL') indicatorScore += 5;
+
+    // Strategy-specific adjustments
+    if (strategy === 'Scalping') {
+      // Higher weight on momentum & EMA20
+      if (indicators.ema20?.emaTrend === 'bullish' && signal === 'BUY') indicatorScore += 5;
+      else if (indicators.ema20?.emaTrend === 'bearish' && signal === 'SELL') indicatorScore += 5;
+    } else if (strategy === 'Swing') {
+      // Higher weight on SMA50 & market regime
+      if (indicators.ma50?.smaTrend === 'bullish' && signal === 'BUY') indicatorScore += 5;
+      else if (indicators.ma50?.smaTrend === 'bearish' && signal === 'SELL') indicatorScore += 5;
+    } else if (strategy === 'Breakout') {
+      // Higher weight on volume & volatility patterns
+      if (indicators.pattern?.confidence > 0.7) indicatorScore += 5;
+    } else if (strategy === 'Trend-following') {
+      // Higher weight on MA alignment & VWAP
+      if (indicators.vwap?.signal === signal.toLowerCase()) indicatorScore += 5;
+    }
+
+    indicatorScore = Math.max(0, Math.min(100, indicatorScore));
+
+    // 2. MARKET STRUCTURE SCORE (0-100) - Weight: 25%
+    let marketStructureScore = 50; // Start at neutral
+
+    // Trend alignment (+10 if 1h & 1d match)
+    if (ccData?.trend1h && ccData?.trend1d) {
+      if (ccData.trend1h === ccData.trend1d) {
+        marketStructureScore += 10;
+        if ((ccData.trend1h === 'bullish' && signal === 'BUY') ||
+            (ccData.trend1h === 'bearish' && signal === 'SELL')) {
+          marketStructureScore += 10; // Market regime aligns with signal
+        }
+      }
+    }
+
+    // Support/Resistance proximity (simplified - would need actual S/R levels)
+    // For now, use VWAP as proxy for fair value
+    const vwap = indicators.vwap?.value || currentPrice;
+    const vwapDeviation = indicators.vwap?.deviation || 0;
+
+    if (signal === 'BUY' && currentPrice < vwap && vwapDeviation < -2) {
+      marketStructureScore += 5; // Price in discount zone for BUY
+    } else if (signal === 'SELL' && currentPrice > vwap && vwapDeviation > 2) {
+      marketStructureScore += 5; // Price in premium zone for SELL
+    } else if (signal === 'BUY' && currentPrice > vwap && vwapDeviation > 2) {
+      marketStructureScore -= 10; // Price at resistance for BUY signal
+    } else if (signal === 'SELL' && currentPrice < vwap && vwapDeviation < -2) {
+      marketStructureScore -= 10; // Price at support for SELL signal
+    }
+
+    marketStructureScore = Math.max(0, Math.min(100, marketStructureScore));
+
+    // 3. MOMENTUM SCORE (0-100) - Weight: 15%
+    let momentumScore = 50; // Start at neutral
+
+    // Momentum indicator (convert 0-1 scale to 0-100)
+    const momentum = indicators.momentum?.score || 0.5;
+    momentumScore = momentum * 100;
+
+    // ATR relative volatility penalty
+    const atr = indicators.atr?.value || 0.01;
+    const atrClassification = indicators.atr?.classification || 'medium';
+    if (atrClassification === 'high') {
+      momentumScore -= 15; // High volatility = risk penalty
+    } else if (atrClassification === 'low') {
+      momentumScore += 5; // Low volatility = more reliable
+    }
+
+    // Pattern confidence boost
+    const patternConfidence = indicators.pattern?.confidence || 0;
+    momentumScore += patternConfidence * 10; // Up to +10 for high confidence patterns
+
+    momentumScore = Math.max(0, Math.min(100, momentumScore));
+
+    // 4. VOLUME CONFIRMATION SCORE (0-100) - Weight: 10%
+    let volumeScore = 50; // Start at neutral
+
+    const volumeTrend = indicators.volume?.trend || 'neutral';
+    const volumeStrength = indicators.volume?.score || 0.5;
+
+    // High volume + trend alignment = +20
+    if (volumeTrend === 'increasing' && volumeStrength > 0.7) {
+      if (signal === 'BUY' && indicators.volume?.trend === 'increasing') volumeScore += 20;
+      else if (signal === 'SELL' && indicators.volume?.trend === 'increasing') volumeScore += 20;
+    }
+
+    // Low volume penalty
+    if (volumeStrength < 0.3) {
+      volumeScore = Math.min(volumeScore, 20); // Cap at 20 for low volume
+    }
+
+    // Volume divergence penalty
+    if (signal === 'BUY' && volumeTrend === 'decreasing') volumeScore -= 10;
+    else if (signal === 'SELL' && volumeTrend === 'decreasing') volumeScore -= 10;
+
+    volumeScore = Math.max(0, Math.min(100, volumeScore));
+
+    // 5. NEWS & SENTIMENT SCORE (0-100) - Weight: 10%
+    let newsScore = 50; // Start at neutral
+
+    if (newsData?.sentimentScore !== undefined) {
+      const sentimentScore = newsData.sentimentScore;
+      newsScore = sentimentScore * 100; // Convert to 0-100 scale
+
+      // Additional alignment bonuses
+      if (sentimentScore > 0.6 && signal === 'BUY') newsScore += 10;
+      else if (sentimentScore < 0.4 && signal === 'SELL') newsScore += 10;
+      else if ((sentimentScore > 0.6 && signal === 'SELL') ||
+               (sentimentScore < 0.4 && signal === 'BUY')) {
+        newsScore -= 20; // Conflicting news = penalty
+      }
+    } else {
+      // No news data available = slight penalty
+      newsScore = 45;
+    }
+
+    newsScore = Math.max(0, Math.min(100, newsScore));
+
+    // 6. VOLATILITY & RISK PENALTY (0 to -15%) - Weight: -10%
+    let riskPenalty = 0;
+
+    // ATR-based volatility penalty
+    if (atrClassification === 'high') riskPenalty += 5;
+    else if (atrClassification === 'medium') riskPenalty += 2;
+
+    // Wrong-side EMA compression (high risk)
+    if (signal === 'BUY' && ema20 < sma50 && sma50 < sma200) riskPenalty += 5;
+    else if (signal === 'SELL' && ema20 > sma50 && sma50 > sma200) riskPenalty += 5;
+
+    // High volatility + low volume mismatch
+    if (atrClassification === 'high' && volumeStrength < 0.4) riskPenalty += 3;
+
+    riskPenalty = Math.min(15, riskPenalty); // Max penalty of 15%
+
+    // FINAL ACCURACY FORMULA
+    let finalAccuracy = Math.max(0, Math.min(100,
+      (indicatorScore * 0.40) +
+      (marketStructureScore * 0.25) +
+      (momentumScore * 0.15) +
+      (volumeScore * 0.10) +
+      (newsScore * 0.10) -
+      (riskPenalty * 0.10)
+    ));
+
+    // Drop accuracy if critical providers fail
+    if (!marketData?.success) finalAccuracy *= 0.8;
+    if (!ccData?.success) finalAccuracy *= 0.9;
+    if (!metadata?.success) finalAccuracy *= 0.95;
+    if (!newsData?.success) finalAccuracy *= 0.95;
+
+    return Math.max(10, Math.min(95, finalAccuracy / 100)); // Convert to 0.10-0.95 scale for consistency
+  }
+
+  /**
    * Combine FREE MODE v1.5 results from all providers
    */
   private async combineFreeModeResults(
+    uid: string,
     symbol: string,
     marketDataResult: FreeModeProviderResult,
     ccResult: FreeModeProviderResult,
@@ -1954,75 +2214,53 @@ export class DeepResearchEngine {
     // Initialize default values
     let combinedSignal: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
     let accuracy = 0.5;
-    let confidenceBoost = 0;
 
     // A. Get indicators from primary data source
     const indicators = dataSource === 'defaults' ? data.indicators : this.calculateIndicatorsFromOHLC(data.ohlc);
 
-    // Calculate signal from indicators
+    // Calculate signal from indicators (simplified for direction)
     let buySignals = 0;
     let sellSignals = 0;
 
     // RSI Analysis
-    if (indicators.rsi.value < 30) buySignals += 2; // Oversold
-    else if (indicators.rsi.value > 70) sellSignals += 2; // Overbought
+    if (indicators.rsi?.value < 30) buySignals += 2; // Oversold
+    else if (indicators.rsi?.value > 70) sellSignals += 2; // Overbought
 
     // Moving Averages
-    if (indicators.ma50.smaTrend === 'bullish' && indicators.ma200.smaTrend === 'bullish') buySignals += 2;
-    else if (indicators.ma50.smaTrend === 'bearish' && indicators.ma200.smaTrend === 'bearish') sellSignals += 2;
+    if (indicators.ma50?.smaTrend === 'bullish' && indicators.ma200?.smaTrend === 'bullish') buySignals += 2;
+    else if (indicators.ma50?.smaTrend === 'bearish' && indicators.ma200?.smaTrend === 'bearish') sellSignals += 2;
 
     // EMA Trend
-    if (indicators.ema20.emaTrend === 'bullish') buySignals += 1;
-    else if (indicators.ema20.emaTrend === 'bearish') sellSignals += 1;
+    if (indicators.ema20?.emaTrend === 'bullish') buySignals += 1;
+    else if (indicators.ema20?.emaTrend === 'bearish') sellSignals += 1;
 
-    // MACD (simplified)
-    if (indicators.macd.signal === 'bullish') buySignals += 1;
-    else if (indicators.macd.signal === 'bearish') sellSignals += 1;
+    // MACD
+    if (indicators.macd?.signal === 'bullish') buySignals += 1;
+    else if (indicators.macd?.signal === 'bearish') sellSignals += 1;
 
-    // Volume Anomaly
-    if (indicators.volume.trend === 'increasing') buySignals += 1;
+    // Volume
+    if (indicators.volume?.trend === 'increasing') buySignals += 1;
 
-    // VWAP Distance
-    if (indicators.vwap.signal === 'bullish') buySignals += 1;
-    else if (indicators.vwap.signal === 'bearish') sellSignals += 1;
-
-    // ATR Volatility (lower volatility = more reliable signals)
-    if (indicators.atr.classification === 'low') accuracy += 0.1;
+    // VWAP
+    if (indicators.vwap?.signal === 'bullish') buySignals += 1;
+    else if (indicators.vwap?.signal === 'bearish') sellSignals += 1;
 
     // Pattern Detection
-    if (indicators.pattern.confidence > 0.7) {
-      if (indicators.pattern.pattern.includes('bull')) buySignals += 2;
-      else if (indicators.pattern.pattern.includes('bear')) sellSignals += 2;
+    if (indicators.pattern?.confidence > 0.7) {
+      if (indicators.pattern.pattern?.includes('bull')) buySignals += 2;
+      else if (indicators.pattern.pattern?.includes('bear')) sellSignals += 2;
     }
 
     // Determine combined signal
     if (buySignals > sellSignals + 2) {
       combinedSignal = 'BUY';
-      accuracy = Math.min(0.9, 0.5 + (buySignals - sellSignals) * 0.1);
     } else if (sellSignals > buySignals + 2) {
       combinedSignal = 'SELL';
-      accuracy = Math.min(0.9, 0.5 + (sellSignals - buySignals) * 0.1);
     } else {
       combinedSignal = 'HOLD';
-      accuracy = 0.5;
     }
 
-    // B. CryptoCompare Trend Filter (optional boost)
-    if (ccResult.success) {
-      const ccData = ccResult.data;
-      const bothBullish = ccData.trend1h === 'bullish' && ccData.trend1d === 'bullish';
-      const bothBearish = ccData.trend1h === 'bearish' && ccData.trend1d === 'bearish';
-
-      if (bothBullish && combinedSignal === 'BUY') {
-        accuracy = Math.min(0.95, accuracy + 0.1); // Boost BUY confidence
-      } else if (bothBearish && combinedSignal === 'SELL') {
-        accuracy = Math.min(0.95, accuracy + 0.1); // Boost SELL confidence
-      } else if (!bothBullish && !bothBearish && combinedSignal !== 'HOLD') {
-        accuracy = Math.max(0.4, accuracy - 0.1); // Reduce confidence for conflicting trends
-      }
-    }
-
-    // C. CMC Metadata Boost (optional)
+    // B. Get metadata
     let metadata: any = {
       name: '',
       symbol: symbol,
@@ -2035,47 +2273,68 @@ export class DeepResearchEngine {
 
     if (cmcResult.success) {
       metadata = cmcResult.data;
-
-      // Supply health boost
-      if (metadata.supply.circulating > 0 && metadata.supply.total > 0) {
-        const supplyRatio = metadata.supply.circulating / metadata.supply.total;
-        if (supplyRatio < 0.8) { // Healthy supply distribution
-          confidenceBoost += 0.05;
-        }
-      }
-
-      // Category and tags boost
-      if (metadata.category && ['layer-1', 'defi', 'infrastructure'].some(cat =>
-        metadata.category.toLowerCase().includes(cat))) {
-        confidenceBoost += 0.05;
-      }
-
-      accuracy = Math.min(0.95, accuracy + confidenceBoost);
     }
 
-    // D. News Sentiment (optional)
+    // C. Get news
     let news: any[] = [];
     if (newsResult.success) {
       news = newsResult.data.articles || [];
-      const sentimentScore = newsResult.data.sentimentScore || 0.5;
-
-      // Boost confidence based on news sentiment
-      if (sentimentScore > 0.6 && combinedSignal === 'BUY') {
-        accuracy = Math.min(0.95, accuracy + 0.05);
-      } else if (sentimentScore < 0.4 && combinedSignal === 'SELL') {
-        accuracy = Math.min(0.95, accuracy + 0.05);
-      } else if ((sentimentScore > 0.6 && combinedSignal === 'SELL') ||
-                 (sentimentScore < 0.4 && combinedSignal === 'BUY')) {
-        accuracy = Math.max(0.3, accuracy - 0.1); // Reduce confidence for conflicting news
-      }
     }
 
-    // Ensure minimum accuracy
-    accuracy = Math.max(0.3, accuracy);
+    // D. Calculate comprehensive accuracy score using the accuracy engine
+    const accuracyResult = await accuracyEngine.calculateSnapshotAccuracy({
+      signal: combinedSignal,
+      accuracy: 0, // Will be overridden
+      indicators,
+      metadata,
+      news,
+      raw: {
+        marketData: marketDataResult.data,
+        cryptocompare: ccResult.success ? ccResult.data : null,
+        metadata: cmcResult.data,
+        news: newsResult.data
+      },
+      providers: {
+        marketData: marketDataResult,
+        metadata: cmcResult,
+        cryptocompare: ccResult,
+        news: newsResult
+      },
+      symbol,
+      requestId: `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+    });
+
+    accuracy = accuracyResult.accuracy;
+
+    // E. Save prediction snapshot for historical tracking
+    try {
+      await accuracyEngine.savePredictionSnapshot(uid, {
+        requestId: accuracyResult.metadata.requestId,
+        timestamp: new Date(),
+        symbol,
+        strategy: 'free-mode', // Could be made configurable
+        signal: combinedSignal,
+        positionPercentCandidate: 0, // Not used in free mode
+        snapshotAccuracy: accuracy,
+        breakdown: accuracyResult.breakdown,
+        providersStatus: {
+          marketData: marketDataResult.success,
+          cryptocompare: ccResult.success,
+          metadata: cmcResult.success,
+          news: newsResult.success
+        }
+      });
+    } catch (error) {
+      logger.warn({ error: error.message }, 'Failed to save prediction snapshot');
+      // Don't fail the research request if snapshot save fails
+    }
 
     return {
       signal: combinedSignal,
       accuracy,
+      snapshotAccuracy: accuracyResult.accuracy,
+      accuracyBreakdown: accuracyResult.breakdown,
+      accuracyWeightsUsed: accuracyResult.finalAppliedWeights,
       indicators,
       metadata,
       news,
@@ -2155,6 +2414,145 @@ export async function runFreeModeDeepResearch(
   const configs = providerConfigs || defaultConfigs;
 
   return await deepResearchEngine.runFreeModeDeepResearch(uid, symbol, configs, integrations);
+}
+
+/**
+ * Run deep research with coin selection based on trading settings
+ */
+export async function runDeepResearchWithCoinSelection(
+  uid: string,
+  tradingSettings: TradingSettings,
+  providerConfigs?: {
+    binance?: ProviderBackupConfig;
+    cryptocompare?: ProviderBackupConfig;
+    cmc?: ProviderBackupConfig;
+    news?: ProviderBackupConfig;
+  },
+  integrations?: any
+): Promise<{ results: FreeModeDeepResearchResult[]; mode: string; coinsAnalyzed: string[] }> {
+  // Default FREE MODE provider configurations
+  const defaultConfigs = {
+    binance: {
+      primary: 'binance',
+      backups: ['bybit', 'okx', 'kucoin']
+    },
+    cryptocompare: {
+      primary: 'cryptocompare',
+      backups: ['alphavantage', 'coingecko']
+    },
+    cmc: {
+      primary: 'coinmarketcap',
+      backups: ['coingecko']
+    },
+    news: {
+      primary: 'newsdata',
+      backups: ['cryptopanic', 'reddit']
+    }
+  };
+
+  const configs = providerConfigs || defaultConfigs;
+
+  return await deepResearchEngine.runDeepResearchWithCoinSelection(uid, tradingSettings, configs, integrations);
+}
+
+  /**
+   * Get coins to research based on trading settings mode
+   */
+  private async getCoinsToResearch(uid: string, tradingSettings: TradingSettings): Promise<string[]> {
+    switch (tradingSettings.mode) {
+      case 'MANUAL':
+        return tradingSettings.manualCoins;
+
+      case 'TOP_100':
+        // Fetch top 100 coins from CoinGecko
+        try {
+          const response = await fetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false');
+          if (response.ok) {
+            const data = await response.json();
+            return data.map((coin: any) => coin.symbol.toUpperCase());
+          }
+        } catch (error) {
+          console.error('Failed to fetch top 100 coins from CoinGecko:', error);
+        }
+        // Fallback to common coins
+        return ['BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'DOT', 'LINK', 'UNI', 'AVAX', 'LTC', 'ALGO', 'VET', 'ICP', 'FIL', 'TRX'];
+
+      case 'TOP_10':
+        // Fetch top 10 coins from CoinGecko
+        try {
+          const response = await fetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=10&page=1&sparkline=false');
+          if (response.ok) {
+            const data = await response.json();
+            return data.map((coin: any) => coin.symbol.toUpperCase());
+          }
+        } catch (error) {
+          console.error('Failed to fetch top 10 coins from CoinGecko:', error);
+        }
+        // Fallback to top 10 common coins
+        return ['BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'DOT', 'LINK', 'UNI', 'AVAX', 'LTC'];
+
+      default:
+        return ['BTCUSDT'];
+    }
+  }
+
+  /**
+   * Run deep research with coin selection based on trading settings
+   */
+  async runDeepResearchWithCoinSelection(
+    uid: string,
+    tradingSettings: TradingSettings,
+    providerConfigs?: {
+      binance?: ProviderBackupConfig;
+      cryptocompare?: ProviderBackupConfig;
+      cmc?: ProviderBackupConfig;
+      news?: ProviderBackupConfig;
+    },
+    integrations?: any
+  ): Promise<{ results: FreeModeDeepResearchResult[]; mode: string; coinsAnalyzed: string[] }> {
+    const startTime = Date.now();
+    logger.info({ uid, mode: tradingSettings.mode }, `Starting Deep Research with ${tradingSettings.mode} mode`);
+
+    // Get coins to research based on mode
+    const coinsToResearch = await this.getCoinsToResearch(uid, tradingSettings);
+    logger.info({ uid, coinsCount: coinsToResearch.length, coins: coinsToResearch.slice(0, 5) }, `Selected ${coinsToResearch.length} coins for research`);
+
+    // Research all coins in parallel (but limit concurrency to avoid rate limits)
+    const semaphore = new Semaphore(5); // Max 5 concurrent requests
+    const researchPromises = coinsToResearch.map(async (symbol) => {
+      const release = await semaphore.acquire();
+      try {
+        return await this.runFreeModeDeepResearch(uid, symbol, providerConfigs, integrations);
+      } finally {
+        release();
+      }
+    });
+
+    const results = await Promise.all(researchPromises);
+
+    // For TOP_100 and TOP_10 modes, find the coin with highest accuracy
+    let bestResult: FreeModeDeepResearchResult | null = null;
+    if (tradingSettings.mode === 'TOP_100' || tradingSettings.mode === 'TOP_10') {
+      bestResult = results.reduce((best, current) => {
+        return !best || current.accuracy > best.accuracy ? current : best;
+      }, null as FreeModeDeepResearchResult | null);
+    }
+
+    logger.info({
+      uid,
+      mode: tradingSettings.mode,
+      coinsAnalyzed: coinsToResearch.length,
+      resultsCount: results.length,
+      bestResult: bestResult ? { symbol: bestResult.metadata.symbol, accuracy: bestResult.accuracy, signal: bestResult.signal } : null,
+      durationMs: Date.now() - startTime
+    }, `Deep Research with ${tradingSettings.mode} mode completed`);
+
+    return {
+      results: tradingSettings.mode === 'MANUAL' ? results : (bestResult ? [bestResult] : []),
+      mode: tradingSettings.mode,
+      coinsAnalyzed: coinsToResearch
+    };
+  }
 }
 
 export const deepResearchEngine = new DeepResearchEngine();

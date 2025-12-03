@@ -7,7 +7,8 @@ import * as admin from 'firebase-admin';
 
 // Trading Settings Interface
 export interface TradingSettings {
-  symbol: string;
+  mode: 'MANUAL' | 'TOP_100' | 'TOP_10';
+  manualCoins: string[];
   maxPositionPerTrade: number;
   tradeType: 'Scalping' | 'Swing' | 'Position';
   accuracyTrigger: number;
@@ -726,7 +727,8 @@ export class AutoTradeEngine {
       if (!settings) {
         // Return default settings
         return {
-          symbol: 'BTCUSDT',
+          mode: 'MANUAL',
+          manualCoins: ['BTCUSDT', 'ETHUSDT'],
           maxPositionPerTrade: 10,
           tradeType: 'Scalping',
           accuracyTrigger: 85,
@@ -1098,18 +1100,29 @@ export class AutoTradeEngine {
       }
 
       // Import deep research engine and integrations
-      const { runFreeModeDeepResearch } = await import('./deepResearchEngine');
+      const { runDeepResearchWithCoinSelection } = await import('./deepResearchEngine');
       const { getUserIntegrations } = await import('../routes/integrations');
 
       // Get user integrations for API keys
       const integrations = await getUserIntegrations(uid);
 
-      // Run deep research for the configured symbol
-      const researchResult = await runFreeModeDeepResearch(uid, settings.symbol, undefined, integrations);
+      // Run deep research with coin selection based on trading settings
+      const researchData = await runDeepResearchWithCoinSelection(uid, settings, undefined, integrations);
+
+      if (!researchData.results || researchData.results.length === 0) {
+        skipReason = 'NO_RESULTS_GENERATED';
+        logger.warn({ uid, mode: settings.mode, skipReason }, '⚠️ Research cycle skipped: No results generated');
+        cycleResult = 'SKIPPED';
+        return;
+      }
+
+      // For MANUAL mode, we might get multiple results, take the first one or find the best
+      // For TOP_100/TOP_10 modes, we already get the best result
+      const researchResult = researchData.results[0];
 
       if (!researchResult || !researchResult.signal) {
         skipReason = 'NO_SIGNAL_GENERATED';
-        logger.warn({ uid, symbol: settings.symbol, skipReason }, '⚠️ Research cycle skipped: No signal generated');
+        logger.warn({ uid, mode: settings.mode, coinsAnalyzed: researchData.coinsAnalyzed.length, skipReason }, '⚠️ Research cycle skipped: No signal generated');
         cycleResult = 'SKIPPED';
         return;
       }
@@ -1119,15 +1132,17 @@ export class AutoTradeEngine {
 
       logger.info({
         uid,
-        symbol: settings.symbol,
+        mode: settings.mode,
+        coinsAnalyzed: researchData.coinsAnalyzed.length,
+        symbol: researchResult.metadata.symbol,
         signal,
         accuracy
-      }, '📊 Research cycle completed, evaluating trade opportunity');
+      }, `📊 Research cycle completed (${settings.mode} mode), evaluating trade opportunity`);
 
       // Skip HOLD signals - only execute BUY/SELL
       if (signal === 'HOLD') {
         skipReason = 'HOLD_SIGNAL';
-        logger.info({ uid, symbol: settings.symbol, accuracy, skipReason }, '⚠️ Research cycle skipped: HOLD signal');
+        logger.info({ uid, mode: settings.mode, symbol: researchResult.metadata.symbol, accuracy, skipReason }, `⚠️ Research cycle skipped: HOLD signal (${settings.mode} mode)`);
         cycleResult = 'SKIPPED';
         return;
       }

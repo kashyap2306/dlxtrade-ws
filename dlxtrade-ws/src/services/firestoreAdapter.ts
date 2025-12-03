@@ -1277,6 +1277,139 @@ export class FirestoreAdapter {
       throw error;
     }
   }
+
+  /**
+   * Save prediction snapshot for accuracy tracking
+   */
+  async savePredictionMetrics(uid: string, snapshotData: any): Promise<void> {
+    try {
+      const docRef = db().collection('users').doc(uid).collection('predictions').doc();
+      await docRef.set({
+        ...snapshotData,
+        id: docRef.id
+      });
+      logger.debug({ uid, predictionId: docRef.id }, 'Prediction snapshot saved');
+    } catch (error: any) {
+      logger.error({ error: error.message, uid }, 'Error saving prediction snapshot');
+      throw error;
+    }
+  }
+
+  /**
+   * Get prediction snapshot by requestId
+   */
+  async getPredictionSnapshot(requestId: string): Promise<any> {
+    try {
+      // Search across all users (simplified - in production you'd want better indexing)
+      const usersRef = db().collection('users');
+      const usersSnapshot = await usersRef.listDocuments();
+
+      for (const userRef of usersSnapshot) {
+        const predictionRef = userRef.collection('predictions').where('requestId', '==', requestId);
+        const predictionSnapshot = await predictionRef.get();
+
+        if (!predictionSnapshot.empty) {
+          const doc = predictionSnapshot.docs[0];
+          return { ...doc.data(), id: doc.id };
+        }
+      }
+
+      return null;
+    } catch (error: any) {
+      logger.error({ error: error.message, requestId }, 'Error getting prediction snapshot');
+      throw error;
+    }
+  }
+
+  /**
+   * Update prediction outcome
+   */
+  async updatePredictionOutcome(requestId: string, outcome: any): Promise<void> {
+    try {
+      // Find and update the prediction document
+      const snapshot = await this.getPredictionSnapshot(requestId);
+      if (snapshot) {
+        const userRef = db().collection('users').doc(snapshot.userId);
+        await userRef.collection('predictions').doc(snapshot.id).update({
+          outcome,
+          completedAt: new Date()
+        });
+      }
+      logger.debug({ requestId }, 'Prediction outcome updated');
+    } catch (error: any) {
+      logger.error({ error: error.message, requestId }, 'Error updating prediction outcome');
+      throw error;
+    }
+  }
+
+  /**
+   * Update accuracy calibration buckets
+   */
+  async updateAccuracyCalibration(uid: string, bucketKey: number, win: boolean): Promise<void> {
+    try {
+      const calibrationRef = db().collection('users').doc(uid).collection('calibration').doc('accuracy');
+      const calibrationDoc = await calibrationRef.get();
+      const currentData = calibrationDoc.exists ? calibrationDoc.data() || {} : {};
+
+      // Initialize bucket if it doesn't exist
+      if (!currentData[bucketKey]) {
+        currentData[bucketKey] = { total: 0, wins: 0 };
+      }
+
+      // Update bucket stats
+      currentData[bucketKey].total += 1;
+      if (win) currentData[bucketKey].wins += 1;
+
+      await calibrationRef.set(currentData);
+      logger.debug({ uid, bucketKey, win }, 'Accuracy calibration updated');
+    } catch (error: any) {
+      logger.error({ error: error.message, uid, bucketKey }, 'Error updating accuracy calibration');
+      throw error;
+    }
+  }
+
+  /**
+   * Get accuracy history and calibration stats
+   */
+  async getAccuracyHistory(uid: string, filters: { strategy?: string; symbol?: string; limit?: number }): Promise<any> {
+    try {
+      let query: any = db().collection('users').doc(uid).collection('predictions');
+
+      if (filters.symbol) {
+        query = query.where('symbol', '==', filters.symbol);
+      }
+
+      if (filters.strategy) {
+        query = query.where('strategy', '==', filters.strategy);
+      }
+
+      query = query.orderBy('timestamp', 'desc').limit(filters.limit || 100);
+
+      const snapshot = await query.get();
+      const predictions = snapshot.docs.map((doc: any) => ({ ...doc.data(), id: doc.id }));
+
+      // Get calibration data
+      const calibrationRef = db().collection('users').doc(uid).collection('calibration').doc('accuracy');
+      const calibrationDoc = await calibrationRef.get();
+      const calibrationData = calibrationDoc.exists ? calibrationDoc.data() || {} : {};
+
+      // Calculate rolling accuracy
+      const totalPredictions = predictions.length;
+      const winningPredictions = predictions.filter((p: any) => p.outcome?.win).length;
+      const rollingAccuracy = totalPredictions > 0 ? (winningPredictions / totalPredictions) * 100 : 0;
+
+      return {
+        rollingAccuracy: Math.round(rollingAccuracy * 100) / 100,
+        totalPredictions,
+        winningPredictions,
+        calibrationBuckets: calibrationData,
+        recentPredictions: predictions.slice(0, 20) // Return last 20 for display
+      };
+    } catch (error: any) {
+      logger.error({ error: error.message, uid }, 'Error getting accuracy history');
+      throw error;
+    }
+  }
 }
 
 export const firestoreAdapter = new FirestoreAdapter();

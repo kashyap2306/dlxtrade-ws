@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { settingsApi, integrationsApi, exchangeApi, marketApi } from '../services/api';
+import { settingsApi, integrationsApi, exchangeApi, adminApi } from '../services/api';
 import Toast from '../components/Toast';
 import Sidebar from '../components/Sidebar';
 import { useAuth } from '../hooks/useAuth';
@@ -83,31 +83,11 @@ const PROVIDER_CONFIG = {
       placeholder: "Enter CryptoCompare API key"
     },
     backups: [
-      { name: "Binance Public", key: "binanceBackupKey", enabledKey: "binanceBackupEnabled", type: "api", placeholder: "Enter Binance API key" },
-      { name: "KuCoin Public", key: "kucoinBackupKey", enabledKey: "kucoinBackupEnabled", type: "api", placeholder: "Enter KuCoin API key" },
-      { name: "Bybit Public", key: "bybitBackupKey", enabledKey: "bybitBackupEnabled", type: "api", placeholder: "Enter Bybit API key" },
-      { name: "OKX Public", key: "okxBackupKey", enabledKey: "okxBackupEnabled", type: "api", placeholder: "Enter OKX API key" },
-      { name: "Bitget Public", key: "bitgetBackupKey", enabledKey: "bitgetBackupEnabled", type: "api", placeholder: "Enter Bitget API key" },
-      { name: "CryptoCompare-FreeMode-1", key: "cryptoCompareFreeMode1Key", enabledKey: "cryptoCompareFreeMode1Enabled", type: "free", placeholder: "No key required" },
-      { name: "CryptoCompare-FreeMode-2", key: "cryptoCompareFreeMode2Key", enabledKey: "cryptoCompareFreeMode2Enabled", type: "free", placeholder: "No key required" }
-    ]
-  },
-  metadata: {
-    icon: "📈",
-    bgColor: "bg-purple-500",
-    title: "Metadata Providers",
-    description: "Market cap, supply, and asset information",
-    primary: {
-      name: "CoinGecko",
-      key: "coinGeckoKey",
-      placeholder: "Enter CoinGecko API key"
-    },
-    backups: [
-      { name: "CoinMarketCap", key: "coinmarketcapKey", enabledKey: "coinmarketcapEnabled", type: "api", placeholder: "Enter CoinMarketCap API key" },
-      { name: "CoinPaprika", key: "coinpaprikaKey", enabledKey: "coinpaprikaEnabled", type: "free", placeholder: "No key required" },
-      { name: "Nomics", key: "nomicsKey", enabledKey: "nomicsEnabled", type: "api", placeholder: "Enter Nomics API key" },
-      { name: "Messari", key: "messariKey", enabledKey: "messariEnabled", type: "api", placeholder: "Enter Messari API key" },
-      { name: "CryptoRank", key: "cryptorankKey", enabledKey: "cryptorankEnabled", type: "free", placeholder: "No key required" }
+      { name: "CoinGecko", key: "coinGeckoBackupKey", enabledKey: "coinGeckoBackupEnabled", type: "free", placeholder: "No key required" },
+      { name: "KuCoin", key: "kucoinBackupKey", enabledKey: "kucoinBackupEnabled", type: "free", placeholder: "No key required" },
+      { name: "Bybit", key: "bybitBackupKey", enabledKey: "bybitBackupEnabled", type: "free", placeholder: "No key required" },
+      { name: "OKX", key: "okxBackupKey", enabledKey: "okxBackupEnabled", type: "free", placeholder: "No key required" },
+      { name: "Bitget", key: "bitgetBackupKey", enabledKey: "bitgetBackupEnabled", type: "free", placeholder: "No key required" }
     ]
   },
   news: {
@@ -122,12 +102,35 @@ const PROVIDER_CONFIG = {
     },
     backups: [
       { name: "CryptoPanic", key: "cryptoPanicKey", enabledKey: "cryptoPanicEnabled", type: "api", placeholder: "Enter CryptoPanic API key" },
-      { name: "GNews", key: "gnewsKey", enabledKey: "gnewsEnabled", type: "api", placeholder: "Enter GNews API key" },
-      { name: "Reddit Crypto", key: "redditKey", enabledKey: "redditEnabled", type: "free", placeholder: "No key required" },
-      { name: "Twitter/X", key: "twitterKey", enabledKey: "twitterEnabled", type: "api", placeholder: "Enter Twitter/X API key" },
-      { name: "Alternative.me", key: "alternativemeKey", enabledKey: "alternativemeEnabled", type: "free", placeholder: "No key required" }
+      { name: "Reddit", key: "redditKey", enabledKey: "redditEnabled", type: "free", placeholder: "No key required" },
+      { name: "GNews", key: "gnewsKey", enabledKey: "gnewsEnabled", type: "api", placeholder: "Enter GNews API key" }
+    ]
+  },
+  metadata: {
+    icon: "📈",
+    bgColor: "bg-purple-500",
+    title: "Metadata Providers",
+    description: "Market cap, supply, and asset information",
+    primary: null,
+    backups: [
+      { name: "CoinGecko", key: "coinGeckoKey", enabledKey: "coinGeckoEnabled", type: "free", placeholder: "No key required" },
+      { name: "CoinPaprika", key: "coinpaprikaKey", enabledKey: "coinpaprikaEnabled", type: "free", placeholder: "No key required" }
     ]
   }
+};
+
+// API name mapping for provider handling
+const API_NAME_MAP: Record<string, string> = {
+  'CryptoCompare': 'cryptocompare',
+  'CoinGecko': 'coingecko',
+  'KuCoin': 'kucoin',
+  'Bybit': 'bybit',
+  'OKX': 'okx',
+  'Bitget': 'bitget',
+  'NewsData': 'newsdata',
+  'CryptoPanic': 'cryptopanic',
+  'Reddit': 'reddit',
+  'GNews': 'gnews'
 };
 
 // Background Research Wizard Component
@@ -173,8 +176,8 @@ function BackgroundResearchWizard() {
 
     setTestingTelegram(true);
     try {
-      await settingsApi.telegram.test({ botToken: telegramBotToken, chatId: telegramChatId });
-      showToast('Test message sent successfully!', 'success');
+      const response = await settingsApi.backgroundResearch.test({ botToken: telegramBotToken, chatId: telegramChatId });
+      showToast(response.data.message || 'DLXTRADE Alert Test Successful: Telegram integration working.', 'success');
     } catch (error: any) {
       console.error('Error testing Telegram:', error);
       showToast(error.response?.data?.error || 'Failed to send test message', 'error');
@@ -625,18 +628,19 @@ export default function Settings() {
   const [showSuccessPopup, setShowSuccessPopup] = useState(false);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
   const [disconnectingExchange, setDisconnectingExchange] = useState(false);
-  const [marketSymbols, setMarketSymbols] = useState<string[]>([]);
-  const [symbolSearch, setSymbolSearch] = useState('');
   const [savingTrading, setSavingTrading] = useState(false);
+  const [tradingSaved, setTradingSaved] = useState(false);
   const [loadingAll, setLoadingAll] = useState(true);
   const [error, setError] = useState<any>(null);
   const [retryCount, setRetryCount] = useState(0);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [integrationsLoaded, setIntegrationsLoaded] = useState(false);
+  const [submittedProviders, setSubmittedProviders] = useState<Set<string>>(new Set());
 
   // Trading Settings State
   const [tradingSettings, setTradingSettings] = useState({
-    symbol: 'BTCUSDT',
+    mode: 'MANUAL' as 'MANUAL' | 'TOP_100' | 'TOP_10',
+    manualCoins: ['BTCUSDT', 'ETHUSDT'] as string[],
     maxPositionPerTrade: 10,
     tradeType: 'Scalping' as 'Scalping' | 'Swing' | 'Position',
     accuracyTrigger: 85,
@@ -652,10 +656,13 @@ export default function Settings() {
   });
   const [sampleAccuracy, setSampleAccuracy] = useState(85);
 
+  // Research Coin Selection States
+  const [coinSearch, setCoinSearch] = useState('');
+  const [top100Coins, setTop100Coins] = useState<string[]>([]);
+  const [showCoinDropdown, setShowCoinDropdown] = useState(false);
+
   const [integrationsLoading, setIntegrationsLoading] = useState(false);
-  const [globalSettings, setGlobalSettings] = useState<any>(null);
   const [settings, setSettings] = useState<any>({
-    symbol: 'BTCUSDT',
     maxPositionPercent: 10,
     tradeType: 'scalping',
     accuracyThreshold: 85,
@@ -663,8 +670,8 @@ export default function Settings() {
     maxTradesPerDay: 50,
     // Market Data Providers
     cryptoCompareKey: '',
-    binanceBackupKey: '',
-    binanceBackupEnabled: false,
+    coinGeckoBackupKey: '',
+    coinGeckoBackupEnabled: false,
     kucoinBackupKey: '',
     kucoinBackupEnabled: false,
     bybitBackupKey: '',
@@ -673,35 +680,19 @@ export default function Settings() {
     okxBackupEnabled: false,
     bitgetBackupKey: '',
     bitgetBackupEnabled: false,
-    // Free mode providers
-    cryptoCompareFreeMode1Key: '',
-    cryptoCompareFreeMode1Enabled: false,
-    cryptoCompareFreeMode2Key: '',
-    cryptoCompareFreeMode2Enabled: false,
-    // Metadata Providers
-    coinGeckoKey: '',
-    coinmarketcapKey: '',
-    coinmarketcapEnabled: false,
-    coinpaprikaKey: '',
-    coinpaprikaEnabled: false,
-    nomicsKey: '',
-    nomicsEnabled: false,
-    messariKey: '',
-    messariEnabled: false,
-    cryptorankKey: '',
-    cryptorankEnabled: false,
     // News Providers
     newsDataKey: '',
     cryptoPanicKey: '',
     cryptoPanicEnabled: false,
-    gnewsKey: '',
-    gnewsEnabled: false,
     redditKey: '',
     redditEnabled: false,
-    twitterKey: '',
-    twitterEnabled: false,
-    alternativemeKey: '',
-    alternativemeEnabled: false,
+    gnewsKey: '',
+    gnewsEnabled: false,
+    // Metadata Providers
+    coinGeckoKey: '',
+    coinGeckoEnabled: false,
+    coinpaprikaKey: '',
+    coinpaprikaEnabled: false,
     enableAutoTrade: false,
     exchanges: [],
     showUnmaskedKeys: false,
@@ -717,13 +708,12 @@ export default function Settings() {
 
     try {
       // Load all settings data in parallel with Promise.allSettled for resilience
-      const [settingsResult, integrationsResult, globalSettingsResult, exchangeResult, symbolsResult, tradingSettingsResult] = await Promise.allSettled([
+      const [settingsResult, integrationsResult, exchangeResult, tradingSettingsResult, topCoinsResult] = await Promise.allSettled([
         loadSettings(),
         loadIntegrations(),
-        loadGlobalSettings(),
         loadConnectedExchange(),
-        loadMarketSymbols(),
-        loadTradingSettings()
+        loadTradingSettings(),
+        loadTop100Coins()
       ]);
 
       // Log any failures but don't fail the whole load
@@ -733,14 +723,8 @@ export default function Settings() {
       if (integrationsResult.status === 'rejected') {
         suppressConsoleError(integrationsResult.reason, 'loadIntegrations');
       }
-      if (globalSettingsResult.status === 'rejected') {
-        suppressConsoleError(globalSettingsResult.reason, 'loadGlobalSettings');
-      }
       if (exchangeResult.status === 'rejected') {
         suppressConsoleError(exchangeResult.reason, 'loadConnectedExchange');
-      }
-      if (symbolsResult.status === 'rejected') {
-        suppressConsoleError(symbolsResult.reason, 'loadMarketSymbols');
       }
 
       setRetryCount(0); // Reset retry count on successful load
@@ -771,16 +755,6 @@ export default function Settings() {
   }, []);
 
 
-  const loadGlobalSettings = async () => {
-    try {
-      const response = await settingsApi.load();
-      // Global settings would be loaded from /api/settings/global/load if user is admin
-      // For now, we'll just load user settings
-      // Admin can access global settings via admin panel
-    } catch (err) {
-      console.error('Error loading global settings:', err);
-    }
-  };
 
   const loadIntegrations = async () => {
     // Prevent multiple simultaneous calls
@@ -837,7 +811,6 @@ export default function Settings() {
       // Settings loaded successfully
       if (response.data) {
         setSettings({
-          symbol: response.data.symbol || 'BTCUSDT',
           maxPositionPercent: response.data.maxPositionPercent || 10,
           tradeType: response.data.tradeType || 'scalping',
           accuracyThreshold: response.data.accuracyThreshold || 85,
@@ -890,7 +863,6 @@ export default function Settings() {
       } else {
         // Initialize with defaults if no settings exist
         setSettings({
-          symbol: 'BTCUSDT',
           maxPositionPercent: 10,
           tradeType: 'scalping',
           accuracyThreshold: 85,
@@ -946,7 +918,6 @@ export default function Settings() {
       showToast(err.response?.data?.error || 'Error loading settings', 'error');
       // Set defaults on error
       setSettings({
-        symbol: 'BTCUSDT',
         maxPositionPercent: 10,
         tradeType: 'scalping',
         accuracyThreshold: 85,
@@ -1012,31 +983,8 @@ export default function Settings() {
     setSavingProvider(providerName);
 
     try {
-      // Map provider names to API names
-      const apiNameMap: any = {
-        'CryptoCompare': 'cryptocompare',
-        'Binance Public': 'binancepublic',
-        'KuCoin Public': 'kucoinpublic',
-        'Bybit Public': 'bybitpublic',
-        'OKX Public': 'okxpublic',
-        'Bitget Public': 'bitgetpublic',
-        'CryptoCompare-FreeMode-1': 'cryptocompare-freemode-1',
-        'CryptoCompare-FreeMode-2': 'cryptocompare-freemode-2',
-        'CoinGecko': 'coingecko',
-        'CoinMarketCap': 'coinmarketcap',
-        'CoinPaprika': 'coinpaprika',
-        'Nomics': 'nomics',
-        'Messari': 'messari',
-        'CryptoRank': 'cryptorank',
-        'NewsData': 'newsdata',
-        'CryptoPanic': 'cryptopanic',
-        'GNews': 'gnews',
-        'Reddit Crypto': 'reddit',
-        'Twitter/X': 'twitter',
-        'Alternative.me': 'alternativeme'
-      };
 
-      const apiName = apiNameMap[providerName];
+      const apiName = API_NAME_MAP[providerName];
       if (!apiName) {
         throw new Error(`Unknown provider: ${providerName}`);
       }
@@ -1044,58 +992,39 @@ export default function Settings() {
       // Get the API key from settings (handle field name mapping)
       const fieldNameMap: any = {
         'cryptocompare': 'cryptoCompareKey',
-        'binancepublic': 'binanceBackupKey',
-        'kucoinpublic': 'kucoinBackupKey',
-        'bybitpublic': 'bybitBackupKey',
-        'okxpublic': 'okxBackupKey',
-        'bitgetpublic': 'bitgetBackupKey',
-        'cryptocompare-freemode-1': 'cryptoCompareFreeMode1Key',
-        'cryptocompare-freemode-2': 'cryptoCompareFreeMode2Key',
-        'coingecko': 'coinGeckoKey',
-        'coinmarketcap': 'coinmarketcapKey',
-        'coinpaprika': 'coinpaprikaKey',
-        'nomics': 'nomicsKey',
-        'messari': 'messariKey',
-        'cryptorank': 'cryptorankKey',
+        'coingecko': 'coinGeckoBackupKey',
+        'kucoin': 'kucoinBackupKey',
+        'bybit': 'bybitBackupKey',
+        'okx': 'okxBackupKey',
+        'bitget': 'bitgetBackupKey',
         'newsdata': 'newsDataKey',
         'cryptopanic': 'cryptoPanicKey',
-        'gnews': 'gnewsKey',
         'reddit': 'redditKey',
-        'twitter': 'twitterKey',
-        'alternativeme': 'alternativemeKey'
+        'gnews': 'gnewsKey'
       };
 
       // Get enabled state for backup providers
       const enabledFieldMap: any = {
-        'binancepublic': 'binanceBackupEnabled',
-        'kucoinpublic': 'kucoinBackupEnabled',
-        'bybitpublic': 'bybitBackupEnabled',
-        'okxpublic': 'okxBackupEnabled',
-        'bitgetpublic': 'bitgetBackupEnabled',
-        'cryptocompare-freemode-1': 'cryptoCompareFreeMode1Enabled',
-        'cryptocompare-freemode-2': 'cryptoCompareFreeMode2Enabled',
-        'coinmarketcap': 'coinmarketcapEnabled',
-        'coinpaprika': 'coinpaprikaEnabled',
-        'nomics': 'nomicsEnabled',
-        'messari': 'messariEnabled',
-        'cryptorank': 'cryptorankEnabled',
+        'coingecko': 'coinGeckoBackupEnabled',
+        'kucoin': 'kucoinBackupEnabled',
+        'bybit': 'bybitBackupEnabled',
+        'okx': 'okxBackupEnabled',
+        'bitget': 'bitgetBackupEnabled',
         'cryptopanic': 'cryptoPanicEnabled',
-        'gnews': 'gnewsEnabled',
         'reddit': 'redditEnabled',
-        'twitter': 'twitterEnabled',
-        'alternativeme': 'alternativemeEnabled'
+        'gnews': 'gnewsEnabled',
+        'coinpaprika': 'coinpaprikaEnabled'
       };
 
       const apiKeyField = fieldNameMap[apiName] || `${apiName}Key`;
       const apiKey = settings[apiKeyField]?.trim();
 
       // For backup providers, check if enabled; for primary providers, always enabled
-      const isPrimary = ['cryptocompare', 'coingecko', 'newsdata'].includes(apiName);
+      const isPrimary = ['cryptocompare', 'newsdata'].includes(apiName);
       const enabledField = enabledFieldMap[apiName];
       const enabled = isPrimary ? true : (enabledField ? settings[enabledField] : !!apiKey);
 
       // Add required logging
-      console.log("FRONTEND-SAVE", { provider: apiName, apiKeyLength: apiKey?.length || 0, enabled });
 
       // Prepare payload and remove null/undefined values
       const payload: any = {
@@ -1122,6 +1051,9 @@ export default function Settings() {
             updatedAt: new Date().toISOString(),
           }
         }));
+
+        // Mark provider as submitted
+        setSubmittedProviders(prev => new Set(prev).add(apiName));
 
         // Clear the input field
         setSettings(prev => ({
@@ -1165,32 +1097,9 @@ export default function Settings() {
       }
     } catch (err: any) {
       // Exchange not configured yet, which is fine
-      console.log('No exchange configured yet');
     }
   };
 
-  const loadMarketSymbols = async () => {
-    try {
-      // Try to get symbols from backend market API
-      const response = await marketApi.getSymbols();
-      if (response.data && Array.isArray(response.data)) {
-        // Extract symbol names from the response
-        const symbols = response.data.map((item: any) => item.symbol || item);
-        setMarketSymbols(symbols);
-      } else {
-        // Fallback to common symbols
-        const commonSymbols = [
-          'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT',
-          'DOTUSDT', 'LINKUSDT', 'UNIUSDT', 'AVAXUSDT', 'LTCUSDT'
-        ];
-        setMarketSymbols(commonSymbols);
-      }
-    } catch (err) {
-      console.error('Error loading market symbols:', err);
-      // Fallback to common symbols
-      setMarketSymbols(['BTCUSDT', 'ETHUSDT', 'BNBUSDT']);
-    }
-  };
 
   const loadTradingSettings = async () => {
     try {
@@ -1211,7 +1120,8 @@ export default function Settings() {
       // DEFENSIVE: Fallback to defaults for any undefined/null values
       if (response.data) {
         const safeSettings = {
-          symbol: response.data.symbol || 'BTCUSDT',
+          mode: response.data.mode || 'MANUAL',
+          manualCoins: response.data.manualCoins || ['BTCUSDT', 'ETHUSDT'],
           maxPositionPerTrade: response.data.maxPositionPerTrade || 10,
           tradeType: response.data.tradeType || 'Scalping',
           accuracyTrigger: response.data.accuracyTrigger || 85,
@@ -1236,6 +1146,30 @@ export default function Settings() {
       });
       setTimeout(() => setToast(null), 5000);
       // Settings will use defaults defined in state
+    }
+  };
+
+  const loadTop100Coins = async () => {
+    try {
+      const response = await adminApi.getMarketData();
+      if (response.data && Array.isArray(response.data)) {
+        const coins = response.data.map((coin: any) => coin.symbol || coin);
+        setTop100Coins(coins);
+      } else {
+        // Fallback to common coins
+        setTop100Coins([
+          'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT',
+          'DOTUSDT', 'LINKUSDT', 'UNIUSDT', 'AVAXUSDT', 'LTCUSDT',
+          'ALGOUSDT', 'VETUSDT', 'ICPUSDT', 'FILUSDT', 'TRXUSDT',
+          'ETCUSDT', 'XLMUSDT', 'THETAUSDT', 'FTTUSDT', 'HBARUSDT'
+        ]);
+      }
+    } catch (err) {
+      console.error('Error loading top 100 coins:', err);
+      // Fallback to common coins
+      setTop100Coins([
+        'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT'
+      ]);
     }
   };
 
@@ -1286,9 +1220,12 @@ export default function Settings() {
 
   const handleSaveTradingSettings = async () => {
     setSavingTrading(true);
+    setTradingSaved(false);
     try {
       await settingsApi.trading.update(tradingSettings);
       showToast('Trading settings saved successfully', 'success');
+      setTradingSaved(true);
+      setTimeout(() => setTradingSaved(false), 3000);
     } catch (err: any) {
       console.error('Error saving trading settings:', err);
       showToast(err.response?.data?.error || 'Error saving trading settings', 'error');
@@ -1299,7 +1236,8 @@ export default function Settings() {
 
   const handleResetTradingSettings = () => {
     setTradingSettings({
-      symbol: 'BTCUSDT',
+      mode: 'MANUAL',
+      manualCoins: ['BTCUSDT', 'ETHUSDT'],
       maxPositionPerTrade: 10,
       tradeType: 'Scalping',
       accuracyTrigger: 85,
@@ -1345,6 +1283,30 @@ export default function Settings() {
     newMap[index] = { ...newMap[index], [field]: value };
     setTradingSettings({ ...tradingSettings, positionSizingMap: newMap });
   };
+
+  // Coin Selection Helpers
+  const addCoinToManual = (coin: string) => {
+    if (!tradingSettings.manualCoins.includes(coin)) {
+      setTradingSettings({
+        ...tradingSettings,
+        manualCoins: [...tradingSettings.manualCoins, coin]
+      });
+    }
+    setCoinSearch('');
+    setShowCoinDropdown(false);
+  };
+
+  const removeCoinFromManual = (coin: string) => {
+    setTradingSettings({
+      ...tradingSettings,
+      manualCoins: tradingSettings.manualCoins.filter(c => c !== coin)
+    });
+  };
+
+  const filteredCoins = top100Coins.filter(coin =>
+    coin.toLowerCase().includes(coinSearch.toLowerCase()) &&
+    !tradingSettings.manualCoins.includes(coin)
+  );
 
 
   const handleDisconnectExchange = async () => {
@@ -1452,7 +1414,7 @@ export default function Settings() {
 
   return (
     <ErrorBoundary>
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 pb-20 lg:pb-0 smooth-scroll">
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 smooth-scroll">
       {/* Animated background elements - Performance optimized */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none gpu-accelerated">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob"></div>
@@ -1462,7 +1424,7 @@ export default function Settings() {
 
       <Sidebar onLogout={handleLogout} />
 
-      <main className="min-h-screen smooth-scroll">
+      <main className="w-full h-full overflow-y-auto smooth-scroll">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
           {/* Header */}
           <div className="mb-8">
@@ -1479,18 +1441,161 @@ export default function Settings() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-gray-300">Symbol</label>
-                  <div className="relative">
-                    <input
-                      type="text"
-                      className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                      value={tradingSettings.symbol}
-                      onChange={(e) => setTradingSettings({ ...tradingSettings, symbol: e.target.value })}
-                      placeholder="e.g., BTCUSDT"
-                    />
+                {/* Research Coin Selection System */}
+                <div className="space-y-4 md:col-span-2">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-2">Research Coin Selection System</label>
+                    <p className="text-xs text-gray-400 mb-4">Choose how Deep Research selects coins for analysis and auto-trading</p>
                   </div>
-                  <p className="text-xs text-gray-400">Trading pair for analysis and execution</p>
+
+                  {/* Mode Selection */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <label className={`relative flex items-center p-4 rounded-xl border-2 cursor-pointer transition-all duration-200 hover:scale-102 ${
+                      tradingSettings.mode === 'MANUAL'
+                        ? 'border-purple-500 bg-gradient-to-r from-purple-500/20 to-pink-500/20 text-white'
+                        : 'border-slate-600/50 bg-slate-800/30 text-gray-300 hover:border-slate-500/70 hover:bg-slate-700/50'
+                    }`}>
+                      <input
+                        type="radio"
+                        name="researchMode"
+                        value="MANUAL"
+                        checked={tradingSettings.mode === 'MANUAL'}
+                        onChange={(e) => setTradingSettings({ ...tradingSettings, mode: e.target.value as 'MANUAL' | 'TOP_100' | 'TOP_10' })}
+                        className="sr-only"
+                      />
+                      <div className="flex-1 text-center">
+                        <div className="text-lg font-bold mb-1">📋 Manual</div>
+                        <div className="text-xs text-gray-400">Select any coins</div>
+                      </div>
+                      {tradingSettings.mode === 'MANUAL' && (
+                        <div className="absolute -top-2 -right-2 w-6 h-6 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full flex items-center justify-center">
+                          <span className="text-white text-sm">✓</span>
+                        </div>
+                      )}
+                    </label>
+
+                    <label className={`relative flex items-center p-4 rounded-xl border-2 cursor-pointer transition-all duration-200 hover:scale-102 ${
+                      tradingSettings.mode === 'TOP_100'
+                        ? 'border-purple-500 bg-gradient-to-r from-purple-500/20 to-pink-500/20 text-white'
+                        : 'border-slate-600/50 bg-slate-800/30 text-gray-300 hover:border-slate-500/70 hover:bg-slate-700/50'
+                    }`}>
+                      <input
+                        type="radio"
+                        name="researchMode"
+                        value="TOP_100"
+                        checked={tradingSettings.mode === 'TOP_100'}
+                        onChange={(e) => setTradingSettings({ ...tradingSettings, mode: e.target.value as 'MANUAL' | 'TOP_100' | 'TOP_10' })}
+                        className="sr-only"
+                      />
+                      <div className="flex-1 text-center">
+                        <div className="text-lg font-bold mb-1">🔝 Top 100</div>
+                        <div className="text-xs text-gray-400">Auto-select best</div>
+                      </div>
+                      {tradingSettings.mode === 'TOP_100' && (
+                        <div className="absolute -top-2 -right-2 w-6 h-6 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full flex items-center justify-center">
+                          <span className="text-white text-sm">✓</span>
+                        </div>
+                      )}
+                    </label>
+
+                    <label className={`relative flex items-center p-4 rounded-xl border-2 cursor-pointer transition-all duration-200 hover:scale-102 ${
+                      tradingSettings.mode === 'TOP_10'
+                        ? 'border-purple-500 bg-gradient-to-r from-purple-500/20 to-pink-500/20 text-white'
+                        : 'border-slate-600/50 bg-slate-800/30 text-gray-300 hover:border-slate-500/70 hover:bg-slate-700/50'
+                    }`}>
+                      <input
+                        type="radio"
+                        name="researchMode"
+                        value="TOP_10"
+                        checked={tradingSettings.mode === 'TOP_10'}
+                        onChange={(e) => setTradingSettings({ ...tradingSettings, mode: e.target.value as 'MANUAL' | 'TOP_100' | 'TOP_10' })}
+                        className="sr-only"
+                      />
+                      <div className="flex-1 text-center">
+                        <div className="text-lg font-bold mb-1">⭐ Top 10</div>
+                        <div className="text-xs text-gray-400">Elite selection</div>
+                      </div>
+                      {tradingSettings.mode === 'TOP_10' && (
+                        <div className="absolute -top-2 -right-2 w-6 h-6 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full flex items-center justify-center">
+                          <span className="text-white text-sm">✓</span>
+                        </div>
+                      )}
+                    </label>
+                  </div>
+
+                  {/* Manual Coin Selection */}
+                  {tradingSettings.mode === 'MANUAL' && (
+                    <div className="mt-6 p-4 bg-slate-800/30 rounded-xl border border-white/10">
+                      <h4 className="text-sm font-medium text-white mb-3">Select Coins for Research</h4>
+
+                      {/* Selected Coins */}
+                      <div className="flex flex-wrap gap-2 mb-4">
+                        {tradingSettings.manualCoins.map((coin) => (
+                          <div key={coin} className="flex items-center gap-1 px-3 py-1 bg-purple-500/20 text-purple-300 rounded-full text-xs">
+                            <span>{coin}</span>
+                            <button
+                              onClick={() => removeCoinFromManual(coin)}
+                              className="ml-1 hover:text-red-400"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Coin Search and Add */}
+                      <div className="relative">
+                        <input
+                          type="text"
+                          className="w-full px-3 py-2 bg-slate-700/50 border border-slate-600/50 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
+                          value={coinSearch}
+                          onChange={(e) => {
+                            setCoinSearch(e.target.value);
+                            setShowCoinDropdown(true);
+                          }}
+                          onFocus={() => setShowCoinDropdown(true)}
+                          placeholder="Search and add coins..."
+                        />
+
+                        {showCoinDropdown && coinSearch && (
+                          <div className="absolute z-10 w-full mt-1 bg-slate-800 border border-slate-600 rounded-lg shadow-lg max-h-40 overflow-y-auto">
+                            {filteredCoins.slice(0, 10).map((coin) => (
+                              <div
+                                key={coin}
+                                className="px-3 py-2 hover:bg-slate-700 cursor-pointer text-white text-sm"
+                                onClick={() => addCoinToManual(coin)}
+                              >
+                                {coin}
+                              </div>
+                            ))}
+                            {filteredCoins.length === 0 && (
+                              <div className="px-3 py-2 text-gray-400 text-sm">No coins found</div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      <p className="text-xs text-gray-400 mt-2">
+                        Selected coins will be analyzed by Deep Research and used for auto-trading
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Mode Descriptions */}
+                  <div className="mt-4 p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl">
+                    <div className="text-sm text-blue-200">
+                      <strong>💡 How it works:</strong>
+                      {tradingSettings.mode === 'MANUAL' && (
+                        <span> Deep Research analyzes only your selected coins and auto-trades the highest accuracy signal.</span>
+                      )}
+                      {tradingSettings.mode === 'TOP_100' && (
+                        <span> Deep Research fetches top 100 coins, analyzes them all, and auto-trades only the coin with highest accuracy.</span>
+                      )}
+                      {tradingSettings.mode === 'TOP_10' && (
+                        <span> Deep Research analyzes top 10 coins and auto-trades the coin with highest accuracy.</span>
+                      )}
+                    </div>
+                  </div>
                 </div>
 
                 <div className="space-y-2">
@@ -1532,7 +1637,7 @@ export default function Settings() {
                     value={tradingSettings.accuracyTrigger}
                     onChange={(e) => setTradingSettings({ ...tradingSettings, accuracyTrigger: parseInt(e.target.value) || 0 })}
                   />
-                  <p className="text-xs text-gray-400">Engine will only execute trades when model accuracy &gt;= this threshold</p>
+                  <p className="text-xs text-gray-400">Engine will only execute trades when model accuracy ≥ this threshold</p>
                 </div>
 
                 <div className="space-y-2">
@@ -1642,7 +1747,7 @@ export default function Settings() {
                   disabled={savingTrading}
                   className="px-6 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {savingTrading ? 'Saving...' : 'Save Trading Settings'}
+                  {savingTrading ? 'Saving...' : tradingSaved ? 'Saved ✓' : 'Save Trading Settings'}
                 </button>
               </div>
             </section>
@@ -1669,28 +1774,53 @@ export default function Settings() {
                     </div>
 
                     {/* Primary Provider */}
-                    <div className="ml-13 space-y-2">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-green-400">PRIMARY:</span>
-                        <span className="text-sm text-white">{config.primary.name}</span>
+                    {config.primary && (
+                      <div className="ml-13 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-green-400">PRIMARY:</span>
+                          <span className="text-sm text-white">{config.primary.name}</span>
+                        </div>
+                        {submittedProviders.has(API_NAME_MAP[config.primary.name]?.toLowerCase()) ? (
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 px-3 py-2 bg-green-500/10 border border-green-500/20 rounded-lg">
+                              <div className="flex items-center gap-2">
+                                <span className="text-green-400 text-sm">✓ Updated</span>
+                                <span className="text-gray-400 text-xs">API key configured</span>
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => {
+                                setSubmittedProviders(prev => {
+                                  const newSet = new Set(prev);
+                                  newSet.delete(API_NAME_MAP[config.primary.name]?.toLowerCase());
+                                  return newSet;
+                                });
+                              }}
+                              className="px-4 py-2 bg-slate-600 text-white font-medium rounded-lg hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 transition-all text-sm"
+                            >
+                              Change
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex gap-2">
+                            <input
+                              type="password"
+                              className="flex-1 px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                              value={settings[config.primary.key] || ''}
+                              onChange={(e) => setSettings({ ...settings, [config.primary.key]: e.target.value })}
+                              placeholder={config.primary.placeholder}
+                            />
+                            <button
+                              onClick={() => handleSaveProvider(config.primary.name)}
+                              disabled={savingProvider === config.primary.name}
+                              className="px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                            >
+                              {savingProvider === config.primary.name ? 'Saving...' : 'Save'}
+                            </button>
+                          </div>
+                        )}
                       </div>
-                      <div className="flex gap-2">
-                        <input
-                          type="password"
-                          className="flex-1 px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                          value={settings[config.primary.key] || ''}
-                          onChange={(e) => setSettings({ ...settings, [config.primary.key]: e.target.value })}
-                          placeholder={config.primary.placeholder}
-                        />
-                        <button
-                          onClick={() => handleSaveProvider(config.primary.name)}
-                          disabled={savingProvider === config.primary.name}
-                          className="px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-                        >
-                          {savingProvider === config.primary.name ? 'Saving...' : 'Save'}
-                        </button>
-                      </div>
-                    </div>
+                    )}
 
                     {/* Backup Providers Accordion */}
                     <details className="group ml-13">
@@ -1719,6 +1849,22 @@ export default function Settings() {
                             {settings[backup.enabledKey] && (
                               backup.type === 'free' ? (
                                 <span className="text-xs text-gray-400">{backup.placeholder}</span>
+                              ) : submittedProviders.has(API_NAME_MAP[backup.name]?.toLowerCase()) ? (
+                                <div className="flex items-center gap-2">
+                                  <span className="text-green-400 text-xs">✓ Updated</span>
+                                  <button
+                                    onClick={() => {
+                                      setSubmittedProviders(prev => {
+                                        const newSet = new Set(prev);
+                                        newSet.delete(API_NAME_MAP[backup.name]?.toLowerCase());
+                                        return newSet;
+                                      });
+                                    }}
+                                    className="px-2 py-1 bg-slate-600 text-white font-medium rounded text-xs hover:bg-slate-700 transition-all"
+                                  >
+                                    Change
+                                  </button>
+                                </div>
                               ) : (
                                 <div className="flex gap-2">
                                   <input

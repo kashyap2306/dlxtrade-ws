@@ -25,7 +25,7 @@ export interface TradeExecutionRequest {
   userId: string;
   symbol: string;
   signal: 'BUY' | 'SELL';
-  confidencePercent: number;
+  accuracy: number;
   researchRequestId: string;
   currentPrice: number;
   exchangeName?: string; // Optional exchange name for auto-trading
@@ -91,7 +91,7 @@ export class AutoTradeExecutor {
         userId: this.maskUserId(request.userId),
         symbol: request.symbol,
         signal: request.signal,
-        confidence: request.confidencePercent,
+        accuracy: request.accuracy,
         researchId: request.researchRequestId
       }, '[AUTO-TRADE] START - Evaluating auto-trade execution');
 
@@ -101,13 +101,13 @@ export class AutoTradeExecutor {
         return { success: false, error: 'Global auto-trade disabled' };
       }
 
-      // 2. Check confidence threshold
-      if (request.confidencePercent < 75) {
+      // 2. Check accuracy threshold
+      if (request.accuracy < 75) {
         logger.info({
           userId: this.maskUserId(request.userId),
-          confidence: request.confidencePercent
-        }, '[AUTO-TRADE] SKIPPED - Confidence below threshold');
-        return { success: false, error: 'Confidence below threshold' };
+          accuracy: request.accuracy
+        }, '[AUTO-TRADE] SKIPPED - Accuracy below threshold');
+        return { success: false, error: 'Accuracy below threshold' };
       }
 
       // 3. Check idempotency - ensure this research result hasn't been executed before

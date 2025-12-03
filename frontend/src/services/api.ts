@@ -51,14 +51,15 @@ export const adminApi = {
 
   // Background Research
   backgroundResearch: {
-    getSettings: () => api.get('/background-research/settings/get'),
+    getSettings: () => api.get('/research/background-research/settings'),
     saveSettings: (data: {
       backgroundResearchEnabled: boolean;
       telegramBotToken?: string;
       telegramChatId?: string;
       researchFrequencyMinutes: number;
       accuracyTrigger: number;
-    }) => api.post('/background-research/settings/save', data),
+    }) => api.post('/research/background-research/settings', data),
+    test: (data: { botToken: string; chatId: string }) => api.post('/research/background-research/settings/test', data),
   },
 
   // Telegram
@@ -120,6 +121,19 @@ export const settingsApi = {
     load: () => api.get('/trading/settings'),
     update: (settings: any) => api.post('/trading/settings', settings),
   },
+
+  // Background Research Settings
+  backgroundResearch: {
+    getSettings: () => api.get('/research/background-research/settings'),
+    saveSettings: (data: {
+      backgroundResearchEnabled: boolean;
+      telegramBotToken?: string;
+      telegramChatId?: string;
+      researchFrequencyMinutes: number;
+      accuracyTrigger: number;
+    }) => api.post('/research/background-research/settings', data),
+    test: (data: { botToken: string; chatId: string }) => api.post('/research/background-research/settings/test', data),
+  },
 };
 
 // Execution - routes already include /api prefix from baseURL
@@ -133,7 +147,7 @@ export const executionApi = {
 // Integrations - routes already include /api prefix from baseURL
 export const integrationsApi = {
   load: async () => {
-    const res = await api.get('/integrations/load');
+    const res = await api.get('/integrations');
     // Frontend fix: Ignore corrupted values
     if (res.data) {
       Object.keys(res.data).forEach(key => {
@@ -234,10 +248,10 @@ export const hftLogsApi = {
 
 // Auto Trade - routes already include /api prefix from baseURL
 export const autoTradeApi = {
-  getStatus: () => api.get('/auto-trade/status'),
+  getStatus: () => api.get('/trading/autotrade/status'),
   getConfig: () => api.get('/auto-trade/config'),
   updateConfig: (config: any) => api.post('/auto-trade/config', config),
-  toggle: (enabled: boolean) => api.post('/auto-trade/toggle', { enabled }),
+  toggle: (enabled: boolean) => api.post('/trading/autotrade/toggle', { enabled }),
   panicStop: (reason?: string) => api.post('/auto-trade/panic-stop', { reason }),
   getActiveTrades: (limit?: number) => api.get('/auto-trade/active-trades', { params: { limit } }),
   closeTrade: (tradeId: string) => api.post('/auto-trade/close-trade', { tradeId }),

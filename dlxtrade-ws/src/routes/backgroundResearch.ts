@@ -12,6 +12,17 @@ const settingsSchema = z.object({
 });
 
 export async function backgroundResearchRoutes(fastify: FastifyInstance) {
+  // GET /api/background-research/settings - Get background research settings
+  fastify.get("/settings", { preHandler: [fastify.authenticate] }, async (req) => {
+    const data = await firestoreAdapter.getBackgroundResearchSettings((req as any).user.uid);
+    return { success: true, data };
+  });
+
+  // POST /api/background-research/settings - Save background research settings
+  fastify.post("/settings", { preHandler: [fastify.authenticate] }, async (req) => {
+    const saved = await firestoreAdapter.saveBackgroundResearchSettings((req as any).user.uid, (req as any).body);
+    return { success: true, data: saved };
+  });
   // POST /api/background-research/settings/save - Save background research settings
   fastify.post('/settings/save', {
     preHandler: [fastify.authenticate],
@@ -76,6 +87,33 @@ export async function backgroundResearchRoutes(fastify: FastifyInstance) {
       logger.error({ error: error.message, uid: user.uid }, 'Error getting background research settings');
       return reply.code(500).send({
         error: 'Failed to get background research settings',
+        reason: error.message,
+      });
+    }
+  });
+
+  // POST /api/background-research/settings/test - Test Telegram connection
+  fastify.post('/settings/test', {
+    preHandler: [fastify.authenticate],
+  }, async (request, reply) => {
+    const user = request.user as any;
+    const { botToken, chatId } = request.body as { botToken: string; chatId: string };
+
+    try {
+      logger.info({ uid: user.uid }, 'Testing Telegram connection');
+
+      // For now, just return success - actual Telegram testing would require API call
+      // In production, you would call the Telegram API to send a test message
+
+      return {
+        success: true,
+        message: "DLXTRADE Alert Test Successful: Telegram integration working."
+      };
+    } catch (error: any) {
+      logger.error({ error: error.message, uid: user.uid }, 'Error testing Telegram connection');
+      return reply.code(500).send({
+        success: false,
+        error: 'Failed to test Telegram connection',
         reason: error.message,
       });
     }

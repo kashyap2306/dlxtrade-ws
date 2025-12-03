@@ -50,10 +50,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(fastifyHelmet);
   // CORS configuration
   await app.register(fastifyCors, {
-    origin: "*",
-    allowedHeaders: ["Content-Type", "Authorization"],
-    methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
-    credentials: true,
+    origin: ["https://dlx-trading.web.app"],
+    methods: ["GET","POST","PUT","DELETE","OPTIONS"],
+    allowedHeaders: ["Content-Type","Authorization"],
+    credentials: true
   });
 
   // Rate limiting with user-aware keys and local allow list
@@ -101,7 +101,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(engineRoutes, { prefix: '/api/engine' });
   await app.register(metricsRoutes, { prefix: '/api' });
   await app.register(researchRoutes, { prefix: '/api/research' });
-  await app.register(settingsRoutes, { prefix: '/api/settings' });
+  await app.register(settingsRoutes, { prefix: '/api/trading' });
   await app.register(executionRoutes, { prefix: '/api/execution' });
   await app.register(integrationsRoutes, { prefix: '/api/integrations' });
   await app.register(hftRoutes, { prefix: '/api/hft' });
