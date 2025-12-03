@@ -23,6 +23,10 @@ const configSchema = z.object({
   takeProfitPct: z.number().min(0.5).max(20).optional(),
   manualOverride: z.boolean().optional(),
   mode: z.enum(['AUTO', 'MANUAL']).optional(),
+  maxTradesPerDay: z.number().int().min(1).max(500).optional(),
+  cooldownSeconds: z.number().int().min(0).max(300).optional(),
+  panicStopEnabled: z.boolean().optional(),
+  slippageBlocker: z.boolean().optional(),
 });
 
 const queueSignalSchema = z.object({
@@ -95,47 +99,43 @@ export async function autoTradeRoutes(fastify: FastifyInstance) {
       const user = (request as any).user;
 
       const config = await autoTradeEngine.loadConfig(user.uid);
-      const status = await autoTradeEngine.getStatus(user.uid);
+      const isRunning = await autoTradeEngine.isAutoTradeRunning(user.uid);
+      const lastResearchAt = await autoTradeEngine.getLastResearchTime(user.uid);
 
-      // Check if user has exchange API keys configured
-      const db = getFirebaseAdmin().firestore();
-      const exchangeConfigDoc = await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').get();
-      const hasExchangeConfig = exchangeConfigDoc.exists && exchangeConfigDoc.data()?.apiKeyEncrypted && exchangeConfigDoc.data()?.secretEncrypted;
+      // Calculate next research time (5 minutes from last research if running)
+      const nextResearchAt = isRunning && lastResearchAt
+        ? new Date(new Date(lastResearchAt).getTime() + 5 * 60 * 1000).toISOString()
+        : null;
 
-      // Get available integrations for required APIs check
-      const integrations = await firestoreAdapter.getAllIntegrations(user.uid);
-
-      // Check which APIs are required and available
-      const requiredAPIs = ['cryptocompare', 'coingecko'];
-      const requiredApis = [];
-      const missingApis = [];
-
-      for (const api of requiredAPIs) {
-        if (integrations[api]?.enabled) {
-          requiredApis.push(api);
-        } else {
-          missingApis.push(api);
-        }
-      }
-
+      // ALWAYS return all expected keys with defaults
       return {
-        enabled: config.autoTradeEnabled || false,
-        accuracyThreshold: 75, // Default threshold
-        mode: config.mode || 'disabled',
-        requiredApis,
-        missingApis,
-        exchange: {
-          connected: hasExchangeConfig || false,
-        },
-        stats: {
-          executed: status.activeTrades || 0,
-          skipped: 0, // Not available in current status
-          signals: status.dailyTrades || 0,
-        },
+        autoTradeEnabled: config.autoTradeEnabled || false,
+        maxConcurrentTrades: config.maxConcurrentTrades || 3,
+        maxTradesPerDay: config.maxTradesPerDay || 50,
+        cooldownSeconds: config.cooldownSeconds || 30,
+        panicStopEnabled: config.panicStopEnabled || false,
+        slippageBlocker: config.slippageBlocker || false,
+        lastResearchAt: lastResearchAt,
+        nextResearchAt: nextResearchAt,
       };
     } catch (err: any) {
       logger.error({ err }, 'Error getting auto-trade config');
-      return reply.code(500).send({ error: err.message || 'Error fetching auto-trade config' });
+      // Return success: false with error on database failure
+      return {
+        success: false,
+        error: 'CONFIG_LOAD_FAILURE',
+        message: 'Failed to load auto-trade configuration from database',
+        details: err.message,
+        // Provide fallback defaults so frontend doesn't break
+        autoTradeEnabled: false,
+        maxConcurrentTrades: 3,
+        maxTradesPerDay: 50,
+        cooldownSeconds: 30,
+        panicStopEnabled: false,
+        slippageBlocker: false,
+        lastResearchAt: null,
+        nextResearchAt: null,
+      };
     }
   });
 
@@ -147,35 +147,44 @@ export async function autoTradeRoutes(fastify: FastifyInstance) {
       const user = (request as any).user;
       const body = configSchema.parse(request.body);
 
-      // Validate mode changes - require admin for AUTO mode
-      if (body.mode === 'AUTO' && body.mode !== (await autoTradeEngine.loadConfig(user.uid)).mode) {
-        // Check if user is admin
-        const db = getFirebaseAdmin().firestore();
-        const userDoc = await db.collection('users').doc(user.uid).get();
-        const userData = userDoc.data() || {};
-        const isAdmin = userData.role === 'admin' || userData.isAdmin === true;
-
-        if (!isAdmin) {
-          return reply.code(403).send({
-            error: 'Only admins can enable AUTO (live trading) mode.',
-          });
-        }
-      }
-
       const savedConfig = await autoTradeEngine.saveConfig(user.uid, body);
+
+      // Get updated status for response
+      const isRunning = await autoTradeEngine.isAutoTradeRunning(user.uid);
+      const lastResearchAt = await autoTradeEngine.getLastResearchTime(user.uid);
+      const nextResearchAt = isRunning && lastResearchAt
+        ? new Date(new Date(lastResearchAt).getTime() + 5 * 60 * 1000).toISOString()
+        : null;
 
       logger.info({ uid: user.uid, config: savedConfig }, 'Auto-trade config updated and saved to Firestore');
 
       return {
-        message: 'Configuration updated successfully',
-        config: savedConfig,
+        autoTradeEnabled: savedConfig.autoTradeEnabled || false,
+        maxConcurrentTrades: savedConfig.maxConcurrentTrades || 3,
+        maxTradesPerDay: savedConfig.maxTradesPerDay || 50,
+        cooldownSeconds: savedConfig.cooldownSeconds || 30,
+        panicStopEnabled: savedConfig.panicStopEnabled || false,
+        slippageBlocker: savedConfig.slippageBlocker || false,
+        lastResearchAt: lastResearchAt,
+        nextResearchAt: nextResearchAt,
       };
     } catch (err: any) {
       if (err instanceof z.ZodError) {
-        return reply.code(400).send({ error: 'Invalid configuration', details: err.errors });
+        return {
+          success: false,
+          error: 'VALIDATION_ERROR',
+          message: 'Invalid auto-trade configuration data',
+          details: err.errors
+        };
       }
       logger.error({ err }, 'Error updating auto-trade config');
-      return reply.code(500).send({ error: err.message || 'Error updating configuration' });
+      // Return success: false with error on database failure
+      return {
+        success: false,
+        error: 'CONFIG_SAVE_FAILURE',
+        message: 'Failed to save auto-trade configuration to database',
+        details: err.message
+      };
     }
   });
 

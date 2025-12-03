@@ -147,28 +147,35 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       const user = (request as any).user;
       const settings = await firestoreAdapter.getTradingSettings(user.uid);
 
-      if (!settings) {
-        // Return default settings
-        return {
-          symbol: 'BTCUSDT',
-          maxPositionPerTrade: 10,
-          tradeType: 'Scalping',
-          accuracyTrigger: 85,
-          maxDailyLoss: 5,
-          maxTradesPerDay: 50,
-          positionSizingMap: [
-            { min: 0, max: 84, percent: 0 },
-            { min: 85, max: 89, percent: 3 },
-            { min: 90, max: 94, percent: 6 },
-            { min: 95, max: 99, percent: 8.5 },
-            { min: 100, max: 100, percent: 10 }
-          ]
-        };
-      }
+      // ALWAYS return a complete settings object with defaults injected
+      const defaultSettings = {
+        symbol: 'BTCUSDT',
+        maxPositionPerTrade: 10,
+        tradeType: 'Scalping',
+        accuracyTrigger: 85,
+        maxDailyLoss: 5,
+        maxTradesPerDay: 50,
+        positionSizingMap: [
+          { min: 0, max: 84, percent: 0 },
+          { min: 85, max: 89, percent: 3 },
+          { min: 90, max: 94, percent: 6 },
+          { min: 95, max: 99, percent: 8.5 },
+          { min: 100, max: 100, percent: 10 }
+        ]
+      };
 
-      return settings;
+      // Merge with defaults to ensure all keys exist
+      const safeSettings = { ...defaultSettings, ...settings };
+
+      return safeSettings;
     } catch (err: any) {
-      return reply.code(500).send({ error: err.message || 'Error loading trading settings' });
+      // Return success: false with error on Firestore failure
+      return {
+        success: false,
+        error: 'SETTINGS_LOAD_FAILURE',
+        message: 'Failed to load trading settings from database',
+        details: err.message
+      };
     }
   });
 
@@ -192,9 +199,21 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       return { message: 'Trading settings updated successfully', settings: savedSettings };
     } catch (err: any) {
       if (err instanceof z.ZodError) {
-        return reply.code(400).send({ error: 'Invalid trading settings', details: err.errors });
+        return {
+          success: false,
+          error: 'VALIDATION_ERROR',
+          message: 'Invalid trading settings data',
+          details: err.errors
+        };
       }
-      return reply.code(500).send({ error: err.message || 'Error updating trading settings' });
+
+      // Return success: false with error on Firestore failure
+      return {
+        success: false,
+        error: 'SETTINGS_SAVE_FAILURE',
+        message: 'Failed to save trading settings to database',
+        details: err.message
+      };
     }
   });
 

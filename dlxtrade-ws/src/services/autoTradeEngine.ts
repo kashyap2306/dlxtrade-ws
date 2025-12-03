@@ -35,6 +35,10 @@ export interface AutoTradeConfig {
   takeProfitPct: number; // default 3
   manualOverride: boolean; // when true, engine pauses for user actions
   mode: 'AUTO' | 'MANUAL';
+  maxTradesPerDay?: number; // max trades per day
+  cooldownSeconds?: number; // cooldown between trades in seconds
+  panicStopEnabled?: boolean; // enable panic stop functionality
+  slippageBlocker?: boolean; // enable slippage protection
   lastRun?: Date;
   stats?: {
     totalTrades: number;
@@ -88,6 +92,10 @@ const DEFAULT_CONFIG: AutoTradeConfig = {
   takeProfitPct: 3, // 3% take profit
   manualOverride: false,
   mode: 'MANUAL', // Start in manual mode for safety
+  maxTradesPerDay: 50,
+  cooldownSeconds: 30,
+  panicStopEnabled: false,
+  slippageBlocker: false,
   stats: {
     totalTrades: 0,
     winningTrades: 0,
@@ -184,6 +192,10 @@ export class AutoTradeEngine {
         takeProfitPct: updatedConfig.takeProfitPct,
         manualOverride: updatedConfig.manualOverride,
         mode: updatedConfig.mode,
+        maxTradesPerDay: updatedConfig.maxTradesPerDay || DEFAULT_CONFIG.maxTradesPerDay,
+        cooldownSeconds: updatedConfig.cooldownSeconds || DEFAULT_CONFIG.cooldownSeconds,
+        panicStopEnabled: updatedConfig.panicStopEnabled || DEFAULT_CONFIG.panicStopEnabled,
+        slippageBlocker: updatedConfig.slippageBlocker || DEFAULT_CONFIG.slippageBlocker,
         stats: updatedConfig.stats || DEFAULT_CONFIG.stats,
         equitySnapshot: updatedConfig.equitySnapshot,
         lastRun: admin.firestore.Timestamp.now(),
@@ -280,36 +292,16 @@ export class AutoTradeEngine {
     const engine = await this.getUserEngine(uid);
     const config = engine.config;
 
-    // Check circuit breaker
-    if (engine.circuitBreaker) {
-      return { allowed: false, reason: 'Circuit breaker active - daily loss limit exceeded' };
-    }
+    // MANDATORY RISK GUARDS - Before any other checks
 
-    // Check manual override
-    if (config.manualOverride) {
-      return { allowed: false, reason: 'Manual override active - trading paused' };
-    }
-
-    // Check if auto-trade is enabled
-    if (!config.autoTradeEnabled) {
-      return { allowed: false, reason: 'Auto-trade is disabled' };
-    }
-
-    // Check max concurrent trades
-    if (engine.activeTrades.size >= config.maxConcurrentTrades) {
-      return { allowed: false, reason: `Max concurrent trades (${config.maxConcurrentTrades}) reached` };
-    }
-
-    // Get trading settings for additional checks
+    // 1. Check accuracy trigger
     const settings = await AutoTradeEngine.getTradingSettings(uid);
-    const stats = config.stats || DEFAULT_CONFIG.stats!;
-
-    // Check max trades per day from trading settings
-    if (stats.dailyTrades >= settings.maxTradesPerDay) {
-      return { allowed: false, reason: `Max trades per day (${settings.maxTradesPerDay}) reached` };
+    if (signal.accuracy < settings.accuracyTrigger) {
+      return { allowed: false, reason: `ACCURACY_TRIGGER: ${signal.accuracy}% < ${settings.accuracyTrigger}% threshold` };
     }
 
-    // Check daily loss limit from trading settings
+    // 2. Check daily loss limit
+    const stats = config.stats || DEFAULT_CONFIG.stats!;
     const equity = config.equitySnapshot || 1000;
     const maxDailyLossAmount = equity * (settings.maxDailyLoss / 100);
     if (stats.dailyPnL < 0 && Math.abs(stats.dailyPnL) >= maxDailyLossAmount) {
@@ -319,8 +311,46 @@ export class AutoTradeEngine {
         dailyPnL: stats.dailyPnL,
         maxDailyLoss: settings.maxDailyLoss,
       });
-      return { allowed: false, reason: 'Daily loss limit exceeded - circuit breaker activated' };
+      return { allowed: false, reason: `DAILY_LOSS_LIMIT: ${Math.abs(stats.dailyPnL)} >= ${maxDailyLossAmount} (${settings.maxDailyLoss}% of ${equity})` };
     }
+
+    // 3. Check max trades per day
+    if (stats.dailyTrades >= settings.maxTradesPerDay) {
+      return { allowed: false, reason: `MAX_TRADES_PER_DAY: ${stats.dailyTrades} >= ${settings.maxTradesPerDay} limit` };
+    }
+
+    // 4. Check position size validity (calculated later, but validate here)
+    const positionSizing = AutoTradeEngine.calculatePositionSize(signal.accuracy, settings);
+    if (positionSizing.positionPercent <= 0) {
+      return { allowed: false, reason: `INVALID_POSITION_SIZE: ${positionSizing.positionPercent}% <= 0` };
+    }
+
+    // 5. Cap position size at maxPositionPerTrade
+    const finalPositionPercent = Math.min(positionSizing.positionPercent, settings.maxPositionPerTrade);
+
+    // EXISTING GUARDS
+
+    // Check circuit breaker
+    if (engine.circuitBreaker) {
+      return { allowed: false, reason: 'CIRCUIT_BREAKER_ACTIVE: Daily loss limit exceeded' };
+    }
+
+    // Check manual override
+    if (config.manualOverride) {
+      return { allowed: false, reason: 'MANUAL_OVERRIDE_ACTIVE: Trading paused by user' };
+    }
+
+    // Check if auto-trade is enabled
+    if (!config.autoTradeEnabled) {
+      return { allowed: false, reason: 'AUTO_TRADE_DISABLED: Auto-trading is not enabled' };
+    }
+
+    // Check max concurrent trades
+    if (engine.activeTrades.size >= config.maxConcurrentTrades) {
+      return { allowed: false, reason: `MAX_CONCURRENT_TRADES: ${engine.activeTrades.size} >= ${config.maxConcurrentTrades} limit` };
+    }
+
+    // Additional safety checks
 
     // Check if already have position in this symbol
     for (const trade of engine.activeTrades.values()) {
@@ -338,7 +368,52 @@ export class AutoTradeEngine {
   async executeTrade(uid: string, signal: TradeSignal): Promise<TradeExecution> {
     const requestId = signal.requestId || `exec_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     logger.info({ uid, symbol: signal.symbol, requestId }, 'Starting trade execution');
-    
+
+    // FAIL-SAFE: Load trading settings FIRST and validate all required fields
+    let settings: TradingSettings;
+    try {
+      settings = await AutoTradeEngine.getTradingSettings(uid);
+
+      // Strict validation: Block if ANY required setting is undefined/null
+      if (!settings ||
+          settings.symbol === undefined ||
+          settings.maxPositionPerTrade === undefined ||
+          settings.accuracyTrigger === undefined ||
+          settings.maxDailyLoss === undefined ||
+          settings.maxTradesPerDay === undefined ||
+          !Array.isArray(settings.positionSizingMap) ||
+          settings.positionSizingMap.length === 0) {
+        await this.logTradeEvent(uid, 'TRADE_REJECTED', {
+          signal,
+          reason: 'TRADING_SETTINGS_INVALID: One or more required trading settings are missing or invalid',
+        });
+        throw new Error('Trading settings validation failed - blocking trade for safety');
+      }
+
+      // Validate positionSizingMap structure
+      const invalidRange = settings.positionSizingMap.find(range =>
+        range.min === undefined || range.max === undefined || range.percent === undefined ||
+        typeof range.min !== 'number' || typeof range.max !== 'number' || typeof range.percent !== 'number'
+      );
+      if (invalidRange) {
+        await this.logTradeEvent(uid, 'TRADE_REJECTED', {
+          signal,
+          reason: 'POSITION_SIZING_MAP_INVALID: Malformed position sizing ranges detected',
+        });
+        throw new Error('Position sizing map validation failed - blocking trade for safety');
+      }
+
+    } catch (settingsError: any) {
+      logger.error({ uid, error: settingsError.message }, 'CRITICAL: Trading settings load/validation failed');
+      // If settings fail to load, stop auto-trade loop for safety
+      await this.stopAutoTradeLoop(uid);
+      await this.logTradeEvent(uid, 'AUTO_TRADE_STOPPED', {
+        reason: 'SETTINGS_LOAD_FAILURE',
+        error: settingsError.message,
+      });
+      throw new Error('Trading settings unavailable - auto-trade stopped for safety');
+    }
+
     // ALWAYS load config fresh from Firestore before execution
     const config = await this.loadConfig(uid);
     const engine = await this.getUserEngine(uid);
@@ -354,8 +429,7 @@ export class AutoTradeEngine {
       throw new Error(riskCheck.reason || 'Trade rejected by risk guards');
     }
 
-    // Check accuracy trigger from trading settings
-    const settings = await AutoTradeEngine.getTradingSettings(uid);
+    // Check accuracy trigger from validated trading settings
     if (signal.accuracy < settings.accuracyTrigger) {
       await this.logTradeEvent(uid, 'TRADE_REJECTED', {
         signal,
@@ -845,8 +919,12 @@ export class AutoTradeEngine {
    */
   async startAutoTradeLoop(uid: string): Promise<void> {
     try {
-      // Ensure singleton - stop any existing loop first
-      await this.stopAutoTradeLoop(uid);
+      // Check for duplicate loops and kill them
+      const existingLoop = this.autoTradeLoops.get(uid);
+      if (existingLoop && existingLoop.isRunning) {
+        logger.warn({ uid }, '🚨 DUPLICATE_LOOP_DETECTED: Killing existing auto-trade loop before starting new one');
+        await this.stopAutoTradeLoop(uid);
+      }
 
       // Initialize loop tracking
       this.autoTradeLoops.set(uid, {
@@ -856,7 +934,11 @@ export class AutoTradeEngine {
         researchInProgress: false,
       });
 
-      logger.info({ uid }, 'Starting auto-trade background research loop');
+      logger.info({
+        uid,
+        timestamp: new Date().toISOString(),
+        engineState: 'STARTING'
+      }, '▶️ AUTO_TRADE_STARTED: Background research loop initiated');
 
       // Start the interval loop (5 minutes = 300,000 ms)
       const intervalId = setInterval(async () => {
@@ -931,9 +1013,18 @@ export class AutoTradeEngine {
       }
 
       this.autoTradeLoops.delete(uid);
-      logger.info({ uid }, 'Stopped auto-trade background research loop');
+      logger.info({
+        uid,
+        timestamp: new Date().toISOString(),
+        engineState: 'STOPPED'
+      }, '⏹️ AUTO_TRADE_STOPPED: Background research loop terminated');
     } catch (error: any) {
-      logger.error({ error: error.message, uid }, 'Error stopping auto-trade loop');
+      logger.error({
+        uid,
+        error: error.message,
+        timestamp: new Date().toISOString(),
+        engineState: 'STOP_FAILED'
+      }, '❌ AUTO_TRADE_STOP_ERROR: Failed to stop background research loop');
       throw error;
     }
   }
@@ -978,11 +1069,33 @@ export class AutoTradeEngine {
    * This is called every 5 minutes by the background loop
    */
   private async runAutoTradeResearchCycle(uid: string): Promise<void> {
-    try {
-      logger.info({ uid }, 'Starting auto-trade research cycle');
+    const cycleStartTime = new Date();
+    let cycleResult = 'FAILED';
+    let accuracy = 0;
+    let signal = 'UNKNOWN';
+    let mappedPositionPercent = 0;
+    let finalPositionPercent = 0;
+    let skipReason = '';
 
-      // Get trading settings
-      const settings = await AutoTradeEngine.getTradingSettings(uid);
+    try {
+      // Check if auto-trade was toggled off during scheduling
+      const loopState = this.autoTradeLoops.get(uid);
+      if (!loopState || !loopState.isRunning) {
+        logger.info({ uid }, '⚠️ Research cycle cancelled - auto-trade was stopped');
+        return;
+      }
+
+      logger.info({ uid, cycleStartTime: cycleStartTime.toISOString() }, '🔄 STARTING auto-trade research cycle');
+
+      // Get trading settings with validation
+      let settings: TradingSettings;
+      try {
+        settings = await AutoTradeEngine.getTradingSettings(uid);
+      } catch (settingsError: any) {
+        logger.error({ uid, error: settingsError.message }, 'CRITICAL: Failed to load trading settings during research cycle');
+        await this.stopAutoTradeLoop(uid);
+        throw new Error('SETTINGS_LOAD_FAILURE: Trading settings unavailable');
+      }
 
       // Import deep research engine and integrations
       const { runFreeModeDeepResearch } = await import('./deepResearchEngine');
@@ -995,22 +1108,40 @@ export class AutoTradeEngine {
       const researchResult = await runFreeModeDeepResearch(uid, settings.symbol, undefined, integrations);
 
       if (!researchResult || !researchResult.signal) {
-        logger.warn({ uid, symbol: settings.symbol }, 'No research signal generated');
+        skipReason = 'NO_SIGNAL_GENERATED';
+        logger.warn({ uid, symbol: settings.symbol, skipReason }, '⚠️ Research cycle skipped: No signal generated');
+        cycleResult = 'SKIPPED';
         return;
       }
 
-      const { signal, accuracy } = researchResult;
+      signal = researchResult.signal;
+      accuracy = researchResult.accuracy;
 
       logger.info({
         uid,
         symbol: settings.symbol,
         signal,
         accuracy
-      }, 'Research cycle completed, evaluating trade opportunity');
+      }, '📊 Research cycle completed, evaluating trade opportunity');
 
       // Skip HOLD signals - only execute BUY/SELL
       if (signal === 'HOLD') {
-        logger.info({ uid, symbol: settings.symbol, accuracy }, 'Research signal is HOLD, skipping trade execution');
+        skipReason = 'HOLD_SIGNAL';
+        logger.info({ uid, symbol: settings.symbol, accuracy, skipReason }, '⚠️ Research cycle skipped: HOLD signal');
+        cycleResult = 'SKIPPED';
+        return;
+      }
+
+      // Calculate position sizing
+      const positionSizing = AutoTradeEngine.calculatePositionSize(accuracy, settings);
+      mappedPositionPercent = positionSizing.positionPercent;
+      finalPositionPercent = Math.min(mappedPositionPercent, settings.maxPositionPerTrade);
+
+      // Check if position size is valid
+      if (finalPositionPercent <= 0) {
+        skipReason = 'INVALID_POSITION_SIZE';
+        logger.warn({ uid, accuracy, mappedPositionPercent, finalPositionPercent, skipReason }, '⚠️ Research cycle skipped: Invalid position size');
+        cycleResult = 'SKIPPED';
         return;
       }
 
@@ -1021,10 +1152,10 @@ export class AutoTradeEngine {
       const tradeSignal: TradeSignal = {
         symbol: settings.symbol,
         signal: signal as 'BUY' | 'SELL',
-        entryPrice: currentPrice, // Use current market price
+        entryPrice: currentPrice,
         accuracy: accuracy,
-        stopLoss: currentPrice * (signal === 'BUY' ? 0.985 : 1.015), // 1.5% stop loss
-        takeProfit: currentPrice * (signal === 'BUY' ? 1.03 : 0.97), // 3% take profit
+        stopLoss: currentPrice * (signal === 'BUY' ? 0.985 : 1.015),
+        takeProfit: currentPrice * (signal === 'BUY' ? 1.03 : 0.97),
         reasoning: `Auto-trade research signal: ${signal} with ${accuracy}% accuracy`,
         requestId: `auto_${uid}_${Date.now()}`,
         timestamp: new Date(),
@@ -1033,9 +1164,36 @@ export class AutoTradeEngine {
       // Execute trade if all conditions are met
       await this.executeTrade(uid, tradeSignal);
 
+      cycleResult = 'TRADE_EXECUTED';
+      logger.info({
+        uid,
+        cycleStartTime: cycleStartTime.toISOString(),
+        accuracy,
+        signal,
+        mappedPositionPercent,
+        finalPositionPercent,
+        cycleResult,
+        symbol: settings.symbol
+      }, '✅ Research cycle completed successfully with trade execution');
+
     } catch (error: any) {
-      logger.error({ error: error.message, uid }, 'Error in auto-trade research cycle');
-      throw error;
+      cycleResult = 'FAILED';
+      skipReason = error.message || 'UNKNOWN_ERROR';
+
+      logger.error({
+        uid,
+        cycleStartTime: cycleStartTime.toISOString(),
+        error: error.message,
+        accuracy,
+        signal,
+        mappedPositionPercent,
+        finalPositionPercent,
+        cycleResult,
+        skipReason
+      }, '❌ Research cycle failed');
+
+      // Don't re-throw - let the cycle complete gracefully
+      // The scheduler will continue with the next cycle
     }
   }
 }

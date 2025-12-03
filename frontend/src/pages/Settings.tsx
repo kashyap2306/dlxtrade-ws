@@ -650,8 +650,6 @@ export default function Settings() {
       { min: 100, max: 100, percent: 10 }
     ]
   });
-  const [loadingTrading, setLoadingTrading] = useState(false);
-  const [savingTrading, setSavingTrading] = useState(false);
   const [sampleAccuracy, setSampleAccuracy] = useState(85);
 
   const [integrationsLoading, setIntegrationsLoading] = useState(false);
@@ -1197,11 +1195,46 @@ export default function Settings() {
   const loadTradingSettings = async () => {
     try {
       const response = await settingsApi.trading.load();
+
+      // DEFENSIVE: Check if backend returned success: false (database error)
+      if (response.data && response.data.success === false) {
+        console.warn('Trading settings load failed:', response.data.message);
+        // Show non-blocking warning toast but keep UI functional with defaults
+        setToast({
+          message: 'Trading settings temporarily unavailable - using defaults',
+          type: 'error'
+        });
+        setTimeout(() => setToast(null), 5000);
+        return;
+      }
+
+      // DEFENSIVE: Fallback to defaults for any undefined/null values
       if (response.data) {
-        setTradingSettings(response.data);
+        const safeSettings = {
+          symbol: response.data.symbol || 'BTCUSDT',
+          maxPositionPerTrade: response.data.maxPositionPerTrade || 10,
+          tradeType: response.data.tradeType || 'Scalping',
+          accuracyTrigger: response.data.accuracyTrigger || 85,
+          maxDailyLoss: response.data.maxDailyLoss || 5,
+          maxTradesPerDay: response.data.maxTradesPerDay || 50,
+          positionSizingMap: response.data.positionSizingMap || [
+            { min: 0, max: 84, percent: 0 },
+            { min: 85, max: 89, percent: 3 },
+            { min: 90, max: 94, percent: 6 },
+            { min: 95, max: 99, percent: 8.5 },
+            { min: 100, max: 100, percent: 10 }
+          ]
+        };
+        setTradingSettings(safeSettings);
       }
     } catch (err) {
       console.error('Error loading trading settings:', err);
+      // DEFENSIVE: On API failure, show warning but keep UI functional with defaults
+      setToast({
+        message: 'Unable to load trading settings - check connection',
+        type: 'error'
+      });
+      setTimeout(() => setToast(null), 5000);
       // Settings will use defaults defined in state
     }
   };
@@ -1283,9 +1316,28 @@ export default function Settings() {
   };
 
   const calculatePositionForAccuracy = (accuracy: number): number => {
-    const range = tradingSettings.positionSizingMap.find(r => accuracy >= r.min && accuracy <= r.max);
+    // DEFENSIVE: Validate inputs to prevent NaN/undefined
+    if (!accuracy || isNaN(accuracy) || accuracy < 0 || accuracy > 100) {
+      return 0;
+    }
+
+    // DEFENSIVE: Check if positionSizingMap exists and is valid
+    if (!tradingSettings.positionSizingMap || !Array.isArray(tradingSettings.positionSizingMap)) {
+      return 0;
+    }
+
+    const range = tradingSettings.positionSizingMap.find(r =>
+      r && typeof r.min === 'number' && typeof r.max === 'number' && typeof r.percent === 'number' &&
+      accuracy >= r.min && accuracy <= r.max
+    );
+
     if (!range) return 0;
-    return Math.min(range.percent, tradingSettings.maxPositionPerTrade);
+
+    const maxPosition = tradingSettings.maxPositionPerTrade || 10;
+    const result = Math.min(range.percent, maxPosition);
+
+    // DEFENSIVE: Ensure result is a valid number
+    return isNaN(result) ? 0 : Math.max(0, result);
   };
 
   const updatePositionSizingMap = (index: number, field: 'min' | 'max' | 'percent', value: number) => {
@@ -1480,7 +1532,7 @@ export default function Settings() {
                     value={tradingSettings.accuracyTrigger}
                     onChange={(e) => setTradingSettings({ ...tradingSettings, accuracyTrigger: parseInt(e.target.value) || 0 })}
                   />
-                  <p className="text-xs text-gray-400">Engine will only execute trades when model accuracy >= this threshold</p>
+                  <p className="text-xs text-gray-400">Engine will only execute trades when model accuracy &gt;= this threshold</p>
                 </div>
 
                 <div className="space-y-2">

@@ -11,18 +11,14 @@ import { ErrorState } from '../components/ErrorState';
 import { suppressConsoleError } from '../utils/errorHandler';
 
 interface AutoTradeConfig {
-  enabled: boolean;
+  autoTradeEnabled: boolean;
   maxConcurrentTrades: number;
-  schedule: {
-    start: string;
-    end: string;
-    days: number[];
-  };
-  maxDailyLoss: number;
   maxTradesPerDay: number;
   cooldownSeconds: number;
-  consecutiveLossPauseCount: number;
+  panicStopEnabled: boolean;
   slippageBlocker: boolean;
+  lastResearchAt: string | null;
+  nextResearchAt: string | null;
 }
 
 interface ActiveTrade {
@@ -67,14 +63,14 @@ export default function AutoTrade() {
 
   // Auto-trade state
   const [config, setConfig] = useState<AutoTradeConfig>({
-    enabled: false,
+    autoTradeEnabled: false,
     maxConcurrentTrades: 3,
-    schedule: { start: "09:00", end: "17:00", days: [1, 2, 3, 4, 5] },
-    maxDailyLoss: 100,
     maxTradesPerDay: 50,
     cooldownSeconds: 30,
-    consecutiveLossPauseCount: 3,
+    panicStopEnabled: false,
     slippageBlocker: false,
+    lastResearchAt: null,
+    nextResearchAt: null,
   });
 
   const [activeTrades, setActiveTrades] = useState<ActiveTrade[]>([]);
@@ -99,7 +95,7 @@ export default function AutoTrade() {
 
   // Control sections state
   const [autoTradeControls, setAutoTradeControls] = useState({
-    enabled: false,
+    autoTradeEnabled: false,
     maxConcurrentTrades: 3,
     maxTradesPerDay: 50,
   });
@@ -109,19 +105,6 @@ export default function AutoTrade() {
     enabled: false,
     lastResearchAt: null as string | null,
     nextScheduledAt: null as string | null,
-  });
-
-  const [scheduleConfig, setScheduleConfig] = useState({
-    start: "09:00",
-    end: "17:00",
-    days: [1, 2, 3, 4, 5],
-    run24_7: false,
-  });
-
-  const [safetyConfig, setSafetyConfig] = useState({
-    cooldownSeconds: 30,
-    consecutiveLossPauseCount: 3,
-    slippageBlocker: false,
   });
 
   const loadProposals = useCallback(async () => {
@@ -155,8 +138,8 @@ export default function AutoTrade() {
       if (isMountedRef.current && response.data) {
         setAutoTradeStatus(response.data);
         // Also update the controls state to match
-        setAutoTradeControls(prev => ({ ...prev, enabled: response.data.enabled }));
-        setConfig(prev => ({ ...prev, enabled: response.data.enabled }));
+        setAutoTradeControls(prev => ({ ...prev, autoTradeEnabled: response.data.enabled }));
+        setConfig(prev => ({ ...prev, autoTradeEnabled: response.data.enabled }));
       }
     } catch (err: any) {
       suppressConsoleError(err, 'loadAutoTradeStatus');
@@ -201,29 +184,77 @@ export default function AutoTrade() {
 
       // Handle results - continue even if some APIs fail
       if (configRes.status === 'fulfilled' && isMountedRef.current) {
-        setConfig(configRes.value.data);
+        const configData = configRes.value.data;
 
-        // Set local state from config
+        // DEFENSIVE: Check if backend returned success: false (database error)
+        if (configData && configData.success === false) {
+          console.warn('Auto-trade config load failed:', configData.message);
+          // Show non-blocking warning toast but keep UI functional with defaults
+          setToast({
+            message: 'Auto-trade settings temporarily unavailable - using defaults',
+            type: 'error'
+          });
+          setTimeout(() => setToast(null), 5000);
+        }
+
+        // DEFENSIVE: Fallback to defaults for any undefined/null values
+        const safeConfig = {
+          autoTradeEnabled: configData?.autoTradeEnabled ?? false,
+          maxConcurrentTrades: configData?.maxConcurrentTrades ?? 3,
+          maxTradesPerDay: configData?.maxTradesPerDay ?? 50,
+          cooldownSeconds: configData?.cooldownSeconds ?? 30,
+          panicStopEnabled: configData?.panicStopEnabled ?? false,
+          slippageBlocker: configData?.slippageBlocker ?? false,
+          lastResearchAt: configData?.lastResearchAt ?? null,
+          nextResearchAt: configData?.nextResearchAt ?? null,
+        };
+
+        setConfig(safeConfig);
+
+        // Set local state from safe config
         setAutoTradeControls({
-          enabled: configRes.value.data.enabled,
-          maxConcurrentTrades: configRes.value.data.maxConcurrentTrades,
-          maxTradesPerDay: configRes.value.data.maxTradesPerDay,
+          autoTradeEnabled: safeConfig.autoTradeEnabled,
+          maxConcurrentTrades: safeConfig.maxConcurrentTrades,
+          maxTradesPerDay: safeConfig.maxTradesPerDay,
         });
 
-        setScheduleConfig({
-          start: configRes.value.data.schedule.start,
-          end: configRes.value.data.schedule.end,
-          days: configRes.value.data.schedule.days,
-          run24_7: false, // Calculate from schedule
-        });
-
-        setSafetyConfig({
-          cooldownSeconds: configRes.value.data.cooldownSeconds,
-          consecutiveLossPauseCount: configRes.value.data.consecutiveLossPauseCount,
-          slippageBlocker: configRes.value.data.slippageBlocker,
+        // Update auto-trade status
+        setAutoTradeStatus({
+          enabled: safeConfig.autoTradeEnabled,
+          lastResearchAt: safeConfig.lastResearchAt,
+          nextScheduledAt: safeConfig.nextResearchAt,
         });
       } else if (configRes.status === 'rejected') {
         suppressConsoleError(configRes.reason, 'loadAutoTradeConfig');
+        // DEFENSIVE: On API failure, show warning but keep UI functional with defaults
+        setToast({
+          message: 'Unable to load auto-trade settings - check connection',
+          type: 'error'
+        });
+        setTimeout(() => setToast(null), 5000);
+
+        // Set safe defaults so UI doesn't break
+        const defaultConfig = {
+          autoTradeEnabled: false,
+          maxConcurrentTrades: 3,
+          maxTradesPerDay: 50,
+          cooldownSeconds: 30,
+          panicStopEnabled: false,
+          slippageBlocker: false,
+          lastResearchAt: null,
+          nextResearchAt: null,
+        };
+        setConfig(defaultConfig);
+        setAutoTradeControls({
+          autoTradeEnabled: false,
+          maxConcurrentTrades: 3,
+          maxTradesPerDay: 50,
+        });
+        setAutoTradeStatus({
+          enabled: false,
+          lastResearchAt: null,
+          nextScheduledAt: null,
+        });
       }
 
       if (symbolsRes.status === 'fulfilled' && isMountedRef.current) {
@@ -287,18 +318,10 @@ export default function AutoTrade() {
   }, []);
 
   const updateEngineStatus = () => {
-    const now = new Date();
-    const currentHour = now.getHours();
-    const currentMinute = now.getMinutes();
-    const currentTime = `${currentHour.toString().padStart(2, '0')}:${currentMinute.toString().padStart(2, '0')}`;
-
-    if (!config.enabled) {
+    if (!config.autoTradeEnabled) {
       setEngineStatus('Stopped');
-    } else if (scheduleConfig.run24_7) {
-      setEngineStatus('Running');
     } else {
-      const isInSchedule = isTimeInSchedule(currentTime, scheduleConfig.days, scheduleConfig.start, scheduleConfig.end);
-      setEngineStatus(isInSchedule ? 'Running' : 'Outside Hours');
+      setEngineStatus('Running');
     }
   };
 
@@ -317,8 +340,8 @@ export default function AutoTrade() {
       try {
         const response = await settingsApi.trading.autotrade.toggle({ enabled });
         setAutoTradeStatus(prev => ({ ...prev, enabled: response.data.enabled }));
-        setAutoTradeControls(prev => ({ ...prev, enabled: response.data.enabled }));
-        setConfig(prev => ({ ...prev, enabled: response.data.enabled }));
+        setAutoTradeControls(prev => ({ ...prev, autoTradeEnabled: response.data.enabled }));
+        setConfig(prev => ({ ...prev, autoTradeEnabled: response.data.enabled }));
         showToast(`Auto-Trade ${enabled ? 'started' : 'stopped'}`, 'success');
       } catch (error: any) {
         showToast('Failed to toggle auto-trade', 'error');
@@ -335,9 +358,12 @@ export default function AutoTrade() {
     try {
       const updatedConfig = {
         ...config,
-        enabled: autoTradeControls.enabled,
+        autoTradeEnabled: autoTradeControls.autoTradeEnabled,
         maxConcurrentTrades: autoTradeControls.maxConcurrentTrades,
         maxTradesPerDay: autoTradeControls.maxTradesPerDay,
+        cooldownSeconds: config.cooldownSeconds,
+        panicStopEnabled: config.panicStopEnabled,
+        slippageBlocker: config.slippageBlocker,
       };
       await autoTradeApi.updateConfig(updatedConfig);
       setConfig(updatedConfig);
@@ -349,49 +375,6 @@ export default function AutoTrade() {
     }
   };
 
-  const handleSaveSchedule = async () => {
-    setSaving(true);
-    try {
-      const updatedConfig = {
-        ...config,
-        schedule: scheduleConfig.run24_7 ? {
-          start: "00:00",
-          end: "23:59",
-          days: [0, 1, 2, 3, 4, 5, 6]
-        } : {
-          start: scheduleConfig.start,
-          end: scheduleConfig.end,
-          days: scheduleConfig.days,
-        }
-      };
-      await autoTradeApi.updateConfig(updatedConfig);
-      setConfig(updatedConfig);
-      showToast('Schedule saved', 'success');
-    } catch (error: any) {
-      showToast('Failed to save schedule', 'error');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleSaveSafety = async () => {
-    setSaving(true);
-    try {
-      const updatedConfig = {
-        ...config,
-        cooldownSeconds: safetyConfig.cooldownSeconds,
-        consecutiveLossPauseCount: safetyConfig.consecutiveLossPauseCount,
-        slippageBlocker: safetyConfig.slippageBlocker,
-      };
-      await autoTradeApi.updateConfig(updatedConfig);
-      setConfig(updatedConfig);
-      showToast('Safety settings saved', 'success');
-    } catch (error: any) {
-      showToast('Failed to save safety settings', 'error');
-    } finally {
-      setSaving(false);
-    }
-  };
 
   const handleTriggerAutoTrade = useCallback(async (symbol?: string, dryRun: boolean = true) => {
     if (!user) return;
@@ -426,21 +409,6 @@ export default function AutoTrade() {
     }
   }, [user, loadLiveData]);
 
-  const handlePanicStop = async () => {
-    if (confirm('Are you sure you want to activate emergency stop? This will immediately disable auto-trading.')) {
-      setSaving(true);
-      try {
-        await autoTradeApi.panicStop('Emergency stop activated from UI');
-        setAutoTradeControls(prev => ({ ...prev, enabled: false }));
-        setConfig(prev => ({ ...prev, enabled: false }));
-        showToast('Emergency stop activated', 'success');
-      } catch (error: any) {
-        showToast('Failed to activate emergency stop', 'error');
-      } finally {
-        setSaving(false);
-      }
-    }
-  };
 
   const handleCloseTrade = async (tradeId: string) => {
     setSaving(true);
@@ -452,18 +420,6 @@ export default function AutoTrade() {
       setActiveTrades(tradesRes.data);
     } catch (error: any) {
       showToast('Failed to close trade', 'error');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleForceScan = async () => {
-    setSaving(true);
-    try {
-      await autoTradeApi.forceScan();
-      showToast('Market scan triggered', 'success');
-    } catch (error: any) {
-      showToast('Failed to trigger scan', 'error');
     } finally {
       setSaving(false);
     }
@@ -481,30 +437,6 @@ export default function AutoTrade() {
 
   const handleManageExchange = () => {
     navigate('/settings');
-  };
-
-  const getNextScheduledRun = () => {
-    if (scheduleConfig.run24_7) return 'Running 24/7';
-
-    const now = new Date();
-    const today = now.getDay();
-
-    // Find next trading day
-    let nextDay = today;
-    let daysAhead = 0;
-    while (!scheduleConfig.days.includes(nextDay) && daysAhead < 7) {
-      nextDay = (nextDay + 1) % 7;
-      daysAhead++;
-    }
-
-    if (daysAhead === 7) return 'No schedule set';
-
-    const nextRun = new Date(now);
-    nextRun.setDate(now.getDate() + daysAhead);
-    nextRun.setHours(parseInt(scheduleConfig.start.split(':')[0]));
-    nextRun.setMinutes(parseInt(scheduleConfig.start.split(':')[1]));
-
-    return nextRun.toLocaleString();
   };
 
 
@@ -724,15 +656,15 @@ export default function AutoTrade() {
                   <div className="flex items-center justify-between">
                     <span className="text-gray-300">Enable Auto-Trade</span>
                     <button
-                      onClick={() => handleAutoTradeToggle(!autoTradeControls.enabled)}
+                      onClick={() => handleAutoTradeToggle(!autoTradeControls.autoTradeEnabled)}
                       disabled={saving}
                       className={`px-4 py-2 rounded-lg font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
-                        autoTradeControls.enabled
+                        autoTradeControls.autoTradeEnabled
                           ? 'bg-green-600 hover:bg-green-700 text-white'
                           : 'bg-gray-600 hover:bg-gray-700 text-white'
                       }`}
                     >
-                      {saving ? '...' : (autoTradeControls.enabled ? 'ON' : 'OFF')}
+                      {saving ? '...' : (autoTradeControls.autoTradeEnabled ? 'ON' : 'OFF')}
                     </button>
                   </div>
 
@@ -760,6 +692,40 @@ export default function AutoTrade() {
                     />
                   </div>
 
+                  <div>
+                    <label className="block text-sm text-gray-300 mb-2">Cooldown Seconds</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="300"
+                      value={config.cooldownSeconds}
+                      onChange={(e) => setConfig(prev => ({ ...prev, cooldownSeconds: parseInt(e.target.value) || 0 }))}
+                      className="w-full px-3 py-2 bg-slate-900/50 border border-purple-500/30 rounded-lg text-white"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="panicStopEnabled"
+                      checked={config.panicStopEnabled}
+                      onChange={(e) => setConfig(prev => ({ ...prev, panicStopEnabled: e.target.checked }))}
+                      className="rounded"
+                    />
+                    <label htmlFor="panicStopEnabled" className="text-sm text-gray-300">Panic Stop Enabled</label>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="slippageBlocker"
+                      checked={config.slippageBlocker}
+                      onChange={(e) => setConfig(prev => ({ ...prev, slippageBlocker: e.target.checked }))}
+                      className="rounded"
+                    />
+                    <label htmlFor="slippageBlocker" className="text-sm text-gray-300">Slippage Blocker</label>
+                  </div>
+
                   <button
                     onClick={handleSaveAutoTradeControls}
                     className="w-full px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50"
@@ -778,28 +744,28 @@ export default function AutoTrade() {
                   <div className="flex items-center justify-between">
                     <span className="text-gray-300">Background Research Loop</span>
                     <span className={`px-3 py-1 rounded-full text-sm font-medium ${
-                      autoTradeStatus.enabled
+                      config.autoTradeEnabled
                         ? 'bg-green-500/20 text-green-300 border border-green-500/30'
                         : 'bg-red-500/20 text-red-300 border border-red-500/30'
                     }`}>
-                      {autoTradeStatus.enabled ? 'RUNNING' : 'STOPPED'}
+                      {config.autoTradeEnabled ? 'RUNNING' : 'STOPPED'}
                     </span>
                   </div>
 
-                  {autoTradeStatus.lastResearchAt && (
+                  {config.lastResearchAt && (
                     <div className="flex items-center justify-between">
                       <span className="text-gray-300">Last Research</span>
                       <span className="text-sm text-blue-300">
-                        {new Date(autoTradeStatus.lastResearchAt).toLocaleString()}
+                        {new Date(config.lastResearchAt).toLocaleString()}
                       </span>
                     </div>
                   )}
 
-                  {autoTradeStatus.nextScheduledAt && autoTradeStatus.enabled && (
+                  {config.nextResearchAt && config.autoTradeEnabled && (
                     <div className="flex items-center justify-between">
                       <span className="text-gray-300">Next Research</span>
                       <span className="text-sm text-purple-300">
-                        {new Date(autoTradeStatus.nextScheduledAt).toLocaleString()}
+                        {new Date(config.nextResearchAt).toLocaleString()}
                       </span>
                     </div>
                   )}
@@ -812,142 +778,6 @@ export default function AutoTrade() {
                 </div>
               </div>
 
-              {/* Section C: Schedule */}
-              <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
-                <h3 className="text-lg font-semibold text-white mb-4">Trading Schedule</h3>
-
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      id="run24_7"
-                      checked={scheduleConfig.run24_7}
-                      onChange={(e) => setScheduleConfig(prev => ({ ...prev, run24_7: e.target.checked }))}
-                      className="rounded"
-                    />
-                    <label htmlFor="run24_7" className="text-sm text-gray-300">Run 24/7</label>
-                  </div>
-
-                  {!scheduleConfig.run24_7 && (
-                    <>
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-sm text-gray-300 mb-2">Start Time</label>
-                          <input
-                            type="time"
-                            value={scheduleConfig.start}
-                            onChange={(e) => setScheduleConfig(prev => ({ ...prev, start: e.target.value }))}
-                            className="w-full px-3 py-2 bg-slate-900/50 border border-purple-500/30 rounded-lg text-white"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-sm text-gray-300 mb-2">End Time</label>
-                          <input
-                            type="time"
-                            value={scheduleConfig.end}
-                            onChange={(e) => setScheduleConfig(prev => ({ ...prev, end: e.target.value }))}
-                            className="w-full px-3 py-2 bg-slate-900/50 border border-purple-500/30 rounded-lg text-white"
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-sm text-gray-300 mb-2">Trading Days</label>
-                        <div className="grid grid-cols-7 gap-1">
-                          {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, index) => (
-                            <button
-                              key={index}
-                              onClick={() => {
-                                const newDays = scheduleConfig.days.includes(index)
-                                  ? scheduleConfig.days.filter(d => d !== index)
-                                  : [...scheduleConfig.days, index];
-                                setScheduleConfig(prev => ({ ...prev, days: newDays.sort() }));
-                              }}
-                              className={`p-2 text-sm rounded ${
-                                scheduleConfig.days.includes(index)
-                                  ? 'bg-purple-600 text-white'
-                                  : 'bg-slate-700 text-gray-400'
-                              }`}
-                            >
-                              {day}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    </>
-                  )}
-
-                  <div className="text-sm text-gray-400">
-                    Next scheduled run: {getNextScheduledRun()}
-                  </div>
-
-                  <button
-                    onClick={handleSaveSchedule}
-                    className="w-full px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50"
-                    disabled={saving}
-                  >
-                    {saving ? 'Saving...' : 'Save Schedule'}
-                  </button>
-                </div>
-              </div>
-
-              {/* Section C: Safety & Risk Controls */}
-              <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
-                <h3 className="text-lg font-semibold text-white mb-4">Safety & Risk Controls</h3>
-
-                <div className="space-y-4">
-                  <button
-                    onClick={handlePanicStop}
-                    className="w-full px-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-all disabled:opacity-50"
-                    disabled={saving}
-                  >
-                    🚨 PANIC STOP
-                  </button>
-
-                  <div>
-                    <label className="block text-sm text-gray-300 mb-2">Cooldown Seconds</label>
-                    <input
-                      type="number"
-                      min="0"
-                      max="300"
-                      value={safetyConfig.cooldownSeconds}
-                      onChange={(e) => setSafetyConfig(prev => ({ ...prev, cooldownSeconds: parseInt(e.target.value) || 0 }))}
-                      className="w-full px-3 py-2 bg-slate-900/50 border border-purple-500/30 rounded-lg text-white"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm text-gray-300 mb-2">Pause After N Losing Trades</label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="10"
-                      value={safetyConfig.consecutiveLossPauseCount}
-                      onChange={(e) => setSafetyConfig(prev => ({ ...prev, consecutiveLossPauseCount: parseInt(e.target.value) || 1 }))}
-                      className="w-full px-3 py-2 bg-slate-900/50 border border-purple-500/30 rounded-lg text-white"
-                    />
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      id="slippageBlocker"
-                      checked={safetyConfig.slippageBlocker}
-                      onChange={(e) => setSafetyConfig(prev => ({ ...prev, slippageBlocker: e.target.checked }))}
-                      className="rounded"
-                    />
-                    <label htmlFor="slippageBlocker" className="text-sm text-gray-300">Slippage/Spread Blocker</label>
-                  </div>
-
-                  <button
-                    onClick={handleSaveSafety}
-                    className="w-full px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50"
-                    disabled={saving}
-                  >
-                    {saving ? 'Saving...' : 'Save Safety Settings'}
-                  </button>
-                </div>
-              </div>
 
               {/* Section D: Manual Overrides & Info */}
               <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
@@ -971,17 +801,8 @@ export default function AutoTrade() {
                     </button>
                   </div>
 
-                  <button
-                    onClick={handleForceScan}
-                    className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors disabled:opacity-50"
-                    disabled={saving}
-                  >
-                    Force Market Scan
-                  </button>
-
                   <div className="text-xs text-gray-400 mt-4">
-                    <div>Last scan: {new Date().toLocaleTimeString()}</div>
-                    <div className="mt-1 text-yellow-400">
+                    <div className="text-yellow-400">
                       ⚠️ Trading involves risk. Use at your own discretion.
                     </div>
                   </div>
