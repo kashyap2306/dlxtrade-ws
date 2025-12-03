@@ -107,6 +107,14 @@ export class AutoTradeEngine {
     lastEquityCheck: Date;
   }> = new Map();
 
+  // Auto-trade background loop tracking
+  private autoTradeLoops: Map<string, {
+    intervalId: NodeJS.Timeout | null;
+    isRunning: boolean;
+    lastResearchTime: Date | null;
+    researchInProgress: boolean;
+  }> = new Map();
+
   /**
    * Get or create user engine instance
    */
@@ -293,23 +301,23 @@ export class AutoTradeEngine {
     }
 
     // Get trading settings for additional checks
-    const tradingSettings = await AutoTradeEngine.getTradingSettings(uid);
+    const settings = await AutoTradeEngine.getTradingSettings(uid);
     const stats = config.stats || DEFAULT_CONFIG.stats!;
 
     // Check max trades per day from trading settings
-    if (stats.dailyTrades >= tradingSettings.maxTradesPerDay) {
-      return { allowed: false, reason: `Max trades per day (${tradingSettings.maxTradesPerDay}) reached` };
+    if (stats.dailyTrades >= settings.maxTradesPerDay) {
+      return { allowed: false, reason: `Max trades per day (${settings.maxTradesPerDay}) reached` };
     }
 
     // Check daily loss limit from trading settings
     const equity = config.equitySnapshot || 1000;
-    const maxDailyLossAmount = equity * (tradingSettings.maxDailyLoss / 100);
+    const maxDailyLossAmount = equity * (settings.maxDailyLoss / 100);
     if (stats.dailyPnL < 0 && Math.abs(stats.dailyPnL) >= maxDailyLossAmount) {
       engine.circuitBreaker = true;
       await this.logTradeEvent(uid, 'CIRCUIT_BREAKER_TRIGGERED', {
         reason: 'Daily loss limit exceeded',
         dailyPnL: stats.dailyPnL,
-        maxDailyLoss: tradingSettings.maxDailyLoss,
+        maxDailyLoss: settings.maxDailyLoss,
       });
       return { allowed: false, reason: 'Daily loss limit exceeded - circuit breaker activated' };
     }
@@ -347,13 +355,13 @@ export class AutoTradeEngine {
     }
 
     // Check accuracy trigger from trading settings
-    const tradingSettings = await AutoTradeEngine.getTradingSettings(uid);
-    if (signal.accuracy < tradingSettings.accuracyTrigger) {
+    const settings = await AutoTradeEngine.getTradingSettings(uid);
+    if (signal.accuracy < settings.accuracyTrigger) {
       await this.logTradeEvent(uid, 'TRADE_REJECTED', {
         signal,
-        reason: `Accuracy ${signal.accuracy}% below trigger threshold ${tradingSettings.accuracyTrigger}%`,
+        reason: `Accuracy ${signal.accuracy}% below trigger threshold ${settings.accuracyTrigger}%`,
       });
-      throw new Error(`Accuracy ${signal.accuracy}% below trigger threshold ${tradingSettings.accuracyTrigger}%`);
+      throw new Error(`Accuracy ${signal.accuracy}% below trigger threshold ${settings.accuracyTrigger}%`);
     }
 
     // Initialize adapter if needed
@@ -829,6 +837,206 @@ export class AutoTradeEngine {
     const engine = await this.getUserEngine(uid);
     engine.circuitBreaker = false;
     await this.logTradeEvent(uid, 'CIRCUIT_BREAKER_RESET', {});
+  }
+
+  /**
+   * Start auto-trade background research loop for a user
+   * Runs deep research every 5 minutes when enabled
+   */
+  async startAutoTradeLoop(uid: string): Promise<void> {
+    try {
+      // Ensure singleton - stop any existing loop first
+      await this.stopAutoTradeLoop(uid);
+
+      // Initialize loop tracking
+      this.autoTradeLoops.set(uid, {
+        intervalId: null,
+        isRunning: true,
+        lastResearchTime: null,
+        researchInProgress: false,
+      });
+
+      logger.info({ uid }, 'Starting auto-trade background research loop');
+
+      // Start the interval loop (5 minutes = 300,000 ms)
+      const intervalId = setInterval(async () => {
+        try {
+          const loopState = this.autoTradeLoops.get(uid);
+          if (!loopState || !loopState.isRunning) {
+            return; // Loop was stopped
+          }
+
+          // Skip if research is already in progress
+          if (loopState.researchInProgress) {
+            logger.warn({ uid }, 'Skipping research cycle - previous research still in progress');
+            return;
+          }
+
+          // Mark research as in progress
+          loopState.researchInProgress = true;
+
+          try {
+            await this.runAutoTradeResearchCycle(uid);
+            loopState.lastResearchTime = new Date();
+          } finally {
+            loopState.researchInProgress = false;
+          }
+        } catch (error: any) {
+          logger.error({ error: error.message, uid }, 'Error in auto-trade research cycle');
+        }
+      }, 5 * 60 * 1000); // 5 minutes
+
+      // Update the interval ID
+      const loopState = this.autoTradeLoops.get(uid);
+      if (loopState) {
+        loopState.intervalId = intervalId;
+      }
+
+      // Run first research cycle immediately
+      setTimeout(async () => {
+        try {
+          const loopState = this.autoTradeLoops.get(uid);
+          if (loopState && loopState.isRunning && !loopState.researchInProgress) {
+            loopState.researchInProgress = true;
+            try {
+              await this.runAutoTradeResearchCycle(uid);
+              loopState.lastResearchTime = new Date();
+            } finally {
+              loopState.researchInProgress = false;
+            }
+          }
+        } catch (error: any) {
+          logger.error({ error: error.message, uid }, 'Error in initial auto-trade research cycle');
+        }
+      }, 1000); // Start after 1 second
+
+    } catch (error: any) {
+      logger.error({ error: error.message, uid }, 'Error starting auto-trade loop');
+      throw error;
+    }
+  }
+
+  /**
+   * Stop auto-trade background research loop for a user
+   */
+  async stopAutoTradeLoop(uid: string): Promise<void> {
+    try {
+      const loopState = this.autoTradeLoops.get(uid);
+      if (loopState) {
+        if (loopState.intervalId) {
+          clearInterval(loopState.intervalId);
+        }
+        loopState.isRunning = false;
+        loopState.researchInProgress = false;
+      }
+
+      this.autoTradeLoops.delete(uid);
+      logger.info({ uid }, 'Stopped auto-trade background research loop');
+    } catch (error: any) {
+      logger.error({ error: error.message, uid }, 'Error stopping auto-trade loop');
+      throw error;
+    }
+  }
+
+  /**
+   * Check if auto-trade loop is running for a user
+   */
+  async isAutoTradeRunning(uid: string): Promise<boolean> {
+    const loopState = this.autoTradeLoops.get(uid);
+    return loopState?.isRunning || false;
+  }
+
+  /**
+   * Get last research time for a user
+   */
+  async getLastResearchTime(uid: string): Promise<string | null> {
+    const loopState = this.autoTradeLoops.get(uid);
+    return loopState?.lastResearchTime?.toISOString() || null;
+  }
+
+  /**
+   * Get current market price for a symbol
+   */
+  private async getCurrentMarketPrice(symbol: string, uid: string): Promise<number> {
+    try {
+      // Try to get from exchange if adapter is available
+      const engine = await this.getUserEngine(uid);
+      if (engine.adapter) {
+        const ticker = await engine.adapter.getTicker(symbol);
+        return parseFloat(ticker.price.toString());
+      }
+    } catch (error) {
+      logger.warn({ uid, symbol, error: error.message }, 'Could not get price from exchange, using fallback');
+    }
+
+    // Fallback price (in production, would get from market data API)
+    return 50000; // BTC fallback price
+  }
+
+  /**
+   * Run a single auto-trade research cycle
+   * This is called every 5 minutes by the background loop
+   */
+  private async runAutoTradeResearchCycle(uid: string): Promise<void> {
+    try {
+      logger.info({ uid }, 'Starting auto-trade research cycle');
+
+      // Get trading settings
+      const settings = await AutoTradeEngine.getTradingSettings(uid);
+
+      // Import deep research engine and integrations
+      const { runFreeModeDeepResearch } = await import('./deepResearchEngine');
+      const { getUserIntegrations } = await import('../routes/integrations');
+
+      // Get user integrations for API keys
+      const integrations = await getUserIntegrations(uid);
+
+      // Run deep research for the configured symbol
+      const researchResult = await runFreeModeDeepResearch(uid, settings.symbol, undefined, integrations);
+
+      if (!researchResult || !researchResult.signal) {
+        logger.warn({ uid, symbol: settings.symbol }, 'No research signal generated');
+        return;
+      }
+
+      const { signal, accuracy } = researchResult;
+
+      logger.info({
+        uid,
+        symbol: settings.symbol,
+        signal,
+        accuracy
+      }, 'Research cycle completed, evaluating trade opportunity');
+
+      // Skip HOLD signals - only execute BUY/SELL
+      if (signal === 'HOLD') {
+        logger.info({ uid, symbol: settings.symbol, accuracy }, 'Research signal is HOLD, skipping trade execution');
+        return;
+      }
+
+      // Get current market price
+      const currentPrice = await this.getCurrentMarketPrice(settings.symbol, uid);
+
+      // Create trade signal with reasonable defaults
+      const tradeSignal: TradeSignal = {
+        symbol: settings.symbol,
+        signal: signal as 'BUY' | 'SELL',
+        entryPrice: currentPrice, // Use current market price
+        accuracy: accuracy,
+        stopLoss: currentPrice * (signal === 'BUY' ? 0.985 : 1.015), // 1.5% stop loss
+        takeProfit: currentPrice * (signal === 'BUY' ? 1.03 : 0.97), // 3% take profit
+        reasoning: `Auto-trade research signal: ${signal} with ${accuracy}% accuracy`,
+        requestId: `auto_${uid}_${Date.now()}`,
+        timestamp: new Date(),
+      };
+
+      // Execute trade if all conditions are met
+      await this.executeTrade(uid, tradeSignal);
+
+    } catch (error: any) {
+      logger.error({ error: error.message, uid }, 'Error in auto-trade research cycle');
+      throw error;
+    }
   }
 }
 

@@ -197,5 +197,57 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: err.message || 'Error updating trading settings' });
     }
   });
+
+  // POST /api/trading/autotrade/toggle - Toggle auto-trade ON/OFF
+  fastify.post('/trading/autotrade/toggle', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const body = z.object({ enabled: z.boolean() }).parse(request.body);
+
+      const { autoTradeEngine } = await import('../services/autoTradeEngine');
+
+      if (body.enabled) {
+        await autoTradeEngine.startAutoTradeLoop(user.uid);
+        await firestoreAdapter.logActivity(user.uid, 'AUTO_TRADE_STARTED', {
+          message: 'Auto-trade background research loop started',
+          timestamp: new Date().toISOString(),
+        });
+        return { enabled: true, message: 'Auto-trade started successfully' };
+      } else {
+        await autoTradeEngine.stopAutoTradeLoop(user.uid);
+        await firestoreAdapter.logActivity(user.uid, 'AUTO_TRADE_STOPPED', {
+          message: 'Auto-trade background research loop stopped',
+          timestamp: new Date().toISOString(),
+        });
+        return { enabled: false, message: 'Auto-trade stopped successfully' };
+      }
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error toggling auto-trade' });
+    }
+  });
+
+  // GET /api/trading/autotrade/status - Get auto-trade status
+  fastify.get('/trading/autotrade/status', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const { autoTradeEngine } = await import('../services/autoTradeEngine');
+
+      const isRunning = await autoTradeEngine.isAutoTradeRunning(user.uid);
+      const lastResearchAt = await autoTradeEngine.getLastResearchTime(user.uid);
+      const nextScheduledAt = isRunning ? new Date(Date.now() + 5 * 60 * 1000).toISOString() : null;
+
+      return {
+        enabled: isRunning,
+        lastResearchAt,
+        nextScheduledAt,
+      };
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error getting auto-trade status' });
+    }
+  });
 }
 

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
-import { autoTradeApi, marketApi, walletApi } from '../services/api';
+import { autoTradeApi, marketApi, walletApi, settingsApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { usePolling } from '../hooks/usePerformance';
 import Toast from '../components/Toast';
@@ -104,6 +104,13 @@ export default function AutoTrade() {
     maxTradesPerDay: 50,
   });
 
+  // Auto-trade loop status
+  const [autoTradeStatus, setAutoTradeStatus] = useState({
+    enabled: false,
+    lastResearchAt: null as string | null,
+    nextScheduledAt: null as string | null,
+  });
+
   const [scheduleConfig, setScheduleConfig] = useState({
     start: "09:00",
     end: "17:00",
@@ -138,6 +145,21 @@ export default function AutoTrade() {
       }
     } catch (err: any) {
       suppressConsoleError(err, 'loadAutoTradeLogs');
+    }
+  }, [user]);
+
+  const loadAutoTradeStatus = useCallback(async () => {
+    if (!user || !isMountedRef.current) return;
+    try {
+      const response = await settingsApi.trading.autotrade.status();
+      if (isMountedRef.current && response.data) {
+        setAutoTradeStatus(response.data);
+        // Also update the controls state to match
+        setAutoTradeControls(prev => ({ ...prev, enabled: response.data.enabled }));
+        setConfig(prev => ({ ...prev, enabled: response.data.enabled }));
+      }
+    } catch (err: any) {
+      suppressConsoleError(err, 'loadAutoTradeStatus');
     }
   }, [user]);
 
@@ -247,6 +269,16 @@ export default function AutoTrade() {
   // Use centralized polling for live data (30 second intervals when visible)
   usePolling(loadLiveData, 30000, !!user);
 
+  // Load auto-trade status on mount and periodically
+  useEffect(() => {
+    if (user) {
+      loadAutoTradeStatus();
+      // Refresh status every 30 seconds
+      const interval = setInterval(loadAutoTradeStatus, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [user, loadAutoTradeStatus]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -283,10 +315,11 @@ export default function AutoTrade() {
     if (!enabled || isExchangeConnected) {
       setSaving(true);
       try {
-        await autoTradeApi.toggle(enabled);
-        setAutoTradeControls(prev => ({ ...prev, enabled }));
-        setConfig(prev => ({ ...prev, enabled }));
-        showToast(`Auto-Trade ${enabled ? 'enabled' : 'disabled'}`, 'success');
+        const response = await settingsApi.trading.autotrade.toggle({ enabled });
+        setAutoTradeStatus(prev => ({ ...prev, enabled: response.data.enabled }));
+        setAutoTradeControls(prev => ({ ...prev, enabled: response.data.enabled }));
+        setConfig(prev => ({ ...prev, enabled: response.data.enabled }));
+        showToast(`Auto-Trade ${enabled ? 'started' : 'stopped'}`, 'success');
       } catch (error: any) {
         showToast('Failed to toggle auto-trade', 'error');
       } finally {
@@ -691,14 +724,15 @@ export default function AutoTrade() {
                   <div className="flex items-center justify-between">
                     <span className="text-gray-300">Enable Auto-Trade</span>
                     <button
-                      onClick={() => setAutoTradeControls(prev => ({ ...prev, enabled: !prev.enabled }))}
-                      className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                      onClick={() => handleAutoTradeToggle(!autoTradeControls.enabled)}
+                      disabled={saving}
+                      className={`px-4 py-2 rounded-lg font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
                         autoTradeControls.enabled
                           ? 'bg-green-600 hover:bg-green-700 text-white'
                           : 'bg-gray-600 hover:bg-gray-700 text-white'
                       }`}
                     >
-                      {autoTradeControls.enabled ? 'ON' : 'OFF'}
+                      {saving ? '...' : (autoTradeControls.enabled ? 'ON' : 'OFF')}
                     </button>
                   </div>
 
@@ -736,7 +770,49 @@ export default function AutoTrade() {
                 </div>
               </div>
 
-              {/* Section B: Schedule */}
+              {/* Section B: Auto-Trade Status */}
+              <div className="bg-slate-800/40 backdrop-blur-xl border border-blue-500/20 rounded-xl p-6">
+                <h3 className="text-lg font-semibold text-white mb-4">Auto-Trade Status</h3>
+
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-300">Background Research Loop</span>
+                    <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                      autoTradeStatus.enabled
+                        ? 'bg-green-500/20 text-green-300 border border-green-500/30'
+                        : 'bg-red-500/20 text-red-300 border border-red-500/30'
+                    }`}>
+                      {autoTradeStatus.enabled ? 'RUNNING' : 'STOPPED'}
+                    </span>
+                  </div>
+
+                  {autoTradeStatus.lastResearchAt && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-300">Last Research</span>
+                      <span className="text-sm text-blue-300">
+                        {new Date(autoTradeStatus.lastResearchAt).toLocaleString()}
+                      </span>
+                    </div>
+                  )}
+
+                  {autoTradeStatus.nextScheduledAt && autoTradeStatus.enabled && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-300">Next Research</span>
+                      <span className="text-sm text-purple-300">
+                        {new Date(autoTradeStatus.nextScheduledAt).toLocaleString()}
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="pt-2 border-t border-white/10">
+                    <p className="text-xs text-gray-400">
+                      Research runs every 5 minutes when auto-trade is enabled, using your trading settings.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Section C: Schedule */}
               <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
                 <h3 className="text-lg font-semibold text-white mb-4">Trading Schedule</h3>
 
