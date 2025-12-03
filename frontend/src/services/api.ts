@@ -114,6 +114,12 @@ export const settingsApi = {
   load: () => cachedApi.get('/settings/load').catch(() => ({ data: {} })),
   update: (settings: any) => api.post('/settings/update', settings).catch(() => ({ data: { success: false } })),
   // Removed: saveApiKeys and getApiKeys - use exchange-config endpoint instead
+
+  // Trading Settings
+  trading: {
+    load: () => api.get('/trading/settings'),
+    update: (settings: any) => api.post('/trading/settings', settings),
+  },
 };
 
 // Execution - routes already include /api prefix from baseURL

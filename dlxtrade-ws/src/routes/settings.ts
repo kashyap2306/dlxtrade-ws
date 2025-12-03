@@ -18,6 +18,34 @@ const settingsSchema = z.object({
   status: z.enum(['active', 'paused_by_risk', 'paused_manual']).optional(),
 });
 
+// Trading Settings Schema
+const positionSizingMapItemSchema = z.object({
+  min: z.number().min(0).max(100),
+  max: z.number().min(0).max(100),
+  percent: z.number().min(0).max(100),
+});
+
+const tradingSettingsSchema = z.object({
+  symbol: z.string().min(1),
+  maxPositionPerTrade: z.number().min(0.1).max(100),
+  tradeType: z.enum(['Scalping', 'Swing', 'Position']),
+  accuracyTrigger: z.number().min(0).max(100),
+  maxDailyLoss: z.number().min(0).max(100),
+  maxTradesPerDay: z.number().int().min(1).max(500),
+  positionSizingMap: z.array(positionSizingMapItemSchema).min(1),
+}).refine((data) => {
+  // Validate position sizing map ranges don't overlap and cover 0-100
+  const map = data.positionSizingMap.sort((a, b) => a.min - b.min);
+  for (let i = 0; i < map.length - 1; i++) {
+    if (map[i].max >= map[i + 1].min) {
+      return false; // Overlapping ranges
+    }
+  }
+  return map[0].min <= 0 && map[map.length - 1].max >= 100;
+}, {
+  message: 'Position sizing map ranges must not overlap and cover 0-100%',
+});
+
 export async function settingsRoutes(fastify: FastifyInstance) {
   // Load user settings
   fastify.get('/load', {
@@ -103,10 +131,70 @@ export async function settingsRoutes(fastify: FastifyInstance) {
 
       const body = request.body as any;
       await firestoreAdapter.updateGlobalSettings(body);
-      
+
       return { message: 'Global settings updated successfully' };
     } catch (err: any) {
       return reply.code(500).send({ error: err.message || 'Error updating global settings' });
+    }
+  });
+
+  // Trading Settings Routes
+  // GET /api/trading/settings - Load trading settings
+  fastify.get('/trading/settings', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const settings = await firestoreAdapter.getTradingSettings(user.uid);
+
+      if (!settings) {
+        // Return default settings
+        return {
+          symbol: 'BTCUSDT',
+          maxPositionPerTrade: 10,
+          tradeType: 'Scalping',
+          accuracyTrigger: 85,
+          maxDailyLoss: 5,
+          maxTradesPerDay: 50,
+          positionSizingMap: [
+            { min: 0, max: 84, percent: 0 },
+            { min: 85, max: 89, percent: 3 },
+            { min: 90, max: 94, percent: 6 },
+            { min: 95, max: 99, percent: 8.5 },
+            { min: 100, max: 100, percent: 10 }
+          ]
+        };
+      }
+
+      return settings;
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error loading trading settings' });
+    }
+  });
+
+  // POST /api/trading/settings - Update trading settings
+  fastify.post('/trading/settings', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const body = tradingSettingsSchema.parse(request.body);
+
+      // Log settings change for audit
+      await firestoreAdapter.logActivity(user.uid, 'TRADING_SETTINGS_UPDATED', {
+        oldSettings: await firestoreAdapter.getTradingSettings(user.uid),
+        newSettings: body,
+        timestamp: new Date().toISOString(),
+      });
+
+      const savedSettings = await firestoreAdapter.saveTradingSettings(user.uid, body);
+
+      return { message: 'Trading settings updated successfully', settings: savedSettings };
+    } catch (err: any) {
+      if (err instanceof z.ZodError) {
+        return reply.code(400).send({ error: 'Invalid trading settings', details: err.errors });
+      }
+      return reply.code(500).send({ error: err.message || 'Error updating trading settings' });
     }
   });
 }

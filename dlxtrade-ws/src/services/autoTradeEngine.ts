@@ -5,6 +5,27 @@ import { decrypt } from './keyManager';
 import { getFirebaseAdmin } from '../utils/firebase';
 import * as admin from 'firebase-admin';
 
+// Trading Settings Interface
+export interface TradingSettings {
+  symbol: string;
+  maxPositionPerTrade: number;
+  tradeType: 'Scalping' | 'Swing' | 'Position';
+  accuracyTrigger: number;
+  maxDailyLoss: number;
+  maxTradesPerDay: number;
+  positionSizingMap: Array<{
+    min: number;
+    max: number;
+    percent: number;
+  }>;
+}
+
+// Position Sizing Result
+export interface PositionSizingResult {
+  positionPercent: number;
+  reason: string;
+}
+
 export interface AutoTradeConfig {
   autoTradeEnabled: boolean;
   perTradeRiskPct: number; // percent of account equity per trade (default 1)
@@ -271,14 +292,24 @@ export class AutoTradeEngine {
       return { allowed: false, reason: `Max concurrent trades (${config.maxConcurrentTrades}) reached` };
     }
 
-    // Check daily loss limit
+    // Get trading settings for additional checks
+    const tradingSettings = await AutoTradeEngine.getTradingSettings(uid);
     const stats = config.stats || DEFAULT_CONFIG.stats!;
-    if (stats.dailyPnL < 0 && Math.abs(stats.dailyPnL) >= (config.equitySnapshot || 1000) * (config.maxDailyLossPct / 100)) {
+
+    // Check max trades per day from trading settings
+    if (stats.dailyTrades >= tradingSettings.maxTradesPerDay) {
+      return { allowed: false, reason: `Max trades per day (${tradingSettings.maxTradesPerDay}) reached` };
+    }
+
+    // Check daily loss limit from trading settings
+    const equity = config.equitySnapshot || 1000;
+    const maxDailyLossAmount = equity * (tradingSettings.maxDailyLoss / 100);
+    if (stats.dailyPnL < 0 && Math.abs(stats.dailyPnL) >= maxDailyLossAmount) {
       engine.circuitBreaker = true;
       await this.logTradeEvent(uid, 'CIRCUIT_BREAKER_TRIGGERED', {
         reason: 'Daily loss limit exceeded',
         dailyPnL: stats.dailyPnL,
-        maxDailyLossPct: config.maxDailyLossPct,
+        maxDailyLoss: tradingSettings.maxDailyLoss,
       });
       return { allowed: false, reason: 'Daily loss limit exceeded - circuit breaker activated' };
     }
@@ -313,6 +344,16 @@ export class AutoTradeEngine {
         reason: riskCheck.reason,
       });
       throw new Error(riskCheck.reason || 'Trade rejected by risk guards');
+    }
+
+    // Check accuracy trigger from trading settings
+    const tradingSettings = await AutoTradeEngine.getTradingSettings(uid);
+    if (signal.accuracy < tradingSettings.accuracyTrigger) {
+      await this.logTradeEvent(uid, 'TRADE_REJECTED', {
+        signal,
+        reason: `Accuracy ${signal.accuracy}% below trigger threshold ${tradingSettings.accuracyTrigger}%`,
+      });
+      throw new Error(`Accuracy ${signal.accuracy}% below trigger threshold ${tradingSettings.accuracyTrigger}%`);
     }
 
     // Initialize adapter if needed
@@ -362,13 +403,25 @@ export class AutoTradeEngine {
       logger.warn({ error: error.message, uid }, 'Could not fetch equity from exchange, using snapshot');
     }
 
-    // Calculate position size using saved config
-    const quantity = this.calculatePositionSize(
-      equity,
-      signal.entryPrice,
-      config.stopLossPct,
-      config.perTradeRiskPct
-    );
+    // Get trading settings for position sizing
+    const tradingSettings = await AutoTradeEngine.getTradingSettings(uid);
+
+    // Calculate position size using new accuracy-based sizing
+    const positionSizing = AutoTradeEngine.calculatePositionSize(signal.accuracy, tradingSettings);
+
+    // Convert position percentage to actual quantity
+    const positionValue = equity * (positionSizing.positionPercent / 100);
+    const quantity = positionValue / signal.entryPrice;
+
+    logger.info({
+      uid,
+      symbol: signal.symbol,
+      accuracy: signal.accuracy,
+      positionPercent: positionSizing.positionPercent,
+      positionValue,
+      quantity,
+      reason: positionSizing.reason
+    }, 'Position size calculated using trading settings');
 
     logger.info({ 
       uid, 
@@ -578,6 +631,87 @@ export class AutoTradeEngine {
     await this.updateStats(uid, trade);
 
     return trade;
+  }
+
+  /**
+   * Get trading settings for a user with caching
+   * This is the main function the auto-trade engine calls to get current settings
+   */
+  static async getTradingSettings(uid: string): Promise<TradingSettings> {
+    try {
+      const settings = await firestoreAdapter.getTradingSettings(uid);
+
+      if (!settings) {
+        // Return default settings
+        return {
+          symbol: 'BTCUSDT',
+          maxPositionPerTrade: 10,
+          tradeType: 'Scalping',
+          accuracyTrigger: 85,
+          maxDailyLoss: 5,
+          maxTradesPerDay: 50,
+          positionSizingMap: [
+            { min: 0, max: 84, percent: 0 },
+            { min: 85, max: 89, percent: 3 },
+            { min: 90, max: 94, percent: 6 },
+            { min: 95, max: 99, percent: 8.5 },
+            { min: 100, max: 100, percent: 10 }
+          ]
+        };
+      }
+
+      return settings as TradingSettings;
+    } catch (error: any) {
+      logger.error({ error: error.message, uid }, 'Error getting trading settings, using defaults');
+      // Return defaults on error
+      return {
+        symbol: 'BTCUSDT',
+        maxPositionPerTrade: 10,
+        tradeType: 'Scalping',
+        accuracyTrigger: 85,
+        maxDailyLoss: 5,
+        maxTradesPerDay: 50,
+        positionSizingMap: [
+          { min: 0, max: 84, percent: 0 },
+          { min: 85, max: 89, percent: 3 },
+          { min: 90, max: 94, percent: 6 },
+          { min: 95, max: 99, percent: 8.5 },
+          { min: 100, max: 100, percent: 10 }
+        ]
+      };
+    }
+  }
+
+  /**
+   * Calculate position size based on accuracy and trading settings
+   * Returns the position percentage to use for the trade
+   */
+  static calculatePositionSize(accuracy: number, settings: TradingSettings): PositionSizingResult {
+    // Check if accuracy meets the trigger threshold
+    if (accuracy < settings.accuracyTrigger) {
+      return {
+        positionPercent: 0,
+        reason: `Accuracy ${accuracy}% below trigger threshold ${settings.accuracyTrigger}%`
+      };
+    }
+
+    // Find the appropriate position sizing range for this accuracy
+    const range = settings.positionSizingMap.find(r => accuracy >= r.min && accuracy <= r.max);
+
+    if (!range) {
+      return {
+        positionPercent: 0,
+        reason: `No position sizing range found for accuracy ${accuracy}%`
+      };
+    }
+
+    // If the range percent is higher than max position per trade, cap it
+    const positionPercent = Math.min(range.percent, settings.maxPositionPerTrade);
+
+    return {
+      positionPercent,
+      reason: `Accuracy ${accuracy}% maps to ${range.percent}% position, capped at ${settings.maxPositionPerTrade}% max per trade`
+    };
   }
 
   /**

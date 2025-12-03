@@ -634,6 +634,26 @@ export default function Settings() {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [integrationsLoaded, setIntegrationsLoaded] = useState(false);
 
+  // Trading Settings State
+  const [tradingSettings, setTradingSettings] = useState({
+    symbol: 'BTCUSDT',
+    maxPositionPerTrade: 10,
+    tradeType: 'Scalping' as 'Scalping' | 'Swing' | 'Position',
+    accuracyTrigger: 85,
+    maxDailyLoss: 5,
+    maxTradesPerDay: 50,
+    positionSizingMap: [
+      { min: 0, max: 84, percent: 0 },
+      { min: 85, max: 89, percent: 3 },
+      { min: 90, max: 94, percent: 6 },
+      { min: 95, max: 99, percent: 8.5 },
+      { min: 100, max: 100, percent: 10 }
+    ]
+  });
+  const [loadingTrading, setLoadingTrading] = useState(false);
+  const [savingTrading, setSavingTrading] = useState(false);
+  const [sampleAccuracy, setSampleAccuracy] = useState(85);
+
   const [integrationsLoading, setIntegrationsLoading] = useState(false);
   const [globalSettings, setGlobalSettings] = useState<any>(null);
   const [settings, setSettings] = useState<any>({
@@ -699,12 +719,13 @@ export default function Settings() {
 
     try {
       // Load all settings data in parallel with Promise.allSettled for resilience
-      const [settingsResult, integrationsResult, globalSettingsResult, exchangeResult, symbolsResult] = await Promise.allSettled([
+      const [settingsResult, integrationsResult, globalSettingsResult, exchangeResult, symbolsResult, tradingSettingsResult] = await Promise.allSettled([
         loadSettings(),
         loadIntegrations(),
         loadGlobalSettings(),
         loadConnectedExchange(),
-        loadMarketSymbols()
+        loadMarketSymbols(),
+        loadTradingSettings()
       ]);
 
       // Log any failures but don't fail the whole load
@@ -1173,6 +1194,18 @@ export default function Settings() {
     }
   };
 
+  const loadTradingSettings = async () => {
+    try {
+      const response = await settingsApi.trading.load();
+      if (response.data) {
+        setTradingSettings(response.data);
+      }
+    } catch (err) {
+      console.error('Error loading trading settings:', err);
+      // Settings will use defaults defined in state
+    }
+  };
+
   const handleExchangeSelect = (exchangeId: string) => {
     setSelectedExchange(exchangeId);
     setExchangeForm({ apiKey: '', secretKey: '', passphrase: '' });
@@ -1221,16 +1254,7 @@ export default function Settings() {
   const handleSaveTradingSettings = async () => {
     setSavingTrading(true);
     try {
-      // Send all trading settings and risk controls together
-      const tradingSettings = {
-        symbol: settings.symbol,
-        maxPositionPercent: settings.maxPositionPercent,
-        tradeType: settings.tradeType,
-        accuracyThreshold: settings.accuracyThreshold,
-        maxDailyLoss: settings.maxDailyLoss,
-        maxTradesPerDay: settings.maxTradesPerDay
-      };
-      await settingsApi.update(tradingSettings);
+      await settingsApi.trading.update(tradingSettings);
       showToast('Trading settings saved successfully', 'success');
     } catch (err: any) {
       console.error('Error saving trading settings:', err);
@@ -1238,6 +1262,36 @@ export default function Settings() {
     } finally {
       setSavingTrading(false);
     }
+  };
+
+  const handleResetTradingSettings = () => {
+    setTradingSettings({
+      symbol: 'BTCUSDT',
+      maxPositionPerTrade: 10,
+      tradeType: 'Scalping',
+      accuracyTrigger: 85,
+      maxDailyLoss: 5,
+      maxTradesPerDay: 50,
+      positionSizingMap: [
+        { min: 0, max: 84, percent: 0 },
+        { min: 85, max: 89, percent: 3 },
+        { min: 90, max: 94, percent: 6 },
+        { min: 95, max: 99, percent: 8.5 },
+        { min: 100, max: 100, percent: 10 }
+      ]
+    });
+  };
+
+  const calculatePositionForAccuracy = (accuracy: number): number => {
+    const range = tradingSettings.positionSizingMap.find(r => accuracy >= r.min && accuracy <= r.max);
+    if (!range) return 0;
+    return Math.min(range.percent, tradingSettings.maxPositionPerTrade);
+  };
+
+  const updatePositionSizingMap = (index: number, field: 'min' | 'max' | 'percent', value: number) => {
+    const newMap = [...tradingSettings.positionSizingMap];
+    newMap[index] = { ...newMap[index], [field]: value };
+    setTradingSettings({ ...tradingSettings, positionSizingMap: newMap });
   };
 
 
@@ -1369,39 +1423,20 @@ export default function Settings() {
             <section className="bg-white/5 backdrop-blur-sm rounded-xl border border-white/10 p-6">
               <div className="mb-6">
                 <h2 className="text-xl font-semibold text-white mb-2">Trading Settings</h2>
-                <p className="text-sm text-gray-400">Configure your core trading parameters and risk controls</p>
+                <p className="text-sm text-gray-400">Configure your core trading parameters, risk controls, and position sizing</p>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                 <div className="space-y-2">
                   <label className="block text-sm font-medium text-gray-300">Symbol</label>
                   <div className="relative">
                     <input
                       type="text"
                       className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                      value={symbolSearch || settings.symbol}
-                      onChange={(e) => setSymbolSearch(e.target.value)}
-                      placeholder="Search symbols..."
+                      value={tradingSettings.symbol}
+                      onChange={(e) => setTradingSettings({ ...tradingSettings, symbol: e.target.value })}
+                      placeholder="e.g., BTCUSDT"
                     />
-                    {symbolSearch && (
-                      <div className="absolute z-10 w-full mt-1 bg-slate-800 border border-white/10 rounded-lg shadow-lg max-h-40 overflow-y-auto">
-                        {marketSymbols
-                          .filter(symbol => symbol.toLowerCase().includes(symbolSearch.toLowerCase()))
-                          .slice(0, 10)
-                          .map((symbol) => (
-                            <div
-                              key={symbol}
-                              className="px-3 py-2 hover:bg-white/10 cursor-pointer text-white"
-                              onClick={() => {
-                                setSettings({ ...settings, symbol });
-                                setSymbolSearch('');
-                              }}
-                            >
-                              {symbol}
-                            </div>
-                          ))}
-                      </div>
-                    )}
                   </div>
                   <p className="text-xs text-gray-400">Trading pair for analysis and execution</p>
                 </div>
@@ -1414,8 +1449,8 @@ export default function Settings() {
                     min="0.1"
                     max="100"
                     className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                    value={settings.maxPositionPercent}
-                    onChange={(e) => setSettings({ ...settings, maxPositionPercent: parseFloat(e.target.value) })}
+                    value={tradingSettings.maxPositionPerTrade}
+                    onChange={(e) => setTradingSettings({ ...tradingSettings, maxPositionPerTrade: parseFloat(e.target.value) || 0 })}
                   />
                   <p className="text-xs text-gray-400">% of portfolio allocated per trade</p>
                 </div>
@@ -1424,12 +1459,12 @@ export default function Settings() {
                   <label className="block text-sm font-medium text-gray-300">Trade Type</label>
                   <select
                     className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                    value={settings.tradeType || 'scalping'}
-                    onChange={(e) => setSettings({ ...settings, tradeType: e.target.value })}
+                    value={tradingSettings.tradeType}
+                    onChange={(e) => setTradingSettings({ ...tradingSettings, tradeType: e.target.value as 'Scalping' | 'Swing' | 'Position' })}
                   >
-                    <option value="scalping">Scalping</option>
-                    <option value="intraday">Intraday</option>
-                    <option value="swing">Swing</option>
+                    <option value="Scalping">Scalping</option>
+                    <option value="Swing">Swing</option>
+                    <option value="Position">Position</option>
                   </select>
                   <p className="text-xs text-gray-400">Trading timeframe and strategy</p>
                 </div>
@@ -1442,10 +1477,10 @@ export default function Settings() {
                     max="100"
                     step="1"
                     className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                    value={settings.accuracyThreshold}
-                    onChange={(e) => setSettings({ ...settings, accuracyThreshold: parseInt(e.target.value, 10) })}
+                    value={tradingSettings.accuracyTrigger}
+                    onChange={(e) => setTradingSettings({ ...tradingSettings, accuracyTrigger: parseInt(e.target.value) || 0 })}
                   />
-                  <p className="text-xs text-gray-400">Minimum accuracy to trigger trades</p>
+                  <p className="text-xs text-gray-400">Engine will only execute trades when model accuracy >= this threshold</p>
                 </div>
 
                 <div className="space-y-2">
@@ -1456,8 +1491,8 @@ export default function Settings() {
                     min="0"
                     max="100"
                     className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                    value={settings.maxDailyLoss}
-                    onChange={(e) => setSettings({ ...settings, maxDailyLoss: parseFloat(e.target.value) })}
+                    value={tradingSettings.maxDailyLoss}
+                    onChange={(e) => setTradingSettings({ ...tradingSettings, maxDailyLoss: parseFloat(e.target.value) || 0 })}
                   />
                   <p className="text-xs text-gray-400">Engine pauses if daily loss exceeds this %</p>
                 </div>
@@ -1469,14 +1504,87 @@ export default function Settings() {
                     min="1"
                     max="500"
                     className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                    value={settings.maxTradesPerDay}
-                    onChange={(e) => setSettings({ ...settings, maxTradesPerDay: parseInt(e.target.value, 10) })}
+                    value={tradingSettings.maxTradesPerDay}
+                    onChange={(e) => setTradingSettings({ ...tradingSettings, maxTradesPerDay: parseInt(e.target.value) || 1 })}
                   />
                   <p className="text-xs text-gray-400">Maximum trades allowed per day</p>
                 </div>
               </div>
 
-              <div className="mt-6 flex justify-end">
+              {/* Position Sizing Map */}
+              <div className="mb-6">
+                <h3 className="text-lg font-semibold text-white mb-3">Position Sizing Map</h3>
+                <p className="text-sm text-gray-400 mb-4">Configure position sizes based on model accuracy ranges</p>
+
+                <div className="space-y-3">
+                  {tradingSettings.positionSizingMap.map((range, index) => (
+                    <div key={index} className="flex items-center gap-4 p-3 bg-slate-800/30 rounded-lg">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          className="w-16 px-2 py-1 bg-slate-700/50 border border-slate-600/50 rounded text-xs text-white text-center"
+                          value={range.min}
+                          onChange={(e) => updatePositionSizingMap(index, 'min', parseInt(e.target.value) || 0)}
+                        />
+                        <span className="text-xs text-gray-400">-</span>
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          className="w-16 px-2 py-1 bg-slate-700/50 border border-slate-600/50 rounded text-xs text-white text-center"
+                          value={range.max}
+                          onChange={(e) => updatePositionSizingMap(index, 'max', parseInt(e.target.value) || 0)}
+                        />
+                        <span className="text-xs text-gray-400">%</span>
+                      </div>
+                      <span className="text-xs text-gray-400">accuracy →</span>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        max="100"
+                        className="w-20 px-2 py-1 bg-slate-700/50 border border-slate-600/50 rounded text-xs text-white text-center"
+                        value={range.percent}
+                        onChange={(e) => updatePositionSizingMap(index, 'percent', parseFloat(e.target.value) || 0)}
+                      />
+                      <span className="text-xs text-gray-400">% position</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Sample Calculator */}
+              <div className="mb-6 p-4 bg-slate-800/30 rounded-lg">
+                <h4 className="text-sm font-medium text-white mb-3">Position Size Calculator</h4>
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-gray-400">If accuracy =</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      className="w-16 px-2 py-1 bg-slate-700/50 border border-slate-600/50 rounded text-xs text-white text-center"
+                      value={sampleAccuracy}
+                      onChange={(e) => setSampleAccuracy(parseInt(e.target.value) || 0)}
+                    />
+                    <span className="text-xs text-gray-400">%</span>
+                  </div>
+                  <span className="text-xs text-gray-400">→ position% =</span>
+                  <span className="text-sm font-medium text-purple-300">
+                    {calculatePositionForAccuracy(sampleAccuracy)}%
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-4 justify-end">
+                <button
+                  onClick={handleResetTradingSettings}
+                  className="px-6 py-2 bg-slate-700/50 text-gray-300 font-medium rounded-lg hover:bg-slate-600/50 focus:outline-none focus:ring-2 focus:ring-slate-500 transition-all"
+                >
+                  Reset to Defaults
+                </button>
                 <button
                   onClick={handleSaveTradingSettings}
                   disabled={savingTrading}

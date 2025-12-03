@@ -93,6 +93,21 @@ export interface HFTSettingsDocument {
   updatedAt: admin.firestore.Timestamp;
 }
 
+export interface TradingSettingsDocument {
+  symbol: string;
+  maxPositionPerTrade: number;
+  tradeType: 'Scalping' | 'Swing' | 'Position';
+  accuracyTrigger: number;
+  maxDailyLoss: number;
+  maxTradesPerDay: number;
+  positionSizingMap: Array<{
+    min: number;
+    max: number;
+    percent: number;
+  }>;
+  updatedAt: admin.firestore.Timestamp;
+}
+
 export interface HFTExecutionLogDocument {
   id?: string;
   symbol: string;
@@ -1214,6 +1229,53 @@ export class FirestoreAdapter {
       id: doc.id,
       ...doc.data(),
     }));
+  }
+
+  // ========== TRADING SETTINGS METHODS ==========
+  async getTradingSettings(uid: string): Promise<any> {
+    try {
+      const doc = await db()
+        .collection('users')
+        .doc(uid)
+        .collection('settings')
+        .doc('trading')
+        .get();
+
+      if (!doc.exists) {
+        return null;
+      }
+
+      const data = doc.data();
+      return {
+        ...data,
+        updatedAt: data?.updatedAt?.toDate().toISOString(),
+      };
+    } catch (error: any) {
+      logger.error({ error: error.message, uid }, 'Error getting trading settings');
+      throw error;
+    }
+  }
+
+  async saveTradingSettings(uid: string, settings: any): Promise<any> {
+    try {
+      const settingsDoc = {
+        ...settings,
+        updatedAt: admin.firestore.Timestamp.now(),
+      };
+
+      await db()
+        .collection('users')
+        .doc(uid)
+        .collection('settings')
+        .doc('trading')
+        .set(settingsDoc, { merge: true });
+
+      logger.info({ uid, settings }, 'Trading settings saved');
+      return settings;
+    } catch (error: any) {
+      logger.error({ error: error.message, uid }, 'Error saving trading settings');
+      throw error;
+    }
   }
 }
 
