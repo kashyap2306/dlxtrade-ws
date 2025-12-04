@@ -254,12 +254,12 @@ export default function Dashboard() {
     try {
       const response = await autoTradeApi.getActiveTrades(10);
       if (isMountedRef.current) {
-        setActiveTrades(response.data?.activeTrades || []);
+        setDashboardState(prev => ({ ...prev, activeTrades: response.data?.activeTrades || [] }));
       }
     } catch (err: any) {
       suppressConsoleError(err, 'loadActiveTrades');
       if (isMountedRef.current) {
-        setActiveTrades([]);
+        setDashboardState(prev => ({ ...prev, activeTrades: [] }));
       }
     }
   }, [user]);
@@ -269,12 +269,12 @@ export default function Dashboard() {
     try {
       const response = await autoTradeApi.getProposals();
       if (isMountedRef.current) {
-        setAiSignals(response.data?.slice(0, 3) || []);
+        setDashboardState(prev => ({ ...prev, aiSignals: response.data?.slice(0, 3) || [] }));
       }
     } catch (err: any) {
       suppressConsoleError(err, 'loadAISignals');
       if (isMountedRef.current) {
-        setAiSignals([]);
+        setDashboardState(prev => ({ ...prev, aiSignals: [] }));
       }
     }
   }, [user, autoTradeStatus?.autoTradeEnabled]);
@@ -300,17 +300,17 @@ export default function Dashboard() {
         const totalProfitToday = todayTrades.reduce((sum: number, log: any) => sum + (log.pnl || 0), 0);
         const totalProfitAllTime = logs.reduce((sum: number, log: any) => sum + (log.pnl || 0), 0);
 
-        setPerformanceStats({
+        setDashboardState(prev => ({ ...prev, performanceStats: {
           totalProfitToday,
           totalProfitAllTime,
           winRate: Math.round(winRate),
           totalTrades,
-        });
+        }}));
       }
     } catch (err: any) {
       suppressConsoleError(err, 'loadPerformanceStats');
       if (isMountedRef.current) {
-        setPerformanceStats(null);
+        setDashboardState(prev => ({ ...prev, performanceStats: null }));
       }
     }
   }, [user]);
@@ -338,12 +338,12 @@ export default function Dashboard() {
       }
 
       if (isMountedRef.current) {
-        setPortfolioHistory(history);
+        setDashboardState(prev => ({ ...prev, portfolioHistory: history }));
       }
     } catch (err: any) {
       suppressConsoleError(err, 'loadPortfolioHistory');
       if (isMountedRef.current) {
-        setPortfolioHistory([]);
+        setDashboardState(prev => ({ ...prev, portfolioHistory: [] }));
       }
     }
   }, [user]); // Removed walletBalances dependency since it's no longer dynamic
@@ -452,7 +452,7 @@ export default function Dashboard() {
     if (autoTradeStatus?.autoTradeEnabled) {
       loadAISignals();
     } else {
-      setAiSignals([]);
+      setDashboardState(prev => ({ ...prev, aiSignals: [] }));
     }
   }, [autoTradeStatus?.autoTradeEnabled, loadAISignals]);
 

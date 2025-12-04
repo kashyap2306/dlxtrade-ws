@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
-import { autoTradeApi, marketApi, walletApi, settingsApi } from '../services/api';
+import { autoTradeApi, marketApi, settingsApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { usePolling } from '../hooks/usePerformance';
 import Toast from '../components/Toast';

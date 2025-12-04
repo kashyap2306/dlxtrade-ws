@@ -125,7 +125,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         clearInterval(pollingIntervalRef.current);
       }
     };
-  }, [user, loadNotifications]);
+  }, [user]);
 
   const addNotification = useCallback(async (
     notification: Omit<Notification, 'id' | 'timestamp' | 'read'>

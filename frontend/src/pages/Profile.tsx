@@ -1,7 +1,7 @@
 ﻿import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
-import { usersApi, agentsApi } from '../services/api';
+import { usersApi, agentsApi, integrationsApi } from '../services/api';
 import Sidebar from '../components/Sidebar';
 import Toast from '../components/Toast';
 import { User } from 'firebase/auth';

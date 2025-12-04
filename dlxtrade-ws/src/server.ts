@@ -3,7 +3,7 @@ import { initDb } from './db';
 import { initRedis } from './db/redis';
 import { config } from './config';
 import { logger } from './utils/logger';
-import { initializeFirebaseAdmin, performForcedTestWrite } from './utils/firebase';
+import { initFirebaseAdmin, performForcedTestWrite } from './utils/firebase';
 import { initializeFirestoreCollections } from './utils/firestoreInitializer';
 import { seedFirestoreData } from './utils/firestoreSeed';
 import { migrateFirestoreDocuments } from './utils/firestoreMigration';
@@ -82,7 +82,7 @@ async function start() {
     (async () => {
       try {
         console.log('🔥 Initializing Firebase Admin...');
-        initializeFirebaseAdmin();
+        initFirebaseAdmin();
         console.log('🔥 Firebase Admin initialized successfully');
 
         // Perform forced test write to verify connection IMMEDIATELY

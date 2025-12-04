@@ -1,6 +1,5 @@
 ﻿import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { firestoreAdapter } from '../services/firestoreAdapter';
-import { runFreeModeDeepResearch, deepResearchEngine } from '../services/deepResearchEngine';
 import { getUserIntegrations } from './integrations';
 import { BinanceAdapter } from '../services/binanceAdapter';
 import { CryptoCompareAdapter } from '../services/cryptocompareAdapter';
@@ -104,6 +103,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
           }
 
           // Run FREE MODE Deep Research v1.5 with user integrations
+          const { runFreeModeDeepResearch } = await import('../services/deepResearchEngine');
           const result = await runFreeModeDeepResearch(uid, symbol, undefined, integrations);
 
           results.push({
@@ -177,6 +177,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
           const userIntegrations = await getUserIntegrations(uid);
 
           // Call FREE MODE Deep Research v1.5 with user integrations
+          const { runFreeModeDeepResearch } = await import('../services/deepResearchEngine');
           const result = await runFreeModeDeepResearch(uid, symbol, undefined, userIntegrations);
 
           results.push({
@@ -246,6 +247,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
             newsdata: { apiKey: '' }
           };
 
+          const { runFreeModeDeepResearch } = await import('../services/deepResearchEngine');
           const result = await runFreeModeDeepResearch(testUserId, symbol, {
             binance: { primary: 'binance', backups: ['bybit', 'okx', 'kucoin'] },
             cryptocompare: { primary: 'cryptocompare', backups: ['alphavantage', 'coingecko'] },

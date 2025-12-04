@@ -65,7 +65,7 @@ const NotificationManager: React.FC<NotificationManagerProps> = ({
       });
       return updated;
     });
-  }, [notifications, activeNotifications]);
+  }, [notifications]);
 
   const handleNotification = useCallback((notification: any) => {
     // Get user preferences from localStorage (set via Settings page)

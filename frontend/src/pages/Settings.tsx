@@ -865,6 +865,10 @@ export default function Settings() {
       if (exchangeResult.status === 'rejected') {
         suppressConsoleError(exchangeResult.reason, 'loadConnectedExchange');
       }
+      if (topCoinsResult.status === 'rejected') {
+        suppressConsoleError(topCoinsResult.reason, 'loadTop100Coins');
+        // loadTop100Coins already handles its own fallback, so no additional action needed
+      }
 
       setRetryCount(0); // Reset retry count on successful load
 
