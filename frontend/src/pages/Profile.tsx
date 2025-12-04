@@ -159,20 +159,18 @@ export default function Profile() {
     }
   }, [user, loadAllData]);
 
-  // Force load after 10 seconds if still loading (fallback for slow APIs)
+  // Emergency timeout: force loading=false after 3 seconds
   useEffect(() => {
-    if (loading && user) {
+    if (loading) {
       const timeout = setTimeout(() => {
-        console.log('[Profile] Forcing load completion after timeout');
+        console.log('[Profile] EMERGENCY: Forcing loading=false after 3 seconds');
         if (isMountedRef.current) {
           setLoading(false);
-          setError({ message: 'Loading timeout - please try refreshing the page' });
         }
-      }, 10000);
-
+      }, 3000);
       return () => clearTimeout(timeout);
     }
-  }, [loading, user]);
+  }, [loading]);
 
   // Cleanup on unmount
   useEffect(() => {

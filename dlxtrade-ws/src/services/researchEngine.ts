@@ -99,43 +99,56 @@ export class ResearchEngine {
       // Analyze available research integrations
       if (integrations.cryptocompare) {
         try {
-          // Simple price-based analysis for cryptocompare
-          const priceChange = Math.random() * 10 - 5; // Placeholder logic
-          if (priceChange > 2) {
-            bullishSignals++;
-          } else if (priceChange < -2) {
-            bearishSignals++;
+          const { CryptoCompareAdapter } = await import('./cryptocompareAdapter');
+          const cryptoCompareAdapter = new CryptoCompareAdapter(integrations.cryptocompare.apiKey);
+          const marketData = await cryptoCompareAdapter.getMarketData(symbol);
+          if (marketData && marketData.priceChangePercent24h !== undefined) {
+            const priceChange = marketData.priceChangePercent24h;
+            if (priceChange > 2) {
+              bullishSignals++;
+            } else if (priceChange < -2) {
+              bearishSignals++;
+            }
+            logger.debug({ symbol, priceChange }, 'CryptoCompare signal analysis');
           }
         } catch (err) {
-          // Ignore errors
+          logger.debug({ err: err.message, symbol }, 'CryptoCompare signal analysis error (non-critical)');
         }
       }
 
       if (integrations.newsdata) {
         try {
-          // Simple sentiment-based analysis for newsdata
-          const sentiment = Math.random() * 2 - 1; // Placeholder logic
-          if (sentiment > 0.3) {
-            bullishSignals++;
-          } else if (sentiment < -0.3) {
-            bearishSignals++;
+          const { fetchNewsData } = await import('./newsDataAdapter');
+          const newsData = await fetchNewsData(integrations.newsdata.apiKey, symbol);
+          if (newsData && newsData.sentiment !== undefined) {
+            const sentiment = newsData.sentiment;
+            if (sentiment > 0.6) {
+              bullishSignals++;
+            } else if (sentiment < 0.4) {
+              bearishSignals++;
+            }
+            logger.debug({ symbol, sentiment }, 'NewsData signal analysis');
           }
         } catch (err) {
-          // Ignore errors
+          logger.debug({ err: err.message, symbol }, 'NewsData signal analysis error (non-critical)');
         }
       }
 
       if (integrations.coinmarketcap) {
         try {
-          // Simple market cap based analysis for coinmarketcap
-          const marketCapChange = Math.random() * 20 - 10; // Placeholder logic
-          if (marketCapChange > 5) {
-            bullishSignals++;
-          } else if (marketCapChange < -5) {
-            bearishSignals++;
+          const { fetchCoinMarketCapMarketData } = await import('./coinMarketCapAdapter');
+          const marketData = await fetchCoinMarketCapMarketData(symbol, integrations.coinmarketcap.apiKey);
+          if (marketData && marketData.success && marketData.priceChangePercent24h !== undefined) {
+            const priceChange = marketData.priceChangePercent24h;
+            if (priceChange > 3) {
+              bullishSignals++;
+            } else if (priceChange < -3) {
+              bearishSignals++;
+            }
+            logger.debug({ symbol, priceChange }, 'CoinMarketCap signal analysis');
           }
         } catch (err) {
-          // Ignore errors
+          logger.debug({ err: err.message, symbol }, 'CoinMarketCap signal analysis error (non-critical)');
         }
       }
 
@@ -273,43 +286,56 @@ export class ResearchEngine {
         // Analyze available research integrations
         if (integrations.cryptocompare) {
           try {
-            // Simple price analysis for cryptocompare
-            const priceChangePercent = Math.random() * 10 - 5; // Placeholder
-            if (priceChangePercent > 2) {
-              accuracy += 0.05;
-            } else if (priceChangePercent < -2) {
-              accuracy -= 0.03;
+            const { CryptoCompareAdapter } = await import('./cryptocompareAdapter');
+            const cryptoCompareAdapter = new CryptoCompareAdapter(integrations.cryptocompare.apiKey);
+            const marketData = await cryptoCompareAdapter.getMarketData(symbol);
+            if (marketData && marketData.priceChangePercent24h !== undefined) {
+              const priceChangePercent = marketData.priceChangePercent24h;
+              if (priceChangePercent > 2) {
+                accuracy += 0.05;
+              } else if (priceChangePercent < -2) {
+                accuracy -= 0.03;
+              }
+              logger.debug({ symbol, priceChangePercent }, 'CryptoCompare data processed');
             }
           } catch (err) {
-            logger.debug({ err, symbol }, 'CryptoCompare fetch error (non-critical)');
+            logger.debug({ err: err.message, symbol }, 'CryptoCompare fetch error (non-critical)');
           }
         }
 
         if (integrations.newsdata) {
           try {
-            // Simple news sentiment analysis for newsdata
-            const sentimentScore = Math.random() * 2 - 1; // Placeholder
-            if (sentimentScore > 0.3) {
-              accuracy += 0.05;
-            } else if (sentimentScore < -0.3) {
-              accuracy -= 0.03;
+            const { fetchNewsData } = await import('./newsDataAdapter');
+            const newsData = await fetchNewsData(integrations.newsdata.apiKey, symbol);
+            if (newsData && newsData.sentiment !== undefined) {
+              const sentimentScore = newsData.sentiment;
+              if (sentimentScore > 0.6) {
+                accuracy += 0.05;
+              } else if (sentimentScore < 0.4) {
+                accuracy -= 0.03;
+              }
+              logger.debug({ symbol, sentimentScore }, 'NewsData sentiment processed');
             }
           } catch (err) {
-            logger.debug({ err, symbol }, 'NewsData fetch error (non-critical)');
+            logger.debug({ err: err.message, symbol }, 'NewsData fetch error (non-critical)');
           }
         }
 
         if (integrations.coinmarketcap) {
           try {
-            // Simple market analysis for coinmarketcap
-            const marketCapChange = Math.random() * 20 - 10; // Placeholder
-            if (marketCapChange > 5) {
-              accuracy += 0.04;
-            } else if (marketCapChange < -5) {
-              accuracy -= 0.02;
+            const { fetchCoinMarketCapMarketData } = await import('./coinMarketCapAdapter');
+            const marketData = await fetchCoinMarketCapMarketData(symbol, integrations.coinmarketcap.apiKey);
+            if (marketData && marketData.success && marketData.priceChangePercent24h !== undefined) {
+              const priceChangePercent = marketData.priceChangePercent24h;
+              if (priceChangePercent > 3) {
+                accuracy += 0.04;
+              } else if (priceChangePercent < -3) {
+                accuracy -= 0.02;
+              }
+              logger.debug({ symbol, priceChangePercent }, 'CoinMarketCap data processed');
             }
           } catch (err) {
-            logger.debug({ err, symbol }, 'CoinMarketCap fetch error (non-critical)');
+            logger.debug({ err: err.message, symbol }, 'CoinMarketCap fetch error (non-critical)');
           }
         }
 

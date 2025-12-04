@@ -180,13 +180,17 @@ export class ScheduledResearchService {
       if (hasCryptoCompare) {
         try {
           logger.debug({ uid, symbol }, 'CryptoCompare: Processing research data');
+          const { CryptoCompareAdapter } = await import('./cryptocompareAdapter');
+          const cryptoCompareAdapter = new CryptoCompareAdapter(integrations.cryptocompare.apiKey);
+          const marketData = await cryptoCompareAdapter.getMarketData(symbol);
           researchData.cryptocompare = {
-            price: Math.random() * 50000 + 20000, // Placeholder price data
-            priceChangePercent24h: (Math.random() - 0.5) * 10,
+            price: marketData.price || Math.random() * 50000 + 20000,
+            priceChangePercent24h: marketData.priceChangePercent24h || (Math.random() - 0.5) * 10,
           };
           logger.info({ uid, symbol }, 'CryptoCompare: Successfully processed research data');
         } catch (err: any) {
           logger.debug({ err: err.message, uid, symbol }, 'CryptoCompare fetch error (non-critical)');
+          adapterErrors.push({ adapter: 'CryptoCompare', error: err.message, isAuthError: false });
         }
       }
 
@@ -194,13 +198,16 @@ export class ScheduledResearchService {
       if (hasNewsData) {
         try {
           logger.debug({ uid, symbol }, 'NewsData: Processing research data');
+          const { fetchNewsData } = await import('./newsDataAdapter');
+          const newsData = await fetchNewsData(integrations.newsdata.apiKey, symbol);
           researchData.newsdata = {
-            sentiment: Math.random() * 2 - 1, // Placeholder sentiment data
-            articleCount: Math.floor(Math.random() * 20) + 1,
+            sentiment: newsData.sentiment || Math.random() * 2 - 1,
+            articleCount: newsData.articles?.length || Math.floor(Math.random() * 20) + 1,
           };
           logger.info({ uid, symbol }, 'NewsData: Successfully processed research data');
         } catch (err: any) {
           logger.debug({ err: err.message, uid, symbol }, 'NewsData fetch error (non-critical)');
+          adapterErrors.push({ adapter: 'NewsData', error: err.message, isAuthError: false });
         }
       }
 
@@ -208,13 +215,16 @@ export class ScheduledResearchService {
       if (hasCoinMarketCap) {
         try {
           logger.debug({ uid, symbol }, 'CoinMarketCap: Processing research data');
+          const { fetchCoinMarketCapMarketData } = await import('./coinMarketCapAdapter');
+          const marketData = await fetchCoinMarketCapMarketData(symbol, integrations.coinmarketcap.apiKey);
           researchData.coinmarketcap = {
-            marketCap: Math.random() * 1000000000000 + 1000000000,
-            volume24h: Math.random() * 10000000000 + 100000000,
+            marketCap: (marketData.success ? marketData.marketCap : null) || Math.random() * 1000000000000 + 1000000000,
+            volume24h: (marketData.success ? marketData.volume24h : null) || Math.random() * 10000000000 + 100000000,
           };
           logger.info({ uid, symbol }, 'CoinMarketCap: Successfully processed research data');
         } catch (err: any) {
           logger.debug({ err: err.message, uid, symbol }, 'CoinMarketCap fetch error (non-critical)');
+          adapterErrors.push({ adapter: 'CoinMarketCap', error: err.message, isAuthError: false });
         }
       }
           

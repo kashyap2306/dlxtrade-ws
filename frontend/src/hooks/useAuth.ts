@@ -8,14 +8,16 @@ export function useAuth() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Add timeout to prevent infinite loading if Firebase auth hangs
-    const authTimeout = setTimeout(() => {
-      console.log('[useAuth] Forcing auth loading completion after timeout');
+    console.log('[useAuth] Setting up auth state listener');
+
+    // Emergency fallback: force loading=false after 1 second to prevent infinite loading
+    const forceLoadingTimeout = setTimeout(() => {
       setLoading(false);
-    }, 10000); // 10 seconds timeout
+    }, 1000);
 
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      clearTimeout(authTimeout); // Clear timeout if auth resolves normally
+      clearTimeout(forceLoadingTimeout); // Clear emergency timeout
+
       try {
         if (firebaseUser) {
           const token = await firebaseUser.getIdToken();
@@ -27,7 +29,6 @@ export function useAuth() {
           setUser(firebaseUser);
         } else {
           // Only clear if we're sure there's no user
-          // Don't clear on initial load if token exists
           const token = localStorage.getItem('firebaseToken');
           if (!token) {
             localStorage.removeItem('firebaseToken');
@@ -36,8 +37,7 @@ export function useAuth() {
           }
         }
       } catch (error) {
-        console.error('Error in auth state change:', error);
-        // On error, clear auth state to prevent infinite loading
+        console.error('Auth state change error:', error);
         localStorage.removeItem('firebaseToken');
         localStorage.removeItem('firebaseUser');
         setUser(null);
@@ -46,19 +46,24 @@ export function useAuth() {
       }
     });
 
-    // Refresh token periodically
+    // Refresh token periodically - Firebase handles this automatically, but we'll do it less frequently
     const tokenRefreshInterval = setInterval(async () => {
       try {
-        if (auth.currentUser) {
+        if (auth.currentUser && !loading) { // Only refresh if not currently loading
+          console.log('[useAuth] Refreshing token periodically');
           const token = await auth.currentUser.getIdToken(true);
           localStorage.setItem('firebaseToken', token);
         }
       } catch (error) {
         console.error('Error refreshing token:', error);
       }
-    }, 55 * 60 * 1000); // Refresh every 55 minutes (tokens expire in 1 hour)
+    }, 50 * 60 * 1000); // Refresh every 50 minutes
+
+    console.log('[useAuth] Auth listener setup complete');
 
     return () => {
+      console.log('[useAuth] Cleaning up auth listener');
+      clearTimeout(forceLoadingTimeout);
       try {
         unsubscribe();
       } catch (error) {

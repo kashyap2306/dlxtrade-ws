@@ -149,25 +149,32 @@ api.interceptors.request.use(
       throw error;
     }
 
-    // Firebase Token - with timeout to prevent blocking
+    // Firebase Token - prevent concurrent calls
     try {
       const currentUser = getAuth().currentUser;
       if (currentUser) {
-        // Add timeout to prevent hanging requests
-        const tokenPromise = currentUser.getIdToken();
-        const timeoutPromise = new Promise<string>((_, reject) =>
-          setTimeout(() => reject(new Error('Token fetch timeout')), 3000)
-        );
-
-        const token = await Promise.race([tokenPromise, timeoutPromise]);
-        if (token && typeof token === 'string') {
+        // Use cached token if available and not expired
+        const cachedToken = localStorage.getItem('firebaseToken');
+        if (cachedToken) {
           config.headers = config.headers || {};
-          config.headers.Authorization = `Bearer ${token}`;
+          config.headers.Authorization = `Bearer ${cachedToken}`;
+        } else {
+          // Only fetch new token if no cached token
+          const tokenPromise = currentUser.getIdToken();
+          const timeoutPromise = new Promise<string>((_, reject) =>
+            setTimeout(() => reject(new Error('Token fetch timeout')), 2000)
+          );
+
+          const token = await Promise.race([tokenPromise, timeoutPromise]);
+          if (token && typeof token === 'string') {
+            localStorage.setItem('firebaseToken', token);
+            config.headers = config.headers || {};
+            config.headers.Authorization = `Bearer ${token}`;
+          }
         }
       }
     } catch (tokenError) {
-      // Silently fail token fetching - allow request to proceed without auth
-      console.warn('[API] Token fetch failed, proceeding without auth:', tokenError.message);
+      console.warn('[API] Token fetch failed:', tokenError.message);
     }
 
     // Metadata
@@ -243,6 +250,50 @@ export const healthPingService = new HealthPingService();
 if (typeof window !== 'undefined') {
   setTimeout(() => healthPingService.start(), 2000);
 }
+
+// Timeout wrapper for long-running calls
+export const timeoutApi = {
+  get: async (url: string, config?: any, timeoutMs: number = 10000) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await api.get(url, {
+        ...config,
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      return response;
+    } catch (error: any) {
+      clearTimeout(timeoutId);
+      if (error.name === 'AbortError') {
+        console.warn(`[API TIMEOUT] ${url} timed out after ${timeoutMs}ms`);
+        throw new Error(`Request timeout after ${timeoutMs}ms`);
+      }
+      throw error;
+    }
+  },
+  post: async (url: string, data?: any, config?: any, timeoutMs: number = 10000) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await api.post(url, data, {
+        ...config,
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      return response;
+    } catch (error: any) {
+      clearTimeout(timeoutId);
+      if (error.name === 'AbortError') {
+        console.warn(`[API TIMEOUT] ${url} timed out after ${timeoutMs}ms`);
+        throw new Error(`Request timeout after ${timeoutMs}ms`);
+      }
+      throw error;
+    }
+  },
+};
 
 // Cached Wrapper
 export const cachedApi = {

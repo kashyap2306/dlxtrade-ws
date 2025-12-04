@@ -1,4 +1,4 @@
-import api, { cachedApi } from '@/config/axios';
+import api, { cachedApi, timeoutApi } from '@/config/axios';
 
 export default api;
 
@@ -43,7 +43,7 @@ export const adminApi = {
   updateUserAgentSettings: (uid: string, agentName: string, settings: any) => api.put(`/admin/user/${uid}/agent/${encodeURIComponent(agentName)}/settings`, settings),
   getGlobalSettings: () => api.get('/admin/global-settings'),
   updateGlobalSettings: (settings: any) => api.post('/admin/global-settings', settings),
-  getMarketData: () => api.get('/market/top-coins'),
+  getMarketData: () => timeoutApi.get('/market/top-coins', {}, 10000),
   deleteUser: (uid: string) => api.delete(`/admin/users/${uid}`),
     // Agent purchases
     getPurchases: (params?: { status?: string; limit?: number }) => api.get('/admin/agents/purchases', { params }),
@@ -135,6 +135,24 @@ export const settingsApi = {
       accuracyTrigger: number;
     }) => api.post('/research/background-research/settings', data),
     test: (data: { botToken: string; chatId: string }) => api.post('/research/background-research/settings/test', data),
+  },
+
+  // Provider Settings
+  providers: {
+    load: () => api.get('/settings/providers'),
+    save: (data: {
+      providerId: string;
+      providerType: 'marketData' | 'news' | 'metadata';
+      isPrimary: boolean;
+      enabled: boolean;
+      apiKey?: string;
+    }) => api.post('/settings/providers/save', data),
+    changeKey: (data: {
+      providerId: string;
+      providerType: 'marketData' | 'news' | 'metadata';
+      isPrimary: boolean;
+      newApiKey: string;
+    }) => api.post('/settings/providers/change', data),
   },
 };
 

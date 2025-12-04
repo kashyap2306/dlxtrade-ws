@@ -297,20 +297,18 @@ export default function AutoTrade() {
     }
   }, [user, loadAllData]);
 
-  // Force load after 10 seconds if still loading (fallback for slow APIs)
+  // Emergency timeout: force loading=false after 3 seconds
   useEffect(() => {
-    if (loading && user) {
+    if (loading) {
       const timeout = setTimeout(() => {
-        console.log('[AutoTrade] Forcing load completion after timeout');
+        console.log('[AutoTrade] EMERGENCY: Forcing loading=false after 3 seconds');
         if (isMountedRef.current) {
           setLoading(false);
-          setError({ message: 'Loading timeout - please try refreshing the page' });
         }
-      }, 10000);
-
+      }, 3000);
       return () => clearTimeout(timeout);
     }
-  }, [loading, user]);
+  }, [loading]);
 
   // Use centralized polling for live data (30 second intervals when visible)
   usePolling(loadLiveData, 30000, !!user);

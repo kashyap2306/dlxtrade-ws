@@ -181,19 +181,23 @@ console.log("[RENDER ENV] Build timestamp:", Date.now());
     let uid: string | null = null;
     try {
       const token = (req.query as any).token || req.headers.authorization?.replace('Bearer ', '');
-      if (token) {
-        const { verifyFirebaseToken } = await import('./utils/firebase');
-        const decoded = await verifyFirebaseToken(token);
-        uid = decoded.uid;
-        (req as any).user = { uid: decoded.uid, email: decoded.email };
-      } else {
-        logger.warn('WebSocket connection without token');
-        connection.socket.close();
+      if (!token) {
+        console.log('🔥 WS: No token provided - closing connection');
+        connection.socket.close(1008, 'No token provided');
         return;
       }
-    } catch (err) {
-      logger.warn({ err }, 'WebSocket auth failed');
-      connection.socket.close();
+
+      console.log('🔥 WS: Verifying Firebase token...');
+      const { verifyFirebaseToken } = await import('./utils/firebase');
+      const decoded = await verifyFirebaseToken(token);
+      uid = decoded.uid;
+      (req as any).user = { uid: decoded.uid, email: decoded.email };
+      console.log('🔥 WS: Token verified successfully for uid:', uid);
+
+    } catch (err: any) {
+      console.log('🔥 WS: Token verification failed:', err.message);
+      // Close with 1008 (policy violation) for auth failures, not 1006 (abnormal closure)
+      connection.socket.close(1008, `Authentication failed: ${err.message}`);
       return;
     }
 

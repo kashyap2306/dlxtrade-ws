@@ -81,17 +81,19 @@ class WebSocketService {
         // Stop heartbeat
         this.stopHeartbeat();
 
-        // Check for authentication failure
+        // Check for authentication failure - do NOT reconnect on auth failures
         if (ev.code === 1008 || (ev.code >= 4000 && ev.code < 5000)) {
-          console.error('[WS] Authentication failed - check token validity');
+          console.error('[WS] Authentication failed - NOT reconnecting:', ev.reason);
+          this.reconnectAttempts = this.maxReconnectAttempts; // Prevent reconnection
+          return;
         }
 
-        // Auto retry on specific close codes or if before handshake
-        if (ev.code === 1006 || ev.code === 1000 || this.reconnectAttempts < this.maxReconnectAttempts) {
+        // Only retry on network issues (1006) or clean disconnects (1000), not on auth failures
+        if ((ev.code === 1006 || ev.code === 1000) && this.reconnectAttempts < this.maxReconnectAttempts) {
           console.log(`[WS] Auto-retrying connection (attempt ${this.reconnectAttempts + 1}/${this.maxReconnectAttempts})`);
           this.scheduleReconnect();
         } else {
-          console.warn(`[WS] Max reconnect attempts (${this.maxReconnectAttempts}) reached, giving up`);
+          console.warn(`[WS] Not reconnecting - code ${ev.code}, attempts: ${this.reconnectAttempts}/${this.maxReconnectAttempts}`);
         }
       };
     } catch (err) {
@@ -179,11 +181,30 @@ class WebSocketService {
 
   initTokenRefreshHandler(): void {
     // Handle token refresh - reconnect WebSocket when token changes
+    // Only reconnect if we were previously connected to avoid loops
+    let wasConnected = false;
+
     onIdTokenChanged(getAuth(), async (user) => {
-      if (user) {
+      if (user && wasConnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
+        console.log('[WS] Token refreshed, reconnecting WebSocket');
         this.reconnectWebSocket();
+      } else if (user) {
+        console.log('[WS] Token available but not reconnecting (was not previously connected)');
       }
     });
+
+    // Track connection state
+    const originalConnect = this.connect.bind(this);
+    this.connect = async () => {
+      wasConnected = true;
+      return originalConnect();
+    };
+
+    const originalDisconnect = this.disconnect.bind(this);
+    this.disconnect = () => {
+      wasConnected = false;
+      return originalDisconnect();
+    };
   }
 
   private startHeartbeat(): void {

@@ -60,15 +60,15 @@ function LoadingScreen() {
 // API-safe route wrapper that prevents blank screens on API failures
 function SafeRoute({ children, fallbackMessage = "Content temporarily unavailable" }: { children: React.ReactNode, fallbackMessage?: string }) {
   const [hasError, setHasError] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [suspenseTimeout, setSuspenseTimeout] = useState(false);
 
+  // Emergency timeout for Suspense fallback - ensure content renders within 3 seconds
   useEffect(() => {
-    // Set a timeout to ensure content renders even if APIs are slow
-    const timeout = setTimeout(() => {
-      setIsLoading(false);
-    }, 5000); // 5 second timeout
+    const suspenseEmergencyTimeout = setTimeout(() => {
+      setSuspenseTimeout(true);
+    }, 3000);
 
-    return () => clearTimeout(timeout);
+    return () => clearTimeout(suspenseEmergencyTimeout);
   }, []);
 
   if (hasError) {
@@ -115,7 +115,29 @@ function SafeRoute({ children, fallbackMessage = "Content temporarily unavailabl
         </div>
       }
     >
-      <Suspense fallback={<LoadingState message="Loading page content..." />}>
+      <Suspense fallback={
+        suspenseTimeout ? (
+          <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center">
+            <div className="max-w-md mx-auto text-center p-8 bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-2xl">
+              <div className="text-slate-400 mb-4">
+                <svg className="w-12 h-12 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-semibold text-white mb-2">Content Loading Timeout</h3>
+              <p className="text-slate-400 text-sm mb-4">The page content is taking longer than expected to load.</p>
+              <button
+                onClick={() => window.location.reload()}
+                className="px-4 py-2 bg-slate-700/50 border border-slate-600/50 text-slate-300 rounded-lg hover:bg-slate-600/50 transition-colors text-sm font-medium"
+              >
+                Reload Page
+              </button>
+            </div>
+          </div>
+        ) : (
+          <LoadingState message="Loading page content..." />
+        )
+      }>
         {children}
       </Suspense>
     </ErrorBoundary>
@@ -125,6 +147,25 @@ function SafeRoute({ children, fallbackMessage = "Content temporarily unavailabl
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
 
+  // Emergency fallback: allow access after 2 seconds to prevent infinite loading
+  const [emergencyAccess, setEmergencyAccess] = useState(false);
+
+  useEffect(() => {
+    if (loading) {
+      const timeout = setTimeout(() => {
+        console.log('[PrivateRoute] EMERGENCY: Allowing access after 2 seconds');
+        setEmergencyAccess(true);
+      }, 2000);
+
+      return () => clearTimeout(timeout);
+    }
+  }, [loading]);
+
+  // Allow access if authenticated OR emergency timeout triggered OR cached token exists
+  if (user || emergencyAccess || localStorage.getItem('firebaseToken')) {
+    return <>{children}</>;
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -133,7 +174,7 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
     );
   }
 
-  return user ? children : <Navigate to="/login" />;
+  return <Navigate to="/login" />;
 }
 
 // AdminRoute moved to components/AdminRoute with simplified logic

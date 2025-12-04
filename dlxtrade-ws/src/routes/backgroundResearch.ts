@@ -102,13 +102,20 @@ export async function backgroundResearchRoutes(fastify: FastifyInstance) {
     try {
       logger.info({ uid: user.uid }, 'Testing Telegram connection');
 
-      // For now, just return success - actual Telegram testing would require API call
-      // In production, you would call the Telegram API to send a test message
+      // Import telegram service and test the connection
+      const { telegramService } = await import('../services/telegramService');
+      const testResult = await telegramService.testConnection(botToken, chatId);
 
-      return {
-        success: true,
-        message: "DLXTRADE Alert Test Successful: Telegram integration working."
-      };
+      if (testResult.success) {
+        return {
+          success: true,
+          message: "DLXTRADE Alert Test Successful: Telegram integration working."
+        };
+      } else {
+        return reply.code(400).send({
+          error: testResult.error || 'Failed to send test message to Telegram'
+        });
+      }
     } catch (error: any) {
       logger.error({ error: error.message, uid: user.uid }, 'Error testing Telegram connection');
       return reply.code(500).send({

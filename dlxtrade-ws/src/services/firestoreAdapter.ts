@@ -1410,6 +1410,37 @@ export class FirestoreAdapter {
       throw error;
     }
   }
+
+  /**
+   * Get user provider settings
+   */
+  async getUserProviderSettings(uid: string): Promise<any> {
+    try {
+      const doc = await db().collection('users').doc(uid).collection('settings').doc('providers').get();
+      if (!doc.exists) {
+        return null;
+      }
+      return doc.data();
+    } catch (error: any) {
+      logger.error({ error: error.message, uid }, 'Error getting user provider settings');
+      throw error;
+    }
+  }
+
+  /**
+   * Save user provider settings
+   */
+  async saveUserProviderSettings(uid: string, settings: any): Promise<void> {
+    try {
+      await db().collection('users').doc(uid).collection('settings').doc('providers').set({
+        ...settings,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+    } catch (error: any) {
+      logger.error({ error: error.message, uid, settings }, 'Error saving user provider settings');
+      throw error;
+    }
+  }
 }
 
 export const firestoreAdapter = new FirestoreAdapter();

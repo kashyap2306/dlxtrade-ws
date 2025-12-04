@@ -56,6 +56,22 @@
     }
   }
 
+  /* Emergency fallback: hide overlay spinners after 12 seconds */
+  .emergency-hide-overlay {
+    animation: hide-overlay-emergency 12s ease-in-out forwards;
+  }
+
+  @keyframes hide-overlay-emergency {
+    0%, 91% {
+      opacity: 1;
+      visibility: visible;
+    }
+    100% {
+      opacity: 0;
+      visibility: hidden;
+    }
+  }
+
   .animate-slide-in-right {
     animation: slide-in-right 0.3s ease-out;
   }

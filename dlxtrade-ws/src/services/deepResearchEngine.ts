@@ -612,10 +612,10 @@ export class DeepResearchEngine {
 
     // Execute all providers with backup logic
     const [marketDataResult, ccResult, cmcResult, newsResult] = await Promise.all([
-      this.executeMarketDataProvider(symbol, providerConfigs?.binance || { primary: 'cryptocompare', backups: [] }, userIntegrations),
+      this.executeMarketDataProvider(symbol, providerConfigs?.binance || { primary: 'cryptocompare', backups: [] }, userIntegrations, uid),
       this.executeCryptoCompareProvider(symbol, providerConfigs?.cryptocompare || { primary: 'cryptocompare', backups: [] }, userIntegrations),
-      this.executeCMCProvider(symbol, providerConfigs?.cmc || { primary: 'coingecko', backups: [] }, userIntegrations),
-      this.executeNewsProvider(symbol, providerConfigs?.news || { primary: 'newsdata', backups: [] }, userIntegrations)
+      this.executeCMCProvider(symbol, providerConfigs?.cmc || { primary: 'coingecko', backups: [] }, userIntegrations, uid),
+      this.executeNewsProvider(symbol, providerConfigs?.news || { primary: 'newsdata', backups: [] }, userIntegrations, uid)
     ]);
 
     // Combine results using FREE MODE logic v1.5
@@ -652,39 +652,106 @@ export class DeepResearchEngine {
   private async executeMarketDataProvider(
     symbol: string,
     config: ProviderBackupConfig,
-    integrations: any
+    integrations: any,
+    uid: string
   ): Promise<FreeModeProviderResult> {
     console.log('🔄 EXECUTE MARKET DATA PROVIDER: Called for symbol', symbol);
 
-    // Direct failover chain - try each provider in order
-    const providers = ['cryptocompare', 'coingecko', 'kucoin', 'bybit', 'okx', 'bitget'];
+    try {
+      // Get user provider settings
+      const userProviderSettings = await firestoreAdapter.getUserProviderSettings(uid) || {};
 
-    for (const provider of providers) {
-      const startTime = Date.now();
-      try {
-        console.log(`🔄 MARKET DATA: Trying ${provider} for ${symbol}`);
-        const result = await this.fetchMarketDataFromProvider(provider, symbol, integrations);
+      // Get enabled market data providers
+      const enabledProviders = [];
 
-        if (result.success) {
-          console.log(`✅ MARKET DATA: ${provider} succeeded in ${Date.now() - startTime}ms`);
-          result.latencyMs = Date.now() - startTime;
-          return result;
-        } else {
-          console.log(`⚠️ MARKET DATA: ${provider} returned success=false: ${result.error}`);
-        }
-      } catch (error: any) {
-        console.error(`❌ MARKET DATA: ${provider} failed:`, error.message);
+      // Add primary if enabled
+      if (userProviderSettings.marketData?.primary?.enabled) {
+        enabledProviders.push({
+          id: 'coingecko',
+          hasKey: userProviderSettings.marketData.primary.encryptedApiKey ? true : false,
+          isPrimary: true
+        });
       }
-    }
 
-    // All providers failed
-    return {
-      success: false,
-      data: null,
-      latencyMs: Date.now() - Date.now(), // Will be 0 since all failed instantly
-      provider: 'none',
-      error: 'All market data providers failed'
-    };
+      // Add backup providers that are enabled
+      if (userProviderSettings.marketData?.backups) {
+        Object.entries(userProviderSettings.marketData.backups).forEach(([providerId, settings]: [string, any]) => {
+          if (settings.enabled) {
+            enabledProviders.push({
+              id: providerId,
+              hasKey: settings.encryptedApiKey ? true : false,
+              isPrimary: false
+            });
+          }
+        });
+      }
+
+      // Sort providers: keyed providers first, then free providers
+      enabledProviders.sort((a, b) => {
+        if (a.hasKey && !b.hasKey) return -1;
+        if (!a.hasKey && b.hasKey) return 1;
+        return 0;
+      });
+
+      console.log(`🔄 MARKET DATA: Trying ${enabledProviders.length} enabled providers for ${symbol}`);
+
+      // Try each enabled provider in priority order
+      for (const provider of enabledProviders) {
+        const startTime = Date.now();
+        try {
+          console.log(`🔄 MARKET DATA: Trying ${provider.id} (keyed: ${provider.hasKey}) for ${symbol}`);
+          const result = await this.fetchMarketDataFromProvider(provider.id, symbol, integrations);
+
+          if (result.success) {
+            console.log(`✅ MARKET DATA: ${provider.id} succeeded in ${Date.now() - startTime}ms`);
+            result.latencyMs = Date.now() - startTime;
+            return result;
+          } else {
+            console.log(`⚠️ MARKET DATA: ${provider.id} returned success=false: ${result.error}`);
+          }
+        } catch (error: any) {
+          console.error(`❌ MARKET DATA: ${provider.id} failed:`, error.message);
+        }
+      }
+
+      // All enabled providers failed
+      return {
+        success: false,
+        data: null,
+        latencyMs: 0,
+        provider: 'none',
+        error: 'All enabled market data providers failed'
+      };
+
+    } catch (error: any) {
+      console.error('❌ MARKET DATA: Error getting user provider settings:', error.message);
+      // Fallback to old behavior if settings can't be loaded
+      const providers = ['coingecko', 'coinpaprika', 'coinmarketcap'];
+
+      for (const provider of providers) {
+        const startTime = Date.now();
+        try {
+          console.log(`🔄 MARKET DATA: Fallback trying ${provider} for ${symbol}`);
+          const result = await this.fetchMarketDataFromProvider(provider, symbol, integrations);
+
+          if (result.success) {
+            console.log(`✅ MARKET DATA: ${provider} succeeded in ${Date.now() - startTime}ms`);
+            result.latencyMs = Date.now() - startTime;
+            return result;
+          }
+        } catch (error: any) {
+          console.error(`❌ MARKET DATA: ${provider} failed:`, error.message);
+        }
+      }
+
+      return {
+        success: false,
+        data: null,
+        latencyMs: 0,
+        provider: 'none',
+        error: 'All market data providers failed'
+      };
+    }
   }
 
   /**
@@ -699,23 +766,48 @@ export class DeepResearchEngine {
     const usdtSymbol = `${baseSymbol}USDT`;
 
     switch (provider) {
-      case 'cryptocompare':
-        return await this.fetchCryptoCompareMarketData(baseSymbol, integrations);
-
       case 'coingecko':
         return await this.fetchCoinGeckoMarketData(baseSymbol);
 
-      case 'kucoin':
-        return await this.fetchKuCoinMarketData(usdtSymbol);
+      case 'bravenewcoin':
+        // TODO: Implement BraveNewCoin market data fetching
+        throw new Error('BraveNewCoin market data provider not yet implemented');
 
-      case 'bybit':
-        return await this.fetchBybitMarketData(usdtSymbol);
+      case 'coinapi':
+        // TODO: Implement CoinAPI market data fetching
+        throw new Error('CoinAPI market data provider not yet implemented');
 
-      case 'okx':
-        return await this.fetchOKXMarketData(usdtSymbol);
+      case 'coincheckup':
+        // TODO: Implement CoinCheckup market data fetching
+        throw new Error('CoinCheckup market data provider not yet implemented');
 
-      case 'bitget':
-        return await this.fetchBitgetMarketData(usdtSymbol);
+      case 'coinlore':
+        // TODO: Implement CoinLore market data fetching
+        throw new Error('CoinLore market data provider not yet implemented');
+
+      case 'coinmarketcap':
+        // TODO: Implement CoinMarketCap market data fetching
+        throw new Error('CoinMarketCap market data provider not yet implemented');
+
+      case 'coinpaprika':
+        // TODO: Implement CoinPaprika market data fetching
+        throw new Error('CoinPaprika market data provider not yet implemented');
+
+      case 'coinstats':
+        // TODO: Implement CoinStats market data fetching
+        throw new Error('CoinStats market data provider not yet implemented');
+
+      case 'kaiko':
+        // TODO: Implement Kaiko market data fetching
+        throw new Error('Kaiko market data provider not yet implemented');
+
+      case 'livecoinwatch':
+        // TODO: Implement LiveCoinWatch market data fetching
+        throw new Error('LiveCoinWatch market data provider not yet implemented');
+
+      case 'messari':
+        // TODO: Implement Messari market data fetching
+        throw new Error('Messari market data provider not yet implemented');
 
       default:
         throw new Error(`Unknown market data provider: ${provider}`);
@@ -765,44 +857,111 @@ export class DeepResearchEngine {
   }
 
   /**
-   * Execute Metadata provider with backups (CoinGecko, CoinPaprika)
+   * Execute Metadata provider with backups
    */
   private async executeCMCProvider(
     symbol: string,
     config: ProviderBackupConfig,
-    integrations: any
+    integrations: any,
+    uid: string
   ): Promise<FreeModeProviderResult> {
     console.log('🔄 EXECUTE METADATA PROVIDER: Called for symbol', symbol);
 
-    // Direct failover chain - try each provider in order
-    const providers = ['coingecko', 'coinpaprika'];
+    try {
+      // Get user provider settings
+      const userProviderSettings = await firestoreAdapter.getUserProviderSettings(uid) || {};
 
-    for (const provider of providers) {
-      const startTime = Date.now();
-      try {
-        console.log(`🔄 METADATA: Trying ${provider} for ${symbol}`);
-        const result = await this.fetchMetadataFromProvider(provider, symbol, integrations);
+      // Get enabled metadata providers
+      const enabledProviders = [];
 
-        if (result.success) {
-          console.log(`✅ METADATA: ${provider} succeeded in ${Date.now() - startTime}ms`);
-          result.latencyMs = Date.now() - startTime;
-          return result;
-        } else {
-          console.log(`⚠️ METADATA: ${provider} returned success=false: ${result.error}`);
-        }
-      } catch (error: any) {
-        console.error(`❌ METADATA: ${provider} failed:`, error.message);
+      // Add primary if enabled
+      if (userProviderSettings.metadata?.primary?.enabled) {
+        enabledProviders.push({
+          id: 'cryptocompare',
+          hasKey: userProviderSettings.metadata.primary.encryptedApiKey ? true : false,
+          isPrimary: true
+        });
       }
-    }
 
-    // All providers failed
-    return {
-      success: false,
-      data: null,
-      latencyMs: Date.now() - Date.now(), // Will be 0 since all failed instantly
-      provider: 'none',
-      error: 'All metadata providers failed'
-    };
+      // Add backup providers that are enabled
+      if (userProviderSettings.metadata?.backups) {
+        Object.entries(userProviderSettings.metadata.backups).forEach(([providerId, settings]: [string, any]) => {
+          if (settings.enabled) {
+            enabledProviders.push({
+              id: providerId,
+              hasKey: settings.encryptedApiKey ? true : false,
+              isPrimary: false
+            });
+          }
+        });
+      }
+
+      // Sort providers: keyed providers first, then free providers
+      enabledProviders.sort((a, b) => {
+        if (a.hasKey && !b.hasKey) return -1;
+        if (!a.hasKey && b.hasKey) return 1;
+        return 0;
+      });
+
+      console.log(`🔄 METADATA: Trying ${enabledProviders.length} enabled providers for ${symbol}`);
+
+      // Try each enabled provider in priority order
+      for (const provider of enabledProviders) {
+        const startTime = Date.now();
+        try {
+          console.log(`🔄 METADATA: Trying ${provider.id} (keyed: ${provider.hasKey}) for ${symbol}`);
+          const result = await this.fetchMetadataFromProvider(provider.id, symbol, integrations);
+
+          if (result.success) {
+            console.log(`✅ METADATA: ${provider.id} succeeded in ${Date.now() - startTime}ms`);
+            result.latencyMs = Date.now() - startTime;
+            return result;
+          } else {
+            console.log(`⚠️ METADATA: ${provider.id} returned success=false: ${result.error}`);
+          }
+        } catch (error: any) {
+          console.error(`❌ METADATA: ${provider.id} failed:`, error.message);
+        }
+      }
+
+      // All enabled providers failed
+      return {
+        success: false,
+        data: null,
+        latencyMs: 0,
+        provider: 'none',
+        error: 'All enabled metadata providers failed'
+      };
+
+    } catch (error: any) {
+      console.error('❌ METADATA: Error getting user provider settings:', error.message);
+      // Fallback to old behavior if settings can't be loaded
+      const providers = ['cryptocompare', 'coingecko', 'coinpaprika'];
+
+      for (const provider of providers) {
+        const startTime = Date.now();
+        try {
+          console.log(`🔄 METADATA: Fallback trying ${provider} for ${symbol}`);
+          const result = await this.fetchMetadataFromProvider(provider, symbol, integrations);
+
+          if (result.success) {
+            console.log(`✅ METADATA: ${provider} succeeded in ${Date.now() - startTime}ms`);
+            result.latencyMs = Date.now() - startTime;
+            return result;
+          }
+        } catch (error: any) {
+          console.error(`❌ METADATA: ${provider} failed:`, error.message);
+        }
+      }
+
+      return {
+        success: false,
+        data: null,
+        latencyMs: 0,
+        provider: 'none',
+        error: 'All metadata providers failed'
+      };
+    }
   }
 
   /**
@@ -814,11 +973,43 @@ export class DeepResearchEngine {
     integrations: any
   ): Promise<FreeModeProviderResult> {
     switch (provider) {
+      case 'cryptocompare':
+        // TODO: Implement CryptoCompare metadata fetching
+        throw new Error('CryptoCompare metadata provider not yet implemented');
+
+      case 'coincap':
+        // TODO: Implement CoinCap metadata fetching
+        throw new Error('CoinCap metadata provider not yet implemented');
+
       case 'coingecko':
         return await this.fetchCoinGeckoMetadata(symbol);
 
+      case 'coinmarketcap':
+        // TODO: Implement CoinMarketCap metadata fetching
+        throw new Error('CoinMarketCap metadata provider not yet implemented');
+
       case 'coinpaprika':
         return await this.fetchCoinPaprikaMetadata(symbol);
+
+      case 'coinranking':
+        // TODO: Implement CoinRanking metadata fetching
+        throw new Error('CoinRanking metadata provider not yet implemented');
+
+      case 'coinstats':
+        // TODO: Implement CoinStats metadata fetching
+        throw new Error('CoinStats metadata provider not yet implemented');
+
+      case 'livecoinwatch':
+        // TODO: Implement LiveCoinWatch metadata fetching
+        throw new Error('LiveCoinWatch metadata provider not yet implemented');
+
+      case 'messari':
+        // TODO: Implement Messari metadata fetching
+        throw new Error('Messari metadata provider not yet implemented');
+
+      case 'nomics':
+        // TODO: Implement Nomics metadata fetching
+        throw new Error('Nomics metadata provider not yet implemented');
 
       default:
         throw new Error(`Unknown metadata provider: ${provider}`);
@@ -831,39 +1022,106 @@ export class DeepResearchEngine {
   private async executeNewsProvider(
     symbol: string,
     config: ProviderBackupConfig,
-    integrations: any
+    integrations: any,
+    uid: string
   ): Promise<FreeModeProviderResult> {
     console.log('🔄 EXECUTE NEWS PROVIDER: Called for symbol', symbol);
 
-    // Direct failover chain - try each provider in order
-    const providers = ['newsdata', 'cryptopanic', 'reddit', 'gnews'];
+    try {
+      // Get user provider settings
+      const userProviderSettings = await firestoreAdapter.getUserProviderSettings(uid) || {};
 
-    for (const provider of providers) {
-      const startTime = Date.now();
-      try {
-        console.log(`🔄 NEWS: Trying ${provider} for ${symbol}`);
-        const result = await this.fetchNewsFromProvider(provider, symbol, integrations);
+      // Get enabled news providers
+      const enabledProviders = [];
 
-        if (result.success) {
-          console.log(`✅ NEWS: ${provider} succeeded in ${Date.now() - startTime}ms`);
-          result.latencyMs = Date.now() - startTime;
-          return result;
-        } else {
-          console.log(`⚠️ NEWS: ${provider} returned success=false: ${result.error}`);
-        }
-      } catch (error: any) {
-        console.error(`❌ NEWS: ${provider} failed:`, error.message);
+      // Add primary if enabled
+      if (userProviderSettings.news?.primary?.enabled) {
+        enabledProviders.push({
+          id: 'newsdataio',
+          hasKey: userProviderSettings.news.primary.encryptedApiKey ? true : false,
+          isPrimary: true
+        });
       }
-    }
 
-    // All providers failed
-    return {
-      success: false,
-      data: null,
-      latencyMs: Date.now() - Date.now(), // Will be 0 since all failed instantly
-      provider: 'none',
-      error: 'All news providers failed'
-    };
+      // Add backup providers that are enabled
+      if (userProviderSettings.news?.backups) {
+        Object.entries(userProviderSettings.news.backups).forEach(([providerId, settings]: [string, any]) => {
+          if (settings.enabled) {
+            enabledProviders.push({
+              id: providerId,
+              hasKey: settings.encryptedApiKey ? true : false,
+              isPrimary: false
+            });
+          }
+        });
+      }
+
+      // Sort providers: keyed providers first, then free providers
+      enabledProviders.sort((a, b) => {
+        if (a.hasKey && !b.hasKey) return -1;
+        if (!a.hasKey && b.hasKey) return 1;
+        return 0;
+      });
+
+      console.log(`🔄 NEWS: Trying ${enabledProviders.length} enabled providers for ${symbol}`);
+
+      // Try each enabled provider in priority order
+      for (const provider of enabledProviders) {
+        const startTime = Date.now();
+        try {
+          console.log(`🔄 NEWS: Trying ${provider.id} (keyed: ${provider.hasKey}) for ${symbol}`);
+          const result = await this.fetchNewsFromProvider(provider.id, symbol, integrations);
+
+          if (result.success) {
+            console.log(`✅ NEWS: ${provider.id} succeeded in ${Date.now() - startTime}ms`);
+            result.latencyMs = Date.now() - startTime;
+            return result;
+          } else {
+            console.log(`⚠️ NEWS: ${provider.id} returned success=false: ${result.error}`);
+          }
+        } catch (error: any) {
+          console.error(`❌ NEWS: ${provider.id} failed:`, error.message);
+        }
+      }
+
+      // All enabled providers failed
+      return {
+        success: false,
+        data: null,
+        latencyMs: 0,
+        provider: 'none',
+        error: 'All enabled news providers failed'
+      };
+
+    } catch (error: any) {
+      console.error('❌ NEWS: Error getting user provider settings:', error.message);
+      // Fallback to old behavior if settings can't be loaded
+      const providers = ['newsdataio', 'cryptopanic', 'reddit', 'gnews'];
+
+      for (const provider of providers) {
+        const startTime = Date.now();
+        try {
+          console.log(`🔄 NEWS: Fallback trying ${provider} for ${symbol}`);
+          const result = await this.fetchNewsFromProvider(provider, symbol, integrations);
+
+          if (result.success) {
+            console.log(`✅ NEWS: ${provider} succeeded in ${Date.now() - startTime}ms`);
+            result.latencyMs = Date.now() - startTime;
+            return result;
+          }
+        } catch (error: any) {
+          console.error(`❌ NEWS: ${provider} failed:`, error.message);
+        }
+      }
+
+      return {
+        success: false,
+        data: null,
+        latencyMs: 0,
+        provider: 'none',
+        error: 'All news providers failed'
+      };
+    }
   }
 
   /**
@@ -875,7 +1133,7 @@ export class DeepResearchEngine {
     integrations: any
   ): Promise<FreeModeProviderResult> {
     switch (provider) {
-      case 'newsdata':
+      case 'newsdataio':
         return await this.fetchNewsDataFree(symbol, integrations);
 
       case 'cryptopanic':
@@ -886,6 +1144,30 @@ export class DeepResearchEngine {
 
       case 'gnews':
         return await this.fetchGNews(symbol);
+
+      case 'bingnews':
+        // TODO: Implement BingNews provider
+        throw new Error('BingNews provider not yet implemented');
+
+      case 'contextualweb':
+        // TODO: Implement ContextualWeb provider
+        throw new Error('ContextualWeb provider not yet implemented');
+
+      case 'mediastack':
+        // TODO: Implement MediaStack provider
+        throw new Error('MediaStack provider not yet implemented');
+
+      case 'newscatcher':
+        // TODO: Implement NewsCatcher provider
+        throw new Error('NewsCatcher provider not yet implemented');
+
+      case 'webzio':
+        // TODO: Implement Webz.io provider
+        throw new Error('Webz.io provider not yet implemented');
+
+      case 'yahoonews':
+        // TODO: Implement YahooNews provider
+        throw new Error('YahooNews provider not yet implemented');
 
       default:
         throw new Error(`Unknown news provider: ${provider}`);

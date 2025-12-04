@@ -34,42 +34,14 @@ function useDebounce<T extends (...args: any[]) => any>(callback: T, delay: numb
   }, [callback, delay]) as T;
 }
 
-// Safe async loader wrapper to prevent blinking
+// Simplified loader - just use external loading state directly
 function SafeAsyncLoader({ children, loading: externalLoading, error: externalError }: {
   children: React.ReactNode;
   loading?: boolean;
   error?: any;
 }) {
-  const [internalLoading, setInternalLoading] = useState(true);
-  const [internalError, setInternalError] = useState<any>(null);
-
-  useEffect(() => {
-    // Set internal loading state with a minimum delay to prevent flicker
-    if (externalLoading !== undefined) {
-      if (externalLoading) {
-        setInternalLoading(true);
-      } else {
-        // Add small delay before showing content to prevent flicker
-        const timeout = setTimeout(() => setInternalLoading(false), 100);
-        return () => clearTimeout(timeout);
-      }
-    } else {
-      // Auto-resolve after 3 seconds if no external loading state
-      const timeout = setTimeout(() => setInternalLoading(false), 3000);
-      return () => clearTimeout(timeout);
-    }
-  }, [externalLoading]);
-
-  useEffect(() => {
-    if (externalError) {
-      setInternalError(externalError);
-      setInternalLoading(false);
-    } else if (externalError === null) {
-      setInternalError(null);
-    }
-  }, [externalError]);
-
-  if (internalLoading) {
+  // If loading is explicitly true, show loading
+  if (externalLoading === true) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
         <Sidebar />
@@ -95,7 +67,8 @@ function SafeAsyncLoader({ children, loading: externalLoading, error: externalEr
     );
   }
 
-  if (internalError) {
+  // If there's an error, show error state
+  if (externalError) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
         <Sidebar />
@@ -107,7 +80,7 @@ function SafeAsyncLoader({ children, loading: externalLoading, error: externalEr
               </h1>
             </div>
             <ErrorState
-              error={internalError}
+              error={externalError}
               onRetry={() => window.location.reload()}
               message="Failed to load dashboard data"
             />
@@ -117,6 +90,7 @@ function SafeAsyncLoader({ children, loading: externalLoading, error: externalEr
     );
   }
 
+  // Otherwise, show content
   return <>{children}</>;
 }
 
@@ -162,10 +136,17 @@ export default function Dashboard() {
 
   // Debounced dashboard data loading (200ms debounce as requested)
   const debouncedLoadDashboardData = useDebounce(useCallback(async () => {
-    if (!user || !isMountedRef.current || dashboardState.hasLoaded || loadingRef.current) return;
+    if (!user || !isMountedRef.current || dashboardState.hasLoaded || loadingRef.current) {
+      console.log('[Dashboard] Skipping loadDashboardData - conditions not met:', {
+        user: !!user,
+        isMounted: isMountedRef.current,
+        hasLoaded: dashboardState.hasLoaded,
+        loadingRef: loadingRef.current
+      });
+      return;
+    }
 
     loadingRef.current = true;
-    console.log('loadDashboardData called for user:', user?.uid);
 
     try {
       // Load multiple dashboard APIs in parallel with individual error handling
@@ -399,42 +380,23 @@ export default function Dashboard() {
 
   // Initial data load - prevent multiple calls
   useEffect(() => {
-    if (user && !dashboardState.hasLoaded && !dashboardState.loading) {
+    if (user && !dashboardState.hasLoaded) {
       loadData();
     }
-  }, [user, dashboardState.hasLoaded, dashboardState.loading, loadData]);
+  }, [user, dashboardState.hasLoaded, loadData]);
 
-  // Force load after 10 seconds if still loading (fallback for slow APIs)
+  // Emergency timeout: force loading=false after 3 seconds
   useEffect(() => {
-    if (dashboardState.loading && !dashboardState.hasLoaded) {
+    if (dashboardState.loading) {
       const timeout = setTimeout(() => {
-        console.log('[Dashboard] Forcing load completion after timeout');
+        console.log('[Dashboard] EMERGENCY: Forcing loading=false after 3 seconds');
         if (isMountedRef.current) {
-          setDashboardState(prev => ({
-            ...prev,
-            loading: false,
-            hasLoaded: true,
-            data: {
-              globalStats: {},
-              engineStatus: {},
-              agentsUnlocked: [],
-              settings: {},
-              notifications: []
-            },
-            autoTradeStatus: {},
-            userStats: {},
-            walletBalances: [],
-            activeTrades: [],
-            aiSignals: [],
-            performanceStats: {},
-            portfolioHistory: [],
-          }));
+          setDashboardState(prev => ({ ...prev, loading: false, hasLoaded: true }));
         }
-      }, 10000);
-
+      }, 3000);
       return () => clearTimeout(timeout);
     }
-  }, [dashboardState.loading, dashboardState.hasLoaded]);
+  }, [dashboardState.loading]);
 
   // Use centralized polling with visibility detection (reduced frequency)
   // Only poll if data is loaded and not currently loading

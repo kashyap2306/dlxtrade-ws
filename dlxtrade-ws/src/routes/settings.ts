@@ -2,6 +2,8 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { firestoreAdapter } from '../services/firestoreAdapter';
 import { z } from 'zod';
 import { accuracyEngine } from '../services/accuracyEngine';
+import { API_PROVIDERS_CONFIG, ProviderConfig } from '../config/apiProviders';
+import { keyManager } from '../services/keyManager';
 
 const settingsSchema = z.object({
   symbol: z.string().optional(),
@@ -305,6 +307,213 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       };
     } catch (err: any) {
       return reply.code(500).send({ error: err.message || 'Error recording prediction outcome' });
+    }
+  });
+
+  // Provider Settings Routes
+  // GET /api/settings/providers - Get provider settings for user
+  fastify.get('/settings/providers', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+
+      // Get user provider settings from Firestore
+      const userProviderSettings = await firestoreAdapter.getUserProviderSettings(user.uid) || {};
+
+      // Merge backend config with user settings
+      const mergedProviders = {
+        marketData: {
+          primary: {
+            ...API_PROVIDERS_CONFIG.marketData.primary,
+            enabled: userProviderSettings.marketData?.primary?.enabled ?? true, // Primary always enabled by default
+            apiKeyPresent: !!userProviderSettings.marketData?.primary?.encryptedApiKey
+          },
+          backups: API_PROVIDERS_CONFIG.marketData.backups.map(backup => ({
+            ...backup,
+            enabled: userProviderSettings.marketData?.backups?.[backup.id]?.enabled ?? false,
+            apiKeyPresent: !!userProviderSettings.marketData?.backups?.[backup.id]?.encryptedApiKey
+          }))
+        },
+        news: {
+          primary: {
+            ...API_PROVIDERS_CONFIG.news.primary,
+            enabled: userProviderSettings.news?.primary?.enabled ?? true, // Primary always enabled by default
+            apiKeyPresent: !!userProviderSettings.news?.primary?.encryptedApiKey
+          },
+          backups: API_PROVIDERS_CONFIG.news.backups.map(backup => ({
+            ...backup,
+            enabled: userProviderSettings.news?.backups?.[backup.id]?.enabled ?? false,
+            apiKeyPresent: !!userProviderSettings.news?.backups?.[backup.id]?.encryptedApiKey
+          }))
+        },
+        metadata: {
+          primary: {
+            ...API_PROVIDERS_CONFIG.metadata.primary,
+            enabled: userProviderSettings.metadata?.primary?.enabled ?? true, // Primary always enabled by default
+            apiKeyPresent: !!userProviderSettings.metadata?.primary?.encryptedApiKey
+          },
+          backups: API_PROVIDERS_CONFIG.metadata.backups.map(backup => ({
+            ...backup,
+            enabled: userProviderSettings.metadata?.backups?.[backup.id]?.enabled ?? false,
+            apiKeyPresent: !!userProviderSettings.metadata?.backups?.[backup.id]?.encryptedApiKey
+          }))
+        }
+      };
+
+      return {
+        success: true,
+        providers: mergedProviders
+      };
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error loading provider settings' });
+    }
+  });
+
+  // POST /api/settings/providers/save - Save provider settings
+  fastify.post('/settings/providers/save', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const body = z.object({
+        providerId: z.string(),
+        providerType: z.enum(['marketData', 'news', 'metadata']),
+        isPrimary: z.boolean(),
+        enabled: z.boolean(),
+        apiKey: z.string().optional()
+      }).parse(request.body);
+
+      const { providerId, providerType, isPrimary, enabled, apiKey } = body;
+
+      // Get current user settings
+      const userProviderSettings = await firestoreAdapter.getUserProviderSettings(user.uid) || {};
+
+      // Initialize provider type if not exists
+      if (!userProviderSettings[providerType]) {
+        userProviderSettings[providerType] = { primary: {}, backups: {} };
+      }
+
+      const providerPath = isPrimary ? 'primary' : `backups.${providerId}`;
+
+      // Validate API key requirement
+      const providerConfig = isPrimary
+        ? API_PROVIDERS_CONFIG[providerType].primary
+        : API_PROVIDERS_CONFIG[providerType].backups.find(p => p.id === providerId);
+
+      if (!providerConfig) {
+        return reply.code(400).send({ error: 'Invalid provider configuration' });
+      }
+
+      if (providerConfig.apiKeyRequired && enabled && !apiKey) {
+        return reply.code(400).send({ error: `API key is required for ${providerConfig.providerName}` });
+      }
+
+      // Encrypt API key if provided
+      let encryptedApiKey = undefined;
+      if (apiKey) {
+        encryptedApiKey = keyManager.encrypt(apiKey);
+      }
+
+      // Update settings
+      if (isPrimary) {
+        userProviderSettings[providerType].primary = {
+          ...userProviderSettings[providerType].primary,
+          enabled,
+          encryptedApiKey,
+          updatedAt: new Date()
+        };
+      } else {
+        if (!userProviderSettings[providerType].backups) {
+          userProviderSettings[providerType].backups = {};
+        }
+        userProviderSettings[providerType].backups[providerId] = {
+          ...userProviderSettings[providerType].backups[providerId],
+          enabled,
+          encryptedApiKey,
+          updatedAt: new Date()
+        };
+      }
+
+      // Save to Firestore
+      await firestoreAdapter.saveUserProviderSettings(user.uid, userProviderSettings);
+
+      return {
+        success: true,
+        message: `${providerConfig.providerName} ${enabled ? 'enabled' : 'disabled'} successfully`
+      };
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error saving provider settings' });
+    }
+  });
+
+  // POST /api/settings/providers/change - Change API key for a provider
+  fastify.post('/settings/providers/change', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const body = z.object({
+        providerId: z.string(),
+        providerType: z.enum(['marketData', 'news', 'metadata']),
+        isPrimary: z.boolean(),
+        newApiKey: z.string().min(1, 'API key cannot be empty')
+      }).parse(request.body);
+
+      const { providerId, providerType, isPrimary, newApiKey } = body;
+
+      // Get current user settings
+      const userProviderSettings = await firestoreAdapter.getUserProviderSettings(user.uid) || {};
+
+      // Validate provider exists
+      const providerConfig = isPrimary
+        ? API_PROVIDERS_CONFIG[providerType].primary
+        : API_PROVIDERS_CONFIG[providerType].backups.find(p => p.id === providerId);
+
+      if (!providerConfig) {
+        return reply.code(400).send({ error: 'Invalid provider configuration' });
+      }
+
+      if (!providerConfig.apiKeyRequired) {
+        return reply.code(400).send({ error: `${providerConfig.providerName} does not require an API key` });
+      }
+
+      // Encrypt new API key
+      const encryptedApiKey = keyManager.encrypt(newApiKey);
+
+      // Update settings
+      if (isPrimary) {
+        if (!userProviderSettings[providerType]) {
+          userProviderSettings[providerType] = { primary: {}, backups: {} };
+        }
+        userProviderSettings[providerType].primary = {
+          ...userProviderSettings[providerType].primary,
+          encryptedApiKey,
+          updatedAt: new Date()
+        };
+      } else {
+        if (!userProviderSettings[providerType]) {
+          userProviderSettings[providerType] = { primary: {}, backups: {} };
+        }
+        if (!userProviderSettings[providerType].backups) {
+          userProviderSettings[providerType].backups = {};
+        }
+        userProviderSettings[providerType].backups[providerId] = {
+          ...userProviderSettings[providerType].backups[providerId],
+          encryptedApiKey,
+          updatedAt: new Date()
+        };
+      }
+
+      // Save to Firestore
+      await firestoreAdapter.saveUserProviderSettings(user.uid, userProviderSettings);
+
+      return {
+        success: true,
+        message: `API key for ${providerConfig.providerName} updated successfully`
+      };
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error changing API key' });
     }
   });
 }
