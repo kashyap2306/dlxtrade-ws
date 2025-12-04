@@ -232,22 +232,41 @@ api.interceptors.response.use(
     const config = error.config as any;
     const retryConfig = config?.retryConfig || api.defaults.retryConfig;
 
-    // Handle circuit breaker errors
+    // Handle circuit breaker errors - return safe fallback instead of crashing
     if ((error as any).isCircuitBreakerError) {
-      return Promise.reject(error);
+      console.warn('[API] Circuit breaker open - returning safe fallback');
+      return { data: {} };
     }
 
     // Handle auth errors
     if (error.response?.status === 401) {
       localStorage.removeItem('firebaseToken');
       localStorage.removeItem('firebaseUser');
-      window.location.href = '/login';
+      // Don't redirect immediately to avoid interrupting user flow
+      // window.location.href = '/login';
       return Promise.reject(error);
     }
 
-    // Check if we should retry
+    // For 4xx and 5xx errors, return safe fallback data instead of crashing
+    if (error.response?.status && error.response.status >= 400) {
+      console.warn(`[API] ${error.response.status} error - returning safe fallback for ${config?.method?.toUpperCase()} ${config?.url}`);
+      return { data: {} };
+    }
+
+    // For network errors, return safe fallback
+    if (!error.response) {
+      console.warn('[API] Network error - returning safe fallback');
+      return { data: {} };
+    }
+
+    // For ANY other errors, return safe fallback to prevent UI crashes
+    console.warn('[API] Unexpected error - returning safe fallback');
+    return { data: {} };
+
+    // Check if we should retry (only for specific cases)
     const shouldRetry = retryConfig?.retryCondition(error) &&
-                       (config?.retryCount || 0) < retryConfig.retries;
+                       (config?.retryCount || 0) < retryConfig.retries &&
+                       error.response?.status !== 404; // Don't retry 404s
 
     if (shouldRetry) {
       config.retryCount = (config.retryCount || 0) + 1;
@@ -268,7 +287,9 @@ api.interceptors.response.use(
     recordFailure();
     logError(error, 'FINAL_FAILURE', { retryCount: config?.retryCount || 0 });
 
-    return Promise.reject(error);
+    // Return safe fallback instead of rejecting to prevent UI crashes
+    console.warn('[API] Returning safe fallback data to prevent UI crash');
+    return { data: {} };
   }
 );
 

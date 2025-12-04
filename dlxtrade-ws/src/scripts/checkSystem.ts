@@ -6,7 +6,7 @@
 
 import axios from 'axios';
 import * as admin from 'firebase-admin';
-import { initializeFirebaseAdmin } from '../utils/firebase';
+import { initFirebaseAdmin } from '../utils/firebase';
 
 const API_BASE = process.env.API_BASE || 'http://localhost:4000/api';
 const WS_BASE = process.env.WS_BASE || 'ws://localhost:4000/ws';

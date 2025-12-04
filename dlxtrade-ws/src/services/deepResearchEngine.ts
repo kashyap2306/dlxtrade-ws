@@ -2372,11 +2372,14 @@ export class DeepResearchEngine {
         }
       }
     };
+  }
 
-  // Temporarily commented out due to compilation issues
-  // private async getCoinsToResearch(uid: string, tradingSettings: TradingSettings): Promise<string[]> {
-  //   // Implementation temporarily removed
-  //   return [];
+}
+
+// Temporarily commented out due to compilation issues
+// private async getCoinsToResearch(uid: string, tradingSettings: TradingSettings): Promise<string[]> {
+//   // Implementation temporarily removed
+//   return [];
 /**
  * FREE MODE Deep Research v1.5 Entry Point
  */
@@ -2487,12 +2490,10 @@ export async function runFreeModeDeepResearch(
     success: false,
     reason: 'Free mode research temporarily disabled',
     providersCalled: [],
-    analysis: {
-      signal: 'HOLD',
-      accuracy: 0
-    }
+    signal: 'HOLD',
+    accuracy: 0,
+    raw: null
   };
 }
 
 export default deepResearchEngine;
-export { DeepResearchEngine };

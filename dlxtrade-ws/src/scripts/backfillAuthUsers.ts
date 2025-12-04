@@ -1,5 +1,5 @@
 import * as admin from 'firebase-admin';
-import { initializeFirebaseAdmin, getFirebaseAdmin } from '../utils/firebase';
+import { initFirebaseAdmin, getFirebaseAdmin } from '../utils/firebase';
 import { ensureUser } from '../services/userOnboarding';
 import { logger } from '../utils/logger';
 

@@ -1593,9 +1593,14 @@ export default function Settings() {
   };
 
   const handleRetry = useCallback(async () => {
+    // Limit retries to 1 attempt
+    if (retryCount >= 1) {
+      console.warn('Maximum retry attempts reached');
+      return;
+    }
     setRetryCount(prev => prev + 1);
     await loadAllData();
-  }, [loadAllData]);
+  }, [loadAllData, retryCount]);
 
   const handleLogout = async () => {
     const { signOut } = await import('firebase/auth');

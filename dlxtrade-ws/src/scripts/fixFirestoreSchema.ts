@@ -214,7 +214,7 @@ if (require.main === module) {
   (async () => {
     try {
       // Initialize Firebase Admin
-      const { initializeFirebaseAdmin } = await import('../utils/firebase');
+      const { initFirebaseAdmin } = await import('../utils/firebase');
       initializeFirebaseAdmin();
       
       const result = await fixFirestoreSchema();

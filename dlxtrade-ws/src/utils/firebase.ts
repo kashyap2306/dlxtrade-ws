@@ -5,7 +5,7 @@ import { logger } from './logger';
 
 let firebaseAdmin: admin.app.App | null = null;
 
-export function initializeFirebaseAdmin(): void {
+export function initFirebaseAdmin(): void {
   if (firebaseAdmin) {
     return;
   }
@@ -89,7 +89,7 @@ export function initializeFirebaseAdmin(): void {
 
 export async function verifyFirebaseToken(token: string): Promise<admin.auth.DecodedIdToken> {
 	if (!firebaseAdmin) {
-		initializeFirebaseAdmin();
+		initFirebaseAdmin();
 	}
 	return admin.auth().verifyIdToken(token);
 }
@@ -97,7 +97,7 @@ export async function verifyFirebaseToken(token: string): Promise<admin.auth.Dec
 export function getFirebaseAdmin(): admin.app.App {
 	if (!firebaseAdmin) {
 		logger.info('Firebase Admin not initialized, attempting to initialize...');
-		initializeFirebaseAdmin();
+		initFirebaseAdmin();
 
 		if (!firebaseAdmin) {
 			logger.error('Firebase Admin initialization failed - returning null app');
@@ -113,7 +113,7 @@ export function getFirebaseAdmin(): admin.app.App {
  */
 export async function performForcedTestWrite(): Promise<void> {
 	if (!firebaseAdmin) {
-		initializeFirebaseAdmin();
+		initFirebaseAdmin();
 	}
 	
 	// If Firebase Admin still not initialized, skip test write
