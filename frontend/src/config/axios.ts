@@ -1,9 +1,9 @@
 import axios, { AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
 import { getAuth } from 'firebase/auth';
-import { API_BASE_URL } from './env';
+import { API_URL } from './env';
 
-// Construct correct base URL (do NOT append /api again if env already has it)
-const baseURL = API_BASE_URL;
+// Set baseURL to API_URL only
+const baseURL = API_URL;
 
 // Circuit breaker state
 interface CircuitBreakerState {
@@ -149,14 +149,26 @@ api.interceptors.request.use(
       throw error;
     }
 
-    // Firebase Token
+    // Firebase Token - with timeout to prevent blocking
     try {
-      const token = await getAuth().currentUser?.getIdToken();
-      if (token) {
-        config.headers = config.headers || {};
-        config.headers.Authorization = `Bearer ${token}`;
+      const currentUser = getAuth().currentUser;
+      if (currentUser) {
+        // Add timeout to prevent hanging requests
+        const tokenPromise = currentUser.getIdToken();
+        const timeoutPromise = new Promise<string>((_, reject) =>
+          setTimeout(() => reject(new Error('Token fetch timeout')), 3000)
+        );
+
+        const token = await Promise.race([tokenPromise, timeoutPromise]);
+        if (token && typeof token === 'string') {
+          config.headers = config.headers || {};
+          config.headers.Authorization = `Bearer ${token}`;
+        }
       }
-    } catch {}
+    } catch (tokenError) {
+      // Silently fail token fetching - allow request to proceed without auth
+      console.warn('[API] Token fetch failed, proceeding without auth:', tokenError.message);
+    }
 
     // Metadata
     config.metadata = {
@@ -185,15 +197,20 @@ api.interceptors.response.use(
 
   async (error: AxiosError) => {
     const config = error.config || {};
-    const retryConfig = config.retryConfig;
 
     if ((error as any).isCircuitBreakerError) return Promise.reject(error);
 
-    if (!error.response) return Promise.reject(error);
+    // Only trigger circuit breaker for server errors, not client errors (like 401 auth failures)
+    const shouldTriggerCircuitBreaker = !error.response ||
+      error.response.status >= 500 ||
+      error.response.status === 429 ||
+      error.response.status === 408;
 
-    if (error.response.status >= 400) return Promise.reject(error);
+    if (shouldTriggerCircuitBreaker) {
+      recordFailure();
+    }
 
-    recordFailure();
+    logError(error, 'ERROR');
     return Promise.reject(error);
   }
 );
@@ -208,12 +225,16 @@ class HealthPingService {
 
     this.intervalId = setInterval(async () => {
       try {
-        const res = await axios.get(`${API_BASE_URL}/health`, { timeout: 5000 });
+        const res = await axios.get('/health', { timeout: 5000 });
         this.isHealthy = res.data?.status === 'ok';
       } catch {
         this.isHealthy = false;
       }
     }, 60000);
+  }
+
+  isServiceHealthy(): boolean {
+    return this.isHealthy;
   }
 }
 

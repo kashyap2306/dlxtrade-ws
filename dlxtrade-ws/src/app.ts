@@ -7,7 +7,6 @@ import fastifyHelmet from '@fastify/helmet';
 import fastifyRateLimit from '@fastify/rate-limit';
 import { config } from './config';
 import { logger } from './utils/logger';
-import { initFirebaseAdmin } from './utils/firebase';
 import { firebaseAuthMiddleware } from './middleware/firebaseAuth';
 import { authRoutes } from './routes/auth';
 import { adminRoutes } from './routes/admin';
@@ -162,9 +161,14 @@ app.get('/api/test', async (request, reply) => {
   return { status: 'ok', message: 'Backend is running', timestamp: new Date().toISOString() };
 });
 
-// Health check route (no auth required)
+// Health check route (no auth required) - ALWAYS returns 200
 app.get('/health', async (request, reply) => {
-  return { status: 'ok', timestamp: new Date().toISOString() };
+  try {
+    return { status: 'ok', timestamp: new Date().toISOString() };
+  } catch (error) {
+    // Fallback - ensure we never return 5xx for health checks
+    return { status: 'ok', timestamp: new Date().toISOString() };
+  }
 });
 
 // Add diagnostic log for build verification
@@ -196,12 +200,12 @@ console.log("[RENDER ENV] Build timestamp:", Date.now());
     // Register user WebSocket for real-time events
     const { userNotificationService } = await import('./services/userNotificationService');
 
-    userNotificationService.registerUserSocket(connection.socket, uid!);
+    userNotificationService.registerUserSocket(uid!, connection.socket);
 
     logger.info({ uid }, 'User WebSocket connected');
 
     connection.socket.on('close', () => {
-      userNotificationService.unregisterUserSocket(connection.socket);
+      userNotificationService.unregisterUserSocket(uid!, connection.socket);
       logger.info({ uid }, 'User WebSocket disconnected');
     });
   });
@@ -268,4 +272,3 @@ console.log("[RENDER ENV] Build timestamp:", Date.now());
 
   return app;
 }
-

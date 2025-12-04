@@ -112,14 +112,16 @@ export const researchApi = {
 
 // Settings - routes already include /api prefix from baseURL
 export const settingsApi = {
-  load: () => cachedApi.get('/settings/load').catch(() => ({ data: {} })),
-  update: (settings: any) => api.post('/settings/update', settings).catch(() => ({ data: { success: false } })),
-  // Removed: saveApiKeys and getApiKeys - use exchange-config endpoint instead
+  load: () => cachedApi.get('/settings/load'),
+  update: (settings: any) => api.post('/settings/update', settings),
 
   // Trading Settings
   trading: {
     load: () => api.get('/trading/settings'),
     update: (settings: any) => api.post('/trading/settings', settings),
+    autotrade: {
+      status: () => api.get('/auto-trade/status'),
+    },
   },
 
   // Background Research Settings
@@ -146,25 +148,9 @@ export const executionApi = {
 
 // Integrations - routes already include /api prefix from baseURL
 export const integrationsApi = {
-  load: async () => {
-    const res = await api.get('/integrations');
-    // Frontend fix: Ignore corrupted values
-    if (res.data) {
-      Object.keys(res.data).forEach(key => {
-        if (res.data[key] && res.data[key].apiKey && res.data[key].apiKey.length < 5) {
-          res.data[key].apiKey = "";
-        }
-      });
-    }
-    return res;
-  },
+  load: () => api.get('/integrations'),
   update: (data: { apiName: string; enabled: boolean; apiKey?: string; secretKey?: string; apiType?: string; passphrase?: string }) =>
     api.post('/integrations/update', data),
-  connect: (data: { apiName: string; enabled: boolean; apiKey?: string; secretKey?: string; apiType?: string; passphrase?: string }) =>
-    api.post('/integrations/connect', data),
-  delete: (apiName: string, apiType?: string) => api.post('/integrations/delete', { apiName, apiType }),
-  saveBackupApi: (providerName: string, backupData: { name: string; apiKey: string; endpoint?: string; active: boolean }) =>
-    api.post('/integrations/backup/add', { providerName, backupData }),
 };
 
 // HFT Engine - routes already include /api prefix from baseURL
@@ -191,14 +177,13 @@ export const usersApi = {
 
 // Agents - routes already include /api prefix from baseURL
 export const agentsApi = {
-  getAll: () => cachedApi.get('/agents').catch(() => ({ data: { agents: [] } })),
-  get: (id: string) => api.get(`/agents/${id}`).catch(() => ({ data: null })),
-  unlock: (agentName: string) => api.post('/agents/unlock', { agentName }).catch(() => ({ data: { success: false } })),
-  getUnlocked: () => cachedApi.get('/agents/unlocked').catch(() => ({ data: { unlocked: [] } })),
+  getAll: () => cachedApi.get('/agents'),
+  get: (id: string) => api.get(`/agents/${id}`),
+  unlock: (agentName: string) => api.post('/agents/unlock', { agentName }),
+  getUnlocked: () => cachedApi.get('/agents/unlocked'),
   submitUnlockRequest: (data: { agentId: string; agentName: string; fullName: string; phoneNumber: string; email: string }) =>
-    api.post('/agents/submit-unlock-request', data).catch(() => ({ data: { success: false } })),
-  updateAgentSettings: (agentId: string, settings: any) => api.put(`/agents/${agentId}/settings`, settings).catch(() => ({ data: { success: false } })),
-  // Removed: getUnlocks (endpoint doesn't exist)
+    api.post('/agents/submit-unlock-request', data),
+  updateAgentSettings: (agentId: string, settings: any) => api.put(`/agents/${agentId}/settings`, settings),
 };
 
 // Activity Logs - routes already include /api prefix from baseURL
@@ -214,10 +199,10 @@ export const tradesApi = {
 
 // Notifications - routes already include /api prefix from baseURL
 export const notificationsApi = {
-  get: (params?: { limit?: number }) => cachedApi.get('/notifications', { params }).catch(() => ({ data: [] })),
-  markRead: (notificationId: string) => api.post('/notifications/mark-read', { notificationId }).catch(() => ({ data: { success: false } })),
+  get: (params?: { limit?: number }) => cachedApi.get('/notifications', { params }),
+  markRead: (notificationId: string) => api.post('/notifications/mark-read', { notificationId }),
   push: (data: { uid: string; type: 'success' | 'error' | 'info' | 'warning'; title: string; message: string; timestamp?: number }) =>
-    api.post('/notifications/push', data).catch(() => ({ data: { success: false } })),
+    api.post('/notifications/push', data),
 };
 
 // System Logs - routes already include /api prefix from baseURL

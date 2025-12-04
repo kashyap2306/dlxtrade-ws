@@ -135,11 +135,11 @@ export default function AutoTrade() {
     if (!user || !isMountedRef.current) return;
     try {
       const response = await settingsApi.trading.autotrade.status();
-      if (isMountedRef.current && response?.data) {
-        setAutoTradeStatus(response.data);
+      if (isMountedRef.current) {
+        setAutoTradeStatus(response?.data ?? {});
         // Also update the controls state to match
-        setAutoTradeControls(prev => ({ ...prev, autoTradeEnabled: response.data?.enabled ?? false }));
-        setConfig(prev => ({ ...prev, autoTradeEnabled: response.data?.enabled ?? false }));
+        setAutoTradeControls(prev => ({ ...prev, autoTradeEnabled: response?.data?.enabled ?? false }));
+        setConfig(prev => ({ ...prev, autoTradeEnabled: response?.data?.enabled ?? false }));
       }
     } catch (err: any) {
       suppressConsoleError(err, 'loadAutoTradeStatus');
@@ -296,6 +296,21 @@ export default function AutoTrade() {
       loadAllData();
     }
   }, [user, loadAllData]);
+
+  // Force load after 10 seconds if still loading (fallback for slow APIs)
+  useEffect(() => {
+    if (loading && user) {
+      const timeout = setTimeout(() => {
+        console.log('[AutoTrade] Forcing load completion after timeout');
+        if (isMountedRef.current) {
+          setLoading(false);
+          setError({ message: 'Loading timeout - please try refreshing the page' });
+        }
+      }, 10000);
+
+      return () => clearTimeout(timeout);
+    }
+  }, [loading, user]);
 
   // Use centralized polling for live data (30 second intervals when visible)
   usePolling(loadLiveData, 30000, !!user);

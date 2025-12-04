@@ -1,5 +1,5 @@
 import * as admin from 'firebase-admin';
-import { initFirebaseAdmin, getFirebaseAdmin } from '../utils/firebase';
+import { getFirebaseAdmin } from '../utils/firebase';
 import { logger } from '../utils/logger';
 
 /**
@@ -21,8 +21,7 @@ async function archiveDemoUsers() {
     console.log('🔥 Starting demo users archive...');
     
     // Initialize Firebase Admin
-    initFirebaseAdmin();
-    const db = admin.firestore(getFirebaseAdmin());
+    const db = getFirebaseAdmin().firestore();
     
     // Get all users
     const usersSnapshot = await db.collection('users').get();

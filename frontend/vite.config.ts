@@ -30,11 +30,11 @@ export default defineConfig({
     historyApiFallback: true,
     proxy: {
       '/api': {
-        target: 'https://dlxtrade-ws-1.onrender.com',
+        target: 'http://localhost:4000',
         changeOrigin: true,
       },
       '/ws': {
-        target: 'https://dlxtrade-ws-1.onrender.com',
+        target: 'http://localhost:4000',
         ws: true,
         changeOrigin: true,
       },

@@ -92,6 +92,9 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
           );
         });
     } catch (err: any) {
+      // Set empty array on errors to prevent undefined.map crashes
+      setNotifications([]);
+
       // Silent fail - don't show errors for notification loading
       console.debug('Error loading notifications:', err);
 

@@ -6,14 +6,14 @@
 
 import axios from 'axios';
 import * as admin from 'firebase-admin';
-import { initFirebaseAdmin } from '../utils/firebase';
+import { getFirebaseAdmin } from '../utils/firebase';
 
 const API_BASE = process.env.API_BASE || 'http://localhost:4000/api';
 const WS_BASE = process.env.WS_BASE || 'ws://localhost:4000/ws';
 
 async function checkFirestore() {
   console.log('🔍 Checking Firestore collections...');
-  const db = admin.firestore();
+  const db = getFirebaseAdmin().firestore();
   
   const requiredCollections = [
     'users',
@@ -84,7 +84,7 @@ async function main() {
     console.log('🔥 Starting system verification...\n');
     
     // Initialize Firebase
-    initFirebaseAdmin();
+    getFirebaseAdmin();
     console.log('✅ Firebase Admin initialized\n');
 
     // Check Firestore

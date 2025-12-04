@@ -1,5 +1,5 @@
 import * as admin from 'firebase-admin';
-import { initFirebaseAdmin, getFirebaseAdmin } from '../utils/firebase';
+import { getFirebaseAdmin } from '../utils/firebase';
 import { ensureUser } from '../services/userOnboarding';
 import { logger } from '../utils/logger';
 
@@ -22,7 +22,6 @@ async function backfillAuthUsers() {
     console.log('🔥 Starting auth users backfill...');
     
     // Initialize Firebase Admin
-    initFirebaseAdmin();
     const firebaseAdmin = getFirebaseAdmin();
     const db = firebaseAdmin.firestore();
     const auth = firebaseAdmin.auth();

@@ -1,9 +1,11 @@
+import 'dotenv/config';
 import { buildApp } from './app';
 import { initDb } from './db';
 import { initRedis } from './db/redis';
 import { config } from './config';
 import { logger } from './utils/logger';
-import { getFirebaseAdmin, performForcedTestWrite } from './utils/firebase';
+import { getFirebaseAdmin } from './utils/firebase';
+console.log("CHECK ENV:", !!process.env.FIREBASE_SERVICE_ACCOUNT);
 import { initializeFirestoreCollections } from './utils/firestoreInitializer';
 import { seedFirestoreData } from './utils/firestoreSeed';
 import { migrateFirestoreDocuments } from './utils/firestoreMigration';
@@ -28,10 +30,10 @@ process.on('unhandledRejection', (reason: any, promise) => {
     console.error('REASON MESSAGE:', reason.message);
     console.error('REASON STACK:', reason.stack);
   }
-  logger.error({ 
-    reason: reason?.message || String(reason), 
+  logger.error({
+    reason: reason?.message || String(reason),
     stack: reason?.stack,
-    promise: promise.toString() 
+    promise: promise.toString()
   }, 'Unhandled rejection - server will continue');
   // Don't exit - allow server to continue running
 });
@@ -41,7 +43,7 @@ async function start() {
     console.log('🔥 BACKEND STARTING...');
     console.log('PORT =', config.port);
     console.log('NODE_ENV =', config.env);
-    
+
     // Initialize database (with timeout to prevent blocking)
     console.log('Initializing database...');
     try {
@@ -69,7 +71,7 @@ async function start() {
     console.log(`Starting server on port ${PORT}...`);
     console.log(`Server will listen on: http://0.0.0.0:${PORT}`);
     console.log(`Server will be accessible at: http://localhost:${PORT}`);
-    
+
     const address = await app.listen({ port: PORT, host: '0.0.0.0' });
     console.log('🔥 BACKEND RUNNING ON PORT', PORT);
     console.log('🔥 Server listening on:', address);
@@ -85,18 +87,6 @@ async function start() {
         await getFirebaseAdmin(); // This will initialize Firebase if needed
         console.log('🔥 Firebase Admin initialized successfully');
 
-        // Perform forced test write to verify connection IMMEDIATELY
-        console.log('🔥 Performing REAL FIRESTORE TEST WRITE...');
-        try {
-          await performForcedTestWrite();
-          console.log('🔥 REAL FIRESTORE TEST WRITE SUCCESS');
-        } catch (testWriteError: any) {
-          console.error('❌ INIT ERROR (Forced Test Write):', testWriteError.message);
-          console.error('❌ STACK:', testWriteError.stack);
-          logger.error({ error: testWriteError.message, stack: testWriteError.stack }, 'Forced test write failed - Firebase Admin may not be connected to real Firestore');
-          // DO NOT throw - allow server to continue even if test write fails
-          // This prevents blocking server startup on Render
-        }
 
         // Initialize Firestore collections - DISABLED (collections created naturally)
         // Collections are created automatically when first document is added
@@ -185,10 +175,10 @@ async function start() {
         // Wrap in try/catch and error boundary to prevent crashes
         try {
           const { scheduledResearchService } = await import('./services/scheduledResearch');
-          
+
           // Wrap start() in error handler
           const originalStart = scheduledResearchService.start.bind(scheduledResearchService);
-          scheduledResearchService.start = function() {
+          scheduledResearchService.start = function () {
             try {
               originalStart();
               console.log('✅ Scheduled research service started (every 5 minutes)');
@@ -200,7 +190,7 @@ async function start() {
               // Don't throw - allow server to continue
             }
           };
-          
+
           scheduledResearchService.start();
         } catch (scheduledErr: any) {
           console.error('⚠️ Scheduled research service failed to import/start:', scheduledErr.message);

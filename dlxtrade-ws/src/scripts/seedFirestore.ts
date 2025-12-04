@@ -5,7 +5,7 @@
  */
 
 import * as admin from 'firebase-admin';
-import { initFirebaseAdmin } from '../utils/firebase';
+import { getFirebaseAdmin } from '../utils/firebase';
 import { seedAll } from '../utils/firestoreSeed';
 
 async function main() {
@@ -13,7 +13,7 @@ async function main() {
     console.log('🔥 Starting manual Firestore seed...');
     
     // Initialize Firebase Admin
-    initFirebaseAdmin();
+    getFirebaseAdmin();
     
     // Run seed
     await seedAll();

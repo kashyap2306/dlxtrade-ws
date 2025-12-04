@@ -2,6 +2,7 @@ import { logger } from '../utils/logger';
 import { firestoreAdapter } from './firestoreAdapter';
 import { notificationService } from './notificationService';
 import * as admin from 'firebase-admin';
+import { getFirebaseAdmin } from '../utils/firebase';
 
 export interface AutoTradeConfig {
   enabled: boolean;
@@ -208,7 +209,7 @@ export class AutoTradeExecutor {
    */
   private async checkIdempotency(researchRequestId: string): Promise<any> {
     try {
-      const tradeRef = admin.firestore()
+      const tradeRef = getFirebaseAdmin().firestore()
         .collection('autoTrades')
         .where('researchRequestId', '==', researchRequestId)
         .limit(1);
@@ -226,7 +227,7 @@ export class AutoTradeExecutor {
    */
   async getUserAutoTradeSettings(userId: string): Promise<AutoTradeConfig> {
     try {
-      const userDoc = await admin.firestore()
+      const userDoc = await getFirebaseAdmin().firestore()
         .collection('users')
         .doc(userId)
         .get();
@@ -620,7 +621,7 @@ export class AutoTradeExecutor {
     stopLossPct?: number;
   }): Promise<void> {
     try {
-      await admin.firestore().collection('autoTrades').add({
+      await getFirebaseAdmin().firestore().collection('autoTrades').add({
         ...trade,
         timestamp: admin.firestore.Timestamp.now(),
         createdAt: admin.firestore.Timestamp.now()
@@ -668,7 +669,7 @@ export class AutoTradeExecutor {
    */
   async cancelTrade(tradeId: string, adminUserId: string): Promise<boolean> {
     try {
-      const tradeRef = admin.firestore().collection('autoTrades').doc(tradeId);
+      const tradeRef = getFirebaseAdmin().firestore().collection('autoTrades').doc(tradeId);
       const tradeDoc = await tradeRef.get();
 
       if (!tradeDoc.exists) {
@@ -694,7 +695,7 @@ export class AutoTradeExecutor {
    */
   async getAutoTrades(limit: number = 50): Promise<any[]> {
     try {
-      const tradesRef = admin.firestore()
+      const tradesRef = getFirebaseAdmin().firestore()
         .collection('autoTrades')
         .orderBy('timestamp', 'desc')
         .limit(limit);

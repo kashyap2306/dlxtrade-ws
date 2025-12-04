@@ -4,11 +4,12 @@ import { riskManager } from '../services/riskManager';
 import { metricsService } from '../services/metricsService';
 
 export async function metricsRoutes(fastify: FastifyInstance) {
+  // Detailed health check with database status (for monitoring)
   fastify.get('/health', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       // Check database
       await query('SELECT 1');
-      
+
       return {
         status: 'healthy',
         timestamp: new Date().toISOString(),

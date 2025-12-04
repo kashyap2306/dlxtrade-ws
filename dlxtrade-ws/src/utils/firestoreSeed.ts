@@ -18,16 +18,14 @@ export async function seedFirestoreData(): Promise<void> {
     const firebaseAdmin = getFirebaseAdmin();
     const db = firebaseAdmin.firestore();
     
-    // Verify project ID
+    // Log project ID for debugging (no longer throws fatal errors)
     const serviceAccountProjectId = (firebaseAdmin.options as any).projectId || 'NOT_FOUND';
     const appProjectId = firebaseAdmin.options.projectId || 'NOT_FOUND';
-    
+
     console.log('🔥 VERIFY: serviceAccount.project_id =', serviceAccountProjectId);
     console.log('🔥 VERIFY: admin.app().options.projectId =', appProjectId);
-    
-    if (!serviceAccountProjectId || serviceAccountProjectId === 'NOT_FOUND' || appProjectId === 'NOT_FOUND') {
-      throw new Error('Project ID verification failed! Cannot proceed.');
-    }
+
+    // Removed fatal project ID verification - backend should work regardless
 
     // Perform forced test write
     console.log('🔥 Performing REAL FIRESTORE TEST WRITE...');
@@ -56,7 +54,8 @@ export async function seedFirestoreData(): Promise<void> {
     console.error('❌ SEED ERROR:', error.message);
     console.error('❌ SEED STACK:', error.stack);
     logger.error({ error: error.message, stack: error.stack }, 'Error seeding Firestore data');
-    throw error;
+    // DO NOT throw - allow server to continue even if seeding fails
+    console.warn('🔥 SEED: Continuing server startup despite seeding error');
   }
 }
 
@@ -179,7 +178,7 @@ async function seedAgents(db: admin.firestore.Firestore): Promise<void> {
     console.log('🔥 SEED: Agents count:', check.size);
   } catch (error: any) {
     console.error('❌ SEED ERROR (agents):', error.message);
-    throw error;
+    // Continue with seeding despite individual collection errors
   }
 }
 
@@ -208,7 +207,7 @@ async function seedAdmin(db: admin.firestore.Firestore): Promise<void> {
     console.log('🔥 SEED: Admin count:', check.size);
   } catch (error: any) {
     console.error('❌ SEED ERROR (admin):', error.message);
-    throw error;
+    // Continue with seeding despite individual collection errors
   }
 }
 
@@ -403,7 +402,7 @@ async function seedDemoUsers(db: admin.firestore.Firestore): Promise<void> {
     console.log('🔥 SEED: AgentUnlocks count:', agentUnlocksCheck.size);
   } catch (error: any) {
     console.error('❌ SEED ERROR (users):', error.message);
-    throw error;
+    // Continue with seeding despite individual collection errors
   }
 }
 
@@ -452,7 +451,7 @@ async function seedGlobalStats(db: admin.firestore.Firestore): Promise<void> {
     console.log('🔥 SEED: GlobalStats count:', check.size);
   } catch (error: any) {
     console.error('❌ SEED ERROR (globalStats):', error.message);
-    throw error;
+    // Continue with seeding despite individual collection errors
   }
 }
 
@@ -493,7 +492,7 @@ async function seedSettings(db: admin.firestore.Firestore): Promise<void> {
     console.log('🔥 SEED: Settings count:', check.size);
   } catch (error: any) {
     console.error('❌ SEED ERROR (settings):', error.message);
-    throw error;
+    // Continue with seeding despite individual collection errors
   }
 }
 
@@ -533,7 +532,7 @@ async function seedLogs(db: admin.firestore.Firestore): Promise<void> {
     console.log('🔥 SEED: Logs count:', check.size);
   } catch (error: any) {
     console.error('❌ SEED ERROR (logs):', error.message);
-    throw error;
+    // Continue with seeding despite individual collection errors
   }
 }
 

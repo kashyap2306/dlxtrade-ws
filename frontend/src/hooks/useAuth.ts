@@ -8,7 +8,14 @@ export function useAuth() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Add timeout to prevent infinite loading if Firebase auth hangs
+    const authTimeout = setTimeout(() => {
+      console.log('[useAuth] Forcing auth loading completion after timeout');
+      setLoading(false);
+    }, 10000); // 10 seconds timeout
+
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      clearTimeout(authTimeout); // Clear timeout if auth resolves normally
       try {
         if (firebaseUser) {
           const token = await firebaseUser.getIdToken();

@@ -890,6 +890,21 @@ export default function Settings() {
     }
   }, [user, loadAllData]);
 
+  // Force load after 10 seconds if still loading (fallback for slow APIs)
+  useEffect(() => {
+    if (loadingAll && user) {
+      const timeout = setTimeout(() => {
+        console.log('[Settings] Forcing load completion after timeout');
+        if (isMountedRef.current) {
+          setLoadingAll(false);
+          setError({ message: 'Loading timeout - please try refreshing the page' });
+        }
+      }, 10000);
+
+      return () => clearTimeout(timeout);
+    }
+  }, [loadingAll, user]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -1645,7 +1660,7 @@ export default function Settings() {
 
   return (
     <ErrorBoundary>
-      <div className="flex flex-col min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 min-h-0">
+      <div className="flex flex-col h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 overflow-hidden">
       {/* Animated background elements - Performance optimized */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none gpu-accelerated">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob"></div>
@@ -1655,23 +1670,23 @@ export default function Settings() {
 
       <Sidebar onLogout={handleLogout} />
 
-      <main className="flex-1 overflow-y-auto h-full smooth-scroll">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="flex-1 overflow-y-auto smooth-scroll">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
           {/* Header */}
           <div className="mb-8">
             <h1 className="text-3xl font-bold text-white mb-2">Settings</h1>
             <p className="text-gray-400">Configure your trading parameters and API integrations</p>
           </div>
 
-          <div className="space-y-8">
+          <div className="space-y-6 sm:space-y-8">
             {/* Trading Settings Section */}
-            <div className="bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 p-6 shadow-sm">
-              <div className="mb-6">
+            <div className="bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 p-4 sm:p-6 shadow-sm">
+              <div className="mb-4 sm:mb-6">
                 <h2 className="text-xl font-semibold text-white mb-2">Trading Settings</h2>
                 <p className="text-sm text-gray-400">Configure your core trading parameters, risk controls, and position sizing</p>
               </div>
 
-              <div className="grid grid-cols-1 gap-6 mb-6">
+              <div className="grid grid-cols-1 gap-4 sm:gap-6 mb-4 sm:mb-6">
                 {/* Research Coin Selection System */}
                 <div className="space-y-4 md:col-span-2">
                   <div>
@@ -1680,7 +1695,7 @@ export default function Settings() {
                   </div>
 
                   {/* Mode Selection */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4">
                     <label className={`relative flex items-center p-4 rounded-xl border-2 cursor-pointer transition-all duration-200 hover:scale-102 ${
                       tradingSettings.mode === 'MANUAL'
                         ? 'border-purple-500 bg-gradient-to-r from-purple-500/20 to-pink-500/20 text-white'
@@ -1984,16 +1999,16 @@ export default function Settings() {
             </div>
 
             {/* API Provider Categories */}
-            <div className="bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 p-6 shadow-sm">
+            <div className="bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 p-4 sm:p-6 shadow-sm">
               <div className="mb-6">
                 <h2 className="text-xl font-semibold text-white mb-2">API Provider Configuration</h2>
                 <p className="text-sm text-gray-400">Configure primary and backup data providers for comprehensive market analysis</p>
               </div>
 
-              <div className="grid grid-cols-1 gap-6">
+              <div className="grid grid-cols-1 gap-4 sm:gap-6">
                 {/* Dynamic Provider Categories */}
                 {Object.entries(PROVIDER_CONFIG).map(([categoryKey, config]) => (
-                  <div key={categoryKey} className="bg-slate-800/30 rounded-2xl p-6 border border-slate-700/50 shadow-sm">
+                  <div key={categoryKey} className="bg-slate-800/30 rounded-2xl p-4 sm:p-6 border border-slate-700/50 shadow-sm">
                     <div className="flex items-center gap-3 mb-4">
                       <div className={`w-12 h-12 ${config.bgColor} rounded-xl flex items-center justify-center shadow-sm`}>
                         <span className="text-white font-bold text-xl">{config.icon}</span>
@@ -2209,7 +2224,7 @@ export default function Settings() {
             </div>
 
             {/* Notification Settings Section */}
-            <div className="bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 p-6 shadow-sm">
+            <div className="bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 p-4 sm:p-6 shadow-sm">
               <div className="mb-6">
                 <h2 className="text-xl font-semibold text-white mb-2">Notification Settings</h2>
                 <p className="text-sm text-gray-400">Configure in-app notification preferences and alerts</p>
@@ -2345,7 +2360,7 @@ export default function Settings() {
             </div>
 
             {/* Background Deep Research Alerts Section */}
-            <div className="bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 p-6 shadow-sm">
+            <div className="bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 p-4 sm:p-6 shadow-sm">
               <div className="mb-6">
                 <h2 className="text-xl font-semibold text-white mb-2">Background Deep Research Alerts</h2>
                 <p className="text-sm text-gray-400">Configure automatic deep research with Telegram notifications</p>
@@ -2355,7 +2370,7 @@ export default function Settings() {
             </div>
 
             {/* Add Exchange Section */}
-            <div className="bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 p-6 shadow-sm">
+            <div className="bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 p-4 sm:p-6 shadow-sm">
               <div className="mb-6">
                 <h2 className="text-xl font-semibold text-white mb-2">Add Exchange</h2>
                 <p className="text-sm text-gray-400">Connect one exchange for automated trading</p>

@@ -1,5 +1,5 @@
 import { getAuth, onIdTokenChanged } from 'firebase/auth';
-import { API_BASE_URL } from '@/config/env';
+import { API_URL, WS_URL } from '@/config/env';
 
 type Timeout = ReturnType<typeof setTimeout>;
 
@@ -16,33 +16,29 @@ class WebSocketService {
   private healthCheckPassed: boolean = false;
 
   async connect(): Promise<void> {
-    // Import healthPingService dynamically to avoid circular dependency
-    const { healthPingService } = await import('../config/axios');
-
-    // Check if health check has passed before attempting WS connection
-    const isHealthy = healthPingService?.isServiceHealthy?.() ?? true;
-
-    if (!this.healthCheckPassed && !isHealthy) {
-      console.log('[WS] Waiting for health check before connecting...');
-      // Wait for health check to pass or timeout after 10 seconds
-      let attempts = 0;
-      while ((healthPingService?.isServiceHealthy?.() ?? true) === false && attempts < 10) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        attempts++;
-      }
-
-      if ((healthPingService?.isServiceHealthy?.() ?? true) === false) {
-        console.warn('[WS] Health check failed, but proceeding with WS connection anyway');
-      } else {
-        this.healthCheckPassed = true;
-        console.log('[WS] Health check passed, proceeding with WS connection');
-      }
-    }
+    // Skip health check - WebSocket should connect regardless of health status
+    // Health check is optional and shouldn't block WS connections
+    console.log('[WS] Connecting to WebSocket...');
 
     try {
-      // Get fresh Firebase token
-      const token = await getAuth().currentUser?.getIdToken();
-      const wsUrl = `${API_BASE_URL.replace('http', 'ws').replace('/api', '')}/ws?token=${token}`;
+      // Get fresh Firebase token with timeout
+      let token: string | undefined;
+      try {
+        const currentUser = getAuth().currentUser;
+        if (currentUser) {
+          const tokenPromise = currentUser.getIdToken();
+          const timeoutPromise = new Promise<string>((_, reject) =>
+            setTimeout(() => reject(new Error('Token fetch timeout')), 3000)
+          );
+          token = await Promise.race([tokenPromise, timeoutPromise]);
+        }
+      } catch (tokenError) {
+        console.warn('[WS] Token fetch failed, connecting without auth:', tokenError.message);
+      }
+
+      const wsUrl = token
+        ? `${WS_URL}?token=${token}`
+        : WS_URL;
 
       this.ws = new WebSocket(wsUrl);
 

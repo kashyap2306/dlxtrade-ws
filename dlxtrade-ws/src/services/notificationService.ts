@@ -1,5 +1,6 @@
 import { logger } from '../utils/logger';
 import * as admin from 'firebase-admin';
+import { getFirebaseAdmin } from '../utils/firebase';
 
 export interface TradeNotification {
   userId: string;
@@ -52,7 +53,7 @@ export class NotificationService {
       }
 
       // Store notification in Firestore
-      await admin.firestore().collection('notifications').add({
+      await getFirebaseAdmin().firestore().collection('notifications').add({
         userId,
         type,
         title,
@@ -111,7 +112,7 @@ export class NotificationService {
           break;
       }
 
-      await admin.firestore().collection('notifications').add({
+      await getFirebaseAdmin().firestore().collection('notifications').add({
         userId,
         type,
         title,

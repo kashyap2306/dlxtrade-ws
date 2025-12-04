@@ -387,11 +387,11 @@ export default function Dashboard() {
       // Load unified dashboard data
       await loadDashboardData();
       if (isMountedRef.current) {
-        setDashboardState(prev => ({ ...prev, retryCount: 0 }));
+        setDashboardState(prev => ({ ...prev, retryCount: 0, loading: false, hasLoaded: true }));
       }
     } catch (err: any) {
       if (isMountedRef.current) {
-        setDashboardState(prev => ({ ...prev, error: err }));
+        setDashboardState(prev => ({ ...prev, error: err, loading: false, hasLoaded: true }));
         suppressConsoleError(err, 'loadDashboardData');
       }
     }
