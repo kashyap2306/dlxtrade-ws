@@ -50,11 +50,11 @@ export default function NotificationToast() {
   };
 
   return (
-    <div className="fixed bottom-4 right-4 z-[100] animate-slide-up">
+    <div className="fixed bottom-4 right-4 sm:bottom-6 sm:right-6 z-[100] animate-slide-up">
       <div
         className={`
           ${getBgColor()}
-          border rounded-lg shadow-2xl p-4 min-w-[300px] max-w-[400px]
+          border rounded-lg shadow-2xl p-3 sm:p-4 min-w-[280px] sm:min-w-[300px] max-w-[400px]
           backdrop-blur-xl
         `}
       >

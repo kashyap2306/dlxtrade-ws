@@ -30,6 +30,7 @@ import { ErrorProvider } from './contexts/ErrorContext';
 import { NotificationProvider } from './contexts/NotificationContext';
 import { ChatbotProvider } from './contexts/ChatbotContext';
 import NotificationToast from './components/NotificationToast';
+import NotificationManager from './components/NotificationManager';
 import BroadcastPopup from './components/BroadcastPopup';
 import Chatbot from './components/Chatbot';
 import { wsService } from './services/ws';
@@ -156,6 +157,7 @@ function App() {
         <NotificationProvider>
           <ChatbotProvider>
             <NotificationToast />
+            <NotificationManager soundEnabled={true} vibrationEnabled={true} />
             <BroadcastPopup />
             <Chatbot />
             <Suspense fallback={<LoadingScreen />}>

@@ -1,6 +1,5 @@
 # Dependencies
 node_modules/
-<<<<<<< HEAD
 .pnp
 .pnp.js
 
@@ -12,40 +11,34 @@ coverage/
 dist/
 build/
 *.local
-=======
-package-lock.json
-
-# Build output
-dist/
->>>>>>> 9636cc16c78c77b9f0c35101a040dc5c414846c5
 
 # Environment variables
 .env
 .env.local
 .env.production
 
-<<<<<<< HEAD
-=======
+# Firebase service account files (never commit these!)
+firebase_service_account.json
+firebase_config.txt
+frontend/temp_env.txt
+
 # Logs
 *.log
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
 # OS files
 .DS_Store
 Thumbs.db
 
->>>>>>> 9636cc16c78c77b9f0c35101a040dc5c414846c5
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-<<<<<<< HEAD
 *~
-
-# OS
-.DS_Store
-Thumbs.db
 
 # Docker
 *.pid
@@ -56,14 +49,6 @@ Thumbs.db
 *.sqlite
 *.db
 
-# Logs
-logs/
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-
 # TypeScript
 *.tsbuildinfo
 
@@ -71,9 +56,4 @@ pnpm-debug.log*
 .cache/
 .temp/
 .tmp/
-=======
-
-# Test coverage
-coverage/
->>>>>>> 9636cc16c78c77b9f0c35101a040dc5c414846c5
 

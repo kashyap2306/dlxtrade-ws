@@ -145,6 +145,8 @@ function BackgroundResearchWizard() {
   const [savingSettings, setSavingSettings] = useState(false);
   const [loadingSettings, setLoadingSettings] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [checkingApiKeys, setCheckingApiKeys] = useState(false);
+  const [apiKeysValid, setApiKeysValid] = useState(false);
 
   // Load existing settings on component mount
   useEffect(() => {
@@ -197,7 +199,7 @@ function BackgroundResearchWizard() {
         accuracyTrigger: accuracyTrigger,
       });
       showToast('Background research settings saved successfully!', 'success');
-      setCurrentStep(1); // Reset to first step
+      setCurrentStep(0); // Reset to API validation step
     } catch (error: any) {
       console.error('Error saving background research settings:', error);
       showToast(error.response?.data?.error || 'Failed to save settings', 'error');
@@ -206,26 +208,83 @@ function BackgroundResearchWizard() {
     }
   };
 
+  const checkApiKeys = async () => {
+    setCheckingApiKeys(true);
+    try {
+      const requiredApis = [
+        'CryptoCompare',
+        'CoinGecko',
+        'CoinPaprika',
+        'NewsData',
+        'CryptoPanic',
+        'Reddit',
+        'GNews',
+        'KuCoin',
+        'Bybit',
+        'OKX',
+        'Bitget'
+      ];
+
+      const missingKeys: string[] = [];
+
+      // Check each required API key
+      for (const apiName of requiredApis) {
+        try {
+          const response = await integrationsApi.checkKey(apiName);
+          if (!response.data?.valid) {
+            missingKeys.push(apiName);
+          }
+        } catch (error) {
+          missingKeys.push(apiName);
+        }
+      }
+
+      if (missingKeys.length > 0) {
+        showToast(`Missing API keys: ${missingKeys.join(', ')}`, 'error');
+        setApiKeysValid(false);
+        return false;
+      } else {
+        showToast('All required API keys are configured!', 'success');
+        setApiKeysValid(true);
+        return true;
+      }
+    } catch (error) {
+      showToast('Failed to validate API keys', 'error');
+      setApiKeysValid(false);
+      return false;
+    } finally {
+      setCheckingApiKeys(false);
+    }
+  };
+
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
   };
 
-  const nextStep = () => {
-    if (currentStep < 4) {
+  const nextStep = async () => {
+    if (currentStep === 0 && bgResearchEnabled) {
+      // Check API keys before proceeding
+      const keysValid = await checkApiKeys();
+      if (keysValid) {
+        setCurrentStep(1);
+      }
+    } else if (currentStep < 5) {
       setCurrentStep(currentStep + 1);
     }
   };
 
   const prevStep = () => {
-    if (currentStep > 1) {
+    if (currentStep > 0) {
       setCurrentStep(currentStep - 1);
     }
   };
 
-  const canProceedToStep2 = bgResearchEnabled;
-  const canProceedToStep3 = telegramBotToken.trim() && telegramChatId.trim();
-  const canProceedToStep4 = true; // Always allow proceeding to confirmation
+  const canProceedToStep1 = bgResearchEnabled;
+  const canProceedToStep2 = telegramBotToken.trim() && telegramChatId.trim();
+  const canProceedToStep3 = true; // Always allow proceeding to frequency selection
+  const canProceedToStep4 = true; // Always allow proceeding to accuracy trigger
+  const canProceedToStep5 = true; // Always allow proceeding to confirmation
 
   if (loadingSettings) {
     return (
@@ -263,7 +322,7 @@ function BackgroundResearchWizard() {
           <div className="bg-gradient-to-r from-slate-800/50 to-slate-900/50 px-6 py-4 border-b border-white/10">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
               <div className="flex items-center space-x-3">
-                {[1, 2, 3, 4].map((step) => (
+                {[0, 1, 2, 3, 4].map((step) => (
                   <div
                     key={step}
                     className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold transition-all duration-300 ${
@@ -272,15 +331,16 @@ function BackgroundResearchWizard() {
                         : 'bg-slate-700 text-gray-400'
                     }`}
                   >
-                    {step}
+                    {step === 0 ? '✓' : step}
                   </div>
                 ))}
               </div>
               <div className="text-right">
                 <span className="text-sm font-medium text-gray-300">
-                  Step {currentStep} of 4
+                  Step {currentStep + 1} of 5
                 </span>
                 <p className="text-xs text-gray-400 mt-1">
+                  {currentStep === 0 && 'API Key Validation'}
                   {currentStep === 1 && 'Configure Telegram'}
                   {currentStep === 2 && 'Set Research Frequency'}
                   {currentStep === 3 && 'Choose Accuracy Trigger'}
@@ -292,6 +352,77 @@ function BackgroundResearchWizard() {
 
           {/* Step Content */}
           <div className="p-6">
+            {currentStep === 0 && (
+              <div className="space-y-6">
+                <div className="text-center sm:text-left">
+                  <h3 className="text-2xl font-bold text-white mb-2">🔑 API Key Validation</h3>
+                  <p className="text-gray-400">
+                    Before enabling Deep Research, we need to verify all required API keys are configured.
+                  </p>
+                </div>
+
+                <div className="bg-slate-800/30 rounded-xl p-6 border border-slate-600/30">
+                  <h4 className="text-lg font-semibold text-white mb-4">Required API Keys:</h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {[
+                      'CryptoCompare (Market Data)',
+                      'CoinGecko (Metadata)',
+                      'CoinPaprika (Metadata)',
+                      'NewsData (News)',
+                      'CryptoPanic (News)',
+                      'Reddit (News)',
+                      'GNews (News)',
+                      'KuCoin (Exchange)',
+                      'Bybit (Exchange)',
+                      'OKX (Exchange)',
+                      'Bitget (Exchange)'
+                    ].map((api, index) => (
+                      <div key={index} className="flex items-center gap-2">
+                        <div className="w-2 h-2 bg-purple-400 rounded-full"></div>
+                        <span className="text-sm text-gray-300">{api}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4">
+                  <p className="text-sm text-blue-200">
+                    <span className="font-semibold">💡 Note:</span> Configure these API keys in the "API Provider Configuration" section above before proceeding.
+                  </p>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-4">
+                  <button
+                    onClick={checkApiKeys}
+                    disabled={checkingApiKeys}
+                    className="flex-1 px-6 py-3 bg-gradient-to-r from-blue-500 to-blue-600 text-white font-semibold rounded-xl hover:from-blue-600 hover:to-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
+                  >
+                    {checkingApiKeys ? (
+                      <span className="flex items-center justify-center gap-2">
+                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                        Checking API Keys...
+                      </span>
+                    ) : (
+                      <span className="flex items-center justify-center gap-2">
+                        🔍 Validate API Keys
+                      </span>
+                    )}
+                  </button>
+                </div>
+
+                {apiKeysValid && (
+                  <div className="flex justify-end pt-4 border-t border-white/10">
+                    <button
+                      onClick={nextStep}
+                      className="px-8 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all shadow-lg"
+                    >
+                      Continue →
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
             {currentStep === 1 && (
               <div className="space-y-6">
                 <div className="text-center sm:text-left">
@@ -377,12 +508,21 @@ function BackgroundResearchWizard() {
                   </p>
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                  {[1, 3, 5, 10, 15, 30].map((minutes) => (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                  {[
+                    { value: 1, label: '1M' },
+                    { value: 3, label: '3M' },
+                    { value: 5, label: '5M' },
+                    { value: 10, label: '10M' },
+                    { value: 15, label: '15M' },
+                    { value: 30, label: '30M' },
+                    { value: 45, label: '45M' },
+                    { value: 60, label: '1H' }
+                  ].map(({ value, label }) => (
                     <label
-                      key={minutes}
+                      key={value}
                       className={`relative flex items-center justify-center p-4 rounded-xl border-2 cursor-pointer transition-all duration-200 hover:scale-105 ${
-                        researchFrequency === minutes
+                        researchFrequency === value
                           ? 'border-purple-500 bg-gradient-to-r from-purple-500/20 to-pink-500/20 text-white shadow-lg'
                           : 'border-slate-600/50 bg-slate-800/30 text-gray-300 hover:border-slate-500/70 hover:bg-slate-700/50'
                       }`}
@@ -390,20 +530,17 @@ function BackgroundResearchWizard() {
                       <input
                         type="radio"
                         name="frequency"
-                        value={minutes}
-                        checked={researchFrequency === minutes}
+                        value={value}
+                        checked={researchFrequency === value}
                         onChange={(e) => setResearchFrequency(parseInt(e.target.value))}
                         className="sr-only"
                       />
                       <div className="text-center">
                         <span className="text-lg font-bold block">
-                          {minutes}
-                        </span>
-                        <span className="text-xs font-medium">
-                          min{minutes > 1 ? 's' : ''}
+                          {label}
                         </span>
                       </div>
-                      {researchFrequency === minutes && (
+                      {researchFrequency === value && (
                         <div className="absolute -top-1 -right-1 w-5 h-5 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full flex items-center justify-center">
                           <span className="text-white text-xs">✓</span>
                         </div>
@@ -414,7 +551,7 @@ function BackgroundResearchWizard() {
 
                 <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4">
                   <p className="text-sm text-blue-200">
-                    <span className="font-semibold">💡 Tip:</span> More frequent research provides timelier signals but uses more API calls. Start with 5 minutes for optimal balance.
+                    <span className="font-semibold">💡 Tip:</span> More frequent research provides timelier signals but uses more API calls. Start with 5M for optimal balance between timeliness and cost.
                   </p>
                 </div>
 
@@ -540,7 +677,7 @@ function BackgroundResearchWizard() {
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between p-3 bg-slate-700/30 rounded-lg">
                       <span className="text-gray-300 font-medium">Research Frequency:</span>
                       <span className="text-purple-300 font-semibold">
-                        ⏰ {researchFrequency} minute{researchFrequency > 1 ? 's' : ''}
+                        ⏰ {researchFrequency === 60 ? '1 hour' : `${researchFrequency} minute${researchFrequency > 1 ? 's' : ''}`}
                       </span>
                     </div>
 
@@ -662,6 +799,8 @@ export default function Settings() {
   const [showCoinDropdown, setShowCoinDropdown] = useState(false);
 
   const [integrationsLoading, setIntegrationsLoading] = useState(false);
+  const [testingProvider, setTestingProvider] = useState<string | null>(null);
+  const [providerTestResults, setProviderTestResults] = useState<Record<string, { status: 'success' | 'error' | null; message: string }>>({});
   const [settings, setSettings] = useState<any>({
     maxPositionPercent: 10,
     tradeType: 'scalping',
@@ -859,6 +998,13 @@ export default function Settings() {
           enableAutoTrade: response.data.enableAutoTrade || false,
           exchanges: response.data.exchanges || [],
           showUnmaskedKeys: response.data.showUnmaskedKeys || false,
+          // Notification settings
+          enableAutoTradeAlerts: response.data.enableAutoTradeAlerts || false,
+          enableAccuracyAlerts: response.data.enableAccuracyAlerts || false,
+          enableWhaleAlerts: response.data.enableWhaleAlerts || false,
+          tradeConfirmationRequired: response.data.tradeConfirmationRequired || false,
+          notificationSounds: response.data.notificationSounds || false,
+          notificationVibration: response.data.notificationVibration || false,
         });
       } else {
         // Initialize with defaults if no settings exist
@@ -911,6 +1057,13 @@ export default function Settings() {
           enableAutoTrade: false,
           exchanges: [],
           showUnmaskedKeys: false,
+          // Notification settings
+          enableAutoTradeAlerts: false,
+          enableAccuracyAlerts: false,
+          enableWhaleAlerts: false,
+          tradeConfirmationRequired: false,
+          notificationSounds: false,
+          notificationVibration: false,
         });
       }
     } catch (err: any) {
@@ -1071,6 +1224,66 @@ export default function Settings() {
       showToast(err.response?.data?.error || `Error saving ${providerName}`, 'error');
     } finally {
       setSavingProvider(null);
+    }
+  };
+
+  const handleTestProvider = async (providerName: string) => {
+    if (!settings) return;
+
+    setTestingProvider(providerName);
+    setProviderTestResults(prev => ({ ...prev, [providerName]: { status: null, message: 'Testing...' } }));
+
+    try {
+      const apiName = API_NAME_MAP[providerName];
+      if (!apiName) {
+        throw new Error(`Unknown provider: ${providerName}`);
+      }
+
+      // Get the API key from settings
+      const fieldNameMap: any = {
+        'cryptocompare': 'cryptoCompareKey',
+        'coingecko': 'coinGeckoBackupKey',
+        'kucoin': 'kucoinBackupKey',
+        'bybit': 'bybitBackupKey',
+        'okx': 'okxBackupKey',
+        'bitget': 'bitgetBackupKey',
+        'newsdata': 'newsDataKey',
+        'cryptopanic': 'cryptoPanicKey',
+        'reddit': 'redditKey',
+        'gnews': 'gnewsKey'
+      };
+
+      const apiKeyField = fieldNameMap[apiName] || `${apiName}Key`;
+      const apiKey = settings[apiKeyField]?.trim();
+
+      // For backup providers, check if enabled; for primary providers, always test if key exists
+      const isPrimary = ['cryptocompare', 'newsdata'].includes(apiName);
+      const enabledField = `coinGeckoBackupEnabled` || `${apiName}Enabled`;
+      const enabled = isPrimary ? !!apiKey : (settings[enabledField] || !!apiKey);
+
+      if (!enabled) {
+        setProviderTestResults(prev => ({ ...prev, [providerName]: { status: 'error', message: 'Provider not enabled' } }));
+        return;
+      }
+
+      if (!apiKey && !['coingecko', 'kucoin', 'bybit', 'okx', 'bitget', 'reddit'].includes(apiName)) {
+        setProviderTestResults(prev => ({ ...prev, [providerName]: { status: 'error', message: 'API key required' } }));
+        return;
+      }
+
+      // Call test API - this would need to be implemented in the backend
+      const testResponse = await integrationsApi.testProvider(apiName, { apiKey });
+
+      if (testResponse.data?.success) {
+        setProviderTestResults(prev => ({ ...prev, [providerName]: { status: 'success', message: 'Connection successful' } }));
+      } else {
+        setProviderTestResults(prev => ({ ...prev, [providerName]: { status: 'error', message: testResponse.data?.error || 'Connection failed' } }));
+      }
+    } catch (err: any) {
+      console.error(`Error testing ${providerName}:`, err);
+      setProviderTestResults(prev => ({ ...prev, [providerName]: { status: 'error', message: err.response?.data?.error || 'Connection failed' } }));
+    } finally {
+      setTestingProvider(null);
     }
   };
 
@@ -1348,6 +1561,15 @@ export default function Settings() {
 
     try {
       const response = await settingsApi.update(settings);
+
+      // Save notification preferences to localStorage for immediate access
+      localStorage.setItem('notificationSounds', settings.notificationSounds ? 'true' : 'false');
+      localStorage.setItem('notificationVibration', settings.notificationVibration ? 'true' : 'false');
+      localStorage.setItem('enableAutoTradeAlerts', settings.enableAutoTradeAlerts ? 'true' : 'false');
+      localStorage.setItem('enableAccuracyAlerts', settings.enableAccuracyAlerts ? 'true' : 'false');
+      localStorage.setItem('enableWhaleAlerts', settings.enableWhaleAlerts ? 'true' : 'false');
+      localStorage.setItem('tradeConfirmationRequired', settings.tradeConfirmationRequired ? 'true' : 'false');
+
       // Settings updated successfully
       showToast('Settings saved successfully', 'success');
       // No need to reload - local state is already updated
@@ -1414,7 +1636,7 @@ export default function Settings() {
 
   return (
     <ErrorBoundary>
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 smooth-scroll">
+      <div className="flex flex-col min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
       {/* Animated background elements - Performance optimized */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none gpu-accelerated">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob"></div>
@@ -1424,7 +1646,7 @@ export default function Settings() {
 
       <Sidebar onLogout={handleLogout} />
 
-      <main className="w-full h-full overflow-y-auto smooth-scroll">
+      <main className="flex-1 overflow-y-auto smooth-scroll">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
           {/* Header */}
           <div className="mb-8">
@@ -1434,13 +1656,13 @@ export default function Settings() {
 
           <div className="space-y-8">
             {/* Trading Settings Section */}
-            <section className="bg-white/5 backdrop-blur-sm rounded-xl border border-white/10 p-6">
+            <div className="bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 p-6 shadow-sm">
               <div className="mb-6">
                 <h2 className="text-xl font-semibold text-white mb-2">Trading Settings</h2>
                 <p className="text-sm text-gray-400">Configure your core trading parameters, risk controls, and position sizing</p>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+              <div className="grid grid-cols-1 gap-6 mb-6">
                 {/* Research Coin Selection System */}
                 <div className="space-y-4 md:col-span-2">
                   <div>
@@ -1449,7 +1671,7 @@ export default function Settings() {
                   </div>
 
                   {/* Mode Selection */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                     <label className={`relative flex items-center p-4 rounded-xl border-2 cursor-pointer transition-all duration-200 hover:scale-102 ${
                       tradingSettings.mode === 'MANUAL'
                         ? 'border-purple-500 bg-gradient-to-r from-purple-500/20 to-pink-500/20 text-white'
@@ -1750,22 +1972,22 @@ export default function Settings() {
                   {savingTrading ? 'Saving...' : tradingSaved ? 'Saved ✓' : 'Save Trading Settings'}
                 </button>
               </div>
-            </section>
+            </div>
 
             {/* API Provider Categories */}
-            <section className="bg-white/5 backdrop-blur-sm rounded-xl border border-white/10 p-6">
+            <div className="bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 p-6 shadow-sm">
               <div className="mb-6">
                 <h2 className="text-xl font-semibold text-white mb-2">API Provider Configuration</h2>
                 <p className="text-sm text-gray-400">Configure primary and backup data providers for comprehensive market analysis</p>
               </div>
 
-              <div className="space-y-8">
+              <div className="grid grid-cols-1 gap-6">
                 {/* Dynamic Provider Categories */}
                 {Object.entries(PROVIDER_CONFIG).map(([categoryKey, config]) => (
-                  <div key={categoryKey} className="space-y-4">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-10 h-10 ${config.bgColor} rounded-lg flex items-center justify-center`}>
-                        <span className="text-white font-bold text-lg">{config.icon}</span>
+                  <div key={categoryKey} className="bg-slate-800/30 rounded-2xl p-6 border border-slate-700/50 shadow-sm">
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className={`w-12 h-12 ${config.bgColor} rounded-xl flex items-center justify-center shadow-sm`}>
+                        <span className="text-white font-bold text-xl">{config.icon}</span>
                       </div>
                       <div>
                         <h3 className="text-lg font-semibold text-white">{config.title}</h3>
@@ -1775,136 +1997,356 @@ export default function Settings() {
 
                     {/* Primary Provider */}
                     {config.primary && (
-                      <div className="ml-13 space-y-2">
+                      <div className="space-y-3">
                         <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium text-green-400">PRIMARY:</span>
-                          <span className="text-sm text-white">{config.primary.name}</span>
+                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-500/20 text-green-400 border border-green-500/30">
+                            PRIMARY
+                          </span>
+                          <span className="text-sm font-medium text-white">{config.primary.name}</span>
                         </div>
+
                         {submittedProviders.has(API_NAME_MAP[config.primary.name]?.toLowerCase()) ? (
-                          <div className="flex items-center gap-2">
-                            <div className="flex-1 px-3 py-2 bg-green-500/10 border border-green-500/20 rounded-lg">
-                              <div className="flex items-center gap-2">
-                                <span className="text-green-400 text-sm">✓ Updated</span>
-                                <span className="text-gray-400 text-xs">API key configured</span>
-                              </div>
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2 p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
+                              <CheckCircleIcon className="w-4 h-4 text-green-400" />
+                              <span className="text-green-400 text-sm font-medium">API key configured</span>
                             </div>
-                            <button
-                              onClick={() => {
-                                setSubmittedProviders(prev => {
-                                  const newSet = new Set(prev);
-                                  newSet.delete(API_NAME_MAP[config.primary.name]?.toLowerCase());
-                                  return newSet;
-                                });
-                              }}
-                              className="px-4 py-2 bg-slate-600 text-white font-medium rounded-lg hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 transition-all text-sm"
-                            >
-                              Change
-                            </button>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => handleTestProvider(config.primary.name)}
+                                disabled={testingProvider === config.primary.name}
+                                className="flex-1 px-3 py-2 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded-lg hover:bg-blue-500/30 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all disabled:opacity-50 text-sm font-medium"
+                              >
+                                {testingProvider === config.primary.name ? (
+                                  <span className="flex items-center justify-center gap-2">
+                                    <div className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+                                    Testing...
+                                  </span>
+                                ) : (
+                                  'Test Connection'
+                                )}
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setSubmittedProviders(prev => {
+                                    const newSet = new Set(prev);
+                                    newSet.delete(API_NAME_MAP[config.primary.name]?.toLowerCase());
+                                    return newSet;
+                                  });
+                                }}
+                                className="px-3 py-2 bg-slate-600/50 text-slate-300 border border-slate-600/50 rounded-lg hover:bg-slate-600/70 focus:outline-none focus:ring-2 focus:ring-slate-500 transition-all text-sm font-medium"
+                              >
+                                Change
+                              </button>
+                            </div>
+                            {providerTestResults[config.primary.name] && (
+                              <div className={`flex items-center gap-2 p-2 rounded-lg text-xs ${
+                                providerTestResults[config.primary.name].status === 'success'
+                                  ? 'bg-green-500/10 border border-green-500/20 text-green-400'
+                                  : providerTestResults[config.primary.name].status === 'error'
+                                  ? 'bg-red-500/10 border border-red-500/20 text-red-400'
+                                  : 'bg-yellow-500/10 border border-yellow-500/20 text-yellow-400'
+                              }`}>
+                                {providerTestResults[config.primary.name].status === 'success' && <CheckCircleIcon className="w-3 h-3" />}
+                                {providerTestResults[config.primary.name].status === 'error' && <XCircleIcon className="w-3 h-3" />}
+                                <span>{providerTestResults[config.primary.name].message}</span>
+                              </div>
+                            )}
                           </div>
                         ) : (
-                          <div className="flex gap-2">
-                            <input
-                              type="password"
-                              className="flex-1 px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                              value={settings[config.primary.key] || ''}
-                              onChange={(e) => setSettings({ ...settings, [config.primary.key]: e.target.value })}
-                              placeholder={config.primary.placeholder}
-                            />
-                            <button
-                              onClick={() => handleSaveProvider(config.primary.name)}
-                              disabled={savingProvider === config.primary.name}
-                              className="px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-                            >
-                              {savingProvider === config.primary.name ? 'Saving...' : 'Save'}
-                            </button>
+                          <div className="space-y-2">
+                            <div className="flex gap-2">
+                              <input
+                                type="password"
+                                id={`primary-${config.primary.key}`}
+                                className="flex-1 px-3 py-2 bg-slate-800/50 border border-slate-600/50 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                                value={settings[config.primary.key] || ''}
+                                onChange={(e) => setSettings({ ...settings, [config.primary.key]: e.target.value })}
+                                placeholder={config.primary.placeholder}
+                                aria-label={`${config.primary.name} API key`}
+                              />
+                              <button
+                                onClick={() => handleSaveProvider(config.primary.name)}
+                                disabled={savingProvider === config.primary.name}
+                                className="px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                              >
+                                {savingProvider === config.primary.name ? 'Saving...' : 'Save'}
+                              </button>
+                            </div>
                           </div>
                         )}
                       </div>
                     )}
 
-                    {/* Backup Providers Accordion */}
-                    <details className="group ml-13">
-                      <summary className="flex items-center gap-2 cursor-pointer text-sm text-gray-400 hover:text-white transition-colors">
-                        <ChevronDownIcon className="w-4 h-4 group-open:rotate-180 transition-transform" />
-                        Backup Providers ({config.backups.length} available)
-                      </summary>
-                      <div className="mt-4 space-y-3">
+                    {/* Backup Providers */}
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-medium text-gray-300">Backup Providers</h4>
+                        <span className="text-xs text-gray-400 bg-slate-700/50 px-2 py-1 rounded-full">
+                          {config.backups.length} available
+                        </span>
+                      </div>
+
+                      <div className="space-y-2">
                         {config.backups.map((backup) => (
-                          <div key={backup.key} className="flex items-center justify-between p-3 bg-slate-800/30 rounded-lg">
-                            <div className="flex items-center gap-3">
-                              <label className="relative inline-flex items-center cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  className="sr-only peer"
-                                  checked={settings[backup.enabledKey] || false}
-                                  onChange={(e) => setSettings({ ...settings, [backup.enabledKey]: e.target.checked })}
-                                />
-                                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-500"></div>
-                              </label>
-                              <span className={`text-xs ${backup.type === 'free' ? 'text-green-400' : 'text-amber-400'}`}>
-                                {backup.type === 'free' ? 'FREE' : 'API KEY'}
-                              </span>
-                              <span className="text-sm text-white">{backup.name}</span>
-                            </div>
-                            {settings[backup.enabledKey] && (
-                              backup.type === 'free' ? (
-                                <span className="text-xs text-gray-400">{backup.placeholder}</span>
-                              ) : submittedProviders.has(API_NAME_MAP[backup.name]?.toLowerCase()) ? (
-                                <div className="flex items-center gap-2">
-                                  <span className="text-green-400 text-xs">✓ Updated</span>
-                                  <button
-                                    onClick={() => {
-                                      setSubmittedProviders(prev => {
-                                        const newSet = new Set(prev);
-                                        newSet.delete(API_NAME_MAP[backup.name]?.toLowerCase());
-                                        return newSet;
-                                      });
-                                    }}
-                                    className="px-2 py-1 bg-slate-600 text-white font-medium rounded text-xs hover:bg-slate-700 transition-all"
-                                  >
-                                    Change
-                                  </button>
-                                </div>
-                              ) : (
-                                <div className="flex gap-2">
+                          <div key={backup.key} className="bg-slate-800/40 rounded-lg p-3 border border-slate-700/50">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-3">
+                                <label className="relative inline-flex items-center cursor-pointer">
                                   <input
-                                    type="password"
-                                    className="px-2 py-1 bg-slate-700/50 border border-slate-600/50 rounded text-xs text-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-purple-500"
-                                    placeholder="API Key"
-                                    value={settings[backup.key] || ''}
-                                    onChange={(e) => setSettings({ ...settings, [backup.key]: e.target.value })}
+                                    type="checkbox"
+                                    id={`backup-${backup.key}`}
+                                    className="sr-only peer"
+                                    checked={settings[backup.enabledKey] || false}
+                                    onChange={(e) => setSettings({ ...settings, [backup.enabledKey]: e.target.checked })}
+                                    aria-label={`Enable ${backup.name} backup provider`}
                                   />
-                                  <button
-                                    onClick={() => handleSaveProvider(backup.name)}
-                                    disabled={savingProvider === backup.name}
-                                    className="px-3 py-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded text-xs hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                                  >
-                                    {savingProvider === backup.name ? '...' : 'Save'}
-                                  </button>
+                                  <div className="w-10 h-5 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-500"></div>
+                                </label>
+                                <div className="flex flex-col">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-medium text-white">{backup.name}</span>
+                                    <span className={`text-xs px-1.5 py-0.5 rounded-full ${
+                                      backup.type === 'free'
+                                        ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+                                        : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                    }`}>
+                                      {backup.type === 'free' ? 'FREE' : 'API KEY'}
+                                    </span>
+                                  </div>
                                 </div>
-                              )
+                              </div>
+
+                              {settings[backup.enabledKey] && (
+                                <div className="flex items-center gap-2">
+                                  {backup.type === 'free' ? (
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-xs text-green-400">Ready</span>
+                                      <button
+                                        onClick={() => handleTestProvider(backup.name)}
+                                        disabled={testingProvider === backup.name}
+                                        className="px-2 py-1 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded text-xs hover:bg-blue-500/30 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-all"
+                                      >
+                                        {testingProvider === backup.name ? '...' : 'Test'}
+                                      </button>
+                                    </div>
+                                  ) : submittedProviders.has(API_NAME_MAP[backup.name]?.toLowerCase()) ? (
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-green-400 text-xs">✓ Configured</span>
+                                      <button
+                                        onClick={() => handleTestProvider(backup.name)}
+                                        disabled={testingProvider === backup.name}
+                                        className="px-2 py-1 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded text-xs hover:bg-blue-500/30 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-all"
+                                      >
+                                        {testingProvider === backup.name ? '...' : 'Test'}
+                                      </button>
+                                      <button
+                                        onClick={() => {
+                                          setSubmittedProviders(prev => {
+                                            const newSet = new Set(prev);
+                                            newSet.delete(API_NAME_MAP[backup.name]?.toLowerCase());
+                                            return newSet;
+                                          });
+                                        }}
+                                        className="px-2 py-1 bg-slate-600/50 text-slate-300 border border-slate-600/50 rounded text-xs hover:bg-slate-600/70 transition-all"
+                                      >
+                                        Change
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div className="flex gap-2">
+                                      <input
+                                        type="password"
+                                        id={`backup-input-${backup.key}`}
+                                        className="w-24 px-2 py-1 bg-slate-700/50 border border-slate-600/50 rounded text-xs text-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                                        placeholder="API Key"
+                                        value={settings[backup.key] || ''}
+                                        onChange={(e) => setSettings({ ...settings, [backup.key]: e.target.value })}
+                                        aria-label={`${backup.name} API key`}
+                                      />
+                                      <button
+                                        onClick={() => handleSaveProvider(backup.name)}
+                                        disabled={savingProvider === backup.name}
+                                        className="px-2 py-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded text-xs hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50"
+                                      >
+                                        {savingProvider === backup.name ? '...' : 'Save'}
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+
+                            {settings[backup.enabledKey] && providerTestResults[backup.name] && (
+                              <div className={`flex items-center gap-2 mt-2 p-2 rounded-lg text-xs ${
+                                providerTestResults[backup.name].status === 'success'
+                                  ? 'bg-green-500/10 border border-green-500/20 text-green-400'
+                                  : providerTestResults[backup.name].status === 'error'
+                                  ? 'bg-red-500/10 border border-red-500/20 text-red-400'
+                                  : 'bg-yellow-500/10 border border-yellow-500/20 text-yellow-400'
+                              }`}>
+                                {providerTestResults[backup.name].status === 'success' && <CheckCircleIcon className="w-3 h-3" />}
+                                {providerTestResults[backup.name].status === 'error' && <XCircleIcon className="w-3 h-3" />}
+                                <span>{providerTestResults[backup.name].message}</span>
+                              </div>
                             )}
                           </div>
                         ))}
                       </div>
-                    </details>
+                    </div>
                   </div>
                 ))}
               </div>
-            </section>
+            </div>
+
+            {/* Notification Settings Section */}
+            <div className="bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 p-6 shadow-sm">
+              <div className="mb-6">
+                <h2 className="text-xl font-semibold text-white mb-2">Notification Settings</h2>
+                <p className="text-sm text-gray-400">Configure in-app notification preferences and alerts</p>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4">
+                {/* Auto-Trade Trigger Alerts */}
+                <div className="bg-slate-800/30 rounded-2xl p-4 border border-slate-700/50 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <div className="flex-1">
+                      <h3 className="text-sm font-semibold text-white mb-1">Auto-Trade Trigger Alerts</h3>
+                      <p className="text-xs text-gray-400">Get notified when auto-trade is triggered by high accuracy signals</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        id="enableAutoTradeAlerts"
+                        className="sr-only peer"
+                        checked={settings.enableAutoTradeAlerts || false}
+                        onChange={(e) => setSettings({ ...settings, enableAutoTradeAlerts: e.target.checked })}
+                        aria-label="Enable auto-trade trigger alerts"
+                      />
+                      <div className="w-12 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-500 peer-checked:to-pink-500"></div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Accuracy Alerts */}
+                <div className="bg-slate-800/30 rounded-2xl p-4 border border-slate-700/50 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <div className="flex-1">
+                      <h3 className="text-sm font-semibold text-white mb-1">Accuracy Alerts</h3>
+                      <p className="text-xs text-gray-400">Receive notifications when accuracy crosses 80%</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        id="enableAccuracyAlerts"
+                        className="sr-only peer"
+                        checked={settings.enableAccuracyAlerts || false}
+                        onChange={(e) => setSettings({ ...settings, enableAccuracyAlerts: e.target.checked })}
+                        aria-label="Enable accuracy alerts"
+                      />
+                      <div className="w-12 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-500 peer-checked:to-pink-500"></div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Whale Movement Alerts */}
+                <div className="bg-slate-800/30 rounded-2xl p-4 border border-slate-700/50 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <div className="flex-1">
+                      <h3 className="text-sm font-semibold text-white mb-1">Whale Movement Alerts</h3>
+                      <p className="text-xs text-gray-400">Get alerted when large buy/sell movements are detected</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        id="enableWhaleAlerts"
+                        className="sr-only peer"
+                        checked={settings.enableWhaleAlerts || false}
+                        onChange={(e) => setSettings({ ...settings, enableWhaleAlerts: e.target.checked })}
+                        aria-label="Enable whale movement alerts"
+                      />
+                      <div className="w-12 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-500 peer-checked:to-pink-500"></div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Trade Confirmation Required */}
+                <div className="bg-slate-800/30 rounded-2xl p-4 border border-slate-700/50 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <div className="flex-1">
+                      <h3 className="text-sm font-semibold text-white mb-1">Trade Confirmation Required</h3>
+                      <p className="text-xs text-gray-400">Show confirmation modal before executing auto-trades</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        id="tradeConfirmationRequired"
+                        className="sr-only peer"
+                        checked={settings.tradeConfirmationRequired || false}
+                        onChange={(e) => setSettings({ ...settings, tradeConfirmationRequired: e.target.checked })}
+                        aria-label="Require trade confirmation"
+                      />
+                      <div className="w-12 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-500 peer-checked:to-pink-500"></div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Sound & Vibration Settings */}
+                <div className="bg-slate-800/30 rounded-2xl p-4 border border-slate-700/50 shadow-sm">
+                  <h3 className="text-sm font-semibold text-white mb-4">Sound & Vibration</h3>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1">
+                        <span className="text-sm font-medium text-gray-300">Notification Sounds</span>
+                        <p className="text-xs text-gray-400">Play sound effects for notifications</p>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          id="notificationSounds"
+                          className="sr-only peer"
+                          checked={settings.notificationSounds || false}
+                          onChange={(e) => setSettings({ ...settings, notificationSounds: e.target.checked })}
+                          aria-label="Enable notification sounds"
+                        />
+                        <div className="w-12 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-500 peer-checked:to-pink-500"></div>
+                      </label>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1">
+                        <span className="text-sm font-medium text-gray-300">Vibration</span>
+                        <p className="text-xs text-gray-400">Vibrate device for critical alerts</p>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          id="notificationVibration"
+                          className="sr-only peer"
+                          checked={settings.notificationVibration || false}
+                          onChange={(e) => setSettings({ ...settings, notificationVibration: e.target.checked })}
+                          aria-label="Enable notification vibration"
+                        />
+                        <div className="w-12 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-500 peer-checked:to-pink-500"></div>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
 
             {/* Background Deep Research Alerts Section */}
-            <section className="bg-white/5 backdrop-blur-sm rounded-xl border border-white/10 p-6">
+            <div className="bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 p-6 shadow-sm">
               <div className="mb-6">
                 <h2 className="text-xl font-semibold text-white mb-2">Background Deep Research Alerts</h2>
                 <p className="text-sm text-gray-400">Configure automatic deep research with Telegram notifications</p>
               </div>
 
               <BackgroundResearchWizard />
-            </section>
+            </div>
 
             {/* Add Exchange Section */}
-            <section className="bg-white/5 backdrop-blur-sm rounded-xl border border-white/10 p-6">
+            <div className="bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 p-6 shadow-sm">
               <div className="mb-6">
                 <h2 className="text-xl font-semibold text-white mb-2">Add Exchange</h2>
                 <p className="text-sm text-gray-400">Connect one exchange for automated trading</p>
@@ -2041,7 +2483,7 @@ export default function Settings() {
                   })()}
                 </div>
               )}
-            </section>
+            </div>
 
           </div>
         </div>

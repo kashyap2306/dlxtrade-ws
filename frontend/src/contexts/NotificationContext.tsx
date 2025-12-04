@@ -7,8 +7,9 @@ export interface Notification {
   title: string;
   message: string;
   timestamp: string | number;
-  type: 'success' | 'error' | 'info' | 'warning';
+  type: 'success' | 'error' | 'info' | 'warning' | 'autoTrade' | 'accuracy' | 'whale' | 'confirmTrade';
   read: boolean;
+  data?: any; // Additional data for specific notification types
 }
 
 interface NotificationContextType {
@@ -19,6 +20,11 @@ interface NotificationContextType {
   markAsRead: (id: string) => Promise<void>;
   markAllAsRead: () => Promise<void>;
   refresh: () => Promise<void>;
+  // Specialized notification methods
+  notifyAutoTrade: (coin: string, accuracy: number) => Promise<void>;
+  notifyHighAccuracy: (coin: string, accuracy: number) => Promise<void>;
+  notifyWhaleAlert: (coin: string, type: 'buy' | 'sell', amount: number) => Promise<void>;
+  notifyTradeConfirmation: (coin: string, accuracy: number, tradeData?: any) => Promise<void>;
 }
 
 const NotificationContext = createContext<NotificationContextType | undefined>(undefined);
@@ -193,6 +199,43 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     return notifications.filter((n) => !n.read).length;
   }, [notifications]);
 
+  // Specialized notification methods
+  const notifyAutoTrade = useCallback(async (coin: string, accuracy: number) => {
+    await addNotification({
+      title: 'Auto-Trade Triggered',
+      message: `Auto-Trade triggered for ${coin} with ${accuracy.toFixed(1)}% accuracy`,
+      type: 'autoTrade',
+      data: { coin, accuracy, timestamp: Date.now() }
+    });
+  }, [addNotification]);
+
+  const notifyHighAccuracy = useCallback(async (coin: string, accuracy: number) => {
+    await addNotification({
+      title: 'High Accuracy Alert',
+      message: `High accuracy detected: ${accuracy.toFixed(1)}% for ${coin}`,
+      type: 'accuracy',
+      data: { coin, accuracy, timestamp: Date.now() }
+    });
+  }, [addNotification]);
+
+  const notifyWhaleAlert = useCallback(async (coin: string, type: 'buy' | 'sell', amount: number) => {
+    await addNotification({
+      title: 'Whale Movement Alert',
+      message: `Whale Alert: Large ${type} detected on ${coin} (${amount.toLocaleString()} USD)`,
+      type: 'whale',
+      data: { coin, type, amount, timestamp: Date.now() }
+    });
+  }, [addNotification]);
+
+  const notifyTradeConfirmation = useCallback(async (coin: string, accuracy: number, tradeData?: any) => {
+    await addNotification({
+      title: 'Trade Confirmation Required',
+      message: `Trade confirmation needed for ${coin} with ${accuracy.toFixed(1)}% accuracy`,
+      type: 'confirmTrade',
+      data: { coin, accuracy, tradeData, timestamp: Date.now() }
+    });
+  }, [addNotification]);
+
   // Memoize context value to prevent unnecessary re-renders
   const contextValue = useMemo(
     () => ({
@@ -203,8 +246,12 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       markAsRead,
       markAllAsRead,
       refresh: loadNotifications,
+      notifyAutoTrade,
+      notifyHighAccuracy,
+      notifyWhaleAlert,
+      notifyTradeConfirmation,
     }),
-    [notifications, unreadCount, loading, addNotification, markAsRead, markAllAsRead, loadNotifications]
+    [notifications, unreadCount, loading, addNotification, markAsRead, markAllAsRead, loadNotifications, notifyAutoTrade, notifyHighAccuracy, notifyWhaleAlert, notifyTradeConfirmation]
   );
 
   return (

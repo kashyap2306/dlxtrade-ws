@@ -1,4 +1,6 @@
 import * as admin from 'firebase-admin';
+import * as fs from 'fs';
+import * as path from 'path';
 import { logger } from './logger';
 
 let firebaseAdmin: admin.app.App | null = null;
@@ -9,21 +11,37 @@ export function initializeFirebaseAdmin(): void {
   }
 
   try {
-    const raw = process.env.FIREBASE_SERVICE_ACCOUNT || process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
-    if (!raw) {
-      const error = new Error('FIREBASE_SERVICE_ACCOUNT env var is required to initialize Firebase Admin');
-      logger.warn({ error: error.message }, 'Firebase Admin initialization skipped - missing service account');
-      // Don't throw - allow server to continue without Firebase (for development/testing)
-      return;
+    let parsed: any;
+    let source: string;
+
+    // First, try to load from environment variable (production/Render)
+    const envServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON || process.env.FIREBASE_SERVICE_ACCOUNT || process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+
+    if (envServiceAccount) {
+      try {
+        parsed = JSON.parse(envServiceAccount);
+        source = 'environment variable';
+        logger.info('Loading Firebase service account from environment variable');
+      } catch (err: any) {
+        logger.error({ err }, 'Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON from environment');
+        // Don't throw - try local file instead
+      }
     }
 
-    let parsed: any;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (err: any) {
-      logger.error({ err }, 'Failed to parse FIREBASE_SERVICE_ACCOUNT JSON');
-      // Don't throw - allow server to continue
-      return;
+    // If environment variable failed or doesn't exist, try local file (localhost development)
+    if (!parsed) {
+      try {
+        const serviceAccountPath = path.resolve(__dirname, '../../firebase_service_account.json');
+        const fileContent = fs.readFileSync(serviceAccountPath, 'utf8');
+        parsed = JSON.parse(fileContent);
+        source = 'local file';
+        logger.info({ path: serviceAccountPath }, 'Loading Firebase service account from local file');
+      } catch (err: any) {
+        const error = new Error('Firebase service account not found in environment variable or local file');
+        logger.warn({ error: error.message }, 'Firebase Admin initialization skipped - missing service account');
+        // Don't throw - allow server to continue without Firebase (for development/testing)
+        return;
+      }
     }
 
     // Fix private_key: replace literal \n with actual newlines (Render env vars escape them)
@@ -62,7 +80,7 @@ export function initializeFirebaseAdmin(): void {
     });
 
     firebaseAdmin = app;
-    logger.info({ projectId }, 'Firebase Admin initialized with service account from environment');
+    logger.info({ projectId, source }, `Firebase Admin initialized with service account from ${source}`);
   } catch (error: any) {
     // Log error but don't throw - allow server to start even if Firebase fails
     logger.error({ error: error.message, stack: error.stack }, 'Error initializing Firebase Admin - server will continue without Firebase');

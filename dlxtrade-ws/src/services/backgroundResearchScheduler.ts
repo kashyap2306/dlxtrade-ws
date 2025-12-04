@@ -2,15 +2,17 @@ import { logger } from '../utils/logger';
 import { firestoreAdapter } from './firestoreAdapter';
 import { researchEngine } from './researchEngine';
 import { telegramService } from './telegramService';
+import { userNotificationService } from './userNotificationService';
 import { getFirebaseAdmin } from '../utils/firebase';
 import * as admin from 'firebase-admin';
 
 export class BackgroundResearchScheduler {
   private intervalId: NodeJS.Timeout | null = null;
   private isRunning = false;
+  private userIntervals: Map<string, NodeJS.Timeout> = new Map();
 
   /**
-   * Start the background research scheduler (runs every minute)
+   * Start the background research scheduler
    */
   start() {
     if (this.isRunning) {
@@ -18,16 +20,16 @@ export class BackgroundResearchScheduler {
       return;
     }
     this.isRunning = true;
-    logger.info('Starting background research scheduler (every minute)');
+    logger.info('Starting background research scheduler');
 
-    // Run every minute
+    // Check for users with enabled background research every minute
     this.intervalId = setInterval(() => {
-      this.runScheduledResearch();
+      this.checkAndScheduleUserResearch();
     }, 60 * 1000);
 
-    // Run immediately on start for testing
+    // Initial check
     setTimeout(() => {
-      this.runScheduledResearch();
+      this.checkAndScheduleUserResearch();
     }, 5000);
   }
 
@@ -39,30 +41,90 @@ export class BackgroundResearchScheduler {
       clearInterval(this.intervalId);
       this.intervalId = null;
     }
+
+    // Clear all user-specific intervals
+    for (const [uid, intervalId] of this.userIntervals.entries()) {
+      clearInterval(intervalId);
+      logger.debug({ uid }, 'User research interval cleared');
+    }
+    this.userIntervals.clear();
+
     this.isRunning = false;
     logger.info('Background research scheduler stopped');
   }
 
   /**
-   * Run scheduled background research for all users
+   * Check all users and schedule/cancel their research intervals as needed
    */
-  private async runScheduledResearch() {
+  private async checkAndScheduleUserResearch() {
     try {
-      logger.debug('Running scheduled background research check');
-      // Get all users with background research enabled
+      logger.debug('Checking users for background research scheduling');
+
       const usersSnapshot = await admin.firestore((getFirebaseAdmin())).collection('users').get();
-      const userPromises = [];
 
       for (const userDoc of usersSnapshot.docs) {
         const uid = userDoc.id;
-        userPromises.push(this.processUserResearch(uid));
+        await this.updateUserResearchSchedule(uid);
+      }
+    } catch (error: any) {
+      logger.error({ error: error.message }, 'Error checking user research schedules');
+    }
+  }
+
+  /**
+   * Update research schedule for a specific user based on their settings
+   */
+  private async updateUserResearchSchedule(uid: string) {
+    try {
+      const settings = await firestoreAdapter.getBackgroundResearchSettings(uid);
+
+      if (!settings || !settings.backgroundResearchEnabled) {
+        // Cancel existing interval if user disabled research
+        const existingInterval = this.userIntervals.get(uid);
+        if (existingInterval) {
+          clearInterval(existingInterval);
+          this.userIntervals.delete(uid);
+          logger.info({ uid }, 'User background research disabled, interval cancelled');
+        }
+        return;
       }
 
-      // Wait for all user processing to complete
-      await Promise.allSettled(userPromises);
+      const frequencyMinutes = settings.researchFrequencyMinutes || 5;
+      const intervalMs = frequencyMinutes * 60 * 1000;
+
+      // Check if we need to update the interval
+      const existingInterval = this.userIntervals.get(uid);
+      if (existingInterval) {
+        // For simplicity, we'll restart intervals if frequency changed
+        // In production, you might want to track the frequency and only restart if changed
+        clearInterval(existingInterval);
+        this.userIntervals.delete(uid);
+      }
+
+      // Schedule user-specific research
+      const userInterval = setInterval(() => {
+        this.processUserResearch(uid);
+      }, intervalMs);
+
+      this.userIntervals.set(uid, userInterval);
+
+      logger.info({ uid, frequencyMinutes }, 'User background research scheduled');
+
+      // Run immediately for new schedules (with a small delay to avoid spam)
+      setTimeout(() => {
+        this.processUserResearch(uid);
+      }, Math.random() * 5000); // Random delay up to 5 seconds
+
     } catch (error: any) {
-      logger.error({ error: error.message }, 'Error in scheduled research run');
+      logger.error({ error: error.message, uid }, 'Error updating user research schedule');
     }
+  }
+
+  /**
+   * Handle settings update for a user (call this when user settings change)
+   */
+  async onUserSettingsChanged(uid: string) {
+    await this.updateUserResearchSchedule(uid);
   }
 
   /**
@@ -76,19 +138,16 @@ export class BackgroundResearchScheduler {
         return; // Skip if not enabled
       }
 
-      // Check if it's time to run research
-      const now = new Date();
-      const lastRun = settings.lastResearchRun?.toDate();
-      const frequencyMinutes = settings.researchFrequencyMinutes || 5;
+      // Get user's notification preferences
+      const userSettings = await firestoreAdapter.getUserSettings(uid);
+      const notificationPrefs = {
+        enableAutoTradeAlerts: userSettings?.enableAutoTradeAlerts || false,
+        enableAccuracyAlerts: userSettings?.enableAccuracyAlerts || false,
+        enableWhaleAlerts: userSettings?.enableWhaleAlerts || false,
+        tradeConfirmationRequired: userSettings?.tradeConfirmationRequired || false
+      };
 
-      if (lastRun) {
-        const minutesSinceLastRun = (now.getTime() - lastRun.getTime()) / (1000 * 60);
-        if (minutesSinceLastRun < frequencyMinutes) {
-          return; // Not time yet
-        }
-      }
-
-      logger.info({ uid, frequencyMinutes }, 'Running background research for user');
+      logger.info({ uid, notificationPrefs }, 'Running background research for user');
 
       // Run deep research using the existing research engine
       const research = await researchEngine.runResearch('BTCUSDT', uid);
@@ -103,66 +162,94 @@ export class BackgroundResearchScheduler {
         lastResearchRun: admin.firestore.Timestamp.now(),
       });
 
-      // Check if accuracy meets the trigger threshold
       const accuracyPercent = Math.round(research.accuracy * 100);
+      const coin = 'BTCUSDT'; // Default for now, can be enhanced to analyze multiple coins
+
+      // Check for auto-trade trigger
       const triggerThreshold = settings.accuracyTrigger || 80;
-      let shouldTrigger = false;
+      let shouldAutoTrade = false;
 
       if (triggerThreshold >= 95) {
-        shouldTrigger = accuracyPercent >= 95;
+        shouldAutoTrade = accuracyPercent >= 95;
       } else if (triggerThreshold >= 85) {
-        shouldTrigger = accuracyPercent >= 85;
+        shouldAutoTrade = accuracyPercent >= 85;
       } else if (triggerThreshold >= 75) {
-        shouldTrigger = accuracyPercent >= 75;
+        shouldAutoTrade = accuracyPercent >= 75;
       } else {
-        shouldTrigger = accuracyPercent >= 60;
+        shouldAutoTrade = accuracyPercent >= 60;
       }
 
-      if (!shouldTrigger) {
-        logger.debug({ uid, accuracyPercent, triggerThreshold }, 'Accuracy below trigger threshold, skipping alert');
-        return;
+      // Send notifications based on user preferences
+      let alertTriggered = false;
+
+      // 1. Auto-trade trigger notification
+      if (shouldAutoTrade && notificationPrefs.enableAutoTradeAlerts) {
+        userNotificationService.sendAutoTradeAlert(uid, coin, accuracyPercent);
+        alertTriggered = true;
+      }
+
+      // 2. High accuracy alert (when accuracy crosses 80%)
+      if (accuracyPercent >= 80 && notificationPrefs.enableAccuracyAlerts) {
+        userNotificationService.sendAccuracyAlert(uid, coin, accuracyPercent);
+        alertTriggered = true;
+      }
+
+      // 3. Trade confirmation required
+      if (shouldAutoTrade && notificationPrefs.tradeConfirmationRequired) {
+        userNotificationService.sendTradeConfirmationAlert(uid, coin, accuracyPercent);
+        alertTriggered = true;
+      }
+
+      // 4. Whale movement detection (simplified - can be enhanced with real whale tracking)
+      // For now, we'll simulate whale detection based on volume spikes
+      if (research.result?.indicators?.volume?.score > 80 && notificationPrefs.enableWhaleAlerts) {
+        const direction = research.signal === 'BUY' ? 'buy' : 'sell';
+        const simulatedAmount = Math.floor(Math.random() * 500000) + 100000; // Simulated amount
+        userNotificationService.sendWhaleAlert(uid, coin, direction, simulatedAmount);
+        alertTriggered = true;
+      }
+
+      if (alertTriggered) {
+        logger.info({ uid, accuracyPercent, coin }, 'Background research alerts sent');
       }
 
       // Send Telegram alert
       if (settings.telegramBotToken && settings.telegramChatId) {
-        logger.info({ uid, accuracyPercent }, 'Sending Telegram alert for high accuracy signal');
-
-        // Get additional research data for the alert
-        const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
-        let fullReport = '';
         try {
-          // Try to get more detailed report from research engine
-          const detailedResearch = await researchEngine.runResearch('BTCUSDT', uid);
-          if (detailedResearch) {
-            fullReport = `Signal: ${detailedResearch.signal}\nAccuracy: ${accuracyPercent}%\nRecommended Action: ${detailedResearch.recommendedAction || 'N/A'}`;
+          logger.info({ uid, accuracyPercent }, 'Sending Telegram alert for high accuracy signal');
+
+          // Get additional research data for the alert
+          let fullReport = '';
+          try {
+            fullReport = `Signal: ${research.signal}\nAccuracy: ${accuracyPercent}%\nRecommended Action: ${research.recommendedAction || 'N/A'}`;
+          } catch (err: any) {
+            fullReport = `Signal: ${research.signal}\nAccuracy: ${accuracyPercent}%\nBasic analysis completed.`;
           }
-        } catch (err: any) {
-          fullReport = `Signal: ${research.signal}\nAccuracy: ${accuracyPercent}%\nBasic analysis completed.`;
+
+          const alertData = {
+            symbol: coin,
+            accuracy: research.accuracy,
+            trend: research.signal === 'BUY' ? 'Bullish' : research.signal === 'SELL' ? 'Bearish' : 'Neutral',
+            volumeSpike: research.result?.indicators?.volume?.score > 80,
+            support: undefined,
+            resistance: undefined,
+            fullReport,
+          };
+
+          const telegramResult = await telegramService.sendResearchAlert(
+            settings.telegramBotToken,
+            settings.telegramChatId,
+            alertData
+          );
+
+          if (telegramResult.success) {
+            logger.info({ uid }, 'Telegram alert sent successfully');
+          } else {
+            logger.error({ uid, error: telegramResult.error }, 'Failed to send Telegram alert');
+          }
+        } catch (error: any) {
+          logger.error({ error: error.message, uid }, 'Error sending Telegram alert');
         }
-
-        const alertData = {
-          symbol: 'BTCUSDT',
-          accuracy: research.accuracy,
-          trend: research.signal === 'BUY' ? 'Bullish' : research.signal === 'SELL' ? 'Bearish' : 'Neutral',
-          volumeSpike: false, // Could be enhanced later
-          support: undefined, // Could be enhanced later
-          resistance: undefined, // Could be enhanced later
-          fullReport,
-        };
-
-        const telegramResult = await telegramService.sendResearchAlert(
-          settings.telegramBotToken,
-          settings.telegramChatId,
-          alertData
-        );
-
-        if (telegramResult.success) {
-          logger.info({ uid }, 'Telegram alert sent successfully');
-        } else {
-          logger.error({ uid, error: telegramResult.error }, 'Failed to send Telegram alert');
-        }
-      } else {
-        logger.warn({ uid }, 'Telegram credentials missing, cannot send alert');
       }
     } catch (error: any) {
       logger.error({ error: error.message, uid }, 'Error processing user background research');

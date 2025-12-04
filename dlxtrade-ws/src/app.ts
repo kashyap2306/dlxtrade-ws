@@ -248,29 +248,42 @@ console.log("[RENDER ENV] Build timestamp:", Date.now());
       logger.info('WebSocket connection without token (unauthenticated)');
     }
 
-    // Register WebSocket to user's engines if they exist (don't let failures block research)
+    // Register WebSocket to user's engines and notification service if they exist
     let hftEngine: any = null;
     try {
       const { userEngineManager } = await import('./services/userEngineManager');
+      const { userNotificationService } = await import('./services/userNotificationService');
+
       const accuracyEngine = userEngineManager.getAccuracyEngine(uid!);
       hftEngine = userEngineManager.getHFTEngine(uid!);
 
-      if (uid && accuracyEngine) {
-        accuracyEngine.registerWebSocketClient(connection.socket);
-        logger.info({ uid }, 'WebSocket connection registered to AI engine');
-      }
+      try {
+        if (uid && accuracyEngine) {
+          accuracyEngine.registerWebSocketClient(connection.socket);
+          logger.info({ uid }, 'WebSocket connection registered to AI engine');
+        }
 
-      if (uid && hftEngine) {
-        hftEngine.registerWebSocketClient(connection.socket);
-        logger.info({ uid }, 'WebSocket connection registered to HFT engine');
-      }
+        if (uid && hftEngine) {
+          hftEngine.registerWebSocketClient(connection.socket);
+          logger.info({ uid }, 'WebSocket connection registered to HFT engine');
+        }
 
-      if (uid && !accuracyEngine && !hftEngine) {
-        logger.debug({ uid }, 'WebSocket connected but user engines not initialized yet');
+        // Register with notification service for real-time alerts
+        if (uid) {
+          userNotificationService.registerUserSocket(uid, connection.socket);
+          logger.info({ uid }, 'WebSocket connection registered for notifications');
+        }
+
+        if (uid && !accuracyEngine && !hftEngine) {
+          logger.debug({ uid }, 'WebSocket connected but user engines not initialized yet');
+        }
+      } catch (error: any) {
+        console.error("WS: Error registering WebSocket to engines:", error.message);
+        // Don't let WebSocket registration errors affect research functionality
       }
     } catch (error: any) {
-      console.error("WS: Error registering WebSocket to engines:", error.message);
-      // Don't let WebSocket registration errors affect research functionality
+      console.error("WS: Error setting up WebSocket connection:", error.message);
+      // Continue with WebSocket setup even if engine registration fails
     }
 
     connection.socket.on('message', (raw) => {
@@ -304,7 +317,6 @@ console.log("[RENDER ENV] Build timestamp:", Date.now());
       }
       logger.info({ uid }, 'WebSocket connection closed');
     });
-  });
 
   return app;
 }
