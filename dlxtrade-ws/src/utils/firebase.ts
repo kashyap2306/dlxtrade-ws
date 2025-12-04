@@ -4,42 +4,51 @@ import * as path from 'path';
 import { logger } from './logger';
 
 let firebaseAdmin: admin.app.App | null = null;
+let initializationAttempted = false;
 
 export function initFirebaseAdmin(): void {
-  if (firebaseAdmin) {
+  if (firebaseAdmin || initializationAttempted) {
     return;
   }
+
+  initializationAttempted = true;
 
   try {
     let parsed: any;
     let source: string;
 
-    // First, try to load from environment variable (production/Render)
-    const envServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON || process.env.FIREBASE_SERVICE_ACCOUNT || process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+    // Prefer local file for development (check first)
+    try {
+      const serviceAccountPath = path.resolve(__dirname, '../../firebase-service-account.json');
+      const fileContent = fs.readFileSync(serviceAccountPath, 'utf8');
+      parsed = JSON.parse(fileContent);
+      source = 'local file (firebase-service-account.json)';
+      logger.info({ path: serviceAccountPath }, 'Loading Firebase service account from local file');
+    } catch (fileErr: any) {
+      // Local file not found, try environment variable (production/Render)
+      const envServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
 
-    if (envServiceAccount) {
-      try {
-        parsed = JSON.parse(envServiceAccount);
-        source = 'environment variable';
-        logger.info('Loading Firebase service account from environment variable');
-      } catch (err: any) {
-        logger.error({ err }, 'Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON from environment');
-        // Don't throw - try local file instead
-      }
-    }
+      if (envServiceAccount) {
+        try {
+          // Handle double-escaped sequences from environment variables
+          let processedEnv = envServiceAccount
+            .replace(/\\\\n/g, '\n')  // Handle \\n -> \n (double-escaped newlines)
+            .replace(/\\\\t/g, '\t')  // Handle \\t -> \t
+            .replace(/\\\\r/g, '\r')  // Handle \\r -> \r
+            .replace(/\\\\"/g, '"')   // Handle \\" -> "
+            .replace(/\\\\/g, '\\');  // Handle remaining \\ -> \
 
-    // If environment variable failed or doesn't exist, try local file (localhost development)
-    if (!parsed) {
-      try {
-        const serviceAccountPath = path.resolve(__dirname, '../../firebase_service_account.json');
-        const fileContent = fs.readFileSync(serviceAccountPath, 'utf8');
-        parsed = JSON.parse(fileContent);
-        source = 'local file';
-        logger.info({ path: serviceAccountPath }, 'Loading Firebase service account from local file');
-      } catch (err: any) {
-        const error = new Error('Firebase service account not found in environment variable or local file');
-        logger.warn({ error: error.message }, 'Firebase Admin initialization skipped - missing service account');
-        // Don't throw - allow server to continue without Firebase (for development/testing)
+          parsed = JSON.parse(processedEnv);
+          source = 'environment variable (FIREBASE_SERVICE_ACCOUNT)';
+          logger.info('Loading Firebase service account from environment variable');
+        } catch (envErr: any) {
+          logger.error({ envErr }, 'Failed to parse FIREBASE_SERVICE_ACCOUNT from environment');
+          logger.error('Firebase Admin initialization failed - invalid service account JSON');
+          return;
+        }
+      } else {
+        logger.warn('Firebase service account not found - neither local file nor environment variable available');
+        logger.warn('Create firebase-service-account.json in project root or set FIREBASE_SERVICE_ACCOUNT env variable');
         return;
       }
     }
@@ -88,10 +97,8 @@ export function initFirebaseAdmin(): void {
 }
 
 export async function verifyFirebaseToken(token: string): Promise<admin.auth.DecodedIdToken> {
-	if (!firebaseAdmin) {
-		initFirebaseAdmin();
-	}
-	return admin.auth().verifyIdToken(token);
+	const app = getFirebaseAdmin();
+	return app.auth().verifyIdToken(token);
 }
 
 export function getFirebaseAdmin(): admin.app.App {

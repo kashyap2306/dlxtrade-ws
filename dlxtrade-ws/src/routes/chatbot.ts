@@ -49,29 +49,12 @@ export async function chatbotRoutes(fastify: FastifyInstance) {
     return { status: 'ok', message: 'Chatbot route is working' };
   });
 
-  // OPTIONS /api/chatbot - CORS preflight
-  fastify.options('/chatbot', async (request: FastifyRequest, reply: FastifyReply) => {
-    try {
-      reply.header('Access-Control-Allow-Origin', '*');
-      reply.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
-      reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-      return reply.code(204).send();
-    } catch (err: any) {
-      logger.error({ err }, 'Error in chatbot OPTIONS handler');
-      return reply.code(500).send({ error: 'Internal server error' });
-    }
-  });
-
   // POST /api/chatbot - Send message to Gemini
   fastify.post('/chatbot', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     // Wrap entire handler in try-catch to catch any errors from preHandler or handler
     try {
-      // Enable CORS first
-      reply.header('Access-Control-Allow-Origin', '*');
-      reply.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
-      reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
       
       // Get user from request (set by authenticate middleware)
       let user: any;

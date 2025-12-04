@@ -8,8 +8,15 @@ import { getFirebaseAdmin } from '../utils/firebase';
 const db = () => admin.firestore(getFirebaseAdmin());
 
 export async function notificationsRoutes(fastify: FastifyInstance) {
+  console.log("[ROUTE READY] GET /api/notifications");
+  console.log("[ROUTE READY] POST /api/notifications");
+  console.log("[ROUTE READY] POST /api/notifications/mark-read");
+  console.log("[ROUTE READY] POST /api/notifications/:id/read");
+  console.log("[ROUTE READY] POST /api/notifications/read-all");
+  console.log("[ROUTE READY] POST /api/notifications/push");
+
   // GET /api/notifications - Get user notifications
-  fastify.get('/notifications', {
+  fastify.get('/', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Querystring: { limit?: number } }>, reply: FastifyReply) => {
     const user = (request as any).user;
@@ -28,7 +35,7 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/notifications - Create notification
-  fastify.post('/notifications', {
+  fastify.post('/', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Body: { title: string; message: string; type: 'success' | 'warning' | 'error' | 'info' } }>, reply: FastifyReply) => {
     const user = (request as any).user;
@@ -78,7 +85,7 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/notifications/mark-read - Mark notification as read (body parameter)
-  fastify.post('/notifications/mark-read', {
+  fastify.post('/mark-read', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Body: { notificationId: string | number } }>, reply: FastifyReply) => {
     const user = (request as any).user;
@@ -123,7 +130,7 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/notifications/:id/read - Mark notification as read (URL parameter)
-  fastify.post('/notifications/:id/read', {
+  fastify.post('/:id/read', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
     const user = (request as any).user;
@@ -157,7 +164,7 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/notifications/read-all - Mark all notifications as read
-  fastify.post('/notifications/read-all', {
+  fastify.post('/read-all', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = (request as any).user;
@@ -198,7 +205,7 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/notifications/push - Push notification to user (and admin)
-  fastify.post('/notifications/push', {
+  fastify.post('/push', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ 
     Body: { 

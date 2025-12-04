@@ -3,7 +3,7 @@ import { getFirebaseAdmin } from '../utils/firebase';
 import { firestoreAdapter } from '../services/firestoreAdapter';
 import { encrypt, decrypt } from '../services/keyManager';
 import { config } from '../config';
-import { deepResearchEngine, runFreeModeDeepResearch } from '../services/deepResearchEngine';
+import deepResearchEngine, { runFreeModeDeepResearch } from '../services/deepResearchEngine';
 import { logger } from '../utils/logger';
 
 interface MigrationStats {

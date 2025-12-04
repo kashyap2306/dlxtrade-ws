@@ -50,6 +50,19 @@ const executeTradeSchema = z.object({
  * Handles comprehensive auto-trade functionality with risk management
  */
 export async function autoTradeRoutes(fastify: FastifyInstance) {
+  console.log("[ROUTE READY] GET /api/auto-trade/status");
+  console.log("[ROUTE READY] GET /api/auto-trade/config");
+  console.log("[ROUTE READY] POST /api/auto-trade/config");
+  console.log("[ROUTE READY] POST /api/auto-trade/queue");
+  console.log("[ROUTE READY] POST /api/auto-trade/run");
+  console.log("[ROUTE READY] POST /api/auto-trade/execute");
+  console.log("[ROUTE READY] POST /api/auto-trade/toggle");
+  console.log("[ROUTE READY] POST /api/auto-trade/reset-circuit-breaker");
+  console.log("[ROUTE READY] GET /api/auto-trade/active-trades");
+  console.log("[ROUTE READY] GET /api/auto-trade/activity");
+  console.log("[ROUTE READY] GET /api/auto-trade/proposals");
+  console.log("[ROUTE READY] GET /api/auto-trade/logs");
+
   // Decorate with admin auth middleware
   fastify.decorate('adminAuth', adminAuthMiddleware);
 

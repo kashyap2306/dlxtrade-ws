@@ -22,7 +22,7 @@ async function backfillAuthUsers() {
     console.log('🔥 Starting auth users backfill...');
     
     // Initialize Firebase Admin
-    initializeFirebaseAdmin();
+    initFirebaseAdmin();
     const firebaseAdmin = getFirebaseAdmin();
     const db = firebaseAdmin.firestore();
     const auth = firebaseAdmin.auth();

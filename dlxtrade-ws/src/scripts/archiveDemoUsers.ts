@@ -21,7 +21,7 @@ async function archiveDemoUsers() {
     console.log('🔥 Starting demo users archive...');
     
     // Initialize Firebase Admin
-    initializeFirebaseAdmin();
+    initFirebaseAdmin();
     const db = admin.firestore(getFirebaseAdmin());
     
     // Get all users

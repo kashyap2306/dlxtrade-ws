@@ -7,7 +7,7 @@ import fastifyHelmet from '@fastify/helmet';
 import fastifyRateLimit from '@fastify/rate-limit';
 import { config } from './config';
 import { logger } from './utils/logger';
-import { initializeFirebaseAdmin } from './utils/firebase';
+import { initFirebaseAdmin } from './utils/firebase';
 import { firebaseAuthMiddleware } from './middleware/firebaseAuth';
 import { authRoutes } from './routes/auth';
 import { adminRoutes } from './routes/admin';
@@ -46,15 +46,18 @@ export async function buildApp(): Promise<FastifyInstance> {
     logger: logger.child({ component: 'fastify' }),
   });
 
+  // CORS configuration - MUST BE FIRST
+  await app.register(fastifyCors, {
+    origin: ["http://localhost:5173"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+    strictPreflight: false,
+    preflightContinue: false
+  });
+
   // Security
   await app.register(fastifyHelmet);
-  // CORS configuration
-  await app.register(fastifyCors, {
-    origin: ["https://dlx-trading.web.app"],
-    methods: ["GET","POST","PUT","DELETE","OPTIONS"],
-    allowedHeaders: ["Content-Type","Authorization"],
-    credentials: true
-  });
 
   // Rate limiting with user-aware keys and local allow list
   await app.register(fastifyRateLimit, {
@@ -101,7 +104,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(engineRoutes, { prefix: '/api/engine' });
   await app.register(metricsRoutes, { prefix: '/api' });
   await app.register(researchRoutes, { prefix: '/api/research' });
-  await app.register(settingsRoutes, { prefix: '/api/trading' });
+  await app.register(settingsRoutes, { prefix: '/api' });
   await app.register(executionRoutes, { prefix: '/api/execution' });
   await app.register(integrationsRoutes, { prefix: '/api/integrations' });
   await app.register(hftRoutes, { prefix: '/api/hft' });
@@ -114,11 +117,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(uiPreferencesRoutes, { prefix: '/api/ui-preferences' });
   await app.register(globalStatsRoutes, { prefix: '/api/global-stats' });
   await app.register(engineStatusRoutes, { prefix: '/api/engine-status' });
-  await app.register(hftLogsRoutes, { prefix: '/api/hft-logs' });
-  await app.register(autoTradeRoutes, { prefix: '/api/auto-trade' });
+    await app.register(hftLogsRoutes, { prefix: '/api/hft-logs' });
+    await app.register(autoTradeRoutes, { prefix: '/api/auto-trade' });
   await app.register(exchangeRoutes, { prefix: '/api' });
   await app.register(diagnosticsRoutes, { prefix: '/api/diagnostics' });
-  await app.register(notificationsRoutes, { prefix: '/api' });
   await app.register(chatbotRoutes, { prefix: '/api' });
   await app.register(walletRoutes, { prefix: '/api/wallet' });
   await app.register(marketRoutes, { prefix: '/api/market' });
@@ -168,6 +170,41 @@ app.get('/health', async (request, reply) => {
 // Add diagnostic log for build verification
 console.log("[RENDER ENV] Build timestamp:", Date.now());
 
+
+  // Main WebSocket endpoint for real-time user events
+  app.get('/ws', { websocket: true }, async (connection, req) => {
+    // Verify Firebase token
+    let uid: string | null = null;
+    try {
+      const token = (req.query as any).token || req.headers.authorization?.replace('Bearer ', '');
+      if (token) {
+        const { verifyFirebaseToken } = await import('./utils/firebase');
+        const decoded = await verifyFirebaseToken(token);
+        uid = decoded.uid;
+        (req as any).user = { uid: decoded.uid, email: decoded.email };
+      } else {
+        logger.warn('WebSocket connection without token');
+        connection.socket.close();
+        return;
+      }
+    } catch (err) {
+      logger.warn({ err }, 'WebSocket auth failed');
+      connection.socket.close();
+      return;
+    }
+
+    // Register user WebSocket for real-time events
+    const { userNotificationService } = await import('./services/userNotificationService');
+
+    userNotificationService.registerUserSocket(connection.socket, uid!);
+
+    logger.info({ uid }, 'User WebSocket connected');
+
+    connection.socket.on('close', () => {
+      userNotificationService.unregisterUserSocket(connection.socket);
+      logger.info({ uid }, 'User WebSocket disconnected');
+    });
+  });
 
   // Admin WebSocket endpoint for real-time admin events
   app.get('/ws/admin', { websocket: true }, async (connection, req) => {

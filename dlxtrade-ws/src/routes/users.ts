@@ -38,6 +38,18 @@ const updateUserSchema = z.object({
 });
 
 export async function usersRoutes(fastify: FastifyInstance) {
+  console.log("[ROUTE READY] GET /api/users");
+  console.log("[ROUTE READY] GET /api/users/:uid");
+  console.log("[ROUTE READY] POST /api/users/create");
+  console.log("[ROUTE READY] POST /api/users/update");
+  console.log("[ROUTE READY] GET /api/users/:id/details");
+  console.log("[ROUTE READY] GET /api/users/:id/stats");
+  console.log("[ROUTE READY] GET /api/users/:id/pnl");
+  console.log("[ROUTE READY] GET /api/users/:id/trades");
+  console.log("[ROUTE READY] GET /api/users/:id/logs");
+  console.log("[ROUTE READY] GET /api/users/:id/usage-stats");
+  console.log("[ROUTE READY] GET /api/users/:id/sessions");
+
   // GET /api/users - Get all users (admin only)
   fastify.get('/', {
     preHandler: [fastify.authenticate],

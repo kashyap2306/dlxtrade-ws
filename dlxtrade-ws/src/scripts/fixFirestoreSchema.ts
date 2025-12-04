@@ -215,7 +215,7 @@ if (require.main === module) {
     try {
       // Initialize Firebase Admin
       const { initFirebaseAdmin } = await import('../utils/firebase');
-      initializeFirebaseAdmin();
+      initFirebaseAdmin();
       
       const result = await fixFirestoreSchema();
       console.log('Migration result:', result);

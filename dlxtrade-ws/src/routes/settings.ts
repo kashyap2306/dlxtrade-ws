@@ -49,6 +49,18 @@ const tradingSettingsSchema = z.object({
 });
 
 export async function settingsRoutes(fastify: FastifyInstance) {
+  console.log("[ROUTE READY] GET /api/settings/load");
+  console.log("[ROUTE READY] POST /api/settings/update");
+  console.log("[ROUTE READY] GET /api/settings/global/load");
+  console.log("[ROUTE READY] POST /api/settings/global/update");
+  console.log("[ROUTE READY] GET /api/trading/settings");
+  console.log("[ROUTE READY] POST /api/trading/settings");
+  console.log("[ROUTE READY] POST /api/trading/autotrade/toggle");
+  console.log("[ROUTE READY] GET /api/trading/autotrade/status");
+  console.log("[ROUTE READY] GET /api/analytics/accuracy/snapshot");
+  console.log("[ROUTE READY] GET /api/analytics/accuracy/history");
+  console.log("[ROUTE READY] POST /api/analytics/accuracy/outcome");
+
   // Load user settings
   fastify.get('/settings/load', {
     preHandler: [fastify.authenticate],

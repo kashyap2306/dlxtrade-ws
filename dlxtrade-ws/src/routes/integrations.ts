@@ -155,6 +155,16 @@ const integrationDeleteSchema = z.object({
 });
 
 export async function integrationsRoutes(fastify: FastifyInstance) {
+  console.log("[ROUTE READY] GET /api/integrations/load");
+  console.log("[ROUTE READY] POST /api/integrations/update");
+  console.log("[ROUTE READY] POST /api/integrations/delete");
+  console.log("[ROUTE READY] POST /api/integrations/connect");
+  console.log("[ROUTE READY] POST /api/integrations/validate");
+  console.log("[ROUTE READY] POST /api/integrations/upsert");
+  console.log("[ROUTE READY] POST /api/integrations/setup-exchange");
+  console.log("[ROUTE READY] GET /api/integrations");
+  console.log("[ROUTE READY] POST /api/integrations/backup/add");
+
   // Load all integrations for the user
   fastify.get('/load', {
     preHandler: [fastify.authenticate],
@@ -1047,6 +1057,20 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       logger.error({ err, uid: (request as any).user?.uid }, 'Error setting up exchange configuration');
       return reply.code(500).send({ error: err.message || 'Error setting up exchange configuration' });
+    }
+  });
+
+  // GET /api/integrations - Get all user integrations
+  fastify.get('/', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = (request as any).user;
+    try {
+      const integrations = await getUserIntegrations(user.uid);
+      return integrations;
+    } catch (err: any) {
+      logger.error({ err, uid: user.uid }, 'Error getting user integrations');
+      return reply.code(500).send({ error: err.message || 'Error fetching integrations' });
     }
   });
 

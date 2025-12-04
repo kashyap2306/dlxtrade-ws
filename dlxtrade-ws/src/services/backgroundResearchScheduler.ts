@@ -138,13 +138,12 @@ export class BackgroundResearchScheduler {
         return; // Skip if not enabled
       }
 
-      // Get user's notification preferences
-      const userSettings = await firestoreAdapter.getUserSettings(uid);
+      // Get user's notification preferences (defaults since SettingsDocument doesn't include these)
       const notificationPrefs = {
-        enableAutoTradeAlerts: userSettings?.enableAutoTradeAlerts || false,
-        enableAccuracyAlerts: userSettings?.enableAccuracyAlerts || false,
-        enableWhaleAlerts: userSettings?.enableWhaleAlerts || false,
-        tradeConfirmationRequired: userSettings?.tradeConfirmationRequired || false
+        enableAutoTradeAlerts: false,
+        enableAccuracyAlerts: false,
+        enableWhaleAlerts: false,
+        tradeConfirmationRequired: false
       };
 
       logger.info({ uid, notificationPrefs }, 'Running background research for user');
@@ -202,7 +201,7 @@ export class BackgroundResearchScheduler {
 
       // 4. Whale movement detection (simplified - can be enhanced with real whale tracking)
       // For now, we'll simulate whale detection based on volume spikes
-      if (research.result?.indicators?.volume?.score > 80 && notificationPrefs.enableWhaleAlerts) {
+      if ((research.microSignals?.volume || 0) > 50000 && notificationPrefs.enableWhaleAlerts) {
         const direction = research.signal === 'BUY' ? 'buy' : 'sell';
         const simulatedAmount = Math.floor(Math.random() * 500000) + 100000; // Simulated amount
         userNotificationService.sendWhaleAlert(uid, coin, direction, simulatedAmount);
@@ -230,7 +229,7 @@ export class BackgroundResearchScheduler {
             symbol: coin,
             accuracy: research.accuracy,
             trend: research.signal === 'BUY' ? 'Bullish' : research.signal === 'SELL' ? 'Bearish' : 'Neutral',
-            volumeSpike: research.result?.indicators?.volume?.score > 80,
+            volumeSpike: (research.microSignals?.volume || 0) > 50000,
             support: undefined,
             resistance: undefined,
             fullReport,

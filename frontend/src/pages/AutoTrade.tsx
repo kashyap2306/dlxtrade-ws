@@ -135,11 +135,11 @@ export default function AutoTrade() {
     if (!user || !isMountedRef.current) return;
     try {
       const response = await settingsApi.trading.autotrade.status();
-      if (isMountedRef.current && response.data) {
+      if (isMountedRef.current && response?.data) {
         setAutoTradeStatus(response.data);
         // Also update the controls state to match
-        setAutoTradeControls(prev => ({ ...prev, autoTradeEnabled: response.data.enabled }));
-        setConfig(prev => ({ ...prev, autoTradeEnabled: response.data.enabled }));
+        setAutoTradeControls(prev => ({ ...prev, autoTradeEnabled: response.data?.enabled ?? false }));
+        setConfig(prev => ({ ...prev, autoTradeEnabled: response.data?.enabled ?? false }));
       }
     } catch (err: any) {
       suppressConsoleError(err, 'loadAutoTradeStatus');
@@ -339,9 +339,9 @@ export default function AutoTrade() {
       setSaving(true);
       try {
         const response = await settingsApi.trading.autotrade.toggle({ enabled });
-        setAutoTradeStatus(prev => ({ ...prev, enabled: response.data.enabled }));
-        setAutoTradeControls(prev => ({ ...prev, autoTradeEnabled: response.data.enabled }));
-        setConfig(prev => ({ ...prev, autoTradeEnabled: response.data.enabled }));
+        setAutoTradeStatus(prev => ({ ...prev, enabled: response?.data?.enabled ?? enabled }));
+        setAutoTradeControls(prev => ({ ...prev, autoTradeEnabled: response?.data?.enabled ?? enabled }));
+        setConfig(prev => ({ ...prev, autoTradeEnabled: response?.data?.enabled ?? enabled }));
         showToast(`Auto-Trade ${enabled ? 'started' : 'stopped'}`, 'success');
       } catch (error: any) {
         showToast('Failed to toggle auto-trade', 'error');
@@ -381,7 +381,7 @@ export default function AutoTrade() {
     setTriggering(true);
     try {
       const response = await autoTradeApi.trigger({ symbol, dryRun });
-      const data = response.data;
+      const data = response?.data ?? {};
 
       if (data.success) {
         setToast({

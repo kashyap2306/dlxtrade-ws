@@ -27,6 +27,20 @@ export interface PositionSizingResult {
   reason: string;
 }
 
+// Research result interface for auto trade
+interface ResearchDataResult {
+  symbol: string;
+  signal: 'BUY' | 'SELL' | 'HOLD';
+  accuracy: number;
+  result: any;
+  processingTimeMs: number;
+}
+
+interface ResearchData {
+  results: ResearchDataResult[];
+  coinsAnalyzed: string[];
+}
+
 export interface AutoTradeConfig {
   autoTradeEnabled: boolean;
   perTradeRiskPct: number; // percent of account equity per trade (default 1)
@@ -106,6 +120,99 @@ const DEFAULT_CONFIG: AutoTradeConfig = {
     dailyTrades: 0,
   },
 };
+
+// Research result interface for auto trade
+interface ResearchDataResult {
+  symbol: string;
+  signal: 'BUY' | 'SELL' | 'HOLD';
+  accuracy: number;
+  result: any;
+  processingTimeMs: number;
+  metadata: {
+    symbol: string;
+    [key: string]: any;
+  };
+}
+
+interface ResearchData {
+  results: ResearchDataResult[];
+  coinsAnalyzed: string[];
+}
+
+// Helper function to run deep research with coin selection based on trading settings
+async function runDeepResearchWithCoinSelection(
+  uid: string,
+  settings: TradingSettings,
+  providerConfigs: any,
+  integrations: any
+): Promise<ResearchData> {
+  const coinsAnalyzed: string[] = [];
+  const results: ResearchDataResult[] = [];
+
+  // Select coins based on trading mode
+  let coinsToAnalyze: string[] = [];
+
+  switch (settings.mode) {
+    case 'MANUAL':
+      coinsToAnalyze = settings.manualCoins || ['BTCUSDT'];
+      break;
+    case 'TOP_100':
+      // For now, use a basic set of major coins for TOP_100
+      coinsToAnalyze = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT'];
+      break;
+    case 'TOP_10':
+      // For now, use a smaller set for TOP_10
+      coinsToAnalyze = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'];
+      break;
+    default:
+      coinsToAnalyze = ['BTCUSDT'];
+  }
+
+  coinsAnalyzed.push(...coinsToAnalyze);
+
+  // Run research for each selected coin
+  for (const symbol of coinsToAnalyze) {
+    try {
+      const { runFreeModeDeepResearch } = await import('./deepResearchEngine');
+      const startTime = Date.now();
+      const result = await runFreeModeDeepResearch(uid, symbol, providerConfigs, integrations) as any;
+      const processingTimeMs = Date.now() - startTime;
+
+      results.push({
+        symbol,
+        signal: result.signal as 'BUY' | 'SELL' | 'HOLD',
+        accuracy: result.accuracy,
+        result,
+        processingTimeMs,
+        metadata: {
+          symbol,
+          ...(result.metadata || {})
+        }
+      });
+
+      logger.info({ uid, symbol, signal: result.signal, accuracy: result.accuracy }, 'Research completed for coin');
+    } catch (error: any) {
+      logger.error({ uid, symbol, error: error.message }, 'Research failed for coin');
+      // Add failed result with HOLD signal
+      results.push({
+        symbol,
+        signal: 'HOLD',
+        accuracy: 0,
+        result: null,
+        processingTimeMs: 0,
+        metadata: { symbol }
+      });
+    }
+  }
+
+  // Sort results by accuracy (highest first)
+  results.sort((a, b) => b.accuracy - a.accuracy);
+
+  return {
+    results,
+    coinsAnalyzed
+  };
+}
 
 export class AutoTradeEngine {
   private userEngines: Map<string, {
@@ -377,7 +484,6 @@ export class AutoTradeEngine {
 
       // Strict validation: Block if ANY required setting is undefined/null
       if (!settings ||
-          settings.symbol === undefined ||
           settings.maxPositionPerTrade === undefined ||
           settings.accuracyTrigger === undefined ||
           settings.maxDailyLoss === undefined ||
@@ -749,7 +855,8 @@ export class AutoTradeEngine {
       logger.error({ error: error.message, uid }, 'Error getting trading settings, using defaults');
       // Return defaults on error
       return {
-        symbol: 'BTCUSDT',
+        mode: 'MANUAL' as const,
+        manualCoins: ['BTCUSDT'],
         maxPositionPerTrade: 10,
         tradeType: 'Scalping',
         accuracyTrigger: 85,
@@ -1099,8 +1206,7 @@ export class AutoTradeEngine {
         throw new Error('SETTINGS_LOAD_FAILURE: Trading settings unavailable');
       }
 
-      // Import deep research engine and integrations
-      const { runDeepResearchWithCoinSelection } = await import('./deepResearchEngine');
+      // Import integrations
       const { getUserIntegrations } = await import('../routes/integrations');
 
       // Get user integrations for API keys
@@ -1161,11 +1267,11 @@ export class AutoTradeEngine {
       }
 
       // Get current market price
-      const currentPrice = await this.getCurrentMarketPrice(settings.symbol, uid);
+      const currentPrice = await this.getCurrentMarketPrice(researchResult.metadata.symbol, uid);
 
       // Create trade signal with reasonable defaults
       const tradeSignal: TradeSignal = {
-        symbol: settings.symbol,
+        symbol: researchResult.metadata.symbol,
         signal: signal as 'BUY' | 'SELL',
         entryPrice: currentPrice,
         accuracy: accuracy,
@@ -1188,7 +1294,7 @@ export class AutoTradeEngine {
         mappedPositionPercent,
         finalPositionPercent,
         cycleResult,
-        symbol: settings.symbol
+        symbol: researchResult.metadata.symbol
       }, '✅ Research cycle completed successfully with trade execution');
 
     } catch (error: any) {

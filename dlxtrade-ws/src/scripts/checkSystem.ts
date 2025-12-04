@@ -84,7 +84,7 @@ async function main() {
     console.log('🔥 Starting system verification...\n');
     
     // Initialize Firebase
-    initializeFirebaseAdmin();
+    initFirebaseAdmin();
     console.log('✅ Firebase Admin initialized\n');
 
     // Check Firestore

@@ -2,8 +2,8 @@ import axios, { AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'ax
 import { getAuth } from 'firebase/auth';
 import { API_BASE_URL } from './env';
 
-// Construct API base URL with /api path
-const baseURL = `${API_BASE_URL}/api`;
+// Construct correct base URL (do NOT append /api again if env already has it)
+const baseURL = API_BASE_URL;
 
 // Circuit breaker state
 interface CircuitBreakerState {
@@ -18,16 +18,14 @@ const circuitBreaker: CircuitBreakerState = {
   state: 'closed',
 };
 
-// Circuit breaker configuration
-const CIRCUIT_BREAKER_THRESHOLD = 5; // failures before opening
-const CIRCUIT_BREAKER_TIMEOUT = 60000; // 1 minute before trying again
+const CIRCUIT_BREAKER_THRESHOLD = 5;
+const CIRCUIT_BREAKER_TIMEOUT = 60000;
 const MAX_RETRIES = 3;
-const RETRY_DELAY = 1000; // 1 second base delay
+const RETRY_DELAY = 1000;
 
-// Slow request tracking to avoid spamming console
 const slowRequestWarnings = new Set<string>();
 
-// API response cache
+// Cache system
 interface CacheEntry {
   data: any;
   timestamp: number;
@@ -35,9 +33,8 @@ interface CacheEntry {
 }
 
 const apiCache = new Map<string, CacheEntry>();
-const CACHE_TTL = 5000; // 5 seconds cache TTL
+const CACHE_TTL = 5000;
 
-// Cacheable endpoints
 const CACHEABLE_ENDPOINTS = [
   '/agents',
   '/agents/unlocked',
@@ -45,62 +42,39 @@ const CACHEABLE_ENDPOINTS = [
   '/settings/load'
 ];
 
-// Check if endpoint should be cached
-const shouldCache = (url: string): boolean => {
-  return CACHEABLE_ENDPOINTS.some(endpoint => url.includes(endpoint));
-};
+const shouldCache = (url: string): boolean =>
+  CACHEABLE_ENDPOINTS.some(endpoint => url.includes(endpoint));
 
-// Get cached response if valid
 const getCachedResponse = (url: string): any | null => {
-  const cacheKey = url;
-  const cached = apiCache.get(cacheKey);
-
+  const cached = apiCache.get(url);
   if (cached && Date.now() - cached.timestamp < cached.ttl) {
     return cached.data;
   }
-
-  // Remove expired cache
-  if (cached) {
-    apiCache.delete(cacheKey);
-  }
-
+  if (cached) apiCache.delete(url);
   return null;
 };
 
-// Cache response
 const setCachedResponse = (url: string, data: any, ttl: number = CACHE_TTL): void => {
-  const cacheKey = url;
-  apiCache.set(cacheKey, {
-    data,
-    timestamp: Date.now(),
-    ttl
-  });
+  apiCache.set(url, { data, timestamp: Date.now(), ttl });
 };
 
+// Axios instance (CORS-safe)
 const api = axios.create({
   baseURL,
-  withCredentials: false,
-  timeout: 20000, // 20 second timeout
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  // Add retry configuration
+  withCredentials: true,
+  timeout: 20000,
   retryConfig: {
     retries: MAX_RETRIES,
     retryDelay: RETRY_DELAY,
-    retryCondition: (error: AxiosError) => {
-      // Retry on network errors, 5xx errors, and specific 4xx errors
-      return (
-        !error.response || // Network error
-        error.response.status >= 500 || // Server errors
-        error.response.status === 429 || // Rate limiting
-        error.response.status === 408 // Request timeout
-      );
-    },
+    retryCondition: (error: AxiosError) =>
+      !error.response ||
+      error.response.status >= 500 ||
+      error.response.status === 429 ||
+      error.response.status === 408,
   },
 });
 
-// Enhanced logging utility
+// Logging
 const logRequest = (config: InternalAxiosRequestConfig, context: string) => {
   if (import.meta.env.DEV) {
     console.log(`[API ${context}]`, `${config.method?.toUpperCase()} ${config.url}`);
@@ -108,51 +82,39 @@ const logRequest = (config: InternalAxiosRequestConfig, context: string) => {
 };
 
 const logResponse = (response: AxiosResponse, context: string) => {
-  const duration = response.config.metadata?.startTime
-    ? Date.now() - response.config.metadata.startTime
-    : 0;
+  const duration = Date.now() - (response.config.metadata?.startTime || 0);
 
   if (import.meta.env.DEV) {
-    console.log(`[API ${context}]`, `${response.status} ${response.config.method?.toUpperCase()} ${response.config.url} (${duration}ms)`);
-  } else {
-    // In production, log slow requests and errors (only once per endpoint to avoid spam)
-    if (duration > 5000) {
-      const endpointKey = `${response.config.method?.toUpperCase()} ${response.config.url}`;
-      if (!slowRequestWarnings.has(endpointKey)) {
-        console.warn(`[API SLOW] ${endpointKey} took ${duration}ms (warning shown once per endpoint)`);
-        slowRequestWarnings.add(endpointKey);
-        // Clear warning after 5 minutes to allow re-warning if issue persists
-        setTimeout(() => slowRequestWarnings.delete(endpointKey), 300000);
-      }
+    console.log(
+      `[API ${context}]`,
+      `${response.status} ${response.config.method?.toUpperCase()} ${response.config.url} (${duration}ms)`
+    );
+  } else if (duration > 5000) {
+    const key = `${response.config.method?.toUpperCase()} ${response.config.url}`;
+    if (!slowRequestWarnings.has(key)) {
+      console.warn(`[API SLOW] ${key} took ${duration}ms`);
+      slowRequestWarnings.add(key);
+      setTimeout(() => slowRequestWarnings.delete(key), 300000);
     }
   }
 };
 
 const logError = (error: AxiosError, context: string, extra?: any) => {
-  const status = error.response?.status;
-  const url = error.config?.url;
-  const method = error.config?.method?.toUpperCase();
-
-  console.error(`[API ${context}]`, `${method} ${url} failed:`, {
-    status,
+  console.error(`[API ${context}]`, {
+    method: error.config?.method,
+    url: error.config?.url,
+    status: error.response?.status,
     message: error.message,
     data: error.response?.data,
     ...extra,
   });
-
-  // In production, you might want to send this to a logging service
-  if (!import.meta.env.DEV) {
-    // Example: send to logging service
-    // logToService('api_error', { status, url, method, error: error.message });
-  }
 };
 
-// Circuit breaker logic
+// Circuit Breaker logic
 const isCircuitBreakerOpen = (): boolean => {
   if (circuitBreaker.state === 'open') {
     if (Date.now() - circuitBreaker.lastFailureTime > CIRCUIT_BREAKER_TIMEOUT) {
       circuitBreaker.state = 'half-open';
-      console.warn('[API] Circuit breaker entering half-open state');
       return false;
     }
     return true;
@@ -166,7 +128,6 @@ const recordFailure = () => {
 
   if (circuitBreaker.failures >= CIRCUIT_BREAKER_THRESHOLD) {
     circuitBreaker.state = 'open';
-    console.error(`[API] Circuit breaker opened after ${circuitBreaker.failures} failures`);
   }
 };
 
@@ -174,200 +135,106 @@ const recordSuccess = () => {
   if (circuitBreaker.state === 'half-open') {
     circuitBreaker.state = 'closed';
     circuitBreaker.failures = 0;
-    console.log('[API] Circuit breaker closed - service recovered');
-  } else if (circuitBreaker.state === 'closed') {
+  } else {
     circuitBreaker.failures = Math.max(0, circuitBreaker.failures - 1);
   }
 };
 
-// Request interceptor
+// Request Interceptor
 api.interceptors.request.use(
-  async (config: InternalAxiosRequestConfig) => {
-    // Check circuit breaker
+  async (config) => {
     if (isCircuitBreakerOpen()) {
-      const error = new Error('Circuit breaker is open - service temporarily unavailable');
+      const error = new Error('Circuit breaker is open');
       (error as any).isCircuitBreakerError = true;
       throw error;
     }
 
-    // Add Firebase token
+    // Firebase Token
     try {
       const token = await getAuth().currentUser?.getIdToken();
       if (token) {
+        config.headers = config.headers || {};
         config.headers.Authorization = `Bearer ${token}`;
       }
-    } catch (tokenError) {
-      logError(tokenError as AxiosError, 'TOKEN', { context: 'Failed to get auth token' });
-    }
+    } catch {}
 
-    // Add request ID for tracking
+    // Metadata
     config.metadata = {
-      requestId: `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       startTime: Date.now(),
+      requestId: `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
     };
 
     logRequest(config, 'REQUEST');
     return config;
   },
-  (error) => {
-    logError(error, 'REQUEST_SETUP');
-    return Promise.reject(error);
-  }
+  (error) => Promise.reject(error)
 );
 
-// Response interceptor
+// Response Interceptor
 api.interceptors.response.use(
-  (response: AxiosResponse) => {
+  (response) => {
     recordSuccess();
     logResponse(response, 'SUCCESS');
 
-    // Cache successful GET responses
-    if (response.config.method?.toLowerCase() === 'get' && shouldCache(response.config.url || '')) {
+    if (response.config.method === 'get' && shouldCache(response.config.url || '')) {
       setCachedResponse(response.config.url || '', response.data);
     }
 
     return response;
   },
+
   async (error: AxiosError) => {
-    const config = error.config as any;
-    const retryConfig = config?.retryConfig || api.defaults.retryConfig;
+    const config = error.config || {};
+    const retryConfig = config.retryConfig;
 
-    // Handle circuit breaker errors - return safe fallback instead of crashing
-    if ((error as any).isCircuitBreakerError) {
-      console.warn('[API] Circuit breaker open - returning safe fallback');
-      return { data: {} };
-    }
+    if ((error as any).isCircuitBreakerError) return Promise.reject(error);
 
-    // Handle auth errors
-    if (error.response?.status === 401) {
-      localStorage.removeItem('firebaseToken');
-      localStorage.removeItem('firebaseUser');
-      // Don't redirect immediately to avoid interrupting user flow
-      // window.location.href = '/login';
-      return Promise.reject(error);
-    }
+    if (!error.response) return Promise.reject(error);
 
-    // For 4xx and 5xx errors, return safe fallback data instead of crashing
-    if (error.response?.status && error.response.status >= 400) {
-      console.warn(`[API] ${error.response.status} error - returning safe fallback for ${config?.method?.toUpperCase()} ${config?.url}`);
-      return { data: {} };
-    }
+    if (error.response.status >= 400) return Promise.reject(error);
 
-    // For network errors, return safe fallback
-    if (!error.response) {
-      console.warn('[API] Network error - returning safe fallback');
-      return { data: {} };
-    }
-
-    // For ANY other errors, return safe fallback to prevent UI crashes
-    console.warn('[API] Unexpected error - returning safe fallback');
-    return { data: {} };
-
-    // Check if we should retry (only for specific cases)
-    const shouldRetry = retryConfig?.retryCondition(error) &&
-                       (config?.retryCount || 0) < retryConfig.retries &&
-                       error.response?.status !== 404; // Don't retry 404s
-
-    if (shouldRetry) {
-      config.retryCount = (config.retryCount || 0) + 1;
-      const delay = retryConfig.retryDelay * Math.pow(2, config.retryCount - 1); // Exponential backoff
-
-      logError(error, 'RETRY', {
-        attempt: config.retryCount,
-        maxRetries: retryConfig.retries,
-        delay,
-      });
-
-      return new Promise((resolve) => {
-        setTimeout(() => resolve(api.request(config)), delay);
-      });
-    }
-
-    // Record failure for circuit breaker
     recordFailure();
-    logError(error, 'FINAL_FAILURE', { retryCount: config?.retryCount || 0 });
-
-    // Return safe fallback instead of rejecting to prevent UI crashes
-    console.warn('[API] Returning safe fallback data to prevent UI crash');
-    return { data: {} };
+    return Promise.reject(error);
   }
 );
 
-// Background health ping service
+// Health Ping Service
 class HealthPingService {
   private intervalId: NodeJS.Timeout | null = null;
   private isHealthy = false;
 
   start() {
-    if (this.intervalId) return; // Already running
+    if (this.intervalId) return;
 
-    console.log('[API] Starting background health ping service (every 60s)');
     this.intervalId = setInterval(async () => {
       try {
-        const response = await axios.get(`${API_BASE_URL}/health`, {
-          timeout: 5000, // Short timeout for health checks
-        });
-
-        if (response.data?.status === 'ok') {
-          if (!this.isHealthy) {
-            console.log('[API] Health check successful - service is healthy');
-            this.isHealthy = true;
-          }
-        } else {
-          if (this.isHealthy) {
-            console.warn('[API] Health check failed - service may be unhealthy');
-            this.isHealthy = false;
-          }
-        }
-      } catch (error) {
-        if (this.isHealthy) {
-          console.warn('[API] Health check failed - service may be down');
-          this.isHealthy = false;
-        }
+        const res = await axios.get(`${API_BASE_URL}/health`, { timeout: 5000 });
+        this.isHealthy = res.data?.status === 'ok';
+      } catch {
+        this.isHealthy = false;
       }
-    }, 60000); // 60 seconds
-  }
-
-  stop() {
-    if (this.intervalId) {
-      clearInterval(this.intervalId);
-      this.intervalId = null;
-      console.log('[API] Stopped background health ping service');
-    }
-  }
-
-  isServiceHealthy(): boolean {
-    return this.isHealthy;
+    }, 60000);
   }
 }
 
 export const healthPingService = new HealthPingService();
 
-// Auto-start health ping service when module loads
 if (typeof window !== 'undefined') {
-  // Start after a short delay to allow app initialization
   setTimeout(() => healthPingService.start(), 2000);
 }
 
-// Cached API wrapper for frequently called endpoints
+// Cached Wrapper
 export const cachedApi = {
   get: async (url: string, config?: any) => {
-    if (shouldCache(url)) {
-      const cached = getCachedResponse(url);
-      if (cached) {
-        return { data: cached };
-      }
-    }
+    const cached = shouldCache(url) ? getCachedResponse(url) : null;
+    if (cached) return { data: cached };
 
-    const response = await api.get(url, config);
+    const res = await api.get(url, config);
 
-    if (shouldCache(url)) {
-      setCachedResponse(url, response.data);
-    }
+    if (shouldCache(url)) setCachedResponse(url, res.data);
 
-    return response;
+    return res;
   },
-
   post: (url: string, data?: any, config?: any) => api.post(url, data, config),
   put: (url: string, data?: any, config?: any) => api.put(url, data, config),
   patch: (url: string, data?: any, config?: any) => api.patch(url, data, config),

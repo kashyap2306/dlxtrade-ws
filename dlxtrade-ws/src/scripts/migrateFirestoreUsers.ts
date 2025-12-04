@@ -220,8 +220,8 @@ if (require.main === module) {
   (async () => {
     try {
       // Initialize Firebase Admin
-      const { initializeFirebaseAdmin } = await import('../utils/firebase');
-      initializeFirebaseAdmin();
+      const { initFirebaseAdmin } = await import('../utils/firebase');
+      initFirebaseAdmin();
       
       const result = await migrateFirestoreUsers();
       console.log('Migration result:', JSON.stringify(result, null, 2));

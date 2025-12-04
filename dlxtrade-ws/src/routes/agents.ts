@@ -9,6 +9,14 @@ const unlockAgentSchema = z.object({
 });
 
 export async function agentsRoutes(fastify: FastifyInstance) {
+  console.log("[ROUTE READY] GET /api/agents");
+  console.log("[ROUTE READY] POST /api/agents/unlock");
+  console.log("[ROUTE READY] GET /api/agents/unlocks");
+  console.log("[ROUTE READY] GET /api/agents/unlocked");
+  console.log("[ROUTE READY] GET /api/agents/:id");
+  console.log("[ROUTE READY] POST /api/agents/submit-unlock-request");
+  console.log("[ROUTE READY] PUT /api/agents/:agentId/settings");
+
   // GET /api/agents - Get all agents
   fastify.get('/', {
     preHandler: [fastify.authenticate],

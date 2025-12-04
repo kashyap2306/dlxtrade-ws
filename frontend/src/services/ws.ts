@@ -17,19 +17,21 @@ class WebSocketService {
 
   async connect(): Promise<void> {
     // Import healthPingService dynamically to avoid circular dependency
-    const { healthPingService } = await import('@/config/axios');
+    const { healthPingService } = await import('../config/axios');
 
     // Check if health check has passed before attempting WS connection
-    if (!this.healthCheckPassed && !healthPingService.isServiceHealthy()) {
+    const isHealthy = healthPingService?.isServiceHealthy?.() ?? true;
+
+    if (!this.healthCheckPassed && !isHealthy) {
       console.log('[WS] Waiting for health check before connecting...');
       // Wait for health check to pass or timeout after 10 seconds
       let attempts = 0;
-      while (!healthPingService.isServiceHealthy() && attempts < 10) {
+      while ((healthPingService?.isServiceHealthy?.() ?? true) === false && attempts < 10) {
         await new Promise(resolve => setTimeout(resolve, 1000));
         attempts++;
       }
 
-      if (!healthPingService.isServiceHealthy()) {
+      if ((healthPingService?.isServiceHealthy?.() ?? true) === false) {
         console.warn('[WS] Health check failed, but proceeding with WS connection anyway');
       } else {
         this.healthCheckPassed = true;
@@ -40,7 +42,7 @@ class WebSocketService {
     try {
       // Get fresh Firebase token
       const token = await getAuth().currentUser?.getIdToken();
-      const wsUrl = `${API_BASE_URL.replace('/api', '')}/ws?token=${token}`;
+      const wsUrl = `${API_BASE_URL.replace('http', 'ws').replace('/api', '')}/ws?token=${token}`;
 
       this.ws = new WebSocket(wsUrl);
 
