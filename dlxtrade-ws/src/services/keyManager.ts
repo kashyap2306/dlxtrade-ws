@@ -220,3 +220,10 @@ export function maskKey(key: string): string {
   return `${key.slice(0, 4)}****${key.slice(-4)}`;
 }
 
+// Export keyManager object for backwards compatibility
+export const keyManager = {
+  encrypt,
+  decrypt,
+  maskKey
+};
+

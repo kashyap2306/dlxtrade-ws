@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { accuracyEngine } from '../services/accuracyEngine';
 import { API_PROVIDERS_CONFIG, ProviderConfig } from '../config/apiProviders';
 import { keyManager } from '../services/keyManager';
+import { ProviderTester } from '../services/providerTester';
 
 const settingsSchema = z.object({
   symbol: z.string().optional(),
@@ -19,6 +20,15 @@ const settingsSchema = z.object({
   max_drawdown_pct: z.number().min(0).max(100).optional(),
   per_trade_risk_pct: z.number().min(0).max(100).optional(),
   status: z.enum(['active', 'paused_by_risk', 'paused_manual']).optional(),
+  // Notification settings
+  enableAutoTradeAlerts: z.boolean().optional(),
+  enableAccuracyAlerts: z.boolean().optional(),
+  enableWhaleAlerts: z.boolean().optional(),
+  tradeConfirmationRequired: z.boolean().optional(),
+  notificationSounds: z.boolean().optional(),
+  notificationVibration: z.boolean().optional(),
+  telegramBotToken: z.string().optional(),
+  telegramChatId: z.string().optional(),
 });
 
 // Trading Settings Schema
@@ -514,6 +524,64 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       };
     } catch (err: any) {
       return reply.code(500).send({ error: err.message || 'Error changing API key' });
+    }
+  });
+
+  // POST /api/settings/providers/test - Test provider connection
+  fastify.post('/settings/providers/test', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const body = z.object({
+        providerName: z.string(),
+        type: z.enum(['marketData', 'news', 'metadata']),
+        apiKey: z.string().optional()
+      }).parse(request.body);
+
+      const { providerName, type, apiKey } = body;
+
+      // Get user provider settings to find the API key if not provided
+      if (!apiKey) {
+        const userProviderSettings = await firestoreAdapter.getUserProviderSettings(user.uid) || {};
+        const providerTypeSettings = userProviderSettings[type];
+
+        if (providerTypeSettings) {
+          // Find the provider in primary or backups
+          const primaryId = API_PROVIDERS_CONFIG[type].primary.id;
+          const providerId = Object.keys(API_PROVIDERS_CONFIG).some(key =>
+            API_PROVIDERS_CONFIG[key as keyof typeof API_PROVIDERS_CONFIG].primary.providerName === providerName ||
+            Object.values(API_PROVIDERS_CONFIG[key as keyof typeof API_PROVIDERS_CONFIG].backups)
+              .some(backup => backup.providerName === providerName)
+          ) ? API_PROVIDERS_CONFIG[type].backups.find(b => b.providerName === providerName)?.id || primaryId : null;
+
+          if (providerId) {
+            // Check primary first
+            if (providerTypeSettings.primary?.encryptedApiKey && API_PROVIDERS_CONFIG[type].primary.providerName === providerName) {
+              const decryptedKey = keyManager.decrypt(providerTypeSettings.primary.encryptedApiKey);
+              body.apiKey = decryptedKey;
+            }
+            // Check backups
+            else if (providerTypeSettings.backups?.[providerId]?.encryptedApiKey) {
+              const decryptedKey = keyManager.decrypt(providerTypeSettings.backups[providerId].encryptedApiKey);
+              body.apiKey = decryptedKey;
+            }
+          }
+        }
+      }
+
+      // Test the provider
+      const result = await ProviderTester.testProvider(providerName, type, body.apiKey);
+
+      return {
+        success: result.success,
+        latencyMs: result.latencyMs,
+        message: result.message,
+        providerName,
+        type
+      };
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error testing provider connection' });
     }
   });
 }

@@ -10,6 +10,8 @@ import * as admin from 'firebase-admin';
 import { config } from '../config';
 import { getUserIntegrations } from '../routes/integrations';
 import { accuracyEngine, AccuracyResult } from './accuracyEngine';
+import { ProviderTester } from './providerTester';
+import { API_PROVIDERS_CONFIG } from '../config/apiProviders';
 
 // FREE MODE Deep Research v1.5 interfaces
 export interface ProviderBackupConfig {
@@ -578,6 +580,69 @@ export class DeepResearchEngine {
   }
 
   /**
+   * Update provider usage statistics in user settings
+   */
+  private async updateProviderUsageStats(
+    uid: string,
+    providerId: string,
+    providerType: 'marketData' | 'news' | 'metadata',
+    success: boolean,
+    latencyMs: number
+  ): Promise<void> {
+    try {
+      const userProviderSettings = await firestoreAdapter.getUserProviderSettings(uid) || {};
+
+      if (!userProviderSettings[providerType]) {
+        userProviderSettings[providerType] = { primary: {}, backups: {} };
+      }
+
+      // Find the provider in primary or backups
+      let providerPath: string | null = null;
+      if (API_PROVIDERS_CONFIG[providerType].primary.id === providerId) {
+        providerPath = 'primary';
+      } else {
+        const backupIndex = API_PROVIDERS_CONFIG[providerType].backups.findIndex(b => b.id === providerId);
+        if (backupIndex !== -1) {
+          providerPath = `backups.${providerId}`;
+        }
+      }
+
+      if (providerPath) {
+        const currentStats = userProviderSettings[providerType][providerPath]?.usageStats || {
+          totalCalls: 0,
+          successfulCalls: 0,
+          failedCalls: 0,
+          averageLatencyMs: 0,
+          lastUsed: null
+        };
+
+        // Update statistics
+        currentStats.totalCalls += 1;
+        if (success) {
+          currentStats.successfulCalls += 1;
+        } else {
+          currentStats.failedCalls += 1;
+        }
+
+        // Update average latency (weighted average)
+        const totalLatency = currentStats.averageLatencyMs * (currentStats.totalCalls - 1) + latencyMs;
+        currentStats.averageLatencyMs = Math.round(totalLatency / currentStats.totalCalls);
+        currentStats.lastUsed = new Date();
+
+        // Update the settings
+        if (!userProviderSettings[providerType][providerPath]) {
+          userProviderSettings[providerType][providerPath] = {};
+        }
+        userProviderSettings[providerType][providerPath].usageStats = currentStats;
+
+        await firestoreAdapter.saveUserProviderSettings(uid, userProviderSettings);
+      }
+    } catch (error: any) {
+      logger.error({ error: error.message, providerId, providerType }, 'Failed to update provider usage stats');
+    }
+  }
+
+  /**
    * FREE MODE Deep Research v1.5 - Execute with backup APIs
    */
   // Temporarily commented out due to syntax errors
@@ -705,9 +770,13 @@ export class DeepResearchEngine {
           if (result.success) {
             console.log(`✅ MARKET DATA: ${provider.id} succeeded in ${Date.now() - startTime}ms`);
             result.latencyMs = Date.now() - startTime;
+            // Update usage statistics
+            await this.updateProviderUsageStats(uid, provider.id, 'marketData', true, result.latencyMs);
             return result;
           } else {
             console.log(`⚠️ MARKET DATA: ${provider.id} returned success=false: ${result.error}`);
+            // Update usage statistics for failed attempt
+            await this.updateProviderUsageStats(uid, provider.id, 'marketData', false, Date.now() - startTime);
           }
         } catch (error: any) {
           console.error(`❌ MARKET DATA: ${provider.id} failed:`, error.message);
@@ -915,9 +984,13 @@ export class DeepResearchEngine {
           if (result.success) {
             console.log(`✅ METADATA: ${provider.id} succeeded in ${Date.now() - startTime}ms`);
             result.latencyMs = Date.now() - startTime;
+            // Update usage statistics
+            await this.updateProviderUsageStats(uid, provider.id, 'metadata', true, result.latencyMs);
             return result;
           } else {
             console.log(`⚠️ METADATA: ${provider.id} returned success=false: ${result.error}`);
+            // Update usage statistics for failed attempt
+            await this.updateProviderUsageStats(uid, provider.id, 'metadata', false, Date.now() - startTime);
           }
         } catch (error: any) {
           console.error(`❌ METADATA: ${provider.id} failed:`, error.message);
@@ -1075,9 +1148,13 @@ export class DeepResearchEngine {
           if (result.success) {
             console.log(`✅ NEWS: ${provider.id} succeeded in ${Date.now() - startTime}ms`);
             result.latencyMs = Date.now() - startTime;
+            // Update usage statistics
+            await this.updateProviderUsageStats(uid, provider.id, 'news', true, result.latencyMs);
             return result;
           } else {
             console.log(`⚠️ NEWS: ${provider.id} returned success=false: ${result.error}`);
+            // Update usage statistics for failed attempt
+            await this.updateProviderUsageStats(uid, provider.id, 'news', false, Date.now() - startTime);
           }
         } catch (error: any) {
           console.error(`❌ NEWS: ${provider.id} failed:`, error.message);

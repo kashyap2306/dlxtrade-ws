@@ -153,6 +153,11 @@ export const settingsApi = {
       isPrimary: boolean;
       newApiKey: string;
     }) => api.post('/settings/providers/change', data),
+    test: (data: {
+      providerName: string;
+      type: 'marketData' | 'news' | 'metadata';
+      apiKey?: string;
+    }) => api.post('/settings/providers/test', data),
   },
 };
 

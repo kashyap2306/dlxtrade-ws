@@ -31,6 +31,15 @@ export interface SettingsDocument {
   max_drawdown_pct?: number; // Max drawdown as percentage
   per_trade_risk_pct?: number; // Risk per trade as percentage
   status?: string; // 'active' | 'paused_by_risk' | 'paused_manual'
+  // Notification settings
+  enableAutoTradeAlerts?: boolean;
+  enableAccuracyAlerts?: boolean;
+  enableWhaleAlerts?: boolean;
+  tradeConfirmationRequired?: boolean;
+  notificationSounds?: boolean;
+  notificationVibration?: boolean;
+  telegramBotToken?: string;
+  telegramChatId?: string;
   updatedAt: admin.firestore.Timestamp;
 }
 
