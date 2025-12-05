@@ -57,160 +57,6 @@ function getSignalColor(indicators, price) {
   else return 'text-yellow-400';
 }
 
-// Structured Analysis Card Component
-function StructuredAnalysisCard({ analysis }) {
-  return (
-    <div className="bg-gradient-to-br from-slate-900/90 via-slate-800/90 to-slate-900/90 backdrop-blur-xl border border-slate-700/50 rounded-2xl p-6 shadow-2xl shadow-slate-900/50 overflow-hidden">
-      <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 via-purple-500/5 to-cyan-500/5"></div>
-      <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-purple-500 to-cyan-500"></div>
-
-      <div className="relative space-y-6">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <h3 className="text-2xl font-bold text-white flex items-center gap-3">
-            <span className="text-3xl">{analysis.coin.replace('USDT', '')}</span>
-            <span className="text-slate-300">Analysis</span>
-          </h3>
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 bg-green-400 rounded-full animate-pulse"></div>
-            <span className="text-sm text-slate-300">Deep Research</span>
-          </div>
-        </div>
-
-        {/* Summary */}
-        <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-600/30">
-          <h4 className="text-lg font-semibold text-white mb-2">Summary</h4>
-          <p className="text-slate-300 leading-relaxed">{analysis.summary}</p>
-        </div>
-
-        {/* Signals */}
-        <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-600/30">
-          <h4 className="text-lg font-semibold text-white mb-4">Signals</h4>
-          <div className="space-y-3">
-            {analysis.signals.map((signal, idx) => (
-              <div key={idx} className="flex items-center justify-between p-3 bg-slate-700/30 rounded-lg">
-                <div className="flex items-center gap-3">
-                  <span className={`px-3 py-1 rounded-full text-sm font-medium ${
-                    signal.type === 'buy' ? 'bg-green-500/20 text-green-400 border border-green-500/30' :
-                    signal.type === 'sell' ? 'bg-red-500/20 text-red-400 border border-red-500/30' :
-                    'bg-slate-500/20 text-slate-400 border border-slate-500/30'
-                  }`}>
-                    {signal.type.toUpperCase()}
-                  </span>
-                  <span className="text-slate-300">{signal.reason}</span>
-                </div>
-                <span className={`text-lg font-bold ${
-                  signal.confidence >= 0.8 ? 'text-green-400' :
-                  signal.confidence >= 0.6 ? 'text-yellow-400' :
-                  'text-red-400'
-                }`}>
-                  {(signal.confidence * 100).toFixed(0)}%
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Metrics Table */}
-        <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-600/30">
-          <h4 className="text-lg font-semibold text-white mb-4">Key Metrics</h4>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            <div className="bg-slate-700/30 rounded-lg p-3">
-              <div className="text-sm text-slate-400">RSI</div>
-              <div className="text-xl font-bold text-white">{analysis.metrics.momentum.rsi.toFixed(1)}</div>
-            </div>
-            <div className="bg-slate-700/30 rounded-lg p-3">
-              <div className="text-sm text-slate-400">MACD</div>
-              <div className="text-xl font-bold text-white">{analysis.metrics.momentum.macd.toFixed(4)}</div>
-            </div>
-            <div className="bg-slate-700/30 rounded-lg p-3">
-              <div className="text-sm text-slate-400">Volume Trend</div>
-              <div className="text-lg font-bold text-white capitalize">{analysis.metrics.volume.trend}</div>
-            </div>
-            <div className="bg-slate-700/30 rounded-lg p-3">
-              <div className="text-sm text-slate-400">Support</div>
-              <div className="text-lg font-bold text-green-400">${analysis.metrics.support.toFixed(2)}</div>
-            </div>
-            <div className="bg-slate-700/30 rounded-lg p-3">
-              <div className="text-sm text-slate-400">Resistance</div>
-              <div className="text-lg font-bold text-red-400">${analysis.metrics.resistance.toFixed(2)}</div>
-            </div>
-            <div className="bg-slate-700/30 rounded-lg p-3">
-              <div className="text-sm text-slate-400">Volatility</div>
-              <div className="text-lg font-bold text-white capitalize">{analysis.metrics.volatility.classification}</div>
-            </div>
-          </div>
-        </div>
-
-        {/* Images Grid */}
-        {analysis.images && analysis.images.length > 0 && (
-          <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-600/30">
-            <h4 className="text-lg font-semibold text-white mb-4">Charts & Visualizations</h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              {analysis.images.slice(0, 4).map((imageUrl, idx) => (
-                <div key={idx} className="aspect-video bg-slate-700/30 rounded-lg overflow-hidden">
-                  <img
-                    src={imageUrl}
-                    alt={`Chart ${idx + 1}`}
-                    className="w-full h-full object-cover hover:scale-105 transition-transform duration-200"
-                    onError={(e) => {
-                      const target = e.target as HTMLImageElement;
-                      target.src = `https://via.placeholder.com/400x300/6366f1/ffffff?text=Chart+${idx + 1}`;
-                    }}
-                  />
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* News List */}
-        {analysis.news && analysis.news.length > 0 && (
-          <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-600/30">
-            <h4 className="text-lg font-semibold text-white mb-4">Latest News</h4>
-            <div className="space-y-3 max-h-96 overflow-y-auto">
-              {analysis.news.map((newsItem, idx) => (
-                <div key={idx} className="bg-slate-700/30 rounded-lg p-3 hover:bg-slate-700/50 transition-colors">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex-1">
-                      <h5 className="text-white font-medium line-clamp-2 mb-1">
-                        <a
-                          href={newsItem.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="hover:text-blue-400 transition-colors"
-                        >
-                          {newsItem.title}
-                        </a>
-                      </h5>
-                      <p className="text-slate-400 text-sm line-clamp-2 mb-2">{newsItem.snippet}</p>
-                      <div className="flex items-center gap-2 text-xs text-slate-500">
-                        <span>{newsItem.source}</span>
-                        <span>•</span>
-                        <span>{new Date(newsItem.publishedAt).toLocaleDateString()}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Action Buttons */}
-        <div className="flex gap-3 pt-4 border-t border-slate-600/30">
-          <button className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors">
-            Save to Watchlist
-          </button>
-          <button className="flex-1 bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition-colors">
-            Run Auto-Trade
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export default function ResearchPanel() {
   const { user, loading } = useAuth();
   const [logs, setLogs] = useState<ResearchLog[]>([]);
@@ -888,55 +734,29 @@ export default function ResearchPanel() {
                   <div className="space-y-6 animate-fade-in">
                     {deepResearchResults.map((result, idx) => (
                       <div key={result.id || idx} className="space-y-6 animate-stagger">
-                        {/* Structured Analysis Display */}
-                        {result.result?.structuredAnalysis ? (
-                          <StructuredAnalysisCard analysis={result.result.structuredAnalysis} />
-                        ) : (
-                          /* Fallback to original display if structuredAnalysis not available */
-                          <div className="relative bg-gradient-to-br from-slate-900/90 via-slate-800/90 to-slate-900/90 backdrop-blur-xl border border-slate-700/50 rounded-2xl p-4 sm:p-6 shadow-2xl shadow-slate-900/50 overflow-hidden">
-                            <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 via-purple-500/5 to-cyan-500/5"></div>
-                            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-purple-500 to-cyan-500"></div>
+                        {/* PRICE HEADER BANNER */}
+                        <div className="bg-slate-800 p-4 rounded">
+                          <div>Price Header</div>
+                        </div>
 
-                            <div className="relative">
-                              <div className="flex items-center justify-between mb-6">
-                                <h3 className="text-xl font-bold text-white flex items-center gap-2">
-                                  <svg className="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                                  </svg>
-                                  {result.symbol} Analysis
-                                </h3>
-                                <div className="flex items-center gap-2">
-                                  <div className="w-3 h-3 bg-green-400 rounded-full animate-pulse"></div>
-                                  <span className="text-sm text-slate-300">Live Analysis</span>
-                                </div>
-                              </div>
+                        {/* SIGNAL PANEL - Temporarily commented out due to adjacent JSX elements issue */}
+                        {/* <div className="relative bg-gradient-to-br from-slate-900/90 via-slate-800/90 to-slate-900/90 backdrop-blur-xl border border-slate-700/50 rounded-2xl p-4 sm:p-6 shadow-2xl shadow-slate-900/50 overflow-hidden"> */}
+                        <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 via-purple-500/5 to-cyan-500/5"></div>
+                        <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-purple-500 to-cyan-500"></div>
 
-                              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                                {/* Signal */}
-                                <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-4">
-                                  <div className="text-sm text-slate-400 mb-2">Signal</div>
-                                  <div className={`text-2xl font-bold ${result.result?.signal === 'BUY' ? 'text-green-400' :
-                                    result.result?.signal === 'SELL' ? 'text-red-400' :
-                                      'text-slate-400'
-                                    }`}>
-                                    {result.result?.signal || 'HOLD'}
-                                  </div>
-                                </div>
-
-                                {/* Accuracy */}
-                                <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-4">
-                                  <div className="text-sm text-slate-400 mb-2">Accuracy</div>
-                                  <div className={`text-2xl font-bold ${((result.result?.accuracy || 0) * 100) >= 70 ? 'text-green-400' :
-                                    ((result.result?.accuracy || 0) * 100) >= 50 ? 'text-yellow-400' :
-                                      'text-red-400'
-                                    }`}>
-                                    {result.result?.accuracy ? (result.result.accuracy * 100).toFixed(1) : 0}%
-                                  </div>
-                                </div>
-                              </div>
+                        <div className="relative">
+                          <div className="flex items-center justify-between mb-6">
+                            <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                              <svg className="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                              </svg>
+                              Signal Panel
+                            </h3>
+                            <div className="flex items-center gap-2">
+                              <div className="w-3 h-3 bg-green-400 rounded-full animate-pulse"></div>
+                              <span className="text-sm text-slate-300">Live Analysis</span>
                             </div>
                           </div>
-                        )}
 
                           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                             {/* Signal */}
