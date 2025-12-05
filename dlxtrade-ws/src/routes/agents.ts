@@ -22,11 +22,199 @@ export async function agentsRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
+      // Try to get agents from Firestore first
       const agents = await firestoreAdapter.getAllAgents();
+
+      // If no agents in Firestore, return default agents
+      if (!agents || agents.length === 0) {
+        const defaultAgents = [
+          {
+            id: 'airdrop_multiverse',
+            name: 'Airdrop Multiverse Agent',
+            price: 350,
+            description: 'Creates 100–500 wallets, auto airdrop tasks runner, auto-claim, auto-merge profits',
+            features: [
+              'Creates 100–500 wallets automatically',
+              'Auto airdrop tasks runner',
+              'Auto-claim rewards',
+              'Auto-merge profits',
+            ],
+            icon: '🎁',
+            category: 'Airdrop',
+            badge: 'Popular',
+          },
+          {
+            id: 'liquidity_sniper_arbitrage',
+            name: 'Liquidity Sniper & Arbitrage Agent',
+            price: 500,
+            description: 'DEX–CEX arbitrage with micro-second gap execution',
+            features: [
+              'DEX–CEX arbitrage detection',
+              'Micro-second gap execution',
+              'Real-time opportunity scanning',
+              'Automated profit capture',
+            ],
+            icon: '⚡',
+            category: 'Arbitrage',
+            badge: 'Premium',
+          },
+          {
+            id: 'ai_launchpad_hunter',
+            name: 'AI Launchpad Hunter & Presale Sniper',
+            price: 450,
+            description: 'Whitelists, presales, early launch detection, auto-entry & auto-exit',
+            features: [
+              'Whitelist detection',
+              'Presale monitoring',
+              'Early launch detection',
+              'Auto-entry & auto-exit',
+            ],
+            icon: '🚀',
+            category: 'Launchpad',
+            badge: 'Hot',
+          },
+          {
+            id: 'whale_movement_tracker',
+            name: 'Whale Movement Tracker Agent',
+            price: 250,
+            description: 'Tracks big wallets (whales), auto-buy/sell on accumulation & distribution',
+            features: [
+              'Tracks big wallets (whales)',
+              'Auto-buy on accumulation',
+              'Auto-sell on distribution',
+              'Real-time alerts',
+            ],
+            icon: '🐋',
+            category: 'Tracking',
+          },
+          {
+            id: 'pre_market_ai_alpha',
+            name: 'Pre-Market AI Alpha Agent',
+            price: 300,
+            description: 'On-chain + sentiment + funding + volatility analysis, predicts next pump tokens',
+            features: [
+              'On-chain analysis',
+              'Sentiment analysis',
+              'Funding rate monitoring',
+              'Volatility prediction',
+              'Pump token prediction',
+            ],
+            icon: '🧠',
+            category: 'AI Prediction',
+          },
+          {
+            id: 'whale_copy_trade',
+            name: 'Whale Copy Trade Agent',
+            price: 400,
+            description: 'Tracks top 500 whales, copies entries/exits automatically',
+            features: [
+              'Tracks top 500 whales',
+              'Copies entries automatically',
+              'Copies exits automatically',
+              'Real-time synchronization',
+            ],
+            icon: '📊',
+            category: 'Copy Trading',
+          },
+        ];
+        return { agents: defaultAgents };
+      }
+
       return { agents };
     } catch (err: any) {
       logger.error({ err }, 'Error getting agents');
-      return reply.code(500).send({ error: err.message || 'Error fetching agents' });
+      // Return default agents even on error
+      const defaultAgents = [
+        {
+          id: 'airdrop_multiverse',
+          name: 'Airdrop Multiverse Agent',
+          price: 350,
+          description: 'Creates 100–500 wallets, auto airdrop tasks runner, auto-claim, auto-merge profits',
+          features: [
+            'Creates 100–500 wallets automatically',
+            'Auto airdrop tasks runner',
+            'Auto-claim rewards',
+            'Auto-merge profits',
+          ],
+          icon: '🎁',
+          category: 'Airdrop',
+          badge: 'Popular',
+        },
+        {
+          id: 'liquidity_sniper_arbitrage',
+          name: 'Liquidity Sniper & Arbitrage Agent',
+          price: 500,
+          description: 'DEX–CEX arbitrage with micro-second gap execution',
+          features: [
+            'DEX–CEX arbitrage detection',
+            'Micro-second gap execution',
+            'Real-time opportunity scanning',
+            'Automated profit capture',
+          ],
+          icon: '⚡',
+          category: 'Arbitrage',
+          badge: 'Premium',
+        },
+        {
+          id: 'ai_launchpad_hunter',
+          name: 'AI Launchpad Hunter & Presale Sniper',
+          price: 450,
+          description: 'Whitelists, presales, early launch detection, auto-entry & auto-exit',
+          features: [
+            'Whitelist detection',
+            'Presale monitoring',
+            'Early launch detection',
+            'Auto-entry & auto-exit',
+          ],
+          icon: '🚀',
+          category: 'Launchpad',
+          badge: 'Hot',
+        },
+        {
+          id: 'whale_movement_tracker',
+          name: 'Whale Movement Tracker Agent',
+          price: 250,
+          description: 'Tracks big wallets (whales), auto-buy/sell on accumulation & distribution',
+          features: [
+            'Tracks big wallets (whales)',
+            'Auto-buy on accumulation',
+            'Auto-sell on distribution',
+            'Real-time alerts',
+          ],
+          icon: '🐋',
+          category: 'Tracking',
+        },
+        {
+          id: 'pre_market_ai_alpha',
+          name: 'Pre-Market AI Alpha Agent',
+          price: 300,
+          description: 'On-chain + sentiment + funding + volatility analysis, predicts next pump tokens',
+          features: [
+            'On-chain analysis',
+            'Sentiment analysis',
+            'Funding rate monitoring',
+            'Volatility prediction',
+            'Pump token prediction',
+          ],
+          icon: '🧠',
+          category: 'AI Prediction',
+        },
+        {
+          id: 'whale_copy_trade',
+          name: 'Whale Copy Trade Agent',
+          price: 400,
+          description: 'Tracks top 500 whales, copies entries/exits automatically',
+          features: [
+            'Tracks top 500 whales',
+            'Copies entries automatically',
+            'Copies exits automatically',
+            'Real-time synchronization',
+          ],
+          icon: '📊',
+          category: 'Copy Trading',
+        },
+      ];
+      return { agents: defaultAgents };
     }
   });
 

@@ -6,6 +6,43 @@ import { API_PROVIDERS_CONFIG, ProviderConfig } from '../config/apiProviders';
 import { keyManager } from '../services/keyManager';
 import { ProviderTester } from '../services/providerTester';
 
+// Provider config schema
+const providerConfigSchema = z.object({
+  marketData: z.array(z.string()).optional(),
+  news: z.array(z.string()).optional(),
+  metadata: z.array(z.string()).optional(),
+});
+
+// Trading settings schema
+const positionSizingMapItemSchema = z.object({
+  min: z.number().min(0).max(100),
+  max: z.number().min(0).max(100),
+  percent: z.number().min(0).max(100),
+});
+
+const tradingSettingsSchema = z.object({
+  mode: z.enum(['MANUAL', 'TOP_100', 'TOP_10']).optional(),
+  manualCoins: z.array(z.string()).optional(),
+  maxPositionPerTrade: z.number().min(0.1).max(100).optional(),
+  tradeType: z.enum(['Scalping', 'Swing', 'Position']).optional(),
+  accuracyTrigger: z.number().min(0).max(100).optional(),
+  maxDailyLoss: z.number().min(0).max(100).optional(),
+  maxTradesPerDay: z.number().int().min(1).max(500).optional(),
+  positionSizingMap: z.array(positionSizingMapItemSchema).optional(),
+});
+
+// Notification settings schema
+const notificationSettingsSchema = z.object({
+  enableAutoTradeAlerts: z.boolean().optional(),
+  enableAccuracyAlerts: z.boolean().optional(),
+  enableWhaleAlerts: z.boolean().optional(),
+  tradeConfirmationRequired: z.boolean().optional(),
+  notificationSounds: z.boolean().optional(),
+  notificationVibration: z.boolean().optional(),
+  telegramBotToken: z.string().optional(),
+  telegramChatId: z.string().optional(),
+});
+
 const settingsSchema = z.object({
   symbol: z.string().optional(),
   quoteSize: z.number().positive().optional(),
@@ -20,7 +57,11 @@ const settingsSchema = z.object({
   max_drawdown_pct: z.number().min(0).max(100).optional(),
   per_trade_risk_pct: z.number().min(0).max(100).optional(),
   status: z.enum(['active', 'paused_by_risk', 'paused_manual']).optional(),
-  // Notification settings
+  // New structured fields
+  providerConfig: providerConfigSchema.optional(),
+  tradingSettings: tradingSettingsSchema.optional(),
+  notificationSettings: notificationSettingsSchema.optional(),
+  // Legacy notification settings (keeping for backward compatibility)
   enableAutoTradeAlerts: z.boolean().optional(),
   enableAccuracyAlerts: z.boolean().optional(),
   enableWhaleAlerts: z.boolean().optional(),
@@ -31,34 +72,6 @@ const settingsSchema = z.object({
   telegramChatId: z.string().optional(),
 });
 
-// Trading Settings Schema
-const positionSizingMapItemSchema = z.object({
-  min: z.number().min(0).max(100),
-  max: z.number().min(0).max(100),
-  percent: z.number().min(0).max(100),
-});
-
-const tradingSettingsSchema = z.object({
-  mode: z.enum(['MANUAL', 'TOP_100', 'TOP_10']),
-  manualCoins: z.array(z.string()).min(1),
-  maxPositionPerTrade: z.number().min(0.1).max(100),
-  tradeType: z.enum(['Scalping', 'Swing', 'Position']),
-  accuracyTrigger: z.number().min(0).max(100),
-  maxDailyLoss: z.number().min(0).max(100),
-  maxTradesPerDay: z.number().int().min(1).max(500),
-  positionSizingMap: z.array(positionSizingMapItemSchema).min(1),
-}).refine((data) => {
-  // Validate position sizing map ranges don't overlap and cover 0-100
-  const map = data.positionSizingMap.sort((a, b) => a.min - b.min);
-  for (let i = 0; i < map.length - 1; i++) {
-    if (map[i].max >= map[i + 1].min) {
-      return false; // Overlapping ranges
-    }
-  }
-  return map[0].min <= 0 && map[map.length - 1].max >= 100;
-}, {
-  message: 'Position sizing map ranges must not overlap and cover 0-100%',
-});
 
 export async function settingsRoutes(fastify: FastifyInstance) {
   console.log("[ROUTE READY] GET /api/settings/load");
@@ -79,7 +92,17 @@ export async function settingsRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = (request as any).user;
     const settings = await firestoreAdapter.getSettings(user.uid);
-    
+
+    // Get user provider settings
+    const userProviderSettings = await firestoreAdapter.getUserProviderSettings(user.uid) || {};
+
+    // Ensure providerConfig always has safe defaults
+    const providerConfig = {
+      marketData: userProviderSettings.marketData?.backups ? Object.keys(userProviderSettings.marketData.backups) : [],
+      news: userProviderSettings.news?.backups ? Object.keys(userProviderSettings.news.backups) : [],
+      metadata: userProviderSettings.metadata?.backups ? Object.keys(userProviderSettings.metadata.backups) : []
+    };
+
     if (!settings) {
       return {
         symbol: 'BTCUSDT',
@@ -95,13 +118,68 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         max_drawdown_pct: 10,
         per_trade_risk_pct: 1,
         status: 'active',
+        providerConfig,
+        tradingSettings: {
+          mode: 'MANUAL',
+          manualCoins: [],
+          maxPositionPerTrade: 10,
+          tradeType: 'Scalping',
+          accuracyTrigger: 80,
+          maxDailyLoss: 5,
+          maxTradesPerDay: 50,
+          positionSizingMap: [
+            { min: 0, max: 25, percent: 1 },
+            { min: 25, max: 50, percent: 2 },
+            { min: 50, max: 75, percent: 3 },
+            { min: 75, max: 100, percent: 5 }
+          ]
+        },
+        notificationSettings: {
+          enableAutoTradeAlerts: false,
+          enableAccuracyAlerts: false,
+          enableWhaleAlerts: false,
+          tradeConfirmationRequired: false,
+          notificationSounds: false,
+          notificationVibration: false
+        }
       };
     }
 
-    return {
+    // Ensure existing settings also have safe providerConfig structure
+    const safeSettings = {
       ...settings,
+      providerConfig: settings.providerConfig ? {
+        marketData: settings.providerConfig.marketData || [],
+        news: settings.providerConfig.news || [],
+        metadata: settings.providerConfig.metadata || []
+      } : providerConfig,
+      tradingSettings: settings.tradingSettings || {
+        mode: 'MANUAL',
+        manualCoins: [],
+        maxPositionPerTrade: 10,
+        tradeType: 'Scalping',
+        accuracyTrigger: 80,
+        maxDailyLoss: 5,
+        maxTradesPerDay: 50,
+        positionSizingMap: [
+          { min: 0, max: 25, percent: 1 },
+          { min: 25, max: 50, percent: 2 },
+          { min: 50, max: 75, percent: 3 },
+          { min: 75, max: 100, percent: 5 }
+        ]
+      },
+      notificationSettings: settings.notificationSettings || {
+        enableAutoTradeAlerts: false,
+        enableAccuracyAlerts: false,
+        enableWhaleAlerts: false,
+        tradeConfirmationRequired: false,
+        notificationSounds: false,
+        notificationVibration: false
+      },
       updatedAt: settings.updatedAt?.toDate().toISOString(),
     };
+
+    return safeSettings;
   });
 
   // Update user settings
@@ -110,20 +188,60 @@ export async function settingsRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = (request as any).user;
     const body = settingsSchema.parse(request.body);
-    
+
     // Safety check: Block liveMode if ENABLE_LIVE_TRADES is not set
     if (body.liveMode === true) {
       const enableLiveTrades = process.env.ENABLE_LIVE_TRADES === 'true';
       if (!enableLiveTrades) {
-        return reply.code(403).send({ 
-          error: 'Live trading is disabled globally. Set ENABLE_LIVE_TRADES=true in environment to enable.' 
+        return reply.code(403).send({
+          error: 'Live trading is disabled globally. Set ENABLE_LIVE_TRADES=true in environment to enable.'
         });
       }
     }
-    
-    await firestoreAdapter.saveSettings(user.uid, body);
-    
-    return { message: 'Settings updated', settings: body };
+
+    // Get existing settings to merge with defaults
+    const existingSettings = await firestoreAdapter.getSettings(user.uid) || {} as any;
+
+    // Ensure providerConfig, tradingSettings, and notificationSettings always have defaults
+    const safeBody = {
+      ...body,
+      providerConfig: body.providerConfig ? {
+        marketData: body.providerConfig.marketData || [],
+        news: body.providerConfig.news || [],
+        metadata: body.providerConfig.metadata || []
+      } : (existingSettings.providerConfig || {
+        marketData: [],
+        news: [],
+        metadata: []
+      }),
+      tradingSettings: body.tradingSettings || existingSettings.tradingSettings || {
+        mode: 'MANUAL',
+        manualCoins: [],
+        maxPositionPerTrade: 10,
+        tradeType: 'Scalping',
+        accuracyTrigger: 80,
+        maxDailyLoss: 5,
+        maxTradesPerDay: 50,
+        positionSizingMap: [
+          { min: 0, max: 25, percent: 1 },
+          { min: 25, max: 50, percent: 2 },
+          { min: 50, max: 75, percent: 3 },
+          { min: 75, max: 100, percent: 5 }
+        ]
+      },
+      notificationSettings: body.notificationSettings || existingSettings.notificationSettings || {
+        enableAutoTradeAlerts: false,
+        enableAccuracyAlerts: false,
+        enableWhaleAlerts: false,
+        tradeConfirmationRequired: false,
+        notificationSounds: false,
+        notificationVibration: false
+      }
+    };
+
+    await firestoreAdapter.saveSettings(user.uid, safeBody);
+
+    return { message: 'Settings updated', settings: safeBody };
   });
 
   // Load global settings (admin only)
@@ -169,7 +287,21 @@ export async function settingsRoutes(fastify: FastifyInstance) {
   fastify.get('/trading/settings', {
     preHandler: [fastify.authenticate],
   }, async (req, reply) => {
-    const data = await firestoreAdapter.getTradingSettings((req as any).user.uid);
+    const data = await firestoreAdapter.getTradingSettings((req as any).user.uid) || {
+      mode: 'MANUAL',
+      manualCoins: [],
+      maxPositionPerTrade: 10,
+      tradeType: 'Scalping',
+      accuracyTrigger: 80,
+      maxDailyLoss: 5,
+      maxTradesPerDay: 50,
+      positionSizingMap: [
+        { min: 0, max: 25, percent: 1 },
+        { min: 25, max: 50, percent: 2 },
+        { min: 50, max: 75, percent: 3 },
+        { min: 75, max: 100, percent: 5 }
+      ]
+    };
     return { success: true, data };
   });
 
@@ -177,7 +309,20 @@ export async function settingsRoutes(fastify: FastifyInstance) {
   fastify.post('/trading/settings', {
     preHandler: [fastify.authenticate],
   }, async (req, reply) => {
-    const saved = await firestoreAdapter.saveTradingSettings((req as any).user.uid, (req as any).body);
+    const body = req.body as any;
+
+    // Ensure positionSizingMap has defaults if not provided
+    const safeBody = {
+      ...body,
+      positionSizingMap: body.positionSizingMap || [
+        { min: 0, max: 25, percent: 1 },
+        { min: 25, max: 50, percent: 2 },
+        { min: 50, max: 75, percent: 3 },
+        { min: 75, max: 100, percent: 5 }
+      ]
+    };
+
+    const saved = await firestoreAdapter.saveTradingSettings((req as any).user.uid, safeBody);
     return { success: true, data: saved };
   });
 

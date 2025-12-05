@@ -1034,7 +1034,11 @@ export default function Settings() {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [integrationsLoaded, setIntegrationsLoaded] = useState(false);
   const [submittedProviders, setSubmittedProviders] = useState<Set<string>>(new Set());
-  const [providerData, setProviderData] = useState<any>(null);
+  const [providerData, setProviderData] = useState<any>({
+    marketData: { primary: null, backups: [] },
+    news: { primary: null, backups: [] },
+    metadata: { primary: null, backups: [] }
+  });
   const [loadingProviders, setLoadingProviders] = useState(false);
 
   // Trading Settings State
@@ -1232,11 +1236,30 @@ export default function Settings() {
     try {
       const response = await settingsApi.providers.load();
       if (response.data?.providers) {
-        setProviderData(response.data.providers);
+        // Ensure safe structure even if API returns incomplete data
+        const safeProviders = {
+          marketData: response.data.providers.marketData || { primary: null, backups: [] },
+          news: response.data.providers.news || { primary: null, backups: [] },
+          metadata: response.data.providers.metadata || { primary: null, backups: [] }
+        };
+        setProviderData(safeProviders);
+      } else {
+        // Set safe defaults if no provider data
+        setProviderData({
+          marketData: { primary: null, backups: [] },
+          news: { primary: null, backups: [] },
+          metadata: { primary: null, backups: [] }
+        });
       }
     } catch (err: any) {
       console.error('Error loading provider data:', err);
       showToast('Failed to load provider settings', 'error');
+      // Set safe defaults on error
+      setProviderData({
+        marketData: { primary: null, backups: [] },
+        news: { primary: null, backups: [] },
+        metadata: { primary: null, backups: [] }
+      });
     } finally {
       setLoadingProviders(false);
     }
@@ -1249,6 +1272,13 @@ export default function Settings() {
       const response = await settingsApi.load();
       // Settings loaded successfully
       if (response.data) {
+        // Use safe defaults for providerConfig
+        const safeConfig = {
+          marketData: response.data.providerConfig?.marketData ?? [],
+          news: response.data.providerConfig?.news ?? [],
+          metadata: response.data.providerConfig?.metadata ?? []
+        };
+
         setSettings({
           maxPositionPercent: response.data.maxPositionPercent || 10,
           tradeType: response.data.tradeType || 'scalping',
@@ -1280,7 +1310,7 @@ export default function Settings() {
           nomicsKey: response.data.nomicsKey || '',
           nomicsEnabled: response.data.nomicsEnabled || false,
           messariKey: response.data.messariKey || '',
-          messariEnabled: response.data.messariEnabled || false,
+          messariEnabled: response.data.messariKey || false,
           cryptorankKey: response.data.cryptorankKey || '',
           cryptorankEnabled: response.data.cryptorankEnabled || false,
           // News Providers
@@ -2406,11 +2436,11 @@ export default function Settings() {
                           <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-500/20 text-green-400 border border-green-500/30">
                             PRIMARY
                           </span>
-                          <span className="text-sm font-medium text-white">{providerData.marketData.primary.providerName}</span>
+                          <span className="text-sm font-medium text-white">{providerData?.marketData?.primary?.providerName}</span>
                         </div>
 
-                        {providerData.marketData.primary.apiKeyRequired ? (
-                          providerData.marketData.primary.apiKeyPresent ? (
+                        {providerData?.marketData?.primary?.apiKeyRequired ? (
+                          providerData?.marketData?.primary?.apiKeyPresent ? (
                             <div className="space-y-3">
                               <div className="flex items-center gap-2 p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
                                 <CheckCircleIcon className="w-4 h-4 text-green-400" />
@@ -2418,8 +2448,8 @@ export default function Settings() {
                               </div>
                               <div className="flex gap-2">
                                 <button
-                                  onClick={() => handleTestProvider(providerData.marketData.primary.providerName)}
-                                  disabled={testingProvider === providerData.marketData.primary.providerName}
+                                  onClick={() => handleTestProvider(providerData?.marketData?.primary?.providerName)}
+                                  disabled={testingProvider === providerData?.marketData?.primary?.providerName}
                                   className="flex-1 px-4 py-2.5 bg-gradient-to-r from-blue-500/20 to-cyan-500/20 text-blue-400 border border-blue-500/30 rounded-xl hover:from-blue-500/30 hover:to-cyan-500/30 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all duration-200 disabled:opacity-50 text-sm font-medium backdrop-blur-sm"
                                 >
                                   {testingProvider === providerData.marketData.primary.providerName ? (

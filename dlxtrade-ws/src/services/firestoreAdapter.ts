@@ -31,7 +31,39 @@ export interface SettingsDocument {
   max_drawdown_pct?: number; // Max drawdown as percentage
   per_trade_risk_pct?: number; // Risk per trade as percentage
   status?: string; // 'active' | 'paused_by_risk' | 'paused_manual'
+  // Provider configuration
+  providerConfig?: {
+    marketData: string[];
+    news: string[];
+    metadata: string[];
+  };
+  // Trading settings
+  tradingSettings?: {
+    mode: 'MANUAL' | 'TOP_100' | 'TOP_10';
+    manualCoins: string[];
+    maxPositionPerTrade: number;
+    tradeType: 'Scalping' | 'Swing' | 'Position';
+    accuracyTrigger: number;
+    maxDailyLoss: number;
+    maxTradesPerDay: number;
+    positionSizingMap: Array<{
+      min: number;
+      max: number;
+      percent: number;
+    }>;
+  };
   // Notification settings
+  notificationSettings?: {
+    enableAutoTradeAlerts: boolean;
+    enableAccuracyAlerts: boolean;
+    enableWhaleAlerts: boolean;
+    tradeConfirmationRequired: boolean;
+    notificationSounds: boolean;
+    notificationVibration: boolean;
+    telegramBotToken?: string;
+    telegramChatId?: string;
+  };
+  // Legacy notification settings (keeping for backward compatibility)
   enableAutoTradeAlerts?: boolean;
   enableAccuracyAlerts?: boolean;
   enableWhaleAlerts?: boolean;
