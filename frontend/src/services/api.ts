@@ -174,6 +174,13 @@ export const integrationsApi = {
   load: () => api.get('/integrations'),
   update: (data: { apiName: string; enabled: boolean; apiKey?: string; secretKey?: string; apiType?: string; passphrase?: string }) =>
     api.post('/integrations/update', data),
+  checkKey: (apiName: string) => api.get(`/integrations/check/${apiName}`),
+  testProvider: (apiName: string, data: { apiKey?: string }) =>
+    api.post('/settings/provider/test', {
+      providerName: apiName,
+      type: 'marketData', // Default, will be determined by backend
+      apiKey: data.apiKey
+    }),
 };
 
 // HFT Engine - routes already include /api prefix from baseURL

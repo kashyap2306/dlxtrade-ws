@@ -24,6 +24,21 @@ import BingXLogo from '../components/ui/BingXLogo';
 import MEXCLogo from '../components/ui/MEXCLogo';
 import WeexLogo from '../components/ui/WeexLogo';
 
+// Reusable input component for consistent styling
+const SettingsInput: React.FC<React.InputHTMLAttributes<HTMLInputElement>> = (props) => (
+  <input
+    className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+    {...props}
+  />
+);
+
+// Reusable card component for consistent styling
+const SettingsCard: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = "" }) => (
+  <div className={`bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 p-4 sm:p-6 shadow-sm ${className}`}>
+    {children}
+  </div>
+);
+
 // Exchange definitions with required fields
 const EXCHANGES = [
   {
@@ -78,94 +93,21 @@ const PROVIDER_CONFIG = {
     title: "Market Data Providers",
     description: "Real-time price, volume, and OHLC data",
     primary: {
-      providerName: "CoinGecko",
-      id: "coingecko",
-      type: "market",
-      apiKeyRequired: false,
-      primary: true,
-      url: "https://api.coingecko.com/api/v3/"
+      name: "CoinGecko",
+      key: "coinGeckoKey",
+      placeholder: "Enter CoinGecko API key"
     },
     backups: [
-      {
-        providerName: "BraveNewCoin",
-        id: "bravenewcoin",
-        type: "market",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://bravenewcoin.p.rapidapi.com/"
-      },
-      {
-        providerName: "CoinAPI",
-        id: "coinapi",
-        type: "market",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://rest.coinapi.io/"
-      },
-      {
-        providerName: "CoinCheckup",
-        id: "coincheckup",
-        type: "market",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://api.coincheckup.com/v1/"
-      },
-      {
-        providerName: "CoinLore",
-        id: "coinlore",
-        type: "market",
-        apiKeyRequired: false,
-        primary: false,
-        url: "https://api.coinlore.net/api/"
-      },
-      {
-        providerName: "CoinMarketCap",
-        id: "coinmarketcap",
-        type: "market",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://pro-api.coinmarketcap.com/v1/"
-      },
-      {
-        providerName: "CoinPaprika",
-        id: "coinpaprika",
-        type: "market",
-        apiKeyRequired: false,
-        primary: false,
-        url: "https://api.coinpaprika.com/v1/"
-      },
-      {
-        providerName: "CoinStats",
-        id: "coinstats",
-        type: "market",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://api.coinstats.app/public/v1/"
-      },
-      {
-        providerName: "Kaiko",
-        id: "kaiko",
-        type: "market",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://us.market-api.kaiko.io/"
-      },
-      {
-        providerName: "LiveCoinWatch",
-        id: "livecoinwatch",
-        type: "market",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://api.livecoinwatch.com/"
-      },
-      {
-        providerName: "Messari",
-        id: "messari",
-        type: "market",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://data.messari.io/api/v1/"
-      }
+      { name: "CoinPaprika", key: "coinPaprikaKey", enabledKey: "coinPaprikaEnabled", type: "free", placeholder: "API Not Required" },
+      { name: "CoinMarketCap", key: "coinMarketCapKey", enabledKey: "coinMarketCapEnabled", type: "api", placeholder: "Enter CoinMarketCap API key" },
+      { name: "CoinLore", key: "coinLoreKey", enabledKey: "coinLoreEnabled", type: "free", placeholder: "API Not Required" },
+      { name: "CoinAPI", key: "coinApiKey", enabledKey: "coinApiEnabled", type: "api", placeholder: "Enter CoinAPI key" },
+      { name: "BraveNewCoin", key: "braveNewCoinKey", enabledKey: "braveNewCoinEnabled", type: "api", placeholder: "Enter BraveNewCoin API key" },
+      { name: "Messari", key: "messariKey", enabledKey: "messariEnabled", type: "api", placeholder: "Enter Messari API key" },
+      { name: "Kaiko", key: "kaikoKey", enabledKey: "kaikoEnabled", type: "api", placeholder: "Enter Kaiko API key" },
+      { name: "LiveCoinWatch", key: "liveCoinWatchKey", enabledKey: "liveCoinWatchEnabled", type: "api", placeholder: "Enter LiveCoinWatch API key" },
+      { name: "CoinStats", key: "coinStatsKey", enabledKey: "coinStatsEnabled", type: "api", placeholder: "Enter CoinStats API key" },
+      { name: "CoinCheckup", key: "coinCheckupKey", enabledKey: "coinCheckupEnabled", type: "free", placeholder: "API Not Required" }
     ]
   },
   news: {
@@ -174,94 +116,21 @@ const PROVIDER_CONFIG = {
     title: "News Providers",
     description: "Sentiment analysis and market news",
     primary: {
-      providerName: "NewsData.io",
-      id: "newsdataio",
-      type: "news",
-      apiKeyRequired: true,
-      primary: true,
-      url: "https://newsdata.io/api/1/"
+      name: "NewsData.io",
+      key: "newsDataKey",
+      placeholder: "Enter NewsData.io API key"
     },
     backups: [
-      {
-        providerName: "BingNews",
-        id: "bingnews",
-        type: "news",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://api.bing.microsoft.com/v7.0/news/search"
-      },
-      {
-        providerName: "ContextualWeb",
-        id: "contextualweb",
-        type: "news",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://contextualweb.io/api/v1/"
-      },
-      {
-        providerName: "CryptoPanic",
-        id: "cryptopanic",
-        type: "news",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://cryptopanic.com/api/v1/"
-      },
-      {
-        providerName: "GNews",
-        id: "gnews",
-        type: "news",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://gnews.io/api/v4/"
-      },
-      {
-        providerName: "MediaStack",
-        id: "mediastack",
-        type: "news",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://api.mediastack.com/v1/"
-      },
-      {
-        providerName: "NewsCatcher",
-        id: "newscatcher",
-        type: "news",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://api.newscatcherapi.com/v3/"
-      },
-      {
-        providerName: "NewsData.io",
-        id: "newsdataio",
-        type: "news",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://newsdata.io/api/1/"
-      },
-      {
-        providerName: "Reddit",
-        id: "reddit",
-        type: "news",
-        apiKeyRequired: false,
-        primary: false,
-        url: "https://www.reddit.com/r/cryptocurrency/"
-      },
-      {
-        providerName: "Webz.io",
-        id: "webzio",
-        type: "news",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://api.webz.io/"
-      },
-      {
-        providerName: "YahooNews",
-        id: "yahoonews",
-        type: "news",
-        apiKeyRequired: false,
-        primary: false,
-        url: "https://news.search.yahoo.com/"
-      }
+      { name: "CryptoPanic", key: "cryptoPanicKey", enabledKey: "cryptoPanicEnabled", type: "api", placeholder: "Enter CryptoPanic API key" },
+      { name: "Reddit", key: "redditKey", enabledKey: "redditEnabled", type: "free", placeholder: "API Not Required" },
+      { name: "Cointelegraph RSS", key: "cointelegraphKey", enabledKey: "cointelegraphEnabled", type: "free", placeholder: "API Not Required" },
+      { name: "AltcoinBuzz RSS", key: "altcoinBuzzKey", enabledKey: "altcoinBuzzEnabled", type: "free", placeholder: "API Not Required" },
+      { name: "GNews", key: "gnewsKey", enabledKey: "gnewsEnabled", type: "api", placeholder: "Enter GNews API key" },
+      { name: "Marketaux", key: "marketauxKey", enabledKey: "marketauxEnabled", type: "api", placeholder: "Enter Marketaux API key" },
+      { name: "Webz.io", key: "webzKey", enabledKey: "webzEnabled", type: "api", placeholder: "Enter Webz.io API key" },
+      { name: "CoinStatsNews", key: "coinStatsNewsKey", enabledKey: "coinStatsNewsEnabled", type: "free", placeholder: "API Not Required" },
+      { name: "NewsCatcher", key: "newsCatcherKey", enabledKey: "newsCatcherEnabled", type: "api", placeholder: "Enter NewsCatcher API key" },
+      { name: "CryptoCompare News", key: "cryptoCompareNewsKey", enabledKey: "cryptoCompareNewsEnabled", type: "api", placeholder: "Enter CryptoCompare News API key" }
     ]
   },
   metadata: {
@@ -270,128 +139,64 @@ const PROVIDER_CONFIG = {
     title: "Metadata Providers",
     description: "Market cap, supply, and asset information",
     primary: {
-      providerName: "CryptoCompare",
-      id: "cryptocompare",
-      type: "metadata",
-      apiKeyRequired: true,
-      primary: true,
-      url: "https://min-api.cryptocompare.com/data/"
+      name: "CryptoCompare",
+      key: "cryptoCompareKey",
+      placeholder: "Enter CryptoCompare API key"
     },
     backups: [
-      {
-        providerName: "CoinCap",
-        id: "coincap",
-        type: "metadata",
-        apiKeyRequired: false,
-        primary: false,
-        url: "https://api.coincap.io/v2/"
-      },
-      {
-        providerName: "CoinGecko",
-        id: "coingecko",
-        type: "metadata",
-        apiKeyRequired: false,
-        primary: false,
-        url: "https://api.coingecko.com/api/v3/"
-      },
-      {
-        providerName: "CoinMarketCap",
-        id: "coinmarketcap",
-        type: "metadata",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://pro-api.coinmarketcap.com/v1/"
-      },
-      {
-        providerName: "CoinPaprika",
-        id: "coinpaprika",
-        type: "metadata",
-        apiKeyRequired: false,
-        primary: false,
-        url: "https://api.coinpaprika.com/v1/"
-      },
-      {
-        providerName: "CoinRanking",
-        id: "coinranking",
-        type: "metadata",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://api.coinranking.com/v2/"
-      },
-      {
-        providerName: "CoinStats",
-        id: "coinstats",
-        type: "metadata",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://api.coinstats.app/public/v1/"
-      },
-      {
-        providerName: "CryptoCompare",
-        id: "cryptocompare",
-        type: "metadata",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://min-api.cryptocompare.com/data/"
-      },
-      {
-        providerName: "LiveCoinWatch",
-        id: "livecoinwatch",
-        type: "metadata",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://api.livecoinwatch.com/"
-      },
-      {
-        providerName: "Messari",
-        id: "messari",
-        type: "metadata",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://data.messari.io/api/v1/"
-      },
-      {
-        providerName: "Nomics",
-        id: "nomics",
-        type: "metadata",
-        apiKeyRequired: true,
-        primary: false,
-        url: "https://api.nomics.com/v1/"
-      }
+      { name: "CoinGecko", key: "coinGeckoKey", enabledKey: "coinGeckoEnabled", type: "free", placeholder: "API Not Required" },
+      { name: "CoinPaprika", key: "coinPaprikaKey", enabledKey: "coinPaprikaEnabled", type: "free", placeholder: "API Not Required" },
+      { name: "CoinMarketCap", key: "coinMarketCapKey", enabledKey: "coinMarketCapEnabled", type: "api", placeholder: "Enter CoinMarketCap API key" },
+      { name: "CoinStats", key: "coinStatsKey", enabledKey: "coinStatsEnabled", type: "api", placeholder: "Enter CoinStats API key" },
+      { name: "CryptoCompare", key: "cryptoCompareKey", enabledKey: "cryptoCompareEnabled", type: "api", placeholder: "Enter CryptoCompare API key" },
+      { name: "LiveCoinWatch", key: "liveCoinWatchKey", enabledKey: "liveCoinWatchEnabled", type: "api", placeholder: "Enter LiveCoinWatch API key" },
+      { name: "Messari", key: "messariKey", enabledKey: "messariEnabled", type: "api", placeholder: "Enter Messari API key" },
+      { name: "CoinLore", key: "coinLoreKey", enabledKey: "coinLoreEnabled", type: "free", placeholder: "API Not Required" },
+      { name: "CoinCheckup", key: "coinCheckupKey", enabledKey: "coinCheckupEnabled", type: "free", placeholder: "API Not Required" },
+      { name: "CoinCap.io", key: "coinCapKey", enabledKey: "coinCapEnabled", type: "free", placeholder: "API Not Required" }
     ]
   }
 };
 
 // API name mapping for provider handling
 const API_NAME_MAP: Record<string, string> = {
-  // Market Data Providers
+  // Primary Providers
   'CoinGecko': 'coingecko',
-  'BraveNewCoin': 'bravenewcoin',
-  'CoinAPI': 'coinapi',
-  'CoinCheckup': 'coincheckup',
-  'CoinLore': 'coinlore',
-  'CoinMarketCap': 'coinmarketcap',
+  'NewsData.io': 'newsdata',
+  'CryptoCompare': 'cryptocompare',
+  // Market Data Backups
   'CoinPaprika': 'coinpaprika',
-  'CoinStats': 'coinstats',
+  'CoinMarketCap': 'coinmarketcap',
+  'CoinLore': 'coinlore',
+  'CoinAPI': 'coinapi',
+  'BraveNewCoin': 'bravenewcoin',
+  'Messari': 'messari',
   'Kaiko': 'kaiko',
   'LiveCoinWatch': 'livecoinwatch',
-  'Messari': 'messari',
-  // News Providers
-  'NewsData.io': 'newsdataio',
-  'BingNews': 'bingnews',
-  'ContextualWeb': 'contextualweb',
+  'CoinStats': 'coinstats',
+  'CoinCheckup': 'coincheckup',
+  // News Backups
   'CryptoPanic': 'cryptopanic',
-  'GNews': 'gnews',
-  'MediaStack': 'mediastack',
-  'NewsCatcher': 'newscatcher',
   'Reddit': 'reddit',
-  'Webz.io': 'webzio',
-  'YahooNews': 'yahoonews',
-  // Metadata Providers
+  'Cointelegraph RSS': 'cointelegraph',
+  'AltcoinBuzz RSS': 'altcoinbuzz',
+  'GNews': 'gnews',
+  'Marketaux': 'marketaux',
+  'Webz.io': 'webz',
+  'CoinStatsNews': 'coinstatsnews',
+  'NewsCatcher': 'newscatcher',
+  'CryptoCompare News': 'cryptocomparenews',
+  // Metadata Backups
+  'CoinGecko': 'coingecko',
+  'CoinPaprika': 'coinpaprika',
+  'CoinMarketCap': 'coinmarketcap',
+  'CoinStats': 'coinstats',
   'CryptoCompare': 'cryptocompare',
-  'CoinCap': 'coincap',
-  'CoinRanking': 'coinranking',
-  'Nomics': 'nomics'
+  'LiveCoinWatch': 'livecoinwatch',
+  'Messari': 'messari',
+  'CoinLore': 'coinlore',
+  'CoinCheckup': 'coincheckup',
+  'CoinCap.io': 'coincap'
 };
 
 // Background Research Wizard Component
@@ -1032,14 +837,7 @@ export default function Settings() {
   const [error, setError] = useState<any>(null);
   const [retryCount, setRetryCount] = useState(0);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-  const [integrationsLoaded, setIntegrationsLoaded] = useState(false);
   const [submittedProviders, setSubmittedProviders] = useState<Set<string>>(new Set());
-  const [providerData, setProviderData] = useState<any>({
-    marketData: { primary: null, backups: [] },
-    news: { primary: null, backups: [] },
-    metadata: { primary: null, backups: [] }
-  });
-  const [loadingProviders, setLoadingProviders] = useState(false);
 
   // Trading Settings State
   const [tradingSettings, setTradingSettings] = useState({
@@ -1074,31 +872,73 @@ export default function Settings() {
     accuracyThreshold: 85,
     maxDailyLoss: 5,
     maxTradesPerDay: 50,
-    // Market Data Providers
-    cryptoCompareKey: '',
-    coinGeckoBackupKey: '',
-    coinGeckoBackupEnabled: false,
-    kucoinBackupKey: '',
-    kucoinBackupEnabled: false,
-    bybitBackupKey: '',
-    bybitBackupEnabled: false,
-    okxBackupKey: '',
-    okxBackupEnabled: false,
-    bitgetBackupKey: '',
-    bitgetBackupEnabled: false,
-    // News Providers
+    // Primary Providers
+    coinGeckoKey: '',
     newsDataKey: '',
+    cryptoCompareKey: '',
+    // Market Data Backup Providers
+    coinPaprikaKey: '',
+    coinPaprikaEnabled: false,
+    coinMarketCapKey: '',
+    coinMarketCapEnabled: false,
+    coinLoreKey: '',
+    coinLoreEnabled: false,
+    coinApiKey: '',
+    coinApiEnabled: false,
+    braveNewCoinKey: '',
+    braveNewCoinEnabled: false,
+    messariKey: '',
+    messariEnabled: false,
+    kaikoKey: '',
+    kaikoEnabled: false,
+    liveCoinWatchKey: '',
+    liveCoinWatchEnabled: false,
+    coinStatsKey: '',
+    coinStatsEnabled: false,
+    coinCheckupKey: '',
+    coinCheckupEnabled: false,
+    // News Backup Providers
     cryptoPanicKey: '',
     cryptoPanicEnabled: false,
     redditKey: '',
     redditEnabled: false,
+    cointelegraphKey: '',
+    cointelegraphEnabled: false,
+    altcoinBuzzKey: '',
+    altcoinBuzzEnabled: false,
     gnewsKey: '',
     gnewsEnabled: false,
-    // Metadata Providers
+    marketauxKey: '',
+    marketauxEnabled: false,
+    webzKey: '',
+    webzEnabled: false,
+    coinStatsNewsKey: '',
+    coinStatsNewsEnabled: false,
+    newsCatcherKey: '',
+    newsCatcherEnabled: false,
+    cryptoCompareNewsKey: '',
+    cryptoCompareNewsEnabled: false,
+    // Metadata Backup Providers
     coinGeckoKey: '',
     coinGeckoEnabled: false,
-    coinpaprikaKey: '',
-    coinpaprikaEnabled: false,
+    coinPaprikaKey: '',
+    coinPaprikaEnabled: false,
+    coinMarketCapKey: '',
+    coinMarketCapEnabled: false,
+    coinStatsKey: '',
+    coinStatsEnabled: false,
+    cryptoCompareKey: '',
+    cryptoCompareEnabled: false,
+    liveCoinWatchKey: '',
+    liveCoinWatchEnabled: false,
+    messariKey: '',
+    messariEnabled: false,
+    coinLoreKey: '',
+    coinLoreEnabled: false,
+    coinCheckupKey: '',
+    coinCheckupEnabled: false,
+    coinCapKey: '',
+    coinCapEnabled: false,
     enableAutoTrade: false,
     exchanges: [],
     showUnmaskedKeys: false,
@@ -1114,13 +954,12 @@ export default function Settings() {
 
     try {
       // Load all settings data in parallel with Promise.allSettled for resilience
-      const [settingsResult, integrationsResult, exchangeResult, tradingSettingsResult, topCoinsResult, providerResult] = await Promise.allSettled([
+      const [settingsResult, integrationsResult, exchangeResult, tradingSettingsResult, topCoinsResult] = await Promise.allSettled([
         loadSettings(),
         loadIntegrations(),
         loadConnectedExchange(),
         loadTradingSettings(),
-        loadTop100Coins(),
-        loadProviderData()
+        loadTop100Coins()
       ]);
 
       // Log any failures but don't fail the whole load
@@ -1136,9 +975,6 @@ export default function Settings() {
       if (topCoinsResult.status === 'rejected') {
         suppressConsoleError(topCoinsResult.reason, 'loadTop100Coins');
         // loadTop100Coins already handles its own fallback, so no additional action needed
-      }
-      if (providerResult.status === 'rejected') {
-        suppressConsoleError(providerResult.reason, 'loadProviderData');
       }
 
       setRetryCount(0); // Reset retry count on successful load
@@ -1161,18 +997,20 @@ export default function Settings() {
     }
   }, [user, loadAllData]);
 
-  // Emergency timeout: force loadingAll=false after 3 seconds
+  // Force load after 10 seconds if still loading (fallback for slow APIs)
   useEffect(() => {
-    if (loadingAll) {
+    if (loadingAll && user) {
       const timeout = setTimeout(() => {
-        console.log('[Settings] EMERGENCY: Forcing loadingAll=false after 3 seconds');
+        console.log('[Settings] Forcing load completion after timeout');
         if (isMountedRef.current) {
           setLoadingAll(false);
+          setError({ message: 'Loading timeout - please try refreshing the page' });
         }
-      }, 3000);
+      }, 10000);
+
       return () => clearTimeout(timeout);
     }
-  }, [loadingAll]);
+  }, [loadingAll, user]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -1193,33 +1031,48 @@ export default function Settings() {
       const response = await integrationsApi.load();
       const integrationsData = response.data || {};
       setIntegrations(integrationsData);
-      setIntegrationsLoaded(true);
 
       // Also update settings with API keys from integrations (only masked keys for UI)
       if (settings) {
         setSettings({
           ...settings,
-          // Market Data Providers
-          cryptoCompareKey: '', // Clear any entered keys - they'll be masked from integrations
-          binanceBackupKey: '',
-          kucoinBackupKey: '',
-          bybitBackupKey: '',
-          okxBackupKey: '',
-          bitgetBackupKey: '',
-          // Metadata Providers
-          coinGeckoKey: '',
-          coinmarketcapKey: '',
-          coinpaprikaKey: '',
-          nomicsKey: '',
-          messariKey: '',
-          cryptorankKey: '',
-          // News Providers
+          // Primary Providers
+          coinGeckoKey: '', // Clear any entered keys - they'll be masked from integrations
           newsDataKey: '',
-          gnewsKey: '',
+          cryptoCompareKey: '',
+          // Market Data Backup Providers
+          coinPaprikaKey: '',
+          coinMarketCapKey: '',
+          coinLoreKey: '',
+          coinApiKey: '',
+          braveNewCoinKey: '',
+          messariKey: '',
+          kaikoKey: '',
+          liveCoinWatchKey: '',
+          coinStatsKey: '',
+          coinCheckupKey: '',
+          // News Backup Providers
           cryptoPanicKey: '',
           redditKey: '',
-          twitterKey: '',
-          alternativemeKey: '',
+          cointelegraphKey: '',
+          altcoinBuzzKey: '',
+          gnewsKey: '',
+          marketauxKey: '',
+          webzKey: '',
+          coinStatsNewsKey: '',
+          newsCatcherKey: '',
+          cryptoCompareNewsKey: '',
+          // Metadata Backup Providers
+          coinGeckoKey: '',
+          coinPaprikaKey: '',
+          coinMarketCapKey: '',
+          coinStatsKey: '',
+          cryptoCompareKey: '',
+          liveCoinWatchKey: '',
+          messariKey: '',
+          coinLoreKey: '',
+          coinCheckupKey: '',
+          coinCapKey: '',
         });
       }
     } catch (err) {
@@ -1230,41 +1083,6 @@ export default function Settings() {
     }
   };
 
-  const loadProviderData = async () => {
-    if (!user) return;
-    setLoadingProviders(true);
-    try {
-      const response = await settingsApi.providers.load();
-      if (response.data?.providers) {
-        // Ensure safe structure even if API returns incomplete data
-        const safeProviders = {
-          marketData: response.data.providers.marketData || { primary: null, backups: [] },
-          news: response.data.providers.news || { primary: null, backups: [] },
-          metadata: response.data.providers.metadata || { primary: null, backups: [] }
-        };
-        setProviderData(safeProviders);
-      } else {
-        // Set safe defaults if no provider data
-        setProviderData({
-          marketData: { primary: null, backups: [] },
-          news: { primary: null, backups: [] },
-          metadata: { primary: null, backups: [] }
-        });
-      }
-    } catch (err: any) {
-      console.error('Error loading provider data:', err);
-      showToast('Failed to load provider settings', 'error');
-      // Set safe defaults on error
-      setProviderData({
-        marketData: { primary: null, backups: [] },
-        news: { primary: null, backups: [] },
-        metadata: { primary: null, backups: [] }
-      });
-    } finally {
-      setLoadingProviders(false);
-    }
-  };
-
   const loadSettings = async () => {
     if (!user) return;
     setLoading(true);
@@ -1272,59 +1090,79 @@ export default function Settings() {
       const response = await settingsApi.load();
       // Settings loaded successfully
       if (response.data) {
-        // Use safe defaults for providerConfig
-        const safeConfig = {
-          marketData: response.data.providerConfig?.marketData ?? [],
-          news: response.data.providerConfig?.news ?? [],
-          metadata: response.data.providerConfig?.metadata ?? []
-        };
-
         setSettings({
           maxPositionPercent: response.data.maxPositionPercent || 10,
           tradeType: response.data.tradeType || 'scalping',
           accuracyThreshold: response.data.accuracyThreshold || 85,
           maxDailyLoss: response.data.maxDailyLoss || 5,
           maxTradesPerDay: response.data.maxTradesPerDay || 50,
-          // Market Data Providers
-          cryptoCompareKey: response.data.cryptoCompareKey || '',
-          binanceBackupKey: response.data.binanceBackupKey || '',
-          binanceBackupEnabled: response.data.binanceBackupEnabled || false,
-          kucoinBackupKey: response.data.kucoinBackupKey || '',
-          kucoinBackupEnabled: response.data.kucoinBackupEnabled || false,
-          bybitBackupKey: response.data.bybitBackupKey || '',
-          bybitBackupEnabled: response.data.bybitBackupEnabled || false,
-          okxBackupKey: response.data.okxBackupKey || '',
-          okxBackupEnabled: response.data.okxBackupEnabled || false,
-          bitgetBackupKey: response.data.bitgetBackupKey || '',
-          bitgetBackupEnabled: response.data.bitgetBackupEnabled || false,
-          cryptoCompareFreeMode1Key: response.data.cryptoCompareFreeMode1Key || '',
-          cryptoCompareFreeMode1Enabled: response.data.cryptoCompareFreeMode1Enabled || false,
-          cryptoCompareFreeMode2Key: response.data.cryptoCompareFreeMode2Key || '',
-          cryptoCompareFreeMode2Enabled: response.data.cryptoCompareFreeMode2Enabled || false,
-          // Metadata Providers
+          // Primary Providers
           coinGeckoKey: response.data.coinGeckoKey || '',
-          coinmarketcapKey: response.data.coinmarketcapKey || '',
-          coinmarketcapEnabled: response.data.coinmarketcapEnabled || false,
-          coinpaprikaKey: response.data.coinpaprikaKey || '',
-          coinpaprikaEnabled: response.data.coinpaprikaEnabled || false,
-          nomicsKey: response.data.nomicsKey || '',
-          nomicsEnabled: response.data.nomicsEnabled || false,
-          messariKey: response.data.messariKey || '',
-          messariEnabled: response.data.messariKey || false,
-          cryptorankKey: response.data.cryptorankKey || '',
-          cryptorankEnabled: response.data.cryptorankEnabled || false,
-          // News Providers
           newsDataKey: response.data.newsDataKey || '',
+          cryptoCompareKey: response.data.cryptoCompareKey || '',
+          // Market Data Backup Providers
+          coinPaprikaKey: response.data.coinPaprikaKey || '',
+          coinPaprikaEnabled: response.data.coinPaprikaEnabled || false,
+          coinMarketCapKey: response.data.coinMarketCapKey || '',
+          coinMarketCapEnabled: response.data.coinMarketCapEnabled || false,
+          coinLoreKey: response.data.coinLoreKey || '',
+          coinLoreEnabled: response.data.coinLoreEnabled || false,
+          coinApiKey: response.data.coinApiKey || '',
+          coinApiEnabled: response.data.coinApiEnabled || false,
+          braveNewCoinKey: response.data.braveNewCoinKey || '',
+          braveNewCoinEnabled: response.data.braveNewCoinEnabled || false,
+          messariKey: response.data.messariKey || '',
+          messariEnabled: response.data.messariEnabled || false,
+          kaikoKey: response.data.kaikoKey || '',
+          kaikoEnabled: response.data.kaikoEnabled || false,
+          liveCoinWatchKey: response.data.liveCoinWatchKey || '',
+          liveCoinWatchEnabled: response.data.liveCoinWatchEnabled || false,
+          coinStatsKey: response.data.coinStatsKey || '',
+          coinStatsEnabled: response.data.coinStatsEnabled || false,
+          coinCheckupKey: response.data.coinCheckupKey || '',
+          coinCheckupEnabled: response.data.coinCheckupEnabled || false,
+          // News Backup Providers
           cryptoPanicKey: response.data.cryptoPanicKey || '',
           cryptoPanicEnabled: response.data.cryptoPanicEnabled || false,
-          gnewsKey: response.data.gnewsKey || '',
-          gnewsEnabled: response.data.gnewsEnabled || false,
           redditKey: response.data.redditKey || '',
           redditEnabled: response.data.redditEnabled || false,
-          twitterKey: response.data.twitterKey || '',
-          twitterEnabled: response.data.twitterEnabled || false,
-          alternativemeKey: response.data.alternativemeKey || '',
-          alternativemeEnabled: response.data.alternativemeEnabled || false,
+          cointelegraphKey: response.data.cointelegraphKey || '',
+          cointelegraphEnabled: response.data.cointelegraphEnabled || false,
+          altcoinBuzzKey: response.data.altcoinBuzzKey || '',
+          altcoinBuzzEnabled: response.data.altcoinBuzzEnabled || false,
+          gnewsKey: response.data.gnewsKey || '',
+          gnewsEnabled: response.data.gnewsEnabled || false,
+          marketauxKey: response.data.marketauxKey || '',
+          marketauxEnabled: response.data.marketauxEnabled || false,
+          webzKey: response.data.webzKey || '',
+          webzEnabled: response.data.webzEnabled || false,
+          coinStatsNewsKey: response.data.coinStatsNewsKey || '',
+          coinStatsNewsEnabled: response.data.coinStatsNewsEnabled || false,
+          newsCatcherKey: response.data.newsCatcherKey || '',
+          newsCatcherEnabled: response.data.newsCatcherEnabled || false,
+          cryptoCompareNewsKey: response.data.cryptoCompareNewsKey || '',
+          cryptoCompareNewsEnabled: response.data.cryptoCompareNewsEnabled || false,
+          // Metadata Backup Providers
+          coinGeckoKey: response.data.coinGeckoKey || '',
+          coinGeckoEnabled: response.data.coinGeckoEnabled || false,
+          coinPaprikaKey: response.data.coinPaprikaKey || '',
+          coinPaprikaEnabled: response.data.coinPaprikaEnabled || false,
+          coinMarketCapKey: response.data.coinMarketCapKey || '',
+          coinMarketCapEnabled: response.data.coinMarketCapEnabled || false,
+          coinStatsKey: response.data.coinStatsKey || '',
+          coinStatsEnabled: response.data.coinStatsEnabled || false,
+          cryptoCompareKey: response.data.cryptoCompareKey || '',
+          cryptoCompareEnabled: response.data.cryptoCompareEnabled || false,
+          liveCoinWatchKey: response.data.liveCoinWatchKey || '',
+          liveCoinWatchEnabled: response.data.liveCoinWatchEnabled || false,
+          messariKey: response.data.messariKey || '',
+          messariEnabled: response.data.messariEnabled || false,
+          coinLoreKey: response.data.coinLoreKey || '',
+          coinLoreEnabled: response.data.coinLoreEnabled || false,
+          coinCheckupKey: response.data.coinCheckupKey || '',
+          coinCheckupEnabled: response.data.coinCheckupEnabled || false,
+          coinCapKey: response.data.coinCapKey || '',
+          coinCapEnabled: response.data.coinCapEnabled || false,
           enableAutoTrade: response.data.enableAutoTrade || false,
           exchanges: response.data.exchanges || [],
           showUnmaskedKeys: response.data.showUnmaskedKeys || false,
@@ -1344,46 +1182,73 @@ export default function Settings() {
           accuracyThreshold: 85,
           maxDailyLoss: 5,
           maxTradesPerDay: 50,
-          // Market Data Providers
-          cryptoCompareKey: '',
-          binanceBackupKey: '',
-          binanceBackupEnabled: false,
-          kucoinBackupKey: '',
-          kucoinBackupEnabled: false,
-          bybitBackupKey: '',
-          bybitBackupEnabled: false,
-          okxBackupKey: '',
-          okxBackupEnabled: false,
-          bitgetBackupKey: '',
-          bitgetBackupEnabled: false,
-          cryptoCompareFreeMode1Key: '',
-          cryptoCompareFreeMode1Enabled: false,
-          cryptoCompareFreeMode2Key: '',
-          cryptoCompareFreeMode2Enabled: false,
-          // Metadata Providers
+          // Primary Providers
           coinGeckoKey: '',
-          coinmarketcapKey: '',
-          coinmarketcapEnabled: false,
-          coinpaprikaKey: '',
-          coinpaprikaEnabled: false,
-          nomicsKey: '',
-          nomicsEnabled: false,
+          newsDataKey: '',
+          cryptoCompareKey: '',
+          // Market Data Backup Providers
+          coinPaprikaKey: '',
+          coinPaprikaEnabled: false,
+          coinMarketCapKey: '',
+          coinMarketCapEnabled: false,
+          coinLoreKey: '',
+          coinLoreEnabled: false,
+          coinApiKey: '',
+          coinApiEnabled: false,
+          braveNewCoinKey: '',
+          braveNewCoinEnabled: false,
           messariKey: '',
           messariEnabled: false,
-          cryptorankKey: '',
-          cryptorankEnabled: false,
-          // News Providers
-          newsDataKey: '',
+          kaikoKey: '',
+          kaikoEnabled: false,
+          liveCoinWatchKey: '',
+          liveCoinWatchEnabled: false,
+          coinStatsKey: '',
+          coinStatsEnabled: false,
+          coinCheckupKey: '',
+          coinCheckupEnabled: false,
+          // News Backup Providers
           cryptoPanicKey: '',
           cryptoPanicEnabled: false,
-          gnewsKey: '',
-          gnewsEnabled: false,
           redditKey: '',
           redditEnabled: false,
-          twitterKey: '',
-          twitterEnabled: false,
-          alternativemeKey: '',
-          alternativemeEnabled: false,
+          cointelegraphKey: '',
+          cointelegraphEnabled: false,
+          altcoinBuzzKey: '',
+          altcoinBuzzEnabled: false,
+          gnewsKey: '',
+          gnewsEnabled: false,
+          marketauxKey: '',
+          marketauxEnabled: false,
+          webzKey: '',
+          webzEnabled: false,
+          coinStatsNewsKey: '',
+          coinStatsNewsEnabled: false,
+          newsCatcherKey: '',
+          newsCatcherEnabled: false,
+          cryptoCompareNewsKey: '',
+          cryptoCompareNewsEnabled: false,
+          // Metadata Backup Providers
+          coinGeckoKey: '',
+          coinGeckoEnabled: false,
+          coinPaprikaKey: '',
+          coinPaprikaEnabled: false,
+          coinMarketCapKey: '',
+          coinMarketCapEnabled: false,
+          coinStatsKey: '',
+          coinStatsEnabled: false,
+          cryptoCompareKey: '',
+          cryptoCompareEnabled: false,
+          liveCoinWatchKey: '',
+          liveCoinWatchEnabled: false,
+          messariKey: '',
+          messariEnabled: false,
+          coinLoreKey: '',
+          coinLoreEnabled: false,
+          coinCheckupKey: '',
+          coinCheckupEnabled: false,
+          coinCapKey: '',
+          coinCapEnabled: false,
           enableAutoTrade: false,
           exchanges: [],
           showUnmaskedKeys: false,
@@ -1406,42 +1271,10 @@ export default function Settings() {
         accuracyThreshold: 85,
         maxDailyLoss: 5,
         maxTradesPerDay: 50,
-        // Market Data Providers
+        // Primary Providers
         cryptoCompareKey: '',
-        binanceBackupKey: '',
-        binanceBackupEnabled: false,
-        kucoinBackupKey: '',
-        kucoinBackupEnabled: false,
-        bybitBackupKey: '',
-        bybitBackupEnabled: false,
-        okxBackupKey: '',
-        okxBackupEnabled: false,
-        bitgetBackupKey: '',
-        bitgetBackupEnabled: false,
-        // Metadata Providers
-        coinGeckoKey: '',
-        coinmarketcapKey: '',
-        coinmarketcapEnabled: false,
-        coinpaprikaKey: '',
-        coinpaprikaEnabled: false,
-        nomicsKey: '',
-        nomicsEnabled: false,
-        messariKey: '',
-        messariEnabled: false,
-        cryptorankKey: '',
-        cryptorankEnabled: false,
-        // News Providers
         newsDataKey: '',
-        cryptoPanicKey: '',
-        cryptoPanicEnabled: false,
-        gnewsKey: '',
-        gnewsEnabled: false,
-        redditKey: '',
-        redditEnabled: false,
-        twitterKey: '',
-        twitterEnabled: false,
-        alternativemeKey: '',
-        alternativemeEnabled: false,
+        coinGeckoKey: '',
         enableAutoTrade: false,
         exchanges: [],
         showUnmaskedKeys: false,
@@ -1452,55 +1285,7 @@ export default function Settings() {
   };
 
 
-  const handleSaveProvider = async (providerId: string, providerType: 'marketData' | 'news' | 'metadata', isPrimary: boolean, enabled: boolean, apiKey?: string) => {
-    setSavingProvider(`${providerType}-${providerId}`);
-
-    try {
-      await settingsApi.providers.save({
-        providerId,
-        providerType,
-        isPrimary,
-        enabled,
-        apiKey
-      });
-
-      // Reload provider data
-      await loadProviderData();
-
-      showToast(`${providerId} ${enabled ? 'enabled' : 'disabled'} successfully`, 'success');
-    } catch (err: any) {
-      console.error(`Error saving ${providerId}:`, err);
-      showToast(err.response?.data?.error || `Error saving ${providerId}`, 'error');
-    } finally {
-      setSavingProvider(null);
-    }
-  };
-
-  const handleChangeProviderKey = async (providerId: string, providerType: 'marketData' | 'news' | 'metadata', isPrimary: boolean, newApiKey: string) => {
-    setSavingProvider(`${providerType}-${providerId}`);
-
-    try {
-      await settingsApi.providers.changeKey({
-        providerId,
-        providerType,
-        isPrimary,
-        newApiKey
-      });
-
-      // Reload provider data
-      await loadProviderData();
-
-      showToast(`API key for ${providerId} updated successfully`, 'success');
-    } catch (err: any) {
-      console.error(`Error changing key for ${providerId}:`, err);
-      showToast(err.response?.data?.error || `Error changing API key for ${providerId}`, 'error');
-    } finally {
-      setSavingProvider(null);
-    }
-  };
-
-  // Legacy function for backward compatibility (used by old UI)
-  const handleSaveProviderLegacy = async (providerName: string, requiredFields: string[] = []) => {
+  const handleSaveProvider = async (providerName: string, requiredFields: string[] = []) => {
     if (!settings) return;
 
     // Validate required fields for this provider
@@ -1522,36 +1307,87 @@ export default function Settings() {
 
       // Get the API key from settings (handle field name mapping)
       const fieldNameMap: any = {
-        'cryptocompare': 'cryptoCompareKey',
-        'coingecko': 'coinGeckoBackupKey',
-        'kucoin': 'kucoinBackupKey',
-        'bybit': 'bybitBackupKey',
-        'okx': 'okxBackupKey',
-        'bitget': 'bitgetBackupKey',
+        // Primary Providers
+        'coingecko': 'coinGeckoKey',
         'newsdata': 'newsDataKey',
+        'cryptocompare': 'cryptoCompareKey',
+        // Market Data Backups
+        'coinpaprika': 'coinPaprikaKey',
+        'coinmarketcap': 'coinMarketCapKey',
+        'coinlore': 'coinLoreKey',
+        'coinapi': 'coinApiKey',
+        'bravenewcoin': 'braveNewCoinKey',
+        'messari': 'messariKey',
+        'kaiko': 'kaikoKey',
+        'livecoinwatch': 'liveCoinWatchKey',
+        'coinstats': 'coinStatsKey',
+        'coincheckup': 'coinCheckupKey',
+        // News Backups
         'cryptopanic': 'cryptoPanicKey',
         'reddit': 'redditKey',
-        'gnews': 'gnewsKey'
+        'cointelegraph': 'cointelegraphKey',
+        'altcoinbuzz': 'altcoinBuzzKey',
+        'gnews': 'gnewsKey',
+        'marketaux': 'marketauxKey',
+        'webz': 'webzKey',
+        'coinstatsnews': 'coinStatsNewsKey',
+        'newscatcher': 'newsCatcherKey',
+        'cryptocomparenews': 'cryptoCompareNewsKey',
+        // Metadata Backups
+        'coingecko': 'coinGeckoKey',
+        'coinpaprika': 'coinPaprikaKey',
+        'coinmarketcap': 'coinMarketCapKey',
+        'coinstats': 'coinStatsKey',
+        'cryptocompare': 'cryptoCompareKey',
+        'livecoinwatch': 'liveCoinWatchKey',
+        'messari': 'messariKey',
+        'coinlore': 'coinLoreKey',
+        'coincheckup': 'coinCheckupKey',
+        'coincap': 'coinCapKey'
       };
 
       // Get enabled state for backup providers
       const enabledFieldMap: any = {
-        'coingecko': 'coinGeckoBackupEnabled',
-        'kucoin': 'kucoinBackupEnabled',
-        'bybit': 'bybitBackupEnabled',
-        'okx': 'okxBackupEnabled',
-        'bitget': 'bitgetBackupEnabled',
+        // Market Data Backups
+        'coinpaprika': 'coinPaprikaEnabled',
+        'coinmarketcap': 'coinMarketCapEnabled',
+        'coinlore': 'coinLoreEnabled',
+        'coinapi': 'coinApiEnabled',
+        'bravenewcoin': 'braveNewCoinEnabled',
+        'messari': 'messariEnabled',
+        'kaiko': 'kaikoEnabled',
+        'livecoinwatch': 'liveCoinWatchEnabled',
+        'coinstats': 'coinStatsEnabled',
+        'coincheckup': 'coinCheckupEnabled',
+        // News Backups
         'cryptopanic': 'cryptoPanicEnabled',
         'reddit': 'redditEnabled',
+        'cointelegraph': 'cointelegraphEnabled',
+        'altcoinbuzz': 'altcoinBuzzEnabled',
         'gnews': 'gnewsEnabled',
-        'coinpaprika': 'coinpaprikaEnabled'
+        'marketaux': 'marketauxEnabled',
+        'webz': 'webzEnabled',
+        'coinstatsnews': 'coinStatsNewsEnabled',
+        'newscatcher': 'newsCatcherEnabled',
+        'cryptocomparenews': 'cryptoCompareNewsEnabled',
+        // Metadata Backups
+        'coingecko': 'coinGeckoEnabled',
+        'coinpaprika': 'coinPaprikaEnabled',
+        'coinmarketcap': 'coinMarketCapEnabled',
+        'coinstats': 'coinStatsEnabled',
+        'cryptocompare': 'cryptoCompareEnabled',
+        'livecoinwatch': 'liveCoinWatchEnabled',
+        'messari': 'messariEnabled',
+        'coinlore': 'coinLoreEnabled',
+        'coincheckup': 'coinCheckupEnabled',
+        'coincap': 'coinCapEnabled'
       };
 
       const apiKeyField = fieldNameMap[apiName] || `${apiName}Key`;
       const apiKey = settings[apiKeyField]?.trim();
 
       // For backup providers, check if enabled; for primary providers, always enabled
-      const isPrimary = ['cryptocompare', 'newsdata'].includes(apiName);
+      const isPrimary = ['cryptocompare', 'newsdata', 'coingecko'].includes(apiName);
       const enabledField = enabledFieldMap[apiName];
       const enabled = isPrimary ? true : (enabledField ? settings[enabledField] : !!apiKey);
 
@@ -1606,69 +1442,87 @@ export default function Settings() {
   };
 
   const handleTestProvider = async (providerName: string) => {
+    if (!settings) return;
+
     setTestingProvider(providerName);
     setProviderTestResults(prev => ({ ...prev, [providerName]: { status: null, message: 'Testing...' } }));
 
     try {
-      // Determine provider type from providerName
-      let providerType: 'marketData' | 'news' | 'metadata' = 'marketData';
-
-      // Market data providers
-      const marketDataProviders = [
-        'CoinGecko', 'BraveNewCoin', 'CoinAPI', 'CoinCheckup', 'CoinLore',
-        'CoinMarketCap', 'CoinPaprika', 'CoinStats', 'Kaiko', 'LiveCoinWatch', 'Messari'
-      ];
-
-      // News providers
-      const newsProviders = [
-        'NewsData.io', 'BingNews', 'ContextualWeb', 'CryptoPanic', 'GNews',
-        'MediaStack', 'NewsCatcher', 'Reddit', 'Webz.io', 'YahooNews'
-      ];
-
-      // Metadata providers
-      const metadataProviders = [
-        'CryptoCompare', 'CoinCap', 'CoinRanking', 'Nomics'
-      ];
-
-      if (marketDataProviders.includes(providerName)) {
-        providerType = 'marketData';
-      } else if (newsProviders.includes(providerName)) {
-        providerType = 'news';
-      } else if (metadataProviders.includes(providerName)) {
-        providerType = 'metadata';
+      const apiName = API_NAME_MAP[providerName];
+      if (!apiName) {
+        throw new Error(`Unknown provider: ${providerName}`);
       }
 
-      // Call the test API
-      const response = await settingsApi.providers.test({
-        providerName,
-        type: providerType
-      });
+      // Get the API key from settings
+      const fieldNameMap: any = {
+        // Primary Providers
+        'coingecko': 'coinGeckoKey',
+        'newsdata': 'newsDataKey',
+        'cryptocompare': 'cryptoCompareKey',
+        // Market Data Backups
+        'coinpaprika': 'coinPaprikaKey',
+        'coinmarketcap': 'coinMarketCapKey',
+        'coinlore': 'coinLoreKey',
+        'coinapi': 'coinApiKey',
+        'bravenewcoin': 'braveNewCoinKey',
+        'messari': 'messariKey',
+        'kaiko': 'kaikoKey',
+        'livecoinwatch': 'liveCoinWatchKey',
+        'coinstats': 'coinStatsKey',
+        'coincheckup': 'coinCheckupKey',
+        // News Backups
+        'cryptopanic': 'cryptoPanicKey',
+        'reddit': 'redditKey',
+        'cointelegraph': 'cointelegraphKey',
+        'altcoinbuzz': 'altcoinBuzzKey',
+        'gnews': 'gnewsKey',
+        'marketaux': 'marketauxKey',
+        'webz': 'webzKey',
+        'coinstatsnews': 'coinStatsNewsKey',
+        'newscatcher': 'newsCatcherKey',
+        'cryptocomparenews': 'cryptoCompareNewsKey',
+        // Metadata Backups
+        'coingecko': 'coinGeckoKey',
+        'coinpaprika': 'coinPaprikaKey',
+        'coinmarketcap': 'coinMarketCapKey',
+        'coinstats': 'coinStatsKey',
+        'cryptocompare': 'cryptoCompareKey',
+        'livecoinwatch': 'liveCoinWatchKey',
+        'messari': 'messariKey',
+        'coinlore': 'coinLoreKey',
+        'coincheckup': 'coinCheckupKey',
+        'coincap': 'coinCapKey'
+      };
 
-      if (response.success) {
-        setProviderTestResults(prev => ({
-          ...prev,
-          [providerName]: {
-            status: 'success',
-            message: response.message || `Connection OK in ${response.latencyMs}ms`
-          }
-        }));
-        showToast(`✅ ${providerName} connected successfully in ${response.latencyMs}ms`, 'success');
+      const apiKeyField = fieldNameMap[apiName] || `${apiName}Key`;
+      const apiKey = settings[apiKeyField]?.trim();
+
+      // For backup providers, check if enabled; for primary providers, always test if key exists
+      const isPrimary = ['cryptocompare', 'newsdata', 'coingecko'].includes(apiName);
+      const enabledField = `coinGeckoBackupEnabled` || `${apiName}Enabled`;
+      const enabled = isPrimary ? !!apiKey : (settings[enabledField] || !!apiKey);
+
+      if (!enabled) {
+        setProviderTestResults(prev => ({ ...prev, [providerName]: { status: 'error', message: 'Provider not enabled' } }));
+        return;
+      }
+
+      if (!apiKey && !['coingecko', 'coinpaprika', 'coinlore', 'reddit', 'cointelegraph', 'altcoinbuzz', 'coinstatsnews', 'coinpaprika', 'coingecko', 'coinpaprika', 'coinlore', 'coincheckup', 'coincap'].includes(apiName)) {
+        setProviderTestResults(prev => ({ ...prev, [providerName]: { status: 'error', message: 'API key required' } }));
+        return;
+      }
+
+      // Call test API - this would need to be implemented in the backend
+      const testResponse = await integrationsApi.testProvider(apiName, { apiKey });
+
+      if (testResponse.data?.success) {
+        setProviderTestResults(prev => ({ ...prev, [providerName]: { status: 'success', message: 'Connection successful' } }));
       } else {
-        setProviderTestResults(prev => ({
-          ...prev,
-          [providerName]: {
-            status: 'error',
-            message: response.message || 'Connection failed'
-          }
-        }));
-        showToast(`❌ ${providerName} connection failed: ${response.message}`, 'error');
+        setProviderTestResults(prev => ({ ...prev, [providerName]: { status: 'error', message: testResponse.data?.error || 'Connection failed' } }));
       }
-    } catch (error: any) {
-      setProviderTestResults(prev => ({
-        ...prev,
-        [providerName]: { status: 'error', message: error.message || 'Connection failed' }
-      }));
-      showToast(`❌ ${providerName} test failed: ${error.message}`, 'error');
+    } catch (err: any) {
+      console.error(`Error testing ${providerName}:`, err);
+      setProviderTestResults(prev => ({ ...prev, [providerName]: { status: 'error', message: err.response?.data?.error || 'Connection failed' } }));
     } finally {
       setTestingProvider(null);
     }
@@ -2028,7 +1882,7 @@ export default function Settings() {
 
   return (
     <ErrorBoundary>
-      <div className="flex flex-col min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+      <div className="flex flex-col h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 overflow-hidden">
       {/* Animated background elements - Performance optimized */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none gpu-accelerated">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob"></div>
@@ -2038,36 +1892,23 @@ export default function Settings() {
 
       <Sidebar onLogout={handleLogout} />
 
-      <main className="flex-1 overflow-y-auto pt-16 lg:pt-0 scrollbar-thin scrollbar-thumb-slate-600 scrollbar-track-transparent">
-        <div className="min-h-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 lg:py-12">
+      <main className="flex-1 overflow-y-auto smooth-scroll">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
           {/* Header */}
-          <div className="mb-12">
-            <div className="text-center lg:text-left">
-              <h1 className="text-4xl lg:text-5xl font-bold bg-gradient-to-r from-white via-purple-200 to-cyan-200 bg-clip-text text-transparent mb-4">
-                Settings
-              </h1>
-              <p className="text-lg text-slate-400 max-w-2xl mx-auto lg:mx-0 leading-relaxed">
-                Configure your trading parameters, risk controls, and API integrations for optimal performance
-              </p>
-            </div>
+          <div className="mb-8">
+            <h1 className="text-3xl font-bold text-white mb-2">Settings</h1>
+            <p className="text-gray-400">Configure your trading parameters and API integrations</p>
           </div>
 
-          <div className="space-y-8 lg:space-y-12">
+          <div className="space-y-6 sm:space-y-8">
             {/* Trading Settings Section */}
-            <div className="bg-gradient-to-br from-slate-800/60 to-slate-900/60 backdrop-blur-xl rounded-3xl border border-slate-700/50 p-6 lg:p-8 shadow-2xl shadow-slate-900/20">
-              <div className="mb-6 lg:mb-8">
-                <div className="flex items-center gap-3 mb-3">
-                  <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-cyan-500 rounded-xl flex items-center justify-center shadow-lg">
-                    <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
-                    </svg>
-                  </div>
-                  <h2 className="text-2xl font-bold text-white">Trading Configuration</h2>
-                </div>
-                <p className="text-slate-400 leading-relaxed">Configure your core trading parameters, risk controls, and position sizing strategy</p>
+            <SettingsCard>
+              <div className="mb-4 sm:mb-6">
+                <h2 className="text-xl font-semibold text-white mb-2">Trading Settings</h2>
+                <p className="text-sm text-gray-400">Configure your core trading parameters, risk controls, and position sizing</p>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+              <div className="grid grid-cols-1 gap-4 sm:gap-6 mb-4 sm:mb-6">
                 {/* Research Coin Selection System */}
                 <div className="space-y-4 md:col-span-2">
                   <div>
@@ -2227,12 +2068,11 @@ export default function Settings() {
 
                 <div className="space-y-2">
                   <label className="block text-sm font-medium text-gray-300">Max Position Per Trade (%)</label>
-                  <input
+                  <SettingsInput
                     type="number"
                     step="0.1"
                     min="0.1"
                     max="100"
-                    className="w-full px-4 py-3 bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500/50 transition-all duration-200"
                     value={tradingSettings.maxPositionPerTrade}
                     onChange={(e) => setTradingSettings({ ...tradingSettings, maxPositionPerTrade: parseFloat(e.target.value) || 0 })}
                   />
@@ -2255,12 +2095,11 @@ export default function Settings() {
 
                 <div className="space-y-2">
                   <label className="block text-sm font-medium text-gray-300">Accuracy Trigger (%)</label>
-                  <input
+                  <SettingsInput
                     type="number"
                     min="0"
                     max="100"
                     step="1"
-                    className="w-full px-4 py-3 bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500/50 transition-all duration-200"
                     value={tradingSettings.accuracyTrigger}
                     onChange={(e) => setTradingSettings({ ...tradingSettings, accuracyTrigger: parseInt(e.target.value) || 0 })}
                   />
@@ -2269,12 +2108,11 @@ export default function Settings() {
 
                 <div className="space-y-2">
                   <label className="block text-sm font-medium text-gray-300">Max Daily Loss (%)</label>
-                  <input
+                  <SettingsInput
                     type="number"
                     step="0.1"
                     min="0"
                     max="100"
-                    className="w-full px-4 py-3 bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500/50 transition-all duration-200"
                     value={tradingSettings.maxDailyLoss}
                     onChange={(e) => setTradingSettings({ ...tradingSettings, maxDailyLoss: parseFloat(e.target.value) || 0 })}
                   />
@@ -2283,11 +2121,10 @@ export default function Settings() {
 
                 <div className="space-y-2">
                   <label className="block text-sm font-medium text-gray-300">Max Trades Per Day</label>
-                  <input
+                  <SettingsInput
                     type="number"
                     min="1"
                     max="500"
-                    className="w-full px-4 py-3 bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500/50 transition-all duration-200"
                     value={tradingSettings.maxTradesPerDay}
                     onChange={(e) => setTradingSettings({ ...tradingSettings, maxTradesPerDay: parseInt(e.target.value) || 1 })}
                   />
@@ -2308,7 +2145,7 @@ export default function Settings() {
                           type="number"
                           min="0"
                           max="100"
-                          className="w-16 px-3 py-2 bg-slate-800/60 backdrop-blur-sm border border-slate-700/60 rounded-lg text-xs text-white text-center focus:outline-none focus:ring-1 focus:ring-purple-500/50"
+                          className="w-16 px-2 py-1 bg-slate-700/50 border border-slate-600/50 rounded text-xs text-white text-center"
                           value={range.min}
                           onChange={(e) => updatePositionSizingMap(index, 'min', parseInt(e.target.value) || 0)}
                         />
@@ -2317,7 +2154,7 @@ export default function Settings() {
                           type="number"
                           min="0"
                           max="100"
-                          className="w-16 px-3 py-2 bg-slate-800/60 backdrop-blur-sm border border-slate-700/60 rounded-lg text-xs text-white text-center focus:outline-none focus:ring-1 focus:ring-purple-500/50"
+                          className="w-16 px-2 py-1 bg-slate-700/50 border border-slate-600/50 rounded text-xs text-white text-center"
                           value={range.max}
                           onChange={(e) => updatePositionSizingMap(index, 'max', parseInt(e.target.value) || 0)}
                         />
@@ -2329,7 +2166,7 @@ export default function Settings() {
                         step="0.1"
                         min="0"
                         max="100"
-                        className="w-20 px-3 py-2 bg-slate-800/60 backdrop-blur-sm border border-slate-700/60 rounded-lg text-xs text-white text-center focus:outline-none focus:ring-1 focus:ring-purple-500/50"
+                        className="w-20 px-2 py-1 bg-slate-700/50 border border-slate-600/50 rounded text-xs text-white text-center"
                         value={range.percent}
                         onChange={(e) => updatePositionSizingMap(index, 'percent', parseFloat(e.target.value) || 0)}
                       />
@@ -2340,201 +2177,96 @@ export default function Settings() {
               </div>
 
               {/* Sample Calculator */}
-              <div className="mb-8 p-6 bg-gradient-to-r from-purple-900/20 to-cyan-900/20 backdrop-blur-sm rounded-2xl border border-purple-500/20">
-                <h4 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-                  <svg className="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-                  </svg>
-                  Position Size Calculator
-                </h4>
-                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
-                  <div className="flex items-center gap-3">
-                    <label className="text-sm text-slate-400 font-medium">If accuracy =</label>
+              <div className="mb-6 p-4 bg-slate-800/30 rounded-lg">
+                <h4 className="text-sm font-medium text-white mb-3">Position Size Calculator</h4>
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-gray-400">If accuracy =</label>
                     <input
                       type="number"
                       min="0"
                       max="100"
-                      className="w-20 px-3 py-2 bg-slate-800/60 backdrop-blur-sm border border-slate-700/60 rounded-lg text-sm text-white text-center focus:outline-none focus:ring-1 focus:ring-purple-500/50"
+                      className="w-16 px-2 py-1 bg-slate-700/50 border border-slate-600/50 rounded text-xs text-white text-center"
                       value={sampleAccuracy}
                       onChange={(e) => setSampleAccuracy(parseInt(e.target.value) || 0)}
                     />
-                    <span className="text-sm text-slate-400">%</span>
+                    <span className="text-xs text-gray-400">%</span>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-sm text-slate-400">→ position size =</span>
-                    <span className="text-lg font-bold text-transparent bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text">
-                      {calculatePositionForAccuracy(sampleAccuracy)}%
-                    </span>
-                  </div>
+                  <span className="text-xs text-gray-400">→ position% =</span>
+                  <span className="text-sm font-medium text-purple-300">
+                    {calculatePositionForAccuracy(sampleAccuracy)}%
+                  </span>
                 </div>
               </div>
 
-              <div className="flex flex-col sm:flex-row gap-4 justify-end pt-6 border-t border-slate-700/50">
+              <div className="flex flex-col sm:flex-row gap-4 justify-end">
                 <button
                   onClick={handleResetTradingSettings}
-                  className="px-6 py-3 bg-slate-700/60 backdrop-blur-sm text-slate-300 font-medium rounded-xl hover:bg-slate-600/60 focus:outline-none focus:ring-2 focus:ring-slate-500/50 transition-all duration-200 border border-slate-600/50"
+                  className="px-6 py-2 bg-slate-700/50 text-gray-300 font-medium rounded-lg hover:bg-slate-600/50 focus:outline-none focus:ring-2 focus:ring-slate-500 transition-all"
                 >
                   Reset to Defaults
                 </button>
                 <button
                   onClick={handleSaveTradingSettings}
                   disabled={savingTrading}
-                  className="px-8 py-3 bg-gradient-to-r from-purple-500 to-cyan-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-cyan-600 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-xl"
+                  className="px-6 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {savingTrading ? (
-                    <span className="flex items-center gap-2">
-                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                      Saving...
-                    </span>
-                  ) : tradingSaved ? (
-                    <span className="flex items-center gap-2">
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                      </svg>
-                      Saved
-                    </span>
-                  ) : (
-                    'Save Trading Settings'
-                  )}
+                  {savingTrading ? 'Saving...' : tradingSaved ? 'Saved ✓' : 'Save Trading Settings'}
                 </button>
               </div>
-            </div>
+            </SettingsCard>
 
             {/* API Provider Categories */}
-            <div className="bg-gradient-to-br from-slate-800/60 to-slate-900/60 backdrop-blur-xl rounded-3xl border border-slate-700/50 p-6 lg:p-8 shadow-2xl shadow-slate-900/20">
-              <div className="mb-6 lg:mb-8">
-                <div className="flex items-center gap-3 mb-3">
-                  <div className="w-10 h-10 bg-gradient-to-br from-green-500 to-emerald-500 rounded-xl flex items-center justify-center shadow-lg">
-                    <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    </svg>
-                  </div>
-                  <h2 className="text-2xl font-bold text-white">API Provider Configuration</h2>
-                </div>
-                <p className="text-slate-400 leading-relaxed">Configure primary and backup data providers for comprehensive market analysis</p>
+            <SettingsCard>
+              <div className="mb-6">
+                <h2 className="text-xl font-semibold text-white mb-2">API Provider Configuration</h2>
+                <p className="text-sm text-gray-400">Configure primary and backup data providers for comprehensive market analysis</p>
               </div>
 
-              <div className="grid grid-cols-1 gap-6 lg:gap-8">
-                {/* Market Data Providers */}
-                <div className="bg-gradient-to-r from-slate-800/40 to-slate-900/40 backdrop-blur-sm rounded-2xl border border-slate-700/30 shadow-lg overflow-hidden">
-                  <div className="p-6 lg:p-8">
-                    <div className="flex items-center gap-3 mb-6">
-                      <div className="w-12 h-12 bg-blue-500 rounded-xl flex items-center justify-center shadow-sm">
-                        <span className="text-white font-bold text-xl">📊</span>
+              <div className="grid grid-cols-1 gap-4 sm:gap-6">
+                {/* Dynamic Provider Categories */}
+                {Object.entries(PROVIDER_CONFIG).map(([categoryKey, config]) => (
+                  <div key={categoryKey} className="bg-slate-800/30 rounded-2xl p-4 sm:p-6 border border-slate-700/50 shadow-sm">
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className={`w-12 h-12 ${config.bgColor} rounded-xl flex items-center justify-center shadow-sm`}>
+                        <span className="text-white font-bold text-xl">{config.icon}</span>
                       </div>
                       <div>
-                        <h3 className="text-xl font-semibold text-white">Market Data Providers</h3>
-                        <p className="text-sm text-gray-400">Real-time price, volume, and OHLC data</p>
+                        <h3 className="text-lg font-semibold text-white">{config.title}</h3>
+                        <p className="text-sm text-gray-400">{config.description}</p>
                       </div>
                     </div>
 
                     {/* Primary Provider */}
-                    {providerData?.marketData?.primary && (
-                      <div className="space-y-4 mb-6">
+                    {config.primary && (
+                      <div className="space-y-3">
                         <div className="flex items-center gap-2">
                           <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-500/20 text-green-400 border border-green-500/30">
                             PRIMARY
                           </span>
-                          <span className="text-sm font-medium text-white">{providerData?.marketData?.primary?.providerName}</span>
+                          <span className="text-sm font-medium text-white">{config.primary.name}</span>
+                          <span className={`text-xs px-1.5 py-0.5 rounded-full ${
+                            config.primary.name === 'CoinGecko'
+                              ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+                              : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                          }`}>
+                            {config.primary.name === 'CoinGecko' ? 'API Not Required' : 'API Required'}
+                          </span>
                         </div>
 
-                        {providerData?.marketData?.primary?.apiKeyRequired ? (
-                          providerData?.marketData?.primary?.apiKeyPresent ? (
-                            <div className="space-y-3">
-                              <div className="flex items-center gap-2 p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
-                                <CheckCircleIcon className="w-4 h-4 text-green-400" />
-                                <span className="text-green-400 text-sm font-medium">API key configured</span>
-                              </div>
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={() => handleTestProvider(providerData?.marketData?.primary?.providerName)}
-                                  disabled={testingProvider === providerData?.marketData?.primary?.providerName}
-                                  className="flex-1 px-4 py-2.5 bg-gradient-to-r from-blue-500/20 to-cyan-500/20 text-blue-400 border border-blue-500/30 rounded-xl hover:from-blue-500/30 hover:to-cyan-500/30 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all duration-200 disabled:opacity-50 text-sm font-medium backdrop-blur-sm"
-                                >
-                                  {testingProvider === providerData.marketData.primary.providerName ? (
-                                    <span className="flex items-center justify-center gap-2">
-                                      <div className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin"></div>
-                                      Testing...
-                                    </span>
-                                  ) : (
-                                    'Test Connection'
-                                  )}
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    const newKey = prompt(`Enter new API key for ${providerData.marketData.primary.providerName}:`);
-                                    if (newKey?.trim()) {
-                                      handleChangeProviderKey(providerData.marketData.primary.id, 'marketData', true, newKey.trim());
-                                    }
-                                  }}
-                                  className="px-3 py-2 bg-slate-600/50 text-slate-300 border border-slate-600/50 rounded-lg hover:bg-slate-600/70 focus:outline-none focus:ring-2 focus:ring-slate-500 transition-all text-sm font-medium"
-                                >
-                                  Change Key
-                                </button>
-                              </div>
-                              {providerTestResults[providerData.marketData.primary.providerName] && (
-                                <div className={`flex items-center gap-2 p-2 rounded-lg text-xs ${
-                                  providerTestResults[providerData.marketData.primary.providerName].status === 'success'
-                                    ? 'bg-green-500/10 border border-green-500/20 text-green-400'
-                                    : providerTestResults[providerData.marketData.primary.providerName].status === 'error'
-                                    ? 'bg-red-500/10 border border-red-500/20 text-red-400'
-                                    : 'bg-yellow-500/10 border border-yellow-500/20 text-yellow-400'
-                                }`}>
-                                  {providerTestResults[providerData.marketData.primary.providerName].status === 'success' && <CheckCircleIcon className="w-3 h-3" />}
-                                  {providerTestResults[providerData.marketData.primary.providerName].status === 'error' && <XCircleIcon className="w-3 h-3" />}
-                                  <span>{providerTestResults[providerData.marketData.primary.providerName].message}</span>
-                                </div>
-                              )}
-                            </div>
-                          ) : (
-                            <div className="space-y-3">
-                              <div className="flex gap-2">
-                                <input
-                                  type="password"
-                                  id={`primary-marketData-${providerData.marketData.primary.id}`}
-                                  className="flex-1 px-3 py-2 bg-slate-800/50 border border-slate-600/50 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                                  placeholder={`Enter ${providerData.marketData.primary.providerName} API key`}
-                                  aria-label={`${providerData.marketData.primary.providerName} API key`}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                      const input = e.target as HTMLInputElement;
-                                      if (input.value.trim()) {
-                                        handleSaveProvider(providerData.marketData.primary.id, 'marketData', true, providerData.marketData.primary.enabled ?? true, input.value.trim());
-                                        input.value = '';
-                                      }
-                                    }
-                                  }}
-                                />
-                                <button
-                                  onClick={() => {
-                                    const input = document.getElementById(`primary-marketData-${providerData.marketData.primary.id}`) as HTMLInputElement;
-                                    if (input?.value.trim()) {
-                                      handleSaveProvider(providerData.marketData.primary.id, 'marketData', true, providerData.marketData.primary.enabled ?? true, input.value.trim());
-                                      input.value = '';
-                                    }
-                                  }}
-                                  disabled={savingProvider === `marketData-${providerData.marketData.primary.id}`}
-                                  className="px-4 py-2.5 bg-gradient-to-r from-purple-500 to-cyan-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-cyan-600 focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed text-sm shadow-lg hover:shadow-xl"
-                                >
-                                  {savingProvider === `marketData-${providerData.marketData.primary.id}` ? 'Saving...' : 'Save'}
-                                </button>
-                              </div>
-                            </div>
-                          )
-                        ) : (
-                          <div className="space-y-3">
+                        {submittedProviders.has(API_NAME_MAP[config.primary.name]?.toLowerCase()) ? (
+                          <div className="space-y-2">
                             <div className="flex items-center gap-2 p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
                               <CheckCircleIcon className="w-4 h-4 text-green-400" />
-                              <span className="text-green-400 text-sm font-medium">No API key required</span>
+                              <span className="text-green-400 text-sm font-medium">API key configured</span>
                             </div>
                             <div className="flex gap-2">
                               <button
-                                onClick={() => handleTestProvider(providerData.marketData.primary.providerName)}
-                                disabled={testingProvider === providerData.marketData.primary.providerName}
-                                className="flex-1 px-4 py-2.5 bg-gradient-to-r from-blue-500/20 to-cyan-500/20 text-blue-400 border border-blue-500/30 rounded-xl hover:from-blue-500/30 hover:to-cyan-500/30 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all duration-200 disabled:opacity-50 text-sm font-medium backdrop-blur-sm"
+                                onClick={() => handleTestProvider(config.primary.name)}
+                                disabled={testingProvider === config.primary.name}
+                                className="flex-1 px-3 py-2 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded-lg hover:bg-blue-500/30 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all disabled:opacity-50 text-sm font-medium"
                               >
-                                {testingProvider === providerData.marketData.primary.providerName ? (
+                                {testingProvider === config.primary.name ? (
                                   <span className="flex items-center justify-center gap-2">
                                     <div className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin"></div>
                                     Testing...
@@ -2543,714 +2275,184 @@ export default function Settings() {
                                   'Test Connection'
                                 )}
                               </button>
+                              <button
+                                onClick={() => {
+                                  setSubmittedProviders(prev => {
+                                    const newSet = new Set(prev);
+                                    newSet.delete(API_NAME_MAP[config.primary.name]?.toLowerCase());
+                                    return newSet;
+                                  });
+                                }}
+                                className="px-3 py-2 bg-slate-600/50 text-slate-300 border border-slate-600/50 rounded-lg hover:bg-slate-600/70 focus:outline-none focus:ring-2 focus:ring-slate-500 transition-all text-sm font-medium"
+                              >
+                                Change
+                              </button>
                             </div>
-                            {providerTestResults[providerData.marketData.primary.providerName] && (
+                            {providerTestResults[config.primary.name] && (
                               <div className={`flex items-center gap-2 p-2 rounded-lg text-xs ${
-                                providerTestResults[providerData.marketData.primary.providerName].status === 'success'
+                                providerTestResults[config.primary.name].status === 'success'
                                   ? 'bg-green-500/10 border border-green-500/20 text-green-400'
-                                  : providerTestResults[providerData.marketData.primary.providerName].status === 'error'
+                                  : providerTestResults[config.primary.name].status === 'error'
                                   ? 'bg-red-500/10 border border-red-500/20 text-red-400'
                                   : 'bg-yellow-500/10 border border-yellow-500/20 text-yellow-400'
                               }`}>
-                                {providerTestResults[providerData.marketData.primary.providerName].status === 'success' && <CheckCircleIcon className="w-3 h-3" />}
-                                {providerTestResults[providerData.marketData.primary.providerName].status === 'error' && <XCircleIcon className="w-3 h-3" />}
-                                <span>{providerTestResults[providerData.marketData.primary.providerName].message}</span>
+                                {providerTestResults[config.primary.name].status === 'success' && <CheckCircleIcon className="w-3 h-3" />}
+                                {providerTestResults[config.primary.name].status === 'error' && <XCircleIcon className="w-3 h-3" />}
+                                <span>{providerTestResults[config.primary.name].message}</span>
                               </div>
                             )}
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            <div className="flex gap-2">
+                              <input
+                                type="password"
+                                id={`primary-${config.primary.key}`}
+                                className="flex-1 px-3 py-2 bg-slate-800/50 border border-slate-600/50 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                                value={settings[config.primary.key] || ''}
+                                onChange={(e) => setSettings({ ...settings, [config.primary.key]: e.target.value })}
+                                placeholder={config.primary.placeholder}
+                                aria-label={`${config.primary.name} API key`}
+                              />
+                              <button
+                                onClick={() => handleSaveProvider(config.primary.name)}
+                                disabled={savingProvider === config.primary.name}
+                                className="px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                              >
+                                {savingProvider === config.primary.name ? 'Saving...' : 'Save'}
+                              </button>
+                            </div>
                           </div>
                         )}
                       </div>
                     )}
 
                     {/* Backup Providers */}
-                    <div className="space-y-4">
-                      <div className="flex items-center justify-between">
-                        <h4 className="text-sm font-medium text-gray-300">Backup Providers</h4>
-                        <span className="text-xs text-gray-400 bg-slate-700/50 px-2 py-1 rounded-full">
-                          {providerData.marketData.backups.length} available
-                        </span>
-                      </div>
-
+                    {config.backups && config.backups.length > 0 && (
                       <div className="space-y-3">
-                        {providerData.marketData.backups.map((backup: any) => (
-                          <div key={backup.id} className="bg-slate-800/40 rounded-lg p-4 border border-slate-700/50">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-3">
-                                <label className="relative inline-flex items-center cursor-pointer">
-                                  <input
-                                    type="checkbox"
-                                    id={`backup-marketData-${backup.id}`}
-                                    className="sr-only peer"
-                                    checked={backup.enabled || false}
-                                    onChange={(e) => handleSaveProvider(backup.id, 'marketData', false, e.target.checked)}
-                                    aria-label={`Enable ${backup.providerName} backup provider`}
-                                  />
-                                  <div className="w-10 h-5 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-500"></div>
-                                </label>
-                                <div className="flex flex-col">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-sm font-medium text-white">{backup.providerName}</span>
+                        <div className="flex items-center justify-between">
+                          <h4 className="text-sm font-medium text-gray-300">Backup Providers</h4>
+                          <span className="text-xs text-gray-400 bg-slate-700/50 px-2 py-1 rounded-full">
+                            {config.backups.length} available
+                          </span>
+                        </div>
+
+                        <div className="space-y-2">
+                          {config.backups.map((backup) => (
+                            <div key={backup.key} className="bg-slate-800/40 rounded-lg p-3 border border-slate-700/50">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                  <label className="relative inline-flex items-center cursor-pointer">
+                                    <input
+                                      type="checkbox"
+                                      id={`backup-${backup.key}`}
+                                      className="sr-only peer"
+                                      checked={settings[backup.enabledKey] || false}
+                                      onChange={(e) => setSettings({ ...settings, [backup.enabledKey]: e.target.checked })}
+                                      aria-label={`Enable ${backup.name} backup provider`}
+                                    />
+                                    <div className="w-10 h-5 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-500"></div>
+                                  </label>
+                                  <div className="flex flex-col">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-sm font-medium text-white">{backup.name}</span>
                                     <span className={`text-xs px-1.5 py-0.5 rounded-full ${
-                                      !backup.apiKeyRequired
+                                      backup.type === 'free'
                                         ? 'bg-green-500/20 text-green-400 border border-green-500/30'
                                         : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
                                     }`}>
-                                      {!backup.apiKeyRequired ? 'FREE' : 'API KEY'}
+                                      {backup.type === 'free' ? 'API Not Required' : 'API Required'}
                                     </span>
+                                    </div>
                                   </div>
                                 </div>
+
+                                {settings[backup.enabledKey] && (
+                                  <div className="flex items-center gap-2">
+                                    {backup.type === 'free' ? (
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-xs text-green-400">Ready</span>
+                                        <button
+                                          onClick={() => handleTestProvider(backup.name)}
+                                          disabled={testingProvider === backup.name}
+                                          className="px-2 py-1 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded text-xs hover:bg-blue-500/30 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-all"
+                                        >
+                                          {testingProvider === backup.name ? '...' : 'Test'}
+                                        </button>
+                                      </div>
+                                    ) : submittedProviders.has(API_NAME_MAP[backup.name]?.toLowerCase()) ? (
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-green-400 text-xs">✓ Configured</span>
+                                        <button
+                                          onClick={() => handleTestProvider(backup.name)}
+                                          disabled={testingProvider === backup.name}
+                                          className="px-2 py-1 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded text-xs hover:bg-blue-500/30 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-all"
+                                        >
+                                          {testingProvider === backup.name ? '...' : 'Test'}
+                                        </button>
+                                        <button
+                                          onClick={() => {
+                                            setSubmittedProviders(prev => {
+                                              const newSet = new Set(prev);
+                                              newSet.delete(API_NAME_MAP[backup.name]?.toLowerCase());
+                                              return newSet;
+                                            });
+                                          }}
+                                          className="px-2 py-1 bg-slate-600/50 text-slate-300 border border-slate-600/50 rounded text-xs hover:bg-slate-600/70 transition-all"
+                                        >
+                                          Change
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <div className="flex gap-2">
+                                        <input
+                                          type="password"
+                                          id={`backup-input-${backup.key}`}
+                                          className="w-24 px-2 py-1 bg-slate-700/50 border border-slate-600/50 rounded text-xs text-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                                          placeholder="API Key"
+                                          value={settings[backup.key] || ''}
+                                          onChange={(e) => setSettings({ ...settings, [backup.key]: e.target.value })}
+                                          aria-label={`${backup.name} API key`}
+                                        />
+                                        <button
+                                          onClick={() => handleSaveProvider(backup.name)}
+                                          disabled={savingProvider === backup.name}
+                                          className="px-2 py-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded text-xs hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50"
+                                        >
+                                          {savingProvider === backup.name ? '...' : 'Save'}
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
                               </div>
 
-                              {backup.enabled && (
-                                <div className="flex items-center gap-2 mt-3">
-                                  {!backup.apiKeyRequired ? (
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-xs text-green-400">Ready</span>
-                                      <button
-                                        onClick={() => handleTestProvider(backup.providerName)}
-                                        disabled={testingProvider === backup.providerName}
-                                        className="px-2 py-1 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded text-xs hover:bg-blue-500/30 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-all"
-                                      >
-                                        {testingProvider === backup.providerName ? '...' : 'Test'}
-                                      </button>
-                                    </div>
-                                  ) : backup.apiKeyPresent ? (
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-green-400 text-xs">✓ Configured</span>
-                                      <button
-                                        onClick={() => handleTestProvider(backup.providerName)}
-                                        disabled={testingProvider === backup.providerName}
-                                        className="px-2 py-1 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded text-xs hover:bg-blue-500/30 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-all"
-                                      >
-                                        {testingProvider === backup.providerName ? '...' : 'Test'}
-                                      </button>
-                                      <button
-                                        onClick={() => {
-                                          const newKey = prompt(`Enter new API key for ${backup.providerName}:`);
-                                          if (newKey?.trim()) {
-                                            handleChangeProviderKey(backup.id, 'marketData', false, newKey.trim());
-                                          }
-                                        }}
-                                        className="px-2 py-1 bg-slate-600/50 text-slate-300 border border-slate-600/50 rounded text-xs hover:bg-slate-600/70 transition-all"
-                                      >
-                                        Change Key
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    <div className="flex gap-2">
-                                      <input
-                                        type="password"
-                                        id={`backup-input-marketData-${backup.id}`}
-                                        className="w-24 px-2 py-1 bg-slate-700/50 border border-slate-600/50 rounded text-xs text-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-purple-500"
-                                        placeholder="API Key"
-                                        aria-label={`${backup.providerName} API key`}
-                                        onKeyDown={(e) => {
-                                          if (e.key === 'Enter') {
-                                            const input = e.target as HTMLInputElement;
-                                            if (input.value.trim()) {
-                                              handleSaveProvider(backup.id, 'marketData', false, backup.enabled ?? false, input.value.trim());
-                                              input.value = '';
-                                            }
-                                          }
-                                        }}
-                                      />
-                                      <button
-                                        onClick={() => {
-                                          const input = document.getElementById(`backup-input-marketData-${backup.id}`) as HTMLInputElement;
-                                          if (input?.value.trim()) {
-                                            handleSaveProvider(backup.id, 'marketData', false, backup.enabled ?? false, input.value.trim());
-                                            input.value = '';
-                                          }
-                                        }}
-                                        disabled={savingProvider === `marketData-${backup.id}`}
-                                        className="px-2 py-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded text-xs hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50"
-                                      >
-                                        {savingProvider === `marketData-${backup.id}` ? '...' : 'Save'}
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-
-                            {backup.enabled && providerTestResults[backup.providerName] && (
-                              <div className={`flex items-center gap-2 mt-2 p-2 rounded-lg text-xs ${
-                                providerTestResults[backup.providerName].status === 'success'
-                                  ? 'bg-green-500/10 border border-green-500/20 text-green-400'
-                                  : providerTestResults[backup.providerName].status === 'error'
-                                  ? 'bg-red-500/10 border border-red-500/20 text-red-400'
-                                  : 'bg-yellow-500/10 border border-yellow-500/20 text-yellow-400'
-                              }`}>
-                                {providerTestResults[backup.providerName].status === 'success' && <CheckCircleIcon className="w-3 h-3" />}
-                                {providerTestResults[backup.providerName].status === 'error' && <XCircleIcon className="w-3 h-3" />}
-                                <span>{providerTestResults[backup.providerName].message}</span>
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* News Providers */}
-                <div className="bg-gradient-to-r from-slate-800/40 to-slate-900/40 backdrop-blur-sm rounded-2xl border border-slate-700/30 shadow-lg overflow-hidden">
-                  <div className="p-6 lg:p-8">
-                    <div className="flex items-center gap-3 mb-6">
-                      <div className="w-12 h-12 bg-green-500 rounded-xl flex items-center justify-center shadow-sm">
-                        <span className="text-white font-bold text-xl">📰</span>
-                      </div>
-                      <div>
-                        <h3 className="text-xl font-semibold text-white">News Providers</h3>
-                        <p className="text-sm text-gray-400">Sentiment analysis and market news</p>
-                      </div>
-                    </div>
-
-                    {/* Primary Provider */}
-                    {providerData?.news?.primary && (
-                      <div className="space-y-4 mb-6">
-                        <div className="flex items-center gap-2">
-                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-500/20 text-green-400 border border-green-500/30">
-                            PRIMARY
-                          </span>
-                          <span className="text-sm font-medium text-white">{providerData.news.primary.providerName}</span>
-                        </div>
-
-                        {providerData.news.primary.apiKeyRequired ? (
-                          providerData.news.primary.apiKeyPresent ? (
-                            <div className="space-y-3">
-                              <div className="flex items-center gap-2 p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
-                                <CheckCircleIcon className="w-4 h-4 text-green-400" />
-                                <span className="text-green-400 text-sm font-medium">API key configured</span>
-                              </div>
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={() => handleTestProvider(providerData.news.primary.providerName)}
-                                  disabled={testingProvider === providerData.news.primary.providerName}
-                                  className="flex-1 px-4 py-2.5 bg-gradient-to-r from-blue-500/20 to-cyan-500/20 text-blue-400 border border-blue-500/30 rounded-xl hover:from-blue-500/30 hover:to-cyan-500/30 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all duration-200 disabled:opacity-50 text-sm font-medium backdrop-blur-sm"
-                                >
-                                  {testingProvider === providerData.news.primary.providerName ? (
-                                    <span className="flex items-center justify-center gap-2">
-                                      <div className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin"></div>
-                                      Testing...
-                                    </span>
-                                  ) : (
-                                    'Test Connection'
-                                  )}
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    const newKey = prompt(`Enter new API key for ${providerData.news.primary.providerName}:`);
-                                    if (newKey?.trim()) {
-                                      handleChangeProviderKey(providerData.news.primary.id, 'news', true, newKey.trim());
-                                    }
-                                  }}
-                                  className="px-3 py-2 bg-slate-600/50 text-slate-300 border border-slate-600/50 rounded-lg hover:bg-slate-600/70 focus:outline-none focus:ring-2 focus:ring-slate-500 transition-all text-sm font-medium"
-                                >
-                                  Change Key
-                                </button>
-                              </div>
-                              {providerTestResults[providerData.news.primary.providerName] && (
-                                <div className={`flex items-center gap-2 p-2 rounded-lg text-xs ${
-                                  providerTestResults[providerData.news.primary.providerName].status === 'success'
+                              {settings[backup.enabledKey] && providerTestResults[backup.name] && (
+                                <div className={`flex items-center gap-2 mt-2 p-2 rounded-lg text-xs ${
+                                  providerTestResults[backup.name].status === 'success'
                                     ? 'bg-green-500/10 border border-green-500/20 text-green-400'
-                                    : providerTestResults[providerData.news.primary.providerName].status === 'error'
+                                    : providerTestResults[backup.name].status === 'error'
                                     ? 'bg-red-500/10 border border-red-500/20 text-red-400'
                                     : 'bg-yellow-500/10 border border-yellow-500/20 text-yellow-400'
                                 }`}>
-                                  {providerTestResults[providerData.news.primary.providerName].status === 'success' && <CheckCircleIcon className="w-3 h-3" />}
-                                  {providerTestResults[providerData.news.primary.providerName].status === 'error' && <XCircleIcon className="w-3 h-3" />}
-                                  <span>{providerTestResults[providerData.news.primary.providerName].message}</span>
+                                  {providerTestResults[backup.name].status === 'success' && <CheckCircleIcon className="w-3 h-3" />}
+                                  {providerTestResults[backup.name].status === 'error' && <XCircleIcon className="w-3 h-3" />}
+                                  <span>{providerTestResults[backup.name].message}</span>
                                 </div>
                               )}
                             </div>
-                          ) : (
-                            <div className="space-y-3">
-                              <div className="flex gap-2">
-                                <input
-                                  type="password"
-                                  id={`primary-news-${providerData.news.primary.id}`}
-                                  className="flex-1 px-3 py-2 bg-slate-800/50 border border-slate-600/50 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                                  placeholder={`Enter ${providerData.news.primary.providerName} API key`}
-                                  aria-label={`${providerData.news.primary.providerName} API key`}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                      const input = e.target as HTMLInputElement;
-                                      if (input.value.trim()) {
-                                        handleSaveProvider(providerData.news.primary.id, 'news', true, providerData.news.primary.enabled ?? true, input.value.trim());
-                                        input.value = '';
-                                      }
-                                    }
-                                  }}
-                                />
-                                <button
-                                  onClick={() => {
-                                    const input = document.getElementById(`primary-news-${providerData.news.primary.id}`) as HTMLInputElement;
-                                    if (input?.value.trim()) {
-                                      handleSaveProvider(providerData.news.primary.id, 'news', true, providerData.news.primary.enabled ?? true, input.value.trim());
-                                      input.value = '';
-                                    }
-                                  }}
-                                  disabled={savingProvider === `news-${providerData.news.primary.id}`}
-                                  className="px-4 py-2.5 bg-gradient-to-r from-purple-500 to-cyan-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-cyan-600 focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed text-sm shadow-lg hover:shadow-xl"
-                                >
-                                  {savingProvider === `news-${providerData.news.primary.id}` ? 'Saving...' : 'Save'}
-                                </button>
-                              </div>
-                            </div>
-                          )
-                        ) : (
-                          <div className="space-y-3">
-                            <div className="flex items-center gap-2 p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
-                              <CheckCircleIcon className="w-4 h-4 text-green-400" />
-                              <span className="text-green-400 text-sm font-medium">No API key required</span>
-                            </div>
-                            <div className="flex gap-2">
-                              <button
-                                onClick={() => handleTestProvider(providerData.news.primary.providerName)}
-                                disabled={testingProvider === providerData.news.primary.providerName}
-                                className="flex-1 px-4 py-2.5 bg-gradient-to-r from-blue-500/20 to-cyan-500/20 text-blue-400 border border-blue-500/30 rounded-xl hover:from-blue-500/30 hover:to-cyan-500/30 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all duration-200 disabled:opacity-50 text-sm font-medium backdrop-blur-sm"
-                              >
-                                {testingProvider === providerData.news.primary.providerName ? (
-                                  <span className="flex items-center justify-center gap-2">
-                                    <div className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin"></div>
-                                    Testing...
-                                  </span>
-                                ) : (
-                                  'Test Connection'
-                                )}
-                              </button>
-                            </div>
-                            {providerTestResults[providerData.news.primary.providerName] && (
-                              <div className={`flex items-center gap-2 p-2 rounded-lg text-xs ${
-                                providerTestResults[providerData.news.primary.providerName].status === 'success'
-                                  ? 'bg-green-500/10 border border-green-500/20 text-green-400'
-                                  : providerTestResults[providerData.news.primary.providerName].status === 'error'
-                                  ? 'bg-red-500/10 border border-red-500/20 text-red-400'
-                                  : 'bg-yellow-500/10 border border-yellow-500/20 text-yellow-400'
-                              }`}>
-                                {providerTestResults[providerData.news.primary.providerName].status === 'success' && <CheckCircleIcon className="w-3 h-3" />}
-                                {providerTestResults[providerData.news.primary.providerName].status === 'error' && <XCircleIcon className="w-3 h-3" />}
-                                <span>{providerTestResults[providerData.news.primary.providerName].message}</span>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Backup Providers */}
-                    <div className="space-y-4">
-                      <div className="flex items-center justify-between">
-                        <h4 className="text-sm font-medium text-gray-300">Backup Providers</h4>
-                        <span className="text-xs text-gray-400 bg-slate-700/50 px-2 py-1 rounded-full">
-                          {providerData.news.backups.length} available
-                        </span>
-                      </div>
-
-                      <div className="space-y-3">
-                        {providerData.news.backups.map((backup: any) => (
-                          <div key={backup.id} className="bg-slate-800/40 rounded-lg p-4 border border-slate-700/50">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-3">
-                                <label className="relative inline-flex items-center cursor-pointer">
-                                  <input
-                                    type="checkbox"
-                                    id={`backup-news-${backup.id}`}
-                                    className="sr-only peer"
-                                    checked={backup.enabled || false}
-                                    onChange={(e) => handleSaveProvider(backup.id, 'news', false, e.target.checked)}
-                                    aria-label={`Enable ${backup.providerName} backup provider`}
-                                  />
-                                  <div className="w-10 h-5 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-500"></div>
-                                </label>
-                                <div className="flex flex-col">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-sm font-medium text-white">{backup.providerName}</span>
-                                    <span className={`text-xs px-1.5 py-0.5 rounded-full ${
-                                      !backup.apiKeyRequired
-                                        ? 'bg-green-500/20 text-green-400 border border-green-500/30'
-                                        : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                                    }`}>
-                                      {!backup.apiKeyRequired ? 'FREE' : 'API KEY'}
-                                    </span>
-                                  </div>
-                                </div>
-                              </div>
-
-                              {backup.enabled && (
-                                <div className="flex items-center gap-2 mt-3">
-                                  {!backup.apiKeyRequired ? (
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-xs text-green-400">Ready</span>
-                                      <button
-                                        onClick={() => handleTestProvider(backup.providerName)}
-                                        disabled={testingProvider === backup.providerName}
-                                        className="px-2 py-1 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded text-xs hover:bg-blue-500/30 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-all"
-                                      >
-                                        {testingProvider === backup.providerName ? '...' : 'Test'}
-                                      </button>
-                                    </div>
-                                  ) : backup.apiKeyPresent ? (
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-green-400 text-xs">✓ Configured</span>
-                                      <button
-                                        onClick={() => handleTestProvider(backup.providerName)}
-                                        disabled={testingProvider === backup.providerName}
-                                        className="px-2 py-1 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded text-xs hover:bg-blue-500/30 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-all"
-                                      >
-                                        {testingProvider === backup.providerName ? '...' : 'Test'}
-                                      </button>
-                                      <button
-                                        onClick={() => {
-                                          const newKey = prompt(`Enter new API key for ${backup.providerName}:`);
-                                          if (newKey?.trim()) {
-                                            handleChangeProviderKey(backup.id, 'news', false, newKey.trim());
-                                          }
-                                        }}
-                                        className="px-2 py-1 bg-slate-600/50 text-slate-300 border border-slate-600/50 rounded text-xs hover:bg-slate-600/70 transition-all"
-                                      >
-                                        Change Key
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    <div className="flex gap-2">
-                                      <input
-                                        type="password"
-                                        id={`backup-input-news-${backup.id}`}
-                                        className="w-24 px-2 py-1 bg-slate-700/50 border border-slate-600/50 rounded text-xs text-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-purple-500"
-                                        placeholder="API Key"
-                                        aria-label={`${backup.providerName} API key`}
-                                        onKeyDown={(e) => {
-                                          if (e.key === 'Enter') {
-                                            const input = e.target as HTMLInputElement;
-                                            if (input.value.trim()) {
-                                              handleSaveProvider(backup.id, 'news', false, backup.enabled ?? false, input.value.trim());
-                                              input.value = '';
-                                            }
-                                          }
-                                        }}
-                                      />
-                                      <button
-                                        onClick={() => {
-                                          const input = document.getElementById(`backup-input-news-${backup.id}`) as HTMLInputElement;
-                                          if (input?.value.trim()) {
-                                            handleSaveProvider(backup.id, 'news', false, backup.enabled ?? false, input.value.trim());
-                                            input.value = '';
-                                          }
-                                        }}
-                                        disabled={savingProvider === `news-${backup.id}`}
-                                        className="px-2 py-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded text-xs hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50"
-                                      >
-                                        {savingProvider === `news-${backup.id}` ? '...' : 'Save'}
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-
-                            {backup.enabled && providerTestResults[backup.providerName] && (
-                              <div className={`flex items-center gap-2 mt-2 p-2 rounded-lg text-xs ${
-                                providerTestResults[backup.providerName].status === 'success'
-                                  ? 'bg-green-500/10 border border-green-500/20 text-green-400'
-                                  : providerTestResults[backup.providerName].status === 'error'
-                                  ? 'bg-red-500/10 border border-red-500/20 text-red-400'
-                                  : 'bg-yellow-500/10 border border-yellow-500/20 text-yellow-400'
-                              }`}>
-                                {providerTestResults[backup.providerName].status === 'success' && <CheckCircleIcon className="w-3 h-3" />}
-                                {providerTestResults[backup.providerName].status === 'error' && <XCircleIcon className="w-3 h-3" />}
-                                <span>{providerTestResults[backup.providerName].message}</span>
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Metadata Providers */}
-                <div className="bg-gradient-to-r from-slate-800/40 to-slate-900/40 backdrop-blur-sm rounded-2xl border border-slate-700/30 shadow-lg overflow-hidden">
-                  <div className="p-6 lg:p-8">
-                    <div className="flex items-center gap-3 mb-6">
-                      <div className="w-12 h-12 bg-purple-500 rounded-xl flex items-center justify-center shadow-sm">
-                        <span className="text-white font-bold text-xl">📈</span>
-                      </div>
-                      <div>
-                        <h3 className="text-xl font-semibold text-white">Metadata Providers</h3>
-                        <p className="text-sm text-gray-400">Market cap, supply, and asset information</p>
-                      </div>
-                    </div>
-
-                    {/* Primary Provider */}
-                    {providerData?.metadata?.primary && (
-                      <div className="space-y-4 mb-6">
-                        <div className="flex items-center gap-2">
-                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-500/20 text-green-400 border border-green-500/30">
-                            PRIMARY
-                          </span>
-                          <span className="text-sm font-medium text-white">{providerData.metadata.primary.providerName}</span>
+                          ))}
                         </div>
-
-                        {providerData.metadata.primary.apiKeyRequired ? (
-                          providerData.metadata.primary.apiKeyPresent ? (
-                            <div className="space-y-3">
-                              <div className="flex items-center gap-2 p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
-                                <CheckCircleIcon className="w-4 h-4 text-green-400" />
-                                <span className="text-green-400 text-sm font-medium">API key configured</span>
-                              </div>
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={() => handleTestProvider(providerData.metadata.primary.providerName)}
-                                  disabled={testingProvider === providerData.metadata.primary.providerName}
-                                  className="flex-1 px-4 py-2.5 bg-gradient-to-r from-blue-500/20 to-cyan-500/20 text-blue-400 border border-blue-500/30 rounded-xl hover:from-blue-500/30 hover:to-cyan-500/30 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all duration-200 disabled:opacity-50 text-sm font-medium backdrop-blur-sm"
-                                >
-                                  {testingProvider === providerData.metadata.primary.providerName ? (
-                                    <span className="flex items-center justify-center gap-2">
-                                      <div className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin"></div>
-                                      Testing...
-                                    </span>
-                                  ) : (
-                                    'Test Connection'
-                                  )}
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    const newKey = prompt(`Enter new API key for ${providerData.metadata.primary.providerName}:`);
-                                    if (newKey?.trim()) {
-                                      handleChangeProviderKey(providerData.metadata.primary.id, 'metadata', true, newKey.trim());
-                                    }
-                                  }}
-                                  className="px-3 py-2 bg-slate-600/50 text-slate-300 border border-slate-600/50 rounded-lg hover:bg-slate-600/70 focus:outline-none focus:ring-2 focus:ring-slate-500 transition-all text-sm font-medium"
-                                >
-                                  Change Key
-                                </button>
-                              </div>
-                              {providerTestResults[providerData.metadata.primary.providerName] && (
-                                <div className={`flex items-center gap-2 p-2 rounded-lg text-xs ${
-                                  providerTestResults[providerData.metadata.primary.providerName].status === 'success'
-                                    ? 'bg-green-500/10 border border-green-500/20 text-green-400'
-                                    : providerTestResults[providerData.metadata.primary.providerName].status === 'error'
-                                    ? 'bg-red-500/10 border border-red-500/20 text-red-400'
-                                    : 'bg-yellow-500/10 border border-yellow-500/20 text-yellow-400'
-                                }`}>
-                                  {providerTestResults[providerData.metadata.primary.providerName].status === 'success' && <CheckCircleIcon className="w-3 h-3" />}
-                                  {providerTestResults[providerData.metadata.primary.providerName].status === 'error' && <XCircleIcon className="w-3 h-3" />}
-                                  <span>{providerTestResults[providerData.metadata.primary.providerName].message}</span>
-                                </div>
-                              )}
-                            </div>
-                          ) : (
-                            <div className="space-y-3">
-                              <div className="flex gap-2">
-                                <input
-                                  type="password"
-                                  id={`primary-metadata-${providerData.metadata.primary.id}`}
-                                  className="flex-1 px-3 py-2 bg-slate-800/50 border border-slate-600/50 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                                  placeholder={`Enter ${providerData.metadata.primary.providerName} API key`}
-                                  aria-label={`${providerData.metadata.primary.providerName} API key`}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                      const input = e.target as HTMLInputElement;
-                                      if (input.value.trim()) {
-                                        handleSaveProvider(providerData.metadata.primary.id, 'metadata', true, providerData.metadata.primary.enabled ?? true, input.value.trim());
-                                        input.value = '';
-                                      }
-                                    }
-                                  }}
-                                />
-                                <button
-                                  onClick={() => {
-                                    const input = document.getElementById(`primary-metadata-${providerData.metadata.primary.id}`) as HTMLInputElement;
-                                    if (input?.value.trim()) {
-                                      handleSaveProvider(providerData.metadata.primary.id, 'metadata', true, providerData.metadata.primary.enabled ?? true, input.value.trim());
-                                      input.value = '';
-                                    }
-                                  }}
-                                  disabled={savingProvider === `metadata-${providerData.metadata.primary.id}`}
-                                  className="px-4 py-2.5 bg-gradient-to-r from-purple-500 to-cyan-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-cyan-600 focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed text-sm shadow-lg hover:shadow-xl"
-                                >
-                                  {savingProvider === `metadata-${providerData.metadata.primary.id}` ? 'Saving...' : 'Save'}
-                                </button>
-                              </div>
-                            </div>
-                          )
-                        ) : (
-                          <div className="space-y-3">
-                            <div className="flex items-center gap-2 p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
-                              <CheckCircleIcon className="w-4 h-4 text-green-400" />
-                              <span className="text-green-400 text-sm font-medium">No API key required</span>
-                            </div>
-                            <div className="flex gap-2">
-                              <button
-                                onClick={() => handleTestProvider(providerData.metadata.primary.providerName)}
-                                disabled={testingProvider === providerData.metadata.primary.providerName}
-                                className="flex-1 px-4 py-2.5 bg-gradient-to-r from-blue-500/20 to-cyan-500/20 text-blue-400 border border-blue-500/30 rounded-xl hover:from-blue-500/30 hover:to-cyan-500/30 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all duration-200 disabled:opacity-50 text-sm font-medium backdrop-blur-sm"
-                              >
-                                {testingProvider === providerData.metadata.primary.providerName ? (
-                                  <span className="flex items-center justify-center gap-2">
-                                    <div className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin"></div>
-                                    Testing...
-                                  </span>
-                                ) : (
-                                  'Test Connection'
-                                )}
-                              </button>
-                            </div>
-                            {providerTestResults[providerData.metadata.primary.providerName] && (
-                              <div className={`flex items-center gap-2 p-2 rounded-lg text-xs ${
-                                providerTestResults[providerData.metadata.primary.providerName].status === 'success'
-                                  ? 'bg-green-500/10 border border-green-500/20 text-green-400'
-                                  : providerTestResults[providerData.metadata.primary.providerName].status === 'error'
-                                  ? 'bg-red-500/10 border border-red-500/20 text-red-400'
-                                  : 'bg-yellow-500/10 border border-yellow-500/20 text-yellow-400'
-                              }`}>
-                                {providerTestResults[providerData.metadata.primary.providerName].status === 'success' && <CheckCircleIcon className="w-3 h-3" />}
-                                {providerTestResults[providerData.metadata.primary.providerName].status === 'error' && <XCircleIcon className="w-3 h-3" />}
-                                <span>{providerTestResults[providerData.metadata.primary.providerName].message}</span>
-                              </div>
-                            )}
-                          </div>
-                        )}
                       </div>
                     )}
 
-                    {/* Backup Providers */}
-                    <div className="space-y-4">
-                      <div className="flex items-center justify-between">
-                        <h4 className="text-sm font-medium text-gray-300">Backup Providers</h4>
-                        <span className="text-xs text-gray-400 bg-slate-700/50 px-2 py-1 rounded-full">
-                          {providerData.metadata.backups.length} available
-                        </span>
-                      </div>
-
-                      <div className="space-y-3">
-                        {providerData.metadata.backups.map((backup: any) => (
-                          <div key={backup.id} className="bg-slate-800/40 rounded-lg p-4 border border-slate-700/50">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-3">
-                                <label className="relative inline-flex items-center cursor-pointer">
-                                  <input
-                                    type="checkbox"
-                                    id={`backup-metadata-${backup.id}`}
-                                    className="sr-only peer"
-                                    checked={backup.enabled || false}
-                                    onChange={(e) => handleSaveProvider(backup.id, 'metadata', false, e.target.checked)}
-                                    aria-label={`Enable ${backup.providerName} backup provider`}
-                                  />
-                                  <div className="w-10 h-5 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-500"></div>
-                                </label>
-                                <div className="flex flex-col">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-sm font-medium text-white">{backup.providerName}</span>
-                                    <span className={`text-xs px-1.5 py-0.5 rounded-full ${
-                                      !backup.apiKeyRequired
-                                        ? 'bg-green-500/20 text-green-400 border border-green-500/30'
-                                        : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                                    }`}>
-                                      {!backup.apiKeyRequired ? 'FREE' : 'API KEY'}
-                                    </span>
-                                  </div>
-                                </div>
-                              </div>
-
-                              {backup.enabled && (
-                                <div className="flex items-center gap-2 mt-3">
-                                  {!backup.apiKeyRequired ? (
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-xs text-green-400">Ready</span>
-                                      <button
-                                        onClick={() => handleTestProvider(backup.providerName)}
-                                        disabled={testingProvider === backup.providerName}
-                                        className="px-2 py-1 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded text-xs hover:bg-blue-500/30 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-all"
-                                      >
-                                        {testingProvider === backup.providerName ? '...' : 'Test'}
-                                      </button>
-                                    </div>
-                                  ) : backup.apiKeyPresent ? (
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-green-400 text-xs">✓ Configured</span>
-                                      <button
-                                        onClick={() => handleTestProvider(backup.providerName)}
-                                        disabled={testingProvider === backup.providerName}
-                                        className="px-2 py-1 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded text-xs hover:bg-blue-500/30 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-all"
-                                      >
-                                        {testingProvider === backup.providerName ? '...' : 'Test'}
-                                      </button>
-                                      <button
-                                        onClick={() => {
-                                          const newKey = prompt(`Enter new API key for ${backup.providerName}:`);
-                                          if (newKey?.trim()) {
-                                            handleChangeProviderKey(backup.id, 'metadata', false, newKey.trim());
-                                          }
-                                        }}
-                                        className="px-2 py-1 bg-slate-600/50 text-slate-300 border border-slate-600/50 rounded text-xs hover:bg-slate-600/70 transition-all"
-                                      >
-                                        Change Key
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    <div className="flex gap-2">
-                                      <input
-                                        type="password"
-                                        id={`backup-input-metadata-${backup.id}`}
-                                        className="w-24 px-2 py-1 bg-slate-700/50 border border-slate-600/50 rounded text-xs text-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-purple-500"
-                                        placeholder="API Key"
-                                        aria-label={`${backup.providerName} API key`}
-                                        onKeyDown={(e) => {
-                                          if (e.key === 'Enter') {
-                                            const input = e.target as HTMLInputElement;
-                                            if (input.value.trim()) {
-                                              handleSaveProvider(backup.id, 'metadata', false, backup.enabled ?? false, input.value.trim());
-                                              input.value = '';
-                                            }
-                                          }
-                                        }}
-                                      />
-                                      <button
-                                        onClick={() => {
-                                          const input = document.getElementById(`backup-input-metadata-${backup.id}`) as HTMLInputElement;
-                                          if (input?.value.trim()) {
-                                            handleSaveProvider(backup.id, 'metadata', false, backup.enabled ?? false, input.value.trim());
-                                            input.value = '';
-                                          }
-                                        }}
-                                        disabled={savingProvider === `metadata-${backup.id}`}
-                                        className="px-2 py-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded text-xs hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50"
-                                      >
-                                        {savingProvider === `metadata-${backup.id}` ? '...' : 'Save'}
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-
-                            {backup.enabled && providerTestResults[backup.providerName] && (
-                              <div className={`flex items-center gap-2 mt-2 p-2 rounded-lg text-xs ${
-                                providerTestResults[backup.providerName].status === 'success'
-                                  ? 'bg-green-500/10 border border-green-500/20 text-green-400'
-                                  : providerTestResults[backup.providerName].status === 'error'
-                                  ? 'bg-red-500/10 border border-red-500/20 text-red-400'
-                                  : 'bg-yellow-500/10 border border-yellow-500/20 text-yellow-400'
-                              }`}>
-                                {providerTestResults[backup.providerName].status === 'success' && <CheckCircleIcon className="w-3 h-3" />}
-                                {providerTestResults[backup.providerName].status === 'error' && <XCircleIcon className="w-3 h-3" />}
-                                <span>{providerTestResults[backup.providerName].message}</span>
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
                   </div>
-                </div>
+                ))}
               </div>
-            </div>
+            </SettingsCard>
 
             {/* Notification Settings Section */}
-            <div className="bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 p-4 sm:p-6 shadow-sm">
+            <SettingsCard>
               <div className="mb-6">
                 <h2 className="text-xl font-semibold text-white mb-2">Notification Settings</h2>
                 <p className="text-sm text-gray-400">Configure in-app notification preferences and alerts</p>
@@ -3383,37 +2585,23 @@ export default function Settings() {
                   </div>
                 </div>
               </div>
-            </div>
+            </SettingsCard>
 
             {/* Background Deep Research Alerts Section */}
-            <div className="bg-gradient-to-br from-slate-800/60 to-slate-900/60 backdrop-blur-xl rounded-3xl border border-slate-700/50 p-6 lg:p-8 shadow-2xl shadow-slate-900/20">
-              <div className="mb-6 lg:mb-8">
-                <div className="flex items-center gap-3 mb-3">
-                  <div className="w-10 h-10 bg-gradient-to-br from-orange-500 to-red-500 rounded-xl flex items-center justify-center shadow-lg">
-                    <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                    </svg>
-                  </div>
-                  <h2 className="text-2xl font-bold text-white">Background Research Alerts</h2>
-                </div>
-                <p className="text-slate-400 leading-relaxed">Configure automatic deep research analysis with real-time Telegram notifications</p>
+            <SettingsCard>
+              <div className="mb-6">
+                <h2 className="text-xl font-semibold text-white mb-2">Background Deep Research Alerts</h2>
+                <p className="text-sm text-gray-400">Configure automatic deep research with Telegram notifications</p>
               </div>
 
               <BackgroundResearchWizard />
-            </div>
+            </SettingsCard>
 
             {/* Add Exchange Section */}
-            <div className="bg-gradient-to-br from-slate-800/60 to-slate-900/60 backdrop-blur-xl rounded-3xl border border-slate-700/50 p-6 lg:p-8 shadow-2xl shadow-slate-900/20">
-              <div className="mb-6 lg:mb-8">
-                <div className="flex items-center gap-3 mb-3">
-                  <div className="w-10 h-10 bg-gradient-to-br from-yellow-500 to-orange-500 rounded-xl flex items-center justify-center shadow-lg">
-                    <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
-                    </svg>
-                  </div>
-                  <h2 className="text-2xl font-bold text-white">Exchange Connection</h2>
-                </div>
-                <p className="text-slate-400 leading-relaxed">Connect your exchange account to enable automated trading</p>
+            <SettingsCard>
+              <div className="mb-6">
+                <h2 className="text-xl font-semibold text-white mb-2">Add Exchange</h2>
+                <p className="text-sm text-gray-400">Connect one exchange for automated trading</p>
               </div>
 
               {connectedExchange ? (
@@ -3490,9 +2678,8 @@ export default function Settings() {
                           {/* API Key */}
                           <div className="space-y-2">
                             <label className="block text-sm font-medium text-gray-300">API Key</label>
-                            <input
+                            <SettingsInput
                               type="password"
-                              className="w-full px-4 py-3 bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500/50 transition-all duration-200"
                               value={exchangeForm.apiKey}
                               onChange={(e) => setExchangeForm({ ...exchangeForm, apiKey: e.target.value })}
                               placeholder="Enter your API key"
@@ -3502,9 +2689,8 @@ export default function Settings() {
                           {/* Secret Key */}
                           <div className="space-y-2">
                             <label className="block text-sm font-medium text-gray-300">Secret Key</label>
-                            <input
+                            <SettingsInput
                               type="password"
-                              className="w-full px-4 py-3 bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500/50 transition-all duration-200"
                               value={exchangeForm.secretKey}
                               onChange={(e) => setExchangeForm({ ...exchangeForm, secretKey: e.target.value })}
                               placeholder="Enter your secret key"
@@ -3515,9 +2701,8 @@ export default function Settings() {
                           {exchange.fields.includes('passphrase') && (
                             <div className="space-y-2">
                               <label className="block text-sm font-medium text-gray-300">Passphrase</label>
-                              <input
+                              <SettingsInput
                                 type="password"
-                                className="w-full px-4 py-3 bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500/50 transition-all duration-200"
                                 value={exchangeForm.passphrase}
                                 onChange={(e) => setExchangeForm({ ...exchangeForm, passphrase: e.target.value })}
                                 placeholder="Enter your passphrase"
@@ -3547,7 +2732,7 @@ export default function Settings() {
                   })()}
                 </div>
               )}
-            </div>
+            </SettingsCard>
 
           </div>
         </div>

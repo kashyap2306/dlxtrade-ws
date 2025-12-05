@@ -5,6 +5,96 @@ import { retryWithBackoff } from '../../utils/rateLimiter';
 const BASE_URL = 'https://pro-api.coinmarketcap.com/v1';
 
 /**
+ * Test connection to CoinMarketCap API
+ * @param apiKey - CoinMarketCap API key
+ * @returns Promise with test result
+ */
+export async function testConnection(apiKey?: string): Promise<{ ok: boolean, message?: string }> {
+  if (!apiKey) {
+    return { ok: false, message: 'CoinMarketCap API key is required' };
+  }
+
+  try {
+    console.log('PROVIDER-CALL', { provider: 'CoinMarketCap', endpoint: 'test-connection' });
+
+    const response = await retryWithBackoff(async () => {
+      return axios.get(`${BASE_URL}/key/info`, {
+        headers: {
+          'X-CMC_PRO_API_KEY': apiKey,
+          'Accept': 'application/json'
+        },
+        timeout: 8000
+      });
+    });
+
+    if (response.status === 200 && response.data) {
+      return { ok: true, message: 'CoinMarketCap API connection successful' };
+    }
+
+    return { ok: false, message: `CoinMarketCap API returned status ${response.status}` };
+  } catch (error: any) {
+    console.error('CoinMarketCap testConnection error:', error.message);
+    return { ok: false, message: `Connection failed: ${error.message}` };
+  }
+}
+
+/**
+ * Fetch ticker data for a specific coin from CoinMarketCap
+ * @param symbol - Coin symbol (e.g., 'BTC')
+ * @param opts - Additional options (apiKey required)
+ * @returns Promise with ticker data
+ */
+export async function fetchTicker(symbol: string, opts?: any): Promise<{ ok: boolean, data?: any }> {
+  const apiKey = opts?.apiKey;
+  if (!apiKey) {
+    return { ok: false, data: { error: 'CoinMarketCap API key is required' } };
+  }
+
+  try {
+    console.log('PROVIDER-CALL', { provider: 'CoinMarketCap', endpoint: 'ticker', symbol });
+
+    const response = await retryWithBackoff(async () => {
+      return axios.get(`${BASE_URL}/cryptocurrency/quotes/latest`, {
+        params: {
+          symbol: symbol.toUpperCase(),
+          convert: 'USD'
+        },
+        headers: {
+          'X-CMC_PRO_API_KEY': apiKey,
+          'Accept': 'application/json'
+        },
+        timeout: 8000
+      });
+    });
+
+    if (response.status !== 200 || !response.data?.data) {
+      return { ok: false, data: { error: `CoinMarketCap API returned status ${response.status}` } };
+    }
+
+    const coinData = response.data.data[symbol.toUpperCase()];
+    if (!coinData) {
+      return { ok: false, data: { error: `Coin ${symbol} not found in CoinMarketCap response` } };
+    }
+
+    const quote = coinData.quote?.USD;
+    return {
+      ok: true,
+      data: {
+        symbol: coinData.symbol,
+        price: quote?.price || null,
+        marketCap: quote?.market_cap || null,
+        volume24h: quote?.volume_24h || null,
+        change24h: quote?.percent_change_24h || null,
+        lastUpdated: quote?.last_updated || new Date().toISOString()
+      }
+    };
+  } catch (error: any) {
+    console.error('CoinMarketCap fetchTicker error:', error.message);
+    return { ok: false, data: { error: error.message } };
+  }
+}
+
+/**
  * Get price data for a specific coin
  * @param symbol - Coin symbol (e.g., 'BTC')
  * @param apiKey - CoinMarketCap API key

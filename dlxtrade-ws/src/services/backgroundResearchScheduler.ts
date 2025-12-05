@@ -138,21 +138,85 @@ export class BackgroundResearchScheduler {
         return; // Skip if not enabled
       }
 
-      // Get user's notification preferences (defaults since SettingsDocument doesn't include these)
-      const notificationPrefs = {
-        enableAutoTradeAlerts: false,
-        enableAccuracyAlerts: false,
-        enableWhaleAlerts: false,
-        tradeConfirmationRequired: false
+      // Get user's selected coins and trading settings
+      const userSettings = await firestoreAdapter.getSettings(uid) || {} as any;
+      const selectedCoins = settings.selectedCoins || userSettings.tradingSettings?.manualCoins || ['BTCUSDT'];
+      const accuracyTrigger = settings.accuracyTrigger || userSettings.tradingSettings?.accuracyTrigger || 80;
+
+      // Get user's notification settings
+      const notifications = userSettings.notifications || {
+        autoTradeAlerts: false,
+        accuracyAlerts: false,
+        whaleAlerts: false,
+        confirmBeforeTrade: false,
+        playSound: false,
+        vibrate: false
       };
 
-      logger.info({ uid, notificationPrefs }, 'Running background research for user');
+      // Get user's provider settings
+      const userProviderSettings = await firestoreAdapter.getUserProviderSettings(uid) || {};
 
-      // Run deep research using the existing research engine
-      const research = await researchEngine.runResearch('BTCUSDT', uid);
-      if (!research) {
-        logger.warn({ uid }, 'No research result returned');
-        return;
+      logger.info({ uid, selectedCoins, accuracyTrigger }, 'Running background research for user');
+
+      // Process each selected coin
+      for (const coin of selectedCoins) {
+        try {
+          logger.debug({ uid, coin }, 'Processing coin for background research');
+
+          // Run deep research using the existing research engine
+          const research = await researchEngine.runResearch(coin, uid);
+
+          if (!research) {
+            logger.warn({ uid, coin }, 'No research result returned for coin');
+            continue;
+          }
+
+          const accuracyPercent = Math.round(research.accuracy * 100);
+
+          // Check if accuracy crosses the trigger threshold
+          const shouldTriggerAlert = accuracyPercent >= accuracyTrigger;
+
+          // Send notifications based on user preferences
+          let alertTriggered = false;
+
+          // 1. Auto-trade trigger notification
+          if (shouldTriggerAlert && notifications.autoTradeAlerts) {
+            userNotificationService.sendAutoTradeAlert(uid, coin, accuracyPercent);
+            alertTriggered = true;
+          }
+
+          // 2. High accuracy alert
+          if (shouldTriggerAlert && notifications.accuracyAlerts) {
+            userNotificationService.sendAccuracyAlert(uid, coin, accuracyPercent);
+            alertTriggered = true;
+          }
+
+          // 3. Trade confirmation required
+          if (shouldTriggerAlert && notifications.confirmBeforeTrade) {
+            userNotificationService.sendTradeConfirmationAlert(uid, coin, accuracyPercent);
+            alertTriggered = true;
+          }
+
+          // 4. Whale movement detection
+          if ((research.microSignals?.volume || 0) > 50000 && notifications.whaleAlerts) {
+            const direction = research.signal === 'BUY' ? 'buy' : 'sell';
+            const simulatedAmount = Math.floor(Math.random() * 500000) + 100000;
+            userNotificationService.sendWhaleAlert(uid, coin, direction, simulatedAmount);
+            alertTriggered = true;
+          }
+
+          if (alertTriggered) {
+            logger.info({ uid, accuracyPercent, coin }, 'Background research alerts sent');
+          }
+
+          // Send Telegram alert if accuracy crosses trigger
+          if (shouldTriggerAlert && settings.telegramBotToken && settings.telegramChatId) {
+            await this.sendTelegramAlertWithRetry(uid, settings, research, coin, accuracyPercent);
+          }
+
+        } catch (coinError: any) {
+          logger.error({ error: coinError.message, uid, coin }, 'Error processing coin in background research');
+        }
       }
 
       // Update last research run timestamp
@@ -161,98 +225,119 @@ export class BackgroundResearchScheduler {
         lastResearchRun: admin.firestore.Timestamp.now(),
       });
 
-      const accuracyPercent = Math.round(research.accuracy * 100);
-      const coin = 'BTCUSDT'; // Default for now, can be enhanced to analyze multiple coins
+      logger.info({ uid }, 'Background research completed for user');
 
-      // Check for auto-trade trigger
-      const triggerThreshold = settings.accuracyTrigger || 80;
-      let shouldAutoTrade = false;
-
-      if (triggerThreshold >= 95) {
-        shouldAutoTrade = accuracyPercent >= 95;
-      } else if (triggerThreshold >= 85) {
-        shouldAutoTrade = accuracyPercent >= 85;
-      } else if (triggerThreshold >= 75) {
-        shouldAutoTrade = accuracyPercent >= 75;
-      } else {
-        shouldAutoTrade = accuracyPercent >= 60;
-      }
-
-      // Send notifications based on user preferences
-      let alertTriggered = false;
-
-      // 1. Auto-trade trigger notification
-      if (shouldAutoTrade && notificationPrefs.enableAutoTradeAlerts) {
-        userNotificationService.sendAutoTradeAlert(uid, coin, accuracyPercent);
-        alertTriggered = true;
-      }
-
-      // 2. High accuracy alert (when accuracy crosses 80%)
-      if (accuracyPercent >= 80 && notificationPrefs.enableAccuracyAlerts) {
-        userNotificationService.sendAccuracyAlert(uid, coin, accuracyPercent);
-        alertTriggered = true;
-      }
-
-      // 3. Trade confirmation required
-      if (shouldAutoTrade && notificationPrefs.tradeConfirmationRequired) {
-        userNotificationService.sendTradeConfirmationAlert(uid, coin, accuracyPercent);
-        alertTriggered = true;
-      }
-
-      // 4. Whale movement detection (simplified - can be enhanced with real whale tracking)
-      // For now, we'll simulate whale detection based on volume spikes
-      if ((research.microSignals?.volume || 0) > 50000 && notificationPrefs.enableWhaleAlerts) {
-        const direction = research.signal === 'BUY' ? 'buy' : 'sell';
-        const simulatedAmount = Math.floor(Math.random() * 500000) + 100000; // Simulated amount
-        userNotificationService.sendWhaleAlert(uid, coin, direction, simulatedAmount);
-        alertTriggered = true;
-      }
-
-      if (alertTriggered) {
-        logger.info({ uid, accuracyPercent, coin }, 'Background research alerts sent');
-      }
-
-      // Send Telegram alert
-      if (settings.telegramBotToken && settings.telegramChatId) {
-        try {
-          logger.info({ uid, accuracyPercent }, 'Sending Telegram alert for high accuracy signal');
-
-          // Get additional research data for the alert
-          let fullReport = '';
-          try {
-            fullReport = `Signal: ${research.signal}\nAccuracy: ${accuracyPercent}%\nRecommended Action: ${research.recommendedAction || 'N/A'}`;
-          } catch (err: any) {
-            fullReport = `Signal: ${research.signal}\nAccuracy: ${accuracyPercent}%\nBasic analysis completed.`;
-          }
-
-          const alertData = {
-            symbol: coin,
-            accuracy: research.accuracy,
-            trend: research.signal === 'BUY' ? 'Bullish' : research.signal === 'SELL' ? 'Bearish' : 'Neutral',
-            volumeSpike: (research.microSignals?.volume || 0) > 50000,
-            support: undefined,
-            resistance: undefined,
-            fullReport,
-          };
-
-          const telegramResult = await telegramService.sendResearchAlert(
-            settings.telegramBotToken,
-            settings.telegramChatId,
-            alertData
-          );
-
-          if (telegramResult.success) {
-            logger.info({ uid }, 'Telegram alert sent successfully');
-          } else {
-            logger.error({ uid, error: telegramResult.error }, 'Failed to send Telegram alert');
-          }
-        } catch (error: any) {
-          logger.error({ error: error.message, uid }, 'Error sending Telegram alert');
-        }
-      }
     } catch (error: any) {
       logger.error({ error: error.message, uid }, 'Error processing user background research');
     }
+  }
+
+  /**
+   * Send Telegram alert with retry logic and backoff
+   */
+  private async sendTelegramAlertWithRetry(
+    uid: string,
+    settings: any,
+    research: any,
+    coin: string,
+    accuracyPercent: number,
+    maxRetries: number = 3
+  ): Promise<void> {
+    let attempt = 0;
+    let delay = 1000; // Start with 1 second delay
+
+    while (attempt < maxRetries) {
+      try {
+        logger.info({ uid, accuracyPercent, coin, attempt: attempt + 1 }, 'Sending Telegram alert for high accuracy signal');
+
+        // Calculate suggested position size using positionSizingMap from user settings
+        const userSettings = await firestoreAdapter.getSettings(uid) || {} as any;
+        const positionSizingMap = userSettings.tradingSettings?.positionSizingMap || [];
+        const suggestedPositionSize = this.calculatePositionSize(accuracyPercent, positionSizingMap);
+
+        // Get provider information used
+        const providersUsed = this.getProvidersUsed(research);
+
+        // Format the Telegram message according to requirements
+        const timestamp = new Date().toISOString();
+        const signal = research.signal || 'HOLD';
+        const positionSize = suggestedPositionSize > 0 ? `$${suggestedPositionSize.toFixed(2)}` : 'N/A';
+
+        const message = `🚨 *DLXTRADE High-Accuracy Signal Alert*
+
+📅 **Timestamp:** ${timestamp}
+📈 **Coin:** ${coin}
+🎯 **Accuracy:** ${accuracyPercent}%
+📊 **Signal:** ${signal}
+💰 **Suggested Position Size:** ${positionSize}
+🔧 **Providers Used:** ${providersUsed.join(', ')}
+
+📋 **Signal Details:**
+${research.recommendedAction || 'Deep research analysis completed'}
+
+⚡ *Action Required:* Review and execute trade if conditions are favorable.`;
+
+        const telegramResult = await telegramService.sendMessage(
+          settings.telegramBotToken,
+          settings.telegramChatId,
+          message
+        );
+
+        if (telegramResult.success) {
+          logger.info({ uid, coin }, 'Telegram alert sent successfully');
+          return;
+        } else {
+          throw new Error(telegramResult.error || 'Telegram API error');
+        }
+
+      } catch (error: any) {
+        attempt++;
+        logger.error({
+          error: error.message,
+          uid,
+          coin,
+          attempt,
+          maxRetries
+        }, `Telegram alert attempt ${attempt} failed`);
+
+        if (attempt < maxRetries) {
+          // Exponential backoff
+          await new Promise(resolve => setTimeout(resolve, delay));
+          delay *= 2; // Double the delay for next attempt
+        }
+      }
+    }
+
+    logger.error({ uid, coin, maxRetries }, 'All Telegram alert attempts failed');
+  }
+
+  /**
+   * Calculate suggested position size based on accuracy and position sizing map
+   */
+  private calculatePositionSize(accuracyPercent: number, positionSizingMap: any[]): number {
+    // Find the appropriate range for this accuracy
+    for (const range of positionSizingMap) {
+      if (accuracyPercent >= range.min && accuracyPercent <= range.max) {
+        return range.percent;
+      }
+    }
+    // Default fallback
+    return 1.0;
+  }
+
+  /**
+   * Extract providers used from research result
+   */
+  private getProvidersUsed(research: any): string[] {
+    const providers: string[] = [];
+
+    // Check which providers returned successful data
+    if (research.providers?.marketData?.success) providers.push('Market Data');
+    if (research.providers?.metadata?.success) providers.push('Metadata');
+    if (research.providers?.cryptocompare?.success) providers.push('CryptoCompare');
+    if (research.providers?.news?.success) providers.push('News');
+
+    return providers.length > 0 ? providers : ['Multiple Providers'];
   }
 }
 

@@ -63,6 +63,15 @@ export interface SettingsDocument {
     telegramBotToken?: string;
     telegramChatId?: string;
   };
+  // New structured notifications
+  notifications?: {
+    autoTradeAlerts?: boolean;
+    accuracyAlerts?: boolean;
+    whaleAlerts?: boolean;
+    confirmBeforeTrade?: boolean;
+    playSound?: boolean;
+    vibrate?: boolean;
+  };
   // Legacy notification settings (keeping for backward compatibility)
   enableAutoTradeAlerts?: boolean;
   enableAccuracyAlerts?: boolean;
@@ -1479,6 +1488,56 @@ export class FirestoreAdapter {
       }, { merge: true });
     } catch (error: any) {
       logger.error({ error: error.message, uid, settings }, 'Error saving user provider settings');
+      throw error;
+    }
+  }
+
+  /**
+   * Save exchange credentials for a user
+   */
+  async saveExchangeCredentials(uid: string, exchange: string, credentials: {
+    apiKey: string;
+    secret: string;
+    passphrase?: string;
+    testnet: boolean;
+  }): Promise<void> {
+    try {
+      await db().collection('users').doc(uid).collection('exchanges').doc(exchange).set({
+        ...credentials,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+      logger.info({ uid, exchange }, 'Exchange credentials saved');
+    } catch (error: any) {
+      logger.error({ error: error.message, uid, exchange }, 'Error saving exchange credentials');
+      throw error;
+    }
+  }
+
+  /**
+   * Get exchange credentials for a user
+   */
+  async getExchangeCredentials(uid: string, exchange: string): Promise<any> {
+    try {
+      const doc = await db().collection('users').doc(uid).collection('exchanges').doc(exchange).get();
+      if (!doc.exists) {
+        return null;
+      }
+      return doc.data();
+    } catch (error: any) {
+      logger.error({ error: error.message, uid, exchange }, 'Error getting exchange credentials');
+      throw error;
+    }
+  }
+
+  /**
+   * Delete exchange credentials for a user
+   */
+  async deleteExchangeCredentials(uid: string, exchange: string): Promise<void> {
+    try {
+      await db().collection('users').doc(uid).collection('exchanges').doc(exchange).delete();
+      logger.info({ uid, exchange }, 'Exchange credentials deleted');
+    } catch (error: any) {
+      logger.error({ error: error.message, uid, exchange }, 'Error deleting exchange credentials');
       throw error;
     }
   }

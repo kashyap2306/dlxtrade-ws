@@ -357,5 +357,159 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       });
     }
   });
+
+  // POST /api/exchange/connect - Connect to exchange
+  fastify.post('/exchange/connect', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const body = z.object({
+        exchange: z.enum(['binance', 'bitget', 'weex', 'bingx']),
+        apiKey: z.string().min(1),
+        secret: z.string().min(1),
+        passphrase: z.string().optional(),
+        testnet: z.boolean().optional().default(true)
+      }).parse(request.body);
+
+      logger.info({ uid: user.uid, exchange: body.exchange }, 'Exchange connect request');
+
+      // Encrypt credentials
+      const encryptedCredentials = {
+        apiKey: encrypt(body.apiKey),
+        secret: encrypt(body.secret),
+        passphrase: body.passphrase ? encrypt(body.passphrase) : undefined,
+        testnet: body.testnet
+      };
+
+      // Save to database
+      await firestoreAdapter.saveExchangeCredentials(user.uid, body.exchange, encryptedCredentials);
+
+      // Test connection by creating connector with provided credentials
+      const testCredentials = {
+        apiKey: body.apiKey,
+        secret: body.secret,
+        passphrase: body.passphrase,
+        testnet: body.testnet
+      };
+      const exchangeConnector = ExchangeConnectorFactory.create(body.exchange as ExchangeName, testCredentials);
+      const testResult = await exchangeConnector.testConnection();
+
+      if (!testResult.success) {
+        // Clean up credentials if test failed
+        await firestoreAdapter.deleteExchangeCredentials(user.uid, body.exchange);
+        return reply.code(400).send({
+          error: 'Connection test failed',
+          message: testResult.message
+        });
+      }
+
+      return {
+        success: true,
+        message: `${body.exchange} connected successfully`,
+        testResult
+      };
+    } catch (err: any) {
+      logger.error({ error: err.message, uid: (request as any).user?.uid }, 'Exchange connect failed');
+      return reply.code(500).send({ error: err.message || 'Failed to connect to exchange' });
+    }
+  });
+
+  // POST /api/exchange/disconnect - Disconnect from exchange
+  fastify.post('/exchange/disconnect', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const body = z.object({
+        exchange: z.enum(['binance', 'bitget', 'weex', 'bingx'])
+      }).parse(request.body);
+
+      logger.info({ uid: user.uid, exchange: body.exchange }, 'Exchange disconnect request');
+
+      await firestoreAdapter.deleteExchangeCredentials(user.uid, body.exchange);
+
+      return {
+        success: true,
+        message: `${body.exchange} disconnected successfully`
+      };
+    } catch (err: any) {
+      logger.error({ error: err.message, uid: (request as any).user?.uid }, 'Exchange disconnect failed');
+      return reply.code(500).send({ error: err.message || 'Failed to disconnect from exchange' });
+    }
+  });
+
+  // GET /api/exchange/status - Get exchange connection status
+  fastify.get('/exchange/status', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const query = request.query as { exchange?: string };
+
+      if (query.exchange) {
+        // Get status for specific exchange
+        const credentials = await firestoreAdapter.getExchangeCredentials(user.uid, query.exchange);
+        const isConnected = !!credentials;
+
+        let testResult = null;
+        if (isConnected && credentials) {
+          try {
+            const decrypted = {
+              apiKey: decrypt(credentials.apiKey),
+              secret: decrypt(credentials.secret),
+              passphrase: credentials.passphrase ? decrypt(credentials.passphrase) : undefined,
+              testnet: credentials.testnet
+            };
+            const exchangeConnector = ExchangeConnectorFactory.create(query.exchange as ExchangeName, decrypted);
+            testResult = await exchangeConnector.testConnection();
+          } catch (testErr: any) {
+            logger.warn({ error: testErr.message, exchange: query.exchange }, 'Exchange status test failed');
+          }
+        }
+
+        return {
+          exchange: query.exchange,
+          connected: isConnected,
+          testResult
+        };
+      } else {
+        // Get status for all exchanges
+        const exchanges: ExchangeName[] = ['binance', 'bitget', 'weex', 'bingx'];
+        const statusPromises = exchanges.map(async (exchange) => {
+          const credentials = await firestoreAdapter.getExchangeCredentials(user.uid, exchange);
+          const isConnected = !!credentials;
+
+          let testResult = null;
+          if (isConnected && credentials) {
+            try {
+              const decrypted = {
+                apiKey: decrypt(credentials.apiKey),
+                secret: decrypt(credentials.secret),
+                passphrase: credentials.passphrase ? decrypt(credentials.passphrase) : undefined,
+                testnet: credentials.testnet
+              };
+              const exchangeConnector = ExchangeConnectorFactory.create(exchange, decrypted);
+              testResult = await exchangeConnector.testConnection();
+            } catch (testErr: any) {
+              logger.warn({ error: testErr.message, exchange }, 'Exchange status test failed');
+            }
+          }
+
+          return {
+            exchange,
+            connected: isConnected,
+            testResult
+          };
+        });
+
+        const statuses = await Promise.all(statusPromises);
+        return { exchanges: statuses };
+      }
+    } catch (err: any) {
+      logger.error({ error: err.message, uid: (request as any).user?.uid }, 'Exchange status check failed');
+      return reply.code(500).send({ error: err.message || 'Failed to get exchange status' });
+    }
+  });
 }
 

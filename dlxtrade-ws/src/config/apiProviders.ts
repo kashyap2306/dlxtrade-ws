@@ -210,6 +210,46 @@ export const API_PROVIDERS_CONFIG: ApiProvidersConfig = {
         apiKeyRequired: false,
         primary: false,
         url: "https://news.search.yahoo.com/"
+      },
+      {
+        providerName: "Cointelegraph RSS",
+        id: "cointelegraph",
+        type: "news",
+        apiKeyRequired: false,
+        primary: false,
+        url: "https://cointelegraph.com/rss"
+      },
+      {
+        providerName: "AltcoinBuzz RSS",
+        id: "altcoinbuzz",
+        type: "news",
+        apiKeyRequired: false,
+        primary: false,
+        url: "https://www.altcoinbuzz.io/feed/"
+      },
+      {
+        providerName: "Marketaux",
+        id: "marketaux",
+        type: "news",
+        apiKeyRequired: true,
+        primary: false,
+        url: "https://api.marketaux.com/v1/"
+      },
+      {
+        providerName: "CoinStatsNews",
+        id: "coinstatsnews",
+        type: "news",
+        apiKeyRequired: true,
+        primary: false,
+        url: "https://api.coinstats.app/public/v1/"
+      },
+      {
+        providerName: "CryptoCompare News",
+        id: "cryptocomparenews",
+        type: "news",
+        apiKeyRequired: true,
+        primary: false,
+        url: "https://min-api.cryptocompare.com/data/v2/"
       }
     ]
   },

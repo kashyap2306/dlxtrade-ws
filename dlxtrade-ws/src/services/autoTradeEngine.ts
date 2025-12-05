@@ -7,18 +7,21 @@ import * as admin from 'firebase-admin';
 
 // Trading Settings Interface
 export interface TradingSettings {
-  mode: 'MANUAL' | 'TOP_100' | 'TOP_10';
-  manualCoins: string[];
-  maxPositionPerTrade: number;
-  tradeType: 'Scalping' | 'Swing' | 'Position';
+  coinSelectionMode: 'manual' | 'top100' | 'top10';
+  selectedCoins: string[];
+  maxPositionPct: number;
+  tradeType: 'scalping' | 'swing' | 'daytrade';
   accuracyTrigger: number;
-  maxDailyLoss: number;
+  maxDailyLossPct: number;
   maxTradesPerDay: number;
-  positionSizingMap: Array<{
-    min: number;
-    max: number;
-    percent: number;
-  }>;
+  autoTradeIntervalMinutes: number;
+  positionSizingMap: {
+    '0-84': number;
+    '85-89': number;
+    '90-94': number;
+    '95-99': number;
+    '100': number;
+  };
 }
 
 // Position Sizing Result
@@ -150,23 +153,9 @@ async function runDeepResearchWithCoinSelection(
   const results: ResearchDataResult[] = [];
 
   // Select coins based on trading mode
-  let coinsToAnalyze: string[] = [];
-
-  switch (settings.mode) {
-    case 'MANUAL':
-      coinsToAnalyze = settings.manualCoins || ['BTCUSDT'];
-      break;
-    case 'TOP_100':
-      // For now, use a basic set of major coins for TOP_100
-      coinsToAnalyze = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT'];
-      break;
-    case 'TOP_10':
-      // For now, use a smaller set for TOP_10
-      coinsToAnalyze = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'];
-      break;
-    default:
-      coinsToAnalyze = ['BTCUSDT'];
-  }
+  // Use the deep research engine's coin selection logic
+  const { selectCoinsForResearch } = await import('./deepResearchEngine');
+  let coinsToAnalyze: string[] = await selectCoinsForResearch(uid);
 
   coinsAnalyzed.push(...coinsToAnalyze);
 
@@ -411,15 +400,15 @@ export class AutoTradeEngine {
     // 2. Check daily loss limit
     const stats = config.stats || DEFAULT_CONFIG.stats!;
     const equity = config.equitySnapshot || 1000;
-    const maxDailyLossAmount = equity * (settings.maxDailyLoss / 100);
+    const maxDailyLossAmount = equity * (settings.maxDailyLossPct / 100);
     if (stats.dailyPnL < 0 && Math.abs(stats.dailyPnL) >= maxDailyLossAmount) {
       engine.circuitBreaker = true;
       await this.logTradeEvent(uid, 'CIRCUIT_BREAKER_TRIGGERED', {
         reason: 'Daily loss limit exceeded',
         dailyPnL: stats.dailyPnL,
-        maxDailyLoss: settings.maxDailyLoss,
+        maxDailyLoss: settings.maxDailyLossPct,
       });
-      return { allowed: false, reason: `DAILY_LOSS_LIMIT: ${Math.abs(stats.dailyPnL)} >= ${maxDailyLossAmount} (${settings.maxDailyLoss}% of ${equity})` };
+      return { allowed: false, reason: `DAILY_LOSS_LIMIT: ${Math.abs(stats.dailyPnL)} >= ${maxDailyLossAmount} (${settings.maxDailyLossPct}% of ${equity})` };
     }
 
     // 3. Check max trades per day
@@ -434,7 +423,7 @@ export class AutoTradeEngine {
     }
 
     // 5. Cap position size at maxPositionPerTrade
-    const finalPositionPercent = Math.min(positionSizing.positionPercent, settings.maxPositionPerTrade);
+    const finalPositionPercent = Math.min(positionSizing.positionPercent, settings.maxPositionPct);
 
     // EXISTING GUARDS
 
@@ -484,12 +473,12 @@ export class AutoTradeEngine {
 
       // Strict validation: Block if ANY required setting is undefined/null
       if (!settings ||
-          settings.maxPositionPerTrade === undefined ||
+          settings.maxPositionPct === undefined ||
           settings.accuracyTrigger === undefined ||
-          settings.maxDailyLoss === undefined ||
+          settings.maxDailyLossPct === undefined ||
           settings.maxTradesPerDay === undefined ||
-          !Array.isArray(settings.positionSizingMap) ||
-          settings.positionSizingMap.length === 0) {
+          !settings.positionSizingMap ||
+          typeof settings.positionSizingMap !== 'object') {
         await this.logTradeEvent(uid, 'TRADE_REJECTED', {
           signal,
           reason: 'TRADING_SETTINGS_INVALID: One or more required trading settings are missing or invalid',
@@ -498,14 +487,12 @@ export class AutoTradeEngine {
       }
 
       // Validate positionSizingMap structure
-      const invalidRange = settings.positionSizingMap.find(range =>
-        range.min === undefined || range.max === undefined || range.percent === undefined ||
-        typeof range.min !== 'number' || typeof range.max !== 'number' || typeof range.percent !== 'number'
-      );
-      if (invalidRange) {
+      const requiredKeys = ['0-84', '85-89', '90-94', '95-99', '100'];
+      const missingKeys = requiredKeys.filter(key => settings.positionSizingMap[key] === undefined);
+      if (missingKeys.length > 0) {
         await this.logTradeEvent(uid, 'TRADE_REJECTED', {
           signal,
-          reason: 'POSITION_SIZING_MAP_INVALID: Malformed position sizing ranges detected',
+          reason: `POSITION_SIZING_MAP_INVALID: Missing ranges: ${missingKeys.join(', ')}`,
         });
         throw new Error('Position sizing map validation failed - blocking trade for safety');
       }
@@ -833,42 +820,61 @@ export class AutoTradeEngine {
       if (!settings) {
         // Return default settings
         return {
-          mode: 'MANUAL',
-          manualCoins: ['BTCUSDT', 'ETHUSDT'],
-          maxPositionPerTrade: 10,
-          tradeType: 'Scalping',
+          coinSelectionMode: 'manual',
+          selectedCoins: ['BTCUSDT', 'ETHUSDT'],
+          maxPositionPct: 10,
+          tradeType: 'scalping',
           accuracyTrigger: 85,
-          maxDailyLoss: 5,
+          maxDailyLossPct: 5,
           maxTradesPerDay: 50,
-          positionSizingMap: [
-            { min: 0, max: 84, percent: 0 },
-            { min: 85, max: 89, percent: 3 },
-            { min: 90, max: 94, percent: 6 },
-            { min: 95, max: 99, percent: 8.5 },
-            { min: 100, max: 100, percent: 10 }
-          ]
+          autoTradeIntervalMinutes: 5,
+          positionSizingMap: {
+            '0-84': 0,
+            '85-89': 3,
+            '90-94': 6,
+            '95-99': 8.5,
+            '100': 10
+          }
         };
       }
 
-      return settings as TradingSettings;
+      // Map old structure to new structure if needed
+      return {
+        coinSelectionMode: settings.coinSelectionMode || (settings.mode === 'MANUAL' ? 'manual' : settings.mode === 'TOP_100' ? 'top100' : 'top10'),
+        selectedCoins: settings.selectedCoins || settings.manualCoins || ['BTCUSDT', 'ETHUSDT'],
+        maxPositionPct: settings.maxPositionPct || settings.maxPositionPerTrade || 10,
+        tradeType: settings.tradeType || 'scalping',
+        accuracyTrigger: settings.accuracyTrigger || 85,
+        maxDailyLossPct: settings.maxDailyLossPct || settings.maxDailyLoss || 5,
+        maxTradesPerDay: settings.maxTradesPerDay || 50,
+        autoTradeIntervalMinutes: settings.autoTradeIntervalMinutes || 5,
+        positionSizingMap: settings.positionSizingMap || {
+          '0-84': 0,
+          '85-89': 3,
+          '90-94': 6,
+          '95-99': 8.5,
+          '100': 10
+        }
+      };
     } catch (error: any) {
       logger.error({ error: error.message, uid }, 'Error getting trading settings, using defaults');
       // Return defaults on error
       return {
-        mode: 'MANUAL' as const,
-        manualCoins: ['BTCUSDT'],
-        maxPositionPerTrade: 10,
-        tradeType: 'Scalping',
+        coinSelectionMode: 'manual' as const,
+        selectedCoins: ['BTCUSDT'],
+        maxPositionPct: 10,
+        tradeType: 'scalping',
         accuracyTrigger: 85,
-        maxDailyLoss: 5,
+        maxDailyLossPct: 5,
         maxTradesPerDay: 50,
-        positionSizingMap: [
-          { min: 0, max: 84, percent: 0 },
-          { min: 85, max: 89, percent: 3 },
-          { min: 90, max: 94, percent: 6 },
-          { min: 95, max: 99, percent: 8.5 },
-          { min: 100, max: 100, percent: 10 }
-        ]
+        autoTradeIntervalMinutes: 5,
+        positionSizingMap: {
+          '0-84': 0,
+          '85-89': 3,
+          '90-94': 6,
+          '95-99': 8.5,
+          '100': 10
+        }
       };
     }
   }
@@ -887,9 +893,15 @@ export class AutoTradeEngine {
     }
 
     // Find the appropriate position sizing range for this accuracy
-    const range = settings.positionSizingMap.find(r => accuracy >= r.min && accuracy <= r.max);
+    let rangeKey = '';
+    if (accuracy >= 0 && accuracy <= 84) rangeKey = '0-84';
+    else if (accuracy >= 85 && accuracy <= 89) rangeKey = '85-89';
+    else if (accuracy >= 90 && accuracy <= 94) rangeKey = '90-94';
+    else if (accuracy >= 95 && accuracy <= 99) rangeKey = '95-99';
+    else if (accuracy === 100) rangeKey = '100';
 
-    if (!range) {
+    const percent = settings.positionSizingMap[rangeKey];
+    if (percent === undefined) {
       return {
         positionPercent: 0,
         reason: `No position sizing range found for accuracy ${accuracy}%`
@@ -897,11 +909,11 @@ export class AutoTradeEngine {
     }
 
     // If the range percent is higher than max position per trade, cap it
-    const positionPercent = Math.min(range.percent, settings.maxPositionPerTrade);
+    const positionPercent = Math.min(percent, settings.maxPositionPct);
 
     return {
       positionPercent,
-      reason: `Accuracy ${accuracy}% maps to ${range.percent}% position, capped at ${settings.maxPositionPerTrade}% max per trade`
+      reason: `Accuracy ${accuracy}% maps to ${percent}% position, capped at ${settings.maxPositionPct}% max per trade`
     };
   }
 
@@ -1043,13 +1055,19 @@ export class AutoTradeEngine {
         researchInProgress: false,
       });
 
+      // Get trading settings for interval configuration
+      const tradingSettings = await AutoTradeEngine.getTradingSettings(uid);
+      const intervalMinutes = tradingSettings.autoTradeIntervalMinutes || 5;
+      const intervalMs = intervalMinutes * 60 * 1000; // Convert minutes to milliseconds
+
       logger.info({
         uid,
+        intervalMinutes,
         timestamp: new Date().toISOString(),
         engineState: 'STARTING'
-      }, '▶️ AUTO_TRADE_STARTED: Background research loop initiated');
+      }, `▶️ AUTO_TRADE_STARTED: Background research loop initiated (${intervalMinutes} minute intervals)`);
 
-      // Start the interval loop (5 minutes = 300,000 ms)
+      // Start the interval loop with configurable interval
       const intervalId = setInterval(async () => {
         try {
           const loopState = this.autoTradeLoops.get(uid);
@@ -1217,7 +1235,7 @@ export class AutoTradeEngine {
 
       if (!researchData.results || researchData.results.length === 0) {
         skipReason = 'NO_RESULTS_GENERATED';
-        logger.warn({ uid, mode: settings.mode, skipReason }, '⚠️ Research cycle skipped: No results generated');
+        logger.warn({ uid, mode: settings.coinSelectionMode, skipReason }, '⚠️ Research cycle skipped: No results generated');
         cycleResult = 'SKIPPED';
         return;
       }
@@ -1228,7 +1246,7 @@ export class AutoTradeEngine {
 
       if (!researchResult || !researchResult.signal) {
         skipReason = 'NO_SIGNAL_GENERATED';
-        logger.warn({ uid, mode: settings.mode, coinsAnalyzed: researchData.coinsAnalyzed.length, skipReason }, '⚠️ Research cycle skipped: No signal generated');
+        logger.warn({ uid, mode: settings.coinSelectionMode, coinsAnalyzed: researchData.coinsAnalyzed.length, skipReason }, '⚠️ Research cycle skipped: No signal generated');
         cycleResult = 'SKIPPED';
         return;
       }
@@ -1238,17 +1256,17 @@ export class AutoTradeEngine {
 
       logger.info({
         uid,
-        mode: settings.mode,
+        mode: settings.coinSelectionMode,
         coinsAnalyzed: researchData.coinsAnalyzed.length,
         symbol: researchResult.metadata.symbol,
         signal,
         accuracy
-      }, `📊 Research cycle completed (${settings.mode} mode), evaluating trade opportunity`);
+      }, `📊 Research cycle completed (${settings.coinSelectionMode} mode), evaluating trade opportunity`);
 
       // Skip HOLD signals - only execute BUY/SELL
       if (signal === 'HOLD') {
         skipReason = 'HOLD_SIGNAL';
-        logger.info({ uid, mode: settings.mode, symbol: researchResult.metadata.symbol, accuracy, skipReason }, `⚠️ Research cycle skipped: HOLD signal (${settings.mode} mode)`);
+        logger.info({ uid, mode: settings.coinSelectionMode, symbol: researchResult.metadata.symbol, accuracy, skipReason }, `⚠️ Research cycle skipped: HOLD signal (${settings.coinSelectionMode} mode)`);
         cycleResult = 'SKIPPED';
         return;
       }
@@ -1256,7 +1274,7 @@ export class AutoTradeEngine {
       // Calculate position sizing
       const positionSizing = AutoTradeEngine.calculatePositionSize(accuracy, settings);
       mappedPositionPercent = positionSizing.positionPercent;
-      finalPositionPercent = Math.min(mappedPositionPercent, settings.maxPositionPerTrade);
+      finalPositionPercent = Math.min(mappedPositionPercent, settings.maxPositionPct);
 
       // Check if position size is valid
       if (finalPositionPercent <= 0) {

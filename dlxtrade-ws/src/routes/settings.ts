@@ -5,6 +5,7 @@ import { accuracyEngine } from '../services/accuracyEngine';
 import { API_PROVIDERS_CONFIG, ProviderConfig } from '../config/apiProviders';
 import { keyManager } from '../services/keyManager';
 import { ProviderTester } from '../services/providerTester';
+import * as admin from 'firebase-admin';
 
 // Provider config schema
 const providerConfigSchema = z.object({
@@ -43,6 +44,28 @@ const notificationSettingsSchema = z.object({
   telegramChatId: z.string().optional(),
 });
 
+// New notifications schema matching user requirements
+const notificationsSchema = z.object({
+  autoTradeAlerts: z.boolean().optional(),
+  accuracyAlerts: z.boolean().optional(),
+  whaleAlerts: z.boolean().optional(),
+  confirmBeforeTrade: z.boolean().optional(),
+  playSound: z.boolean().optional(),
+  vibrate: z.boolean().optional(),
+});
+
+// Background research schema
+const backgroundResearchSchema = z.object({
+  telegramEnabled: z.boolean().optional(),
+  telegramToken: z.string().optional(),
+  chatId: z.string().optional(),
+  thresholds: z.object({
+    minAccuracy: z.number().optional(),
+    maxFrequency: z.number().optional(),
+  }).optional(),
+  scheduleInterval: z.number().optional(),
+});
+
 const settingsSchema = z.object({
   symbol: z.string().optional(),
   quoteSize: z.number().positive().optional(),
@@ -61,6 +84,8 @@ const settingsSchema = z.object({
   providerConfig: providerConfigSchema.optional(),
   tradingSettings: tradingSettingsSchema.optional(),
   notificationSettings: notificationSettingsSchema.optional(),
+  notifications: notificationsSchema.optional(),
+  backgroundResearch: backgroundResearchSchema.optional(),
   // Legacy notification settings (keeping for backward compatibility)
   enableAutoTradeAlerts: z.boolean().optional(),
   enableAccuracyAlerts: z.boolean().optional(),
@@ -103,6 +128,15 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       metadata: userProviderSettings.metadata?.backups ? Object.keys(userProviderSettings.metadata.backups) : []
     };
 
+    // Get background research settings for defaults
+    const bgResearchDefaults = await firestoreAdapter.getBackgroundResearchSettings(user.uid) || {
+      telegramEnabled: false,
+      telegramToken: '',
+      chatId: '',
+      thresholds: { minAccuracy: 80, maxFrequency: 10 },
+      scheduleInterval: 5
+    };
+
     if (!settings) {
       return {
         symbol: 'BTCUSDT',
@@ -134,18 +168,34 @@ export async function settingsRoutes(fastify: FastifyInstance) {
             { min: 75, max: 100, percent: 5 }
           ]
         },
-        notificationSettings: {
-          enableAutoTradeAlerts: false,
-          enableAccuracyAlerts: false,
-          enableWhaleAlerts: false,
-          tradeConfirmationRequired: false,
-          notificationSounds: false,
-          notificationVibration: false
+        notifications: {
+          autoTradeAlerts: false,
+          accuracyAlerts: false,
+          whaleAlerts: false,
+          confirmBeforeTrade: false,
+          playSound: false,
+          vibrate: false
+        },
+        backgroundResearch: {
+          telegramEnabled: bgResearchDefaults.telegramEnabled || false,
+          telegramToken: bgResearchDefaults.telegramBotToken || '',
+          chatId: bgResearchDefaults.telegramChatId || '',
+          thresholds: bgResearchDefaults.thresholds || { minAccuracy: 80, maxFrequency: 10 },
+          scheduleInterval: bgResearchDefaults.researchFrequencyMinutes || 5
         }
       };
     }
 
-    // Ensure existing settings also have safe providerConfig structure
+    // Get background research settings
+    const bgResearchSettings = await firestoreAdapter.getBackgroundResearchSettings(user.uid) || {
+      telegramEnabled: false,
+      telegramToken: '',
+      chatId: '',
+      thresholds: { minAccuracy: 80, maxFrequency: 10 },
+      scheduleInterval: 5
+    };
+
+    // Ensure existing settings also have safe structure
     const safeSettings = {
       ...settings,
       providerConfig: settings.providerConfig ? {
@@ -168,13 +218,20 @@ export async function settingsRoutes(fastify: FastifyInstance) {
           { min: 75, max: 100, percent: 5 }
         ]
       },
-      notificationSettings: settings.notificationSettings || {
-        enableAutoTradeAlerts: false,
-        enableAccuracyAlerts: false,
-        enableWhaleAlerts: false,
-        tradeConfirmationRequired: false,
-        notificationSounds: false,
-        notificationVibration: false
+      notifications: (settings as any).notifications || {
+        autoTradeAlerts: false,
+        accuracyAlerts: false,
+        whaleAlerts: false,
+        confirmBeforeTrade: false,
+        playSound: false,
+        vibrate: false
+      },
+      backgroundResearch: {
+        telegramEnabled: bgResearchSettings.telegramEnabled || false,
+        telegramToken: bgResearchSettings.telegramBotToken || '',
+        chatId: bgResearchSettings.telegramChatId || '',
+        thresholds: bgResearchSettings.thresholds || { minAccuracy: 80, maxFrequency: 10 },
+        scheduleInterval: bgResearchSettings.researchFrequencyMinutes || 5
       },
       updatedAt: settings.updatedAt?.toDate().toISOString(),
     };
@@ -202,7 +259,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     // Get existing settings to merge with defaults
     const existingSettings = await firestoreAdapter.getSettings(user.uid) || {} as any;
 
-    // Ensure providerConfig, tradingSettings, and notificationSettings always have defaults
+    // Ensure all settings fields have proper defaults
     const safeBody = {
       ...body,
       providerConfig: body.providerConfig ? {
@@ -229,6 +286,21 @@ export async function settingsRoutes(fastify: FastifyInstance) {
           { min: 75, max: 100, percent: 5 }
         ]
       },
+      notifications: body.notifications || existingSettings.notifications || {
+        autoTradeAlerts: false,
+        accuracyAlerts: false,
+        whaleAlerts: false,
+        confirmBeforeTrade: false,
+        playSound: false,
+        vibrate: false
+      },
+      backgroundResearch: body.backgroundResearch || existingSettings.backgroundResearch || {
+        telegramEnabled: false,
+        telegramToken: '',
+        chatId: '',
+        thresholds: { minAccuracy: 80, maxFrequency: 10 },
+        scheduleInterval: 5
+      },
       notificationSettings: body.notificationSettings || existingSettings.notificationSettings || {
         enableAutoTradeAlerts: false,
         enableAccuracyAlerts: false,
@@ -236,10 +308,23 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         tradeConfirmationRequired: false,
         notificationSounds: false,
         notificationVibration: false
-      }
+      },
+      updatedAt: admin.firestore.Timestamp.now()
     };
 
     await firestoreAdapter.saveSettings(user.uid, safeBody);
+
+    // Save background research settings separately if provided
+    if (body.backgroundResearch) {
+      await firestoreAdapter.saveBackgroundResearchSettings(user.uid, {
+        backgroundResearchEnabled: body.backgroundResearch.telegramEnabled || false,
+        telegramBotToken: body.backgroundResearch.telegramToken || '',
+        telegramChatId: body.backgroundResearch.chatId || '',
+        researchFrequencyMinutes: body.backgroundResearch.scheduleInterval || 5,
+        accuracyTrigger: body.backgroundResearch.thresholds?.minAccuracy || 80,
+        lastResearchRun: null,
+      });
+    }
 
     return { message: 'Settings updated', settings: safeBody };
   });
@@ -288,21 +373,23 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (req, reply) => {
     const data = await firestoreAdapter.getTradingSettings((req as any).user.uid) || {
-      mode: 'MANUAL',
-      manualCoins: [],
-      maxPositionPerTrade: 10,
-      tradeType: 'Scalping',
-      accuracyTrigger: 80,
-      maxDailyLoss: 5,
+      coinSelectionMode: 'manual',
+      selectedCoins: [],
+      maxPositionPct: 10,
+      tradeType: 'scalping',
+      accuracyTrigger: 85,
+      maxDailyLossPct: 5,
       maxTradesPerDay: 50,
-      positionSizingMap: [
-        { min: 0, max: 25, percent: 1 },
-        { min: 25, max: 50, percent: 2 },
-        { min: 50, max: 75, percent: 3 },
-        { min: 75, max: 100, percent: 5 }
-      ]
+      autoTradeIntervalMinutes: 5,
+      positionSizingMap: {
+        '0-84': 0,
+        '85-89': 3,
+        '90-94': 6,
+        '95-99': 8.5,
+        '100': 10
+      }
     };
-    return { success: true, data };
+    return data;
   });
 
   // POST /api/trading/settings - Update trading settings
@@ -314,16 +401,17 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     // Ensure positionSizingMap has defaults if not provided
     const safeBody = {
       ...body,
-      positionSizingMap: body.positionSizingMap || [
-        { min: 0, max: 25, percent: 1 },
-        { min: 25, max: 50, percent: 2 },
-        { min: 50, max: 75, percent: 3 },
-        { min: 75, max: 100, percent: 5 }
-      ]
+      positionSizingMap: body.positionSizingMap || {
+        '0-84': 0,
+        '85-89': 3,
+        '90-94': 6,
+        '95-99': 8.5,
+        '100': 10
+      }
     };
 
     const saved = await firestoreAdapter.saveTradingSettings((req as any).user.uid, safeBody);
-    return { success: true, data: saved };
+    return saved;
   });
 
   // POST /api/trading/autotrade/toggle - Toggle auto-trade ON/OFF
@@ -727,6 +815,309 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       };
     } catch (err: any) {
       return reply.code(500).send({ error: err.message || 'Error testing provider connection' });
+    }
+  });
+
+  // POST /api/settings/provider/save - Save provider settings (singular - matches frontend)
+  fastify.post('/settings/provider/save', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const body = z.object({
+        providerName: z.string(),
+        type: z.enum(['marketData', 'news', 'metadata']),
+        enabled: z.boolean(),
+        apiKey: z.string().optional()
+      }).parse(request.body);
+
+      const { providerName, type, enabled, apiKey } = body;
+
+      console.log(`[PROVIDER SAVE] ${user.uid}: ${providerName} (${type}) - enabled: ${enabled}, hasApiKey: ${!!apiKey}`);
+
+      // Get current user settings
+      const userProviderSettings = await firestoreAdapter.getUserProviderSettings(user.uid) || {};
+
+      // Initialize provider type if not exists
+      if (!userProviderSettings[type]) {
+        userProviderSettings[type] = { primary: {}, backups: {} };
+      }
+
+      // Find if this is primary or backup provider
+      const isPrimary = API_PROVIDERS_CONFIG[type].primary.providerName === providerName;
+      const backupConfig = API_PROVIDERS_CONFIG[type].backups.find(b => b.providerName === providerName);
+      const providerId = isPrimary ? API_PROVIDERS_CONFIG[type].primary.id : backupConfig?.id;
+
+      if (!providerId) {
+        console.error(`[PROVIDER SAVE ERROR] Unknown provider: ${providerName}`);
+        return reply.code(400).send({ error: `Unknown provider: ${providerName}` });
+      }
+
+      // Validate API key requirement
+      const providerConfig = isPrimary
+        ? API_PROVIDERS_CONFIG[type].primary
+        : backupConfig;
+
+      if (!providerConfig) {
+        return reply.code(400).send({ error: 'Invalid provider configuration' });
+      }
+
+      if (providerConfig.apiKeyRequired && enabled && !apiKey) {
+        console.error(`[PROVIDER SAVE ERROR] API key required for ${providerName}`);
+        return reply.code(400).send({ error: `API key is required for ${providerName}` });
+      }
+
+      // Encrypt API key if provided
+      let encryptedApiKey = undefined;
+      if (apiKey) {
+        encryptedApiKey = keyManager.encrypt(apiKey);
+      }
+
+      // Update settings
+      if (isPrimary) {
+        userProviderSettings[type].primary = {
+          ...userProviderSettings[type].primary,
+          enabled,
+          encryptedApiKey,
+          updatedAt: new Date()
+        };
+      } else {
+        if (!userProviderSettings[type].backups) {
+          userProviderSettings[type].backups = {};
+        }
+        userProviderSettings[type].backups[providerId] = {
+          ...userProviderSettings[type].backups[providerId],
+          enabled,
+          encryptedApiKey,
+          updatedAt: new Date()
+        };
+      }
+
+      // Save to Firestore with error handling
+      try {
+        await firestoreAdapter.saveUserProviderSettings(user.uid, userProviderSettings);
+        console.log(`[PROVIDER SAVE SUCCESS] ${providerName} saved successfully`);
+
+        return {
+          ok: true,
+          message: `${providerName} ${enabled ? 'enabled' : 'disabled'} successfully`
+        };
+      } catch (dbError: any) {
+        console.error(`[PROVIDER SAVE DB ERROR] ${providerName}:`, dbError);
+        return reply.code(500).send({
+          ok: false,
+          error: 'Save operation did not complete successfully',
+          detail: dbError.message
+        });
+      }
+    } catch (err: any) {
+      console.error(`[PROVIDER SAVE ERROR]`, err);
+      return reply.code(500).send({
+        ok: false,
+        error: err.message || 'Error saving provider settings'
+      });
+    }
+  });
+
+  // POST /api/settings/provider/test - Test provider connection (singular - matches frontend)
+  fastify.post('/settings/provider/test', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const body = z.object({
+        providerName: z.string(),
+        type: z.enum(['marketData', 'news', 'metadata']),
+        apiKey: z.string().optional()
+      }).parse(request.body);
+
+      const { providerName, type, apiKey } = body;
+
+      console.log(`[PROVIDER TEST] ${user.uid}: Testing ${providerName} (${type})`);
+
+      // Get user provider settings to find the API key if not provided
+      let finalApiKey = apiKey;
+      if (!finalApiKey) {
+        const userProviderSettings = await firestoreAdapter.getUserProviderSettings(user.uid) || {};
+        const providerTypeSettings = userProviderSettings[type];
+
+        if (providerTypeSettings) {
+          // Check if this is primary or backup
+          const isPrimary = API_PROVIDERS_CONFIG[type].primary.providerName === providerName;
+          const backupConfig = API_PROVIDERS_CONFIG[type].backups.find(b => b.providerName === providerName);
+          const providerId = isPrimary ? API_PROVIDERS_CONFIG[type].primary.id : backupConfig?.id;
+
+          if (providerId) {
+            // Check primary first
+            if (isPrimary && providerTypeSettings.primary?.encryptedApiKey) {
+              finalApiKey = keyManager.decrypt(providerTypeSettings.primary.encryptedApiKey);
+            }
+            // Check backups
+            else if (!isPrimary && providerTypeSettings.backups?.[providerId]?.encryptedApiKey) {
+              finalApiKey = keyManager.decrypt(providerTypeSettings.backups[providerId].encryptedApiKey);
+            }
+          }
+        }
+      }
+
+      // Test the provider
+      const result = await ProviderTester.testProvider(providerName, type, finalApiKey);
+
+      console.log(`[PROVIDER TEST RESULT] ${providerName}: ${result.success ? 'SUCCESS' : 'FAILED'} - ${result.message}`);
+
+      return {
+        ok: result.success,
+        message: result.message,
+        details: result.details || {}
+      };
+    } catch (err: any) {
+      console.error(`[PROVIDER TEST ERROR] ${err.message}`);
+      return reply.code(500).send({
+        ok: false,
+        error: 'Test operation failed',
+        message: err.message
+      });
+    }
+  });
+
+  // Trading Settings Routes
+  // GET /api/settings/trading - Get trading settings
+  fastify.get('/settings/trading', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const tradingSettings = await firestoreAdapter.getTradingSettings(user.uid) || {
+        mode: 'MANUAL',
+        manualCoins: [],
+        maxPositionPerTrade: 10,
+        tradeType: 'Scalping',
+        accuracyTrigger: 80,
+        maxDailyLoss: 5,
+        maxTradesPerDay: 50,
+        positionSizingMap: [
+          { min: 0, max: 25, percent: 1 },
+          { min: 25, max: 50, percent: 2 },
+          { min: 50, max: 75, percent: 3 },
+          { min: 75, max: 100, percent: 5 }
+        ]
+      };
+      return tradingSettings;
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error loading trading settings' });
+    }
+  });
+
+  // POST /api/settings/trading - Update trading settings
+  fastify.post('/settings/trading', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const body = tradingSettingsSchema.parse(request.body);
+
+      await firestoreAdapter.saveTradingSettings(user.uid, body);
+      return { message: 'Trading settings updated successfully' };
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error saving trading settings' });
+    }
+  });
+
+  // Research Settings Routes
+  // GET /api/settings/selectedCoins - Get selected coins for research
+  fastify.get('/settings/selectedCoins', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const settings = await firestoreAdapter.getSettings(user.uid) || {};
+      const researchSettings = await firestoreAdapter.getBackgroundResearchSettings(user.uid) || {};
+
+      return {
+        mode: researchSettings.coinSelectionMode || 'manual',
+        selectedCoins: researchSettings.selectedCoins || [],
+        accuracyTrigger: researchSettings.accuracyTrigger || 80
+      };
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error loading research settings' });
+    }
+  });
+
+  // POST /api/settings/selectedCoins - Update selected coins for research
+  fastify.post('/settings/selectedCoins', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const body = z.object({
+        mode: z.enum(['Manual', 'Top100', 'Top10']),
+        selectedCoins: z.array(z.string()),
+        accuracyTrigger: z.number().min(0).max(100).optional()
+      }).parse(request.body);
+
+      // Get existing background research settings
+      const existingSettings = await firestoreAdapter.getBackgroundResearchSettings(user.uid) || {};
+
+      // Update with new values
+      const updatedSettings = {
+        ...existingSettings,
+        coinSelectionMode: body.mode,
+        selectedCoins: body.selectedCoins,
+        accuracyTrigger: body.accuracyTrigger || existingSettings.accuracyTrigger || 80,
+        updatedAt: new Date()
+      };
+
+      await firestoreAdapter.saveBackgroundResearchSettings(user.uid, updatedSettings);
+      return { message: 'Research settings updated successfully' };
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error saving research settings' });
+    }
+  });
+
+  // Notifications Settings Routes
+  // GET /api/settings/notifications - Get notification settings
+  fastify.get('/settings/notifications', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const settings = await firestoreAdapter.getSettings(user.uid) || {} as any;
+
+      return settings.notifications || {
+        autoTradeAlerts: false,
+        accuracyAlerts: false,
+        whaleAlerts: false,
+        confirmBeforeTrade: false,
+        playSound: false,
+        vibrate: false
+      };
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error loading notification settings' });
+    }
+  });
+
+  // POST /api/settings/notifications - Update notification settings
+  fastify.post('/settings/notifications', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const body = notificationsSchema.parse(request.body);
+
+      // Get existing settings to merge
+      const existingSettings = await firestoreAdapter.getSettings(user.uid) || {};
+
+      // Update notifications
+      const updatedSettings = {
+        ...existingSettings,
+        notifications: body,
+        updatedAt: admin.firestore.Timestamp.now()
+      };
+
+      await firestoreAdapter.saveSettings(user.uid, updatedSettings);
+      return { message: 'Notification settings updated successfully' };
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error saving notification settings' });
     }
   });
 }
