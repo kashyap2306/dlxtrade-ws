@@ -1,4 +1,41 @@
-import api, { cachedApi, timeoutApi } from '@/config/axios';
+import api, { cachedApi, timeoutApi, invalidateCache } from '@/config/axios';
+
+// Mapping from provider ID to display name for backend API calls
+const PROVIDER_ID_TO_NAME: Record<string, string> = {
+  // Market Data Providers
+  'coingecko': 'CoinGecko',
+  'bravenewcoin': 'BraveNewCoin',
+  'coinapi': 'CoinAPI',
+  'coincheckup': 'CoinCheckup',
+  'coinlore': 'CoinLore',
+  'coinmarketcap': 'CoinMarketCap',
+  'coinpaprika': 'CoinPaprika',
+  'coinstats': 'CoinStats',
+  'kaiko': 'Kaiko',
+  'livecoinwatch': 'LiveCoinWatch',
+  'messari': 'Messari',
+  // News Providers
+  'newsdataio': 'NewsData.io',
+  'bingnews': 'BingNews',
+  'contextualweb': 'ContextualWeb',
+  'cryptopanic': 'CryptoPanic',
+  'gnews': 'GNews',
+  'mediastack': 'MediaStack',
+  'newscatcher': 'NewsCatcher',
+  'reddit': 'Reddit',
+  'webzio': 'Webz.io',
+  'yahoonews': 'YahooNews',
+  'cointelegraph': 'Cointelegraph RSS',
+  'altcoinbuzz': 'AltcoinBuzz RSS',
+  'marketaux': 'Marketaux',
+  'coinstatsnews': 'CoinStatsNews',
+  'cryptocomparenews': 'CryptoCompare News',
+  // Metadata Providers
+  'cryptocompare': 'CryptoCompare',
+  'coincap': 'CoinCap',
+  'coinranking': 'CoinRanking',
+  'nomics': 'Nomics'
+};
 
 export default api;
 
@@ -113,7 +150,12 @@ export const researchApi = {
 // Settings - routes already include /api prefix from baseURL
 export const settingsApi = {
   load: () => cachedApi.get('/settings/load'),
-  update: (settings: any) => api.post('/settings/update', settings),
+  update: async (settings: any) => {
+    const response = await api.post('/settings/update', settings);
+    // Invalidate settings cache after update
+    invalidateCache('/settings/load');
+    return response;
+  },
 
   // Trading Settings
   trading: {
@@ -126,15 +168,15 @@ export const settingsApi = {
 
   // Background Research Settings
   backgroundResearch: {
-    getSettings: () => api.get('/research/background-research/settings'),
+    getSettings: () => api.get('/background-research/settings'),
     saveSettings: (data: {
       backgroundResearchEnabled: boolean;
       telegramBotToken?: string;
       telegramChatId?: string;
       researchFrequencyMinutes: number;
       accuracyTrigger: number;
-    }) => api.post('/research/background-research/settings', data),
-    test: (data: { botToken: string; chatId: string }) => api.post('/research/background-research/settings/test', data),
+    }) => api.post('/background-research/settings', data),
+    test: (data: { botToken: string; chatId: string }) => api.post('/background-research/settings/test', data),
   },
 
   // Provider Settings
@@ -159,6 +201,13 @@ export const settingsApi = {
       apiKey?: string;
     }) => api.post('/settings/providers/test', data),
   },
+
+  // Notification Settings
+  notifications: {
+    load: () => api.get('/settings/notifications'),
+    update: (settings: any) => api.post('/settings/notifications', settings),
+    checkPrereq: () => api.get('/settings/notifications/prereq'),
+  },
 };
 
 // Execution - routes already include /api prefix from baseURL
@@ -173,11 +222,16 @@ export const executionApi = {
 export const integrationsApi = {
   load: () => api.get('/integrations'),
   update: (data: { apiName: string; enabled: boolean; apiKey?: string; secretKey?: string; apiType?: string; passphrase?: string }) =>
-    api.post('/integrations/update', data),
+    api.post('/settings/provider/save', {
+      providerName: PROVIDER_ID_TO_NAME[data.apiName] || data.apiName,
+      type: data.apiType || 'marketData',
+      enabled: data.enabled,
+      apiKey: data.apiKey
+    }),
   checkKey: (apiName: string) => api.get(`/integrations/check/${apiName}`),
   testProvider: (apiName: string, data: { apiKey?: string }) =>
     api.post('/settings/provider/test', {
-      providerName: apiName,
+      providerName: PROVIDER_ID_TO_NAME[apiName] || apiName,
       type: 'marketData', // Default, will be determined by backend
       apiKey: data.apiKey
     }),
@@ -299,6 +353,13 @@ export const chatbotApi = {
 
 // Exchange - routes already include /api prefix from baseURL
 export const exchangeApi = {
+  connect: (config: { exchange: string; apiKey: string; secret: string; passphrase?: string; testnet?: boolean }) =>
+    api.post('/exchange/connect', config),
+  disconnect: (exchange: string) =>
+    api.post('/exchange/disconnect', { exchange }),
+  status: (exchange?: string) =>
+    api.get('/exchange/status', { params: exchange ? { exchange } : {} }),
+  // Legacy endpoints for backward compatibility
   saveConfig: (config: { exchange: string; apiKey: string; secret: string; passphrase?: string; testnet?: boolean }) =>
     api.post(`/users/${localStorage.getItem('firebaseUser') ? JSON.parse(localStorage.getItem('firebaseUser')!).uid : ''}/exchange-config`, config),
   getConfig: () =>

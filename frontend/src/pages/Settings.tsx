@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { settingsApi, integrationsApi, exchangeApi, adminApi } from '../services/api';
 import Toast from '../components/Toast';
 import Sidebar from '../components/Sidebar';
@@ -14,7 +15,11 @@ import {
   PlusIcon,
   ChevronDownIcon,
   ChevronUpIcon,
-  ExclamationTriangleIcon
+  ExclamationTriangleIcon,
+  SpeakerWaveIcon,
+  DevicePhoneMobileIcon,
+  BellIcon,
+  XMarkIcon
 } from '@heroicons/react/24/outline';
 import BinanceLogo from '../components/ui/BinanceLogo';
 import BitgetLogo from '../components/ui/BitgetLogo';
@@ -162,7 +167,7 @@ const PROVIDER_CONFIG = {
 const API_NAME_MAP: Record<string, string> = {
   // Primary Providers
   'CoinGecko': 'coingecko',
-  'NewsData.io': 'newsdata',
+  'NewsData.io': 'newsdataio',
   'CryptoCompare': 'cryptocompare',
   // Market Data Backups
   'CoinPaprika': 'coinpaprika',
@@ -182,21 +187,14 @@ const API_NAME_MAP: Record<string, string> = {
   'AltcoinBuzz RSS': 'altcoinbuzz',
   'GNews': 'gnews',
   'Marketaux': 'marketaux',
-  'Webz.io': 'webz',
+  'Webz.io': 'webzio',
   'CoinStatsNews': 'coinstatsnews',
   'NewsCatcher': 'newscatcher',
   'CryptoCompare News': 'cryptocomparenews',
   // Metadata Backups
-  'CoinGecko': 'coingecko',
-  'CoinPaprika': 'coinpaprika',
-  'CoinMarketCap': 'coinmarketcap',
-  'CoinStats': 'coinstats',
-  'CryptoCompare': 'cryptocompare',
-  'LiveCoinWatch': 'livecoinwatch',
-  'Messari': 'messari',
-  'CoinLore': 'coinlore',
-  'CoinCheckup': 'coincheckup',
-  'CoinCap.io': 'coincap'
+  'CoinCap.io': 'coincap',
+  'CoinRanking': 'coinranking',
+  'Nomics': 'nomics'
 };
 
 // Background Research Wizard Component
@@ -239,6 +237,20 @@ function BackgroundResearchWizard() {
   const testTelegramConnection = async () => {
     if (!telegramBotToken.trim() || !telegramChatId.trim()) {
       showToast('Please fill in both Bot Token and Chat ID', 'error');
+      return;
+    }
+
+    // Validate bot token format (Telegram bot tokens start with a number and contain a colon)
+    const botTokenRegex = /^\d+:[A-Za-z0-9_-]+$/;
+    if (!botTokenRegex.test(telegramBotToken.trim())) {
+      showToast('Invalid bot token format. Telegram bot tokens should be in format: 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11', 'error');
+      return;
+    }
+
+    // Validate chat ID format (should be a number or start with @ or -)
+    const chatIdRegex = /^(@[A-Za-z0-9_]+|-\d+|\d+)$/;
+    if (!chatIdRegex.test(telegramChatId.trim())) {
+      showToast('Invalid chat ID format. Chat ID should be a number, start with @ for channels/groups, or start with - for groups', 'error');
       return;
     }
 
@@ -817,6 +829,7 @@ function BackgroundResearchWizard() {
 
 export default function Settings() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savingProvider, setSavingProvider] = useState<string | null>(null);
@@ -919,32 +932,148 @@ export default function Settings() {
     cryptoCompareNewsKey: '',
     cryptoCompareNewsEnabled: false,
     // Metadata Backup Providers
-    coinGeckoKey: '',
-    coinGeckoEnabled: false,
-    coinPaprikaKey: '',
-    coinPaprikaEnabled: false,
-    coinMarketCapKey: '',
-    coinMarketCapEnabled: false,
-    coinStatsKey: '',
-    coinStatsEnabled: false,
-    cryptoCompareKey: '',
-    cryptoCompareEnabled: false,
-    liveCoinWatchKey: '',
-    liveCoinWatchEnabled: false,
-    messariKey: '',
-    messariEnabled: false,
-    coinLoreKey: '',
-    coinLoreEnabled: false,
-    coinCheckupKey: '',
-    coinCheckupEnabled: false,
     coinCapKey: '',
     coinCapEnabled: false,
+    coinRankingKey: '',
+    coinRankingEnabled: false,
+    nomicsKey: '',
+    nomicsEnabled: false,
     enableAutoTrade: false,
     exchanges: [],
     showUnmaskedKeys: false,
   });
   const [integrations, setIntegrations] = useState<any>(null);
+
+  // Backup provider visibility states
+  const [showMarketBackups, setShowMarketBackups] = useState(false);
+  const [showNewsBackups, setShowNewsBackups] = useState(false);
+  const [showMetadataBackups, setShowMetadataBackups] = useState(false);
+
+  // Notification settings states
+  const [notificationSettings, setNotificationSettings] = useState<any>({
+    autoTradeAlerts: false,
+    accuracyAlerts: { enabled: false, threshold: 80 },
+    whaleAlerts: { enabled: false, sensitivity: 'medium' },
+    requireTradeConfirmation: false,
+    soundEnabled: false,
+    vibrateEnabled: false,
+    telegramEnabled: false
+  });
+  const [notificationPrereqs, setNotificationPrereqs] = useState<{ met: boolean, missing: string[] } | null>(null);
+
+  // Modal states
+  const [showAutoTradePrereqModal, setShowAutoTradePrereqModal] = useState(false);
+  const [showAccuracyModal, setShowAccuracyModal] = useState(false);
+  const [showWhaleModal, setShowWhaleModal] = useState(false);
+  const [accuracyThresholdInput, setAccuracyThresholdInput] = useState('80');
+  const [whaleSensitivityInput, setWhaleSensitivityInput] = useState<'low' | 'medium' | 'high'>('medium');
+  const [telegramForAccuracy, setTelegramForAccuracy] = useState(false);
+  const [telegramForWhale, setTelegramForWhale] = useState(false);
+
   const isMountedRef = useRef(true);
+
+  // Load notification settings
+  const loadNotificationSettings = useCallback(async () => {
+    try {
+      const response = await settingsApi.notifications.load();
+      setNotificationSettings(response.data);
+    } catch (error: any) {
+      console.error('Error loading notification settings:', error);
+      showToast('Failed to load notification settings', 'error');
+    }
+  }, []);
+
+  // Save notification settings
+  const saveNotificationSettings = useCallback(async (newSettings: any) => {
+    try {
+      await settingsApi.notifications.update(newSettings);
+      setNotificationSettings(newSettings);
+      showToast('Notification settings saved successfully', 'success');
+    } catch (error: any) {
+      console.error('Error saving notification settings:', error);
+      showToast('Failed to save notification settings', 'error');
+    }
+  }, []);
+
+  // Check auto-trade prerequisites
+  const checkAutoTradePrerequisites = useCallback(async () => {
+    try {
+      const response = await settingsApi.notifications.checkPrereq();
+      setNotificationPrereqs(response.data);
+      return response.data;
+    } catch (error: any) {
+      console.error('Error checking prerequisites:', error);
+      return { met: false, missing: ['Error checking prerequisites'] };
+    }
+  }, []);
+
+  // Handle auto-trade alerts toggle
+  const handleAutoTradeAlertsToggle = useCallback(async (enabled: boolean) => {
+    if (enabled) {
+      const prereq = await checkAutoTradePrerequisites();
+      if (!prereq.met) {
+        setShowAutoTradePrereqModal(true);
+        return;
+      }
+    }
+    await saveNotificationSettings({ ...notificationSettings, autoTradeAlerts: enabled });
+  }, [notificationSettings, checkAutoTradePrerequisites, saveNotificationSettings]);
+
+  // Handle accuracy alerts toggle
+  const handleAccuracyAlertsToggle = useCallback(async () => {
+    setAccuracyThresholdInput(notificationSettings.accuracyAlerts?.threshold?.toString() || '80');
+    setTelegramForAccuracy(notificationSettings.telegramEnabled || false);
+    setShowAccuracyModal(true);
+  }, [notificationSettings]);
+
+  // Save accuracy alerts settings
+  const saveAccuracyAlerts = useCallback(async () => {
+    const threshold = parseInt(accuracyThresholdInput);
+    if (isNaN(threshold) || threshold < 1 || threshold > 100) {
+      showToast('Please enter a valid threshold between 1-100', 'error');
+      return;
+    }
+
+    const newSettings = {
+      ...notificationSettings,
+      accuracyAlerts: { enabled: true, threshold, telegramEnabled: telegramForAccuracy }
+    };
+
+    await saveNotificationSettings(newSettings);
+    setShowAccuracyModal(false);
+  }, [accuracyThresholdInput, telegramForAccuracy, notificationSettings, saveNotificationSettings]);
+
+  // Handle whale alerts toggle
+  const handleWhaleAlertsToggle = useCallback(async () => {
+    setWhaleSensitivityInput(notificationSettings.whaleAlerts?.sensitivity || 'medium');
+    setTelegramForWhale(notificationSettings.whaleAlerts?.telegramEnabled || false);
+    setShowWhaleModal(true);
+  }, [notificationSettings]);
+
+  // Save whale alerts settings
+  const saveWhaleAlerts = useCallback(async () => {
+    const newSettings = {
+      ...notificationSettings,
+      whaleAlerts: { enabled: true, sensitivity: whaleSensitivityInput, telegramEnabled: telegramForWhale }
+    };
+    await saveNotificationSettings(newSettings);
+    setShowWhaleModal(false);
+  }, [whaleSensitivityInput, notificationSettings, saveNotificationSettings]);
+
+  // Test notification
+  const testNotification = useCallback(() => {
+    if (notificationSettings.soundEnabled) {
+      // Play a simple beep sound
+      const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
+      audio.play().catch(() => {}); // Ignore errors if audio can't play
+    }
+
+    if (notificationSettings.vibrateEnabled && navigator.vibrate) {
+      navigator.vibrate(200);
+    }
+
+    showToast('Test notification sent!', 'success');
+  }, [notificationSettings]);
 
   const loadAllData = useCallback(async () => {
     if (!isMountedRef.current) return;
@@ -954,12 +1083,13 @@ export default function Settings() {
 
     try {
       // Load all settings data in parallel with Promise.allSettled for resilience
-      const [settingsResult, integrationsResult, exchangeResult, tradingSettingsResult, topCoinsResult] = await Promise.allSettled([
+      const [settingsResult, integrationsResult, exchangeResult, tradingSettingsResult, topCoinsResult, notificationsResult] = await Promise.allSettled([
         loadSettings(),
         loadIntegrations(),
         loadConnectedExchange(),
         loadTradingSettings(),
-        loadTop100Coins()
+        loadTop100Coins(),
+        loadNotificationSettings()
       ]);
 
       // Log any failures but don't fail the whole load
@@ -975,6 +1105,9 @@ export default function Settings() {
       if (topCoinsResult.status === 'rejected') {
         suppressConsoleError(topCoinsResult.reason, 'loadTop100Coins');
         // loadTop100Coins already handles its own fallback, so no additional action needed
+      }
+      if (notificationsResult.status === 'rejected') {
+        suppressConsoleError(notificationsResult.reason, 'loadNotificationSettings');
       }
 
       setRetryCount(0); // Reset retry count on successful load
@@ -1063,16 +1196,9 @@ export default function Settings() {
           newsCatcherKey: '',
           cryptoCompareNewsKey: '',
           // Metadata Backup Providers
-          coinGeckoKey: '',
-          coinPaprikaKey: '',
-          coinMarketCapKey: '',
-          coinStatsKey: '',
-          cryptoCompareKey: '',
-          liveCoinWatchKey: '',
-          messariKey: '',
-          coinLoreKey: '',
-          coinCheckupKey: '',
           coinCapKey: '',
+          coinRankingKey: '',
+          nomicsKey: '',
         });
       }
     } catch (err) {
@@ -1143,26 +1269,12 @@ export default function Settings() {
           cryptoCompareNewsKey: response.data.cryptoCompareNewsKey || '',
           cryptoCompareNewsEnabled: response.data.cryptoCompareNewsEnabled || false,
           // Metadata Backup Providers
-          coinGeckoKey: response.data.coinGeckoKey || '',
-          coinGeckoEnabled: response.data.coinGeckoEnabled || false,
-          coinPaprikaKey: response.data.coinPaprikaKey || '',
-          coinPaprikaEnabled: response.data.coinPaprikaEnabled || false,
-          coinMarketCapKey: response.data.coinMarketCapKey || '',
-          coinMarketCapEnabled: response.data.coinMarketCapEnabled || false,
-          coinStatsKey: response.data.coinStatsKey || '',
-          coinStatsEnabled: response.data.coinStatsEnabled || false,
-          cryptoCompareKey: response.data.cryptoCompareKey || '',
-          cryptoCompareEnabled: response.data.cryptoCompareEnabled || false,
-          liveCoinWatchKey: response.data.liveCoinWatchKey || '',
-          liveCoinWatchEnabled: response.data.liveCoinWatchEnabled || false,
-          messariKey: response.data.messariKey || '',
-          messariEnabled: response.data.messariEnabled || false,
-          coinLoreKey: response.data.coinLoreKey || '',
-          coinLoreEnabled: response.data.coinLoreEnabled || false,
-          coinCheckupKey: response.data.coinCheckupKey || '',
-          coinCheckupEnabled: response.data.coinCheckupEnabled || false,
           coinCapKey: response.data.coinCapKey || '',
           coinCapEnabled: response.data.coinCapEnabled || false,
+          coinRankingKey: response.data.coinRankingKey || '',
+          coinRankingEnabled: response.data.coinRankingEnabled || false,
+          nomicsKey: response.data.nomicsKey || '',
+          nomicsEnabled: response.data.nomicsEnabled || false,
           enableAutoTrade: response.data.enableAutoTrade || false,
           exchanges: response.data.exchanges || [],
           showUnmaskedKeys: response.data.showUnmaskedKeys || false,
@@ -1229,25 +1341,12 @@ export default function Settings() {
           cryptoCompareNewsKey: '',
           cryptoCompareNewsEnabled: false,
           // Metadata Backup Providers
-          coinGeckoKey: '',
-          coinGeckoEnabled: false,
-          coinPaprikaKey: '',
-          coinPaprikaEnabled: false,
-          coinMarketCapKey: '',
-          coinMarketCapEnabled: false,
-          coinStatsKey: '',
-          coinStatsEnabled: false,
-          cryptoCompareKey: '',
-          cryptoCompareEnabled: false,
-          liveCoinWatchKey: '',
-          liveCoinWatchEnabled: false,
-          messariKey: '',
-          messariEnabled: false,
-          coinLoreKey: '',
-          coinLoreEnabled: false,
-          coinCheckupKey: '',
-          coinCheckupEnabled: false,
           coinCapKey: '',
+          coinCapEnabled: false,
+          coinRankingKey: '',
+          coinRankingEnabled: false,
+          nomicsKey: '',
+          nomicsEnabled: false,
           coinCapEnabled: false,
           enableAutoTrade: false,
           exchanges: [],
@@ -1309,7 +1408,7 @@ export default function Settings() {
       const fieldNameMap: any = {
         // Primary Providers
         'coingecko': 'coinGeckoKey',
-        'newsdata': 'newsDataKey',
+        'newsdataio': 'newsDataKey',
         'cryptocompare': 'cryptoCompareKey',
         // Market Data Backups
         'coinpaprika': 'coinPaprikaKey',
@@ -1329,21 +1428,14 @@ export default function Settings() {
         'altcoinbuzz': 'altcoinBuzzKey',
         'gnews': 'gnewsKey',
         'marketaux': 'marketauxKey',
-        'webz': 'webzKey',
+        'webzio': 'webzKey',
         'coinstatsnews': 'coinStatsNewsKey',
         'newscatcher': 'newsCatcherKey',
         'cryptocomparenews': 'cryptoCompareNewsKey',
         // Metadata Backups
-        'coingecko': 'coinGeckoKey',
-        'coinpaprika': 'coinPaprikaKey',
-        'coinmarketcap': 'coinMarketCapKey',
-        'coinstats': 'coinStatsKey',
-        'cryptocompare': 'cryptoCompareKey',
-        'livecoinwatch': 'liveCoinWatchKey',
-        'messari': 'messariKey',
-        'coinlore': 'coinLoreKey',
-        'coincheckup': 'coinCheckupKey',
-        'coincap': 'coinCapKey'
+        'coincap': 'coinCapKey',
+        'coinranking': 'coinRankingKey',
+        'nomics': 'nomicsKey'
       };
 
       // Get enabled state for backup providers
@@ -1366,28 +1458,21 @@ export default function Settings() {
         'altcoinbuzz': 'altcoinBuzzEnabled',
         'gnews': 'gnewsEnabled',
         'marketaux': 'marketauxEnabled',
-        'webz': 'webzEnabled',
+        'webzio': 'webzEnabled',
         'coinstatsnews': 'coinStatsNewsEnabled',
         'newscatcher': 'newsCatcherEnabled',
         'cryptocomparenews': 'cryptoCompareNewsEnabled',
         // Metadata Backups
-        'coingecko': 'coinGeckoEnabled',
-        'coinpaprika': 'coinPaprikaEnabled',
-        'coinmarketcap': 'coinMarketCapEnabled',
-        'coinstats': 'coinStatsEnabled',
-        'cryptocompare': 'cryptoCompareEnabled',
-        'livecoinwatch': 'liveCoinWatchEnabled',
-        'messari': 'messariEnabled',
-        'coinlore': 'coinLoreEnabled',
-        'coincheckup': 'coinCheckupEnabled',
-        'coincap': 'coinCapEnabled'
+        'coincap': 'coinCapEnabled',
+        'coinranking': 'coinRankingEnabled',
+        'nomics': 'nomicsEnabled'
       };
 
       const apiKeyField = fieldNameMap[apiName] || `${apiName}Key`;
       const apiKey = settings[apiKeyField]?.trim();
 
       // For backup providers, check if enabled; for primary providers, always enabled
-      const isPrimary = ['cryptocompare', 'newsdata', 'coingecko'].includes(apiName);
+      const isPrimary = ['cryptocompare', 'newsdataio', 'coingecko'].includes(apiName);
       const enabledField = enabledFieldMap[apiName];
       const enabled = isPrimary ? true : (enabledField ? settings[enabledField] : !!apiKey);
 
@@ -1408,7 +1493,7 @@ export default function Settings() {
       const response = await integrationsApi.update(payload);
 
       // Check if save was successful
-      if (response.data?.saved) {
+      if (response.data?.success) {
         // Update UI state immediately without waiting for reload
         setIntegrations(prev => ({
           ...prev,
@@ -1457,7 +1542,7 @@ export default function Settings() {
       const fieldNameMap: any = {
         // Primary Providers
         'coingecko': 'coinGeckoKey',
-        'newsdata': 'newsDataKey',
+        'newsdataio': 'newsDataKey',
         'cryptocompare': 'cryptoCompareKey',
         // Market Data Backups
         'coinpaprika': 'coinPaprikaKey',
@@ -1477,28 +1562,21 @@ export default function Settings() {
         'altcoinbuzz': 'altcoinBuzzKey',
         'gnews': 'gnewsKey',
         'marketaux': 'marketauxKey',
-        'webz': 'webzKey',
+        'webzio': 'webzKey',
         'coinstatsnews': 'coinStatsNewsKey',
         'newscatcher': 'newsCatcherKey',
         'cryptocomparenews': 'cryptoCompareNewsKey',
         // Metadata Backups
-        'coingecko': 'coinGeckoKey',
-        'coinpaprika': 'coinPaprikaKey',
-        'coinmarketcap': 'coinMarketCapKey',
-        'coinstats': 'coinStatsKey',
-        'cryptocompare': 'cryptoCompareKey',
-        'livecoinwatch': 'liveCoinWatchKey',
-        'messari': 'messariKey',
-        'coinlore': 'coinLoreKey',
-        'coincheckup': 'coinCheckupKey',
-        'coincap': 'coinCapKey'
+        'coincap': 'coinCapKey',
+        'coinranking': 'coinRankingKey',
+        'nomics': 'nomicsKey'
       };
 
       const apiKeyField = fieldNameMap[apiName] || `${apiName}Key`;
       const apiKey = settings[apiKeyField]?.trim();
 
       // For backup providers, check if enabled; for primary providers, always test if key exists
-      const isPrimary = ['cryptocompare', 'newsdata', 'coingecko'].includes(apiName);
+      const isPrimary = ['cryptocompare', 'newsdataio', 'coingecko'].includes(apiName);
       const enabledField = `coinGeckoBackupEnabled` || `${apiName}Enabled`;
       const enabled = isPrimary ? !!apiKey : (settings[enabledField] || !!apiKey);
 
@@ -1531,23 +1609,21 @@ export default function Settings() {
   const loadConnectedExchange = async () => {
     if (!user) return;
     try {
-      const response = await exchangeApi.getConfig();
-      if (response.data && response.data.hasApiKey) {
-        // Map exchange names to our UI format
-        const exchangeMap: any = {
-          binance: 'binance',
-          bitget: 'bitget',
-          weex: 'weex',
-          bingx: 'bingx'
-        };
-
-        setConnectedExchange({
-          id: exchangeMap[response.data.exchange] || response.data.exchange,
-          name: response.data.exchange,
-          logo: EXCHANGES.find(e => e.id === exchangeMap[response.data.exchange])?.logo,
-          connectedAt: response.data.updatedAt,
-          lastUpdated: response.data.updatedAt
-        });
+      const response = await exchangeApi.status();
+      if (response.data && response.data.exchanges) {
+        // Find the first connected exchange
+        const connectedExchangeData = response.data.exchanges.find((ex: any) => ex.connected);
+        if (connectedExchangeData) {
+          setConnectedExchange({
+            id: connectedExchangeData.exchange,
+            name: connectedExchangeData.exchange,
+            logo: EXCHANGES.find(e => e.id === connectedExchangeData.exchange)?.logo,
+            connectedAt: new Date().toISOString(),
+            lastUpdated: new Date().toISOString()
+          });
+        } else {
+          setConnectedExchange(null);
+        }
       }
     } catch (err: any) {
       // Exchange not configured yet, which is fine
@@ -1649,7 +1725,7 @@ export default function Settings() {
     setSavingExchange(true);
 
     try {
-      await exchangeApi.saveConfig({
+      await exchangeApi.connect({
         exchange: selectedExchange,
         apiKey: exchangeForm.apiKey,
         secret: exchangeForm.secretKey,
@@ -1767,11 +1843,13 @@ export default function Settings() {
     setDisconnectingExchange(true);
 
     try {
-      await exchangeApi.removeConfig();
+      if (connectedExchange) {
+        await exchangeApi.disconnect(connectedExchange.id);
 
-      setConnectedExchange(null);
-      setShowDisconnectConfirm(false);
-      showToast('Exchange disconnected successfully', 'success');
+        setConnectedExchange(null);
+        setShowDisconnectConfirm(false);
+        showToast('Exchange disconnected successfully', 'success');
+      }
     } catch (err: any) {
       console.error('Error disconnecting exchange:', err);
       showToast('Error disconnecting exchange', 'error');
@@ -1804,8 +1882,9 @@ export default function Settings() {
       const response = await settingsApi.update(settings);
 
       // Save notification preferences to localStorage for immediate access
-      localStorage.setItem('notificationSounds', settings.notificationSounds ? 'true' : 'false');
-      localStorage.setItem('notificationVibration', settings.notificationVibration ? 'true' : 'false');
+      const notifications = settings.notifications || {};
+      localStorage.setItem('notificationSounds', notifications.soundEnabled ? 'true' : 'false');
+      localStorage.setItem('notificationVibration', notifications.vibrateEnabled ? 'true' : 'false');
       localStorage.setItem('enableAutoTradeAlerts', settings.enableAutoTradeAlerts ? 'true' : 'false');
       localStorage.setItem('enableAccuracyAlerts', settings.enableAccuracyAlerts ? 'true' : 'false');
       localStorage.setItem('enableWhaleAlerts', settings.enableWhaleAlerts ? 'true' : 'false');
@@ -2219,7 +2298,7 @@ export default function Settings() {
             {/* API Provider Categories */}
             <SettingsCard>
               <div className="mb-6">
-                <h2 className="text-xl font-semibold text-white mb-2">API Provider Configuration</h2>
+                <h2 id="provider-settings" className="text-xl font-semibold text-white mb-2">API Provider Configuration</h2>
                 <p className="text-sm text-gray-400">Configure primary and backup data providers for comprehensive market analysis</p>
               </div>
 
@@ -2327,18 +2406,49 @@ export default function Settings() {
                       </div>
                     )}
 
+                    {/* Add Backup Providers Button */}
+                    {config.backups && config.backups.length > 0 && (
+                      <div className="mt-4">
+                        <button
+                          onClick={() => {
+                            if (categoryKey === 'marketData') setShowMarketBackups(!showMarketBackups);
+                            else if (categoryKey === 'news') setShowNewsBackups(!showNewsBackups);
+                            else if (categoryKey === 'metadata') setShowMetadataBackups(!showMetadataBackups);
+                          }}
+                          className="flex items-center gap-2 px-4 py-2 bg-slate-700/50 text-slate-300 border border-slate-600/50 rounded-lg hover:bg-slate-600/50 focus:outline-none focus:ring-2 focus:ring-slate-500 transition-all text-sm font-medium"
+                        >
+                          <PlusIcon className="w-4 h-4" />
+                          Add Backup Providers
+                          {((categoryKey === 'marketData' && showMarketBackups) ||
+                            (categoryKey === 'news' && showNewsBackups) ||
+                            (categoryKey === 'metadata' && showMetadataBackups)) ? (
+                            <ChevronUpIcon className="w-4 h-4" />
+                          ) : (
+                            <ChevronDownIcon className="w-4 h-4" />
+                          )}
+                        </button>
+                      </div>
+                    )}
+
                     {/* Backup Providers */}
                     {config.backups && config.backups.length > 0 && (
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between">
-                          <h4 className="text-sm font-medium text-gray-300">Backup Providers</h4>
-                          <span className="text-xs text-gray-400 bg-slate-700/50 px-2 py-1 rounded-full">
-                            {config.backups.length} available
-                          </span>
-                        </div>
+                      <div className={`transition-all duration-300 ease-in-out ${
+                        (categoryKey === 'marketData' && showMarketBackups) ||
+                        (categoryKey === 'news' && showNewsBackups) ||
+                        (categoryKey === 'metadata' && showMetadataBackups)
+                          ? 'opacity-100 max-h-screen mt-4'
+                          : 'opacity-0 max-h-0 overflow-hidden'
+                      }`}>
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <h4 className="text-sm font-medium text-gray-300">Backup Providers</h4>
+                            <span className="text-xs text-gray-400 bg-slate-700/50 px-2 py-1 rounded-full">
+                              {config.backups.length} available
+                            </span>
+                          </div>
 
-                        <div className="space-y-2">
-                          {config.backups.map((backup) => (
+                          <div className="space-y-2">
+                            {config.backups.map((backup) => (
                             <div key={backup.key} className="bg-slate-800/40 rounded-lg p-3 border border-slate-700/50">
                               <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-3">
@@ -2443,6 +2553,7 @@ export default function Settings() {
                             </div>
                           ))}
                         </div>
+                        </div>
                       </div>
                     )}
 
@@ -2455,7 +2566,7 @@ export default function Settings() {
             <SettingsCard>
               <div className="mb-6">
                 <h2 className="text-xl font-semibold text-white mb-2">Notification Settings</h2>
-                <p className="text-sm text-gray-400">Configure in-app notification preferences and alerts</p>
+                <p className="text-sm text-gray-400">Configure comprehensive notification preferences and alert triggers</p>
               </div>
 
               <div className="grid grid-cols-1 gap-4">
@@ -2463,16 +2574,24 @@ export default function Settings() {
                 <div className="bg-slate-800/30 rounded-2xl p-4 border border-slate-700/50 shadow-sm">
                   <div className="flex items-center justify-between">
                     <div className="flex-1">
-                      <h3 className="text-sm font-semibold text-white mb-1">Auto-Trade Trigger Alerts</h3>
-                      <p className="text-xs text-gray-400">Get notified when auto-trade is triggered by high accuracy signals</p>
+                      <div className="flex items-center gap-2 mb-1">
+                        <h3 className="text-sm font-semibold text-white">Auto-Trade Trigger Alerts</h3>
+                        {!notificationSettings?.autoTradeAlertsPrereqMet && notificationSettings?.autoTradeAlerts && (
+                          <ExclamationTriangleIcon className="w-4 h-4 text-amber-400" />
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-400">Get notified when auto-trade executes based on high accuracy signals</p>
+                      {notificationSettings?.autoTradeAlerts && !notificationSettings?.autoTradeAlertsPrereqMet && (
+                        <p className="text-xs text-amber-400 mt-1">Prerequisites not met - configure providers, auto-trade, and exchange</p>
+                      )}
                     </div>
                     <label className="relative inline-flex items-center cursor-pointer">
                       <input
                         type="checkbox"
-                        id="enableAutoTradeAlerts"
+                        id="autoTradeAlerts"
                         className="sr-only peer"
-                        checked={settings.enableAutoTradeAlerts || false}
-                        onChange={(e) => setSettings({ ...settings, enableAutoTradeAlerts: e.target.checked })}
+                        checked={notificationSettings?.autoTradeAlerts || false}
+                        onChange={(e) => handleAutoTradeAlertsToggle(e.target.checked)}
                         aria-label="Enable auto-trade trigger alerts"
                       />
                       <div className="w-12 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-500 peer-checked:to-pink-500"></div>
@@ -2485,15 +2604,20 @@ export default function Settings() {
                   <div className="flex items-center justify-between">
                     <div className="flex-1">
                       <h3 className="text-sm font-semibold text-white mb-1">Accuracy Alerts</h3>
-                      <p className="text-xs text-gray-400">Receive notifications when accuracy crosses 80%</p>
+                      <p className="text-xs text-gray-400">
+                        {notificationSettings?.accuracyAlerts?.enabled
+                          ? `Notify when model accuracy ≥ ${notificationSettings.accuracyAlerts.threshold}%`
+                          : 'Receive notifications when model accuracy crosses threshold'
+                        }
+                      </p>
                     </div>
                     <label className="relative inline-flex items-center cursor-pointer">
                       <input
                         type="checkbox"
-                        id="enableAccuracyAlerts"
+                        id="accuracyAlerts"
                         className="sr-only peer"
-                        checked={settings.enableAccuracyAlerts || false}
-                        onChange={(e) => setSettings({ ...settings, enableAccuracyAlerts: e.target.checked })}
+                        checked={notificationSettings?.accuracyAlerts?.enabled || false}
+                        onChange={() => handleAccuracyAlertsToggle()}
                         aria-label="Enable accuracy alerts"
                       />
                       <div className="w-12 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-500 peer-checked:to-pink-500"></div>
@@ -2506,15 +2630,20 @@ export default function Settings() {
                   <div className="flex items-center justify-between">
                     <div className="flex-1">
                       <h3 className="text-sm font-semibold text-white mb-1">Whale Movement Alerts</h3>
-                      <p className="text-xs text-gray-400">Get alerted when large buy/sell movements are detected</p>
+                      <p className="text-xs text-gray-400">
+                        {notificationSettings?.whaleAlerts?.enabled
+                          ? `Sensitivity: ${notificationSettings.whaleAlerts.sensitivity.charAt(0).toUpperCase() + notificationSettings.whaleAlerts.sensitivity.slice(1)}`
+                          : 'Get alerted when large buy/sell movements are detected'
+                        }
+                      </p>
                     </div>
                     <label className="relative inline-flex items-center cursor-pointer">
                       <input
                         type="checkbox"
-                        id="enableWhaleAlerts"
+                        id="whaleAlerts"
                         className="sr-only peer"
-                        checked={settings.enableWhaleAlerts || false}
-                        onChange={(e) => setSettings({ ...settings, enableWhaleAlerts: e.target.checked })}
+                        checked={notificationSettings?.whaleAlerts?.enabled || false}
+                        onChange={() => handleWhaleAlertsToggle()}
                         aria-label="Enable whale movement alerts"
                       />
                       <div className="w-12 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-500 peer-checked:to-pink-500"></div>
@@ -2527,15 +2656,15 @@ export default function Settings() {
                   <div className="flex items-center justify-between">
                     <div className="flex-1">
                       <h3 className="text-sm font-semibold text-white mb-1">Trade Confirmation Required</h3>
-                      <p className="text-xs text-gray-400">Show confirmation modal before executing auto-trades</p>
+                      <p className="text-xs text-gray-400">Show confirmation modal with editable parameters before executing auto-trades</p>
                     </div>
                     <label className="relative inline-flex items-center cursor-pointer">
                       <input
                         type="checkbox"
-                        id="tradeConfirmationRequired"
+                        id="requireTradeConfirmation"
                         className="sr-only peer"
-                        checked={settings.tradeConfirmationRequired || false}
-                        onChange={(e) => setSettings({ ...settings, tradeConfirmationRequired: e.target.checked })}
+                        checked={notificationSettings?.requireTradeConfirmation || false}
+                        onChange={(e) => saveNotificationSettings({ ...notificationSettings, requireTradeConfirmation: e.target.checked })}
                         aria-label="Require trade confirmation"
                       />
                       <div className="w-12 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-500 peer-checked:to-pink-500"></div>
@@ -2545,20 +2674,31 @@ export default function Settings() {
 
                 {/* Sound & Vibration Settings */}
                 <div className="bg-slate-800/30 rounded-2xl p-4 border border-slate-700/50 shadow-sm">
-                  <h3 className="text-sm font-semibold text-white mb-4">Sound & Vibration</h3>
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <h3 className="text-sm font-semibold text-white">Sound & Vibration</h3>
+                      <p className="text-xs text-gray-400">Configure audio and haptic feedback for notifications</p>
+                    </div>
+                    <button
+                      onClick={testNotification}
+                      className="px-3 py-1 bg-slate-600/50 text-slate-300 text-xs rounded-lg hover:bg-slate-600/70 transition-all"
+                    >
+                      Test
+                    </button>
+                  </div>
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
-                      <div className="flex-1">
-                        <span className="text-sm font-medium text-gray-300">Notification Sounds</span>
-                        <p className="text-xs text-gray-400">Play sound effects for notifications</p>
+                      <div className="flex items-center gap-2">
+                        <SpeakerWaveIcon className="w-4 h-4 text-gray-400" />
+                        <span className="text-sm text-gray-300">Enable Sound</span>
                       </div>
                       <label className="relative inline-flex items-center cursor-pointer">
                         <input
                           type="checkbox"
-                          id="notificationSounds"
+                          id="soundEnabled"
                           className="sr-only peer"
-                          checked={settings.notificationSounds || false}
-                          onChange={(e) => setSettings({ ...settings, notificationSounds: e.target.checked })}
+                          checked={notificationSettings?.soundEnabled || false}
+                          onChange={(e) => saveNotificationSettings({ ...notificationSettings, soundEnabled: e.target.checked })}
                           aria-label="Enable notification sounds"
                         />
                         <div className="w-12 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-500 peer-checked:to-pink-500"></div>
@@ -2566,17 +2706,17 @@ export default function Settings() {
                     </div>
 
                     <div className="flex items-center justify-between">
-                      <div className="flex-1">
-                        <span className="text-sm font-medium text-gray-300">Vibration</span>
-                        <p className="text-xs text-gray-400">Vibrate device for critical alerts</p>
+                      <div className="flex items-center gap-2">
+                        <DevicePhoneMobileIcon className="w-4 h-4 text-gray-400" />
+                        <span className="text-sm text-gray-300">Enable Vibration</span>
                       </div>
                       <label className="relative inline-flex items-center cursor-pointer">
                         <input
                           type="checkbox"
-                          id="notificationVibration"
+                          id="vibrateEnabled"
                           className="sr-only peer"
-                          checked={settings.notificationVibration || false}
-                          onChange={(e) => setSettings({ ...settings, notificationVibration: e.target.checked })}
+                          checked={notificationSettings?.vibrateEnabled || false}
+                          onChange={(e) => saveNotificationSettings({ ...notificationSettings, vibrateEnabled: e.target.checked })}
                           aria-label="Enable notification vibration"
                         />
                         <div className="w-12 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-500 peer-checked:to-pink-500"></div>
@@ -2586,6 +2726,221 @@ export default function Settings() {
                 </div>
               </div>
             </SettingsCard>
+
+            {/* Auto-Trade Prerequisites Modal */}
+            {showAutoTradePrereqModal && (
+              <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                <div className="bg-slate-800 rounded-2xl border border-slate-700 max-w-md w-full">
+                  <div className="p-6">
+                    <div className="flex items-center gap-3 mb-4">
+                      <ExclamationTriangleIcon className="w-6 h-6 text-amber-400" />
+                      <h3 className="text-lg font-semibold text-white">Prerequisites Not Met</h3>
+                    </div>
+                    <p className="text-sm text-gray-400 mb-4">
+                      To enable Auto-Trade Alerts, the following must be configured:
+                    </p>
+                    <ul className="space-y-2 mb-6">
+                      {notificationPrereqs?.missing?.map((item, index) => {
+                        let action = () => {};
+                        let actionName = 'Settings';
+
+                        if (item.includes('CoinGecko') || item.includes('NewsData') || item.includes('CryptoCompare')) {
+                          action = () => {
+                            setShowAutoTradePrereqModal(false);
+                            const element = document.getElementById('provider-settings');
+                            if (element) {
+                              element.scrollIntoView({ behavior: 'smooth' });
+                            }
+                          };
+                          actionName = 'Provider Config';
+                        } else if (item.includes('Auto-Trade not enabled')) {
+                          action = () => {
+                            setShowAutoTradePrereqModal(false);
+                            navigate('/auto-trade');
+                          };
+                          actionName = 'Auto-Trade Page';
+                        } else if (item.includes('exchange')) {
+                          action = () => {
+                            setShowAutoTradePrereqModal(false);
+                            const element = document.getElementById('exchange-settings');
+                            if (element) {
+                              element.scrollIntoView({ behavior: 'smooth' });
+                            }
+                          };
+                          actionName = 'Exchange Settings';
+                        }
+
+                        return (
+                          <li key={index} className="flex items-center gap-2 text-sm text-gray-300">
+                            <XMarkIcon className="w-4 h-4 text-red-400 flex-shrink-0" />
+                            <span>{item}</span>
+                            <button
+                              onClick={action}
+                              className="ml-auto text-xs text-purple-400 hover:text-purple-300 underline"
+                            >
+                              → {actionName}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    <div className="flex gap-3">
+                      <button
+                        onClick={() => setShowAutoTradePrereqModal(false)}
+                        className="flex-1 px-4 py-2 bg-slate-700 text-slate-300 rounded-lg hover:bg-slate-600 transition-all"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => {
+                          setShowAutoTradePrereqModal(false);
+                          // Could add deep linking to relevant sections here
+                        }}
+                        className="flex-1 px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-all"
+                      >
+                        Go to Settings
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Accuracy Alerts Configuration Modal */}
+            {showAccuracyModal && (
+              <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                <div className="bg-slate-800 rounded-2xl border border-slate-700 max-w-md w-full">
+                  <div className="p-6">
+                    <div className="flex items-center gap-3 mb-4">
+                      <BellIcon className="w-6 h-6 text-purple-400" />
+                      <h3 className="text-lg font-semibold text-white">Accuracy Alerts</h3>
+                    </div>
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-300 mb-2">
+                          Notify when accuracy ≥
+                        </label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="100"
+                          value={accuracyThresholdInput}
+                          onChange={(e) => setAccuracyThresholdInput(e.target.value)}
+                          className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                          placeholder="80"
+                        />
+                        <span className="text-xs text-gray-400 mt-1 block">%</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="checkbox"
+                          id="telegramAccuracy"
+                          checked={telegramForAccuracy}
+                          onChange={(e) => setTelegramForAccuracy(e.target.checked)}
+                          className="w-4 h-4 text-purple-500 bg-slate-700 border-slate-600 rounded focus:ring-purple-500"
+                        />
+                        <label htmlFor="telegramAccuracy" className="text-sm text-gray-300">
+                          Also send alerts via Telegram
+                        </label>
+                      </div>
+                      {!notificationSettings?.telegramEnabled && telegramForAccuracy && (
+                        <p className="text-xs text-amber-400">
+                          Telegram not configured. Configure in Background Research settings.
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex gap-3 mt-6">
+                      <button
+                        onClick={() => setShowAccuracyModal(false)}
+                        className="flex-1 px-4 py-2 bg-slate-700 text-slate-300 rounded-lg hover:bg-slate-600 transition-all"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={saveAccuracyAlerts}
+                        className="flex-1 px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-all"
+                      >
+                        Save Settings
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Whale Alerts Configuration Modal */}
+            {showWhaleModal && (
+              <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                <div className="bg-slate-800 rounded-2xl border border-slate-700 max-w-md w-full">
+                  <div className="p-6">
+                    <div className="flex items-center gap-3 mb-4">
+                      <BellIcon className="w-6 h-6 text-blue-400" />
+                      <h3 className="text-lg font-semibold text-white">Whale Movement Alerts</h3>
+                    </div>
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-300 mb-3">
+                          Alert Sensitivity
+                        </label>
+                        <div className="space-y-2">
+                          {['low', 'medium', 'high'].map((sensitivity) => (
+                            <label key={sensitivity} className="flex items-center gap-3 cursor-pointer">
+                              <input
+                                type="radio"
+                                name="whaleSensitivity"
+                                value={sensitivity}
+                                checked={whaleSensitivityInput === sensitivity}
+                                onChange={(e) => setWhaleSensitivityInput(e.target.value as 'low' | 'medium' | 'high')}
+                                className="w-4 h-4 text-purple-500 bg-slate-700 border-slate-600 focus:ring-purple-500"
+                              />
+                              <div>
+                                <span className="text-sm text-white capitalize">{sensitivity}</span>
+                                <p className="text-xs text-gray-400">
+                                  {sensitivity === 'low' ? 'Large movements only (>$500k)' :
+                                   sensitivity === 'medium' ? 'Medium movements (>$250k)' :
+                                   'All significant movements (>$100k)'}
+                                </p>
+                              </div>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="checkbox"
+                          id="telegramWhale"
+                          checked={telegramForWhale}
+                          onChange={(e) => setTelegramForWhale(e.target.checked)}
+                          className="w-4 h-4 text-purple-500 bg-slate-700 border-slate-600 rounded focus:ring-purple-500"
+                        />
+                        <label htmlFor="telegramWhale" className="text-sm text-gray-300">
+                          Also send alerts via Telegram
+                        </label>
+                      </div>
+                      {!notificationSettings?.telegramEnabled && telegramForWhale && (
+                        <p className="text-xs text-amber-400">
+                          Telegram not configured. Configure in Background Research settings.
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex gap-3 mt-6">
+                      <button
+                        onClick={() => setShowWhaleModal(false)}
+                        className="flex-1 px-4 py-2 bg-slate-700 text-slate-300 rounded-lg hover:bg-slate-600 transition-all"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={saveWhaleAlerts}
+                        className="flex-1 px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-all"
+                      >
+                        Save Settings
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Background Deep Research Alerts Section */}
             <SettingsCard>
@@ -2600,7 +2955,7 @@ export default function Settings() {
             {/* Add Exchange Section */}
             <SettingsCard>
               <div className="mb-6">
-                <h2 className="text-xl font-semibold text-white mb-2">Add Exchange</h2>
+                <h2 id="exchange-settings" className="text-xl font-semibold text-white mb-2">Add Exchange</h2>
                 <p className="text-sm text-gray-400">Connect one exchange for automated trading</p>
               </div>
 

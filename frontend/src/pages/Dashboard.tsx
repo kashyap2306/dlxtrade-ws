@@ -11,6 +11,7 @@ import { ErrorState } from '../components/ErrorState';
 import { useNavigate } from 'react-router-dom';
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
 import { ArrowTrendingUpIcon, ArrowTrendingDownIcon, WalletIcon, ChartBarIcon, BoltIcon, CpuChipIcon } from '@heroicons/react/24/outline';
+import TradeConfirmationModal from '../components/TradeConfirmationModal';
 
 // Wallet balances are now loaded from global-stats endpoint
 
@@ -97,6 +98,18 @@ function SafeAsyncLoader({ children, loading: externalLoading, error: externalEr
 export default function Dashboard() {
   const { user, loading: loadingUser } = useAuth();
   const navigate = useNavigate();
+
+  // Trade confirmation modal state
+  const [tradeConfirmation, setTradeConfirmation] = useState<{
+    isOpen: boolean;
+    coin: string;
+    accuracy: number;
+    tradeData?: any;
+  }>({
+    isOpen: false,
+    coin: '',
+    accuracy: 0
+  });
 
   // Unified dashboard state - consolidated to reduce re-renders
   const [dashboardState, setDashboardState] = useState({
@@ -409,6 +422,58 @@ export default function Dashboard() {
     }
   }, [autoTradeStatus, userStats]);
 
+  // Listen for trade confirmation events
+  useEffect(() => {
+    const handleTradeConfirmation = (event: CustomEvent) => {
+      const { coin, accuracy, tradeData } = event.detail;
+      setTradeConfirmation({
+        isOpen: true,
+        coin,
+        accuracy,
+        tradeData
+      });
+    };
+
+    window.addEventListener('tradeConfirmationRequired', handleTradeConfirmation as EventListener);
+
+    return () => {
+      window.removeEventListener('tradeConfirmationRequired', handleTradeConfirmation as EventListener);
+    };
+  }, []);
+
+  // Handle trade confirmation
+  const handleTradeConfirm = async (tradeData: any) => {
+    try {
+      // Execute the trade via API
+      const result = await autoTradeApi.execute({
+        requestId: `manual-${Date.now()}`,
+        signal: {
+          symbol: tradeConfirmation.coin,
+          action: 'BUY', // Default to BUY, could be enhanced
+          size: tradeData.tradeSize,
+          leverage: tradeData.leverage,
+          stopLoss: tradeData.maxLoss,
+          // Note: takeProfit not implemented in current API
+        }
+      });
+
+      // Show success message
+      // You might want to add a toast notification here
+
+    } catch (error: any) {
+      console.error('Trade execution failed:', error);
+      // Show error message
+    }
+
+    // Close modal
+    setTradeConfirmation(prev => ({ ...prev, isOpen: false }));
+  };
+
+  // Handle trade cancellation
+  const handleTradeCancel = () => {
+    setTradeConfirmation(prev => ({ ...prev, isOpen: false }));
+  };
+
   // Load AI signals when auto-trade status changes
   useEffect(() => {
     if (autoTradeStatus?.autoTradeEnabled) {
@@ -472,7 +537,7 @@ export default function Dashboard() {
 
               {/* Visit Auto-Trade Button */}
               <button
-                onClick={() => window.location.href = '/auto-trade'}
+                onClick={() => navigate('/auto-trade')}
                 className="px-8 py-4 bg-gradient-to-r from-purple-600 to-cyan-600 text-white font-semibold rounded-xl hover:from-purple-500 hover:to-cyan-500 transition-all duration-300 shadow-lg shadow-purple-500/25 flex items-center gap-3 transform hover:scale-[1.02] active:scale-98"
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -531,20 +596,24 @@ export default function Dashboard() {
                   Required APIs
                 </h3>
                 <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${
-                  // For demo purposes, we'll assume all are connected - this should be based on actual API status
-                  'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30'
+                  autoTradeStatus?.isApiConnected && autoTradeStatus?.apiStatus === 'connected'
+                    ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30'
+                    : 'bg-red-500/10 text-red-300 border border-red-400/30'
                 }`}>
-                  <div className="w-2 h-2 rounded-full bg-emerald-400"></div>
-                  All Connected
+                  <div className={`w-2 h-2 rounded-full ${
+                    autoTradeStatus?.isApiConnected && autoTradeStatus?.apiStatus === 'connected'
+                      ? 'bg-emerald-400' : 'bg-red-400'
+                  }`}></div>
+                  {autoTradeStatus?.isApiConnected && autoTradeStatus?.apiStatus === 'connected' ? 'Connected' : 'Not Connected'}
                 </div>
               </div>
 
               <div className="space-y-3">
                 {[
-                  { name: 'Binance Public', status: 'connected' },
-                  { name: 'CryptoCompare', status: 'connected' },
-                  { name: 'NewsData', status: 'connected' },
-                  { name: 'CoinMarketCap', status: 'connected' }
+                  { name: 'Exchange API', key: 'isApiConnected', status: autoTradeStatus?.isApiConnected ? 'connected' : 'disconnected' },
+                  { name: 'Market Data', key: 'marketData', status: 'connected' }, // Assume connected for now
+                  { name: 'News API', key: 'news', status: 'connected' }, // Assume connected for now
+                  { name: 'Metadata API', key: 'metadata', status: 'connected' } // Assume connected for now
                 ].map((api) => (
                   <div key={api.name} className="flex items-center justify-between py-2">
                     <span className="text-slate-300 text-sm font-medium">{api.name}</span>
@@ -856,6 +925,16 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      {/* Trade Confirmation Modal */}
+      <TradeConfirmationModal
+        isOpen={tradeConfirmation.isOpen}
+        coin={tradeConfirmation.coin}
+        accuracy={tradeConfirmation.accuracy}
+        onConfirm={handleTradeConfirm}
+        onCancel={handleTradeCancel}
+        soundEnabled={dashboardState.settings?.notificationSettings?.soundEnabled}
+      />
       </div>
       </ErrorBoundary>
     </SafeAsyncLoader>

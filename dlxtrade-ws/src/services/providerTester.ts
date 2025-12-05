@@ -87,6 +87,11 @@ export class ProviderTester {
       'Reddit': 'reddit',
       'Webz.io': 'webzio',
       'YahooNews': 'yahoonews',
+      'Cointelegraph RSS': 'cointelegraph',
+      'AltcoinBuzz RSS': 'altcoinbuzz',
+      'Marketaux': 'marketaux',
+      'CoinStatsNews': 'coinstatsnews',
+      'CryptoCompare News': 'cryptocomparenews',
       // Metadata Providers
       'CryptoCompare': 'cryptocompare',
       'CoinCap': 'coincap',

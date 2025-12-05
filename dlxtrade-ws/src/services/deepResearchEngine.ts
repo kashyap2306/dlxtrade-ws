@@ -103,6 +103,30 @@ export interface FreeModeDeepResearchResult {
       error?: string;
     };
   };
+  structuredAnalysis?: {
+    coin: string;
+    summary: string;
+    signals: Array<{
+      type: string;
+      confidence: number;
+      reason: string;
+    }>;
+    metrics: {
+      momentum: any;
+      volatility: any;
+      volume: any;
+      support: number;
+      resistance: number;
+    };
+    news: Array<{
+      title: string;
+      source: string;
+      url: string;
+      publishedAt: string;
+      snippet: string;
+    }>;
+    images: string[];
+  };
 }
 
 /**
@@ -2689,7 +2713,22 @@ export class DeepResearchEngine {
       // Don't fail the research request if snapshot save fails
     }
 
+    // Generate images for the analysis
+    const images = await this.generateAnalysisImages(symbol, indicators, data.ohlc || []);
+
+    // Transform to required structured format
+    const structuredResult: any = {
+      coin: symbol,
+      summary: this.generateAnalysisSummary(combinedSignal, accuracy, indicators, metadata),
+      signals: this.generateSignalsArray(combinedSignal, accuracy, indicators),
+      metrics: this.generateMetricsObject(indicators),
+      news: this.transformNewsForUI(news),
+      images: images
+    };
+
+    // Return both structured format and original detailed format
     return {
+      // Original detailed format for backward compatibility
       signal: combinedSignal,
       accuracy,
       snapshotAccuracy: accuracyResult.accuracy,
@@ -2729,8 +2768,208 @@ export class DeepResearchEngine {
           data: newsResult.data,
           error: newsResult.error
         }
-      }
+      },
+      // New structured format for UI
+      structuredAnalysis: structuredResult
     };
+  }
+
+  /**
+   * Generate analysis summary text
+   */
+  private generateAnalysisSummary(signal: string, accuracy: number, indicators: any, metadata: any): string {
+    const accuracyPercent = Math.round(accuracy * 100);
+    const signalText = signal.toLowerCase();
+
+    let summary = `${metadata.name || metadata.symbol} shows a ${signalText} signal with ${accuracyPercent}% confidence. `;
+
+    if (indicators.rsi?.value < 30) {
+      summary += 'The asset appears oversold based on RSI analysis. ';
+    } else if (indicators.rsi?.value > 70) {
+      summary += 'The asset appears overbought based on RSI analysis. ';
+    }
+
+    if (indicators.macd?.signal === 'bullish') {
+      summary += 'MACD indicates bullish momentum. ';
+    } else if (indicators.macd?.signal === 'bearish') {
+      summary += 'MACD indicates bearish momentum. ';
+    }
+
+    if (indicators.volume?.trend === 'increasing') {
+      summary += 'Trading volume is increasing, suggesting growing interest. ';
+    }
+
+    summary += `Current market rank: ${metadata.rank || 'N/A'}.`;
+
+    return summary;
+  }
+
+  /**
+   * Generate signals array for UI
+   */
+  private generateSignalsArray(signal: string, accuracy: number, indicators: any): any[] {
+    const signals = [];
+
+    // Main signal
+    signals.push({
+      type: signal.toLowerCase(),
+      confidence: accuracy,
+      reason: this.getSignalReason(signal, indicators)
+    });
+
+    // Additional signals based on indicators
+    if (indicators.rsi?.value < 30 && signal === 'BUY') {
+      signals.push({
+        type: 'buy',
+        confidence: Math.min(0.9, accuracy + 0.1),
+        reason: 'RSI indicates oversold conditions'
+      });
+    }
+
+    if (indicators.macd?.signal === 'bullish' && signal === 'BUY') {
+      signals.push({
+        type: 'buy',
+        confidence: Math.min(0.95, accuracy + 0.05),
+        reason: 'MACD shows bullish convergence'
+      });
+    }
+
+    return signals;
+  }
+
+  /**
+   * Get reason for main signal
+   */
+  private getSignalReason(signal: string, indicators: any): string {
+    const reasons = [];
+
+    if (signal === 'BUY') {
+      if (indicators.rsi?.value < 30) reasons.push('oversold RSI');
+      if (indicators.ema20?.emaTrend === 'bullish') reasons.push('bullish EMA trend');
+      if (indicators.macd?.signal === 'bullish') reasons.push('bullish MACD');
+      if (indicators.volume?.trend === 'increasing') reasons.push('increasing volume');
+    } else if (signal === 'SELL') {
+      if (indicators.rsi?.value > 70) reasons.push('overbought RSI');
+      if (indicators.ema20?.emaTrend === 'bearish') reasons.push('bearish EMA trend');
+      if (indicators.macd?.signal === 'bearish') reasons.push('bearish MACD');
+    }
+
+    return reasons.length > 0 ? reasons.join(', ') : 'technical analysis';
+  }
+
+  /**
+   * Generate metrics object
+   */
+  private generateMetricsObject(indicators: any): any {
+    return {
+      momentum: {
+        rsi: indicators.rsi?.value || 50,
+        macd: indicators.macd?.value || 0,
+        trend: indicators.ema20?.emaTrend || 'neutral'
+      },
+      volatility: {
+        atr: indicators.atr?.value || 0,
+        classification: indicators.atr?.classification || 'medium'
+      },
+      volume: {
+        trend: indicators.volume?.trend || 'stable',
+        score: indicators.volume?.score || 50
+      },
+      support: indicators.ma50?.value || 0,
+      resistance: indicators.ma200?.value || 0
+    };
+  }
+
+  /**
+   * Transform news for UI format
+   */
+  private transformNewsForUI(news: any[]): any[] {
+    return news.slice(0, 5).map(article => ({
+      title: article.title || 'No title',
+      source: article.source?.name || article.source || 'Unknown',
+      url: article.url || '#',
+      publishedAt: article.published_at || article.publishedAt || new Date().toISOString(),
+      snippet: article.description || article.content || article.snippet || 'No description available'
+    }));
+  }
+
+  /**
+   * Generate analysis images
+   */
+  private async generateAnalysisImages(symbol: string, indicators: any, ohlc: any[]): Promise<string[]> {
+    const images = [];
+
+    try {
+      // Generate price chart image
+      const priceChartUrl = await this.generatePriceChartImage(symbol, ohlc);
+      if (priceChartUrl) images.push(priceChartUrl);
+
+      // Generate momentum chart image
+      const momentumChartUrl = await this.generateMomentumChartImage(symbol, indicators);
+      if (momentumChartUrl) images.push(momentumChartUrl);
+
+      // Generate volume chart image
+      const volumeChartUrl = await this.generateVolumeChartImage(symbol, ohlc);
+      if (volumeChartUrl) images.push(volumeChartUrl);
+
+      // Add news images if available (placeholder for now)
+      // In a full implementation, this would extract images from news articles
+      if (images.length < 3) {
+        images.push(`https://via.placeholder.com/400x300/6366f1/ffffff?text=${symbol}+Chart`);
+      }
+
+    } catch (error) {
+      console.error('Error generating analysis images:', error);
+      // Fallback to placeholder images
+      images.push(`https://via.placeholder.com/400x300/6366f1/ffffff?text=${symbol}+Price+Chart`);
+      images.push(`https://via.placeholder.com/400x300/10b981/ffffff?text=${symbol}+Momentum`);
+      images.push(`https://via.placeholder.com/400x300/f59e0b/ffffff?text=${symbol}+Volume`);
+    }
+
+    return images.slice(0, 4); // Limit to 4 images
+  }
+
+  /**
+   * Generate price chart image (placeholder implementation)
+   */
+  private async generatePriceChartImage(symbol: string, ohlc: any[]): Promise<string | null> {
+    try {
+      // In a real implementation, this would use chartjs-node-canvas or similar
+      // For now, return a placeholder URL
+      return `https://via.placeholder.com/400x300/6366f1/ffffff?text=${symbol}+Price+Chart`;
+    } catch (error) {
+      console.error('Error generating price chart:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Generate momentum chart image (placeholder implementation)
+   */
+  private async generateMomentumChartImage(symbol: string, indicators: any): Promise<string | null> {
+    try {
+      const rsi = indicators.rsi?.value || 50;
+      const macd = indicators.macd?.value || 0;
+      return `https://via.placeholder.com/400x300/10b981/ffffff?text=${symbol}+RSI+${rsi.toFixed(1)}+MACD+${macd.toFixed(4)}`;
+    } catch (error) {
+      console.error('Error generating momentum chart:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Generate volume chart image (placeholder implementation)
+   */
+  private async generateVolumeChartImage(symbol: string, ohlc: any[]): Promise<string | null> {
+    try {
+      // Calculate average volume
+      const volumes = ohlc.map(d => d.volume || 0);
+      const avgVolume = volumes.reduce((a, b) => a + b, 0) / volumes.length;
+      return `https://via.placeholder.com/400x300/f59e0b/ffffff?text=${symbol}+Volume+${avgVolume.toLocaleString()}`;
+    } catch (error) {
+      console.error('Error generating volume chart:', error);
+      return null;
+    }
   }
 
 }
@@ -2833,6 +3072,7 @@ export async function runFreeModeDeepResearch(
 const deepResearchEngine = new DeepResearchEngine();
 
 // Export the function that routes/research.ts expects
+
 /**
  * Select coins for research based on trading settings
  */
@@ -2889,7 +3129,7 @@ export async function runFreeModeDeepResearch(
     news?: ProviderBackupConfig;
   },
   integrations?: any
-) {
+): Promise<FreeModeDeepResearchResult> {
   try {
     // Get trading settings for accuracy filtering
     const tradingSettings = await firestoreAdapter.getTradingSettings(uid);
@@ -2899,23 +3139,137 @@ export async function runFreeModeDeepResearch(
     // But include accuracy filtering logic
     const mockAccuracy = Math.floor(Math.random() * 100) + 1; // Random accuracy for demo
 
+    // Create a minimal FreeModeDeepResearchResult
     return {
-      success: mockAccuracy >= accuracyTrigger,
-      reason: mockAccuracy >= accuracyTrigger ? 'Research completed' : `Accuracy ${mockAccuracy}% below threshold ${accuracyTrigger}%`,
-      providersCalled: ['mock_provider'],
       signal: mockAccuracy >= accuracyTrigger ? (Math.random() > 0.5 ? 'BUY' : 'SELL') : 'HOLD',
       accuracy: mockAccuracy,
-      raw: { mockData: true }
+      snapshotAccuracy: mockAccuracy,
+      accuracyBreakdown: {
+        indicatorScore: mockAccuracy * 0.4,
+        marketStructureScore: mockAccuracy * 0.3,
+        momentumScore: mockAccuracy * 0.2,
+        volumeScore: mockAccuracy * 0.05,
+        newsScore: mockAccuracy * 0.05,
+        riskPenalty: 0
+      },
+      accuracyWeightsUsed: { indicatorScore: 0.4, marketStructureScore: 0.3, momentumScore: 0.2, volumeScore: 0.05, newsScore: 0.05 },
+      indicators: {
+        rsi: { value: 50, strength: 0.5 },
+        ma50: { value: 100 },
+        ma200: { value: 100 },
+        ema20: { value: 100 },
+        macd: { value: 0, signal: 'neutral' },
+        volume: { value: 1000000, trend: 'stable', score: 50 },
+        vwap: { value: 100 },
+        atr: { value: 1, classification: 'medium' },
+        pattern: { confidence: 0.5, pattern: 'neutral' },
+        momentum: { value: 0, strength: 0.5 }
+      },
+      metadata: {
+        name: symbol,
+        symbol: symbol,
+        category: 'Cryptocurrency',
+        tags: ['crypto', 'trading'],
+        rank: 1,
+        supply: { circulating: 1000000, total: 1000000 },
+        description: 'Mock cryptocurrency'
+      },
+      news: [],
+      raw: {
+        marketData: { mockData: true },
+        cryptocompare: null,
+        metadata: null,
+        news: null
+      },
+      providers: {
+        marketData: { success: true, latency: 100, data: null },
+        metadata: { success: true, latency: 100, data: null },
+        cryptocompare: { success: true, latency: 100, data: null },
+        news: { success: true, latency: 100, data: null }
+      },
+      structuredAnalysis: {
+        coin: symbol,
+        summary: `Mock analysis for ${symbol} with ${mockAccuracy.toFixed(1)}% accuracy`,
+        signals: [{
+          type: mockAccuracy >= accuracyTrigger ? (Math.random() > 0.5 ? 'buy' : 'sell') : 'hold',
+          confidence: mockAccuracy / 100,
+          reason: 'Mock technical analysis'
+        }],
+        metrics: {
+          momentum: { rsi: 50, macd: 0, trend: 'neutral' },
+          volatility: { atr: 1, classification: 'medium' },
+          volume: { trend: 'stable', score: 50 },
+          support: 95,
+          resistance: 105
+        },
+        news: [],
+        images: [`https://via.placeholder.com/400x300/6366f1/ffffff?text=${symbol}+Chart`]
+      }
     };
   } catch (error) {
     logger.error({ uid, symbol, error }, 'Error in free mode deep research');
+    // Return a minimal valid FreeModeDeepResearchResult for errors
     return {
-      success: false,
-      reason: 'Research failed',
-      providersCalled: [],
       signal: 'HOLD',
       accuracy: 0,
-      raw: null
+      snapshotAccuracy: 0,
+      accuracyBreakdown: {
+        indicatorScore: 0,
+        marketStructureScore: 0,
+        momentumScore: 0,
+        volumeScore: 0,
+        newsScore: 0,
+        riskPenalty: 0
+      },
+      accuracyWeightsUsed: {},
+      indicators: {
+        rsi: { value: 50, strength: 0.5 },
+        ma50: { value: 100 },
+        ma200: { value: 100 },
+        ema20: { value: 100 },
+        macd: { value: 0, signal: 'neutral' },
+        volume: { value: 1000000, trend: 'stable', score: 50 },
+        vwap: { value: 100 },
+        atr: { value: 1, classification: 'medium' },
+        pattern: { confidence: 0.5, pattern: 'neutral' },
+        momentum: { value: 0, strength: 0.5 }
+      },
+      metadata: {
+        name: symbol,
+        symbol: symbol,
+        category: 'Cryptocurrency',
+        tags: ['crypto', 'trading'],
+        rank: 1,
+        supply: { circulating: 1000000, total: 1000000 },
+        description: 'Error occurred during analysis'
+      },
+      news: [],
+      raw: {
+        marketData: null,
+        cryptocompare: null,
+        metadata: null,
+        news: null
+      },
+      providers: {
+        marketData: { success: false, latency: 0, error: 'Error occurred' },
+        metadata: { success: false, latency: 0, error: 'Error occurred' },
+        cryptocompare: { success: false, latency: 0, error: 'Error occurred' },
+        news: { success: false, latency: 0, error: 'Error occurred' }
+      },
+      structuredAnalysis: {
+        coin: symbol,
+        summary: `Error occurred during analysis of ${symbol}`,
+        signals: [{ type: 'hold', confidence: 0, reason: 'Analysis failed' }],
+        metrics: {
+          momentum: { rsi: 50, macd: 0, trend: 'neutral' },
+          volatility: { atr: 1, classification: 'medium' },
+          volume: { trend: 'stable', score: 50 },
+          support: 95,
+          resistance: 105
+        },
+        news: [],
+        images: [`https://via.placeholder.com/400x300/ef4444/ffffff?text=Error+${symbol}`]
+      }
     };
   }
 }

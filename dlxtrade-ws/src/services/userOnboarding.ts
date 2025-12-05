@@ -81,6 +81,87 @@ export async function ensureUser(
         autoTradeEnabled: false,
         role: 'user',
         profilePicture: null,
+        // Settings defaults
+        providerConfig: {
+          marketData: [],
+          news: [],
+          metadata: []
+        },
+        tradingSettings: {
+          mode: 'MANUAL',
+          manualCoins: [],
+          maxPositionPerTrade: 10,
+          tradeType: 'Scalping',
+          accuracyTrigger: 80,
+          maxDailyLoss: 5,
+          maxTradesPerDay: 50,
+          positionSizingMap: [
+            { min: 0, max: 25, percent: 1 },
+            { min: 25, max: 50, percent: 2 },
+            { min: 50, max: 75, percent: 3 },
+            { min: 75, max: 100, percent: 5 }
+          ]
+        },
+        notifications: {
+          autoTradeAlerts: false,
+          autoTradeAlertsPrereqMet: false,
+          accuracyAlerts: {
+            enabled: false,
+            threshold: 80,
+            telegramEnabled: false
+          },
+          whaleAlerts: {
+            enabled: false,
+            sensitivity: 'medium',
+            telegramEnabled: false
+          },
+          requireTradeConfirmation: false,
+          soundEnabled: false,
+          vibrateEnabled: false,
+          telegramEnabled: false,
+          telegramChatId: ''
+        },
+        backgroundResearch: {
+          telegramEnabled: false,
+          telegramToken: '',
+          chatId: '',
+          thresholds: {
+            minAccuracy: 80,
+            maxFrequency: 10
+          },
+          scheduleInterval: 5
+        },
+        notificationSettings: {
+          enableAutoTradeAlerts: false,
+          enableAccuracyAlerts: false,
+          enableWhaleAlerts: false,
+          tradeConfirmationRequired: false,
+          notificationSounds: false,
+          notificationVibration: false,
+          telegramBotToken: '',
+          telegramChatId: ''
+        },
+        // Trading and research settings
+        seenPopups: [],
+        researchSettings: {
+          coinSelectionMode: 'manual',
+          selectedCoins: [],
+          accuracyTrigger: 80
+        },
+        // Risk management defaults
+        riskLimits: {
+          max_loss_pct: 5,
+          max_drawdown_pct: 10,
+          per_trade_risk_pct: 0.5,
+          max_pos: 0.02,
+          cooldownAfterSLSec: 300
+        },
+        // Auto trade settings
+        autoTrade: {
+          enabled: false,
+          accuracyThreshold: 0.85,
+          strategy: 'orderbook_imbalance'
+        }
       };
 
       logger.info({ uid, userDataKeys: Object.keys(userData) }, '🔄 Creating new user document with full schema');
@@ -137,6 +218,102 @@ export async function ensureUser(
           riskLevel: '',
           tradingStyle: '',
           analysisType: '',
+        };
+      }
+      // Ensure settings fields exist with proper defaults
+      if (existingData.providerConfig === undefined) {
+        updateData.providerConfig = {
+          marketData: [],
+          news: [],
+          metadata: []
+        };
+      }
+      if (existingData.tradingSettings === undefined) {
+        updateData.tradingSettings = {
+          mode: 'MANUAL',
+          manualCoins: [],
+          maxPositionPerTrade: 10,
+          tradeType: 'Scalping',
+          accuracyTrigger: 80,
+          maxDailyLoss: 5,
+          maxTradesPerDay: 50,
+          positionSizingMap: [
+            { min: 0, max: 25, percent: 1 },
+            { min: 25, max: 50, percent: 2 },
+            { min: 50, max: 75, percent: 3 },
+            { min: 75, max: 100, percent: 5 }
+          ]
+        };
+      }
+      if (existingData.notifications === undefined) {
+        updateData.notifications = {
+          autoTradeAlerts: false,
+          autoTradeAlertsPrereqMet: false,
+          accuracyAlerts: {
+            enabled: false,
+            threshold: 80,
+            telegramEnabled: false
+          },
+          whaleAlerts: {
+            enabled: false,
+            sensitivity: 'medium',
+            telegramEnabled: false
+          },
+          requireTradeConfirmation: false,
+          soundEnabled: false,
+          vibrateEnabled: false,
+          telegramEnabled: false,
+          telegramChatId: ''
+        };
+      }
+      if (existingData.backgroundResearch === undefined) {
+        updateData.backgroundResearch = {
+          telegramEnabled: false,
+          telegramToken: '',
+          chatId: '',
+          thresholds: {
+            minAccuracy: 80,
+            maxFrequency: 10
+          },
+          scheduleInterval: 5
+        };
+      }
+      if (existingData.notificationSettings === undefined) {
+        updateData.notificationSettings = {
+          enableAutoTradeAlerts: false,
+          enableAccuracyAlerts: false,
+          enableWhaleAlerts: false,
+          tradeConfirmationRequired: false,
+          notificationSounds: false,
+          notificationVibration: false,
+          telegramBotToken: '',
+          telegramChatId: ''
+        };
+      }
+      if (existingData.seenPopups === undefined) {
+        updateData.seenPopups = [];
+      }
+      if (existingData.researchSettings === undefined) {
+        updateData.researchSettings = {
+          coinSelectionMode: 'manual',
+          selectedCoins: [],
+          accuracyTrigger: 80
+        };
+      }
+      if (existingData.riskLimits === undefined) {
+        updateData.riskLimits = {
+          max_loss_pct: 5,
+          max_drawdown_pct: 10,
+          per_trade_risk_pct: 0.5,
+          max_pos: 0.02,
+          cooldownAfterSLSec: 300
+        };
+      }
+      if (existingData.autoTrade === undefined) {
+        updateData.autoTrade = {
+          enabled: false,
+          accuracyThreshold: 0.85,
+          strategy: 'orderbook_imbalance'
         };
       }
 

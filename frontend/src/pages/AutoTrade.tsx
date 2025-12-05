@@ -98,6 +98,12 @@ export default function AutoTrade() {
     autoTradeEnabled: false,
     maxConcurrentTrades: 3,
     maxTradesPerDay: 50,
+    perTradeRiskPct: 1.0,
+    maxDailyLossPct: 5.0,
+    stopLossPct: 2.0,
+    takeProfitPct: 4.0,
+    manualOverride: false,
+    mode: 'AUTO' as 'AUTO' | 'MANUAL',
   });
 
   // Auto-trade loop status
@@ -216,6 +222,12 @@ export default function AutoTrade() {
           autoTradeEnabled: safeConfig.autoTradeEnabled,
           maxConcurrentTrades: safeConfig.maxConcurrentTrades,
           maxTradesPerDay: safeConfig.maxTradesPerDay,
+          perTradeRiskPct: configData?.perTradeRiskPct ?? 1.0,
+          maxDailyLossPct: configData?.maxDailyLossPct ?? 5.0,
+          stopLossPct: configData?.stopLossPct ?? 2.0,
+          takeProfitPct: configData?.takeProfitPct ?? 4.0,
+          manualOverride: configData?.manualOverride ?? false,
+          mode: configData?.mode ?? 'AUTO',
         });
 
         // Update auto-trade status
@@ -370,16 +382,26 @@ export default function AutoTrade() {
     setSaving(true);
     try {
       const updatedConfig = {
-        ...config,
+        // Basic controls
         autoTradeEnabled: autoTradeControls.autoTradeEnabled,
         maxConcurrentTrades: autoTradeControls.maxConcurrentTrades,
         maxTradesPerDay: autoTradeControls.maxTradesPerDay,
         cooldownSeconds: config.cooldownSeconds,
         panicStopEnabled: config.panicStopEnabled,
         slippageBlocker: config.slippageBlocker,
+
+        // Risk management settings (with defaults)
+        perTradeRiskPct: autoTradeControls.perTradeRiskPct || 1.0,
+        maxDailyLossPct: autoTradeControls.maxDailyLossPct || 5.0,
+        stopLossPct: autoTradeControls.stopLossPct || 2.0,
+        takeProfitPct: autoTradeControls.takeProfitPct || 4.0,
+
+        // Mode settings
+        manualOverride: autoTradeControls.manualOverride || false,
+        mode: autoTradeControls.mode || 'AUTO',
       };
       await autoTradeApi.updateConfig(updatedConfig);
-      setConfig(updatedConfig);
+      setConfig(prev => ({ ...prev, ...updatedConfig }));
       showToast('Auto-trade controls saved', 'success');
     } catch (error: any) {
       showToast('Failed to save controls', 'error');
@@ -698,9 +720,62 @@ export default function AutoTrade() {
                     <input
                       type="number"
                       min="1"
-                      max="100"
+                      max="500"
                       value={autoTradeControls.maxTradesPerDay}
                       onChange={(e) => setAutoTradeControls(prev => ({ ...prev, maxTradesPerDay: parseInt(e.target.value) || 1 }))}
+                      className="w-full px-3 py-2 bg-slate-900/50 border border-purple-500/30 rounded-lg text-white"
+                    />
+                  </div>
+
+                  {/* Risk Management Controls */}
+                  <div>
+                    <label className="block text-sm text-gray-300 mb-2">Per Trade Risk (%)</label>
+                    <input
+                      type="number"
+                      min="0.1"
+                      max="10"
+                      step="0.1"
+                      value={autoTradeControls.perTradeRiskPct}
+                      onChange={(e) => setAutoTradeControls(prev => ({ ...prev, perTradeRiskPct: parseFloat(e.target.value) || 1.0 }))}
+                      className="w-full px-3 py-2 bg-slate-900/50 border border-purple-500/30 rounded-lg text-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm text-gray-300 mb-2">Max Daily Loss (%)</label>
+                    <input
+                      type="number"
+                      min="0.5"
+                      max="50"
+                      step="0.5"
+                      value={autoTradeControls.maxDailyLossPct}
+                      onChange={(e) => setAutoTradeControls(prev => ({ ...prev, maxDailyLossPct: parseFloat(e.target.value) || 5.0 }))}
+                      className="w-full px-3 py-2 bg-slate-900/50 border border-purple-500/30 rounded-lg text-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm text-gray-300 mb-2">Stop Loss (%)</label>
+                    <input
+                      type="number"
+                      min="0.5"
+                      max="10"
+                      step="0.1"
+                      value={autoTradeControls.stopLossPct}
+                      onChange={(e) => setAutoTradeControls(prev => ({ ...prev, stopLossPct: parseFloat(e.target.value) || 2.0 }))}
+                      className="w-full px-3 py-2 bg-slate-900/50 border border-purple-500/30 rounded-lg text-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm text-gray-300 mb-2">Take Profit (%)</label>
+                    <input
+                      type="number"
+                      min="0.5"
+                      max="20"
+                      step="0.1"
+                      value={autoTradeControls.takeProfitPct}
+                      onChange={(e) => setAutoTradeControls(prev => ({ ...prev, takeProfitPct: parseFloat(e.target.value) || 4.0 }))}
                       className="w-full px-3 py-2 bg-slate-900/50 border border-purple-500/30 rounded-lg text-white"
                     />
                   </div>
@@ -824,40 +899,10 @@ export default function AutoTrade() {
             </div>
           </div>
 
-          {/* Bottom - Recent Activity */}
-          <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
-            <h2 className="text-xl font-semibold text-white mb-4">Recent Activity</h2>
-
-            {!Array.isArray(activityLogs) || activityLogs.length === 0 ? (
-              <div className="text-center py-8 text-gray-400">
-                No recent activity
-              </div>
-            ) : (
-              <div className="space-y-3 max-h-80 overflow-y-auto">
-                {activityLogs.map((activity, index) => (
-                  <div key={index} className="flex items-start gap-3 p-3 bg-slate-900/30 rounded-lg border border-purple-500/10">
-                    <div className="w-8 h-8 rounded-lg bg-slate-700/50 flex items-center justify-center text-sm">
-                      {activity.type.includes('TRADE_OPENED') && '📈'}
-                      {activity.type.includes('TRADE_CLOSED') && '📉'}
-                      {activity.type.includes('START') && '▶️'}
-                      {activity.type.includes('STOP') && '⏹️'}
-                      {activity.type.includes('PANIC') && '🚨'}
-                      {!activity.type.includes('TRADE') && !activity.type.includes('START') && !activity.type.includes('STOP') && !activity.type.includes('PANIC') && '📝'}
-                    </div>
-                    <div className="flex-1">
-                      <div className="text-sm text-white">{activity.text}</div>
-                      <div className="text-xs text-gray-400">{new Date(activity.ts).toLocaleString()}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Section: Auto-Trade Proposals & Logs */}
+          {/* Recent Activity - Combined Section */}
           <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-white">Auto-Trade Analysis</h3>
+              <h2 className="text-xl font-semibold text-white">Recent Activity</h2>
               <div className="flex gap-2">
                 <button
                   onClick={() => handleTriggerAutoTrade(undefined, true)}
@@ -876,40 +921,128 @@ export default function AutoTrade() {
               </div>
             </div>
 
+            {/* Cycle Info */}
             {proposals && (
-              <div className="mb-4 text-sm text-gray-300">
+              <div className="mb-4 text-sm text-gray-300 bg-slate-700/30 rounded p-3">
                 <div>Last Cycle: {proposals.lastCycle ? new Date(proposals.lastCycle).toLocaleString() : 'Never'}</div>
                 <div>Next Cycle: {proposals.nextCycle ? new Date(proposals.nextCycle).toLocaleString() : 'N/A'}</div>
               </div>
             )}
 
-            {/* Recent Proposals */}
-            {Array.isArray(proposals?.recentProposals) && proposals.recentProposals.length > 0 && (
+            {/* Combined Activity Feed */}
+            <div className="space-y-3 max-h-96 overflow-y-auto">
+              {/* Recent Proposals */}
+              {Array.isArray(proposals?.recentProposals) && proposals.recentProposals.length > 0 && (
+                <>
+                  {proposals.recentProposals.slice(0, 5).map((proposal: any, index: number) => (
+                    <div key={`proposal-${index}`} className="flex items-start gap-3 p-3 bg-slate-900/30 rounded-lg border border-purple-500/10">
+                      <div className="w-8 h-8 rounded-lg bg-blue-600/50 flex items-center justify-center text-sm">
+                        💡
+                      </div>
+                      <div className="flex-1">
+                        <div className="text-sm text-white font-medium">
+                          Trade Proposal: {proposal.symbol} {proposal.direction}
+                        </div>
+                        <div className="text-xs text-gray-400">
+                          Entry: ${proposal.entryPrice.toFixed(2)} | Accuracy: {proposal.accuracy.toFixed(1)}% |
+                          Size: {proposal.positionSize.toFixed(4)}
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          {new Date(proposal.timestamp).toLocaleString()} |
+                          <span className={`px-2 py-0.5 rounded text-xs ${
+                            proposal.executed ? 'bg-green-600/20 text-green-400' : 'bg-yellow-600/20 text-yellow-400'
+                          }`}>
+                            {proposal.executed ? 'Executed' : 'Proposed'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+
+              {/* Activity Logs */}
+              {Array.isArray(activityLogs) && activityLogs.length > 0 && (
+                <>
+                  {activityLogs.slice(0, 10).map((activity, index) => (
+                    <div key={`activity-${index}`} className="flex items-start gap-3 p-3 bg-slate-900/30 rounded-lg border border-purple-500/10">
+                      <div className="w-8 h-8 rounded-lg bg-slate-700/50 flex items-center justify-center text-sm">
+                        {activity.type.includes('TRADE_OPENED') && '📈'}
+                        {activity.type.includes('TRADE_CLOSED') && '📉'}
+                        {activity.type.includes('START') && '▶️'}
+                        {activity.type.includes('STOP') && '⏹️'}
+                        {activity.type.includes('PANIC') && '🚨'}
+                        {!activity.type.includes('TRADE') && !activity.type.includes('START') && !activity.type.includes('STOP') && !activity.type.includes('PANIC') && '📝'}
+                      </div>
+                      <div className="flex-1">
+                        <div className="text-sm text-white">{activity.text}</div>
+                        <div className="text-xs text-gray-400">{new Date(activity.ts).toLocaleString()}</div>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+
+              {/* Auto-Trade Logs */}
+              {Array.isArray(autoTradeLogs) && autoTradeLogs.length > 0 && (
+                <>
+                  {autoTradeLogs.slice(0, 5).map((log: any, index: number) => (
+                    <div key={`log-${index}`} className="flex items-start gap-3 p-3 bg-slate-900/30 rounded-lg border border-purple-500/10">
+                      <div className="w-8 h-8 rounded-lg bg-slate-700/50 flex items-center justify-center text-sm">
+                        📊
+                      </div>
+                      <div className="flex-1">
+                        <div className="text-sm text-white">{log.eventType?.replace(/_/g, ' ') || 'System Event'}</div>
+                        {log.data?.reason && (
+                          <div className="text-xs text-gray-400 mt-1">{log.data.reason}</div>
+                        )}
+                        <div className="text-xs text-gray-500">{new Date(log.timestamp).toLocaleTimeString()}</div>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+
+              {/* Empty State */}
+              {(!Array.isArray(proposals?.recentProposals) || proposals.recentProposals.length === 0) &&
+               (!Array.isArray(activityLogs) || activityLogs.length === 0) &&
+               (!Array.isArray(autoTradeLogs) || autoTradeLogs.length === 0) && (
+                <div className="text-center py-8 text-gray-400">
+                  No recent activity
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Execution Summary */}
+          <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+            <h2 className="text-xl font-semibold text-white mb-4">Execution Summary</h2>
+
+            {/* Active Trades Summary */}
+            {Array.isArray(activeTrades) && activeTrades.length > 0 && (
               <div className="mb-6">
-                <h4 className="text-md font-medium text-white mb-2">Recent Proposals</h4>
-                <div className="space-y-2 max-h-60 overflow-y-auto">
-                  {proposals.recentProposals.map((proposal: any, index: number) => (
+                <h3 className="text-md font-medium text-white mb-3">Active Positions</h3>
+                <div className="space-y-3">
+                  {activeTrades.slice(0, 5).map((trade, index) => (
                     <div key={index} className="bg-slate-700/50 rounded p-3">
                       <div className="flex justify-between items-start">
                         <div>
                           <div className="text-sm text-white font-medium">
-                            {proposal.symbol} {proposal.direction} @ ${proposal.entryPrice.toFixed(2)}
+                            {trade.symbol} {trade.side} @ ${trade.entryPrice.toFixed(2)}
                           </div>
                           <div className="text-xs text-gray-400">
-                            Accuracy: {proposal.accuracy.toFixed(1)}% |
-                            Size: {proposal.positionSize.toFixed(4)} |
-                            SL: ${proposal.stopLoss.toFixed(2)} |
-                            TP: ${proposal.takeProfit.toFixed(2)}
+                            P&L: ${trade.pnl.toFixed(2)} ({trade.pnlPercent.toFixed(2)}%) |
+                            Current: ${trade.currentPrice.toFixed(2)}
                           </div>
                         </div>
                         <div className={`text-xs px-2 py-1 rounded ${
-                          proposal.executed ? 'bg-green-600' : 'bg-yellow-600'
+                          trade.pnl >= 0 ? 'bg-green-600/20 text-green-400' : 'bg-red-600/20 text-red-400'
                         }`}>
-                          {proposal.executed ? 'Executed' : 'Proposed'}
+                          {trade.status}
                         </div>
                       </div>
                       <div className="text-xs text-gray-500 mt-1">
-                        {new Date(proposal.timestamp).toLocaleString()}
+                        {new Date(trade.entryTime).toLocaleString()}
                       </div>
                     </div>
                   ))}
@@ -917,27 +1050,32 @@ export default function AutoTrade() {
               </div>
             )}
 
-            {/* Auto-Trade Logs */}
-            {Array.isArray(autoTradeLogs) && autoTradeLogs.length > 0 && (
-              <div>
-                <h4 className="text-md font-medium text-white mb-2">Activity Logs</h4>
-                <div className="space-y-1 max-h-60 overflow-y-auto">
-                  {autoTradeLogs.slice(0, 10).map((log: any, index: number) => (
-                    <div key={index} className="text-xs bg-slate-700/30 rounded p-2">
-                      <div className="flex justify-between">
-                        <span className="text-gray-300">{log.eventType?.replace(/_/g, ' ')}</span>
-                        <span className="text-gray-500">
-                          {new Date(log.timestamp).toLocaleTimeString()}
-                        </span>
-                      </div>
-                      {log.data?.reason && (
-                        <div className="text-gray-400 mt-1">{log.data.reason}</div>
-                      )}
-                    </div>
-                  ))}
+            {/* Portfolio Summary */}
+            <div className="bg-slate-700/30 rounded-lg p-4">
+              <h3 className="text-md font-medium text-white mb-3">Portfolio Overview</h3>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+                <div>
+                  <div className="text-lg font-bold text-white">${portfolio.equity.toFixed(2)}</div>
+                  <div className="text-xs text-gray-400">Equity</div>
+                </div>
+                <div>
+                  <div className="text-lg font-bold text-white">${portfolio.freeMargin.toFixed(2)}</div>
+                  <div className="text-xs text-gray-400">Free Margin</div>
+                </div>
+                <div>
+                  <div className={`text-lg font-bold ${portfolio.todayPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    ${portfolio.todayPnL.toFixed(2)}
+                  </div>
+                  <div className="text-xs text-gray-400">Today's P&L</div>
+                </div>
+                <div>
+                  <div className={`text-lg font-bold ${portfolio.totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    ${portfolio.totalPnL.toFixed(2)}
+                  </div>
+                  <div className="text-xs text-gray-400">Total P&L</div>
                 </div>
               </div>
-            )}
+            </div>
           </div>
 
         </div>

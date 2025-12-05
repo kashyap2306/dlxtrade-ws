@@ -47,11 +47,22 @@ const notificationSettingsSchema = z.object({
 // New notifications schema matching user requirements
 const notificationsSchema = z.object({
   autoTradeAlerts: z.boolean().optional(),
-  accuracyAlerts: z.boolean().optional(),
-  whaleAlerts: z.boolean().optional(),
-  confirmBeforeTrade: z.boolean().optional(),
-  playSound: z.boolean().optional(),
-  vibrate: z.boolean().optional(),
+  autoTradeAlertsPrereqMet: z.boolean().optional(),
+  accuracyAlerts: z.object({
+    enabled: z.boolean(),
+    threshold: z.number().min(1).max(100),
+    telegramEnabled: z.boolean().optional()
+  }).optional(),
+  whaleAlerts: z.object({
+    enabled: z.boolean(),
+    sensitivity: z.enum(['low', 'medium', 'high']),
+    telegramEnabled: z.boolean().optional()
+  }).optional(),
+  requireTradeConfirmation: z.boolean().optional(),
+  soundEnabled: z.boolean().optional(),
+  vibrateEnabled: z.boolean().optional(),
+  telegramEnabled: z.boolean().optional(),
+  telegramChatId: z.string().optional(),
 });
 
 // Background research schema
@@ -373,21 +384,19 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (req, reply) => {
     const data = await firestoreAdapter.getTradingSettings((req as any).user.uid) || {
-      coinSelectionMode: 'manual',
-      selectedCoins: [],
-      maxPositionPct: 10,
-      tradeType: 'scalping',
-      accuracyTrigger: 85,
-      maxDailyLossPct: 5,
+      mode: 'MANUAL',
+      manualCoins: [],
+      maxPositionPerTrade: 10,
+      tradeType: 'Scalping',
+      accuracyTrigger: 80,
+      maxDailyLoss: 5,
       maxTradesPerDay: 50,
-      autoTradeIntervalMinutes: 5,
-      positionSizingMap: {
-        '0-84': 0,
-        '85-89': 3,
-        '90-94': 6,
-        '95-99': 8.5,
-        '100': 10
-      }
+      positionSizingMap: [
+        { min: 0, max: 25, percent: 1 },
+        { min: 25, max: 50, percent: 2 },
+        { min: 50, max: 75, percent: 3 },
+        { min: 75, max: 100, percent: 5 }
+      ]
     };
     return data;
   });
@@ -401,13 +410,12 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     // Ensure positionSizingMap has defaults if not provided
     const safeBody = {
       ...body,
-      positionSizingMap: body.positionSizingMap || {
-        '0-84': 0,
-        '85-89': 3,
-        '90-94': 6,
-        '95-99': 8.5,
-        '100': 10
-      }
+      positionSizingMap: body.positionSizingMap || [
+        { min: 0, max: 25, percent: 1 },
+        { min: 25, max: 50, percent: 2 },
+        { min: 50, max: 75, percent: 3 },
+        { min: 75, max: 100, percent: 5 }
+      ]
     };
 
     const saved = await firestoreAdapter.saveTradingSettings((req as any).user.uid, safeBody);
@@ -899,7 +907,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         console.log(`[PROVIDER SAVE SUCCESS] ${providerName} saved successfully`);
 
         return {
-          ok: true,
+          success: true,
           message: `${providerName} ${enabled ? 'enabled' : 'disabled'} successfully`
         };
       } catch (dbError: any) {
@@ -966,7 +974,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       console.log(`[PROVIDER TEST RESULT] ${providerName}: ${result.success ? 'SUCCESS' : 'FAILED'} - ${result.message}`);
 
       return {
-        ok: result.success,
+        success: result.success,
         message: result.message,
         details: result.details || {}
       };
@@ -1074,6 +1082,77 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // Helper function to check auto-trade alerts prerequisites
+  async function checkAutoTradeAlertsPrerequisites(uid: string): Promise<{ met: boolean, missing: string[] }> {
+    const missing: string[] = [];
+
+    try {
+      // Check 1: All three primary providers have been saved/configured
+      const userProviderSettings = await firestoreAdapter.getUserProviderSettings(uid) || {};
+
+      const primaryProviders = [
+        { id: 'coingecko', name: 'CoinGecko', requiresKey: false },
+        { id: 'newsdataio', name: 'NewsData.io', requiresKey: true },
+        { id: 'cryptocompare', name: 'CryptoCompare', requiresKey: true }
+      ];
+
+      for (const provider of primaryProviders) {
+        const providerData = userProviderSettings.marketData?.primary?.providerName === provider.name ||
+                           userProviderSettings.news?.primary?.providerName === provider.name ||
+                           userProviderSettings.metadata?.primary?.providerName === provider.name;
+
+        if (!providerData) {
+          missing.push(`${provider.name} not configured as primary provider`);
+          continue;
+        }
+
+        // Check if API key is provided for providers that require it
+        if (provider.requiresKey) {
+          const hasKey = (userProviderSettings.marketData?.primary?.encryptedApiKey && userProviderSettings.marketData.primary.providerName === provider.name) ||
+                        (userProviderSettings.news?.primary?.encryptedApiKey && userProviderSettings.news.primary.providerName === provider.name) ||
+                        (userProviderSettings.metadata?.primary?.encryptedApiKey && userProviderSettings.metadata.primary.providerName === provider.name);
+
+          if (!hasKey) {
+            missing.push(`${provider.name} missing API key`);
+          }
+        }
+      }
+
+      // Check 2: Auto-Trade mode is enabled
+      const settings = await firestoreAdapter.getSettings(uid);
+      if (!settings || !settings.autoTradeEnabled) {
+        missing.push('Auto-Trade not enabled');
+      }
+
+      // Check 3: An exchange is connected
+      const exchanges = ['binance', 'bitget', 'weex', 'bingx'];
+      let hasExchangeConnected = false;
+
+      for (const exchange of exchanges) {
+        const credentials = await firestoreAdapter.getExchangeCredentials(uid, exchange);
+        if (credentials) {
+          hasExchangeConnected = true;
+          break;
+        }
+      }
+
+      if (!hasExchangeConnected) {
+        missing.push('No exchange connected');
+      }
+
+      return {
+        met: missing.length === 0,
+        missing
+      };
+    } catch (error: any) {
+      console.error('Error checking auto-trade prerequisites:', error);
+      return {
+        met: false,
+        missing: ['Error checking prerequisites']
+      };
+    }
+  }
+
   // Notifications Settings Routes
   // GET /api/settings/notifications - Get notification settings
   fastify.get('/settings/notifications', {
@@ -1083,16 +1162,43 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       const user = (request as any).user;
       const settings = await firestoreAdapter.getSettings(user.uid) || {} as any;
 
-      return settings.notifications || {
+      // Check prerequisites for auto-trade alerts
+      const prereqMet = await checkAutoTradeAlertsPrerequisites(user.uid);
+
+      const notifications = settings.notifications || {
         autoTradeAlerts: false,
-        accuracyAlerts: false,
-        whaleAlerts: false,
-        confirmBeforeTrade: false,
-        playSound: false,
-        vibrate: false
+        accuracyAlerts: { enabled: false, threshold: 80 },
+        whaleAlerts: { enabled: false, sensitivity: 'medium' },
+        requireTradeConfirmation: false,
+        soundEnabled: false,
+        vibrateEnabled: false,
+        telegramEnabled: false
+      };
+
+      return {
+        ...notifications,
+        autoTradeAlertsPrereqMet: prereqMet.met,
+        autoTradeAlertsPrereqMissing: prereqMet.missing
       };
     } catch (err: any) {
       return reply.code(500).send({ error: err.message || 'Error loading notification settings' });
+    }
+  });
+
+  // GET /api/settings/notifications/prereq - Check prerequisites for auto-trade alerts
+  fastify.get('/settings/notifications/prereq', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const prereq = await checkAutoTradeAlertsPrerequisites(user.uid);
+
+      return {
+        autoTradeReady: prereq.met,
+        missing: prereq.missing
+      };
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error checking prerequisites' });
     }
   });
 
@@ -1103,6 +1209,14 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     try {
       const user = (request as any).user;
       const body = notificationsSchema.parse(request.body);
+
+      // Validate telegram settings
+      if (body.telegramEnabled) {
+        if (!body.telegramChatId?.trim()) {
+          return reply.code(400).send({ error: 'Telegram Chat ID is required when Telegram is enabled' });
+        }
+        // Note: botToken validation will be handled by the frontend
+      }
 
       // Get existing settings to merge
       const existingSettings = await firestoreAdapter.getSettings(user.uid) || {};
@@ -1118,6 +1232,36 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       return { message: 'Notification settings updated successfully' };
     } catch (err: any) {
       return reply.code(500).send({ error: err.message || 'Error saving notification settings' });
+    }
+  });
+
+  // POST /api/notifications/dismiss - Mark notification as dismissed
+  fastify.post('/notifications/dismiss', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const body = z.object({
+        notificationId: z.string()
+      }).parse(request.body);
+
+      // For now, we'll store dismissed notifications in user settings
+      // In a production system, you might want a separate notifications collection
+      const settings = await firestoreAdapter.getSettings(user.uid) || {} as any;
+      const dismissedNotifications = settings.dismissedNotifications || [];
+      dismissedNotifications.push({
+        id: body.notificationId,
+        dismissedAt: admin.firestore.Timestamp.now()
+      });
+
+      await firestoreAdapter.saveSettings(user.uid, {
+        ...settings,
+        dismissedNotifications
+      });
+
+      return { message: 'Notification dismissed successfully' };
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error dismissing notification' });
     }
   });
 }

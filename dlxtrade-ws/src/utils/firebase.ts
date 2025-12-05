@@ -9,9 +9,69 @@ export function getFirebaseAdmin() {
   if (!serviceAccountJSON) {
     console.error("FIREBASE_SERVICE_ACCOUNT env variable missing - Firebase Admin will not work");
     // Return a dummy app instead of throwing - server should continue
+    let createdDocs = new Set<string>();
+
     firebaseApp = {
-      firestore: () => ({ collection: () => ({}) }),
-      auth: () => ({ verifyIdToken: () => Promise.reject(new Error("Firebase not configured")) })
+      firestore: () => ({
+        collection: (name: string) => ({
+          doc: (id: string) => {
+            const docPath = `${name}/${id}`;
+            const docRef = {
+              get: () => Promise.resolve({
+                exists: createdDocs.has(docPath),
+                data: () => null,
+                id
+              }),
+              set: (data: any) => {
+                createdDocs.add(docPath);
+                return Promise.resolve();
+              },
+              update: (data: any) => Promise.resolve(),
+              delete: () => {
+                createdDocs.delete(docPath);
+                return Promise.resolve();
+              },
+              collection: (subName: string) => ({
+                doc: (subId: string) => {
+                  const subDocPath = `${docPath}/${subName}/${subId}`;
+                  return {
+                    get: () => Promise.resolve({
+                      exists: createdDocs.has(subDocPath),
+                      data: () => null,
+                      id: subId
+                    }),
+                    set: (data: any) => {
+                      createdDocs.add(subDocPath);
+                      return Promise.resolve();
+                    },
+                    update: (data: any) => Promise.resolve(),
+                    delete: () => {
+                      createdDocs.delete(subDocPath);
+                      return Promise.resolve();
+                    }
+                  };
+                },
+                where: () => ({ get: () => Promise.resolve({ docs: [] }) }),
+                get: () => Promise.resolve({ docs: [] })
+              })
+            };
+            return docRef;
+          },
+          where: () => ({ get: () => Promise.resolve({ docs: [] }) }),
+          get: () => Promise.resolve({ docs: [] })
+        }),
+        Timestamp: {
+          now: () => ({
+            toDate: () => new Date(),
+            toMillis: () => Date.now(),
+            toISOString: () => new Date().toISOString()
+          })
+        }
+      }),
+      auth: () => ({
+        verifyIdToken: () => Promise.reject(new Error("Firebase not configured")),
+        getUser: () => Promise.reject(new Error("Firebase not configured"))
+      })
     } as any;
     return firebaseApp;
   }

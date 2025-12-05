@@ -66,12 +66,25 @@ export interface SettingsDocument {
   // New structured notifications
   notifications?: {
     autoTradeAlerts?: boolean;
-    accuracyAlerts?: boolean;
-    whaleAlerts?: boolean;
-    confirmBeforeTrade?: boolean;
-    playSound?: boolean;
-    vibrate?: boolean;
+    autoTradeAlertsPrereqMet?: boolean;
+    accuracyAlerts?: {
+      enabled?: boolean;
+      threshold?: number;
+    };
+    whaleAlerts?: {
+      enabled?: boolean;
+      sensitivity?: 'low' | 'medium' | 'high';
+    };
+    requireTradeConfirmation?: boolean;
+    soundEnabled?: boolean;
+    vibrateEnabled?: boolean;
+    telegramEnabled?: boolean;
+    telegramChatId?: string;
   };
+  dismissedNotifications?: Array<{
+    id: string;
+    dismissedAt: any;
+  }>;
   // Legacy notification settings (keeping for backward compatibility)
   enableAutoTradeAlerts?: boolean;
   enableAccuracyAlerts?: boolean;

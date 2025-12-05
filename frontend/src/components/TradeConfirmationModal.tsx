@@ -13,7 +13,8 @@ interface TradeConfirmationModalProps {
 interface TradeData {
   tradeSize: number;
   leverage: number;
-  maxLoss: number;
+  stopLoss: number;
+  takeProfit?: number;
 }
 
 const TradeConfirmationModal: React.FC<TradeConfirmationModalProps> = ({
@@ -26,14 +27,16 @@ const TradeConfirmationModal: React.FC<TradeConfirmationModalProps> = ({
 }) => {
   const [tradeSize, setTradeSize] = useState(10);
   const [leverage, setLeverage] = useState(1);
-  const [maxLoss, setMaxLoss] = useState(2);
+  const [stopLoss, setStopLoss] = useState(2);
+  const [takeProfit, setTakeProfit] = useState<number | undefined>(undefined);
 
   useEffect(() => {
     if (!isOpen) {
       // Reset to defaults when modal closes
       setTradeSize(10);
       setLeverage(1);
-      setMaxLoss(2);
+      setStopLoss(2);
+      setTakeProfit(undefined);
     }
   }, [isOpen]);
 
@@ -41,7 +44,8 @@ const TradeConfirmationModal: React.FC<TradeConfirmationModalProps> = ({
     onConfirm({
       tradeSize,
       leverage,
-      maxLoss
+      stopLoss,
+      takeProfit
     });
   };
 
@@ -106,21 +110,39 @@ const TradeConfirmationModal: React.FC<TradeConfirmationModalProps> = ({
           <p className="text-xs text-gray-400">Higher leverage increases both profit and risk</p>
         </div>
 
-        {/* Max Loss */}
+        {/* Stop Loss */}
         <div className="space-y-2">
           <label className="block text-sm font-medium text-gray-300">
-            Max Loss (% of Trade)
+            Stop Loss (% of Entry Price)
           </label>
           <input
             type="number"
             min="0.1"
             max="20"
             step="0.1"
-            value={maxLoss}
-            onChange={(e) => setMaxLoss(parseFloat(e.target.value) || 0)}
+            value={stopLoss}
+            onChange={(e) => setStopLoss(parseFloat(e.target.value) || 0)}
             className="w-full px-3 py-2 bg-slate-700/50 border border-slate-600/50 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
           />
           <p className="text-xs text-gray-400">Stop-loss percentage to limit downside risk</p>
+        </div>
+
+        {/* Take Profit */}
+        <div className="space-y-2">
+          <label className="block text-sm font-medium text-gray-300">
+            Take Profit (% of Entry Price) - Optional
+          </label>
+          <input
+            type="number"
+            min="0.1"
+            max="50"
+            step="0.1"
+            value={takeProfit || ''}
+            onChange={(e) => setTakeProfit(e.target.value ? parseFloat(e.target.value) : undefined)}
+            placeholder="Leave empty for no take profit"
+            className="w-full px-3 py-2 bg-slate-700/50 border border-slate-600/50 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+          />
+          <p className="text-xs text-gray-400">Optional take-profit percentage for automated profit taking</p>
         </div>
 
         {/* Risk Warning */}

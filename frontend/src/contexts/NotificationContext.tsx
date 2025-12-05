@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import api from '../services/api';
+import { wsService as ws } from '../services/ws';
 
 export interface Notification {
   id: string;
@@ -118,6 +119,42 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       loadNotifications();
       // Poll every 10 seconds
       pollingIntervalRef.current = setInterval(loadNotifications, 10000);
+
+      // Subscribe to WebSocket alerts
+      const unsubscribe = ws.subscribe('newAlert', (alertData: any) => {
+        // Handle real-time alerts
+        const notification: Notification = {
+          id: `ws-${Date.now()}-${Math.random()}`,
+          title: alertData.title || 'Alert',
+          message: alertData.message || '',
+          timestamp: alertData.timestamp || Date.now(),
+          type: alertData.type || 'info',
+          read: false,
+          data: alertData.data
+        };
+
+        // Add to local state
+        setNotifications((prev) => [notification, ...prev].slice(0, 50));
+
+        // Trigger toast
+        window.dispatchEvent(
+          new CustomEvent('newNotification', { detail: notification })
+        );
+
+        // For trade confirmation alerts, also trigger a special event
+        if (alertData.type === 'confirmTrade') {
+          window.dispatchEvent(
+            new CustomEvent('tradeConfirmationRequired', { detail: alertData })
+          );
+        }
+      });
+
+      return () => {
+        unsubscribe();
+        if (pollingIntervalRef.current) {
+          clearInterval(pollingIntervalRef.current);
+        }
+      };
     } else {
       setNotifications([]);
       lastNotificationIdsRef.current.clear();

@@ -1,0 +1,127 @@
+{
+  "agents": {
+    "passed": 0,
+    "failed": 1,
+    "tests": [
+      {
+        "name": "Agents API basic functionality",
+        "passed": false,
+        "details": "Request failed with status code 401",
+        "timestamp": "2025-12-05T12:19:37.760Z"
+      }
+    ]
+  },
+  "research": {
+    "passed": 3,
+    "failed": 1,
+    "tests": [
+      {
+        "name": "POST /api/research/test-run returns results",
+        "passed": true,
+        "details": "",
+        "timestamp": "2025-12-05T12:19:37.846Z"
+      },
+      {
+        "name": "Test research returns results for 2 symbols",
+        "passed": true,
+        "details": "",
+        "timestamp": "2025-12-05T12:19:37.897Z"
+      },
+      {
+        "name": "Research results include structured analysis format",
+        "details": "",
+        "timestamp": "2025-12-05T12:19:37.898Z"
+      },
+      {
+        "name": "POST /api/research/run requires auth",
+        "passed": true,
+        "details": "",
+        "timestamp": "2025-12-05T12:19:38.177Z"
+      }
+    ]
+  },
+  "autoTrade": {
+    "passed": 3,
+    "failed": 0,
+    "tests": [
+      {
+        "name": "GET /api/auto-trade/status requires auth",
+        "passed": true,
+        "details": "",
+        "timestamp": "2025-12-05T12:19:37.914Z"
+      },
+      {
+        "name": "GET /api/auto-trade/config requires auth",
+        "passed": true,
+        "details": "",
+        "timestamp": "2025-12-05T12:19:38.068Z"
+      },
+      {
+        "name": "Auto-trade routes are properly registered",
+        "passed": true,
+        "details": "",
+        "timestamp": "2025-12-05T12:19:38.224Z"
+      }
+    ]
+  },
+  "profile": {
+    "passed": 2,
+    "failed": 0,
+    "tests": [
+      {
+        "name": "GET /api/users requires auth",
+        "passed": true,
+        "details": "",
+        "timestamp": "2025-12-05T12:19:37.935Z"
+      },
+      {
+        "name": "GET /api/settings/load requires auth",
+        "passed": true,
+        "details": "",
+        "timestamp": "2025-12-05T12:19:38.190Z"
+      }
+    ]
+  },
+  "dashboard": {
+    "passed": 1,
+    "failed": 1,
+    "tests": [
+      {
+        "name": "GET /api/global-stats works",
+        "passed": false,
+        "details": "Request failed with status code 401",
+        "timestamp": "2025-12-05T12:19:37.981Z"
+      },
+      {
+        "name": "GET /api/engine-status/status requires auth",
+        "passed": true,
+        "details": "",
+        "timestamp": "2025-12-05T12:19:38.215Z"
+      }
+    ]
+  },
+  "userFlow": {
+    "passed": 2,
+    "failed": 1,
+    "tests": [
+      {
+        "name": "Backend health check passes",
+        "passed": false,
+        "details": "",
+        "timestamp": "2025-12-05T12:19:38.232Z"
+      },
+      {
+        "name": "GET /api/test works",
+        "passed": true,
+        "details": "",
+        "timestamp": "2025-12-05T12:19:38.244Z"
+      },
+      {
+        "name": "WebSocket endpoints configured",
+        "passed": true,
+        "details": "WS routes registered in app.ts",
+        "timestamp": "2025-12-05T12:19:38.244Z"
+      }
+    ]
+  }
+}

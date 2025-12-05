@@ -559,7 +559,48 @@ export default function Profile() {
                 </div>
               </div>
 
-              {/* 4. TRADING STATISTICS */}
+              {/* 4. EXCHANGE API KEYS */}
+              <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-xl font-semibold text-white">Exchange API Keys</h2>
+                  <button
+                    onClick={() => navigate('/settings')}
+                    className="px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white text-sm rounded transition-colors"
+                  >
+                    Manage Keys
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  {/* Binance */}
+                  <div className="flex items-center justify-between p-3 bg-slate-900/30 rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <BinanceLogo className="w-6 h-6" />
+                      <div>
+                        <div className="text-sm font-medium text-white">Binance</div>
+                        <div className="text-xs text-gray-400">
+                          {userData?.exchangeConfig?.binance?.apiKeyEncrypted ?
+                            '••••••••••••••••' : 'Not configured'}
+                        </div>
+                      </div>
+                    </div>
+                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                      userData?.exchangeConfig?.binance?.apiKeyEncrypted
+                        ? 'bg-green-500/20 text-green-300 border border-green-400/30'
+                        : 'bg-red-500/20 text-red-300 border border-red-400/30'
+                    }`}>
+                      {userData?.exchangeConfig?.binance?.apiKeyEncrypted ? 'Connected' : 'Not Set'}
+                    </span>
+                  </div>
+
+                  {/* Placeholder for other exchanges */}
+                  <div className="text-center py-4 text-gray-400 text-sm">
+                    Configure exchange API keys in Settings for automated trading
+                  </div>
+                </div>
+              </div>
+
+              {/* 5. TRADING STATISTICS */}
               <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
                 <h2 className="text-xl font-semibold text-white mb-4">Trading Statistics</h2>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

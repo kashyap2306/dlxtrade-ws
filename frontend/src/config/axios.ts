@@ -313,4 +313,13 @@ export const cachedApi = {
   delete: (url: string, config?: any) => api.delete(url, config),
 };
 
+// Cache invalidation function
+export const invalidateCache = (urlPattern: string) => {
+  for (const [url, _] of apiCache) {
+    if (url.includes(urlPattern)) {
+      apiCache.delete(url);
+    }
+  }
+};
+
 export default api;

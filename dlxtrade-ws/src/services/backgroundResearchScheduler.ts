@@ -146,11 +146,12 @@ export class BackgroundResearchScheduler {
       // Get user's notification settings
       const notifications = userSettings.notifications || {
         autoTradeAlerts: false,
-        accuracyAlerts: false,
-        whaleAlerts: false,
-        confirmBeforeTrade: false,
-        playSound: false,
-        vibrate: false
+        accuracyAlerts: { enabled: false, threshold: 80 },
+        whaleAlerts: { enabled: false, sensitivity: 'medium' },
+        requireTradeConfirmation: false,
+        soundEnabled: false,
+        vibrateEnabled: false,
+        telegramEnabled: false
       };
 
       // Get user's provider settings
@@ -185,10 +186,16 @@ export class BackgroundResearchScheduler {
             alertTriggered = true;
           }
 
-          // 2. High accuracy alert
-          if (shouldTriggerAlert && notifications.accuracyAlerts) {
+          // 2. High accuracy alert (when accuracy crosses threshold)
+          if (notifications.accuracyAlerts?.enabled && accuracyPercent >= (notifications.accuracyAlerts.threshold || 80)) {
             userNotificationService.sendAccuracyAlert(uid, coin, accuracyPercent);
             alertTriggered = true;
+
+            // Send Telegram alert for accuracy if enabled
+            if (notifications.accuracyAlerts.telegramEnabled && settings.telegramBotToken && settings.telegramChatId) {
+              const telegramMessage = `🎯 *High Accuracy Alert*\n\n${coin} reached ${accuracyPercent}% accuracy!\n\nThis exceeds your threshold of ${notifications.accuracyAlerts.threshold || 80}%.\n\nConsider opening a position.`;
+              await telegramService.sendMessage(settings.telegramBotToken, settings.telegramChatId, telegramMessage);
+            }
           }
 
           // 3. Trade confirmation required
@@ -198,11 +205,23 @@ export class BackgroundResearchScheduler {
           }
 
           // 4. Whale movement detection
-          if ((research.microSignals?.volume || 0) > 50000 && notifications.whaleAlerts) {
-            const direction = research.signal === 'BUY' ? 'buy' : 'sell';
-            const simulatedAmount = Math.floor(Math.random() * 500000) + 100000;
-            userNotificationService.sendWhaleAlert(uid, coin, direction, simulatedAmount);
-            alertTriggered = true;
+          if (notifications.whaleAlerts?.enabled) {
+            const volume = research.microSignals?.volume || 0;
+            const sensitivity = notifications.whaleAlerts.sensitivity || 'medium';
+            const volumeThreshold = sensitivity === 'low' ? 500000 : sensitivity === 'medium' ? 250000 : 100000;
+
+            if (volume > volumeThreshold) {
+              const direction = research.signal === 'BUY' ? 'buy' : 'sell';
+              const simulatedAmount = Math.floor(Math.random() * 500000) + 100000;
+              userNotificationService.sendWhaleAlert(uid, coin, direction, simulatedAmount);
+              alertTriggered = true;
+
+              // Send Telegram alert for whale movement if enabled
+              if (notifications.whaleAlerts.telegramEnabled && settings.telegramBotToken && settings.telegramChatId) {
+                const telegramMessage = `🐋 *Whale Movement Alert*\n\nLarge ${direction.toUpperCase()} order detected for ${coin}!\n\nVolume: $${simulatedAmount.toLocaleString()}\nSensitivity: ${sensitivity}\n\nThis exceeds your ${sensitivity} threshold.`;
+                await telegramService.sendMessage(settings.telegramBotToken, settings.telegramChatId, telegramMessage);
+              }
+            }
           }
 
           if (alertTriggered) {

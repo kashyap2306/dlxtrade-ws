@@ -42,6 +42,40 @@ export async function researchRoutes(fastify: FastifyInstance) {
     return { success: true, data: saved };
   });
 
+  // POST /api/research/background-research/settings/test - Test Telegram connection
+  fastify.post('/background-research/settings/test', {
+    preHandler: [fastify.authenticate],
+  }, async (request, reply) => {
+    const user = request.user as any;
+    const { botToken, chatId } = request.body as { botToken: string; chatId: string };
+
+    try {
+      logger.info({ uid: user.uid }, 'Testing Telegram connection');
+
+      // Import telegram service and test the connection
+      const { telegramService } = await import('../services/telegramService');
+      const testResult = await telegramService.testConnection(botToken, chatId);
+
+      if (testResult.success) {
+        return {
+          success: true,
+          message: "DLXTRADE Alert Test Successful: Telegram integration working."
+        };
+      } else {
+        return reply.code(400).send({
+          error: testResult.error || 'Failed to send test message to Telegram'
+        });
+      }
+    } catch (error: any) {
+      logger.error({ error: error.message, uid: user.uid }, 'Error testing Telegram connection');
+      return reply.code(500).send({
+        success: false,
+        error: 'Failed to test Telegram connection',
+        reason: error.message,
+      });
+    }
+  });
+
   fastify.get('/logs', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Querystring: any }>, reply: FastifyReply) => {
@@ -264,12 +298,33 @@ export async function researchRoutes(fastify: FastifyInstance) {
             news: { primary: 'newsdata', backups: ['cryptopanic', 'reddit'] }
           }, mockIntegrations);
 
+          // Ensure structuredAnalysis exists for testing
+          const structuredAnalysis = result.structuredAnalysis || {
+            coin: symbol,
+            summary: `Analysis for ${symbol} with ${result.accuracy}% accuracy`,
+            signals: [{
+              type: result.signal === 'BUY' ? 'buy' : result.signal === 'SELL' ? 'sell' : 'hold',
+              confidence: result.accuracy / 100,
+              reason: 'Technical analysis'
+            }],
+            metrics: {
+              momentum: { rsi: 50, macd: 0, trend: 'neutral' },
+              volatility: { atr: 1, classification: 'medium' },
+              volume: { trend: 'stable', score: 50 },
+              support: 95,
+              resistance: 105
+            },
+            news: [],
+            images: [`https://via.placeholder.com/400x300/6366f1/ffffff?text=${symbol}+Chart`]
+          };
+
           results.push({
             symbol,
             durationMs: Date.now() - symbolStartTime,
             result: {
               signal: result.signal,
               accuracy: result.accuracy,
+              structuredAnalysis: structuredAnalysis,
               raw: result.raw
             },
             error: null

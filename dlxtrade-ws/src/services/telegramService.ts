@@ -36,6 +36,18 @@ export class TelegramService {
   }
 
   async testConnection(botToken: string, chatId: string): Promise<{ success: boolean; error?: string }> {
+    // Validate bot token format
+    const botTokenRegex = /^\d+:[A-Za-z0-9_-]+$/;
+    if (!botTokenRegex.test(botToken)) {
+      return { success: false, error: 'Invalid bot token format' };
+    }
+
+    // Validate chat ID format
+    const chatIdRegex = /^(@[A-Za-z0-9_]+|-\d+|\d+)$/;
+    if (!chatIdRegex.test(chatId)) {
+      return { success: false, error: 'Invalid chat ID format' };
+    }
+
     const testMessage = `🚀 *DLXTRADE Background Research Test*\n\n✅ Your Telegram bot is configured correctly!\n\nThis is a test message from your Background Deep Research system.`;
     return await this.sendMessage(botToken, chatId, testMessage);
   }

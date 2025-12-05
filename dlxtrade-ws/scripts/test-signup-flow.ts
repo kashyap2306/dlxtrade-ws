@@ -1,15 +1,53 @@
 /**
  * Test script to verify new user signup flow
  * This script simulates the signup process and verifies Firestore document creation
- * 
+ *
  * Usage: ts-node scripts/test-signup-flow.ts
  */
 
+import 'dotenv/config';
 import * as admin from 'firebase-admin';
 import { getFirebaseAdmin } from '../src/utils/firebase';
 import { ensureUser } from '../src/services/userOnboarding';
 import { firestoreAdapter } from '../src/services/firestoreAdapter';
 import { logger } from '../src/utils/logger';
+
+// Mock Firebase if it's not working
+const mockFirebase = () => {
+  const mockDoc = {
+    exists: false,
+    data: () => null,
+    id: 'mock'
+  };
+
+  const mockCollection = {
+    doc: (id: string) => ({
+      get: () => Promise.resolve(mockDoc),
+      set: (data: any) => Promise.resolve(),
+      update: (data: any) => Promise.resolve(),
+      delete: () => Promise.resolve()
+    }),
+    where: () => ({ get: () => Promise.resolve({ docs: [] }) }),
+    get: () => Promise.resolve({ docs: [] })
+  };
+
+  const mockFirestore = {
+    collection: (name: string) => mockCollection,
+    Timestamp: { now: () => ({ toDate: () => new Date(), toMillis: () => Date.now() }) }
+  };
+
+  const mockAuth = {
+    verifyIdToken: () => Promise.reject(new Error("Firebase not configured")),
+    getUser: () => Promise.reject(new Error("Firebase not configured"))
+  };
+
+  const mockApp = {
+    firestore: () => mockFirestore,
+    auth: () => mockAuth
+  };
+
+  return mockApp;
+};
 
 const REQUIRED_FIELDS = [
   'uid',
@@ -37,6 +75,16 @@ const REQUIRED_FIELDS = [
   'updatedAt',
   'lastLogin',
   'profilePicture',
+  // New settings fields
+  'providerConfig',
+  'tradingSettings',
+  'notifications',
+  'backgroundResearch',
+  'notificationSettings',
+  'seenPopups',
+  'researchSettings',
+  'riskLimits',
+  'autoTrade'
 ];
 
 async function testSignupFlow() {

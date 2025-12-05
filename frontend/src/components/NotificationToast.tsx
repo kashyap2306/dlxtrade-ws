@@ -8,6 +8,25 @@ export default function NotificationToast() {
   useEffect(() => {
     const handleNewNotification = (event: CustomEvent<Notification>) => {
       setToast(event.detail);
+
+      // Play sound if enabled
+      const soundEnabled = localStorage.getItem('notificationSounds') === 'true';
+      if (soundEnabled) {
+        try {
+          const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
+          audio.volume = 0.3; // Lower volume for notifications
+          audio.play().catch(() => {}); // Ignore errors
+        } catch (error) {
+          // Ignore audio errors
+        }
+      }
+
+      // Vibrate if enabled and supported
+      const vibrationEnabled = localStorage.getItem('notificationVibration') === 'true';
+      if (vibrationEnabled && navigator.vibrate) {
+        navigator.vibrate(200);
+      }
+
       // Auto-hide after 3 seconds
       setTimeout(() => setToast(null), 3000);
     };
