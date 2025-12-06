@@ -8,8 +8,6 @@ import { useError } from '../contexts/ErrorContext';
 import { useNotificationContext } from '../contexts/NotificationContext';
 import { getApiErrorMessage, suppressConsoleError } from '../utils/errorHandler';
 import { useAuth } from '../hooks/useAuth';
-import { doc, getDoc } from 'firebase/firestore';
-import { db } from '../config/firebase';
 import { Link } from 'react-router-dom';
 import ProviderCard from '../components/ui/ProviderCard';
 
@@ -111,6 +109,10 @@ export default function ResearchPanel() {
   const checkAdmin = async () => {
     if (!user) return;
     try {
+      const [{ doc, getDoc }, { db }] = await Promise.all([
+        import('firebase/firestore'),
+        import('../config/firebase')
+      ]);
       const userDoc = await getDoc(doc(db, 'users', user.uid));
       if (userDoc.exists()) {
         const userData: any = userDoc.data();

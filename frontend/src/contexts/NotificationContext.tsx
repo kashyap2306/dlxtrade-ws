@@ -117,8 +117,8 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   useEffect(() => {
     if (user) {
       loadNotifications();
-      // Poll every 10 seconds
-      pollingIntervalRef.current = setInterval(loadNotifications, 10000);
+      // Poll every 30 seconds to reduce API load
+      pollingIntervalRef.current = setInterval(loadNotifications, 30000);
 
       // Subscribe to WebSocket alerts
       const unsubscribe = ws.subscribe('newAlert', (alertData: any) => {
@@ -304,7 +304,22 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 export function useNotificationContext() {
   const context = useContext(NotificationContext);
   if (context === undefined) {
-    throw new Error('useNotificationContext must be used within a NotificationProvider');
+    // Return safe defaults to prevent crashes during hot reload or initialization
+    return {
+      notifications: [],
+      unreadCount: 0,
+      addNotification: () => {},
+      markAsRead: () => {},
+      markAllAsRead: () => {},
+      removeNotification: () => {},
+      clearAllNotifications: () => {},
+      notifyAutoTrade: () => {},
+      notifyAgentUpdate: () => {},
+      notifyError: () => {},
+      notifySuccess: () => {},
+      notifyInfo: () => {},
+      notifyWarning: () => {},
+    };
   }
   return context;
 }

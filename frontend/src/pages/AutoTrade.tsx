@@ -323,14 +323,14 @@ export default function AutoTrade() {
   }, [loading]);
 
   // Use centralized polling for live data (30 second intervals when visible)
-  usePolling(loadLiveData, 30000, !!user);
+  usePolling(loadLiveData, 60000, !!user); // Reduced to 1 minute
 
   // Load auto-trade status on mount and periodically
   useEffect(() => {
     if (user) {
       loadAutoTradeStatus();
       // Refresh status every 30 seconds
-      const interval = setInterval(loadAutoTradeStatus, 30000);
+      const interval = setInterval(loadAutoTradeStatus, 60000); // Reduced to 1 minute
       return () => clearInterval(interval);
     }
   }, [user, loadAutoTradeStatus]);

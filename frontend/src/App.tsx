@@ -197,10 +197,18 @@ function App() {
       <ErrorProvider>
         <NotificationProvider>
           <ChatbotProvider>
-            <NotificationToast />
-            <NotificationManager soundEnabled={true} vibrationEnabled={true} />
-            <BroadcastPopup />
-            <Chatbot />
+            <ErrorBoundary fallback={null}>
+              <NotificationToast />
+            </ErrorBoundary>
+            <ErrorBoundary fallback={null}>
+              <NotificationManager soundEnabled={true} vibrationEnabled={true} />
+            </ErrorBoundary>
+            <ErrorBoundary fallback={null}>
+              <BroadcastPopup />
+            </ErrorBoundary>
+            <ErrorBoundary fallback={null}>
+              <Chatbot />
+            </ErrorBoundary>
             <Suspense fallback={<LoadingScreen />}>
               <Routes>
                 {/* Public Routes */}

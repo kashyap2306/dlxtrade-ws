@@ -2,6 +2,15 @@ import axios, { AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'ax
 import { getAuth } from 'firebase/auth';
 import { API_URL } from './env';
 
+declare module 'axios' {
+  export interface InternalAxiosRequestConfig {
+    metadata?: {
+      startTime: number;
+      requestId: string;
+    };
+  }
+}
+
 // Set baseURL to API_URL only
 const baseURL = API_URL;
 console.log('API_URL loaded:', API_URL);
@@ -19,7 +28,7 @@ const circuitBreaker: CircuitBreakerState = {
   state: 'closed',
 };
 
-const CIRCUIT_BREAKER_THRESHOLD = 5;
+const CIRCUIT_BREAKER_THRESHOLD = 10;
 const CIRCUIT_BREAKER_TIMEOUT = 10000; // 10 seconds for faster recovery
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000;
@@ -36,12 +45,7 @@ interface CacheEntry {
 const apiCache = new Map<string, CacheEntry>();
 const CACHE_TTL = 5000;
 
-const CACHEABLE_ENDPOINTS = [
-  '/agents',
-  '/agents/unlocked',
-  '/notifications',
-  '/settings/load'
-];
+const CACHEABLE_ENDPOINTS = ['agents', 'notifications', 'settings', 'unlocked'];
 
 const shouldCache = (url: string): boolean =>
   CACHEABLE_ENDPOINTS.some(endpoint => url.includes(endpoint));
@@ -63,16 +67,42 @@ const setCachedResponse = (url: string, data: any, ttl: number = CACHE_TTL): voi
 const api = axios.create({
   baseURL,
   timeout: 30000,
-  retryConfig: {
-    retries: MAX_RETRIES,
-    retryDelay: RETRY_DELAY,
-    retryCondition: (error: AxiosError) =>
-      !error.response ||
-      error.response.status >= 500 ||
-      error.response.status === 429 ||
-      error.response.status === 408,
-  },
 });
+
+// Token caching to reduce Firebase calls
+let cachedToken: string | null = null;
+let tokenTimestamp: number = 0;
+const TOKEN_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
+const getCachedToken = async (): Promise<string | null> => {
+  const now = Date.now();
+
+  // Return cached token if still valid
+  if (cachedToken && (now - tokenTimestamp) < TOKEN_CACHE_DURATION) {
+    return cachedToken;
+  }
+
+  try {
+    const auth = getAuth();
+    const user = auth.currentUser;
+
+    if (user) {
+      // Try to get fresh token, fallback to force refresh if needed
+      try {
+        cachedToken = await user.getIdToken(false);
+      } catch (tokenError) {
+        console.warn('Failed to get fresh token, trying force refresh', tokenError);
+        cachedToken = await user.getIdToken(true);
+      }
+      tokenTimestamp = now;
+      return cachedToken;
+    }
+  } catch (e) {
+    console.warn('Could not get token', e);
+  }
+
+  return null;
+};
 
 // Logging
 const logRequest = (config: InternalAxiosRequestConfig, context: string) => {
@@ -82,7 +112,7 @@ const logRequest = (config: InternalAxiosRequestConfig, context: string) => {
 };
 
 const logResponse = (response: AxiosResponse, context: string) => {
-  const duration = Date.now() - (response.config.metadata?.startTime || 0);
+  const duration = response.config.metadata ? Date.now() - response.config.metadata.startTime : 0;
 
   if (import.meta.env.DEV) {
     console.log(
@@ -149,20 +179,15 @@ api.interceptors.request.use(
       throw error;
     }
 
-    // Firebase Token - get fresh token on each request
+    // Firebase Token - use cached token with automatic refresh
     try {
-      const auth = getAuth();
-      const user = auth.currentUser;
-      if (user) {
-        const idToken = await user.getIdToken(/* forceRefresh= */ false);
-        config.headers = {
-          ...config.headers,
-          Authorization: `Bearer ${idToken}`,
-        };
+      const idToken = await getCachedToken();
+      if (idToken) {
+        config.headers.Authorization = `Bearer ${idToken}`;
       }
     } catch (e) {
       // swallow here; request will continue without token
-      console.warn('Could not attach idToken', e);
+      console.warn('Could not attach cached idToken', e);
     }
 
     // Metadata
@@ -198,7 +223,7 @@ api.interceptors.response.use(
     // Only trigger circuit breaker for server errors, not client errors, CORS, or network errors
     const shouldTriggerCircuitBreaker = error.response &&
       error.response.status >= 500 &&
-      error.response.status !== 0; // Exclude network/CORS errors
+      error.response.status !== 502;
 
     if (shouldTriggerCircuitBreaker) {
       recordFailure();
@@ -221,7 +246,7 @@ api.interceptors.response.use(
 
 // Health Ping Service
 class HealthPingService {
-  private intervalId: NodeJS.Timeout | null = null;
+  private intervalId: number | null = null;
   private isHealthy = false;
 
   start() {
@@ -229,9 +254,7 @@ class HealthPingService {
 
     this.intervalId = setInterval(async () => {
       try {
-        // Health check bypasses baseURL - call /health directly
-        const apiBase = baseURL.replace('/api', '');
-        const healthUrl = `${apiBase}/health`;
+        const healthUrl = `${baseURL}/health`;
         const res = await axios.get(healthUrl, { timeout: 5000 });
         this.isHealthy = res.data?.status === 'ok';
       } catch {
@@ -254,19 +277,17 @@ if (typeof window !== 'undefined') {
 // Timeout wrapper for long-running calls
 export const timeoutApi = {
   get: async (url: string, config?: any, timeoutMs: number = 10000) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const source = axios.CancelToken.source();
+    setTimeout(() => source.cancel("timeout"), timeoutMs);
 
     try {
       const response = await api.get(url, {
         ...config,
-        signal: controller.signal,
+        cancelToken: source.token,
       });
-      clearTimeout(timeoutId);
       return response;
     } catch (error: any) {
-      clearTimeout(timeoutId);
-      if (error.name === 'AbortError') {
+      if (error.message === 'timeout') {
         console.warn(`[API TIMEOUT] ${url} timed out after ${timeoutMs}ms`);
         throw new Error(`Request timeout after ${timeoutMs}ms`);
       }
@@ -274,19 +295,17 @@ export const timeoutApi = {
     }
   },
   post: async (url: string, data?: any, config?: any, timeoutMs: number = 10000) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const source = axios.CancelToken.source();
+    setTimeout(() => source.cancel("timeout"), timeoutMs);
 
     try {
       const response = await api.post(url, data, {
         ...config,
-        signal: controller.signal,
+        cancelToken: source.token,
       });
-      clearTimeout(timeoutId);
       return response;
     } catch (error: any) {
-      clearTimeout(timeoutId);
-      if (error.name === 'AbortError') {
+      if (error.message === 'timeout') {
         console.warn(`[API TIMEOUT] ${url} timed out after ${timeoutMs}ms`);
         throw new Error(`Request timeout after ${timeoutMs}ms`);
       }

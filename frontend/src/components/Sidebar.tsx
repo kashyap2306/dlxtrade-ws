@@ -1,8 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
-import { doc, getDoc } from 'firebase/firestore';
-import { db } from '../config/firebase';
 import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
 import { useChatbot } from '../contexts/ChatbotContext';
 
@@ -109,6 +107,10 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
       }
 
       try {
+        const [{ doc, getDoc }, { db }] = await Promise.all([
+          import('firebase/firestore'),
+          import('../config/firebase')
+        ]);
         const userDoc = await getDoc(doc(db, 'users', user.uid));
         if (userDoc.exists()) {
           const userData: any = userDoc.data();

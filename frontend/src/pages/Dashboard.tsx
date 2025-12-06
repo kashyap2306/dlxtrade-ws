@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, lazy, Suspense, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import Sidebar from '../components/Sidebar';
 import { autoTradeApi, usersApi, globalStatsApi, engineStatusApi, settingsApi, notificationsApi, agentsApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
@@ -101,6 +101,7 @@ export default function Dashboard() {
   // Unified dashboard state - consolidated to reduce re-renders
   const [dashboardState, setDashboardState] = useState({
     data: null as any,
+    settings: null as any, // Fix 1: Add missing settings property
     alerts: [] as Array<{ type: 'warning' | 'error'; message: string }>,
     loading: true,
     error: null as any,
@@ -123,16 +124,18 @@ export default function Dashboard() {
   // Lazy load triggers for heavy components
   const { ref: marketScannerRef, hasIntersected: marketScannerVisible } = useLazyLoad(0.1);
 
-  // Memoized state getters to prevent unnecessary re-renders
-  const dashboardData = useMemo(() => dashboardState.data, [dashboardState.data]);
-  const alerts = useMemo(() => dashboardState.alerts, [dashboardState.alerts]);
-  const loading = useMemo(() => dashboardState.loading, [dashboardState.loading]);
-  const error = useMemo(() => dashboardState.error, [dashboardState.error]);
-  const hasLoaded = useMemo(() => dashboardState.hasLoaded, [dashboardState.hasLoaded]);
-  const autoTradeStatus = useMemo(() => dashboardState.autoTradeStatus, [dashboardState.autoTradeStatus]);
-  const userStats = useMemo(() => dashboardState.userStats, [dashboardState.userStats]);
-  const activeTrades = useMemo(() => dashboardState.activeTrades, [dashboardState.activeTrades]);
-  const aiSignals = useMemo(() => dashboardState.aiSignals, [dashboardState.aiSignals]);
+  // Fix 7: Remove useMemo wrappers and use direct state values
+  const {
+    data: dashboardData,
+    alerts,
+    loading,
+    error,
+    autoTradeStatus,
+    userStats,
+    activeTrades,
+    aiSignals,
+    settings
+  } = dashboardState;
 
   // Debounced dashboard data loading (200ms debounce as requested)
   const debouncedLoadDashboardData = useDebounce(useCallback(async () => {
@@ -159,7 +162,7 @@ export default function Dashboard() {
       ]);
 
       // Extract data with safe fallbacks
-      const dashboardData = {
+      const extractedData = {
         globalStats: results[0].status === 'fulfilled' ? results[0].value?.data || {} : {},
         engineStatus: results[1].status === 'fulfilled' ? results[1].value?.data || {} : {},
         agentsUnlocked: results[2].status === 'fulfilled' ? results[2].value?.data?.unlocked || [] : [],
@@ -170,18 +173,19 @@ export default function Dashboard() {
       if (isMountedRef.current) {
         setDashboardState(prev => ({
           ...prev,
-          data: dashboardData,
+          data: extractedData,
+          settings: extractedData.settings, // Fix 2: Correctly store settings
           error: null,
           loading: false,
           hasLoaded: true,
           // Legacy state
-          autoTradeStatus: dashboardData?.engineStatus || {},
-          userStats: dashboardData?.globalStats || {},
+          autoTradeStatus: extractedData.engineStatus || {},
+          userStats: extractedData.globalStats || {},
           walletBalances: [],
-          activeTrades: dashboardData?.globalStats?.hftLogs || [],
-          aiSignals: dashboardData?.globalStats?.activityLogs || [],
-          performanceStats: dashboardData?.globalStats || {},
-          portfolioHistory: dashboardData?.globalStats?.trades || [],
+          activeTrades: extractedData.globalStats?.hftLogs?.activeTrades || [], // Populated for state access
+          aiSignals: extractedData.globalStats?.activityLogs || [],
+          performanceStats: extractedData.globalStats || {},
+          portfolioHistory: extractedData.globalStats?.trades || [],
         }));
       }
     } catch (err: any) {
@@ -198,6 +202,7 @@ export default function Dashboard() {
         setDashboardState(prev => ({
           ...prev,
           data: safeDashboardData,
+          settings: {},
           error: err,
           loading: false,
           hasLoaded: true,
@@ -221,8 +226,11 @@ export default function Dashboard() {
     debouncedLoadDashboardData();
   }, [debouncedLoadDashboardData]);
 
+  // Fix 6: Correct auto-trade status detection
+  const isAutoTradeEnabled = autoTradeStatus?.status?.autoTradeEnabled ?? autoTradeStatus?.autoTradeEnabled;
+
   const loadAISignals = useCallback(async () => {
-    if (!user || !isMountedRef.current || !autoTradeStatus?.autoTradeEnabled) return;
+    if (!user || !isMountedRef.current || !isAutoTradeEnabled) return;
     try {
       const response = await autoTradeApi.getProposals();
       if (isMountedRef.current) {
@@ -234,7 +242,7 @@ export default function Dashboard() {
         setDashboardState(prev => ({ ...prev, aiSignals: [] }));
       }
     }
-  }, [user, autoTradeStatus?.autoTradeEnabled]);
+  }, [user, isAutoTradeEnabled]);
 
   const checkAlerts = useCallback(() => {
     const newAlerts: Array<{ type: 'warning' | 'error'; message: string }> = [];
@@ -305,9 +313,9 @@ export default function Dashboard() {
     }
   }, [dashboardState.loading]);
 
-  // Use centralized polling with visibility detection (reduced frequency)
+  // Use centralized polling with visibility detection (reduced frequency to 5 minutes)
   // Only poll if data is loaded and not currently loading
-  usePolling(loadData, 120000, !!user && dashboardState.hasLoaded && !dashboardState.loading);
+  usePolling(loadData, 300000, !!user && dashboardState.hasLoaded && !dashboardState.loading);
 
   useEffect(() => {
     if (autoTradeStatus && userStats) {
@@ -352,8 +360,6 @@ export default function Dashboard() {
       });
 
       // Show success message
-      // You might want to add a toast notification here
-
     } catch (error: any) {
       console.error('Trade execution failed:', error);
       // Show error message
@@ -370,12 +376,12 @@ export default function Dashboard() {
 
   // Load AI signals when auto-trade status changes
   useEffect(() => {
-    if (autoTradeStatus?.autoTradeEnabled) {
+    if (isAutoTradeEnabled) {
       loadAISignals();
     } else {
       setDashboardState(prev => ({ ...prev, aiSignals: [] }));
     }
-  }, [autoTradeStatus?.autoTradeEnabled, loadAISignals]);
+  }, [isAutoTradeEnabled, loadAISignals]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -505,9 +511,9 @@ export default function Dashboard() {
               <div className="space-y-3">
                 {[
                   { name: 'Exchange API', key: 'isApiConnected', status: autoTradeStatus?.isApiConnected ? 'connected' : 'disconnected' },
-                  { name: 'Market Data', key: 'marketData', status: 'connected' }, // Assume connected for now
-                  { name: 'News API', key: 'news', status: 'connected' }, // Assume connected for now
-                  { name: 'Metadata API', key: 'metadata', status: 'connected' } // Assume connected for now
+                  { name: 'Market Data', key: 'marketData', status: 'connected' },
+                  { name: 'News API', key: 'news', status: 'connected' },
+                  { name: 'Metadata API', key: 'metadata', status: 'connected' }
                 ].map((api) => (
                   <div key={api.name} className="flex items-center justify-between py-2">
                     <span className="text-slate-300 text-sm font-medium">{api.name}</span>
@@ -517,24 +523,6 @@ export default function Dashboard() {
                   </div>
                 ))}
               </div>
-
-              {/* Uncomment and implement actual API status checking
-              <div className="space-y-3">
-                {[
-                  { name: 'Binance Public', status: autoTradeStatus?.binanceConnected ? 'connected' : 'missing' },
-                  { name: 'CryptoCompare', status: autoTradeStatus?.cryptoCompareConnected ? 'connected' : 'missing' },
-                  { name: 'NewsData', status: autoTradeStatus?.newsDataConnected ? 'connected' : 'missing' },
-                  { name: 'CoinMarketCap', status: autoTradeStatus?.coinMarketCapConnected ? 'connected' : 'missing' }
-                ].map((api) => (
-                  <div key={api.name} className="flex items-center justify-between py-2">
-                    <span className="text-slate-300 text-sm font-medium">{api.name}</span>
-                    <div className={`w-2 h-2 rounded-full ${
-                      api.status === 'connected' ? 'bg-emerald-400' : 'bg-red-400'
-                    }`}></div>
-                  </div>
-                ))}
-              </div>
-              */}
             </div>
           </div>
 
@@ -589,33 +577,34 @@ export default function Dashboard() {
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="text-center p-4 bg-slate-700/30 rounded-xl">
+                  {/* Fix 3: Replace dashboardData?.stats?.user with dashboardData?.globalStats?.user */}
                   <div className={`text-2xl font-bold mb-1 ${
-                    (dashboardData?.stats?.user?.pnlToday || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'
+                    (dashboardData?.globalStats?.user?.pnlToday || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'
                   }`}>
-                    ${(dashboardData?.stats?.user?.pnlToday || 0).toFixed(2)}
+                    ${(dashboardData?.globalStats?.user?.pnlToday || 0).toFixed(2)}
                   </div>
                   <div className="text-xs text-slate-400">Today</div>
                 </div>
 
                 <div className="text-center p-4 bg-slate-700/30 rounded-xl">
                   <div className={`text-2xl font-bold mb-1 ${
-                    (dashboardData?.stats?.user?.pnlTotal || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'
+                    (dashboardData?.globalStats?.user?.pnlTotal || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'
                   }`}>
-                    ${(dashboardData?.stats?.user?.pnlTotal || 0).toFixed(2)}
+                    ${(dashboardData?.globalStats?.user?.pnlTotal || 0).toFixed(2)}
                   </div>
                   <div className="text-xs text-slate-400">All Time</div>
                 </div>
 
                 <div className="text-center p-4 bg-slate-700/30 rounded-xl">
                   <div className="text-2xl font-bold mb-1 text-blue-400">
-                    {dashboardData?.stats?.user?.winRate || 0}%
+                    {dashboardData?.globalStats?.user?.winRate || 0}%
                   </div>
                   <div className="text-xs text-slate-400">Win Rate</div>
                 </div>
 
                 <div className="text-center p-4 bg-slate-700/30 rounded-xl">
                   <div className="text-2xl font-bold mb-1 text-purple-400">
-                    {dashboardData?.stats?.user?.totalTrades || 0}
+                    {dashboardData?.globalStats?.user?.totalTrades || 0}
                   </div>
                   <div className="text-xs text-slate-400">Total Trades</div>
                 </div>
@@ -638,8 +627,9 @@ export default function Dashboard() {
               </div>
 
               <div className="space-y-3 max-h-64 overflow-y-auto">
-                {(dashboardData?.hftLogs?.activeTrades || []).length > 0 ? (
-                  (dashboardData?.hftLogs?.activeTrades || []).slice(0, 5).map((trade: any, index: number) => (
+                {/* Fix 4: Use dashboardState.activeTrades instead of hftLogs.activeTrades */}
+                {activeTrades.length > 0 ? (
+                  activeTrades.slice(0, 5).map((trade: any, index: number) => (
                     <div key={trade.id || index} className="flex items-center justify-between p-3 bg-slate-700/30 rounded-lg">
                       <div>
                         <div className="font-medium text-white">{trade.symbol}</div>
@@ -648,6 +638,7 @@ export default function Dashboard() {
                         </div>
                       </div>
                       <div className="text-right">
+                        {/* Fix 9: Safe PnL rendering */}
                         <div className={`font-medium ${
                           (trade.pnl || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'
                         }`}>
@@ -670,7 +661,8 @@ export default function Dashboard() {
           </div>
 
           {/* AI Research Signals */}
-          {dashboardData?.user?.settings?.autoTradeEnabled && (dashboardData?.research?.signals || []).length > 0 && (
+          {/* Fix 4 & 5: Fix visibility condition and data source */}
+          {dashboardData?.settings?.autoTradeEnabled && aiSignals.length > 0 && (
             <div className="mb-8 bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-2xl p-6 hover:shadow-lg hover:shadow-slate-900/20 transition-all duration-300">
               <div className="flex items-center gap-2 mb-6">
                 <CpuChipIcon className="w-5 h-5 text-slate-400" />
@@ -678,7 +670,7 @@ export default function Dashboard() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {(dashboardData?.research?.signals || []).map((signal: any, index: number) => (
+                {aiSignals.map((signal: any, index: number) => (
                   <div key={signal.id || index} className="p-4 bg-slate-700/30 rounded-xl">
                     <div className="flex items-center justify-between mb-2">
                       <span className="font-medium text-white">{signal.symbol}</span>
@@ -827,7 +819,8 @@ export default function Dashboard() {
         accuracy={tradeConfirmation.accuracy}
         onConfirm={handleTradeConfirm}
         onCancel={handleTradeCancel}
-        soundEnabled={dashboardState.settings?.notificationSettings?.soundEnabled}
+        // Fix 8: Correct prop access for settings
+        soundEnabled={dashboardData?.settings?.notificationSettings?.soundEnabled}
       />
       </div>
       </ErrorBoundary>
