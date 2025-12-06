@@ -131,26 +131,27 @@ export async function ensureUser(
     if (!existingUser.exists) {
       // Create minimal base user document immediately - REQUIREMENT: NO other onboarding code runs before this base doc exists
       const baseUserData = {
-        uid,
         email: profileData?.email || '',
         createdAt: now,
-        lastLogin: now,
-        apiProviders: {} // empty object, keep as default
+        updatedAt: now,
+        providerConfig: {
+          marketData: PROVIDERS.MARKET_DATA.map(id => ({
+            id,
+            category: 'marketData',
+            keyRequired: KEY_REQUIRED_PROVIDERS.includes(id)
+          })),
+          news: PROVIDERS.NEWS.map(id => ({
+            id,
+            category: 'news',
+            keyRequired: KEY_REQUIRED_PROVIDERS.includes(id)
+          })),
+          metadata: PROVIDERS.METADATA.map(id => ({
+            id,
+            category: 'metadata',
+            keyRequired: KEY_REQUIRED_PROVIDERS.includes(id)
+          }))
+        }
       };
-
-      logger.info({ uid, baseFields: Object.keys(baseUserData) }, '🔄 Creating minimal base user document');
-
-      await userRef.set(baseUserData);
-      createdNew = true;
-      logger.info({ uid, createdNew: true, path: `users/${uid}` }, '✅ Base user document created');
-
-      // Verify the document was created
-      const verifyDoc = await userRef.get();
-      if (!verifyDoc.exists) {
-        throw new Error('Base user document creation failed - document does not exist after set()');
-      }
-      logger.info({ uid }, '✅ Base user document creation verified');
-    }
 
       logger.info({ uid, baseFields: Object.keys(baseUserData) }, '🔄 Creating minimal base user document (signup fix)');
 
@@ -176,27 +177,51 @@ export async function ensureUser(
       };
 
       // Only update if field is missing or empty
-      if (!existingData.uid) {
-        updateData.uid = uid;
+      if (!existingData.name && profileData?.name) {
+        updateData.name = profileData.name;
       }
       if (!existingData.email && profileData?.email) {
         updateData.email = profileData.email;
       }
-      if (existingData.apiProviders === undefined) {
-        updateData.apiProviders = {};
+      if (!existingData.phone && profileData?.phone) {
+        updateData.phone = profileData.phone;
       }
-      const fieldsToUpdate = Object.keys(updateData).filter(key => key !== 'lastLogin');
-
-      if (fieldsToUpdate.length > 0) {
-        logger.info({ uid, fieldsToUpdate }, '🔄 Updating existing user with missing basic fields');
-        await userRef.update(updateData);
-        logger.info({ uid, updatedFields: fieldsToUpdate }, '✅ User document updated with missing basic fields');
-      } else {
-        await userRef.update({ lastLogin: now }); // Still update login timestamp
-        logger.info({ uid }, '✅ User document exists and basic fields are present');
+      // Ensure onboarding fields exist (don't overwrite if already set)
+      if (existingData.onboardingRequired === undefined) {
+        updateData.onboardingRequired = true;
       }
-
-    }
+      if (existingData.tradingMarkets === undefined) {
+        updateData.tradingMarkets = [];
+      }
+      if (existingData.experienceLevel === undefined) {
+        updateData.experienceLevel = '';
+      }
+      if (existingData.interestedAgents === undefined) {
+        updateData.interestedAgents = [];
+      }
+      if (existingData.portfolioSize === undefined) {
+        updateData.portfolioSize = '';
+      }
+      if (existingData.preferences === undefined) {
+        updateData.preferences = {
+          riskLevel: '',
+          tradingStyle: '',
+          analysisType: '',
+        };
+      }
+      // Ensure providerConfig exists with complete provider lists (MANDATORY)
+      if (existingData.providerConfig === undefined || !existingData.providerConfig.marketData || existingData.providerConfig.marketData.length === 0) {
+        updateData.providerConfig = {
+          marketData: PROVIDERS.MARKET_DATA.map(id => ({
+            id,
+            category: 'marketData',
+            keyRequired: KEY_REQUIRED_PROVIDERS.includes(id)
+          })),
+          news: PROVIDERS.NEWS.map(id => ({
+            id,
+            category: 'news',
+            keyRequired: KEY_REQUIRED_PROVIDERS.includes(id)
+          })),
           metadata: PROVIDERS.METADATA.map(id => ({
             id,
             category: 'metadata',
@@ -782,4 +807,3 @@ export async function onboardNewUser(
     throw new Error(result.error || 'User onboarding failed');
   }
 }
-

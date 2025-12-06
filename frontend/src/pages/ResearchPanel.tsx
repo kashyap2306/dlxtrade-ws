@@ -10,6 +10,8 @@ import { getApiErrorMessage, suppressConsoleError } from '../utils/errorHandler'
 import { useAuth } from '../hooks/useAuth';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
+import { Link } from 'react-router-dom';
+import ProviderCard from '../components/ui/ProviderCard';
 
 interface ResearchLog {
   id: string;
@@ -23,98 +25,43 @@ interface ResearchLog {
   researchType?: 'manual' | 'auto';
 }
 
-interface AnalysisReportItem {
-  id: string;
-  symbol: string;
-  price: number | null;
-  longSignals: number;
-  accuracy: number;
-  timestamp: string;
+// Coin Image Header Component
+function CoinImageHeader({ symbol, price }) {
+  return (
+    <div className="flex items-center gap-4 mb-2">
+      <div className="w-16 h-16 bg-slate-700 rounded-2xl flex items-center justify-center">
+        <span className="text-white font-bold">{symbol.slice(0, 3)}</span>
+      </div>
+      <div>
+        <div className="text-4xl font-bold text-white">
+          ${price ? price.toLocaleString() : 'N/A'}
+        </div>
+        <div className="text-sm text-slate-400">{symbol}</div>
+      </div>
+    </div>
+  );
 }
 
-
-
-// Helper function to calculate market regime based on indicators
-function getMarketRegime(indicators: any, price: number): { color: string; text: string } {
+// Helper function to get signal color based on indicators
+function getSignalColor(indicators, price) {
   let bullishSignals = 0;
   let bearishSignals = 0;
 
-  // MACD signal
-  if (indicators.macd?.value > 0) bullishSignals++;
-  else if (indicators.macd?.value < 0) bearishSignals++;
+  if (indicators.rsi?.value && indicators.rsi.value < 30) bullishSignals++; else if (indicators.rsi?.value && indicators.rsi.value > 70) bearishSignals++;
+  if (indicators.ema20?.value && price && price > indicators.ema20.value) bullishSignals++; else if (indicators.ema20?.value && price && price < indicators.ema20.value) bearishSignals++;
+  if (indicators.ma50?.value && price && price > indicators.ma50.value) bullishSignals++; else if (indicators.ma50?.value && price && price < indicators.ma50.value) bearishSignals++;
+  if (indicators.volume?.score && indicators.volume.score > 60) bullishSignals++; else if (indicators.volume?.score && indicators.volume.score < 40) bearishSignals++;
 
-  // RSI signal
-  if (indicators.rsi?.value && indicators.rsi.value > 70) bearishSignals++;
-  else if (indicators.rsi?.value && indicators.rsi.value < 30) bullishSignals++;
-
-  // Moving averages
-  if (indicators.ma50?.value && indicators.ma200?.value) {
-    if (price > indicators.ma50.value && indicators.ma50.value > indicators.ma200.value) bullishSignals++;
-    else if (price < indicators.ma200.value) bearishSignals++;
-  }
-
-  // Volume
-  if (indicators.volume?.score && indicators.volume.score > 60) bullishSignals++;
-  else if (indicators.volume?.score && indicators.volume.score < 40) bearishSignals++;
-
-  if (bullishSignals > bearishSignals) return { color: 'text-green-400', text: 'Bullish' };
-  else if (bearishSignals > bullishSignals) return { color: 'text-red-400', text: 'Bearish' };
-  else return { color: 'text-slate-400', text: 'Neutral' };
-}
-
-// Helper function to calculate support and resistance levels
-function getSupportResistanceLevels(indicators: any, price: number): {
-  majorResistance: string;
-  minorResistance: string;
-  majorSupport: string;
-  minorSupport: string;
-} {
-  const ma200 = indicators.ma200?.value;
-  const ma50 = indicators.ma50?.value;
-  const ema20 = indicators.ema20?.value;
-  const atr = indicators.atr?.value;
-
-  return {
-    majorResistance: (() => {
-      // Major resistance: highest of recent highs or MA200 if price is below it
-      if (ma200 && price < ma200) return ma200.toFixed(2);
-      // Use MA50 as resistance if price is below it
-      if (ma50 && price < ma50) return ma50.toFixed(2);
-      // Calculate based on ATR for resistance level
-      if (atr && price) return (price + (atr * 2)).toFixed(2);
-      return 'N/A';
-    })(),
-    minorResistance: (() => {
-      // Minor resistance: EMA20 or MA50 if above current price
-      if (ema20 && price < ema20) return ema20.toFixed(2);
-      if (ma50 && price < ma50) return ma50.toFixed(2);
-      // Calculate based on ATR for minor resistance
-      if (atr && price) return (price + atr).toFixed(2);
-      return 'N/A';
-    })(),
-    majorSupport: (() => {
-      // Major support: lowest of recent lows or MA200 if price is above it
-      if (ma200 && price > ma200) return ma200.toFixed(2);
-      // Use MA50 as support if price is above it
-      if (ma50 && price > ma50) return ma50.toFixed(2);
-      // Calculate based on ATR for support level
-      if (atr && price) return (price - (atr * 2)).toFixed(2);
-      return 'N/A';
-    })(),
-    minorSupport: (() => {
-      // Minor support: EMA20 or MA50 if below current price
-      if (ema20 && price > ema20) return ema20.toFixed(2);
-      if (ma50 && price > ma50) return ma50.toFixed(2);
-      // Calculate based on ATR for minor support
-      if (atr && price) return (price - atr).toFixed(2);
-      return 'N/A';
-    })()
-  };
+  if (bullishSignals > bearishSignals) return 'text-green-400';
+  else if (bearishSignals > bullishSignals) return 'text-red-400';
+  else return 'text-yellow-400';
 }
 
 export default function ResearchPanel() {
   const { user, loading } = useAuth();
   const [logs, setLogs] = useState<ResearchLog[]>([]);
+  const [pageLoading, setPageLoading] = useState(false);
+  const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT');
   const [liveData, setLiveData] = useState<any>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [settings, setSettings] = useState<any>(null);
@@ -128,6 +75,7 @@ export default function ResearchPanel() {
     status: 'pending' | 'loading' | 'success' | 'error';
     error?: string;
   }[]>([]);
+  const [showMoreAnalysis, setShowMoreAnalysis] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
 
   // Deep Research state
@@ -145,6 +93,8 @@ export default function ResearchPanel() {
     images: false,
   });
 
+  // Throttle research results to prevent excessive re-renders
+  const throttledDeepResearchResults = useThrottle(deepResearchResults, 200);
   const { showError } = useError();
   const { addNotification } = useNotificationContext();
 
@@ -851,6 +801,10 @@ export default function ResearchPanel() {
                   <div className="space-y-6 animate-fade-in">
                     {deepResearchResults.map((result, idx) => (
                       <div key={result.id || idx} className="space-y-6 animate-stagger">
+                        {/* PRICE HEADER BANNER */}
+                        <div className="bg-slate-800 p-4 rounded">
+                          <div>Price Header</div>
+                        </div>
 
                         {/* SIGNAL PANEL - Temporarily commented out due to adjacent JSX elements issue */}
                         {/* <div className="relative bg-gradient-to-br from-slate-900/90 via-slate-800/90 to-slate-900/90 backdrop-blur-xl border border-slate-700/50 rounded-2xl p-4 sm:p-6 shadow-2xl shadow-slate-900/50 overflow-hidden"> */}
@@ -900,14 +854,56 @@ export default function ResearchPanel() {
                               <div className="text-sm text-slate-400 mb-2">Market Regime</div>
                               <div className={`text-lg font-bold ${(() => {
                                 const indicators = result.result?.indicators || {};
+                                let bullishSignals = 0;
+                                let bearishSignals = 0;
+
+                                // MACD signal
+                                if (indicators.macd?.value > 0) bullishSignals++;
+                                else if (indicators.macd?.value < 0) bearishSignals++;
+
+                                // RSI signal
+                                if (indicators.rsi?.value && indicators.rsi.value > 70) bearishSignals++;
+                                else if (indicators.rsi?.value && indicators.rsi.value < 30) bullishSignals++;
+
+                                // Moving averages
                                 const price = result.result?.raw?.marketData?.price || 0;
-                                return getMarketRegime(indicators, price).color;
+                                if (indicators.ma50?.value && indicators.ma200?.value) {
+                                  if (price > indicators.ma50.value && indicators.ma50.value > indicators.ma200.value) bullishSignals++;
+                                  else if (price < indicators.ma200.value) bearishSignals++;
+                                }
+
+                                // Volume
+                                if (indicators.volume?.score && indicators.volume.score > 60) bullishSignals++;
+                                else if (indicators.volume?.score && indicators.volume.score < 40) bearishSignals++;
+
+                                if (bullishSignals > bearishSignals) return 'text-green-400';
+                                else if (bearishSignals > bullishSignals) return 'text-red-400';
+                                else return 'text-slate-400';
                               })()
                                 }`}>
                                 {(() => {
                                   const indicators = result.result?.indicators || {};
+                                  let bullishSignals = 0;
+                                  let bearishSignals = 0;
+
+                                  if (indicators.macd?.value > 0) bullishSignals++;
+                                  else if (indicators.macd?.value < 0) bearishSignals++;
+
+                                  if (indicators.rsi?.value && indicators.rsi.value > 70) bearishSignals++;
+                                  else if (indicators.rsi?.value && indicators.rsi.value < 30) bullishSignals++;
+
                                   const price = result.result?.raw?.marketData?.price || 0;
-                                  return getMarketRegime(indicators, price).text;
+                                  if (indicators.ma50?.value && indicators.ma200?.value) {
+                                    if (price > indicators.ma50.value && indicators.ma50.value > indicators.ma200.value) bullishSignals++;
+                                    else if (price < indicators.ma200.value) bearishSignals++;
+                                  }
+
+                                  if (indicators.volume?.score && indicators.volume.score > 60) bullishSignals++;
+                                  else if (indicators.volume?.score && indicators.volume.score < 40) bearishSignals++;
+
+                                  if (bullishSignals > bearishSignals) return 'Bullish';
+                                  else if (bearishSignals > bullishSignals) return 'Bearish';
+                                  else return 'Neutral';
                                 })()}
                               </div>
                             </div>
@@ -953,7 +949,20 @@ export default function ResearchPanel() {
                                     ${(() => {
                                       const indicators = result.result?.indicators || {};
                                       const price = result.result?.raw?.marketData?.price || 0;
-                                      return getSupportResistanceLevels(indicators, price).majorResistance;
+
+                                      // Major resistance: highest of recent highs or MA200 if price is below it
+                                      if (indicators.ma200?.value && price < indicators.ma200.value) {
+                                        return indicators.ma200.value.toFixed(2);
+                                      }
+                                      // Use MA50 as resistance if price is below it
+                                      if (indicators.ma50?.value && price < indicators.ma50.value) {
+                                        return indicators.ma50.value.toFixed(2);
+                                      }
+                                      // Calculate based on ATR for resistance level
+                                      if (indicators.atr?.value && price) {
+                                        return (price + (indicators.atr.value * 2)).toFixed(2);
+                                      }
+                                      return 'N/A';
                                     })()}
                                   </div>
                                 </div>
@@ -969,7 +978,19 @@ export default function ResearchPanel() {
                                     ${(() => {
                                       const indicators = result.result?.indicators || {};
                                       const price = result.result?.raw?.marketData?.price || 0;
-                                      return getSupportResistanceLevels(indicators, price).minorResistance;
+
+                                      // Minor resistance: EMA20 or MA50 if above current price
+                                      if (indicators.ema20?.value && price < indicators.ema20.value) {
+                                        return indicators.ema20.value.toFixed(2);
+                                      }
+                                      if (indicators.ma50?.value && price < indicators.ma50.value) {
+                                        return indicators.ma50.value.toFixed(2);
+                                      }
+                                      // Calculate based on ATR for minor resistance
+                                      if (indicators.atr?.value && price) {
+                                        return (price + indicators.atr.value).toFixed(2);
+                                      }
+                                      return 'N/A';
                                     })()}
                                   </div>
                                 </div>
@@ -990,7 +1011,20 @@ export default function ResearchPanel() {
                                     ${(() => {
                                       const indicators = result.result?.indicators || {};
                                       const price = result.result?.raw?.marketData?.price || 0;
-                                      return getSupportResistanceLevels(indicators, price).majorSupport;
+
+                                      // Major support: lowest of recent lows or MA200 if price is above it
+                                      if (indicators.ma200?.value && price > indicators.ma200.value) {
+                                        return indicators.ma200.value.toFixed(2);
+                                      }
+                                      // Use MA50 as support if price is above it
+                                      if (indicators.ma50?.value && price > indicators.ma50.value) {
+                                        return indicators.ma50.value.toFixed(2);
+                                      }
+                                      // Calculate based on ATR for support level
+                                      if (indicators.atr?.value && price) {
+                                        return (price - (indicators.atr.value * 2)).toFixed(2);
+                                      }
+                                      return 'N/A';
                                     })()}
                                   </div>
                                 </div>
@@ -1006,7 +1040,19 @@ export default function ResearchPanel() {
                                     ${(() => {
                                       const indicators = result.result?.indicators || {};
                                       const price = result.result?.raw?.marketData?.price || 0;
-                                      return getSupportResistanceLevels(indicators, price).minorSupport;
+
+                                      // Minor support: EMA20 or MA50 if below current price
+                                      if (indicators.ema20?.value && price > indicators.ema20.value) {
+                                        return indicators.ema20.value.toFixed(2);
+                                      }
+                                      if (indicators.ma50?.value && price > indicators.ma50.value) {
+                                        return indicators.ma50.value.toFixed(2);
+                                      }
+                                      // Calculate based on ATR for minor support
+                                      if (indicators.atr?.value && price) {
+                                        return (price - indicators.atr.value).toFixed(2);
+                                      }
+                                      return 'N/A';
                                     })()}
                                   </div>
                                 </div>
@@ -3538,4 +3584,3 @@ export default function ResearchPanel() {
     </div >
   );
 }
-
