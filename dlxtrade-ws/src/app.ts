@@ -40,6 +40,9 @@ import { backgroundResearchRoutes } from './routes/backgroundResearch';
 // Environment checks
 console.log("ENV: VITE_API_URL set?", !!process.env.VITE_API_URL);
 
+// Version logging for deployment verification
+logger.info("WS VERSION: 2025-DEC-05-ONBOARDING-PATCH");
+
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
     logger: logger.child({ component: 'fastify' }),
@@ -91,6 +94,17 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   // Firebase Authentication decorator
   app.decorate('authenticate', firebaseAuthMiddleware);
+
+  // Global preHandler middleware - runs ensureUser BEFORE all WS and REST logic
+  app.addHook("preHandler", async (req, reply) => {
+    if ((req as any).user && (req as any).user.uid) {
+      const { ensureUser } = await import('./services/userOnboarding');
+      await ensureUser((req as any).user.uid, {
+        email: (req as any).user.email,
+        name: (req as any).user.name || (req as any).user.displayName
+      });
+    }
+  });
 
   // WebSocket
   await app.register(fastifyWebsocket);
@@ -193,6 +207,22 @@ console.log("[RENDER ENV] Build timestamp:", Date.now());
       uid = decoded.uid;
       (req as any).user = { uid: decoded.uid, email: decoded.email };
       console.log('🔥 WS: Token verified successfully for uid:', uid);
+
+      // FIRST LINE after token verify: Run ensureUser BEFORE any other async call
+      const { ensureUser } = await import('./services/userOnboarding');
+      const ensureResult = await ensureUser(uid, {
+        email: decoded.email,
+        name: decoded.name || decoded.display_name,
+        phone: null
+      });
+
+      if (!ensureResult.success) {
+        logger.error({ uid, error: ensureResult.error }, '❌ ensureUser failed in WebSocket handler - closing connection');
+        connection.socket.close(1008, `User onboarding failed: ${ensureResult.error}`);
+        return;
+      }
+
+      logger.info({ uid }, '✅ ensureUser completed');
 
     } catch (err: any) {
       console.log('🔥 WS: Token verification failed:', err.message);

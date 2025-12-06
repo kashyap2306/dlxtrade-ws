@@ -2972,6 +2972,218 @@ export class DeepResearchEngine {
     }
   }
 
+  /**
+   * Try a provider with timeout and retry logic
+   */
+  private async tryProviderWithRetry<T>(
+    providerFunction: () => Promise<T>,
+    providerName: string,
+    symbol: string,
+    timeoutMs: number,
+    maxRetries: number
+  ): Promise<{ success: boolean; data?: T; error?: string; latency: number }> {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const startTime = Date.now();
+
+      try {
+        // Create timeout promise
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('Request timeout')), timeoutMs);
+        });
+
+        // Race between the provider call and timeout
+        const data = await Promise.race([providerFunction(), timeoutPromise]);
+
+        return {
+          success: true,
+          data,
+          latency: Date.now() - startTime
+        };
+
+      } catch (error: any) {
+        const latency = Date.now() - startTime;
+        const isRetryable = attempt < maxRetries && (
+          error.message?.includes('timeout') ||
+          error.message?.includes('network') ||
+          error.response?.status >= 500
+        );
+
+        if (isRetryable) {
+          logger.warn({
+            symbol,
+            provider: providerName,
+            attempt: attempt + 1,
+            maxRetries,
+            error: error.message,
+            latency
+          }, `Provider ${providerName} failed, retrying in 400ms`);
+
+          // Wait 400ms before retry
+          await new Promise(resolve => setTimeout(resolve, 400));
+          continue;
+        }
+
+        return {
+          success: false,
+          error: error.message || 'Unknown error',
+          latency
+        };
+      }
+    }
+
+    return {
+      success: false,
+      error: 'Max retries exceeded',
+      latency: 0
+    };
+  }
+
+  /**
+   * Fetch market data with provider failover logic and timeout/retry
+   */
+  private async fetchMarketDataWithFailover(symbol: string, integrations: any, providerUsage: any) {
+    const providers = [
+      { name: 'cryptocompare', key: 'cryptocompare', hasApiKey: !!integrations.cryptocompare?.apiKey },
+      { name: 'coingecko', key: 'coingecko', hasApiKey: true }, // Public API
+      { name: 'kucoin', key: null, hasApiKey: true }, // Public API
+      { name: 'bybit', key: 'bybit', hasApiKey: !!integrations.bybit?.apiKey },
+      { name: 'okx', key: 'okx', hasApiKey: !!integrations.okx?.apiKey },
+      { name: 'bitget', key: 'bitget', hasApiKey: !!integrations.bitget?.apiKey },
+    ];
+
+    for (const provider of providers) {
+      if (!provider.hasApiKey) continue; // Skip providers without API keys
+
+      const result = await this.tryProviderWithRetry(
+        () => this.fetchMarketDataFromProvider(provider.name, symbol, integrations),
+        provider.name,
+        symbol,
+        4000, // 4 second timeout
+        1 // 1 retry
+      );
+
+      if (result.success && result.data) {
+        providerUsage.marketData = {
+          provider: provider.name,
+          timestamp: new Date().toISOString(),
+          latency: result.latency,
+        };
+        logger.info({ symbol, provider: provider.name, latency: result.latency }, `Market data fetched from ${provider.name}`);
+        return result.data;
+      }
+
+      logger.warn({ symbol, provider: provider.name, error: result.error }, `Market data provider ${provider.name} failed, trying next`);
+    }
+
+    // Return partial data if all providers fail
+    logger.error({ symbol }, 'All market data providers failed');
+    providerUsage.marketData = { provider: 'failed', timestamp: new Date().toISOString(), latency: 0 };
+    return { error: 'All market data providers failed', ohlc: [], currentPrice: 0 };
+  }
+
+
+  /**
+   * Get top 10 coins by market cap for deep research
+   */
+  async getTop10Coins(uid: string): Promise<any[]> {
+    try {
+      logger.info({ uid }, 'Fetching top 10 coins for deep research');
+
+      // For now, return hardcoded top 10 coins
+      // In production, this would fetch from multiple providers with failover
+      return [
+        { id: 'bitcoin', symbol: 'BTCUSDT', name: 'Bitcoin', thumbnail: 'https://assets.coingecko.com/coins/images/1/small/bitcoin.png', current_price: 43000, price_change_percentage_24h: 2.5 },
+        { id: 'ethereum', symbol: 'ETHUSDT', name: 'Ethereum', thumbnail: 'https://assets.coingecko.com/coins/images/279/small/ethereum.png', current_price: 2500, price_change_percentage_24h: 1.8 },
+        { id: 'binancecoin', symbol: 'BNBUSDT', name: 'Binance Coin', thumbnail: 'https://assets.coingecko.com/coins/images/825/small/binance-coin-logo.png', current_price: 310, price_change_percentage_24h: 3.2 },
+        { id: 'cardano', symbol: 'ADAUSDT', name: 'Cardano', thumbnail: 'https://assets.coingecko.com/coins/images/975/small/cardano.png', current_price: 0.45, price_change_percentage_24h: -1.2 },
+        { id: 'ripple', symbol: 'XRPUSDT', name: 'XRP', thumbnail: 'https://assets.coingecko.com/coins/images/44/small/xrp-symbol-white-128.png', current_price: 0.62, price_change_percentage_24h: 0.8 },
+        { id: 'solana', symbol: 'SOLUSDT', name: 'Solana', thumbnail: 'https://assets.coingecko.com/coins/images/4128/small/solana.png', current_price: 95, price_change_percentage_24h: 4.1 },
+        { id: 'polkadot', symbol: 'DOTUSDT', name: 'Polkadot', thumbnail: 'https://assets.coingecko.com/coins/images/12171/small/polkadot.png', current_price: 7.2, price_change_percentage_24h: -0.5 },
+        { id: 'dogecoin', symbol: 'DOGEUSDT', name: 'Dogecoin', thumbnail: 'https://assets.coingecko.com/coins/images/5/small/dogecoin.png', current_price: 0.085, price_change_percentage_24h: 2.1 },
+        { id: 'avalanche-2', symbol: 'AVAXUSDT', name: 'Avalanche', thumbnail: 'https://assets.coingecko.com/coins/images/12559/small/coin-round-red.png', current_price: 35, price_change_percentage_24h: 1.9 },
+        { id: 'litecoin', symbol: 'LTCUSDT', name: 'Litecoin', thumbnail: 'https://assets.coingecko.com/coins/images/2/small/litecoin.png', current_price: 75, price_change_percentage_24h: 0.3 },
+      ];
+    } catch (error) {
+      logger.error({ uid, error: error.message }, 'Error fetching top 10 coins');
+      return [];
+    }
+  }
+
+  /**
+   * Get comprehensive research data for a specific coin
+   */
+  async getCoinResearch(uid: string, symbol: string, source?: string): Promise<any> {
+    const startTime = Date.now();
+    const providerUsage = {
+      marketData: { provider: null as string | null, timestamp: null as string | null, latency: 0 },
+      metadata: { provider: null as string | null, timestamp: null as string | null, latency: 0 },
+      news: { provider: null as string | null, timestamp: null as string | null, latency: 0 },
+    };
+
+    try {
+      logger.info({ uid, symbol, source }, 'Starting comprehensive coin research');
+
+      const integrations = await getUserIntegrations(uid);
+
+      // Use existing provider execution methods for basic functionality
+      const marketDataResult = await this.executeMarketDataProvider(symbol, { primary: 'cryptocompare', backups: ['coingecko'] }, integrations, uid);
+      const metadataResult = await this.executeCMCProvider(symbol, { primary: 'coingecko', backups: ['coinpaprika'] }, integrations, uid);
+      const newsResult = await this.executeNewsProvider(symbol, { primary: 'newsdata', backups: ['cryptopanic'] }, integrations, uid);
+
+      // Extract actual data from provider results
+      const marketData = marketDataResult.success ? marketDataResult.data : { currentPrice: 0, volume24h: 0, priceChangePercent24h: 0 };
+      const metadata = metadataResult.success ? metadataResult.data : { description: '', categories: [], website: '', tags: [] };
+      const news = newsResult.success && newsResult.data ? newsResult.data.slice(0, 10) : [];
+
+      // Basic coin images
+      const coinImages = [
+        metadata?.image?.large || `https://via.placeholder.com/200x200/6366f1/ffffff?text=${symbol}`,
+        `https://via.placeholder.com/400x300/10b981/ffffff?text=${symbol}+Chart`,
+        `https://via.placeholder.com/400x300/3b82f6/ffffff?text=${symbol}+Analysis`
+      ];
+
+      // Basic analysis summary
+      const analysisSummary = {
+        rsi: 50,
+        maSignal: 'neutral',
+        volatility: 'medium',
+        signals: {
+          momentum: 'neutral',
+          trend: 'neutral',
+          risk: 'medium'
+        },
+        summary: `Basic analysis for ${symbol}`,
+      };
+
+      // Update provider usage
+      if (marketDataResult.success) {
+        providerUsage.marketData = { provider: marketDataResult.provider, timestamp: new Date().toISOString(), latency: marketDataResult.latencyMs };
+      }
+      if (metadataResult.success) {
+        providerUsage.metadata = { provider: metadataResult.provider, timestamp: new Date().toISOString(), latency: metadataResult.latencyMs };
+      }
+      if (newsResult.success) {
+        providerUsage.news = { provider: newsResult.provider, timestamp: new Date().toISOString(), latency: newsResult.latencyMs };
+      }
+
+      const totalLatency = Date.now() - startTime;
+      logger.info({ uid, symbol, totalLatency, providers: providerUsage }, 'Coin research completed');
+
+      return {
+        marketData: marketDataResult,
+        metadata: metadataResult,
+        news: newsResult,
+        coinImages,
+        analysisSummary,
+        providerUsage,
+      };
+
+    } catch (error) {
+      logger.error({ uid, symbol, error: error.message }, 'Error in coin research');
+      throw error;
+    }
+  }
+
 }
 
 // Temporarily commented out due to compilation issues
@@ -3117,6 +3329,7 @@ export async function selectCoinsForResearch(uid: string): Promise<string[]> {
     logger.error({ uid, error }, 'Error selecting coins for research');
     return ['BTCUSDT', 'ETHUSDT'];
   }
+
 }
 
 export async function runFreeModeDeepResearch(

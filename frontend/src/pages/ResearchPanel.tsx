@@ -78,6 +78,21 @@ export default function ResearchPanel() {
   const [showMoreAnalysis, setShowMoreAnalysis] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
 
+  // Deep Research state
+  const [top10Coins, setTop10Coins] = useState<any[]>([]);
+  const [selectedCoinData, setSelectedCoinData] = useState<any>(null);
+  const [selectedCoinSymbol, setSelectedCoinSymbol] = useState<string | null>(null);
+  const [coinResearchLoading, setCoinResearchLoading] = useState(false);
+  const [top10Loading, setTop10Loading] = useState(false);
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
+  const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(null);
+  const [mobileSectionsOpen, setMobileSectionsOpen] = useState({
+    analysis: true,
+    metrics: false,
+    news: false,
+    images: false,
+  });
+
   // Throttle research results to prevent excessive re-renders
   const throttledDeepResearchResults = useThrottle(deepResearchResults, 200);
   const { showError } = useError();
@@ -117,6 +132,58 @@ export default function ResearchPanel() {
       suppressConsoleError(err, 'loadLogs');
     }
   }, [user]);
+
+  // Load top 10 coins for deep research
+  const loadTop10Coins = useCallback(async () => {
+    if (!user?.uid) return;
+
+    setTop10Loading(true);
+    try {
+      const response = await researchApi.deepResearch.getTop10();
+      setTop10Coins(response.data?.coins || []);
+    } catch (err: any) {
+      console.error('Error loading top 10 coins:', err);
+      showError('Failed to load top 10 coins', 'api');
+    } finally {
+      setTop10Loading(false);
+    }
+  }, [user?.uid, showError]);
+
+  // Load detailed research for a specific coin
+  const loadCoinResearch = useCallback(async (symbol: string) => {
+    if (!user?.uid) return;
+
+    setCoinResearchLoading(true);
+    setSelectedCoinSymbol(symbol);
+
+    try {
+      const response = await researchApi.deepResearch.getCoin(symbol);
+      setSelectedCoinData(response.data?.data || null);
+      setLastRefreshTime(new Date());
+    } catch (err: any) {
+      console.error('Error loading coin research:', err);
+      showError('Failed to load coin research data', 'api');
+      setSelectedCoinData(null);
+    } finally {
+      setCoinResearchLoading(false);
+    }
+  }, [user?.uid, showError]);
+
+  // Auto-refresh functionality
+  useEffect(() => {
+    if (!autoRefreshEnabled || !selectedCoinSymbol) return;
+
+    const interval = setInterval(() => {
+      loadCoinResearch(selectedCoinSymbol);
+    }, 30000); // 30 seconds
+
+    return () => clearInterval(interval);
+  }, [autoRefreshEnabled, selectedCoinSymbol, loadCoinResearch]);
+
+  // Load top 10 coins on component mount
+  useEffect(() => {
+    loadTop10Coins();
+  }, [loadTop10Coins]);
 
   const loadSettings = useCallback(async () => {
     try {
@@ -3057,6 +3124,458 @@ export default function ResearchPanel() {
             </div>
           </div>
         </div >
+
+        {/* Deep Research Section */}
+        <section className="mb-16">
+          <div className="relative">
+            {/* Background gradient card */}
+            <div className="absolute inset-0 bg-gradient-to-r from-slate-900/40 via-slate-800/40 to-slate-900/40 backdrop-blur-xl rounded-3xl border border-slate-700/50 shadow-2xl shadow-slate-900/30"></div>
+
+            {/* Gradient accent lines */}
+            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-purple-500 via-cyan-500 to-blue-500 rounded-t-3xl"></div>
+            <div className="absolute bottom-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-purple-500 to-cyan-500 rounded-b-3xl"></div>
+
+            <div className="relative p-8 rounded-3xl">
+              <div className="flex items-center justify-between mb-8">
+                <div>
+                  <h2 className="text-3xl font-bold bg-gradient-to-r from-purple-300 via-cyan-300 to-blue-300 bg-clip-text text-transparent mb-2">
+                    Deep Research
+                  </h2>
+                  <p className="text-slate-300">Comprehensive market analysis with real-time data and provider failover</p>
+                </div>
+                {selectedCoinSymbol && (
+                  <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="autoRefresh"
+                        checked={autoRefreshEnabled}
+                        onChange={(e) => setAutoRefreshEnabled(e.target.checked)}
+                        className="w-4 h-4 text-purple-600 bg-slate-700 border-slate-600 rounded focus:ring-purple-500"
+                      />
+                      <label htmlFor="autoRefresh" className="text-sm text-slate-300">
+                        Auto-refresh (30s)
+                      </label>
+                    </div>
+                    {lastRefreshTime && (
+                      <span className="text-xs text-slate-400">
+                        Last updated: {lastRefreshTime.toLocaleTimeString()}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+
+                  {/* Top 10 Coins Selector */}
+              <div className="mb-8">
+                <h3 className="text-xl font-semibold text-white mb-4">Top 10 Coins by Market Cap</h3>
+                {top10Loading ? (
+                  <div className="flex items-center justify-center py-8">
+                    <div className="w-8 h-8 border-4 border-purple-500/30 border-t-purple-500 rounded-full animate-spin"></div>
+                    <span className="ml-3 text-slate-400">Loading top coins...</span>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4">
+                    {top10Coins.map((coin) => (
+                      <button
+                        key={coin.symbol}
+                        onClick={() => loadCoinResearch(coin.symbol)}
+                        disabled={coinResearchLoading}
+                        className={`p-4 bg-slate-800/50 backdrop-blur-sm border rounded-xl hover:bg-slate-700/50 transition-all duration-300 ${
+                          selectedCoinSymbol === coin.symbol
+                            ? 'border-purple-500 bg-purple-500/10'
+                            : 'border-slate-600/30 hover:border-slate-500/60'
+                        } ${coinResearchLoading ? 'opacity-50 cursor-not-allowed' : 'transform hover:scale-105'}`}
+                      >
+                        <div className="flex flex-col items-center text-center">
+                          {coin.thumbnail && (
+                            <img
+                              src={coin.thumbnail}
+                              alt={coin.name}
+                              className="w-8 h-8 rounded-full mb-2"
+                              onError={(e) => {
+                                e.currentTarget.style.display = 'none';
+                              }}
+                            />
+                          )}
+                          <span className="text-sm font-medium text-white">{coin.symbol.replace('USDT', '')}</span>
+                          <span className="text-xs text-slate-400 truncate w-full">{coin.name}</span>
+                          <div className={`text-xs mt-1 ${coin.price_change_percentage_24h >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {coin.price_change_percentage_24h >= 0 ? '+' : ''}{coin.price_change_percentage_24h?.toFixed(2)}%
+                          </div>
+                          <div className="text-xs text-slate-300 mt-1">
+                            ${coin.current_price?.toLocaleString()}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Coin Research Display */}
+              {selectedCoinSymbol && (
+                <div className="space-y-6">
+                  {coinResearchLoading ? (
+                    <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-8">
+                      <div className="text-center">
+                        <div className="w-12 h-12 border-4 border-purple-500/30 border-t-purple-500 rounded-full animate-spin mx-auto mb-4"></div>
+                        <h3 className="text-xl font-semibold text-white mb-2">Analyzing {selectedCoinSymbol.replace('USDT', '')}</h3>
+                        <p className="text-slate-400">Fetching comprehensive market data...</p>
+                      </div>
+                    </div>
+                  ) : selectedCoinData ? (
+                    <div className="space-y-4 lg:space-y-6">
+                      {/* Mobile: Accordion Sections */}
+                      <div className="lg:hidden space-y-4">
+                        {/* Coin Header - Always visible */}
+                        <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-4">
+                          <div className="flex items-center gap-3 mb-3">
+                            {selectedCoinData.coinImages?.[0] && (
+                              <img
+                                src={selectedCoinData.coinImages[0]}
+                                alt={selectedCoinSymbol}
+                                className="w-10 h-10 rounded-full"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none';
+                                }}
+                              />
+                            )}
+                            <div>
+                              <h3 className="text-xl font-bold text-white">{selectedCoinSymbol.replace('USDT', '')}</h3>
+                              <p className="text-slate-400 text-sm">{selectedCoinData.metadata?.description?.substring(0, 80)}...</p>
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <span className="text-xs text-slate-400">Price</span>
+                              <div className="text-lg font-bold text-white">
+                                ${selectedCoinData.marketData?.currentPrice?.toLocaleString() || 'N/A'}
+                              </div>
+                            </div>
+                            <div>
+                              <span className="text-xs text-slate-400">24h Change</span>
+                              <div className={`text-sm font-semibold ${
+                                selectedCoinData.marketData?.priceChangePercent24h >= 0 ? 'text-green-400' : 'text-red-400'
+                              }`}>
+                                {selectedCoinData.marketData?.priceChangePercent24h >= 0 ? '+' : ''}
+                                {selectedCoinData.marketData?.priceChangePercent24h?.toFixed(2)}%
+                              </div>
+                            </div>
+                          </div>
+                          {/* Provider badges */}
+                          <div className="flex gap-2 mt-3 flex-wrap">
+                            {selectedCoinData.providerUsage?.marketData?.provider && (
+                              <span className="px-2 py-1 bg-blue-500/20 text-blue-300 text-xs rounded-full">
+                                Market: {selectedCoinData.providerUsage.marketData.provider}
+                              </span>
+                            )}
+                            {selectedCoinData.providerUsage?.metadata?.provider && (
+                              <span className="px-2 py-1 bg-green-500/20 text-green-300 text-xs rounded-full">
+                                Metadata: {selectedCoinData.providerUsage.metadata.provider}
+                              </span>
+                            )}
+                            {selectedCoinData.providerUsage?.news?.provider && (
+                              <span className="px-2 py-1 bg-purple-500/20 text-purple-300 text-xs rounded-full">
+                                News: {selectedCoinData.providerUsage.news.provider}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Analysis Section */}
+                        <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl">
+                          <button
+                            onClick={() => setMobileSectionsOpen(prev => ({ ...prev, analysis: !prev.analysis }))}
+                            className="w-full p-4 flex items-center justify-between text-left"
+                          >
+                            <h4 className="text-lg font-semibold text-white">Analysis Summary</h4>
+                            <svg
+                              className={`w-5 h-5 text-slate-400 transition-transform ${mobileSectionsOpen.analysis ? 'rotate-180' : ''}`}
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                            </svg>
+                          </button>
+                          {mobileSectionsOpen.analysis && (
+                            <div className="px-4 pb-4 space-y-3">
+                              <div className="flex justify-between">
+                                <span className="text-slate-400">RSI</span>
+                                <span className={`font-semibold ${
+                                  selectedCoinData.analysisSummary?.rsi >= 70 ? 'text-red-400' :
+                                  selectedCoinData.analysisSummary?.rsi <= 30 ? 'text-green-400' :
+                                  'text-yellow-400'
+                                }`}>
+                                  {selectedCoinData.analysisSummary?.rsi?.toFixed(1)}
+                                </span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-slate-400">MA Signal</span>
+                                <span className={`font-semibold ${
+                                  selectedCoinData.analysisSummary?.maSignal === 'bullish' ? 'text-green-400' :
+                                  selectedCoinData.analysisSummary?.maSignal === 'bearish' ? 'text-red-400' :
+                                  'text-slate-400'
+                                }`}>
+                                  {selectedCoinData.analysisSummary?.maSignal}
+                                </span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-slate-400">Volatility</span>
+                                <span className="font-semibold text-white">
+                                  {selectedCoinData.analysisSummary?.volatility}
+                                </span>
+                              </div>
+                              <div className="mt-3 p-3 bg-slate-700/50 rounded-lg">
+                                <p className="text-sm text-slate-300">
+                                  {selectedCoinData.analysisSummary?.summary}
+                                </p>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Images Section */}
+                        <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl">
+                          <button
+                            onClick={() => setMobileSectionsOpen(prev => ({ ...prev, images: !prev.images }))}
+                            className="w-full p-4 flex items-center justify-between text-left"
+                          >
+                            <h4 className="text-lg font-semibold text-white">Images & Charts</h4>
+                            <svg
+                              className={`w-5 h-5 text-slate-400 transition-transform ${mobileSectionsOpen.images ? 'rotate-180' : ''}`}
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                            </svg>
+                          </button>
+                          {mobileSectionsOpen.images && (
+                            <div className="px-4 pb-4">
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                {selectedCoinData.coinImages?.slice(0, 4).map((image, index) => (
+                                  <div key={index} className="bg-slate-700/50 rounded-lg p-2">
+                                    <img
+                                      src={image}
+                                      alt={`${selectedCoinSymbol} ${index === 0 ? 'logo' : 'chart'}`}
+                                      className="w-full h-24 object-cover rounded"
+                                      onError={(e) => {
+                                        e.currentTarget.src = `https://via.placeholder.com/200x150/6366f1/ffffff?text=${selectedCoinSymbol}`;
+                                      }}
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* News Section */}
+                        <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl">
+                          <button
+                            onClick={() => setMobileSectionsOpen(prev => ({ ...prev, news: !prev.news }))}
+                            className="w-full p-4 flex items-center justify-between text-left"
+                          >
+                            <h4 className="text-lg font-semibold text-white">Recent News</h4>
+                            <svg
+                              className={`w-5 h-5 text-slate-400 transition-transform ${mobileSectionsOpen.news ? 'rotate-180' : ''}`}
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                            </svg>
+                          </button>
+                          {mobileSectionsOpen.news && (
+                            <div className="px-4 pb-4">
+                              <div className="space-y-3 max-h-64 overflow-y-auto">
+                                {selectedCoinData.news?.length > 0 ? (
+                                  selectedCoinData.news.slice(0, 5).map((newsItem, index) => (
+                                    <div key={index} className="border-b border-slate-600/30 pb-3 last:border-b-0">
+                                      <h5 className="text-sm font-medium text-white mb-1">{newsItem.title}</h5>
+                                      <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
+                                        <span>{newsItem.source}</span>
+                                        <span>{new Date(newsItem.published_at).toLocaleDateString()}</span>
+                                      </div>
+                                      <p className="text-xs text-slate-300 mb-2">{newsItem.summary?.substring(0, 100)}...</p>
+                                      <a
+                                        href={newsItem.url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-xs text-purple-400 hover:text-purple-300"
+                                      >
+                                        Read more →
+                                      </a>
+                                    </div>
+                                  ))
+                                ) : (
+                                  <p className="text-slate-400 text-sm">No recent news available</p>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Desktop: Grid Layout */}
+                      <div className="hidden lg:grid lg:grid-cols-3 gap-6">
+                        {/* Left Column - Charts & Images */}
+                        <div className="lg:col-span-2 space-y-6">
+                        {/* Header */}
+                        <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-6">
+                          <div className="flex items-center gap-4 mb-4">
+                            {selectedCoinData.coinImages?.[0] && (
+                              <img
+                                src={selectedCoinData.coinImages[0]}
+                                alt={selectedCoinSymbol}
+                                className="w-12 h-12 rounded-full"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none';
+                                }}
+                              />
+                            )}
+                            <div>
+                              <h3 className="text-2xl font-bold text-white">{selectedCoinSymbol.replace('USDT', '')}</h3>
+                              <p className="text-slate-400">{selectedCoinData.metadata?.description?.substring(0, 100)}...</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-6">
+                            <div>
+                              <span className="text-sm text-slate-400">Price</span>
+                              <div className="text-2xl font-bold text-white">
+                                ${selectedCoinData.marketData?.currentPrice?.toLocaleString() || 'N/A'}
+                              </div>
+                            </div>
+                            <div>
+                              <span className="text-sm text-slate-400">24h Change</span>
+                              <div className={`text-xl font-semibold ${
+                                selectedCoinData.marketData?.priceChangePercent24h >= 0 ? 'text-green-400' : 'text-red-400'
+                              }`}>
+                                {selectedCoinData.marketData?.priceChangePercent24h >= 0 ? '+' : ''}
+                                {selectedCoinData.marketData?.priceChangePercent24h?.toFixed(2)}%
+                              </div>
+                            </div>
+                            {/* Provider badges */}
+                            <div className="flex gap-2">
+                              {selectedCoinData.providerUsage?.marketData?.provider && (
+                                <span className="px-2 py-1 bg-blue-500/20 text-blue-300 text-xs rounded-full">
+                                  {selectedCoinData.providerUsage.marketData.provider}
+                                </span>
+                              )}
+                              {selectedCoinData.providerUsage?.metadata?.provider && (
+                                <span className="px-2 py-1 bg-green-500/20 text-green-300 text-xs rounded-full">
+                                  {selectedCoinData.providerUsage.metadata.provider}
+                                </span>
+                              )}
+                              {selectedCoinData.providerUsage?.news?.provider && (
+                                <span className="px-2 py-1 bg-purple-500/20 text-purple-300 text-xs rounded-full">
+                                  {selectedCoinData.providerUsage.news.provider}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Images */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {selectedCoinData.coinImages?.slice(0, 4).map((image, index) => (
+                            <div key={index} className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-4">
+                              <img
+                                src={image}
+                                alt={`${selectedCoinSymbol} ${index === 0 ? 'logo' : 'chart'}`}
+                                className="w-full h-32 object-cover rounded-lg"
+                                onError={(e) => {
+                                  e.currentTarget.src = `https://via.placeholder.com/300x200/6366f1/ffffff?text=${selectedCoinSymbol}`;
+                                }}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Right Column - Analysis & News */}
+                      <div className="space-y-6">
+                        {/* Analysis Summary */}
+                        <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-6">
+                          <h4 className="text-lg font-semibold text-white mb-4">Analysis Summary</h4>
+                          <div className="space-y-3">
+                            <div className="flex justify-between">
+                              <span className="text-slate-400">RSI</span>
+                              <span className={`font-semibold ${
+                                selectedCoinData.analysisSummary?.rsi >= 70 ? 'text-red-400' :
+                                selectedCoinData.analysisSummary?.rsi <= 30 ? 'text-green-400' :
+                                'text-yellow-400'
+                              }`}>
+                                {selectedCoinData.analysisSummary?.rsi?.toFixed(1)}
+                              </span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400">MA Signal</span>
+                              <span className={`font-semibold ${
+                                selectedCoinData.analysisSummary?.maSignal === 'bullish' ? 'text-green-400' :
+                                selectedCoinData.analysisSummary?.maSignal === 'bearish' ? 'text-red-400' :
+                                'text-slate-400'
+                              }`}>
+                                {selectedCoinData.analysisSummary?.maSignal}
+                              </span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400">Volatility</span>
+                              <span className="font-semibold text-white">
+                                {selectedCoinData.analysisSummary?.volatility}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="mt-4 p-3 bg-slate-700/50 rounded-lg">
+                            <p className="text-sm text-slate-300">
+                              {selectedCoinData.analysisSummary?.summary}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* News Feed */}
+                        <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-6">
+                          <h4 className="text-lg font-semibold text-white mb-4">Recent News</h4>
+                          <div className="space-y-3 max-h-96 overflow-y-auto">
+                            {selectedCoinData.news?.length > 0 ? (
+                              selectedCoinData.news.slice(0, 5).map((newsItem, index) => (
+                                <div key={index} className="border-b border-slate-600/30 pb-3 last:border-b-0">
+                                  <h5 className="text-sm font-medium text-white mb-1">{newsItem.title}</h5>
+                                  <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
+                                    <span>{newsItem.source}</span>
+                                    <span>{new Date(newsItem.published_at).toLocaleDateString()}</span>
+                                  </div>
+                                  <p className="text-xs text-slate-300 mb-2">{newsItem.summary?.substring(0, 100)}...</p>
+                                  <a
+                                    href={newsItem.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-xs text-purple-400 hover:text-purple-300"
+                                  >
+                                    Read more →
+                                  </a>
+                                </div>
+                              ))
+                            ) : (
+                              <p className="text-slate-400 text-sm">No recent news available</p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-600/30 rounded-xl p-8 text-center">
+                      <p className="text-slate-400">Select a coin to view detailed research</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
       </main >
 
 

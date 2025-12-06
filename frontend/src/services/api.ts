@@ -145,6 +145,12 @@ export const researchApi = {
   run: (data?: { uid?: string; symbol?: string; symbols?: string[] }) =>
     api.post('/research/run', data), // Now internally calls FREE MODE
   getLogs: (params?: any) => api.get('/research/logs', { params }),
+
+  // Deep Research endpoints
+  deepResearch: {
+    getTop10: () => api.get('/research/deep-research/top10'),
+    getCoin: (symbol: string) => api.get(`/research/deep-research/coin/${symbol}`),
+  },
 };
 
 // Settings - routes already include /api prefix from baseURL

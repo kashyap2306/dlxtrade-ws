@@ -3,6 +3,8 @@ import { firestoreAdapter } from '../services/firestoreAdapter';
 import { getUserIntegrations } from './integrations';
 import { BinanceAdapter } from '../services/binanceAdapter';
 import { CryptoCompareAdapter } from '../services/cryptocompareAdapter';
+import { DeepResearchEngine } from '../services/deepResearchEngine';
+import { CacheService } from '../services/cacheService';
 import { z } from 'zod';
 import { logger } from '../utils/logger';
 
@@ -21,6 +23,9 @@ type ResearchResponse = {
 const researchQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(500).optional().default(100),
 });
+
+// Initialize cache service
+const cacheService = new CacheService();
 
 export async function researchRoutes(fastify: FastifyInstance) {
   console.log("[ROUTE READY] GET /api/background-research/settings");
@@ -396,6 +401,96 @@ export async function researchRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({
         error: 'Build info failed',
         reason: error.message
+      });
+    }
+  });
+
+  // Deep Research Endpoints
+
+  // GET /api/deep-research/top10 - Returns top 10 coins by market cap
+  fastify.get('/deep-research/top10', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = (request as any).user;
+    const uid = user.uid;
+
+    try {
+      logger.info({ uid }, 'Fetching top 10 coins for deep research');
+
+      // Check cache first (market data cached for 30 seconds)
+      const cacheKey = `top10_coins_${uid}`;
+      let top10Coins = cacheService.get('price', cacheKey);
+
+      if (!top10Coins) {
+        const deepResearchEngine = new DeepResearchEngine();
+        top10Coins = await deepResearchEngine.getTop10Coins(uid);
+        cacheService.set('price', cacheKey, top10Coins);
+        logger.info({ uid }, 'Top 10 coins fetched from providers and cached');
+      } else {
+        logger.info({ uid }, 'Top 10 coins served from cache');
+      }
+
+      return {
+        success: true,
+        coins: top10Coins,
+        timestamp: new Date().toISOString(),
+        cached: !!cacheService.get('price', cacheKey),
+      };
+    } catch (error: any) {
+      logger.error({ error: error.message, uid }, 'Error fetching top 10 coins');
+      return reply.code(500).send({
+        error: 'Failed to fetch top 10 coins',
+        reason: error.message,
+      });
+    }
+  });
+
+  // GET /api/deep-research/coin/:symbol - Returns comprehensive research for a specific coin
+  fastify.get('/deep-research/coin/:symbol', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { symbol: string }; Querystring: { source?: string } }>, reply: FastifyReply) => {
+    const user = (request as any).user;
+    const uid = user.uid;
+    const { symbol } = request.params;
+    const { source } = request.query;
+
+    if (!symbol) {
+      return reply.code(400).send({ error: 'Symbol parameter is required' });
+    }
+
+    try {
+      logger.info({ uid, symbol, source }, 'Fetching deep research data for coin');
+
+      const deepResearchEngine = new DeepResearchEngine();
+      const cacheKey = `coin_research_${symbol}_${uid}`;
+
+      // Check if we have cached data
+      let coinResearch = cacheService.get('metadata', cacheKey);
+      let isCached = false;
+
+      if (coinResearch) {
+        isCached = true;
+        logger.info({ uid, symbol }, 'Coin research served from cache');
+      } else {
+        // Fetch fresh data
+        coinResearch = await deepResearchEngine.getCoinResearch(uid, symbol, source);
+
+        // Cache the result (metadata cache for 5 minutes)
+        cacheService.set('metadata', cacheKey, coinResearch);
+        logger.info({ uid, symbol }, 'Coin research fetched from providers and cached');
+      }
+
+      return {
+        success: true,
+        data: coinResearch,
+        timestamp: new Date().toISOString(),
+        cached: isCached,
+      };
+    } catch (error: any) {
+      logger.error({ error: error.message, uid, symbol }, 'Error fetching coin research data');
+      return reply.code(500).send({
+        error: 'Failed to fetch coin research data',
+        reason: error.message,
       });
     }
   });

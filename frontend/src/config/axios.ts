@@ -61,8 +61,7 @@ const setCachedResponse = (url: string, data: any, ttl: number = CACHE_TTL): voi
 // Axios instance (CORS-safe)
 const api = axios.create({
   baseURL,
-  withCredentials: true,
-  timeout: 20000,
+  timeout: 30000,
   retryConfig: {
     retries: MAX_RETRIES,
     retryDelay: RETRY_DELAY,
@@ -149,32 +148,20 @@ api.interceptors.request.use(
       throw error;
     }
 
-    // Firebase Token - prevent concurrent calls
+    // Firebase Token - get fresh token on each request
     try {
-      const currentUser = getAuth().currentUser;
-      if (currentUser) {
-        // Use cached token if available and not expired
-        const cachedToken = localStorage.getItem('firebaseToken');
-        if (cachedToken) {
-          config.headers = config.headers || {};
-          config.headers.Authorization = `Bearer ${cachedToken}`;
-        } else {
-          // Only fetch new token if no cached token
-          const tokenPromise = currentUser.getIdToken();
-          const timeoutPromise = new Promise<string>((_, reject) =>
-            setTimeout(() => reject(new Error('Token fetch timeout')), 2000)
-          );
-
-          const token = await Promise.race([tokenPromise, timeoutPromise]);
-          if (token && typeof token === 'string') {
-            localStorage.setItem('firebaseToken', token);
-            config.headers = config.headers || {};
-            config.headers.Authorization = `Bearer ${token}`;
-          }
-        }
+      const auth = getAuth();
+      const user = auth.currentUser;
+      if (user) {
+        const idToken = await user.getIdToken(/* forceRefresh= */ false);
+        config.headers = {
+          ...config.headers,
+          Authorization: `Bearer ${idToken}`,
+        };
       }
-    } catch (tokenError) {
-      console.warn('[API] Token fetch failed:', tokenError.message);
+    } catch (e) {
+      // swallow here; request will continue without token
+      console.warn('Could not attach idToken', e);
     }
 
     // Metadata

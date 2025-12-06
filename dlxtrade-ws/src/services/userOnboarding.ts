@@ -3,6 +3,84 @@ import { getFirebaseAdmin } from '../utils/firebase';
 import { firestoreAdapter } from './firestoreAdapter';
 import { logger } from '../utils/logger';
 
+// DLXTRADE Provider System - 33 providers total
+const PROVIDERS = {
+  // Market Data Providers (11 total)
+  MARKET_DATA: [
+    'coingecko', // Primary - no key required
+    'coinpaprika',
+    'coinmarketcap',
+    'coinlore',
+    'coinapi',
+    'bravenewcoin',
+    'messari',
+    'kaiko',
+    'livecoinwatch',
+    'coinstats',
+    'coincheckup'
+  ],
+
+  // News Providers (11 total)
+  NEWS: [
+    'newsdata', // Primary - key required
+    'cryptopanic',
+    'reddit',
+    'cointelegraph_rss',
+    'altcoinbuzz_rss',
+    'gnews',
+    'marketaux',
+    'webzio',
+    'coinstatsnews',
+    'newscatcher',
+    'cryptocompare_news'
+  ],
+
+  // Metadata Providers (11 total)
+  METADATA: [
+    'cryptocompare', // Primary - key required
+    'coingecko_metadata',
+    'coinpaprika_metadata',
+    'coinmarketcap_metadata',
+    'coinstats_metadata',
+    'cryptocompare_metadata',
+    'livecoinwatch_metadata',
+    'messari_metadata',
+    'coinlore_metadata',
+    'coincheckup_metadata',
+    'coincap_metadata'
+  ]
+};
+
+// All providers flattened for integration creation
+const ALL_PROVIDERS = [
+  ...PROVIDERS.MARKET_DATA,
+  ...PROVIDERS.NEWS,
+  ...PROVIDERS.METADATA
+];
+
+// Providers that require API keys
+const KEY_REQUIRED_PROVIDERS = [
+  'newsdata',
+  'cryptopanic',
+  'gnews',
+  'marketaux',
+  'webzio',
+  'newscatcher',
+  'cryptocompare_news',
+  'cryptocompare',
+  'coinmarketcap',
+  'coinmarketcap_metadata',
+  'coinapi',
+  'bravenewcoin',
+  'messari',
+  'messari_metadata',
+  'kaiko',
+  'livecoinwatch',
+  'livecoinwatch_metadata',
+  'coinstats',
+  'coinstats_metadata'
+];
+
 /**
  * Idempotent user onboarding service
  * Creates ALL required Firestore documents when user signs up/logs in
@@ -24,6 +102,7 @@ export async function ensureUser(
     phone?: string | null;
   }
 ): Promise<UserOnboardingResult> {
+  console.log("ENSUREUSER CALLED");
   const startTime = Date.now();
   let createdNew = false;
   
@@ -50,51 +129,42 @@ export async function ensureUser(
     const existingUser = await userRef.get();
     
     if (!existingUser.exists) {
-      // Create new user with full schema
-      const userData: any = {
-        uid,
-        name: profileData?.name || '',
+      // Create minimal base user document immediately - REQUIREMENT: NO other onboarding code runs before this base doc exists
+      const baseUserData = {
         email: profileData?.email || '',
-        phone: profileData?.phone || null,
         createdAt: now,
         updatedAt: now,
-        lastLogin: now,
-        onboardingRequired: true, // New users must complete onboarding
-        tradingMarkets: [],
-        experienceLevel: '',
-        interestedAgents: [],
-        portfolioSize: '',
-        preferences: {
-          riskLevel: '',
-          tradingStyle: '',
-          analysisType: '',
-        },
-        totalTrades: 0,
-        totalPnl: 0,
-        dailyPnl: 0,
-        weeklyPnl: 0,
-        monthlyPnl: 0,
-        unlockedAgents: [],
-        engineStatus: 'stopped',
-        hftRunning: false,
-        engineRunning: false,
-        autoTradeEnabled: false,
-        role: 'user',
-        profilePicture: null,
+        providerConfig: {
+          marketData: PROVIDERS.MARKET_DATA.map(id => ({
+            id,
+            category: 'marketData',
+            keyRequired: KEY_REQUIRED_PROVIDERS.includes(id)
+          })),
+          news: PROVIDERS.NEWS.map(id => ({
+            id,
+            category: 'news',
+            keyRequired: KEY_REQUIRED_PROVIDERS.includes(id)
+          })),
+          metadata: PROVIDERS.METADATA.map(id => ({
+            id,
+            category: 'metadata',
+            keyRequired: KEY_REQUIRED_PROVIDERS.includes(id)
+          }))
+        }
       };
 
-      logger.info({ uid, userDataKeys: Object.keys(userData) }, '🔄 Creating new user document with full schema');
+      logger.info({ uid, baseFields: Object.keys(baseUserData) }, '🔄 Creating minimal base user document (signup fix)');
 
-      await userRef.set(userData);
+      await userRef.set(baseUserData);
       createdNew = true;
-      logger.info({ uid, createdNew: true, path: `users/${uid}` }, '✅ Main user document created: users/{uid}');
+      logger.info({ uid, createdNew: true, path: `users/${uid}` }, '✅ Base user document created: users/{uid}');
 
       // Verify the document was created
       const verifyDoc = await userRef.get();
       if (!verifyDoc.exists) {
-        throw new Error('User document creation failed - document does not exist after set()');
+        throw new Error('Base user document creation failed - document does not exist after set()');
       }
-      logger.info({ uid }, '✅ User document creation verified');
+      logger.info({ uid }, '✅ Base user document creation verified');
     } else {
       // Update only missing fields (do not overwrite existing user-provided fields)
       const existingData = existingUser.data() || {};
@@ -137,6 +207,114 @@ export async function ensureUser(
           riskLevel: '',
           tradingStyle: '',
           analysisType: '',
+        };
+      }
+      // Ensure providerConfig exists with complete provider lists (MANDATORY)
+      if (existingData.providerConfig === undefined || !existingData.providerConfig.marketData || existingData.providerConfig.marketData.length === 0) {
+        updateData.providerConfig = {
+          marketData: PROVIDERS.MARKET_DATA.map(id => ({
+            id,
+            category: 'marketData',
+            keyRequired: KEY_REQUIRED_PROVIDERS.includes(id)
+          })),
+          news: PROVIDERS.NEWS.map(id => ({
+            id,
+            category: 'news',
+            keyRequired: KEY_REQUIRED_PROVIDERS.includes(id)
+          })),
+          metadata: PROVIDERS.METADATA.map(id => ({
+            id,
+            category: 'metadata',
+            keyRequired: KEY_REQUIRED_PROVIDERS.includes(id)
+          }))
+        };
+      }
+      if (existingData.tradingSettings === undefined) {
+        updateData.tradingSettings = {
+          mode: 'MANUAL',
+          manualCoins: [],
+          maxPositionPerTrade: 10,
+          tradeType: 'Scalping',
+          accuracyTrigger: 80,
+          maxDailyLoss: 5,
+          maxTradesPerDay: 50,
+          positionSizingMap: [
+            { min: 0, max: 25, percent: 1 },
+            { min: 25, max: 50, percent: 2 },
+            { min: 50, max: 75, percent: 3 },
+            { min: 75, max: 100, percent: 5 }
+          ]
+        };
+      }
+      if (existingData.notifications === undefined) {
+        updateData.notifications = {
+          autoTradeAlerts: false,
+          autoTradeAlertsPrereqMet: false,
+          accuracyAlerts: {
+            enabled: false,
+            threshold: 80,
+            telegramEnabled: false
+          },
+          whaleAlerts: {
+            enabled: false,
+            sensitivity: 'medium',
+            telegramEnabled: false
+          },
+          requireTradeConfirmation: false,
+          soundEnabled: false,
+          vibrateEnabled: false,
+          telegramEnabled: false,
+          telegramChatId: ''
+        };
+      }
+      if (existingData.backgroundResearch === undefined) {
+        updateData.backgroundResearch = {
+          telegramEnabled: false,
+          telegramToken: '',
+          chatId: '',
+          thresholds: {
+            minAccuracy: 80,
+            maxFrequency: 10
+          },
+          scheduleInterval: 5
+        };
+      }
+      if (existingData.notificationSettings === undefined) {
+        updateData.notificationSettings = {
+          enableAutoTradeAlerts: false,
+          enableAccuracyAlerts: false,
+          enableWhaleAlerts: false,
+          tradeConfirmationRequired: false,
+          notificationSounds: false,
+          notificationVibration: false,
+          telegramBotToken: '',
+          telegramChatId: ''
+        };
+      }
+      if (existingData.seenPopups === undefined) {
+        updateData.seenPopups = [];
+      }
+      if (existingData.researchSettings === undefined) {
+        updateData.researchSettings = {
+          coinSelectionMode: 'manual',
+          selectedCoins: [],
+          accuracyTrigger: 80
+        };
+      }
+      if (existingData.riskLimits === undefined) {
+        updateData.riskLimits = {
+          max_loss_pct: 5,
+          max_drawdown_pct: 10,
+          per_trade_risk_pct: 0.5,
+          max_pos: 0.02,
+          cooldownAfterSLSec: 300
+        };
+      }
+      if (existingData.autoTrade === undefined) {
+        updateData.autoTrade = {
+          enabled: false,
+          accuracyThreshold: 0.85,
+          strategy: 'orderbook_imbalance'
         };
       }
 
@@ -314,6 +492,11 @@ export async function ensureUser(
         },
         updatedAt: now,
         status: 'idle',
+        providerPriority: {
+          marketData: [...PROVIDERS.MARKET_DATA],
+          news: [...PROVIDERS.NEWS],
+          metadata: [...PROVIDERS.METADATA]
+        }
       });
       logger.info({ uid }, 'User settings subcollection document created');
     } else {
@@ -350,7 +533,14 @@ export async function ensureUser(
       if (existingSettings.status === undefined) {
         settingsUpdate.status = 'idle';
       }
-      
+      if (!existingSettings.providerPriority) {
+        settingsUpdate.providerPriority = {
+          marketData: [...PROVIDERS.MARKET_DATA],
+          news: [...PROVIDERS.NEWS],
+          metadata: [...PROVIDERS.METADATA]
+        };
+      }
+
       if (Object.keys(settingsUpdate).length > 0) {
         settingsUpdate.updatedAt = now;
         await userSettingsRef.update(settingsUpdate);
@@ -373,26 +563,20 @@ export async function ensureUser(
     // 9. Initialize required collections and docs under users/{uid}
     const userDocRef = db.collection('users').doc(uid);
 
-    // users/{uid}/integrations: create default disabled docs for RESEARCH APIs only
+    // users/{uid}/integrations: create default disabled docs for ALL 33 DLXTRADE providers
     // Trading exchanges (binance, bitget, bingx, weex) are stored in exchangeConfig/current, NOT in integrations
-    const integrations = [
-      "binance",
-      "cryptocompare",
-      "newsdata",
-      "coinmarketcap"
-    ];
-    for (const apiName of integrations) {
-      const ref = userDocRef.collection('integrations').doc(apiName);
+    for (const providerId of ALL_PROVIDERS) {
+      const ref = userDocRef.collection('integrations').doc(providerId);
       const doc = await ref.get();
       if (!doc.exists) {
-        const integrationData: any = {
+        const integrationData = {
           enabled: false,
           apiKey: "",
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         };
-        
+
         await ref.set(integrationData);
-        logger.info({ uid, apiName, path: `users/${uid}/integrations/${apiName}` }, `✅ Research integration doc created: users/{uid}/integrations/${apiName}`);
+        logger.info({ uid, providerId, path: `users/${uid}/integrations/${providerId}` }, `✅ Provider integration doc created: users/{uid}/integrations/${providerId}`);
       }
     }
 
@@ -553,26 +737,20 @@ export async function ensureUser(
     const createdDocs = [];
     if (createdNew) {
       createdDocs.push(`users/${uid}`);
-      createdDocs.push(`users/${uid}/integrations/binance`);
-      createdDocs.push(`users/${uid}/integrations/cryptocompare`);
-      createdDocs.push(`users/${uid}/integrations/newsdata`);
-      createdDocs.push(`users/${uid}/integrations/coinmarketcap`);
+      createdDocs.push(`users/${uid}/integrations/* (33 DLXTRADE providers)`);
       createdDocs.push(`users/${uid}/exchangeConfig/current`);
     }
-    
-    logger.info({ 
-      uid, 
-      createdNew, 
-      duration, 
+
+    logger.info({
+      uid,
+      createdNew,
+      duration,
       activityType,
       email: profileData?.email,
       createdDocs: createdDocs.length > 0 ? createdDocs : undefined,
       requiredDocs: [
         `users/${uid}`,
-        `users/${uid}/integrations/binance`,
-        `users/${uid}/integrations/cryptocompare`,
-        `users/${uid}/integrations/newsdata`,
-        `users/${uid}/integrations/coinmarketcap`,
+        `users/${uid}/integrations/* (33 DLXTRADE providers)`,
         `users/${uid}/exchangeConfig/current`
       ]
     }, '✅ User onboarding completed successfully - all required Firestore documents created/verified');

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { createUserWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, GithubAuthProvider, updateProfile } from 'firebase/auth';
 import { auth } from '../config/firebase';
-import { authApi } from '../services/api';
+import { API_URL } from '../config/env';
 import Toast from '../components/Toast';
 import { useError } from '../contexts/ErrorContext';
 import { getFirebaseErrorMessage, suppressConsoleError } from '../utils/errorHandler';
@@ -60,11 +60,21 @@ export default function Signup() {
         email: userCredential.user.email,
       }));
 
-      // Call backend afterSignIn endpoint - this triggers ensureUser() which creates all Firestore documents
-      const authResponse = await authApi.afterSignIn(token);
+      // Call backend POST /api/auth/afterSignIn with idToken - this triggers ensureUser() which creates all Firestore documents
+      console.log("afterSignIn sent");
+      const authResponse = await fetch(`${API_URL}/auth/afterSignIn`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idToken: token }),
+      });
 
-      if (!authResponse.data.success) {
-        throw new Error(authResponse.data.error || 'User onboarding failed');
+      if (!authResponse.ok) {
+        throw new Error(`Backend auth failed: ${authResponse.status}`);
+      }
+
+      const authData = await authResponse.json();
+      if (!authData.success) {
+        throw new Error(authData.error || 'User onboarding failed');
       }
 
       // New users always go to onboarding

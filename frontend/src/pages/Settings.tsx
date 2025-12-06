@@ -1347,7 +1347,6 @@ export default function Settings() {
           coinRankingEnabled: false,
           nomicsKey: '',
           nomicsEnabled: false,
-          coinCapEnabled: false,
           enableAutoTrade: false,
           exchanges: [],
           showUnmaskedKeys: false,

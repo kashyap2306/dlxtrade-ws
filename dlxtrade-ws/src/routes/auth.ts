@@ -151,6 +151,25 @@ export async function authRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = (request as any).user;
     logger.info({ uid: user.uid, email: user.email }, 'Firebase auth verified');
+
+    // Run ensureUser to create/update user documents
+    logger.info({ uid: user.uid }, '🔧 Running ensureUser for uid: {uid}');
+    const result = await ensureUser(user.uid, {
+      email: user.email,
+      name: user.name || user.displayName,
+      phone: null,
+    });
+
+    if (!result.success) {
+      logger.error({ uid: user.uid, error: result.error }, '❌ ensureUser failed in /auth/verify endpoint');
+      return reply.code(500).send({
+        error: 'User onboarding failed',
+        details: result.error
+      });
+    }
+
+    logger.info({ uid: user.uid }, '✅ ensureUser completed');
+
     return {
       authenticated: true,
       user: {

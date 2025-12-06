@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "prebuild": "npx rimraf dist",
-    "build": "tsc",
+    "build": "npx rimraf dist && tsc",
     "start": "node dist/server.js",
     "test": "jest",
     "verify:ws": "node -e \"require('@fastify/websocket'); require('ws'); console.log('ws-ok')\"",

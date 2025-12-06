@@ -5,6 +5,7 @@ import { auth } from '../config/firebase';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { wsService } from '../services/ws';
+import { API_URL } from '../config/env';
 import Toast from '../components/Toast';
 import { useError } from '../contexts/ErrorContext';
 import { useNotificationContext } from '../contexts/NotificationContext';
@@ -51,16 +52,26 @@ export default function Login() {
         uid: userCredential.user.uid,
         email: userCredential.user.email,
       }));
-      
-      // Call backend afterSignIn endpoint using axios
-      const authResponse = await authApi.afterSignIn(token);
-      const authData = authResponse.data;
-      
+
+      // Call backend POST /api/auth/afterSignIn with idToken
+      console.log("afterSignIn sent");
+      const authResponse = await fetch(`${API_URL}/auth/afterSignIn`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idToken: token }),
+      });
+
+      if (!authResponse.ok) {
+        throw new Error(`Backend auth failed: ${authResponse.status}`);
+      }
+
+      const authData = await authResponse.json();
+
       // Check if user needs onboarding
       const userDoc = await getDoc(doc(db, 'users', userCredential.user.uid));
       const userData = userDoc.data();
       const needsOnboarding = userData?.onboardingRequired === true;
-      
+
       wsService.connect();
       
       // Add login success notification with a flag to prevent showing on refresh
