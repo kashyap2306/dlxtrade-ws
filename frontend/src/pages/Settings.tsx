@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { settingsApi, integrationsApi, exchangeApi, adminApi } from '../services/api';
 import Toast from '../components/Toast';
 import Sidebar from '../components/Sidebar';
+import { API_NAME_MAP } from "../constants/providers";
+import { EXCHANGES } from "../constants/exchanges";
 import { useAuth } from '../hooks/useAuth';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { LoadingState } from '../components/LoadingState';
@@ -25,7 +27,16 @@ import { SettingsExchangeSection } from './SettingsExchangeSection';
 import { BackgroundResearchWizard } from './BackgroundResearchWizard';
 import { SettingsModals } from './SettingsModals';
 
-// Main Settings Component 
+console.log("🟣 SETTINGS COMPONENT CHECK", {
+  General: SettingsGeneralSection,
+  PositionSizing: SettingsPositionSizingSection,
+  Providers: SettingsApiProvidersSection,
+  Exchange: SettingsExchangeSection,
+  Wizard: BackgroundResearchWizard,
+  Modals: SettingsModals,
+});
+
+// Main Settings Component
 const Settings = () => {
   const navigate = useNavigate();
   const { user, loading: authLoading, handleLogout: authHandleLogout } = useAuth();
@@ -766,11 +777,11 @@ const Settings = () => {
                 handleAutoTradeModalClose={handleAutoTradeModalClose}
               />
 
+              {/* Toast Notification */}
+              {toast && <Toast message={toast.message} type={toast.type} />}
+
             </div>
           </main>
-
-          {/* Toast Notification */}
-          {toast && <Toast message={toast.message} type={toast.type} />}
 
         </div>
       </ErrorBoundary>
@@ -798,3 +809,5 @@ const Settings = () => {
     );
   }
 }
+
+export default Settings;

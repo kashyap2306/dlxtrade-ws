@@ -379,5 +379,7 @@ export const exchangeApi = {
     }),
   testConnection: (config: { exchange?: string; apiKey?: string; secret?: string; passphrase?: string; testnet?: boolean }) =>
     api.post('/exchange/test', config),
+  loadConnected: () =>
+    api.get('/exchange/connected'),
 };
 

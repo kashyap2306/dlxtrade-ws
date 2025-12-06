@@ -53,12 +53,13 @@ export const ProviderTestResult: React.FC<{
   if (!result) return null;
   const iconSize = size === 'small' ? 'w-3 h-3' : 'w-4 h-4';
   return (
-    <div className={`flex items-center gap-2 p-2 rounded-lg text-${size === 'small' ? 'xs' : 'sm'} ${result.status === 'success'
-      ? 'bg-green-500/10 border border-green-500/20 text-green-400'
-      : result.status === 'error'
-        ? 'bg-red-500/10 border border-red-500/20 text-red-400'
-        : 'bg-yellow-500/10 border border-yellow-500/20 text-yellow-400'
-      }`}>
+    <div className={`flex items-center gap-2 p-2 rounded-lg text-${size === 'small' ? 'xs' : 'sm'} ${
+  result.status === 'success'
+    ? 'bg-green-500/10 border border-green-500/20 text-green-400'
+    : result.status === 'error'
+      ? 'bg-red-500/10 border border-red-500/20 text-red-400'
+      : 'bg-yellow-500/10 border border-yellow-500/20 text-yellow-400'
+}`}>
       {result.status === 'success' && <CheckCircleIcon className={iconSize} />}
       {result.status === 'error' && <XCircleIcon className={iconSize} />}
       <span>{result.message}</span>
