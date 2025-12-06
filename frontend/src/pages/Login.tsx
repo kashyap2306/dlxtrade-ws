@@ -5,7 +5,7 @@ import { auth } from '../config/firebase';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { wsService } from '../services/ws';
-import { API_URL } from '../config/env';
+import api from '../config/axios';
 import Toast from '../components/Toast';
 import { useError } from '../contexts/ErrorContext';
 import { useNotificationContext } from '../contexts/NotificationContext';
@@ -55,11 +55,7 @@ export default function Login() {
 
       // Call backend POST /api/auth/afterSignIn with idToken
       console.log("afterSignIn sent");
-      const authResponse = await fetch(`${API_URL}/auth/afterSignIn`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ idToken: token }),
-      });
+      const authResponse = await api.post('/auth/afterSignIn', { idToken });
 
       if (!authResponse.ok) {
         throw new Error(`Backend auth failed: ${authResponse.status}`);

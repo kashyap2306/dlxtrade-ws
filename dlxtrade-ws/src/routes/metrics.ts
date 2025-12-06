@@ -4,23 +4,7 @@ import { riskManager } from '../services/riskManager';
 import { metricsService } from '../services/metricsService';
 
 export async function metricsRoutes(fastify: FastifyInstance) {
-  // Detailed health check with database status (for monitoring)
-  fastify.get('/health', async (request: FastifyRequest, reply: FastifyReply) => {
-    try {
-      // Check database
-      await query('SELECT 1');
-
-      return {
-        status: 'healthy',
-        timestamp: new Date().toISOString(),
-      };
-    } catch (err) {
-      return reply.code(503).send({
-        status: 'unhealthy',
-        error: 'Database connection failed',
-      });
-    }
-  });
+  // Health check moved to app.ts to avoid conflicts
 
   fastify.get('/metrics', async (request: FastifyRequest, reply: FastifyReply) => {
     try {

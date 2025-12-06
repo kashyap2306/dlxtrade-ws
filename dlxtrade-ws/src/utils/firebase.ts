@@ -5,9 +5,17 @@ let firebaseApp: admin.app.App | null = null;
 export function getFirebaseAdmin() {
   if (firebaseApp) return firebaseApp;
 
-  const serviceAccountJSON = process.env.FIREBASE_SERVICE_ACCOUNT;
-  if (!serviceAccountJSON) {
-    console.error("FIREBASE_SERVICE_ACCOUNT env variable missing - Firebase Admin will not work");
+  // Use individual environment variables instead of JSON
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n");
+
+  if (!projectId || !clientEmail || !privateKey) {
+    console.error("Missing Firebase environment variables:");
+    console.error("- FIREBASE_PROJECT_ID:", !!projectId);
+    console.error("- FIREBASE_CLIENT_EMAIL:", !!clientEmail);
+    console.error("- FIREBASE_PRIVATE_KEY:", !!privateKey);
+
     // Return a dummy app instead of throwing - server should continue
     let createdDocs = new Set<string>();
 
@@ -76,19 +84,9 @@ export function getFirebaseAdmin() {
     return firebaseApp;
   }
 
-  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || "{}");
-  console.log("🔥 FIREBASE SERVICE ACCOUNT project_id =", serviceAccount.project_id);
-  console.log("🔥 FIREBASE SERVICE ACCOUNT type =", serviceAccount.type);
-  console.log("🔥 FIREBASE SERVICE ACCOUNT full keys =", Object.keys(serviceAccount));
-
-  // Check for conflicting environment variables
-  console.log("🔥 GCLOUD_PROJECT =", process.env.GCLOUD_PROJECT);
-  console.log("🔥 FIREBASE_CONFIG =", process.env.FIREBASE_CONFIG);
-  console.log("🔥 GOOGLE_APPLICATION_CREDENTIALS =", process.env.GOOGLE_APPLICATION_CREDENTIALS);
-
-  // Ensure we have a valid project_id
-  const projectId = serviceAccount.project_id || 'dlx-trading';
-  console.log("🔥 USING PROJECT ID =", projectId);
+  console.log("🔥 FIREBASE_PROJECT_ID =", projectId);
+  console.log("🔥 FIREBASE_CLIENT_EMAIL =", clientEmail);
+  console.log("🔥 FIREBASE_PRIVATE_KEY length =", privateKey.length);
 
   // Check if there's already a default app
   try {
@@ -100,11 +98,18 @@ export function getFirebaseAdmin() {
     console.log("🔥 NO EXISTING FIREBASE APP, creating new one");
   }
 
-  // Initialize with explicit projectId
-  firebaseApp = admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-    projectId: projectId,
-  });
+  // Initialize with individual environment variables
+  if (!admin.apps.length) {
+    firebaseApp = admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId: projectId,
+        clientEmail: clientEmail,
+        privateKey: privateKey,
+      }),
+    });
+  } else {
+    firebaseApp = admin.app();
+  }
 
   // Verify the app was initialized correctly
   console.log("🔥 FIREBASE ADMIN APP PROJECT ID =", firebaseApp.options.projectId);

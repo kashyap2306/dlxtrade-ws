@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { createUserWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, GithubAuthProvider, updateProfile } from 'firebase/auth';
 import { auth } from '../config/firebase';
-import { API_URL } from '../config/env';
+import api from '../config/axios';
 import Toast from '../components/Toast';
 import { useError } from '../contexts/ErrorContext';
 import { getFirebaseErrorMessage, suppressConsoleError } from '../utils/errorHandler';
@@ -62,11 +62,7 @@ export default function Signup() {
 
       // Call backend POST /api/auth/afterSignIn with idToken - this triggers ensureUser() which creates all Firestore documents
       console.log("afterSignIn sent");
-      const authResponse = await fetch(`${API_URL}/auth/afterSignIn`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ idToken: token }),
-      });
+      const authResponse = await api.post('/auth/afterSignIn', { idToken });
 
       if (!authResponse.ok) {
         throw new Error(`Backend auth failed: ${authResponse.status}`);

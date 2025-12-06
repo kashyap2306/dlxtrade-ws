@@ -210,20 +210,20 @@ class WebSocketService {
   private startHeartbeat(): void {
     this.stopHeartbeat(); // Clear any existing timers
 
-    // Send ping every 30 seconds
+    // Send ping every 60 seconds
     this.heartbeatTimer = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send('ping');
 
-        // Expect pong within 10 seconds
+        // Expect pong within 15 seconds
         this.pongTimeout = setTimeout(() => {
           console.warn('WebSocket heartbeat timeout - no pong received, reconnecting...');
           if (this.ws) {
             this.ws.close();
           }
-        }, 10000);
+        }, 15000);
       }
-    }, 30000);
+    }, 60000);
   }
 
   private stopHeartbeat(): void {

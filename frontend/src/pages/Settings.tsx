@@ -30,14 +30,14 @@ import WeexLogo from '../components/ui/WeexLogo';
 // Reusable input component for consistent styling
 const SettingsInput: React.FC<React.InputHTMLAttributes<HTMLInputElement>> = (props) => (
   <input
-    className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-300 shadow-inner hover:bg-white/10"
     {...props}
   />
 );
 
 // Reusable card component for consistent styling
 const SettingsCard: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = "" }) => (
-  <div className={`bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 p-4 sm:p-6 shadow-sm ${className}`}>
+  <div className={`bg-slate-900/40 backdrop-blur-md rounded-2xl border border-white/10 p-5 sm:p-8 shadow-xl transition-all duration-300 hover:shadow-2xl hover:border-purple-500/20 ${className}`}>
     {children}
   </div>
 );
@@ -405,8 +405,13 @@ function BackgroundResearchWizard() {
 
   if (loadingSettings) {
     return (
-      <div className="flex items-center justify-center py-8">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500"></div>
+      <div className="min-h-screen w-full fixed inset-0 bg-gradient-to-br from-[#0a0f1c] via-[#111727] to-[#000a0f] overflow-y-auto">
+        <Sidebar onLogout={handleLogout} />
+        <main className="min-h-screen w-full relative z-10 pt-16 lg:pt-0 lg:pl-64">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-12 flex items-center justify-center">
+            <LoadingState message="Loading settings..." />
+          </div>
+        </main>
       </div>
     );
   }
@@ -414,13 +419,13 @@ function BackgroundResearchWizard() {
   return (
     <div className="space-y-8">
       {/* Enable/Disable Toggle */}
-      <div className="bg-white/5 backdrop-blur-sm rounded-xl border border-white/10 p-6 shadow-lg">
+      <div className="bg-slate-900/40 backdrop-blur-md rounded-2xl border border-white/10 p-6 sm:p-8 shadow-xl transition-all duration-300 hover:shadow-2xl hover:border-purple-500/20">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div className="flex-1">
-            <label className="text-lg font-semibold text-white mb-2 block">Background Deep Research</label>
+            <label className="text-xl font-bold text-white mb-2 block">Background Deep Research</label>
             <p className="text-sm text-gray-400">Automatically run deep research analysis and receive Telegram alerts for high-accuracy signals</p>
           </div>
-          <label className="relative inline-flex items-center cursor-pointer">
+          <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
             <input
               type="checkbox"
               className="sr-only peer"
@@ -434,21 +439,21 @@ function BackgroundResearchWizard() {
 
       {/* Multi-step Wizard */}
       {bgResearchEnabled && (
-        <div className="bg-white/5 backdrop-blur-sm rounded-xl border border-white/10 shadow-lg overflow-hidden">
+        <div className="bg-slate-900/40 backdrop-blur-md rounded-2xl border border-white/10 shadow-xl overflow-hidden">
           {/* Step Indicator */}
-          <div className="bg-gradient-to-r from-slate-800/50 to-slate-900/50 px-6 py-4 border-b border-white/10">
+          <div className="bg-gradient-to-r from-slate-900/70 to-slate-800/70 backdrop-blur-sm px-6 py-4 border-b border-white/10">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
               <div className="flex items-center space-x-3">
                 {[0, 1, 2, 3, 4].map((step) => (
                   <div
                     key={step}
-                    className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold transition-all duration-300 ${
+                    className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold transition-all duration-300 hover:scale-105 ${
                       step <= currentStep
-                        ? 'bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-lg'
+                        ? 'bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-lg ring-2 ring-purple-300/50'
                         : 'bg-slate-700 text-gray-400'
                     }`}
                   >
-                    {step === 0 ? '✓' : step}
+                    {step === 0 ? '✓' : step + 1}
                   </div>
                 ))}
               </div>
@@ -468,7 +473,7 @@ function BackgroundResearchWizard() {
           </div>
 
           {/* Step Content */}
-          <div className="p-6">
+          <div className="p-6 sm:p-8">
             {currentStep === 0 && (
               <div className="space-y-6">
                 <div className="text-center sm:text-left">
@@ -509,7 +514,7 @@ function BackgroundResearchWizard() {
                   <button
                     onClick={checkApiKeys}
                     disabled={checkingApiKeys}
-                    className="flex-1 px-6 py-3 bg-gradient-to-r from-blue-500 to-blue-600 text-white font-semibold rounded-xl hover:from-blue-600 hover:to-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
+                    className="w-full flex-1 px-6 py-3 bg-gradient-to-r from-blue-500 to-blue-600 text-white font-semibold rounded-xl hover:from-blue-600 hover:to-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:scale-[1.01]"
                   >
                     {checkingApiKeys ? (
                       <span className="flex items-center justify-center gap-2">
@@ -527,7 +532,7 @@ function BackgroundResearchWizard() {
                   <div className="flex justify-end pt-4 border-t border-white/10">
                     <button
                       onClick={nextStep}
-                      className="px-8 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all shadow-lg"
+                      className="w-full sm:w-auto px-8 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all duration-300 shadow-lg hover:scale-[1.01]"
                     >
                       Continue →
                     </button>
@@ -550,7 +555,7 @@ function BackgroundResearchWizard() {
                     </label>
                     <input
                       type="password"
-                      className="w-full px-4 py-3 bg-slate-800/50 border border-slate-600/50 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-200"
+                      className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-300 shadow-inner hover:bg-white/10"
                       value={telegramBotToken}
                       onChange={(e) => setTelegramBotToken(e.target.value)}
                       placeholder="Enter your Telegram bot token (e.g., 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11)"
@@ -566,7 +571,7 @@ function BackgroundResearchWizard() {
                     </label>
                     <input
                       type="text"
-                      className="w-full px-4 py-3 bg-slate-800/50 border border-slate-600/50 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-200"
+                      className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-300 shadow-inner hover:bg-white/10"
                       value={telegramChatId}
                       onChange={(e) => setTelegramChatId(e.target.value)}
                       placeholder="Enter your chat ID (e.g., 123456789)"
@@ -581,7 +586,7 @@ function BackgroundResearchWizard() {
                   <button
                     onClick={testTelegramConnection}
                     disabled={testingTelegram || !telegramBotToken.trim() || !telegramChatId.trim()}
-                    className="flex-1 px-6 py-3 bg-gradient-to-r from-blue-500 to-blue-600 text-white font-semibold rounded-xl hover:from-blue-600 hover:to-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
+                    className="w-full flex-1 px-6 py-3 bg-gradient-to-r from-blue-500 to-blue-600 text-white font-semibold rounded-xl hover:from-blue-600 hover:to-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:scale-[1.01]"
                   >
                     {testingTelegram ? (
                       <span className="flex items-center justify-center gap-2">
@@ -599,7 +604,7 @@ function BackgroundResearchWizard() {
                   <button
                     onClick={nextStep}
                     disabled={!canProceedToStep2}
-                    className="px-8 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
+                    className="w-full sm:w-auto px-8 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:scale-[1.01]"
                   >
                     Continue →
                   </button>
@@ -627,10 +632,10 @@ function BackgroundResearchWizard() {
                   ].map(({ value, label }) => (
                     <label
                       key={value}
-                      className={`relative flex items-center justify-center p-4 rounded-xl border-2 cursor-pointer transition-all duration-200 hover:scale-105 ${
+                      className={`relative flex items-center justify-center p-4 rounded-xl border-2 cursor-pointer transition-all duration-300 hover:scale-[1.02] transform-gpu ${
                         researchFrequency === value
-                          ? 'border-purple-500 bg-gradient-to-r from-purple-500/20 to-pink-500/20 text-white shadow-lg'
-                          : 'border-slate-600/50 bg-slate-800/30 text-gray-300 hover:border-slate-500/70 hover:bg-slate-700/50'
+                          ? 'border-purple-500 bg-gradient-to-r from-purple-500/20 to-pink-500/20 text-white shadow-lg ring-2 ring-purple-500/50'
+                          : 'border-slate-600/50 bg-slate-800/30 text-gray-300 hover:border-purple-500/70 hover:bg-slate-700/50'
                       }`}
                     >
                       <input
@@ -662,13 +667,13 @@ function BackgroundResearchWizard() {
                 <div className="flex flex-col sm:flex-row justify-between gap-4 pt-4 border-t border-white/10">
                   <button
                     onClick={prevStep}
-                    className="px-6 py-3 bg-slate-700/50 text-gray-300 font-medium rounded-xl hover:bg-slate-600/50 focus:outline-none focus:ring-2 focus:ring-slate-500 transition-all"
+                    className="w-full sm:w-auto px-6 py-3 bg-slate-700/50 text-gray-300 font-medium rounded-xl hover:bg-slate-600/50 focus:outline-none focus:ring-2 focus:ring-slate-500 transition-all duration-300 hover:scale-[1.01]"
                   >
                     ← Back
                   </button>
                   <button
                     onClick={nextStep}
-                    className="px-8 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all shadow-lg"
+                    className="w-full sm:w-auto px-8 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all duration-300 shadow-lg hover:scale-[1.01]"
                   >
                     Continue →
                   </button>
@@ -687,52 +692,70 @@ function BackgroundResearchWizard() {
                   {[
                     { label: '60% - 75%', value: 60, desc: 'More signals, higher volume', color: 'from-green-500 to-emerald-500' },
                     { label: '75% - 85%', value: 75, desc: 'Balanced approach', color: 'from-blue-500 to-cyan-500' },
-                    { label: '85% - 95%', value: 85, desc: 'High confidence', color: 'from-yellow-500 to-orange-500' },
-                    { label: 'Above 95%', value: 95, desc: 'Ultra-precise signals', color: 'from-red-500 to-pink-500' },
+                    { label: '85% - 95%', value: 85, desc: 'Fewer, high-conviction signals', color: 'from-purple-500 to-pink-500' },
+                    { label: '95% - 100%', value: 95, desc: 'Only critical, ultra-high accuracy alerts', color: 'from-red-500 to-orange-500' }
                   ].map(({ label, value, desc, color }) => (
                     <label
                       key={value}
-                      className={`relative flex items-center p-4 rounded-xl border-2 cursor-pointer transition-all duration-200 hover:scale-102 ${
-                        accuracyTrigger === value
-                          ? `border-purple-500 bg-gradient-to-r from-purple-500/20 to-pink-500/20 text-white shadow-lg`
-                          : 'border-slate-600/50 bg-slate-800/30 text-gray-300 hover:border-slate-500/70 hover:bg-slate-700/50'
+                      className={`relative block p-5 rounded-xl border-2 cursor-pointer transition-all duration-300 hover:scale-[1.02] transform-gpu ${
+                        accuracyTrigger >= value && accuracyTrigger < value + 10
+                          ? `border-purple-500 bg-gradient-to-r ${color}/20 text-white shadow-lg ring-2 ring-purple-500/50`
+                          : 'border-slate-600/50 bg-slate-800/30 text-gray-300 hover:border-purple-500/70 hover:bg-slate-700/50'
                       }`}
                     >
                       <input
                         type="radio"
                         name="accuracy"
                         value={value}
-                        checked={accuracyTrigger === value}
-                        onChange={(e) => setAccuracyTrigger(parseInt(e.target.value))}
+                        checked={accuracyTrigger >= value && accuracyTrigger < value + 10}
+                        onChange={() => setAccuracyTrigger(value)}
                         className="sr-only"
                       />
-                      <div className="flex-1 text-center">
-                        <div className="text-lg font-bold mb-1">{label}</div>
-                        <div className="text-xs text-gray-400">{desc}</div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-lg font-bold">{label}</span>
+                        {accuracyTrigger >= value && accuracyTrigger < value + 10 && (
+                          <div className="w-5 h-5 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full flex items-center justify-center flex-shrink-0">
+                            <span className="text-white text-xs">✓</span>
+                          </div>
+                        )}
                       </div>
-                      {accuracyTrigger === value && (
-                        <div className="absolute -top-2 -right-2 w-6 h-6 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full flex items-center justify-center">
-                          <span className="text-white text-sm">✓</span>
-                        </div>
-                      )}
+                      <p className="text-sm text-gray-400 mt-1">{desc}</p>
                     </label>
                   ))}
                 </div>
-                <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4">
-                  <p className="text-sm text-amber-200">
-                    <span className="font-semibold">⚠️ Warning:</span> Choosing a high accuracy trigger (e.g., 95%) will significantly reduce the number of alerts received.
+                <div className="space-y-3">
+                  <label className="block text-sm font-semibold text-gray-200">
+                    Current Accuracy Trigger: <span className="text-purple-400">{accuracyTrigger}%</span>
+                  </label>
+                  <input
+                    type="range"
+                    min="60"
+                    max="99"
+                    step="1"
+                    value={accuracyTrigger}
+                    onChange={(e) => setAccuracyTrigger(parseInt(e.target.value))}
+                    className="w-full h-2 bg-purple-900/50 rounded-lg appearance-none cursor-pointer transition-all duration-300 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:bg-purple-500 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:shadow-lg"
+                  />
+                  <div className="flex justify-between text-xs text-gray-400">
+                    <span>60% (High Volume)</span>
+                    <span>99% (Max Reliability)</span>
+                  </div>
+                </div>
+                <div className="bg-orange-500/10 border border-orange-500/20 rounded-xl p-4">
+                  <p className="text-sm text-orange-200">
+                    <span className="font-semibold">⚠️ Warning:</span> Setting a very high trigger (90%+) may significantly reduce the number of alerts received.
                   </p>
                 </div>
                 <div className="flex flex-col sm:flex-row justify-between gap-4 pt-4 border-t border-white/10">
                   <button
                     onClick={prevStep}
-                    className="px-6 py-3 bg-slate-700/50 text-gray-300 font-medium rounded-xl hover:bg-slate-600/50 focus:outline-none focus:ring-2 focus:ring-slate-500 transition-all"
+                    className="w-full sm:w-auto px-6 py-3 bg-slate-700/50 text-gray-300 font-medium rounded-xl hover:bg-slate-600/50 focus:outline-none focus:ring-2 focus:ring-slate-500 transition-all duration-300 hover:scale-[1.01]"
                   >
                     ← Back
                   </button>
                   <button
                     onClick={nextStep}
-                    className="px-8 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all shadow-lg"
+                    className="w-full sm:w-auto px-8 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all duration-300 shadow-lg hover:scale-[1.01]"
                   >
                     Continue →
                   </button>
@@ -743,65 +766,40 @@ function BackgroundResearchWizard() {
               <div className="space-y-6">
                 <div className="text-center sm:text-left">
                   <h3 className="text-2xl font-bold text-white mb-2">💾 Review & Save</h3>
-                  <p className="text-gray-400">
-                    Please review your background deep research settings before saving.
-                  </p>
+                  <p className="text-gray-400"> Please review your background deep research settings before saving. </p>
                 </div>
                 <div className="bg-slate-800/30 rounded-xl p-6 border border-slate-600/30 space-y-4">
                   <h4 className="text-lg font-semibold text-white mb-3">Configuration Summary</h4>
                   <div className="flex justify-between items-center pb-2 border-b border-white/5">
                     <span className="text-sm font-medium text-gray-300">Status</span>
-                    <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-500/20 text-green-300">
-                      Enabled
-                    </span>
+                    <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-500/20 text-green-300 border border-green-400/30">Enabled</span>
                   </div>
                   <div className="flex justify-between items-center pb-2 border-b border-white/5">
-                    <span className="text-sm font-medium text-gray-300">Telegram Config</span>
-                    <span className="text-sm font-semibold text-purple-400">
-                      {telegramBotToken.length > 10 ? 'Token Configured' : 'Missing'}
-                    </span>
+                    <span className="text-sm font-medium text-gray-300">Telegram Setup</span>
+                    <span className="text-sm font-semibold text-green-400">Configured</span>
                   </div>
                   <div className="flex justify-between items-center pb-2 border-b border-white/5">
                     <span className="text-sm font-medium text-gray-300">Research Frequency</span>
-                    <span className="text-sm font-semibold text-white">
-                      {researchFrequency} Minutes
-                    </span>
+                    <span className="text-sm font-semibold text-purple-400">{researchFrequency} minutes</span>
                   </div>
                   <div className="flex justify-between items-center">
                     <span className="text-sm font-medium text-gray-300">Accuracy Trigger</span>
-                    <span className="text-sm font-semibold text-white">
-                      🎯 {accuracyTrigger === 60 ? '60% - 75%' : accuracyTrigger === 75 ? '75% - 85%' : accuracyTrigger === 85 ? '85% - 95%' : 'Above 95%'}
-                    </span>
+                    <span className="text-sm font-semibold text-purple-400">{accuracyTrigger}%</span>
                   </div>
-                </div>
-                <div className="bg-green-500/10 border border-green-500/20 rounded-xl p-4">
-                  <p className="text-sm text-green-200 flex items-center gap-2">
-                    <span className="text-green-400">🚀</span>
-                    <span>Ready to save! Your background research system will automatically analyze markets and send high-accuracy signals to your Telegram.</span>
-                  </p>
                 </div>
                 <div className="flex flex-col sm:flex-row justify-between gap-4 pt-4 border-t border-white/10">
                   <button
                     onClick={prevStep}
-                    className="px-6 py-3 bg-slate-700/50 text-gray-300 font-medium rounded-xl hover:bg-slate-600/50 focus:outline-none focus:ring-2 focus:ring-slate-500 transition-all"
+                    className="w-full sm:w-auto px-6 py-3 bg-slate-700/50 text-gray-300 font-medium rounded-xl hover:bg-slate-600/50 focus:outline-none focus:ring-2 focus:ring-slate-500 transition-all duration-300 hover:scale-[1.01]"
                   >
                     ← Back
                   </button>
                   <button
                     onClick={saveBackgroundResearchSettings}
                     disabled={savingSettings}
-                    className="px-8 py-4 bg-gradient-to-r from-green-500 to-green-600 text-white font-bold rounded-xl hover:from-green-600 hover:to-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg text-lg"
+                    className="w-full sm:w-auto px-8 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:scale-[1.01]"
                   >
-                    {savingSettings ? (
-                      <span className="flex items-center justify-center gap-2">
-                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                        Saving Settings...
-                      </span>
-                    ) : (
-                      <span className="flex items-center justify-center gap-2">
-                        ✅ Confirm & Save Settings
-                      </span>
-                    )}
+                    {savingSettings ? 'Saving...' : 'Save All Settings'}
                   </button>
                 </div>
               </div>
@@ -814,7 +812,7 @@ function BackgroundResearchWizard() {
 }
 
 // Main Settings Component
-const Settings: React.FC = () => {
+const Settings = () => {
   const navigate = useNavigate();
   const { user, handleLogout: authHandleLogout } = useAuth();
   const [loadingAll, setLoadingAll] = useState(true);
@@ -884,10 +882,10 @@ const Settings: React.FC = () => {
     coinRankingEnabled: false,
     nomicsKey: '',
     nomicsEnabled: false,
+
     enableAutoTrade: false,
     exchanges: [],
     showUnmaskedKeys: false,
-    // Notification settings
     enableAutoTradeAlerts: false,
     enableAccuracyAlerts: false,
     enableWhaleAlerts: false,
@@ -895,38 +893,40 @@ const Settings: React.FC = () => {
     notificationSounds: false,
     notificationVibration: false,
   });
-  const [showUnmaskedKeys, setShowUnmaskedKeys] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
-  const [savingProvider, setSavingProvider] = useState<string | null>(null);
   const [integrationsLoading, setIntegrationsLoading] = useState(false);
-  const [testingProvider, setTestingProvider] = useState<string | null>(null);
-  const [providerTestResults, setProviderTestResults] = useState<Record<string, { status: 'success' | 'error' | null; message: string }>>({});
 
-  // Exchange States
+  // Exchange Connection States
+  const [selectedExchange, setSelectedExchange] = useState<string>('');
+  const [exchangeForm, setExchangeForm] = useState({
+    apiKey: '',
+    secretKey: '',
+    passphrase: ''
+  });
   const [connectedExchange, setConnectedExchange] = useState<any>(null);
-  const [selectedExchange, setSelectedExchange] = useState<string | null>(null);
-  const [exchangeForm, setExchangeForm] = useState({ apiKey: '', secretKey: '', passphrase: '' });
   const [savingExchange, setSavingExchange] = useState(false);
-  const [disconnectingExchange, setDisconnectingExchange] = useState(false);
+  const [testingExchange, setTestingExchange] = useState(false);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
 
-  // Trading Settings States
+  // Provider Test States
+  const [testingProvider, setTestingProvider] = useState<string | null>(null);
+  const [savingProvider, setSavingProvider] = useState<string | null>(null);
+  const [providerTestResults, setProviderTestResults] = useState<Record<string, { status: 'success' | 'error' | null; message: string }>>({});
+
+  // Trading Engine States
   const [tradingSettings, setTradingSettings] = useState<any>({
-    tradeType: 'scalping',
     maxPositionPerTrade: 10,
-    accuracyThreshold: 85,
+    tradeType: 'scalping',
     maxDailyLoss: 5,
     maxTradesPerDay: 50,
-    positionSizingMap: [
-      { min: 0, max: 84, percent: 0 },
-      { min: 85, max: 89, percent: 3 },
-      { min: 90, max: 94, percent: 6 },
-      { min: 95, max: 99, percent: 8.5 },
-      { min: 100, max: 100, percent: 10 }
-    ],
     manualCoins: [],
+    positionSizingMap: [
+      { min: 0, max: 70, percent: 1 },
+      { min: 70, max: 80, percent: 5 },
+      { min: 80, max: 90, percent: 10 },
+      { min: 90, max: 100, percent: 15 },
+    ]
   });
-  const [savingTradingSettings, setSavingTradingSettings] = useState(false);
   const [sampleAccuracy, setSampleAccuracy] = useState(85);
 
   // Research Coin Selection States
@@ -967,78 +967,82 @@ const Settings: React.FC = () => {
   const loadSettings = async () => {
     try {
       const response = await settingsApi.load();
-      // Use loaded successfully if (response.data) {
+      // Use loaded successfully
       if (response.data) {
-        setSettings({
-          maxPositionPercent: response.data.maxPositionPercent || 10,
-          tradeType: response.data.tradeType || 'scalping',
-          accuracyThreshold: response.data.accuracyThreshold || 85,
-          maxDailyLoss: response.data.maxDailyLoss || 5,
-          maxTradesPerDay: response.data.maxTradesPerDay || 50,
-          // Primary Providers
-          coinGeckoKey: response.data.coinGeckoKey || '',
-          newsDataKey: response.data.newsDataKey || '',
-          cryptoCompareKey: response.data.cryptoCompareKey || '',
-          // Market Data Backup Providers
-          coinPaprikaKey: response.data.coinPaprikaKey || '',
-          coinPaprikaEnabled: response.data.coinPaprikaEnabled || false,
-          coinMarketCapKey: response.data.coinMarketCapKey || '',
-          coinMarketCapEnabled: response.data.coinMarketCapEnabled || false,
-          coinLoreKey: response.data.coinLoreKey || '',
-          coinLoreEnabled: response.data.coinLoreEnabled || false,
-          coinApiKey: response.data.coinApiKey || '',
-          coinApiEnabled: response.data.coinApiEnabled || false,
-          braveNewCoinKey: response.data.braveNewCoinKey || '',
-          braveNewCoinEnabled: response.data.braveNewCoinEnabled || false,
-          messariKey: response.data.messariKey || '',
-          messariEnabled: response.data.messariEnabled || false,
-          kaikoKey: response.data.kaikoKey || '',
-          kaikoEnabled: response.data.kaikoEnabled || false,
-          liveCoinWatchKey: response.data.liveCoinWatchKey || '',
-          liveCoinWatchEnabled: response.data.liveCoinWatchEnabled || false,
-          coinStatsKey: response.data.coinStatsKey || '',
-          coinStatsEnabled: response.data.coinStatsEnabled || false,
-          coinCheckupKey: response.data.coinCheckupKey || '',
-          coinCheckupEnabled: response.data.coinCheckupEnabled || false,
-          // News Backup Providers
-          cryptoPanicKey: response.data.cryptoPanicKey || '',
-          cryptoPanicEnabled: response.data.cryptoPanicEnabled || false,
-          redditKey: response.data.redditKey || '',
-          redditEnabled: response.data.redditEnabled || false,
-          cointelegraphKey: response.data.cointelegraphKey || '',
-          cointelegraphEnabled: response.data.cointelegraphEnabled || false,
-          altcoinBuzzKey: response.data.altcoinBuzzKey || '',
-          altcoinBuzzEnabled: response.data.altcoinBuzzEnabled || false,
-          gnewsKey: response.data.gnewsKey || '',
-          gnewsEnabled: response.data.gnewsEnabled || false,
-          marketauxKey: response.data.marketauxKey || '',
-          marketauxEnabled: response.data.marketauxEnabled || false,
-          webzKey: response.data.webzKey || '',
-          webzEnabled: response.data.webzEnabled || false,
-          coinStatsNewsKey: response.data.coinStatsNewsKey || '',
-          coinStatsNewsEnabled: response.data.coinStatsNewsEnabled || false,
-          newsCatcherKey: response.data.newsCatcherKey || '',
-          newsCatcherEnabled: response.data.newsCatcherEnabled || false,
-          cryptoCompareNewsKey: response.data.cryptoCompareNewsKey || '',
-          cryptoCompareNewsEnabled: response.data.cryptoCompareNewsEnabled || false,
-          // Metadata Backup Providers
-          coinCapKey: response.data.coinCapKey || '',
-          coinCapEnabled: response.data.coinCapEnabled || false,
-          coinRankingKey: response.data.coinRankingKey || '',
-          coinRankingEnabled: response.data.coinRankingEnabled || false,
-          nomicsKey: response.data.nomicsKey || '',
-          nomicsEnabled: response.data.nomicsEnabled || false,
-          enableAutoTrade: response.data.enableAutoTrade || false,
-          exchanges: response.data.exchanges || [],
-          showUnmaskedKeys: response.data.showUnmaskedKeys || false,
-          // Notification settings
-          enableAutoTradeAlerts: response.data.enableAutoTradeAlerts || false,
-          enableAccuracyAlerts: response.data.enableAccuracyAlerts || false,
-          enableWhaleAlerts: response.data.enableWhaleAlerts || false,
-          tradeConfirmationRequired: response.data.tradeConfirmationRequired || false,
-          notificationSounds: response.data.notificationSounds || false,
-          notificationVibration: response.data.notificationVibration || false,
-        });
+        if (response.data) {
+          setSettings({
+            maxPositionPercent: response.data.maxPositionPercent || 10,
+            tradeType: response.data.tradeType || 'scalping',
+            accuracyThreshold: response.data.accuracyThreshold || 85,
+            maxDailyLoss: response.data.maxDailyLoss || 5,
+            maxTradesPerDay: response.data.maxTradesPerDay || 50,
+            // Primary Providers
+            coinGeckoKey: response.data.coinGeckoKey || '',
+            newsDataKey: response.data.newsDataKey || '',
+            cryptoCompareKey: response.data.cryptoCompareKey || '',
+            // Market Data Backup Providers
+            coinPaprikaKey: response.data.coinPaprikaKey || '',
+            coinPaprikaEnabled: response.data.coinPaprikaEnabled || false,
+            coinMarketCapKey: response.data.coinMarketCapKey || '',
+            coinMarketCapEnabled: response.data.coinMarketCapEnabled || false,
+            coinLoreKey: response.data.coinLoreKey || '',
+            coinLoreEnabled: response.data.coinLoreEnabled || false,
+            coinApiKey: response.data.coinApiKey || '',
+            coinApiEnabled: response.data.coinApiEnabled || false,
+            braveNewCoinKey: response.data.braveNewCoinKey || '',
+            braveNewCoinEnabled: response.data.braveNewCoinEnabled || false,
+            messariKey: response.data.messariKey || '',
+            messariEnabled: response.data.messariEnabled || false,
+            kaikoKey: response.data.kaikoKey || '',
+            kaikoEnabled: response.data.kaikoEnabled || false,
+            liveCoinWatchKey: response.data.liveCoinWatchKey || '',
+            liveCoinWatchEnabled: response.data.liveCoinWatchEnabled || false,
+            coinStatsKey: response.data.coinStatsKey || '',
+            coinStatsEnabled: response.data.coinStatsEnabled || false,
+            coinCheckupKey: response.data.coinCheckupKey || '',
+            coinCheckupEnabled: response.data.coinCheckupEnabled || false,
+            // News Backup Providers
+            cryptoPanicKey: response.data.cryptoPanicKey || '',
+            cryptoPanicEnabled: response.data.cryptoPanicEnabled || false,
+            redditKey: response.data.redditKey || '',
+            redditEnabled: response.data.redditEnabled || false,
+            cointelegraphKey: response.data.cointelegraphKey || '',
+            cointelegraphEnabled: response.data.cointelegraphEnabled || false,
+            altcoinBuzzKey: response.data.altcoinBuzzKey || '',
+            altcoinBuzzEnabled: response.data.altcoinBuzzEnabled || false,
+            gnewsKey: response.data.gnewsKey || '',
+            gnewsEnabled: response.data.gnewsEnabled || false,
+            marketauxKey: response.data.marketauxKey || '',
+            marketauxEnabled: response.data.marketauxEnabled || false,
+            webzKey: response.data.webzKey || '',
+            webzEnabled: response.data.webzEnabled || false,
+            coinStatsNewsKey: response.data.coinStatsNewsKey || '',
+            coinStatsNewsEnabled: response.data.coinStatsNewsEnabled || false,
+            newsCatcherKey: response.data.newsCatcherKey || '',
+            newsCatcherEnabled: response.data.newsCatcherEnabled || false,
+            cryptoCompareNewsKey: response.data.cryptoCompareNewsKey || '',
+            cryptoCompareNewsEnabled: response.data.cryptoCompareNewsEnabled || false,
+            // Metadata Backup Providers
+            coinCapKey: response.data.coinCapKey || '',
+            coinCapEnabled: response.data.coinCapEnabled || false,
+            coinRankingKey: response.data.coinRankingKey || '',
+            coinRankingEnabled: response.data.coinRankingEnabled || false,
+            nomicsKey: response.data.nomicsKey || '',
+            nomicsEnabled: response.data.nomicsEnabled || false,
+
+            enableAutoTrade: response.data.enableAutoTrade || false,
+            exchanges: response.data.exchanges || [],
+            showUnmaskedKeys: response.data.showUnmaskedKeys || false,
+
+            // Notification settings
+            enableAutoTradeAlerts: response.data.enableAutoTradeAlerts || false,
+            enableAccuracyAlerts: response.data.enableAccuracyAlerts || false,
+            enableWhaleAlerts: response.data.enableWhaleAlerts || false,
+            tradeConfirmationRequired: response.data.tradeConfirmationRequired || false,
+            notificationSounds: response.data.notificationSounds || false,
+            notificationVibration: response.data.notificationVibration || false,
+          });
+        }
       }
     } catch (err: any) {
       showToast(err.response?.data?.error || 'Error loading settings', 'error');
@@ -1076,50 +1080,21 @@ const Settings: React.FC = () => {
     if (!user) return;
     try {
       const response = await exchangeApi.status();
-      if (response.data && response.data.exchanges) {
-        // Find the first connected exchange
-        const connectedExchangeData = response.data.exchanges.find((ex: any) => ex.connected);
-        if (connectedExchangeData) {
+      if (response.data?.exchange) {
+        const exchange = EXCHANGES.find(e => e.id === response.data.exchange);
+        if (exchange) {
           setConnectedExchange({
-            id: connectedExchangeData.exchange,
-            name: connectedExchangeData.exchange,
-            logo: EXCHANGES.find(e => e.id === connectedExchangeData.exchange)?.logo || (() => <div className="w-12 h-12 bg-gray-500 rounded-full"></div>),
-            lastUpdated: connectedExchangeData.lastUpdated,
+            ...exchange,
+            lastUpdated: new Date().toISOString()
           });
-          setSelectedExchange(null); // Clear selection on successful connection
         } else {
           setConnectedExchange(null);
         }
+      } else {
+        setConnectedExchange(null);
       }
     } catch (err) {
       setConnectedExchange(null);
-    }
-  };
-
-  const loadTradingSettings = async () => {
-    try {
-      const response = await settingsApi.trading.load();
-      if (response.data) {
-        setTradingSettings({
-          tradeType: response.data.tradeType || 'scalping',
-          maxPositionPerTrade: response.data.maxPositionPerTrade || 10,
-          accuracyThreshold: response.data.accuracyThreshold || 85,
-          maxDailyLoss: response.data.maxDailyLoss || 5,
-          maxTradesPerDay: response.data.maxTradesPerDay || 50,
-          positionSizingMap: response.data.positionSizingMap || [
-            { min: 0, max: 84, percent: 0 },
-            { min: 85, max: 89, percent: 3 },
-            { min: 90, max: 94, percent: 6 },
-            { min: 95, max: 99, percent: 8.5 },
-            { min: 100, max: 100, percent: 10 }
-          ],
-          manualCoins: response.data.manualCoins || [],
-        });
-      }
-    } catch (err) {
-      // DEFENSIVE: On API failure, show warning but keep UI functional with defaults
-      setToast({ message: 'Unable to load trading settings - check connection', type: 'error' });
-      setTimeout(() => setToast(null), 5000); // Settings will use defaults defined in state
     }
   };
 
@@ -1165,70 +1140,47 @@ const Settings: React.FC = () => {
 
   const checkAutoTradePrerequisites = useCallback(async () => {
     try {
-      const response = await settingsApi.notifications.checkPrereq();
+      const response = await settingsApi.notifications.checkPrereqs();
       setNotificationPrereqs(response.data);
+      if (!response.data.allMet) {
+        setShowAutoTradePrereqModal(true);
+      }
       return response.data;
     } catch (error: any) {
-      return { met: false, missing: ['Error checking prerequisites'] };
+      showToast(error.response?.data?.error || 'Failed to check auto-trade prerequisites', 'error');
+      return { allMet: false };
     }
   }, []);
 
-  // Combined data loading logic
-  const loadAllData = useCallback(async () => {
-    if (!user || !isMountedRef.current) return;
-
-    try {
-      setLoadingAll(true);
-      setError(null);
-
-      let settingsResult: PromiseSettledResult<any>;
-      let integrationsResult: PromiseSettledResult<any>;
-      let exchangeResult: PromiseSettledResult<any>;
-      let tradingSettingsResult: PromiseSettledResult<any>;
-      let topCoinsResult: PromiseSettledResult<any>;
-      let notificationsResult: PromiseSettledResult<any>;
-
-      [settingsResult, integrationsResult, exchangeResult, tradingSettingsResult, topCoinsResult, notificationsResult] = await Promise.allSettled([
-        loadSettings(),
-        loadIntegrations(),
-        loadConnectedExchange(),
-        loadTradingSettings(),
-        loadTop100Coins(),
-        loadNotificationSettings()
-      ]);
-
-      // Log any failures but don't fail the whole load
-      if (settingsResult.status === 'rejected') { suppressConsoleError(settingsResult.reason, 'loadSettings'); }
-      if (integrationsResult.status === 'rejected') { suppressConsoleError(integrationsResult.reason, 'loadIntegrations'); }
-      if (exchangeResult.status === 'rejected') { suppressConsoleError(exchangeResult.reason, 'loadConnectedExchange'); }
-      if (topCoinsResult.status === 'rejected') { suppressConsoleError(topCoinsResult.reason, 'loadTop100Coins'); }
-      if (notificationsResult.status === 'rejected') { suppressConsoleError(notificationsResult.reason, 'loadNotificationSettings'); }
-
-      setRetryCount(0); // Reset retry count on successful load
-    } catch (err: any) {
-      suppressConsoleError(err, 'loadSettingsData');
-      if (isMountedRef.current) {
-        setError(err);
-      }
-    } finally {
-      if (isMountedRef.current) {
-        setLoadingAll(false);
-      }
-    }
-  }, [user, loadNotificationSettings]);
-
+  // Initial Data Load
   useEffect(() => {
-    if (user) {
-      loadAllData();
-    }
-  }, [user, loadAllData]);
+    const fetchData = async () => {
+      suppressConsoleError(async () => {
+        try {
+          await Promise.all([
+            loadSettings(),
+            loadIntegrations(),
+            loadConnectedExchange(),
+            loadTop100Coins(),
+            loadNotificationSettings()
+          ]);
+        } catch (e) {
+          setError(e);
+        } finally {
+          if (isMountedRef.current) {
+            setLoadingAll(false);
+          }
+        }
+      });
+    };
+    fetchData();
+  }, [retryCount, loadNotificationSettings]);
 
-  // Force load after 10 seconds if still loading (fallback for slow APIs)
+  // Handle timeout
   useEffect(() => {
-    if (loadingAll && user) {
+    if (loadingAll) {
       const timeout = setTimeout(() => {
-        if (isMountedRef.current) {
-          setLoadingAll(false);
+        if (loadingAll) {
           setError({ message: 'Loading timeout - please try refreshing the page' });
         }
       }, 10000);
@@ -1276,51 +1228,33 @@ const Settings: React.FC = () => {
       setProviderTestResults(prev => ({ ...prev, [providerName]: { status: 'error', message: 'API not mapped' } }));
       return;
     }
-
     setTestingProvider(providerName);
     try {
       // Check if API key is missing for a required API
       const FREE_APIS = ['coingecko', 'coinpaprika', 'coinlore', 'reddit', 'cointelegraph', 'altcoinbuzz', 'coinstatsnews', 'coincheckup', 'coincap'];
-
       if (!apiKey && !FREE_APIS.includes(apiName)) {
-        setProviderTestResults(prev => ({ ...prev, [providerName]: { status: 'error', message: 'API key required' } }));
+        setProviderTestResults(prev => ({ ...prev, [providerName]: { status: 'error', message: `${providerName} requires an API key.` } }));
         return;
       }
 
-      // Call test API - this would need to be implemented in the backend
-      const testResponse = await integrationsApi.testProvider(apiName, { apiKey: apiKey as string });
-
-      if (testResponse.data?.success) {
-        setProviderTestResults(prev => ({ ...prev, [providerName]: { status: 'success', message: 'Connection successful' } }));
+      const response = await integrationsApi.testKey(apiName, apiKey as string);
+      if (response.data.valid) {
+        setProviderTestResults(prev => ({ ...prev, [providerName]: { status: 'success', message: `${providerName} connection successful.` } }));
       } else {
-        setProviderTestResults(prev => ({ ...prev, [providerName]: { status: 'error', message: testResponse.data?.error || 'Connection failed' } }));
+        setProviderTestResults(prev => ({ ...prev, [providerName]: { status: 'error', message: response.data.message || `${providerName} key invalid or failed to connect.` } }));
       }
     } catch (err: any) {
-      setProviderTestResults(prev => ({ ...prev, [providerName]: { status: 'error', message: err.response?.data?.error || 'Connection failed' } }));
+      setProviderTestResults(prev => ({ ...prev, [providerName]: { status: 'error', message: err.response?.data?.error || `${providerName} connection failed.` } }));
     } finally {
       setTestingProvider(null);
     }
   };
 
-  const handleSaveTradingSettings = async () => {
-    setSavingTradingSettings(true);
-    try {
-      await settingsApi.trading.update(tradingSettings);
-      showToast('Trading parameters saved successfully', 'success');
-    } catch (err: any) {
-      showToast(err.response?.data?.error || 'Failed to save trading parameters', 'error');
-    } finally {
-      setSavingTradingSettings(false);
-    }
-  };
-
-  // Trading Helpers
-  const calculatePositionForAccuracy = (accuracy: number): number => {
-    // DEFENSIVE: Validate inputs to prevent NaN/undefined
-    if (!accuracy || isNaN(accuracy) || accuracy < 0 || accuracy > 100) {
+  const calculatePositionForAccuracy = (accuracy: number) => {
+    // DEFENSIVE: Check if accuracy is valid
+    if (accuracy < 0 || accuracy > 100) {
       return 0;
     }
-
     // DEFENSIVE: Check if positionSizingMap exists and is valid
     if (!tradingSettings.positionSizingMap || !Array.isArray(tradingSettings.positionSizingMap)) {
       return 0;
@@ -1368,74 +1302,74 @@ const Settings: React.FC = () => {
     setExchangeForm({ apiKey: '', secretKey: '', passphrase: '' });
   };
 
-  const handleSaveExchange = async () => {
-    if (!selectedExchange) return;
+  const handleExchangeFormChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setExchangeForm({ ...exchangeForm, [e.target.name]: e.target.value });
+  };
 
-    const exchange = EXCHANGES.find(e => e.id === selectedExchange);
-    if (!exchange) {
-      showToast('Invalid exchange selected', 'error');
-      return;
-    }
-
-    const requiredFields = exchange.fields;
-    for (const field of requiredFields) {
-      if (!exchangeForm[field as keyof typeof exchangeForm]) {
-        showToast(`Please enter the required ${field} for ${exchange.name}`, 'error');
-        return;
-      }
-    }
-
+  const handleConnectExchange = async () => {
     setSavingExchange(true);
     try {
+      const exchange = EXCHANGES.find(e => e.id === selectedExchange);
+      if (!exchange) throw new Error('Invalid exchange selected');
+
       await exchangeApi.connect({
-        exchangeId: selectedExchange,
+        exchange: selectedExchange,
         apiKey: exchangeForm.apiKey,
         secretKey: exchangeForm.secretKey,
         passphrase: exchangeForm.passphrase,
       });
 
-      // Reload connected exchange data
-      await loadConnectedExchange();
-
       showToast(`Successfully connected to ${exchange.name}!`, 'success');
-      setSelectedExchange(null);
+      loadConnectedExchange(); // Reload connected exchange status
+      setSelectedExchange('');
+      setExchangeForm({ apiKey: '', secretKey: '', passphrase: '' });
     } catch (err: any) {
-      showToast(err.response?.data?.error || `Failed to connect to ${exchange.name}`, 'error');
+      showToast(err.response?.data?.error || 'Failed to connect exchange', 'error');
     } finally {
       setSavingExchange(false);
     }
   };
 
-  const handleDisconnectExchange = async () => {
-    if (!connectedExchange) return;
-    setDisconnectingExchange(true);
+  const handleTestExchange = async () => {
+    setTestingExchange(true);
     try {
-      await exchangeApi.disconnect(connectedExchange.id);
-      setConnectedExchange(null);
-      showToast(`Successfully disconnected from ${connectedExchange.name}`, 'success');
+      const response = await exchangeApi.test();
+      showToast(response.data.message || 'Exchange connection verified!', 'success');
     } catch (err: any) {
-      showToast(err.response?.data?.error || `Failed to disconnect from ${connectedExchange.name}`, 'error');
+      showToast(err.response?.data?.error || 'Exchange connection failed. Check your API keys/permissions.', 'error');
     } finally {
-      setDisconnectingExchange(false);
-      setShowDisconnectConfirm(false);
+      setTestingExchange(false);
     }
   };
 
-  // Notification Handlers
-  const handleAutoTradeAlertsToggle = useCallback(async (enabled: boolean) => {
+  const handleDisconnectExchange = async () => {
+    setSavingExchange(true); // Reusing savingExchange for disconnect loading state
+    try {
+      await exchangeApi.disconnect();
+      showToast('Exchange disconnected successfully', 'success');
+      setConnectedExchange(null);
+      setShowDisconnectConfirm(false);
+    } catch (err: any) {
+      showToast(err.response?.data?.error || 'Failed to disconnect exchange', 'error');
+    } finally {
+      setSavingExchange(false);
+    }
+  };
+
+  const handleAutoTradeToggle = useCallback(async (enabled: boolean) => {
     if (enabled) {
-      const prereq = await checkAutoTradePrerequisites();
-      if (!prereq.met) {
-        setShowAutoTradePrereqModal(true);
+      const prereqs = await checkAutoTradePrerequisites();
+      if (!prereqs.allMet) {
         return;
       }
     }
-    await saveNotificationSettings({ ...notificationSettings, autoTradeAlerts: enabled });
+    const newSettings = { ...notificationSettings, enableAutoTradeAlerts: enabled };
+    saveNotificationSettings(newSettings);
   }, [notificationSettings, checkAutoTradePrerequisites, saveNotificationSettings]);
 
   const handleAccuracyAlertsToggle = useCallback(async () => {
-    setAccuracyThresholdInput(notificationSettings.accuracyAlerts?.threshold?.toString() || '80');
-    setTelegramForAccuracy(notificationSettings.telegramEnabled || false);
+    setAccuracyThresholdInput(notificationSettings?.accuracyAlerts?.threshold?.toString() || '80');
+    setTelegramForAccuracy(notificationSettings?.telegramEnabled || false);
     setShowAccuracyModal(true);
   }, [notificationSettings]);
 
@@ -1454,7 +1388,6 @@ const Settings: React.FC = () => {
       },
       telegramEnabled: telegramForAccuracy,
     };
-
     await saveNotificationSettings(newSettings);
     setShowAccuracyModal(false);
   }, [accuracyThresholdInput, notificationSettings, saveNotificationSettings, telegramForAccuracy]);
@@ -1470,10 +1403,10 @@ const Settings: React.FC = () => {
 
   if (loadingAll) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+      <div className="min-h-screen w-full fixed inset-0 bg-gradient-to-br from-[#0a0f1c] via-[#111727] to-[#000a0f] overflow-y-auto">
         <Sidebar onLogout={handleLogout} />
-        <main className="min-h-screen smooth-scroll">
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <main className="min-h-screen w-full relative z-10 pt-16 lg:pt-0 lg:pl-64">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-12 flex items-center justify-center">
             <LoadingState message="Loading settings..." />
           </div>
         </main>
@@ -1484,11 +1417,11 @@ const Settings: React.FC = () => {
   // Show error state with retry option
   if (error && !loadingAll) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+      <div className="min-h-screen w-full fixed inset-0 bg-gradient-to-br from-[#0a0f1c] via-[#111727] to-[#000a0f] overflow-y-auto">
         <Sidebar onLogout={handleLogout} />
-        <main className="min-h-screen smooth-scroll">
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-            <ErrorState error={error} onRetry={handleRetry} message={`Failed to load settings${retryCount > 0 ? ` (attempt ${retryCount + 1})` : ''}`} />
+        <main className="min-h-screen w-full relative z-10 pt-16 lg:pt-0 lg:pl-64">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-12">
+            <ErrorState message={error.message || "An unexpected error occurred."} onRetry={handleRetry} onLogout={handleLogout} />
           </div>
         </main>
       </div>
@@ -1497,685 +1430,657 @@ const Settings: React.FC = () => {
 
   return (
     <ErrorBoundary>
-      <div className="flex flex-col h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 overflow-hidden">
-        {/* Animated background elements - omitted for brevity */}
-
+      <div className="min-h-screen w-full fixed inset-0 bg-gradient-to-br from-[#0a0f1c] via-[#111727] to-[#000a0f] overflow-y-auto">
         <Sidebar onLogout={handleLogout} />
-        <main className="flex-1 overflow-y-auto smooth-scroll">
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <main className="w-full relative z-10 pt-20 lg:pt-0 lg:pl-64">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-12">
+            <h1 className="text-3xl font-extrabold text-white mb-8 sm:mb-12">System Settings & Configuration</h1>
 
-            <h1 className="text-3xl font-bold text-white mb-8">System Settings</h1>
-
-            {/* General Settings Section (Autotrade, Max Position) */}
-            <SettingsCard className="mb-8">
-              <div className="mb-6">
-                <h2 className="text-xl font-semibold text-white mb-2">General Trading Settings</h2>
-                <p className="text-sm text-gray-400">Core parameters for the automated trading engine</p>
-              </div>
-
-              <div className="space-y-6">
-                {/* Auto-Trade Toggle */}
-                <div className="flex items-center justify-between p-4 bg-slate-800/30 rounded-xl border border-slate-700/50">
-                  <div className="flex-1">
-                    <label htmlFor="enable-autotrade" className="text-lg font-semibold text-white block">Enable Auto-Trade</label>
-                    <p className="text-sm text-gray-400">Automatically execute trades based on system signals</p>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              {/* Column 1: Core Settings */}
+              <div className="lg:col-span-2 space-y-8">
+                {/* General & Risk Settings Card */}
+                <SettingsCard>
+                  <div className="mb-6">
+                    <h2 className="text-xl font-bold text-white mb-2">General Trading Settings</h2>
+                    <p className="text-sm text-gray-400">Core parameters for the auto-trading engine</p>
                   </div>
-                  <ToggleSwitch
-                    id="enable-autotrade"
-                    checked={settings.enableAutoTrade || false}
-                    onChange={(checked) => setSettings({ ...settings, enableAutoTrade: checked })}
-                    ariaLabel="Toggle auto-trade"
-                  />
-                </div>
 
-                {/* Max Position Per Trade */}
-                <div className="space-y-2">
-                  <label htmlFor="max-position" className="block text-sm font-medium text-gray-300">Max Position Per Trade (%)</label>
-                  <SettingsInput
-                    id="max-position"
-                    type="number"
-                    step="1"
-                    min="1"
-                    max="100"
-                    value={settings.maxPositionPercent}
-                    onChange={(e) => setSettings({ ...settings, maxPositionPercent: parseInt(e.target.value) || 1 })}
-                  />
-                  <p className="text-xs text-gray-400">Maximum percentage of total capital to use per trade. Default: 10%</p>
-                </div>
-              </div>
-
-              {/* Save Button */}
-              <div className="mt-6 flex justify-end">
-                <button
-                  onClick={handleSaveGeneralSettings}
-                  disabled={savingSettings}
-                  className="px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
-                >
-                  {savingSettings ? 'Saving...' : 'Save General Settings'}
-                </button>
-              </div>
-            </SettingsCard>
-
-            {/* Trading Parameters Section */}
-            <SettingsCard className="mb-8">
-              <div className="mb-6">
-                <h2 className="text-xl font-semibold text-white mb-2">Trading Engine Parameters</h2>
-                <p className="text-sm text-gray-400">Advanced risk and position sizing controls for auto-trade</p>
-              </div>
-
-              {/* Trade Type and Risk */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-6">
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-gray-300">Trade Type</label>
-                  <div className="flex space-x-2">
-                    {['scalping', 'swing', 'daytrading'].map((type) => (
-                      <button
-                        key={type}
-                        onClick={() => setTradingSettings({ ...tradingSettings, tradeType: type })}
-                        className={`flex-1 px-4 py-2 text-sm font-medium rounded-lg capitalize transition-all ${
-                          tradingSettings.tradeType === type
-                            ? 'bg-purple-500 text-white shadow-md'
-                            : 'bg-slate-700/50 text-gray-300 hover:bg-slate-600/50'
-                        }`}
-                      >
-                        {type}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-gray-300">Max Daily Loss (%)</label>
-                  <SettingsInput
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    max="100"
-                    value={tradingSettings.maxDailyLoss}
-                    onChange={(e) => setTradingSettings({ ...tradingSettings, maxDailyLoss: parseFloat(e.target.value) || 0 })}
-                  />
-                  <p className="text-xs text-gray-400">Engine pauses if daily loss exceeds this %</p>
-                </div>
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-gray-300">Max Trades Per Day</label>
-                  <SettingsInput
-                    type="number"
-                    min="1"
-                    max="500"
-                    value={tradingSettings.maxTradesPerDay}
-                    onChange={(e) => setTradingSettings({ ...tradingSettings, maxTradesPerDay: parseInt(e.target.value) || 1 })}
-                  />
-                  <p className="text-xs text-gray-400">Maximum trades allowed per day</p>
-                </div>
-              </div>
-
-              {/* Position Sizing Map */}
-              <div className="mb-6">
-                <h3 className="text-lg font-semibold text-white mb-3">Position Sizing Map</h3>
-                <p className="text-sm text-gray-400 mb-4">Configure position sizes based on model accuracy ranges</p>
-                <div className="space-y-3">
-                  {tradingSettings.positionSizingMap.map((range: any, index: number) => (
-                    <div key={index} className="flex items-center gap-4 p-3 bg-slate-800/30 rounded-lg">
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="number"
-                          min="0"
-                          max="100"
-                          className="w-16 px-2 py-1 bg-slate-700/50 border border-slate-600/50 rounded text-xs text-white text-center"
-                          value={range.min}
-                          onChange={(e) => updatePositionSizingMap(index, 'min', parseInt(e.target.value) || 0)}
-                        />
-                        <span className="text-xs text-gray-400">-</span>
-                        <input
-                          type="number"
-                          min="0"
-                          max="100"
-                          className="w-16 px-2 py-1 bg-slate-700/50 border border-slate-600/50 rounded text-xs text-white text-center"
-                          value={range.max}
-                          onChange={(e) => updatePositionSizingMap(index, 'max', parseInt(e.target.value) || 0)}
-                        />
-                        <span className="text-sm text-gray-300 flex-shrink-0">Accuracy % →</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="number"
-                          step="0.1"
-                          min="0"
-                          max={tradingSettings.maxPositionPerTrade || 10}
-                          className="w-16 px-2 py-1 bg-purple-700/50 border border-purple-600/50 rounded text-xs text-white text-center"
-                          value={range.percent}
-                          onChange={(e) => updatePositionSizingMap(index, 'percent', parseFloat(e.target.value) || 0)}
-                        />
-                        <span className="text-sm font-semibold text-purple-400 flex-shrink-0">Position %</span>
-                      </div>
+                  {/* Settings Grid */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+                    <div className="space-y-2">
+                      <label htmlFor="maxPositionPercent" className="block text-sm font-medium text-gray-300">Max Position %</label>
+                      <SettingsInput
+                        id="maxPositionPercent"
+                        type="number"
+                        min="1"
+                        max="100"
+                        step="1"
+                        value={settings.maxPositionPercent}
+                        onChange={(e) => setSettings({ ...settings, maxPositionPercent: parseInt(e.target.value) || 1 })}
+                      />
+                      <p className="text-xs text-gray-400">Max capital to use per trade. Default: 10%</p>
                     </div>
-                  ))}
-                </div>
 
-                {/* Live Position Calculation Preview */}
-                <div className="mt-6 p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl">
-                  <h4 className="text-sm font-semibold text-blue-200 mb-2">Live Preview:</h4>
-                  <div className="flex items-center gap-4">
-                    <label className="text-sm text-blue-200">Test Accuracy:</label>
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      step="1"
-                      value={sampleAccuracy}
-                      onChange={(e) => setSampleAccuracy(parseInt(e.target.value))}
-                      className="w-full h-2 bg-blue-700 rounded-lg appearance-none cursor-pointer range-lg"
-                    />
-                    <span className="text-lg font-bold text-white w-12 flex-shrink-0">{sampleAccuracy}%</span>
-                  </div>
-                  <div className="mt-2 text-center text-lg font-bold text-white">
-                    Position Size: <span className="text-purple-400">{calculatePositionForAccuracy(sampleAccuracy)}%</span> of Max ({tradingSettings.maxPositionPerTrade}%)
-                  </div>
-                </div>
-              </div>
+                    <div className="space-y-2">
+                      <label htmlFor="maxDailyLoss" className="block text-sm font-medium text-gray-300">Max Daily Loss %</label>
+                      <SettingsInput
+                        id="maxDailyLoss"
+                        type="number"
+                        min="1"
+                        max="100"
+                        step="0.5"
+                        value={settings.maxDailyLoss}
+                        onChange={(e) => setSettings({ ...settings, maxDailyLoss: parseFloat(e.target.value) || 1 })}
+                      />
+                      <p className="text-xs text-gray-400">Auto-stop if daily loss exceeds this value.</p>
+                    </div>
 
-              {/* Coin Selection */}
-              <div className="mb-6">
-                <h3 className="text-lg font-semibold text-white mb-3">Manual Coin Selection</h3>
-                <p className="text-sm text-gray-400 mb-4">Select specific coins for the engine to trade (if disabled, engine scans all markets)</p>
-                <div className="relative">
-                  <SettingsInput
-                    type="text"
-                    placeholder="Search and add coin (e.g., BTCUSDT)"
-                    value={coinSearch}
-                    onChange={(e) => {
-                      setCoinSearch(e.target.value);
-                      setShowCoinDropdown(true);
-                    }}
-                    onFocus={() => setShowCoinDropdown(true)}
-                  />
-                  {showCoinDropdown && coinSearch && (
-                    <div className="absolute z-10 w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg shadow-xl max-h-40 overflow-y-auto">
-                      {filteredCoins.length > 0 ? (
-                        filteredCoins.slice(0, 10).map((coin) => (
-                          <div
-                            key={coin}
-                            className="px-4 py-2 text-sm text-gray-200 hover:bg-slate-700/50 cursor-pointer flex justify-between items-center"
-                            onClick={() => addCoinToManual(coin)}
+                    <div className="space-y-2">
+                      <label htmlFor="maxTradesPerDay" className="block text-sm font-medium text-gray-300">Max Trades/Day</label>
+                      <SettingsInput
+                        id="maxTradesPerDay"
+                        type="number"
+                        min="1"
+                        max="500"
+                        step="1"
+                        value={settings.maxTradesPerDay}
+                        onChange={(e) => setSettings({ ...settings, maxTradesPerDay: parseInt(e.target.value) || 1 })}
+                      />
+                      <p className="text-xs text-gray-400">Limit to avoid over-trading.</p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label htmlFor="accuracyThreshold" className="block text-sm font-medium text-gray-300">Min Accuracy %</label>
+                      <SettingsInput
+                        id="accuracyThreshold"
+                        type="number"
+                        min="50"
+                        max="100"
+                        step="1"
+                        value={settings.accuracyThreshold}
+                        onChange={(e) => setSettings({ ...settings, accuracyThreshold: parseInt(e.target.value) || 50 })}
+                      />
+                      <p className="text-xs text-gray-400">Minimum accuracy for a trade signal.</p>
+                    </div>
+                  </div>
+
+                  {/* Trade Type and Risk */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-6">
+                    <div className="space-y-2 sm:col-span-1">
+                      <label className="block text-sm font-medium text-gray-300">Trade Type</label>
+                      <div className="flex space-x-2">
+                        {['scalping', 'swing', 'daytrading'].map((type) => (
+                          <button
+                            key={type}
+                            onClick={() => setSettings({ ...settings, tradeType: type })}
+                            className={`flex-1 px-4 py-3 text-sm font-medium rounded-xl capitalize transition-all duration-300 hover:scale-105 ${
+                              settings.tradeType === type ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-lg ring-2 ring-purple-500/50' : 'bg-slate-700/50 text-gray-300 hover:bg-slate-600/50'
+                            }`}
                           >
-                            {coin}
-                            <PlusIcon className="w-4 h-4 text-green-400" />
-                          </div>
-                        ))
-                      ) : (
-                        <div className="px-4 py-2 text-sm text-gray-400">No coins found or already added.</div>
-                      )}
-                    </div>
-                  )}
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {tradingSettings.manualCoins.map((coin: string) => (
-                    <span
-                      key={coin}
-                      className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-purple-500/20 text-purple-300 cursor-pointer hover:bg-red-500/20 transition-colors"
-                      onClick={() => removeCoinFromManual(coin)}
-                    >
-                      {coin} <XMarkIcon className="w-4 h-4 ml-1" />
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              {/* Save Button */}
-              <div className="mt-6 flex justify-end pt-4 border-t border-white/10">
-                <button
-                  onClick={handleSaveTradingSettings}
-                  disabled={savingTradingSettings}
-                  className="px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
-                >
-                  {savingTradingSettings ? 'Saving...' : 'Save Trading Parameters'}
-                </button>
-              </div>
-            </SettingsCard>
-
-            {/* API Provider Configuration Section */}
-            <SettingsCard className="mb-8">
-              <div className="mb-6">
-                <h2 className="text-xl font-semibold text-white mb-2">API Provider Configuration</h2>
-                <p className="text-sm text-gray-400">Manage API keys for market data, news, and metadata sources</p>
-              </div>
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
-                {/* Dynamic Provider Categories */}
-                {Object.entries(PROVIDER_CONFIG).map(([categoryKey, config]) => (
-                  <div key={categoryKey} className="bg-slate-800/30 rounded-2xl p-4 sm:p-6 border border-slate-700/50 shadow-sm">
-                    <div className="flex items-center gap-3 mb-4">
-                      <div className={`w-12 h-12 ${config.bgColor} rounded-xl flex items-center justify-center shadow-sm`}>
-                        <span className="text-white font-bold text-xl">{config.icon}</span>
-                      </div>
-                      <div>
-                        <h3 className="text-lg font-semibold text-white">{config.title}</h3>
-                        <p className="text-sm text-gray-400">{config.description}</p>
+                            {type}
+                          </button>
+                        ))}
                       </div>
                     </div>
-
-                    {/* Primary Provider */}
-                    {config.primary && (
-                      <div className="space-y-3">
-                        <div className="flex items-center gap-2">
-                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-500/20 text-green-400 border border-green-500/30"> PRIMARY </span>
-                          <span className="text-sm font-medium text-white">{config.primary.name}</span>
-                          <span className={`text-xs px-1.5 py-0.5 rounded-full ${
-                            config.primary.name === 'CoinGecko' ? 'bg-green-500/20 text-green-400 border border-green-500/30' : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                          }`}>
-                            {config.primary.name === 'CoinGecko' ? 'API Not Required' : 'API Required'}
-                          </span>
-                        </div>
-
-                        {config.primary.name !== 'CoinGecko' ? (
-                          <div className="space-y-2">
-                            <SettingsInput
-                              type={showUnmaskedKeys ? 'text' : 'password'}
-                              placeholder={config.primary.placeholder}
-                              value={settings[config.primary.key] || ''}
-                              onChange={(e) => setSettings({ ...settings, [config.primary.key]: e.target.value })}
-                            />
-                            <div className="flex justify-end gap-2">
-                              <button
-                                onClick={() => testProviderConnection(config.primary.name, settings[config.primary.key], config.primary.key)}
-                                disabled={testingProvider === config.primary.name}
-                                className="px-3 py-1 bg-slate-600/50 text-slate-300 text-xs rounded-lg hover:bg-slate-600/70 transition-all disabled:opacity-50"
-                              >
-                                {testingProvider === config.primary.name ? 'Testing...' : 'Test'}
-                              </button>
-                              <button
-                                onClick={() => handleProviderKeyChange(config.primary.name, config.primary.key, settings[config.primary.key])}
-                                disabled={savingProvider === config.primary.name || !settings[config.primary.key]}
-                                className="px-3 py-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded text-xs hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50"
-                              >
-                                {savingProvider === config.primary.name ? '...' : 'Save Key'}
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
-                            <span className="text-green-400 text-sm">CoinGecko is active by default.</span>
-                          </div>
-                        )}
-                        <ProviderTestResult result={providerTestResults[config.primary.name]} />
-                      </div>
-                    )}
-
-                    {/* Toggle for Backup Providers */}
-                    {config.backups && config.backups.length > 0 && (
-                      <div className="mt-4 pt-4 border-t border-slate-700/50">
-                        <button
-                          onClick={() => {
-                            if (categoryKey === 'marketData') setShowMarketBackups(!showMarketBackups);
-                            if (categoryKey === 'news') setShowNewsBackups(!showNewsBackups);
-                            if (categoryKey === 'metadata') setShowMetadataBackups(!showMetadataBackups);
-                          }}
-                          className="w-full flex items-center justify-between text-purple-400 hover:text-purple-300 transition-all text-sm font-medium"
-                        >
-                          <PlusIcon className="w-4 h-4" /> Add Backup Providers
-                          {((categoryKey === 'marketData' && showMarketBackups) || (categoryKey === 'news' && showNewsBackups) || (categoryKey === 'metadata' && showMetadataBackups)) ? (
-                            <ChevronUpIcon className="w-4 h-4" />
-                          ) : (
-                            <ChevronDownIcon className="w-4 h-4" />
-                          )}
-                        </button>
-                      </div>
-                    )}
-
-                    {/* Backup Providers */}
-                    {config.backups && config.backups.length > 0 && (
-                      <div className={`transition-all duration-300 ease-in-out ${
-                        ((categoryKey === 'marketData' && showMarketBackups) || (categoryKey === 'news' && showNewsBackups) || (categoryKey === 'metadata' && showMetadataBackups))
-                          ? 'opacity-100 max-h-screen mt-4'
-                          : 'opacity-0 max-h-0 overflow-hidden'
-                      }`}>
-                        <div className="space-y-3">
-                          <div className="flex items-center justify-between">
-                            <h4 className="text-sm font-medium text-gray-300">Backup Providers</h4>
-                            <span className="text-xs text-gray-400 bg-slate-700/50 px-2 py-1 rounded-full">
-                              {config.backups.length} available
-                            </span>
-                          </div>
-                          <div className="space-y-2">
-                            {config.backups.map((backup) => (
-                              <div key={backup.key} className="bg-slate-800/40 rounded-lg p-3 border border-slate-700/50">
-                                <div className="flex items-start justify-between">
-                                  <div className="flex items-center gap-3">
-                                    <ToggleSwitch
-                                      id={`backup-${backup.key}`}
-                                      checked={settings[backup.enabledKey] || false}
-                                      onChange={(checked) => setSettings({ ...settings, [backup.enabledKey]: checked })}
-                                      ariaLabel={`Enable ${backup.name} backup provider`}
-                                      size="small"
-                                    />
-                                    <div className="flex flex-col">
-                                      <div className="flex items-center gap-2">
-                                        <span className="text-sm font-medium text-white">{backup.name}</span>
-                                        <span className={`text-xs px-1.5 py-0.5 rounded-full ${
-                                          backup.type === 'free' ? 'bg-green-500/20 text-green-400 border border-green-500/30' : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                                        }`}>
-                                          {backup.type === 'free' ? 'Free/No API' : 'API Required'}
-                                        </span>
-                                      </div>
-                                    </div>
-                                  </div>
-                                  {settings[backup.enabledKey] && backup.type !== 'free' && (
-                                    <div className="flex gap-2">
-                                      <button
-                                        onClick={() => testProviderConnection(backup.name, settings[backup.key], backup.key)}
-                                        disabled={testingProvider === backup.name}
-                                        className="px-3 py-1 bg-slate-600/50 text-slate-300 text-xs rounded-lg hover:bg-slate-600/70 transition-all disabled:opacity-50"
-                                      >
-                                        {testingProvider === backup.name ? 'Testing...' : 'Test'}
-                                      </button>
-                                      <button
-                                        onClick={() => handleProviderKeyChange(backup.name, backup.key, settings[backup.key])}
-                                        disabled={savingProvider === backup.name || !settings[backup.key]}
-                                        className="px-3 py-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded text-xs hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50"
-                                      >
-                                        {savingProvider === backup.name ? '...' : 'Save'}
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-
-                                {settings[backup.enabledKey] && backup.type !== 'free' && (
-                                  <div className="mt-3">
-                                    <SettingsInput
-                                      type={showUnmaskedKeys ? 'text' : 'password'}
-                                      placeholder={backup.placeholder}
-                                      value={settings[backup.key] || ''}
-                                      onChange={(e) => setSettings({ ...settings, [backup.key]: e.target.value })}
-                                    />
-                                  </div>
-                                )}
-                                {settings[backup.enabledKey] && <ProviderTestResult result={providerTestResults[backup.name]} size="small" />}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    )}
                   </div>
-                ))}
-              </div>
-              <div className="mt-6 flex justify-end">
-                <ToggleSwitch
-                  id="showKeysToggle"
-                  checked={showUnmaskedKeys}
-                  onChange={setShowUnmaskedKeys}
-                  ariaLabel="Toggle show API keys"
-                />
-                <span className="ml-2 text-sm text-gray-400">Show API Keys</span>
-              </div>
-            </SettingsCard>
 
-            {/* Notification Settings Section */}
-            <SettingsCard className="mb-8">
-              <div className="mb-6">
-                <h2 className="text-xl font-semibold text-white mb-2">Notification Settings</h2>
-                <p className="text-sm text-gray-400">Configure comprehensive notification preferences and alert triggers</p>
-              </div>
-
-              <div className="grid grid-cols-1 gap-4">
-                {/* Auto-Trade Trigger Alerts */}
-                <div className="bg-slate-800/30 rounded-2xl p-4 border border-slate-700/50 shadow-sm">
-                  <div className="flex items-center justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-1">
-                        <h3 className="text-sm font-semibold text-white">Auto-Trade Trigger Alerts</h3>
-                        {!notificationSettings?.autoTradeAlertsPrereqMet && notificationSettings?.autoTradeAlerts && (
-                          <ExclamationTriangleIcon className="w-4 h-4 text-amber-400" />
-                        )}
-                      </div>
-                      <p className="text-xs text-gray-400">Get notified when auto-trade executes based on high accuracy signals</p>
-                      {notificationSettings?.autoTradeAlerts && !notificationSettings?.autoTradeAlertsPrereqMet && (
-                        <p className="text-xs text-amber-400 mt-1">Prerequisites not met - configure providers, auto-trade, and exchange</p>
-                      )}
-                    </div>
-                    <ToggleSwitch
-                      id="autoTradeAlerts"
-                      checked={notificationSettings?.autoTradeAlerts || false}
-                      onChange={handleAutoTradeAlertsToggle}
-                      ariaLabel="Enable auto-trade trigger alerts"
-                    />
-                  </div>
-                </div>
-
-                {/* Accuracy Alerts */}
-                <div className="bg-slate-800/30 rounded-2xl p-4 border border-slate-700/50 shadow-sm">
-                  <div className="flex items-center justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-1">
-                        <h3 className="text-sm font-semibold text-white">Accuracy Threshold Alerts</h3>
-                        {notificationSettings?.accuracyAlerts?.enabled && notificationSettings.accuracyAlerts.threshold < 70 && (
-                          <ExclamationTriangleIcon className="w-4 h-4 text-red-400" />
-                        )}
-                      </div>
-                      <p className="text-xs text-gray-400">Receive alerts when the core model's accuracy exceeds a set threshold (e.g., 90%)</p>
-                      {notificationSettings?.accuracyAlerts?.enabled && (
-                        <p className="text-xs text-purple-400 mt-1">Alerts enabled for accuracy &gt; {notificationSettings.accuracyAlerts.threshold}%</p>
-                      )}
-                    </div>
-                    {notificationSettings?.accuracyAlerts?.enabled ? (
-                      <button
-                        onClick={() => saveNotificationSettings({ ...notificationSettings, accuracyAlerts: { enabled: false, threshold: 80 } })}
-                        className="px-3 py-1 bg-red-500/50 text-white text-xs rounded-lg hover:bg-red-600/50 transition-all"
-                      >
-                        Disable
-                      </button>
-                    ) : (
-                      <button
-                        onClick={handleAccuracyAlertsToggle}
-                        className="px-3 py-1 bg-purple-500/50 text-white text-xs rounded-lg hover:bg-purple-600/50 transition-all"
-                      >
-                        Configure
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Whale Alerts */}
-                <div className="bg-slate-800/30 rounded-2xl p-4 border border-slate-700/50 shadow-sm">
-                  <div className="flex items-center justify-between">
-                    <div className="flex-1">
-                      <h3 className="text-sm font-semibold text-white mb-1">Large Transaction (Whale) Alerts</h3>
-                      <p className="text-xs text-gray-400">Get notified of significant whale transactions (experimental)</p>
-                    </div>
-                    <ToggleSwitch
-                      id="whaleAlerts"
-                      checked={notificationSettings?.whaleAlerts || false}
-                      onChange={(checked) => saveNotificationSettings({ ...notificationSettings, whaleAlerts: checked })}
-                      ariaLabel="Enable whale alerts"
-                    />
-                  </div>
-                </div>
-
-                {/* Trade Confirmation Required */}
-                <div className="bg-slate-800/30 rounded-2xl p-4 border border-slate-700/50 shadow-sm">
-                  <div className="flex items-center justify-between">
-                    <div className="flex-1">
-                      <h3 className="text-sm font-semibold text-white mb-1">Trade Confirmation Required</h3>
-                      <p className="text-xs text-gray-400">Require manual confirmation before executing an auto-trade signal</p>
-                    </div>
-                    <ToggleSwitch
-                      id="tradeConfirmationRequired"
-                      checked={notificationSettings?.tradeConfirmationRequired || false}
-                      onChange={(checked) => saveNotificationSettings({ ...notificationSettings, tradeConfirmationRequired: checked })}
-                      ariaLabel="Require trade confirmation"
-                    />
-                  </div>
-                </div>
-
-                {/* Sound & Haptics */}
-                <div className="bg-slate-800/30 rounded-2xl p-4 border border-slate-700/50 shadow-sm">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex-1">
-                      <h3 className="text-sm font-semibold text-white mb-1">Audio & Haptic Feedback</h3>
-                      <p className="text-xs text-gray-400">Configure audio and haptic feedback for notifications</p>
-                    </div>
+                  {/* Save Button */}
+                  <div className="mt-6 flex justify-end border-t border-white/5 pt-6">
                     <button
-                      onClick={testNotification}
-                      className="px-3 py-1 bg-slate-600/50 text-slate-300 text-xs rounded-lg hover:bg-slate-600/70 transition-all"
+                      onClick={handleSaveGeneralSettings}
+                      disabled={savingSettings}
+                      className="w-full sm:w-auto px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:scale-[1.01]"
                     >
-                      Test
+                      {savingSettings ? 'Saving...' : 'Save General Settings'}
                     </button>
                   </div>
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <SpeakerWaveIcon className="w-4 h-4 text-gray-400" />
-                        <span className="text-sm text-gray-300">Enable Sound</span>
-                      </div>
-                      <ToggleSwitch
-                        id="soundEnabled"
-                        checked={notificationSettings?.soundEnabled || false}
-                        onChange={(checked) => saveNotificationSettings({ ...notificationSettings, soundEnabled: checked })}
-                        ariaLabel="Enable notification sounds"
-                      />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <DevicePhoneMobileIcon className="w-4 h-4 text-gray-400" />
-                        <span className="text-sm text-gray-300">Enable Vibration/Haptics</span>
-                      </div>
-                      <ToggleSwitch
-                        id="vibrationEnabled"
-                        checked={notificationSettings?.vibrationEnabled || false}
-                        onChange={(checked) => saveNotificationSettings({ ...notificationSettings, vibrationEnabled: checked })}
-                        ariaLabel="Enable notification vibration"
-                      />
-                    </div>
-                  </div>
-                </div>
+                </SettingsCard>
 
-              </div>
-            </SettingsCard>
-
-            {/* Background Deep Research Alerts Section */}
-            <SettingsCard className="mb-8">
-              <div className="mb-6">
-                <h2 className="text-xl font-semibold text-white mb-2">Background Deep Research Alerts</h2>
-                <p className="text-sm text-gray-400">Configure automatic deep research with Telegram notifications</p>
-              </div>
-              <BackgroundResearchWizard />
-            </SettingsCard>
-
-            {/* Add Exchange Section */}
-            <SettingsCard className="mb-8">
-              <div className="mb-6">
-                <h2 id="exchange-settings" className="text-xl font-semibold text-white mb-2">Add Exchange</h2>
-                <p className="text-sm text-gray-400">Connect one exchange for automated trading</p>
-              </div>
-              {connectedExchange ? (
-                // Connected exchange section
-                <div className="bg-white/5 backdrop-blur-sm rounded-xl border border-white/10 p-6">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center space-x-4">
-                      {React.createElement(connectedExchange.logo, { size: 48 })}
-                      <div>
-                        <h3 className="text-xl font-semibold text-white">{connectedExchange.name}</h3>
-                        <p className="text-sm text-gray-400">Exchange account connected</p>
-                      </div>
-                    </div>
-                    <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-500/20 text-green-300 border border-green-400/30">
-                      <CheckCircleIcon className="w-3 h-3 mr-1" /> Connected
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between text-sm text-gray-400 mb-6">
-                    <span>Last updated: {new Date(connectedExchange.lastUpdated).toLocaleString()}</span>
-                  </div>
-                  <button
-                    onClick={() => setShowDisconnectConfirm(true)}
-                    className="w-full px-4 py-2 bg-red-600/80 text-white font-medium rounded-lg hover:bg-red-700/80 transition-colors"
-                  >
-                    Disconnect Exchange
-                  </button>
-                </div>
-              ) : (
-                // Exchange selection form
-                <div className="space-y-6">
-                  <div className="grid grid-cols-3 sm:grid-cols-7 gap-4">
-                    {EXCHANGES.map((exchange) => (
-                      <div
-                        key={exchange.id}
-                        onClick={() => handleExchangeSelect(exchange.id)}
-                        className={`p-4 rounded-xl border-2 flex flex-col items-center justify-center space-y-2 cursor-pointer transition-all duration-200 hover:scale-105 ${
-                          selectedExchange === exchange.id
-                            ? 'border-purple-500 bg-purple-500/10 shadow-lg'
-                            : 'border-slate-700/50 bg-slate-800/30 hover:border-purple-500/50'
-                        }`}
-                      >
-                        {React.createElement(exchange.logo, { size: 40 })}
-                        <span className="text-xs font-medium text-white text-center">{exchange.name}</span>
-                      </div>
-                    ))}
+                {/* Trading Parameters Section */}
+                <SettingsCard className="mb-8">
+                  <div className="mb-6">
+                    <h2 className="text-xl font-bold text-white mb-2">Trading Engine Parameters</h2>
+                    <p className="text-sm text-gray-400">Advanced risk and position sizing controls for auto-trade</p>
                   </div>
 
-                  {selectedExchange && (
-                    <div className="bg-slate-800/30 rounded-xl p-6 border border-purple-500/30 space-y-4">
-                      <h3 className="text-lg font-semibold text-white">
-                        Connect {EXCHANGES.find(e => e.id === selectedExchange)?.name}
-                      </h3>
-                      {EXCHANGES.find(e => e.id === selectedExchange)?.fields.map((field) => (
-                        <div key={field} className="space-y-2">
-                          <label className="block text-sm font-medium text-gray-300 capitalize">{field.replace('key', ' Key').replace('passphrase', 'Passphrase')}</label>
+                  {/* Position Sizing Map */}
+                  <div className="mb-8">
+                    <h3 className="text-lg font-semibold text-white mb-4">Dynamic Position Sizing Map</h3>
+                    <p className="text-sm text-gray-400 mb-4">Defines position size based on signal accuracy (Max: {tradingSettings.maxPositionPerTrade}%)</p>
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-3 gap-4 text-xs font-bold uppercase text-purple-400 border-b border-purple-500/30 pb-2">
+                        <span>Min Accuracy (%)</span>
+                        <span>Max Accuracy (%)</span>
+                        <span>Position Size (%)</span>
+                      </div>
+                      {tradingSettings.positionSizingMap.map((range: any, index: number) => (
+                        <div key={index} className="grid grid-cols-3 gap-4 items-center pb-4 border-b border-white/5 last:border-b-0 transition-all duration-300 hover:bg-white/5 rounded-lg p-2 -mx-2">
                           <SettingsInput
-                            type={field.includes('Key') ? (showUnmaskedKeys ? 'text' : 'password') : 'password'}
-                            placeholder={`Enter ${field.replace('key', ' Key').replace('passphrase', 'Passphrase')}`}
-                            value={exchangeForm[field as keyof typeof exchangeForm]}
-                            onChange={(e) => setExchangeForm({ ...exchangeForm, [field]: e.target.value })}
+                            type="number"
+                            min="0"
+                            max="100"
+                            step="1"
+                            value={range.min}
+                            onChange={(e) => updatePositionSizingMap(index, 'min', parseInt(e.target.value))}
+                          />
+                          <SettingsInput
+                            type="number"
+                            min="0"
+                            max="100"
+                            step="1"
+                            value={range.max}
+                            onChange={(e) => updatePositionSizingMap(index, 'max', parseInt(e.target.value))}
+                          />
+                          <SettingsInput
+                            type="number"
+                            min="0"
+                            max="100"
+                            step="1"
+                            value={range.percent}
+                            onChange={(e) => updatePositionSizingMap(index, 'percent', parseInt(e.target.value))}
                           />
                         </div>
                       ))}
-                      {/* Save Button */}
-                      <div className="flex space-x-3 pt-4">
-                        <button
-                          onClick={handleSaveExchange}
-                          disabled={savingExchange}
-                          className="flex-1 px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {savingExchange ? 'Connecting...' : 'Connect Exchange'}
-                        </button>
-                        <button
-                          onClick={() => setSelectedExchange(null)}
-                          className="px-4 py-2 bg-slate-700 text-gray-300 font-medium rounded-lg hover:bg-slate-600 transition-colors"
-                          disabled={savingExchange}
-                        >
-                          Cancel
-                        </button>
+                      <button
+                        onClick={() => setTradingSettings({
+                          ...tradingSettings,
+                          positionSizingMap: [...tradingSettings.positionSizingMap, { min: 0, max: 0, percent: 0 }]
+                        })}
+                        className="flex items-center justify-center w-full px-4 py-2 mt-4 bg-slate-700/50 text-gray-300 font-medium rounded-xl hover:bg-slate-600/50 transition-all duration-300 hover:scale-[1.01]"
+                      >
+                        <PlusIcon className="w-4 h-4 mr-2" /> Add Range
+                      </button>
+                    </div>
+
+                    {/* Live Preview */}
+                    <div className="mt-8 p-5 bg-blue-500/10 border border-blue-500/20 rounded-xl">
+                      <h4 className="text-sm font-semibold text-blue-200 mb-2">Live Preview:</h4>
+                      <div className="flex items-center gap-4">
+                        <label className="text-sm text-blue-200">Test Accuracy:</label>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          step="1"
+                          value={sampleAccuracy}
+                          onChange={(e) => setSampleAccuracy(parseInt(e.target.value))}
+                          className="w-full h-2 bg-purple-900/50 rounded-lg appearance-none cursor-pointer transition-all duration-300 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:bg-purple-500 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:shadow-lg"
+                        />
+                        <span className="text-lg font-bold text-white w-12 flex-shrink-0">{sampleAccuracy}%</span>
+                      </div>
+                      <div className="mt-2 text-center text-lg font-bold text-white">
+                        Position Size: <span className="text-purple-400">{calculatePositionForAccuracy(sampleAccuracy)}%</span> of Max ({settings.maxPositionPercent}%)
                       </div>
                     </div>
-                  )}
-                </div>
-              )}
-            </SettingsCard>
+                  </div>
 
+                  {/* Coin Selection */}
+                  <div className="mb-6">
+                    <h3 className="text-lg font-semibold text-white mb-3">Manual Coin Selection</h3>
+                    <p className="text-sm text-gray-400 mb-4">Select specific coins for the engine to trade (if disabled, engine scans all markets)</p>
+                    <div className="relative">
+                      <SettingsInput
+                        type="text"
+                        placeholder="Search and add coin (e.g., BTCUSDT)"
+                        value={coinSearch}
+                        onChange={(e) => {
+                          setCoinSearch(e.target.value);
+                          setShowCoinDropdown(true);
+                        }}
+                        onFocus={() => setShowCoinDropdown(true)}
+                      />
+                      {showCoinDropdown && coinSearch && (
+                        <div className="absolute z-20 w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg shadow-xl max-h-40 overflow-y-auto">
+                          {filteredCoins.length > 0 ? (
+                            filteredCoins.slice(0, 10).map((coin) => (
+                              <div
+                                key={coin}
+                                className="px-4 py-2 text-sm text-gray-200 hover:bg-purple-600/50 cursor-pointer transition-colors"
+                                onClick={() => addCoinToManual(coin)}
+                              >
+                                {coin}
+                              </div>
+                            ))
+                          ) : (
+                            <div className="px-4 py-2 text-sm text-gray-400">No coins found or already added.</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {tradingSettings.manualCoins.map((coin: string) => (
+                        <span
+                          key={coin}
+                          className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-purple-500/20 text-purple-300 border border-purple-400/30 cursor-pointer transition-all duration-300 hover:bg-red-500/30 hover:text-red-300"
+                          onClick={() => removeCoinFromManual(coin)}
+                        >
+                          {coin}
+                          <XMarkIcon className="w-3 h-3 ml-1" />
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </SettingsCard>
+
+                {/* API Provider Configuration Card */}
+                <SettingsCard>
+                  <div className="mb-6">
+                    <h2 className="text-xl font-bold text-white mb-2">API Provider Configuration</h2>
+                    <p className="text-sm text-gray-400">Configure keys for data, news, and metadata providers</p>
+                  </div>
+                  <div className="space-y-6">
+                    {Object.entries(PROVIDER_CONFIG).map(([key, config]) => (
+                      <div key={key} className="bg-white/5 backdrop-blur-sm rounded-xl p-5 border border-white/10 transition-all duration-300 hover:shadow-xl hover:scale-[1.005]">
+                        <div className="flex items-center gap-4 mb-4">
+                          <div className={`p-3 rounded-full ${config.bgColor}/20`}>
+                            <span className="text-xl">{config.icon}</span>
+                          </div>
+                          <div>
+                            <h3 className="text-lg font-bold text-white">{config.title}</h3>
+                            <p className="text-xs text-gray-400">{config.description}</p>
+                          </div>
+                        </div>
+
+                        {/* Primary Provider */}
+                        <div className="bg-slate-800/50 rounded-xl p-5 border border-purple-500/20 transition-all duration-300 hover:bg-slate-700/50 mb-6">
+                          <div className="flex justify-between items-center mb-4">
+                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-500/20 text-green-400 border border-green-500/30"> PRIMARY </span>
+                            <span className="text-sm font-medium text-white">{config.primary.name}</span>
+                            <span className={`text-xs px-1.5 py-0.5 rounded-full ${
+                              config.primary.name === 'CoinGecko' ? 'bg-green-500/20 text-green-400 border border-green-500/30' : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                            }`}>
+                              {config.primary.name === 'CoinGecko' ? 'API Not Required' : 'API Required'}
+                            </span>
+                          </div>
+                          {config.primary.name !== 'CoinGecko' ? (
+                            <div className="space-y-2">
+                              <SettingsInput
+                                type={settings.showUnmaskedKeys ? 'text' : 'password'}
+                                placeholder={config.primary.placeholder}
+                                value={settings[config.primary.key] || ''}
+                                onChange={(e) => setSettings({ ...settings, [config.primary.key]: e.target.value })}
+                              />
+                              <div className="flex justify-end gap-2">
+                                <button
+                                  onClick={() => testProviderConnection(config.primary.name, settings[config.primary.key], config.primary.key)}
+                                  disabled={testingProvider === config.primary.name}
+                                  className="px-3 py-2 bg-slate-600/50 text-slate-300 text-sm rounded-lg hover:bg-slate-500/70 transition-all duration-300 disabled:opacity-50 hover:scale-[1.05]"
+                                >
+                                  {testingProvider === config.primary.name ? 'Testing...' : 'Test'}
+                                </button>
+                                <button
+                                  onClick={() => handleProviderKeyChange(config.primary.name, config.primary.key, settings[config.primary.key])}
+                                  disabled={savingProvider === config.primary.name || !settings[config.primary.key]}
+                                  className="px-3 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg text-sm hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all duration-300 disabled:opacity-50 hover:scale-[1.05]"
+                                >
+                                  {savingProvider === config.primary.name ? 'Saving...' : 'Save'}
+                                </button>
+                              </div>
+                              <ProviderTestResult result={providerTestResults[config.primary.name]} />
+                            </div>
+                          ) : (
+                            <div className="p-3 bg-green-500/10 border border-green-500/20 rounded-xl text-sm text-green-300">
+                              CoinGecko is automatically integrated for free tier use.
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Backup Providers */}
+                        <div className="border-t border-white/10 pt-4">
+                          <button
+                            onClick={() => {
+                              if (key === 'marketData') setShowMarketBackups(prev => !prev);
+                              else if (key === 'news') setShowNewsBackups(prev => !prev);
+                              else if (key === 'metadata') setShowMetadataBackups(prev => !prev);
+                            }}
+                            className="flex justify-between items-center w-full py-2 text-sm font-medium text-gray-300 transition-colors duration-300 hover:text-purple-400"
+                          >
+                            <span>
+                              {key === 'marketData' && 'Market Data Backups'}
+                              {key === 'news' && 'News Backups'}
+                              {key === 'metadata' && 'Metadata Backups'}
+                              {' '} ({config.backups.length})
+                            </span>
+                            {((key === 'marketData' && showMarketBackups) || (key === 'news' && showNewsBackups) || (key === 'metadata' && showMetadataBackups)) ? (
+                              <ChevronUpIcon className="w-5 h-5 transition-transform" />
+                            ) : (
+                              <ChevronDownIcon className="w-5 h-5 transition-transform" />
+                            )}
+                          </button>
+
+                          {((key === 'marketData' && showMarketBackups) || (key === 'news' && showNewsBackups) || (key === 'metadata' && showMetadataBackups)) && (
+                            <div className="mt-4 space-y-4">
+                              {config.backups.map((backup) => (
+                                <div key={backup.name} className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50 transition-all duration-300 hover:bg-slate-700/50 hover:shadow-md">
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-4">
+                                      <ToggleSwitch
+                                        id={`toggle-${backup.key}`}
+                                        checked={settings[backup.enabledKey] || false}
+                                        onChange={(checked) => setSettings({ ...settings, [backup.enabledKey]: checked })}
+                                        ariaLabel={`Toggle ${backup.name}`}
+                                        size="small"
+                                      />
+                                      <span className="text-sm font-medium text-white">{backup.name}</span>
+                                    </div>
+                                    <span className={`text-xs px-1.5 py-0.5 rounded-full ${
+                                      backup.type === 'free' ? 'bg-green-500/20 text-green-400 border border-green-500/30' : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                    }`}>
+                                      {backup.type === 'free' ? 'Free/No API' : 'API Required'}
+                                    </span>
+                                  </div>
+
+                                  {settings[backup.enabledKey] && backup.type !== 'free' && (
+                                    <div className="mt-4 space-y-2">
+                                      <SettingsInput
+                                        type={settings.showUnmaskedKeys ? 'text' : 'password'}
+                                        placeholder={backup.placeholder}
+                                        value={settings[backup.key] || ''}
+                                        onChange={(e) => setSettings({ ...settings, [backup.key]: e.target.value })}
+                                      />
+                                      <div className="flex justify-end gap-2">
+                                        <button
+                                          onClick={() => testProviderConnection(backup.name, settings[backup.key], backup.key)}
+                                          disabled={testingProvider === backup.name}
+                                          className="px-3 py-2 bg-slate-600/50 text-slate-300 text-sm rounded-lg hover:bg-slate-500/70 transition-all duration-300 disabled:opacity-50 hover:scale-[1.05]"
+                                        >
+                                          {testingProvider === backup.name ? 'Testing...' : 'Test'}
+                                        </button>
+                                        <button
+                                          onClick={() => handleProviderKeyChange(backup.name, backup.key, settings[backup.key])}
+                                          disabled={savingProvider === backup.name || !settings[backup.key]}
+                                          className="px-3 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg text-sm hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all duration-300 disabled:opacity-50 hover:scale-[1.05]"
+                                        >
+                                          {savingProvider === backup.name ? 'Saving...' : 'Save'}
+                                        </button>
+                                      </div>
+                                      <ProviderTestResult result={providerTestResults[backup.name]} size="small" />
+                                    </div>
+                                  )}
+                                  {settings[backup.enabledKey] && backup.type === 'free' && (
+                                    <div className="mt-3 p-3 bg-green-500/10 border border-green-500/20 rounded-xl text-sm text-green-300">
+                                      {backup.name} is enabled and does not require an API key.
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    <div className="flex items-center justify-end pt-4 border-t border-white/10">
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="sr-only peer"
+                          checked={settings.showUnmaskedKeys}
+                          onChange={(e) => setSettings({ ...settings, showUnmaskedKeys: e.target.checked })}
+                        />
+                        <div className="w-10 h-5 bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-purple-300/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-500"></div>
+                        <span className="ml-3 text-sm font-medium text-gray-300">Show Keys</span>
+                      </label>
+                    </div>
+                  </div>
+                </SettingsCard>
+              </div>
+
+              {/* Column 2: Notifications, Exchange, Background Research */}
+              <div className="space-y-8">
+                {/* Background Research Wizard */}
+                <h2 className="text-xl font-bold text-white mb-4">Background Research</h2>
+                <BackgroundResearchWizard />
+
+                {/* Exchange Connection Card */}
+                <SettingsCard>
+                  <div className="mb-6">
+                    <h2 className="text-xl font-bold text-white mb-2">Exchange Connection</h2>
+                    <p className="text-sm text-gray-400">Securely connect your trading account</p>
+                  </div>
+
+                  {connectedExchange ? (
+                    // Connected State
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between p-4 bg-green-500/10 rounded-xl border border-green-400/30">
+                        <div className="flex items-center gap-4">
+                          {React.createElement(connectedExchange.logo, { size: 48 })}
+                          <div>
+                            <h3 className="text-xl font-semibold text-white">{connectedExchange.name}</h3>
+                            <p className="text-sm text-gray-400">Exchange account connected</p>
+                          </div>
+                        </div>
+                        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-500/20 text-green-300 border border-green-400/30">
+                          <CheckCircleIcon className="w-3 h-3 mr-1" /> Connected
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm text-gray-400 mb-6">
+                        <span>Last updated: {new Date(connectedExchange.lastUpdated).toLocaleString()}</span>
+                        <button
+                          onClick={handleTestExchange}
+                          disabled={testingExchange}
+                          className="px-3 py-1 bg-blue-600/50 text-white text-xs rounded-lg hover:bg-blue-700/50 transition-all duration-300 hover:scale-[1.05]"
+                        >
+                          {testingExchange ? 'Testing...' : 'Test Connection'}
+                        </button>
+                      </div>
+                      <button
+                        onClick={() => setShowDisconnectConfirm(true)}
+                        className="w-full px-4 py-2 bg-red-600/80 text-white font-medium rounded-xl hover:bg-red-700/80 transition-colors duration-300 hover:scale-[1.01]"
+                      >
+                        Disconnect Exchange
+                      </button>
+                    </div>
+                  ) : (
+                    // Exchange selection form
+                    <div className="space-y-6">
+                      <div className="grid grid-cols-3 sm:grid-cols-4 gap-4">
+                        {EXCHANGES.map((exchange) => (
+                          <div
+                            key={exchange.id}
+                            onClick={() => handleExchangeSelect(exchange.id)}
+                            className={`p-4 rounded-xl border-2 flex flex-col items-center justify-center space-y-2 cursor-pointer transition-all duration-300 hover:scale-[1.05] hover:border-purple-500 ${
+                              selectedExchange === exchange.id ? 'border-purple-500 bg-purple-500/10 shadow-xl ring-2 ring-purple-500' : 'border-slate-700/50 bg-slate-800/50 hover:bg-slate-700/50'
+                            }`}
+                          >
+                            {React.createElement(exchange.logo, { size: 32 })}
+                            <span className="text-xs text-gray-300 font-medium">{exchange.name}</span>
+                          </div>
+                        ))}
+                      </div>
+
+                      {selectedExchange && (
+                        <div className="space-y-4">
+                          <h3 className="text-lg font-semibold text-white pt-2 border-t border-white/10">Enter API Credentials</h3>
+                          {EXCHANGES.find(e => e.id === selectedExchange)?.fields.map(field => (
+                            <div key={field}>
+                              <label className="block text-sm font-medium text-gray-300 mb-1 capitalize">
+                                {field.replace('Key', ' Key').replace('passphrase', 'Passphrase')}
+                              </label>
+                              <SettingsInput
+                                type={field.toLowerCase().includes('passphrase') || settings.showUnmaskedKeys ? 'text' : 'password'}
+                                name={field}
+                                placeholder={`Enter ${field.replace('Key', ' Key').replace('passphrase', 'Passphrase')}`}
+                                value={exchangeForm[field as keyof typeof exchangeForm]}
+                                onChange={handleExchangeFormChange}
+                                required
+                              />
+                            </div>
+                          ))}
+                          <button
+                            onClick={handleConnectExchange}
+                            disabled={savingExchange || !exchangeForm.apiKey || !exchangeForm.secretKey}
+                            className="w-full px-4 py-3 mt-4 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-pink-600 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:scale-[1.01]"
+                          >
+                            {savingExchange ? 'Connecting...' : 'Connect Exchange'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </SettingsCard>
+
+                {/* Notification Settings Card */}
+                <SettingsCard>
+                  <div className="mb-6">
+                    <h2 className="text-xl font-bold text-white mb-2">Notification & Alert Settings</h2>
+                    <p className="text-sm text-gray-400">Configure how you receive critical system alerts</p>
+                  </div>
+
+                  <div className="space-y-4">
+                    {/* Auto-Trade Alerts */}
+                    <div className="bg-white/5 backdrop-blur-sm rounded-xl p-5 border border-white/10 shadow-lg transition-all duration-300 hover:bg-white/10 hover:shadow-xl hover:scale-[1.005]">
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1">
+                          <h3 className="text-sm font-semibold text-white mb-1">Auto-Trade Execution Alerts</h3>
+                          <p className="text-xs text-gray-400">Get notified when the engine opens or closes a position</p>
+                        </div>
+                        <ToggleSwitch
+                          id="autoTradeAlerts"
+                          checked={notificationSettings?.enableAutoTradeAlerts || false}
+                          onChange={handleAutoTradeToggle}
+                          ariaLabel="Enable auto-trade alerts"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Accuracy Alerts */}
+                    <div className="bg-white/5 backdrop-blur-sm rounded-xl p-5 border border-white/10 shadow-lg transition-all duration-300 hover:bg-white/10 hover:shadow-xl hover:scale-[1.005]">
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1">
+                          <h3 className="text-sm font-semibold text-white mb-1">High Accuracy Signal Alerts</h3>
+                          <p className="text-xs text-gray-400">Alert me for signals &gt; {notificationSettings?.accuracyAlerts?.threshold || 80}%</p>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className="text-sm font-medium text-gray-300 hidden sm:inline">Status:</span>
+                          <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${
+                            notificationSettings?.accuracyAlerts?.enabled
+                              ? 'bg-green-500/20 text-green-300'
+                              : 'bg-red-500/20 text-red-300'
+                          }`}>
+                            {notificationSettings?.accuracyAlerts?.enabled ? 'Active' : 'Disabled'}
+                          </span>
+                          {notificationSettings?.accuracyAlerts?.enabled ? (
+                            <button
+                              onClick={() => saveNotificationSettings({ ...notificationSettings, accuracyAlerts: { enabled: false, threshold: 80 } })}
+                              className="px-3 py-1 bg-red-500/50 text-white text-xs rounded-lg hover:bg-red-600/50 transition-all duration-300 hover:scale-[1.05]"
+                            >
+                              Disable
+                            </button>
+                          ) : (
+                            <button
+                              onClick={handleAccuracyAlertsToggle}
+                              className="px-3 py-1 bg-purple-500/50 text-white text-xs rounded-lg hover:bg-purple-600/50 transition-all duration-300 hover:scale-[1.05]"
+                            >
+                              Configure
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Whale Alerts */}
+                    <div className="bg-white/5 backdrop-blur-sm rounded-xl p-5 border border-white/10 shadow-lg transition-all duration-300 hover:bg-white/10 hover:shadow-xl hover:scale-[1.005]">
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1">
+                          <h3 className="text-sm font-semibold text-white mb-1">Large Transaction (Whale) Alerts</h3>
+                          <p className="text-xs text-gray-400">Get notified of significant whale transactions (experimental)</p>
+                        </div>
+                        <ToggleSwitch
+                          id="whaleAlerts"
+                          checked={notificationSettings?.enableWhaleAlerts || false}
+                          onChange={(checked) => saveNotificationSettings({ ...notificationSettings, enableWhaleAlerts: checked })}
+                          ariaLabel="Enable whale alerts"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Trade Confirmation Required */}
+                    <div className="bg-white/5 backdrop-blur-sm rounded-xl p-5 border border-white/10 shadow-lg transition-all duration-300 hover:bg-white/10 hover:shadow-xl hover:scale-[1.005]">
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1">
+                          <h3 className="text-sm font-semibold text-white mb-1">Trade Confirmation Required</h3>
+                          <p className="text-xs text-gray-400">Require manual confirmation before executing an auto-trade signal</p>
+                        </div>
+                        <ToggleSwitch
+                          id="tradeConfirmationRequired"
+                          checked={notificationSettings?.tradeConfirmationRequired || false}
+                          onChange={(checked) => saveNotificationSettings({ ...notificationSettings, tradeConfirmationRequired: checked })}
+                          ariaLabel="Require trade confirmation"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Sound & Haptics */}
+                    <div className="bg-white/5 backdrop-blur-sm rounded-xl p-5 border border-white/10 shadow-lg transition-all duration-300 hover:bg-white/10 hover:shadow-xl hover:scale-[1.005]">
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1">
+                          <h3 className="text-sm font-semibold text-white mb-1">Notification Sound & Haptics</h3>
+                          <p className="text-xs text-gray-400">Enable sound and vibration for mobile notifications</p>
+                        </div>
+                        <div className="flex items-center space-x-4">
+                          <div className="flex items-center gap-2">
+                            <SpeakerWaveIcon className={`w-5 h-5 ${notificationSettings?.notificationSounds ? 'text-purple-400' : 'text-gray-500'}`} />
+                            <ToggleSwitch
+                              id="notificationSounds"
+                              checked={notificationSettings?.notificationSounds || false}
+                              onChange={(checked) => saveNotificationSettings({ ...notificationSettings, notificationSounds: checked })}
+                              ariaLabel="Enable notification sounds"
+                              size="small"
+                            />
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <DevicePhoneMobileIcon className={`w-5 h-5 ${notificationSettings?.notificationVibration ? 'text-purple-400' : 'text-gray-500'}`} />
+                            <ToggleSwitch
+                              id="notificationVibration"
+                              checked={notificationSettings?.notificationVibration || false}
+                              onChange={(checked) => saveNotificationSettings({ ...notificationSettings, notificationVibration: checked })}
+                              ariaLabel="Enable notification vibration"
+                              size="small"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Test Notification Button */}
+                    <div className="mt-6 flex justify-end pt-4 border-t border-white/10">
+                      <button
+                        onClick={testNotification}
+                        className="w-full sm:w-auto px-6 py-3 bg-gradient-to-r from-blue-500 to-cyan-500 text-white font-semibold rounded-xl hover:from-blue-600 hover:to-cyan-600 transition-all duration-300 shadow-lg hover:scale-[1.01]"
+                      >
+                        Send Test Notification
+                      </button>
+                    </div>
+                  </div>
+                </SettingsCard>
+              </div>
+            </div>
           </div>
         </main>
 
-        {/* Modals */}
         {/* Disconnect Confirmation Modal */}
         {showDisconnectConfirm && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-            <div className="bg-white rounded-2xl p-8 max-w-sm w-full text-center">
-              <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                <ExclamationTriangleIcon className="w-8 h-8 text-red-600" />
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+            <div className="bg-slate-900/90 backdrop-blur-lg rounded-2xl p-8 max-w-lg w-full text-center border border-red-500/20 shadow-2xl">
+              <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-4">
+                <ExclamationTriangleIcon className="w-8 h-8 text-red-500" />
               </div>
-              <h3 className="text-xl font-semibold text-gray-900 mb-2">Disconnect Exchange?</h3>
-              <p className="text-gray-600 mb-6">Are you sure you want to disconnect this exchange? Auto-trading will be disabled.</p>
-              <div className="flex space-x-3">
+              <h3 className="text-xl font-bold text-white mb-2">Confirm Disconnect</h3>
+              <p className="text-gray-400 mb-6">Are you sure you want to disconnect your exchange account? This will halt all auto-trading activity.</p>
+              <div className="flex justify-center gap-4">
                 <button
                   onClick={() => setShowDisconnectConfirm(false)}
-                  className="flex-1 px-4 py-2 bg-gray-200 text-gray-800 font-medium rounded-lg hover:bg-gray-300 transition-colors"
-                  disabled={disconnectingExchange}
+                  className="px-6 py-3 bg-slate-700/50 text-gray-300 font-medium rounded-xl hover:bg-slate-600/50 transition-all"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleDisconnectExchange}
-                  disabled={disconnectingExchange}
-                  className="flex-1 px-4 py-2 bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50"
+                  disabled={savingExchange}
+                  className="px-6 py-3 bg-red-600/80 text-white font-medium rounded-xl hover:bg-red-700/80 transition-colors disabled:opacity-50"
                 >
-                  {disconnectingExchange ? 'Disconnecting...' : 'Disconnect'}
+                  {savingExchange ? 'Disconnecting...' : 'Disconnect'}
                 </button>
               </div>
             </div>
@@ -2184,49 +2089,49 @@ const Settings: React.FC = () => {
 
         {/* Auto-Trade Prerequisite Modal */}
         {showAutoTradePrereqModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-            <div className="bg-white rounded-2xl p-8 max-w-lg w-full text-center">
-              <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                <ExclamationTriangleIcon className="w-8 h-8 text-amber-600" />
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+            <div className="bg-slate-900/90 backdrop-blur-lg rounded-2xl p-8 max-w-lg w-full text-center border border-amber-500/20 shadow-2xl">
+              <div className="w-16 h-16 bg-amber-500/10 rounded-full flex items-center justify-center mx-auto mb-4">
+                <ExclamationTriangleIcon className="w-8 h-8 text-amber-500" />
               </div>
-              <h3 className="text-xl font-semibold text-gray-900 mb-2">Cannot Enable Auto-Trade Alerts</h3>
-              <p className="text-gray-600 mb-6 text-left">
-                To enable Auto-Trade Trigger Alerts, the following prerequisites must be met:
-              </p>
-              <ul className="text-left space-y-2 text-sm text-gray-700 mb-6">
-                {notificationPrereqs?.missing?.map((item: string, index: number) => (
-                  <li key={index} className="flex items-start">
-                    <XCircleIcon className="w-5 h-5 text-red-500 mr-2 flex-shrink-0" />
-                    <span>{item}</span>
-                  </li>
-                ))}
+              <h3 className="text-xl font-bold text-white mb-2">Auto-Trade Prerequisites Not Met</h3>
+              <p className="text-gray-400 mb-4">You must complete the following steps before enabling Auto-Trade Alerts:</p>
+              <ul className="text-left space-y-2 mb-6">
+                <li className={`flex items-center gap-2 ${notificationPrereqs?.exchangeConnected ? 'text-green-400' : 'text-red-400'}`}>
+                  {notificationPrereqs?.exchangeConnected ? <CheckCircleIcon className="w-5 h-5 flex-shrink-0" /> : <XCircleIcon className="w-5 h-5 flex-shrink-0" />}
+                  <span>Connect an Exchange Account</span>
+                </li>
+                <li className={`flex items-center gap-2 ${notificationPrereqs?.tradeTypeSet ? 'text-green-400' : 'text-red-400'}`}>
+                  {notificationPrereqs?.tradeTypeSet ? <CheckCircleIcon className="w-5 h-5 flex-shrink-0" /> : <XCircleIcon className="w-5 h-5 flex-shrink-0" />}
+                  <span>Configure Trade Type (e.g., Scalping)</span>
+                </li>
+                <li className={`flex items-center gap-2 ${notificationPrereqs?.riskSet ? 'text-green-400' : 'text-red-400'}`}>
+                  {notificationPrereqs?.riskSet ? <CheckCircleIcon className="w-5 h-5 flex-shrink-0" /> : <XCircleIcon className="w-5 h-5 flex-shrink-0" />}
+                  <span>Set Max Position and Max Daily Loss</span>
+                </li>
               </ul>
               <button
                 onClick={() => setShowAutoTradePrereqModal(false)}
-                className="w-full px-4 py-2 bg-gray-800 text-white font-medium rounded-lg hover:bg-gray-700 transition-colors"
+                className="w-full px-6 py-3 bg-purple-600/80 text-white font-medium rounded-xl hover:bg-purple-700/80 transition-colors"
               >
-                Close
+                Close and Update Settings
               </button>
             </div>
           </div>
         )}
 
-        {/* Accuracy Alert Configuration Modal */}
+        {/* Accuracy Alert Modal */}
         {showAccuracyModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-            <div className="bg-slate-800 rounded-2xl p-8 max-w-sm w-full text-white">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-xl font-semibold">Configure Accuracy Alert</h3>
-                <button onClick={() => setShowAccuracyModal(false)}>
-                  <XMarkIcon className="w-6 h-6 text-gray-400 hover:text-white" />
-                </button>
-              </div>
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+            <div className="bg-slate-900/90 backdrop-blur-lg rounded-2xl p-8 max-w-md w-full text-center border border-purple-500/20 shadow-2xl space-y-4">
+              <h3 className="text-xl font-bold text-white mb-2">Accuracy Alert Configuration</h3>
+              <p className="text-gray-400 text-sm">Define the minimum model accuracy required to trigger a notification.</p>
 
               <div className="space-y-4">
-                <div className="space-y-2">
-                  <label htmlFor="accuracy-threshold" className="block text-sm font-medium text-gray-300">Minimum Accuracy Threshold (%)</label>
+                <div className="space-y-2 text-left">
+                  <label htmlFor="accuracy-threshold-input" className="block text-sm font-medium text-gray-300">Minimum Accuracy Threshold (%)</label>
                   <SettingsInput
-                    id="accuracy-threshold"
+                    id="accuracy-threshold-input"
                     type="number"
                     step="1"
                     min="1"
@@ -2251,7 +2156,7 @@ const Settings: React.FC = () => {
 
                 <button
                   onClick={saveAccuracyAlerts}
-                  className="w-full px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg hover:from-purple-600 hover:to-pink-600 transition-colors"
+                  className="w-full px-4 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-pink-600 transition-all duration-300 shadow-lg hover:scale-[1.01]"
                 >
                   Save Accuracy Settings
                 </button>

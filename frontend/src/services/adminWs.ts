@@ -1,4 +1,5 @@
 import { getAuth, onIdTokenChanged } from 'firebase/auth';
+import { WS_URL } from '@/config/env';
 
 type MessageHandler = (data: any) => void;
 
@@ -17,13 +18,12 @@ class AdminWebSocketService {
       return;
     }
 
-    // Production admin WebSocket URL
-    const WS_URL = 'wss://dlxtrade-ws-1.onrender.com/ws/admin';
+    const ADMIN_WS_URL = `${WS_URL}/admin`;
 
     try {
       // Get fresh Firebase token
       const token = await getAuth().currentUser?.getIdToken();
-      const wsUrl = token ? `${WS_URL}?token=${token}` : WS_URL;
+      const wsUrl = token ? `${ADMIN_WS_URL}?token=${token}` : ADMIN_WS_URL;
 
       this.ws = new WebSocket(wsUrl);
 

@@ -41,35 +41,26 @@ function SafeAsyncLoader({ children, loading: externalLoading, error: externalEr
   loading?: boolean;
   error?: any;
 }) {
-  // If loading is explicitly true, show loading
-  if (externalLoading === true) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
-        <Sidebar />
-        <main className="min-h-screen">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
-            <div className="mb-8">
-              <h1 className="text-4xl lg:text-5xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
-                Dashboard
-              </h1>
-            </div>
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-              <div className="space-y-8">
-                <CardSkeleton />
-                <CardSkeleton />
-              </div>
-              <div>
-                <CardSkeleton />
-              </div>
-            </div>
-          </div>
-        </main>
+  // If loading is explicitly true or there's an error, show the respective full-page state
+  if (externalLoading === true || externalError) {
+    const content = externalLoading === true ? (
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+        <div className="space-y-8">
+          <CardSkeleton />
+          <CardSkeleton />
+        </div>
+        <div>
+          <CardSkeleton />
+        </div>
       </div>
+    ) : (
+      <ErrorState
+        error={externalError}
+        onRetry={() => window.location.reload()}
+        message="Failed to load dashboard data"
+      />
     );
-  }
 
-  // If there's an error, show error state
-  if (externalError) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
         <Sidebar />
@@ -80,11 +71,7 @@ function SafeAsyncLoader({ children, loading: externalLoading, error: externalEr
                 Dashboard
               </h1>
             </div>
-            <ErrorState
-              error={externalError}
-              onRetry={() => window.location.reload()}
-              message="Failed to load dashboard data"
-            />
+            {content}
           </div>
         </main>
       </div>
@@ -234,30 +221,6 @@ export default function Dashboard() {
     debouncedLoadDashboardData();
   }, [debouncedLoadDashboardData]);
 
-  // Legacy functions for backward compatibility (will be removed)
-  const loadAutoTradeStatus = useCallback(async () => {
-    await loadDashboardData();
-  }, [loadDashboardData]);
-
-  const loadUserStats = useCallback(async () => {
-    await loadDashboardData();
-  }, [loadDashboardData]);
-
-  const loadActiveTrades = useCallback(async () => {
-    if (!user || !isMountedRef.current) return;
-    try {
-      const response = await autoTradeApi.getActiveTrades(10);
-      if (isMountedRef.current) {
-        setDashboardState(prev => ({ ...prev, activeTrades: response.data?.activeTrades || [] }));
-      }
-    } catch (err: any) {
-      suppressConsoleError(err, 'loadActiveTrades');
-      if (isMountedRef.current) {
-        setDashboardState(prev => ({ ...prev, activeTrades: [] }));
-      }
-    }
-  }, [user]);
-
   const loadAISignals = useCallback(async () => {
     if (!user || !isMountedRef.current || !autoTradeStatus?.autoTradeEnabled) return;
     try {
@@ -272,75 +235,6 @@ export default function Dashboard() {
       }
     }
   }, [user, autoTradeStatus?.autoTradeEnabled]);
-
-  const loadPerformanceStats = useCallback(async () => {
-    if (!user || !isMountedRef.current) return;
-    try {
-      const response = await autoTradeApi.getLogs(100);
-      if (isMountedRef.current && response.data?.logs) {
-        const logs = response.data.logs;
-        const totalTrades = logs.length;
-        const winningTrades = logs.filter((log: any) => log.pnl > 0).length;
-        const winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0;
-
-        // Calculate profits
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const todayTrades = logs.filter((log: any) => {
-          const tradeDate = new Date(log.timestamp);
-          return tradeDate >= today;
-        });
-
-        const totalProfitToday = todayTrades.reduce((sum: number, log: any) => sum + (log.pnl || 0), 0);
-        const totalProfitAllTime = logs.reduce((sum: number, log: any) => sum + (log.pnl || 0), 0);
-
-        setDashboardState(prev => ({ ...prev, performanceStats: {
-          totalProfitToday,
-          totalProfitAllTime,
-          winRate: Math.round(winRate),
-          totalTrades,
-        }}));
-      }
-    } catch (err: any) {
-      suppressConsoleError(err, 'loadPerformanceStats');
-      if (isMountedRef.current) {
-        setDashboardState(prev => ({ ...prev, performanceStats: null }));
-      }
-    }
-  }, [user]);
-
-  const loadPortfolioHistory = useCallback(async () => {
-    if (!user || !isMountedRef.current) return;
-    try {
-      // Generate mock 7-day portfolio history for demo
-      // In production, this would come from a dedicated endpoint
-      const history = [];
-      const baseValue = 10000; // Default portfolio value since wallet data not available
-      let currentValue = baseValue;
-
-      for (let i = 6; i >= 0; i--) {
-        const date = new Date();
-        date.setDate(date.getDate() - i);
-        const change = (Math.random() - 0.5) * 0.05; // ±5% daily change
-        currentValue = currentValue * (1 + change);
-
-        history.push({
-          date: date.toISOString().split('T')[0],
-          value: Math.round(currentValue),
-          change: change * 100,
-        });
-      }
-
-      if (isMountedRef.current) {
-        setDashboardState(prev => ({ ...prev, portfolioHistory: history }));
-      }
-    } catch (err: any) {
-      suppressConsoleError(err, 'loadPortfolioHistory');
-      if (isMountedRef.current) {
-        setDashboardState(prev => ({ ...prev, portfolioHistory: [] }));
-      }
-    }
-  }, [user]); // Removed walletBalances dependency since it's no longer dynamic
 
   const checkAlerts = useCallback(() => {
     const newAlerts: Array<{ type: 'warning' | 'error'; message: string }> = [];

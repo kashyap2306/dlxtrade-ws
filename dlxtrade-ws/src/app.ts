@@ -8,6 +8,7 @@ import fastifyRateLimit from '@fastify/rate-limit';
 import { config } from './config';
 import { logger } from './utils/logger';
 import { firebaseAuthMiddleware } from './middleware/firebaseAuth';
+import { getFirebaseAdmin } from './utils/firebase';
 import { authRoutes } from './routes/auth';
 import { adminRoutes } from './routes/admin';
 import { ordersRoutes } from './routes/orders';
@@ -38,7 +39,7 @@ import { telegramRoutes } from './routes/telegram';
 import { backgroundResearchRoutes } from './routes/backgroundResearch';
 
 // Environment checks
-console.log("ENV: VITE_API_URL set?", !!process.env.VITE_API_URL);
+console.log("CHECK ENV:", !!process.env.FIREBASE_PROJECT_ID && !!process.env.FIREBASE_CLIENT_EMAIL && !!process.env.FIREBASE_PRIVATE_KEY);
 
 // Version logging for deployment verification
 logger.info("WS VERSION: 2025-DEC-05-ONBOARDING-PATCH");
@@ -48,12 +49,24 @@ export async function buildApp(): Promise<FastifyInstance> {
     logger: logger.child({ component: 'fastify' }),
   });
 
+  // CORS middleware - handle all requests
+  app.addHook('preHandler', (req, reply, done) => {
+    reply.header("Access-Control-Allow-Origin", "*");
+    reply.header("Access-Control-Allow-Headers", "Authorization, Content-Type");
+    reply.header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+    if (req.method === "OPTIONS") {
+      reply.code(200).send();
+      return;
+    }
+    done();
+  });
+
   // CORS configuration - MUST BE FIRST
   await app.register(fastifyCors, {
-    origin: ["http://localhost:5173"],
+    origin: "*",
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: true,
+    credentials: false,
     strictPreflight: false,
     preflightContinue: false
   });
@@ -175,13 +188,18 @@ app.get('/api/test', async (request, reply) => {
   return { status: 'ok', message: 'Backend is running', timestamp: new Date().toISOString() };
 });
 
-// Health check route (no auth required) - ALWAYS returns 200
-app.get('/health', async (request, reply) => {
+// Health check route (no auth required) - checks database connectivity
+app.get('/api/health', async (request, reply) => {
   try {
-    return { status: 'ok', timestamp: new Date().toISOString() };
-  } catch (error) {
-    // Fallback - ensure we never return 5xx for health checks
-    return { status: 'ok', timestamp: new Date().toISOString() };
+    // Simple Firestore check
+    await getFirebaseAdmin().firestore().listCollections();
+    reply.status(200).send({ status: 'ok' });
+  } catch (err: any) {
+    reply.status(500).send({
+      status: 'unhealthy',
+      error: 'Database connection failed',
+      details: err.message,
+    });
   }
 });
 
@@ -230,6 +248,14 @@ console.log("[RENDER ENV] Build timestamp:", Date.now());
       connection.socket.close(1008, `Authentication failed: ${err.message}`);
       return;
     }
+
+    // Handle ping/pong for heartbeat
+    connection.socket.on('message', (message: Buffer) => {
+      const data = message.toString();
+      if (data === 'ping') {
+        connection.socket.send('pong');
+      }
+    });
 
     // Register user WebSocket for real-time events
     const { userNotificationService } = await import('./services/userNotificationService');
@@ -280,6 +306,14 @@ console.log("[RENDER ENV] Build timestamp:", Date.now());
       connection.socket.close();
       return;
     }
+
+    // Handle ping/pong for heartbeat
+    connection.socket.on('message', (message: Buffer) => {
+      const data = message.toString();
+      if (data === 'ping') {
+        connection.socket.send('pong');
+      }
+    });
 
     // Register admin WebSocket for global events
     const { adminWebSocketManager } = await import('./services/adminWebSocketManager');

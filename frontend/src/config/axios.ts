@@ -4,6 +4,7 @@ import { API_URL } from './env';
 
 // Set baseURL to API_URL only
 const baseURL = API_URL;
+console.log('API_URL loaded:', API_URL);
 
 // Circuit breaker state
 interface CircuitBreakerState {
@@ -19,7 +20,7 @@ const circuitBreaker: CircuitBreakerState = {
 };
 
 const CIRCUIT_BREAKER_THRESHOLD = 5;
-const CIRCUIT_BREAKER_TIMEOUT = 60000;
+const CIRCUIT_BREAKER_TIMEOUT = 10000; // 10 seconds for faster recovery
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000;
 
@@ -194,15 +195,24 @@ api.interceptors.response.use(
 
     if ((error as any).isCircuitBreakerError) return Promise.reject(error);
 
-    // Only trigger circuit breaker for server errors, not client errors (like 401 auth failures)
-    const shouldTriggerCircuitBreaker = !error.response ||
-      error.response.status >= 500 ||
-      error.response.status === 429 ||
-      error.response.status === 408;
+    // Only trigger circuit breaker for server errors, not client errors, CORS, or network errors
+    const shouldTriggerCircuitBreaker = error.response &&
+      error.response.status >= 500 &&
+      error.response.status !== 0; // Exclude network/CORS errors
 
     if (shouldTriggerCircuitBreaker) {
       recordFailure();
     }
+
+    // Auto-reset circuit breaker after 5 seconds of no failures
+    setTimeout(() => {
+      if (circuitBreaker.failures > 0) {
+        circuitBreaker.failures = Math.max(0, circuitBreaker.failures - 1);
+        if (circuitBreaker.failures === 0) {
+          circuitBreaker.state = 'closed';
+        }
+      }
+    }, 5000);
 
     logError(error, 'ERROR');
     return Promise.reject(error);
@@ -219,7 +229,10 @@ class HealthPingService {
 
     this.intervalId = setInterval(async () => {
       try {
-        const res = await axios.get('/health', { timeout: 5000 });
+        // Health check bypasses baseURL - call /health directly
+        const apiBase = baseURL.replace('/api', '');
+        const healthUrl = `${apiBase}/health`;
+        const res = await axios.get(healthUrl, { timeout: 5000 });
         this.isHealthy = res.data?.status === 'ok';
       } catch {
         this.isHealthy = false;
