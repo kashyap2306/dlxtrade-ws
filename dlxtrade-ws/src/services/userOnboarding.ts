@@ -105,7 +105,7 @@ export async function ensureUser(
   console.log("ENSUREUSER CALLED");
   const startTime = Date.now();
   let createdNew = false;
-  
+
   try {
     // Ensure Firebase Admin is initialized before proceeding
     const firebaseApp = getFirebaseAdmin();
@@ -127,13 +127,128 @@ export async function ensureUser(
     // 1. Ensure users/{uid} exists with ALL required fields (idempotent)
     const userRef = db.collection('users').doc(uid);
     const existingUser = await userRef.get();
-    
+
     if (!existingUser.exists) {
       // Create minimal base user document immediately - REQUIREMENT: NO other onboarding code runs before this base doc exists
       const baseUserData = {
+        name: profileData?.name || '',
         email: profileData?.email || '',
+        phone: profileData?.phone || null,
         createdAt: now,
         updatedAt: now,
+        lastLogin: now,
+        role: 'user',
+        profilePicture: null,
+
+        // Onboarding & Status
+        onboardingRequired: true,
+        engineStatus: 'stopped',
+        engineRunning: false,
+        hftRunning: false,
+        autoTradeEnabled: false,
+
+        // Stats
+        totalPnl: 0,
+        totalTrades: 0,
+        weeklyPnl: 0,
+        monthlyPnl: 0,
+        // dailyPnl is in thresholds
+
+        // Settings & Configs
+        tradingMarkets: [],
+        experienceLevel: '',
+        interestedAgents: [],
+        portfolioSize: '',
+        unlockedAgents: [],
+        seenPopups: [],
+
+        preferences: {
+          riskLevel: '',
+          tradingStyle: '',
+          analysisType: '',
+        },
+
+        thresholds: {
+          maxFrequency: 10,
+          minAccuracy: 80,
+          dailyPnl: 0
+        },
+
+        autoTrade: {
+          enabled: false,
+          accuracyThreshold: 0.85,
+          strategy: 'orderbook_imbalance',
+          autoTradeEnabled: false
+        },
+
+        backgroundResearch: {
+          telegramEnabled: false,
+          telegramToken: '',
+          chatId: '',
+          scheduleInterval: 5
+        },
+
+        notifications: {
+          autoTradeAlerts: false,
+          autoTradeAlertsPrereqMet: false,
+          accuracyAlerts: {
+            enabled: false,
+            threshold: 80,
+            telegramEnabled: false
+          },
+          whaleAlerts: {
+            enabled: false,
+            sensitivity: 'medium',
+            telegramEnabled: false
+          },
+          requireTradeConfirmation: false,
+          soundEnabled: false,
+          vibrateEnabled: false,
+          telegramEnabled: false,
+          telegramChatId: ''
+        },
+
+        notificationSettings: {
+          enableAutoTradeAlerts: false,
+          enableAccuracyAlerts: false,
+          enableWhaleAlerts: false,
+          tradeConfirmationRequired: false,
+          notificationSounds: false,
+          notificationVibration: false,
+          telegramBotToken: '',
+          telegramChatId: ''
+        },
+
+        researchSettings: {
+          coinSelectionMode: 'manual',
+          selectedCoins: [],
+          accuracyTrigger: 80
+        },
+
+        riskLimits: {
+          max_loss_pct: 5,
+          max_drawdown_pct: 10,
+          per_trade_risk_pct: 0.5,
+          max_pos: 0.02,
+          cooldownAfterSLSec: 300
+        },
+
+        tradingSettings: {
+          mode: 'MANUAL',
+          manualCoins: [],
+          maxPositionPerTrade: 10,
+          tradeType: 'Scalping',
+          accuracyTrigger: 80,
+          maxDailyLoss: 5,
+          maxTradesPerDay: 50,
+          positionSizingMap: [
+            { min: 0, max: 25, percent: 1 },
+            { min: 25, max: 50, percent: 2 },
+            { min: 50, max: 75, percent: 3 },
+            { min: 75, max: 100, percent: 5 }
+          ]
+        },
+
         providerConfig: {
           marketData: PROVIDERS.MARKET_DATA.map(id => ({
             id,
@@ -272,10 +387,6 @@ export async function ensureUser(
           telegramEnabled: false,
           telegramToken: '',
           chatId: '',
-          thresholds: {
-            minAccuracy: 80,
-            maxFrequency: 10
-          },
           scheduleInterval: 5
         };
       }
@@ -314,7 +425,17 @@ export async function ensureUser(
         updateData.autoTrade = {
           enabled: false,
           accuracyThreshold: 0.85,
-          strategy: 'orderbook_imbalance'
+          strategy: 'orderbook_imbalance',
+          autoTradeEnabled: false // Added as per request structure
+        };
+      }
+
+      // Request: thresholds: { maxFrequency, minAccuracy, dailyPnl }
+      if (existingData.thresholds === undefined) {
+        updateData.thresholds = {
+          maxFrequency: 10,
+          minAccuracy: 80,
+          dailyPnl: 0
         };
       }
 
@@ -325,9 +446,10 @@ export async function ensureUser(
       if (existingData.totalPnl === undefined) {
         updateData.totalPnl = 0;
       }
-      if (existingData.dailyPnl === undefined) {
-        updateData.dailyPnl = 0;
-      }
+      // dailyPnl is now in thresholds, but we might want to keep it in root if used elsewhere.
+      // However, the request specifically listed it under thresholds and NOT in root. 
+      // I will NOT add it to root here to strictly follow the request list.
+
       if (existingData.weeklyPnl === undefined) {
         updateData.weeklyPnl = 0;
       }
@@ -376,7 +498,7 @@ export async function ensureUser(
     // 3. Create engineStatus/{uid}
     const engineStatusRef = db.collection('engineStatus').doc(uid);
     const existingEngineStatus = await engineStatusRef.get();
-    
+
     if (!existingEngineStatus.exists) {
       await engineStatusRef.set({
         uid,
@@ -395,7 +517,7 @@ export async function ensureUser(
     // 4. Create uiPreferences/{uid}
     const prefsRef = db.collection('uiPreferences').doc(uid);
     const existingPrefs = await prefsRef.get();
-    
+
     if (!existingPrefs.exists) {
       await prefsRef.set({
         uid,
@@ -410,7 +532,7 @@ export async function ensureUser(
     // 5. Create settings/{uid}
     const settingsRef = db.collection('settings').doc(uid);
     const existingSettings = await settingsRef.get();
-    
+
     if (!existingSettings.exists) {
       await settingsRef.set({
         uid,
@@ -432,7 +554,7 @@ export async function ensureUser(
     // 6. Create users/{uid}/profile document (exact schema match)
     const profileRef = db.collection('users').doc(uid).collection('profile').doc('current');
     const existingProfile = await profileRef.get();
-    
+
     if (!existingProfile.exists) {
       await profileRef.set({
         uid,
@@ -475,7 +597,7 @@ export async function ensureUser(
     // 7. Create users/{uid}/settings document (exact schema match)
     const userSettingsRef = db.collection('users').doc(uid).collection('settings').doc('current');
     const existingUserSettings = await userSettingsRef.get();
-    
+
     if (!existingUserSettings.exists) {
       await userSettingsRef.set({
         strategy: 'orderbook_imbalance',
@@ -503,7 +625,7 @@ export async function ensureUser(
       // Update missing fields to match exact schema
       const existingSettings = existingUserSettings.data() || {};
       const settingsUpdate: any = {};
-      
+
       if (existingSettings.strategy === undefined) {
         settingsUpdate.strategy = 'orderbook_imbalance';
       }
@@ -551,7 +673,7 @@ export async function ensureUser(
     // 8. Create users/{uid}/uiPreferences document (if not exists in subcollection)
     const userUIPrefsRef = db.collection('users').doc(uid).collection('uiPreferences').doc('current');
     const existingUserUIPrefs = await userUIPrefsRef.get();
-    
+
     if (!existingUserUIPrefs.exists) {
       await userUIPrefsRef.set({
         dismissedAgents: [],
@@ -699,7 +821,7 @@ export async function ensureUser(
     // 11. Log activity (USER_CREATED for new users, USER_LOGIN for existing)
     const activityType = createdNew ? 'USER_CREATED' : 'USER_LOGIN';
     await firestoreAdapter.logActivity(uid, activityType, {
-      message: createdNew 
+      message: createdNew
         ? `User ${profileData?.email || uid} signed up`
         : `User ${profileData?.email || uid} logged in`,
       email: profileData?.email,
@@ -709,7 +831,7 @@ export async function ensureUser(
     if (createdNew) {
       const globalStatsRef = db.collection('globalStats').doc('main');
       const globalStats = await globalStatsRef.get();
-      
+
       if (globalStats.exists) {
         const currentStats = globalStats.data();
         await globalStatsRef.update({
@@ -732,7 +854,7 @@ export async function ensureUser(
     }
 
     const duration = Date.now() - startTime;
-    
+
     // Log summary of all documents created/verified
     const createdDocs = [];
     if (createdNew) {
@@ -762,13 +884,13 @@ export async function ensureUser(
     };
   } catch (error: any) {
     const duration = Date.now() - startTime;
-    logger.error({ 
-      error: error.message, 
+    logger.error({
+      error: error.message,
       stack: error.stack,
       uid,
-      duration 
+      duration
     }, '❌ Error during user onboarding');
-    
+
     // Log to Firestore logs collection
     try {
       const db = getFirebaseAdmin().firestore();

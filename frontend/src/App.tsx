@@ -1,29 +1,5 @@
 import React, { Suspense, useState, useEffect } from 'react';
 import { Routes, Route, Navigate, BrowserRouter, Outlet } from 'react-router-dom';
-import Login from './pages/Login';
-import Signup from './pages/Signup';
-import Dashboard from './pages/Dashboard';
-import Home from './pages/Home';
-import EngineControl from './pages/EngineControl';
-import ResearchPanel from './pages/ResearchPanel';
-import AutoTrade from './pages/AutoTrade';
-import Settings from './pages/Settings';
-import Profile from './pages/Profile';
-import HFTSettings from './pages/HFTSettings';
-import HFTLogs from './pages/HFTLogs';
-import AdminDashboard from './pages/AdminDashboard';
-import AdminUsersList from './pages/AdminUsersList';
-import AdminUserDetail from './pages/AdminUserDetail';
-import AdminAgentsManager from './pages/AdminAgentsManager';
-import AdminUnlockRequests from './pages/AdminUnlockRequests';
-import AdminBroadcastPopup from './pages/AdminBroadcastPopup';
-import AdminLogin from './pages/AdminLogin';
-import AdminToken from './pages/AdminToken';
-import AdminRoute from './components/AdminRoute';
-import AgentsMarketplace from './pages/AgentsMarketplace';
-import AgentDetails from './pages/AgentDetails';
-import AgentFeature from './pages/AgentFeature';
-import Onboarding from './pages/Onboarding';
 import TopNavigation from './components/TopNavigation';
 import UserRoute from './components/UserRoute';
 import { ErrorProvider } from './contexts/ErrorContext';
@@ -37,6 +13,32 @@ import { wsService } from './services/ws';
 import { useAuth } from './hooks/useAuth';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { LoadingState } from './components/LoadingState';
+
+// Lazy load pages to break circular dependencies and improve performance
+const Login = React.lazy(() => import('./pages/Login'));
+const Signup = React.lazy(() => import('./pages/Signup'));
+const Dashboard = React.lazy(() => import('./pages/Dashboard'));
+const Home = React.lazy(() => import('./pages/Home'));
+const EngineControl = React.lazy(() => import('./pages/EngineControl'));
+const ResearchPanel = React.lazy(() => import('./pages/ResearchPanel'));
+const AutoTrade = React.lazy(() => import('./pages/AutoTrade'));
+const Settings = React.lazy(() => import('./pages/Settings'));
+const Profile = React.lazy(() => import('./pages/Profile'));
+const HFTSettings = React.lazy(() => import('./pages/HFTSettings'));
+const HFTLogs = React.lazy(() => import('./pages/HFTLogs'));
+const AdminDashboard = React.lazy(() => import('./pages/AdminDashboard'));
+const AdminUsersList = React.lazy(() => import('./pages/AdminUsersList'));
+const AdminUserDetail = React.lazy(() => import('./pages/AdminUserDetail'));
+const AdminAgentsManager = React.lazy(() => import('./pages/AdminAgentsManager'));
+const AdminUnlockRequests = React.lazy(() => import('./pages/AdminUnlockRequests'));
+const AdminBroadcastPopup = React.lazy(() => import('./pages/AdminBroadcastPopup'));
+const AdminLogin = React.lazy(() => import('./pages/AdminLogin'));
+const AdminToken = React.lazy(() => import('./pages/AdminToken'));
+const AdminRoute = React.lazy(() => import('./components/AdminRoute'));
+const AgentsMarketplace = React.lazy(() => import('./pages/AgentsMarketplace'));
+const AgentDetails = React.lazy(() => import('./pages/AgentDetails'));
+const AgentFeature = React.lazy(() => import('./pages/AgentFeature'));
+const Onboarding = React.lazy(() => import('./pages/Onboarding'));
 
 // Layout component that includes TopNavigation and renders page content via Outlet
 function Layout() {

@@ -8,6 +8,7 @@ declare module 'axios' {
       startTime: number;
       requestId: string;
     };
+    _retry?: boolean;
   }
 }
 
@@ -15,94 +16,11 @@ declare module 'axios' {
 const baseURL = API_URL;
 console.log('API_URL loaded:', API_URL);
 
-// Circuit breaker state
-interface CircuitBreakerState {
-  failures: number;
-  lastFailureTime: number;
-  state: 'closed' | 'open' | 'half-open';
-}
-
-const circuitBreaker: CircuitBreakerState = {
-  failures: 0,
-  lastFailureTime: 0,
-  state: 'closed',
-};
-
-const CIRCUIT_BREAKER_THRESHOLD = 10;
-const CIRCUIT_BREAKER_TIMEOUT = 10000; // 10 seconds for faster recovery
-const MAX_RETRIES = 3;
-const RETRY_DELAY = 1000;
-
-const slowRequestWarnings = new Set<string>();
-
-// Cache system
-interface CacheEntry {
-  data: any;
-  timestamp: number;
-  ttl: number;
-}
-
-const apiCache = new Map<string, CacheEntry>();
-const CACHE_TTL = 5000;
-
-const CACHEABLE_ENDPOINTS = ['agents', 'notifications', 'settings', 'unlocked'];
-
-const shouldCache = (url: string): boolean =>
-  CACHEABLE_ENDPOINTS.some(endpoint => url.includes(endpoint));
-
-const getCachedResponse = (url: string): any | null => {
-  const cached = apiCache.get(url);
-  if (cached && Date.now() - cached.timestamp < cached.ttl) {
-    return cached.data;
-  }
-  if (cached) apiCache.delete(url);
-  return null;
-};
-
-const setCachedResponse = (url: string, data: any, ttl: number = CACHE_TTL): void => {
-  apiCache.set(url, { data, timestamp: Date.now(), ttl });
-};
-
 // Axios instance (CORS-safe)
 const api = axios.create({
   baseURL,
   timeout: 30000,
 });
-
-// Token caching to reduce Firebase calls
-let cachedToken: string | null = null;
-let tokenTimestamp: number = 0;
-const TOKEN_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
-
-const getCachedToken = async (): Promise<string | null> => {
-  const now = Date.now();
-
-  // Return cached token if still valid
-  if (cachedToken && (now - tokenTimestamp) < TOKEN_CACHE_DURATION) {
-    return cachedToken;
-  }
-
-  try {
-    const auth = getAuth();
-    const user = auth.currentUser;
-
-    if (user) {
-      // Try to get fresh token, fallback to force refresh if needed
-      try {
-        cachedToken = await user.getIdToken(false);
-      } catch (tokenError) {
-        console.warn('Failed to get fresh token, trying force refresh', tokenError);
-        cachedToken = await user.getIdToken(true);
-      }
-      tokenTimestamp = now;
-      return cachedToken;
-    }
-  } catch (e) {
-    console.warn('Could not get token', e);
-  }
-
-  return null;
-};
 
 // Logging
 const logRequest = (config: InternalAxiosRequestConfig, context: string) => {
@@ -113,19 +31,11 @@ const logRequest = (config: InternalAxiosRequestConfig, context: string) => {
 
 const logResponse = (response: AxiosResponse, context: string) => {
   const duration = response.config.metadata ? Date.now() - response.config.metadata.startTime : 0;
-
   if (import.meta.env.DEV) {
     console.log(
       `[API ${context}]`,
       `${response.status} ${response.config.method?.toUpperCase()} ${response.config.url} (${duration}ms)`
     );
-  } else if (duration > 5000) {
-    const key = `${response.config.method?.toUpperCase()} ${response.config.url}`;
-    if (!slowRequestWarnings.has(key)) {
-      console.warn(`[API SLOW] ${key} took ${duration}ms`);
-      slowRequestWarnings.add(key);
-      setTimeout(() => slowRequestWarnings.delete(key), 300000);
-    }
   }
 };
 
@@ -140,61 +50,32 @@ const logError = (error: AxiosError, context: string, extra?: any) => {
   });
 };
 
-// Circuit Breaker logic
-const isCircuitBreakerOpen = (): boolean => {
-  if (circuitBreaker.state === 'open') {
-    if (Date.now() - circuitBreaker.lastFailureTime > CIRCUIT_BREAKER_TIMEOUT) {
-      circuitBreaker.state = 'half-open';
-      return false;
-    }
-    return true;
-  }
-  return false;
-};
-
-const recordFailure = () => {
-  circuitBreaker.failures++;
-  circuitBreaker.lastFailureTime = Date.now();
-
-  if (circuitBreaker.failures >= CIRCUIT_BREAKER_THRESHOLD) {
-    circuitBreaker.state = 'open';
-  }
-};
-
-const recordSuccess = () => {
-  if (circuitBreaker.state === 'half-open') {
-    circuitBreaker.state = 'closed';
-    circuitBreaker.failures = 0;
-  } else {
-    circuitBreaker.failures = Math.max(0, circuitBreaker.failures - 1);
-  }
-};
-
 // Request Interceptor
 api.interceptors.request.use(
   async (config) => {
-    if (isCircuitBreakerOpen()) {
-      const error = new Error('Circuit breaker is open');
-      (error as any).isCircuitBreakerError = true;
-      throw error;
-    }
-
-    // Firebase Token - use cached token with automatic refresh
-    try {
-      const idToken = await getCachedToken();
-      if (idToken) {
-        config.headers.Authorization = `Bearer ${idToken}`;
-      }
-    } catch (e) {
-      // swallow here; request will continue without token
-      console.warn('Could not attach cached idToken', e);
-    }
-
     // Metadata
     config.metadata = {
       startTime: Date.now(),
       requestId: `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
     };
+
+    // Firebase Token - ALWAYS attach if user exists
+    try {
+      const auth = getAuth();
+      const user = auth.currentUser;
+      if (user) {
+        // Ensure we get a fresh token if needed, but standard getIdToken() handles expiration
+        const idToken = await user.getIdToken();
+
+        // CRITICAL FIX: Secure header attachment
+        config.headers = {
+          ...(config.headers || {}),
+          Authorization: `Bearer ${idToken}`
+        } as any;
+      }
+    } catch (e) {
+      console.warn('Could not attach idToken', e);
+    }
 
     logRequest(config, 'REQUEST');
     return config;
@@ -205,39 +86,36 @@ api.interceptors.request.use(
 // Response Interceptor
 api.interceptors.response.use(
   (response) => {
-    recordSuccess();
     logResponse(response, 'SUCCESS');
-
-    if (response.config.method === 'get' && shouldCache(response.config.url || '')) {
-      setCachedResponse(response.config.url || '', response.data);
-    }
-
     return response;
   },
-
   async (error: AxiosError) => {
-    const config = error.config || {};
+    const config = error.config as InternalAxiosRequestConfig;
 
-    if ((error as any).isCircuitBreakerError) return Promise.reject(error);
+    // 401 Retry Logic
+    if (error.response?.status === 401 && config && !config._retry) {
+      config._retry = true;
+      try {
+        const auth = getAuth();
+        const user = auth.currentUser;
+        if (user) {
+          console.log('[API] 401 detected, refreshing token...');
+          // Force refresh token
+          const newToken = await user.getIdToken(true);
 
-    // Only trigger circuit breaker for server errors, not client errors, CORS, or network errors
-    const shouldTriggerCircuitBreaker = error.response &&
-      error.response.status >= 500 &&
-      error.response.status !== 502;
+          // Update header with new token
+          config.headers = {
+            ...(config.headers || {}),
+            Authorization: `Bearer ${newToken}`
+          } as any;
 
-    if (shouldTriggerCircuitBreaker) {
-      recordFailure();
-    }
-
-    // Auto-reset circuit breaker after 5 seconds of no failures
-    setTimeout(() => {
-      if (circuitBreaker.failures > 0) {
-        circuitBreaker.failures = Math.max(0, circuitBreaker.failures - 1);
-        if (circuitBreaker.failures === 0) {
-          circuitBreaker.state = 'closed';
+          // Retry request
+          return api(config);
         }
+      } catch (refreshError) {
+        console.error('Failed to refresh token on 401', refreshError);
       }
-    }, 5000);
+    }
 
     logError(error, 'ERROR');
     return Promise.reject(error);
@@ -252,7 +130,7 @@ class HealthPingService {
   start() {
     if (this.intervalId) return;
 
-    this.intervalId = setInterval(async () => {
+    this.intervalId = window.setInterval(async () => {
       try {
         const healthUrl = `${baseURL}/health`;
         const res = await axios.get(healthUrl, { timeout: 5000 });
@@ -276,36 +154,41 @@ if (typeof window !== 'undefined') {
 
 // Timeout wrapper for long-running calls
 export const timeoutApi = {
-  get: async (url: string, config?: any, timeoutMs: number = 10000) => {
+  get: async (url: string, config: any = {}, timeoutMs: number = 10000) => {
     const source = axios.CancelToken.source();
-    setTimeout(() => source.cancel("timeout"), timeoutMs);
+    const timeoutId = setTimeout(() => source.cancel("timeout"), timeoutMs);
 
     try {
+      // Do NOT override config here, merge it
       const response = await api.get(url, {
         ...config,
         cancelToken: source.token,
       });
+      clearTimeout(timeoutId);
       return response;
     } catch (error: any) {
-      if (error.message === 'timeout') {
+      clearTimeout(timeoutId);
+      if (axios.isCancel(error) && error.message === 'timeout') {
         console.warn(`[API TIMEOUT] ${url} timed out after ${timeoutMs}ms`);
         throw new Error(`Request timeout after ${timeoutMs}ms`);
       }
       throw error;
     }
   },
-  post: async (url: string, data?: any, config?: any, timeoutMs: number = 10000) => {
+  post: async (url: string, data?: any, config: any = {}, timeoutMs: number = 10000) => {
     const source = axios.CancelToken.source();
-    setTimeout(() => source.cancel("timeout"), timeoutMs);
+    const timeoutId = setTimeout(() => source.cancel("timeout"), timeoutMs);
 
     try {
       const response = await api.post(url, data, {
         ...config,
         cancelToken: source.token,
       });
+      clearTimeout(timeoutId);
       return response;
     } catch (error: any) {
-      if (error.message === 'timeout') {
+      clearTimeout(timeoutId);
+      if (axios.isCancel(error) && error.message === 'timeout') {
         console.warn(`[API TIMEOUT] ${url} timed out after ${timeoutMs}ms`);
         throw new Error(`Request timeout after ${timeoutMs}ms`);
       }
@@ -314,17 +197,11 @@ export const timeoutApi = {
   },
 };
 
-// Cached Wrapper
+// Simplified Cached Wrapper - Removed complex caching logic that might block Auth
 export const cachedApi = {
   get: async (url: string, config?: any) => {
-    const cached = shouldCache(url) ? getCachedResponse(url) : null;
-    if (cached) return { data: cached };
-
-    const res = await api.get(url, config);
-
-    if (shouldCache(url)) setCachedResponse(url, res.data);
-
-    return res;
+    // Direct pass-through for now to ensure freshness and correct Auth
+    return api.get(url, config);
   },
   post: (url: string, data?: any, config?: any) => api.post(url, data, config),
   put: (url: string, data?: any, config?: any) => api.put(url, data, config),
@@ -332,13 +209,9 @@ export const cachedApi = {
   delete: (url: string, config?: any) => api.delete(url, config),
 };
 
-// Cache invalidation function
 export const invalidateCache = (urlPattern: string) => {
-  for (const [url, _] of apiCache) {
-    if (url.includes(urlPattern)) {
-      apiCache.delete(url);
-    }
-  }
+  // No-op since cache is removed
+  console.log('[Cache] Invalidation requested for', urlPattern);
 };
 
 export default api;

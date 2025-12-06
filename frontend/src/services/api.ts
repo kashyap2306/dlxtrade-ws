@@ -80,11 +80,11 @@ export const adminApi = {
   updateUserAgentSettings: (uid: string, agentName: string, settings: any) => api.put(`/admin/user/${uid}/agent/${encodeURIComponent(agentName)}/settings`, settings),
   getGlobalSettings: () => api.get('/admin/global-settings'),
   updateGlobalSettings: (settings: any) => api.post('/admin/global-settings', settings),
-  getMarketData: () => timeoutApi.get('/market/top-coins', {}, 10000),
+  getMarketData: () => timeoutApi.get('/market/top-coins', {}, 3000),
   deleteUser: (uid: string) => api.delete(`/admin/users/${uid}`),
-    // Agent purchases
-    getPurchases: (params?: { status?: string; limit?: number }) => api.get('/admin/agents/purchases', { params }),
-    approvePurchase: (purchaseId: string) => api.post(`/admin/agents/purchases/${purchaseId}/approve`),
+  // Agent purchases
+  getPurchases: (params?: { status?: string; limit?: number }) => api.get('/admin/agents/purchases', { params }),
+  approvePurchase: (purchaseId: string) => api.post(`/admin/agents/purchases/${purchaseId}/approve`),
 
   // Background Research
   backgroundResearch: {
@@ -103,15 +103,15 @@ export const adminApi = {
   telegram: {
     test: (data: { botToken: string; chatId: string }) => api.post('/telegram/test', data),
   },
-    rejectPurchase: (purchaseId: string, reason?: string) => api.post(`/admin/agents/purchases/${purchaseId}/reject`, { reason }),
-    // Broadcast Popup
-    broadcastPopup: (data: any) => api.post('/admin/popup-broadcast', data),
-    // Admin promotion
-    promote: (email: string) => api.post('/admin/promote', { email }, {
-      headers: {
-        'x-admin-setup': 'SUPER-SECRET-998877'
-      }
-    }),
+  rejectPurchase: (purchaseId: string, reason?: string) => api.post(`/admin/agents/purchases/${purchaseId}/reject`, { reason }),
+  // Broadcast Popup
+  broadcastPopup: (data: any) => api.post('/admin/popup-broadcast', data),
+  // Admin promotion
+  promote: (email: string) => api.post('/admin/promote', { email }, {
+    headers: {
+      'x-admin-setup': 'SUPER-SECRET-998877'
+    }
+  }),
 };
 
 // Orders - routes already include /api prefix from baseURL
@@ -220,7 +220,7 @@ export const settingsApi = {
 export const executionApi = {
   getLogs: (params?: any) => api.get('/execution/logs', { params }),
   close: (data: { symbol: string; orderId?: string }) => api.post('/execution/close', data),
-  execute: (data: { symbol: string; signal: 'BUY' | 'SELL'; entry: number; size: number; sl?: number; tp?: number }) => 
+  execute: (data: { symbol: string; signal: 'BUY' | 'SELL'; entry: number; size: number; sl?: number; tp?: number }) =>
     api.post('/execution/execute', data),
 };
 
