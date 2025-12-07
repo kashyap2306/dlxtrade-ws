@@ -64,11 +64,11 @@ function SafeRoute({ children, fallbackMessage = "Content temporarily unavailabl
   const [hasError, setHasError] = useState(false);
   const [suspenseTimeout, setSuspenseTimeout] = useState(false);
 
-  // Emergency timeout for Suspense fallback - ensure content renders within 3 seconds
+  // Emergency timeout for Suspense fallback - ensure content renders within 5 seconds
   useEffect(() => {
     const suspenseEmergencyTimeout = setTimeout(() => {
       setSuspenseTimeout(true);
-    }, 3000);
+    }, 5000);
 
     return () => clearTimeout(suspenseEmergencyTimeout);
   }, []);

@@ -440,6 +440,71 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
   });
 
   // GET /api/exchange/status - Get exchange connection status
+  // GET /api/exchange/connected - Get connected exchange with trading settings
+  console.log('[ROUTE READY] GET /api/exchange/connected');
+  fastify.get('/exchange/connected', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+
+      // Get exchange status
+      const exchanges: ExchangeName[] = ['binance', 'bitget', 'weex', 'bingx'];
+      const statusPromises = exchanges.map(async (exchange) => {
+        const credentials = await firestoreAdapter.getExchangeCredentials(user.uid, exchange);
+        const isConnected = !!credentials;
+
+        let testResult = null;
+        if (isConnected && credentials) {
+          try {
+            const decrypted = {
+              apiKey: decrypt(credentials.apiKey),
+              secret: decrypt(credentials.secret),
+              passphrase: credentials.passphrase ? decrypt(credentials.passphrase) : undefined,
+              testnet: credentials.testnet
+            };
+            const exchangeConnector = ExchangeConnectorFactory.create(exchange as ExchangeName, decrypted);
+            testResult = await exchangeConnector.testConnection();
+          } catch (testErr: any) {
+            logger.warn({ error: testErr.message, exchange }, 'Exchange connection test failed');
+          }
+        }
+
+        return {
+          exchange,
+          connected: isConnected,
+          testResult
+        };
+      });
+
+      const exchangeStatuses = await Promise.all(statusPromises);
+      const connectedExchange = exchangeStatuses.find(ex => ex.connected);
+
+      // Get trading settings from user settings
+      const settings = await firestoreAdapter.getSettings(user.uid);
+      const tradingSettings = settings?.tradingSettings || {
+        manualCoins: [],
+        maxPositionPerTrade: 10,
+        positionSizingMap: [
+          { min: 0, max: 25, percent: 1 },
+          { min: 25, max: 50, percent: 2 },
+          { min: 50, max: 75, percent: 3 },
+          { min: 75, max: 100, percent: 5 }
+        ]
+      };
+
+      return {
+        exchange: connectedExchange || null,
+        manualCoins: tradingSettings.manualCoins || [],
+        positionSizingMap: tradingSettings.positionSizingMap || [],
+        maxPositionPerTrade: tradingSettings.maxPositionPerTrade || 10
+      };
+    } catch (err: any) {
+      logger.error({ error: err.message }, 'Error getting connected exchange');
+      return reply.code(500).send({ error: err.message || 'Error fetching connected exchange' });
+    }
+  });
+
   fastify.get('/exchange/status', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {

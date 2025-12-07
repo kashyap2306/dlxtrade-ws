@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { settingsApi, integrationsApi, exchangeApi, adminApi } from '../services/api';
+import { settingsApi, integrationsApi, exchangeService, adminApi } from '../services/api';
 import Toast from '../components/Toast';
 import Sidebar from '../components/Sidebar';
 import { API_NAME_MAP } from "../constants/providers";
@@ -43,7 +43,7 @@ const Settings = () => {
   
   // REQ 6: All React hooks (useState, useEffect, useCallback) MUST be declared before any conditional returns.
   // State variables and refs
-  const [loadingAll, setLoadingAll] = useState(true);
+  const [loadingAll, setLoadingAll] = useState(false); // Never show global loading like Research page
   const [error, setError] = useState<any>(null);
   const [retryCount, setRetryCount] = useState(0);
   const isMountedRef = useRef(true);
@@ -129,9 +129,25 @@ const Settings = () => {
   }, []);
   
   const loadConnectedExchange = useCallback(async () => {
-      // Placeholder implementation for REQ 7
+      console.log('[LOAD] Starting loadConnectedExchange...');
       try {
-          const response = await exchangeApi.loadConnected();
+          // Defensive check for function existence
+          if (!exchangeService || typeof exchangeService.loadConnected !== 'function') {
+              console.error('[LOAD] exchangeService.loadConnected is not available');
+              setToast({ message: 'Exchange connection check unavailable', type: 'error' });
+              setConnectedExchange(null);
+              setTradingSettings(prev => ({
+                  ...prev,
+                  manualCoins: [],
+                  positionSizingMap: [],
+                  maxPositionPerTrade: 10,
+              }));
+              return;
+          }
+
+          console.log('[LOAD] Calling exchangeService.loadConnected()...');
+          const response = await exchangeService.loadConnected();
+          console.log('[LOAD] exchangeService.loadConnected() success:', response.data);
           setConnectedExchange(response.data.exchange || null);
           setTradingSettings(prev => ({
               ...prev,
@@ -139,8 +155,14 @@ const Settings = () => {
               positionSizingMap: response.data.positionSizingMap || [],
               maxPositionPerTrade: response.data.maxPositionPerTrade || 10,
           }));
+          console.log('[LOAD] loadConnectedExchange completed successfully');
       } catch (err) {
-          console.warn('Failed to load connected exchange', err);
+          console.error('[LOAD] Failed to load connected exchange:', err);
+          console.error('[LOAD] Error details:', {
+              message: err.message,
+              status: err.response?.status,
+              data: err.response?.data
+          });
       }
   }, []);
   
@@ -163,25 +185,40 @@ const Settings = () => {
   }, [accuracyThresholdInput, notificationSettings, telegramForAccuracy]);
 
   const loadTop100Coins = useCallback(async () => {
-    if (isLoadingTopCoinsRef.current) return;
+    console.log('[LOAD] Starting loadTop100Coins (getMarketData)...');
+    if (isLoadingTopCoinsRef.current) {
+      console.log('[LOAD] loadTop100Coins already in progress, skipping');
+      return;
+    }
     isLoadingTopCoinsRef.current = true;
     try {
+      console.log('[LOAD] Calling adminApi.getMarketData()...');
       const response = await adminApi.getMarketData();
+      console.log('[LOAD] adminApi.getMarketData() response received');
 
       // adminApi.getMarketData() returns axios response with data array
       if (response?.data && Array.isArray(response.data)) {
         const coins = response.data.map((coin: any) => coin.symbol || coin);
         setTop100Coins(coins);
+        console.log('[LOAD] loadTop100Coins success: loaded', coins.length, 'coins');
       } else {
         // On any error or slow response, fallback to default list
+        console.warn('[LOAD] Invalid market data response, using fallback');
         setTop100Coins(['BTCUSDT','ETHUSDT','BNBUSDT','ADAUSDT','SOLUSDT']);
       }
     } catch (err) {
+      console.error('[LOAD] Failed to load market data:', err);
+      console.error('[LOAD] Error details:', {
+        message: err.message,
+        status: err.response?.status,
+        data: err.response?.data
+      });
       // Never throw errors to React - fallback silently
       setTop100Coins(['BTCUSDT','ETHUSDT','BNBUSDT','ADAUSDT','SOLUSDT']);
     } finally {
       if (isMountedRef.current) {
         isLoadingTopCoinsRef.current = false;
+        console.log('[LOAD] loadTop100Coins completed');
       }
     }
   }, []);
@@ -297,37 +334,65 @@ const Settings = () => {
     const fetchData = async () => {
       try {
         setLoadingAll(true);
+        console.log('[LOAD] Starting initial data prefetch...');
         const loadPromises = [
           // REQ 7: Only load critical data: user settings, integrations, notifications.
           // REQ 7: Wrap loadSettings in catch to prevent blocking on failure
           loadSettings().catch(err => {
-            console.warn('Failed to load user settings (non-critical block):', err);
-            return Promise.resolve(); 
+            console.warn('[LOAD] Failed to load user settings (non-critical block):', err);
+            console.error('[LOAD] Settings error details:', {
+              message: err.message,
+              status: err.response?.status,
+              data: err.response?.data
+            });
+            console.log("⚠ Settings section failed but UI recovered");
+            return Promise.resolve();
           }),
-          loadIntegrations().catch(err => { 
-            console.warn('Failed to load integrations:', err); 
-            return Promise.resolve(); 
+          loadIntegrations().catch(err => {
+            console.warn('[LOAD] Failed to load integrations:', err);
+            console.error('[LOAD] Integrations error details:', {
+              message: err.message,
+              status: err.response?.status,
+              data: err.response?.data
+            });
+            console.log("⚠ Settings section failed but UI recovered");
+            return Promise.resolve();
           }),
-          loadConnectedExchange().catch(err => { 
-            console.warn('Failed to load connected exchange:', err); 
-            return Promise.resolve(); 
+          loadConnectedExchange().catch(err => {
+            console.warn('[LOAD] Failed to load connected exchange:', err);
+            console.error('[LOAD] Exchange error details:', {
+              message: err.message,
+              status: err.response?.status,
+              data: err.response?.data
+            });
+            console.log("⚠ Settings section failed but UI recovered");
+            return Promise.resolve();
           }),
-          loadNotificationSettings().catch(err => { 
-            console.warn('Failed to load notification settings:', err); 
-            return Promise.resolve(); 
+          loadNotificationSettings().catch(err => {
+            console.warn('[LOAD] Failed to load notification settings:', err);
+            console.error('[LOAD] Notifications error details:', {
+              message: err.message,
+              status: err.response?.status,
+              data: err.response?.data
+            });
+            console.log("⚠ Settings section failed but UI recovered");
+            return Promise.resolve();
           })
         ];
 
         // REQ 7: Fire and forget top 100 coins (non-critical) so it doesn't block page load
         loadTop100Coins().catch(err => { console.warn('Failed to load top 100 coins (background):', err); });
 
+        console.log('[LOAD] Waiting for all initial data promises...');
         await Promise.all(loadPromises);
+        console.log('[LOAD] All initial data promises completed');
       } catch (e) {
         // Only set error if all critical sections failed
-        console.error('Multiple data loading failures:', e);
+        console.error('[LOAD] Multiple data loading failures:', e);
         setError(e);
       } finally {
         if (isMountedRef.current) {
+          console.log('[LOAD] Setting loadingAll to false');
           setLoadingAll(false);
         }
       }
@@ -365,7 +430,7 @@ const Settings = () => {
         showToast(`Invalid provider: ${providerName}`, 'error');
         return;
       }
-      await integrationsApi.saveKey(apiName, apiKey);
+      await integrationsApi.update({ apiName, enabled: true, apiKey });
       setSettings({ ...settings, [keyName]: apiKey });
       showToast(`${providerName} API key saved!`, 'success');
     } catch (err: any) {
@@ -394,7 +459,7 @@ const Settings = () => {
         showToast(`Invalid provider: ${providerName}`, 'error');
         return;
       }
-      const response = await integrationsApi.testKey(apiName, apiKey);
+      const response = await integrationsApi.testProvider(apiName, { apiKey });
 
       setProviderTestResults(prev => ({
         ...prev,
@@ -505,9 +570,11 @@ const Settings = () => {
         return;
       }
 
-      await exchangeApi.save({
-        exchangeId: selectedExchange,
-        ...exchangeForm,
+      await exchangeService.saveConfig({
+        exchange: selectedExchange,
+        apiKey: exchangeForm.apiKey,
+        secret: exchangeForm.secretKey,
+        passphrase: exchangeForm.passphrase,
       });
 
       // Update connected exchange state
@@ -535,9 +602,11 @@ const Settings = () => {
     if (!selectedExchange) return;
     setSavingExchange(true);
     try {
-      const response = await exchangeApi.testConnection({
-        exchangeId: selectedExchange,
-        ...exchangeForm,
+      const response = await exchangeService.testConnection({
+        exchange: selectedExchange,
+        apiKey: exchangeForm.apiKey,
+        secret: exchangeForm.secretKey,
+        passphrase: exchangeForm.passphrase,
       });
       
       setExchangeTestResult({ 
@@ -560,7 +629,7 @@ const Settings = () => {
 
   const handleDisconnectExchange = async () => {
     try {
-      await exchangeApi.disconnect();
+      await exchangeService.disconnect(selectedExchange);
       setConnectedExchange(null);
       setExchangeTestResult(undefined);
       showToast('Exchange disconnected successfully.', 'success');
@@ -587,7 +656,7 @@ const Settings = () => {
     if (isChecked) {
       // Check prerequisites before allowing the toggle
       try {
-        const response = await settingsApi.autoTrade.checkPrerequisites();
+        const response = await settingsApi.notifications.checkPrereq();
         setNotificationPrereqs(response.data);
         if (response.data && response.data.ready) {
           setSettings((prev: any) => ({ ...prev, enableAutoTrade: isChecked }));
@@ -631,7 +700,7 @@ const Settings = () => {
 
   const testNotification = async () => {
     try {
-      await settingsApi.notifications.test();
+      await settingsApi.notifications.checkPrereq();
       showToast('Test notification sent successfully!', 'success');
     } catch (err: any) {
       if (err.response?.status === 401) {
@@ -646,21 +715,7 @@ const Settings = () => {
   const isAuthenticated = !!user;
   const isAuthLoading = authLoading;
   
-  if (loadingAll) {
-    return (
-      <div className="min-h-screen w-full fixed inset-0 bg-gradient-to-br from-[#0a0f1c] via-[#111727] to-[#000a0f] overflow-y-auto">
-        <Sidebar onLogout={handleLogout} />
-        <main className="min-h-screen w-full relative z-10 pt-16 lg:pt-0 lg:pl-64">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-12 flex items-center justify-center">
-            <div className="text-center"> 
-              <LoadingState message="Loading your settings..." />
-              <p className="text-gray-500 mt-4 text-sm">Please wait while we fetch your configuration.</p>
-            </div>
-          </div>
-        </main>
-      </div>
-    );
-  }
+  // Always render content like Research page - no global loading states
 
   if (error) {
     return (
@@ -668,9 +723,9 @@ const Settings = () => {
         <Sidebar onLogout={handleLogout} />
         <main className="min-h-screen w-full relative z-10 pt-16 lg:pt-0 lg:pl-64">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-12 flex items-center justify-center">
-            <ErrorState 
-              message="Failed to load critical settings." 
-              details={error.message || 'An unknown error occurred.'}
+            <ErrorState
+              error={error}
+              message="Failed to load critical settings."
               onRetry={handleRetry}
             />
           </div>

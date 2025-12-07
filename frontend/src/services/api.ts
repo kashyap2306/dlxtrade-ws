@@ -80,7 +80,7 @@ export const adminApi = {
   updateUserAgentSettings: (uid: string, agentName: string, settings: any) => api.put(`/admin/user/${uid}/agent/${encodeURIComponent(agentName)}/settings`, settings),
   getGlobalSettings: () => api.get('/admin/global-settings'),
   updateGlobalSettings: (settings: any) => api.post('/admin/global-settings', settings),
-  getMarketData: () => timeoutApi.get('/market/top-coins', {}, 3000),
+  getMarketData: () => timeoutApi.get('/market/top-coins', {}, 8000),
   deleteUser: (uid: string) => api.delete(`/admin/users/${uid}`),
   // Agent purchases
   getPurchases: (params?: { status?: string; limit?: number }) => api.get('/admin/agents/purchases', { params }),
@@ -382,4 +382,7 @@ export const exchangeApi = {
   loadConnected: () =>
     api.get('/exchange/connected'),
 };
+
+// Alias for backward compatibility - export exchangeService as well
+export const exchangeService = exchangeApi;
 

@@ -14,7 +14,7 @@ import { suppressConsoleError } from '../utils/errorHandler';
 export default function Profile() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(false); // Never show global loading like Research page
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<any>(null);
   const [retryCount, setRetryCount] = useState(0);
@@ -329,37 +329,7 @@ export default function Profile() {
     return null;
   }
 
-  // Show loading state
-  if (loading && retryCount === 0) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 smooth-scroll">
-        <Sidebar onLogout={handleLogout} />
-        <main className="min-h-screen smooth-scroll">
-          <div className="container py-4 sm:py-8">
-            <LoadingState message="Loading profile data..." />
-          </div>
-        </main>
-      </div>
-    );
-  }
-
-  // Show error state with retry option
-  if (error && !loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 smooth-scroll">
-        <Sidebar onLogout={handleLogout} />
-        <main className="min-h-screen smooth-scroll">
-          <div className="container py-4 sm:py-8">
-            <ErrorState
-              error={error}
-              onRetry={handleRetry}
-              message={`Failed to load profile data${retryCount > 0 ? ` (attempt ${retryCount + 1})` : ''}`}
-            />
-          </div>
-        </main>
-      </div>
-    );
-  }
+  // Always render content like Research page - no global loading/error states
 
   return (
     <ErrorBoundary>

@@ -15,6 +15,7 @@ declare module 'axios' {
 // Set baseURL to API_URL only
 const baseURL = API_URL;
 console.log('API_URL loaded:', API_URL);
+console.log("[API URL CHECK]", API_URL);
 
 // Axios instance (CORS-safe)
 const api = axios.create({
@@ -22,32 +23,76 @@ const api = axios.create({
   timeout: 30000,
 });
 
+console.log('[AXIOS] Axios instance created:');
+console.log('  - baseURL:', api.defaults.baseURL);
+console.log('  - timeout:', api.defaults.timeout);
+
 // Logging
 const logRequest = (config: InternalAxiosRequestConfig, context: string) => {
-  if (import.meta.env.DEV) {
-    console.log(`[API ${context}]`, `${config.method?.toUpperCase()} ${config.url}`);
-  }
+  const fullUrl = config.baseURL ? `${config.baseURL}${config.url}` : config.url;
+  console.log(`[API ${context}] REQUEST:`, {
+    method: config.method?.toUpperCase(),
+    url: config.url,
+    fullUrl: fullUrl,
+    timeout: config.timeout,
+    headers: {
+      'Content-Type': config.headers?.['Content-Type'],
+      'Authorization': config.headers?.['Authorization'] ? 'Bearer [TOKEN]' : 'None'
+    }
+  });
 };
 
 const logResponse = (response: AxiosResponse, context: string) => {
   const duration = response.config.metadata ? Date.now() - response.config.metadata.startTime : 0;
-  if (import.meta.env.DEV) {
-    console.log(
-      `[API ${context}]`,
-      `${response.status} ${response.config.method?.toUpperCase()} ${response.config.url} (${duration}ms)`
-    );
-  }
+  const fullUrl = response.config.baseURL ? `${response.config.baseURL}${response.config.url}` : response.config.url;
+  console.log(`[API ${context}] SUCCESS:`, {
+    status: response.status,
+    statusText: response.statusText,
+    method: response.config.method?.toUpperCase(),
+    url: response.config.url,
+    fullUrl: fullUrl,
+    duration: `${duration}ms`,
+    dataSize: JSON.stringify(response.data).length + ' chars'
+  });
 };
 
 const logError = (error: AxiosError, context: string, extra?: any) => {
-  console.error(`[API ${context}]`, {
-    method: error.config?.method,
+  const fullUrl = error.config?.baseURL ? `${error.config.baseURL}${error.config.url}` : error.config?.url;
+  const duration = error.config?.metadata ? Date.now() - error.config.metadata.startTime : 0;
+
+  console.error(`[API ${context}] ERROR:`, {
+    method: error.config?.method?.toUpperCase(),
     url: error.config?.url,
+    fullUrl: fullUrl,
+    timeout: error.config?.timeout,
+    duration: duration ? `${duration}ms` : 'unknown',
+    errorCode: error.code,
+    errorMessage: error.message,
     status: error.response?.status,
-    message: error.message,
-    data: error.response?.data,
+    statusText: error.response?.statusText,
+    responseData: error.response?.data,
     ...extra,
   });
+
+  // Additional logging for debugging
+  if (error.code === 'ECONNABORTED') {
+    console.error('[API TIMEOUT] Request timed out - check if backend is running on localhost:4000');
+    console.error('[API TIMEOUT] Full URL attempted:', fullUrl);
+  } else if (error.code === 'ENOTFOUND') {
+    console.error('[API NETWORK] Host not found - check API_URL configuration');
+    console.error('[API NETWORK] Attempted URL:', fullUrl);
+  } else if (error.code === 'ECONNREFUSED') {
+    console.error('[API NETWORK] Connection refused - backend server not running');
+    console.error('[API NETWORK] Attempted URL:', fullUrl);
+  } else if (error.response?.status === 401) {
+    console.error('[API AUTH] 401 Unauthorized - check Firebase authentication');
+    console.error('[API AUTH] This may be expected for unauthenticated requests');
+  } else if (error.response?.status >= 500) {
+    console.error('[API SERVER] 5xx Server error - check backend logs');
+  } else if (!error.response) {
+    console.error('[API NETWORK] No response received - network or CORS issue');
+    console.error('[API NETWORK] Check if backend is running and CORS is configured');
+  }
 };
 
 // Request Interceptor
@@ -63,18 +108,25 @@ api.interceptors.request.use(
     try {
       const auth = getAuth();
       const user = auth.currentUser;
+      console.log('[AUTH] Request interceptor - user exists:', !!user);
+
       if (user) {
+        console.log('[AUTH] Getting Firebase ID token...');
         // Ensure we get a fresh token if needed, but standard getIdToken() handles expiration
         const idToken = await user.getIdToken();
+        console.log('[AUTH] Token retrieved, length:', idToken?.length || 0);
 
         // CRITICAL FIX: Secure header attachment
         config.headers = {
           ...(config.headers || {}),
           Authorization: `Bearer ${idToken}`
         } as any;
+        console.log('[AUTH] Authorization header attached');
+      } else {
+        console.warn('[AUTH] No authenticated user - request will be unauthenticated');
       }
     } catch (e) {
-      console.warn('Could not attach idToken', e);
+      console.error('[AUTH] Could not attach idToken:', e.message);
     }
 
     logRequest(config, 'REQUEST');

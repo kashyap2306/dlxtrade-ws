@@ -35,50 +35,8 @@ function useDebounce<T extends (...args: any[]) => any>(callback: T, delay: numb
   }, [callback, delay]) as T;
 }
 
-// Simplified loader - just use external loading state directly
-function SafeAsyncLoader({ children, loading: externalLoading, error: externalError }: {
-  children: React.ReactNode;
-  loading?: boolean;
-  error?: any;
-}) {
-  // If loading is explicitly true or there's an error, show the respective full-page state
-  if (externalLoading === true || externalError) {
-    const content = externalLoading === true ? (
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-        <div className="space-y-8">
-          <CardSkeleton />
-          <CardSkeleton />
-        </div>
-        <div>
-          <CardSkeleton />
-        </div>
-      </div>
-    ) : (
-      <ErrorState
-        error={externalError}
-        onRetry={() => window.location.reload()}
-        message="Failed to load dashboard data"
-      />
-    );
-
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
-        <Sidebar />
-        <main className="min-h-screen">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
-            <div className="mb-8">
-              <h1 className="text-4xl lg:text-5xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
-                Dashboard
-              </h1>
-            </div>
-            {content}
-          </div>
-        </main>
-      </div>
-    );
-  }
-
-  // Otherwise, show content
+// Direct render - no loading wrapper needed like Research page
+function DirectRenderer({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
@@ -103,10 +61,10 @@ export default function Dashboard() {
     data: null as any,
     settings: null as any, // Fix 1: Add missing settings property
     alerts: [] as Array<{ type: 'warning' | 'error'; message: string }>,
-    loading: true,
+    loading: false, // Never show global loading like Research page
     error: null as any,
     retryCount: 0,
-    hasLoaded: false,
+    hasLoaded: true, // Always consider loaded like Research page
     // Legacy state consolidated
     autoTradeStatus: null as any,
     userStats: null as any,
@@ -275,47 +233,28 @@ export default function Dashboard() {
   }, [autoTradeStatus, userStats]);
 
   const loadData = useCallback(async () => {
-    if (!user || !isMountedRef.current || dashboardState.hasLoaded || dashboardState.loading) return;
-
-    setDashboardState(prev => ({ ...prev, loading: true, error: null }));
+    if (!user || !isMountedRef.current) return;
 
     try {
-      // Load unified dashboard data
+      // Load unified dashboard data - no loading state management like Research page
       await loadDashboardData();
-      if (isMountedRef.current) {
-        setDashboardState(prev => ({ ...prev, retryCount: 0, loading: false, hasLoaded: true }));
-      }
     } catch (err: any) {
-      if (isMountedRef.current) {
-        setDashboardState(prev => ({ ...prev, error: err, loading: false, hasLoaded: true }));
-        suppressConsoleError(err, 'loadDashboardData');
-      }
+      suppressConsoleError(err, 'loadDashboardData');
     }
   }, [user, loadDashboardData]);
 
-  // Initial data load - prevent multiple calls
+  // Initial data load - always load like Research page
   useEffect(() => {
-    if (user && !dashboardState.hasLoaded) {
+    if (user) {
       loadData();
     }
-  }, [user, dashboardState.hasLoaded, loadData]);
+  }, [user, loadData]);
 
-  // Emergency timeout: force loading=false after 3 seconds
-  useEffect(() => {
-    if (dashboardState.loading) {
-      const timeout = setTimeout(() => {
-        console.log('[Dashboard] EMERGENCY: Forcing loading=false after 3 seconds');
-        if (isMountedRef.current) {
-          setDashboardState(prev => ({ ...prev, loading: false, hasLoaded: true }));
-        }
-      }, 3000);
-      return () => clearTimeout(timeout);
-    }
-  }, [dashboardState.loading]);
+  // No emergency timeout needed - no global loading state like Research page
 
   // Use centralized polling with visibility detection (reduced frequency to 5 minutes)
-  // Only poll if data is loaded and not currently loading
-  usePolling(loadData, 300000, !!user && dashboardState.hasLoaded && !dashboardState.loading);
+  // Always poll if user exists like Research page
+  usePolling(loadData, 300000, !!user);
 
   useEffect(() => {
     if (autoTradeStatus && userStats) {
@@ -406,7 +345,7 @@ export default function Dashboard() {
 
 
   return (
-    <SafeAsyncLoader loading={loading} error={error}>
+    <DirectRenderer>
       <ErrorBoundary>
         <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 relative overflow-hidden">
       {/* Subtle animated background */}
@@ -824,6 +763,6 @@ export default function Dashboard() {
       />
       </div>
       </ErrorBoundary>
-    </SafeAsyncLoader>
+    </DirectRenderer>
   );
 }

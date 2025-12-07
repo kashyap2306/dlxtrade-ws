@@ -27,7 +27,7 @@ export default function AgentsMarketplace() {
   const { user, logout } = useAuth();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [unlockedAgents, setUnlockedAgents] = useState<Record<string, boolean>>({});
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false); // Never show global loading like Research page
   const [error, setError] = useState<any>(null);
   const [retryCount, setRetryCount] = useState(0);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -161,33 +161,7 @@ export default function AgentsMarketplace() {
     await loadData();
   }, [loadData]);
 
-  // Show loading state
-  if (loading && retryCount === 0) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
-        <Sidebar onLogout={logout} onMenuToggle={setMenuOpen} />
-        <main className="pt-16 lg:pt-0">
-          <LoadingState message="Loading agents..." />
-        </main>
-      </div>
-    );
-  }
-
-  // Show error state with retry option
-  if (error && !loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
-        <Sidebar onLogout={logout} onMenuToggle={setMenuOpen} />
-        <main className="pt-16 lg:pt-0">
-          <ErrorState
-            error={error}
-            onRetry={handleRetry}
-            message={`Failed to load agents${retryCount > 0 ? ` (attempt ${retryCount + 1})` : ''}`}
-          />
-        </main>
-      </div>
-    );
-  }
+  // Always render content like Research page - no global loading/error states
 
   return (
     <ErrorBoundary>

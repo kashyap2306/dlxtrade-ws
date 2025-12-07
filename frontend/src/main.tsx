@@ -3,11 +3,22 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import './styles/index.css';
+import { API_URL, WS_URL } from './config/env';
 
 // Telemetry and performance monitoring
 const startTime = performance.now();
 
 console.log('[APP] Initializing DLXTRADE frontend...');
+console.log('[CONFIG] Environment check:');
+console.log('  - window.location.origin:', window.location.origin);
+console.log('  - import.meta.env.MODE:', import.meta.env.MODE);
+console.log('  - import.meta.env.DEV:', import.meta.env.DEV);
+console.log('  - VITE_API_URL (env):', import.meta.env.VITE_API_URL);
+console.log('  - VITE_WS_URL (env):', import.meta.env.VITE_WS_URL);
+console.log('  - API_URL (imported):', API_URL);
+console.log('  - WS_URL (imported):', WS_URL);
+console.log("[API URL CHECK]", API_URL);
+console.log("[WS URL CHECK]", WS_URL);
 
 // Track first paint
 if ('PerformanceObserver' in window) {
