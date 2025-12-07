@@ -46,7 +46,7 @@ async function callGeminiAPIHttp(apiKey: string, prompt: string): Promise<string
 export async function chatbotRoutes(fastify: FastifyInstance) {
   // Test endpoint to verify route is working
   fastify.get('/chatbot/test', async (request: FastifyRequest, reply: FastifyReply) => {
-    return { status: 'ok', message: 'Chatbot route is working' };
+    return { status: 'ok', message: 'Chatbot route is working good' };
   });
 
   // POST /api/chatbot - Send message to Gemini
