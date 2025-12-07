@@ -52,7 +52,7 @@ export async function usersRoutes(fastify: FastifyInstance) {
   console.log("[ROUTE READY] GET /api/users/:id/sessions");
 
   // GET /api/users - Get all users (admin only)
-  fastify.get('/', {
+  fastify.get('/users', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
