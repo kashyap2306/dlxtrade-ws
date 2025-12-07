@@ -15,7 +15,7 @@ const engineConfigSchema = z.object({
 });
 
 export async function engineRoutes(fastify: FastifyInstance) {
-  fastify.get('/status', {
+  fastify.get('/engine/status', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Querystring: { uid?: string } }>, reply: FastifyReply) => {
     const user = (request as any).user;
@@ -196,7 +196,7 @@ export async function engineRoutes(fastify: FastifyInstance) {
   });
 
   // POST /engine/update - Update engine settings
-  fastify.post('/update', {
+  fastify.post('/engine/update', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Body: any }>, reply: FastifyReply) => {
     const user = (request as any).user;
@@ -215,7 +215,7 @@ export async function engineRoutes(fastify: FastifyInstance) {
   });
 
   // POST /engine/toggle - Start/stop engine
-  fastify.post('/toggle', {
+  fastify.post('/engine/toggle', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = (request as any).user;
