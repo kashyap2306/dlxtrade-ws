@@ -120,7 +120,7 @@ export async function usersRoutes(fastify: FastifyInstance) {
 
   // POST /api/users/create - Create user (called on sign-in)
   // PART 1: Creates ALL required Firestore documents
-  fastify.post('/create', {
+  fastify.post('/users/create', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
@@ -177,7 +177,7 @@ export async function usersRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/users/update - Update user
-  fastify.post('/update', {
+  fastify.post('/users/update', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
