@@ -88,20 +88,20 @@ export const adminApi = {
 
   // Background Research
   backgroundResearch: {
-    getSettings: () => api.get('/research/background-research/settings'),
+    getSettings: () => api.get('/api/research/background-research/settings'),
     saveSettings: (data: {
       backgroundResearchEnabled: boolean;
       telegramBotToken?: string;
       telegramChatId?: string;
       researchFrequencyMinutes: number;
       accuracyTrigger: number;
-    }) => api.post('/research/background-research/settings', data),
-    test: (data: { botToken: string; chatId: string }) => api.post('/research/background-research/settings/test', data),
+    }) => api.post('/api/research/background-research/settings', data),
+    test: (data: { botToken: string; chatId: string }) => api.post('/api/research/background-research/settings/test', data),
   },
 
   // Telegram
   telegram: {
-    test: (data: { botToken: string; chatId: string }) => api.post('/telegram/test', data),
+    test: (data: { botToken: string; chatId: string }) => api.post('/api/telegram/test', data),
   },
   rejectPurchase: (purchaseId: string, reason?: string) => api.post(`/admin/agents/purchases/${purchaseId}/reject`, { reason }),
   // Broadcast Popup
@@ -116,11 +116,11 @@ export const adminApi = {
 
 // Orders - routes already include /api prefix from baseURL
 export const ordersApi = {
-  listOrders: (params?: any) => api.get('/orders', { params }),
-  getOrder: (id: string) => api.get(`/orders/${id}`),
-  placeOrder: (data: any) => api.post('/orders', data),
-  cancelOrder: (id: string) => api.delete(`/orders/${id}`),
-  listFills: (params?: any) => api.get('/fills', { params }),
+  listOrders: (params?: any) => api.get('/api/orders', { params }),
+  getOrder: (id: string) => api.get(`/api/orders/${id}`),
+  placeOrder: (data: any) => api.post('/api/orders', data),
+  cancelOrder: (id: string) => api.delete(`/api/orders/${id}`),
+  listFills: (params?: any) => api.get('/api/fills', { params }),
 };
 
 // Engine - routes already include /api prefix from baseURL
@@ -139,89 +139,89 @@ export const engineApi = {
 
 // Metrics - routes already include /api prefix from baseURL
 export const metricsApi = {
-  health: () => api.get('/health'),
-  metrics: () => api.get('/metrics'),
+  health: () => api.get('/api/health'),
+  metrics: () => api.get('/api/metrics'),
 };
 
 // Research - routes already include /api prefix from baseURL
 export const researchApi = {
   run: (data?: { uid?: string; symbol?: string; symbols?: string[] }) =>
-    api.post('/research/run', data), // Now internally calls FREE MODE
-  getLogs: (params?: any) => api.get('/research/logs', { params }),
+    api.post('/api/research/run', data), // Now internally calls FREE MODE
+  getLogs: (params?: any) => api.get('/api/research/logs', { params }),
 
   // Deep Research endpoints
   deepResearch: {
-    getTop10: () => api.get('/research/deep-research/top10'),
-    getCoin: (symbol: string) => api.get(`/research/deep-research/coin/${symbol}`),
+    getTop10: () => api.get('/api/research/deep-research/top10'),
+    getCoin: (symbol: string) => api.get(`/api/research/deep-research/coin/${symbol}`),
   },
 };
 
 // Settings - routes already include /api prefix from baseURL
 export const settingsApi = {
-  load: () => cachedApi.get('/settings/load'),
+  load: () => cachedApi.get('/api/settings/load'),
   save: async (settings: any) => {
-    const response = await api.post('/settings/save', settings);
+    const response = await api.post('/api/settings/save', settings);
     // Invalidate settings cache after update
-    invalidateCache('/settings/load');
+    invalidateCache('/api/settings/load');
     return response;
   },
 
   // Trading Settings (General Trading Config)
   general: {
-    load: () => api.get('/settings/general'),
-    save: (settings: any) => api.post('/settings/general', settings),
+    load: () => api.get('/api/settings/general'),
+    save: (settings: any) => api.post('/api/settings/general', settings),
   },
 
   // Trading Settings
   trading: {
-    load: () => api.get('/settings/trading/settings'),
-    update: (settings: any) => api.post('/settings/trading/settings', settings),
+    load: () => api.get('/api/settings/trading/settings'),
+    update: (settings: any) => api.post('/api/settings/trading/settings', settings),
     autotrade: {
-      status: () => api.get('/auto-trade/status'),
+      status: () => api.get('/api/auto-trade/status'),
     },
   },
 
   // Background Research Settings
   backgroundResearch: {
-    getSettings: () => api.get('/background-research/settings'),
+    getSettings: () => api.get('/api/background-research/settings'),
     saveSettings: (data: {
       backgroundResearchEnabled: boolean;
       telegramBotToken?: string;
       telegramChatId?: string;
       researchFrequencyMinutes: number;
       accuracyTrigger: number;
-    }) => api.post('/background-research/settings', data),
-    test: (data: { botToken: string; chatId: string }) => api.post('/background-research/settings/test', data),
+    }) => api.post('/api/background-research/settings', data),
+    test: (data: { botToken: string; chatId: string }) => api.post('/api/background-research/settings/test', data),
   },
 
   // Provider Settings
   providers: {
-    load: () => api.get('/settings/providers'),
+    load: () => api.get('/api/settings/providers'),
     save: (data: {
       providerId: string;
       providerType: 'marketData' | 'news' | 'metadata';
       isPrimary: boolean;
       enabled: boolean;
       apiKey?: string;
-    }) => api.post('/settings/providers/save', data),
+    }) => api.post('/api/settings/providers/save', data),
     changeKey: (data: {
       providerId: string;
       providerType: 'marketData' | 'news' | 'metadata';
       isPrimary: boolean;
       newApiKey: string;
-    }) => api.post('/settings/providers/change', data),
+    }) => api.post('/api/settings/providers/change', data),
     test: (data: {
       providerName: string;
       type: 'marketData' | 'news' | 'metadata';
       apiKey?: string;
-    }) => api.post('/settings/providers/test', data),
+    }) => api.post('/api/settings/providers/test', data),
   },
 
   // Notification Settings
   notifications: {
-    load: () => api.get('/settings/notifications'),
-    update: (settings: any) => api.post('/settings/notifications', settings),
-    checkPrereq: () => api.get('/settings/notifications/prereq'),
+    load: () => api.get('/api/settings/notifications'),
+    update: (settings: any) => api.post('/api/settings/notifications', settings),
+    checkPrereq: () => api.get('/api/settings/notifications/prereq'),
   },
 };
 
@@ -271,52 +271,52 @@ export const hftApi = {
 
 // Users - routes already include /api prefix from baseURL
 export const usersApi = {
-  getAll: () => api.get('/users'),
-  get: (uid: string) => api.get(`/users/${uid}/details`),
-  getSessions: (uid: string) => api.get(`/users/${uid}/sessions`),
-  logoutAllSessions: (uid: string) => api.post(`/users/${uid}/logout-all`),
-  requestAccountDeletion: (uid: string) => api.post(`/users/${uid}/request-delete`),
-  create: (data: any) => api.post('/users/create', data),
-  update: (data: any) => api.post('/users/update', data),
+  getAll: () => api.get('/api/users'),
+  get: (uid: string) => api.get(`/api/users/${uid}/details`),
+  getSessions: (uid: string) => api.get(`/api/users/${uid}/sessions`),
+  logoutAllSessions: (uid: string) => api.post(`/api/users/${uid}/logout-all`),
+  requestAccountDeletion: (uid: string) => api.post(`/api/users/${uid}/request-delete`),
+  create: (data: any) => api.post('/api/users/create', data),
+  update: (data: any) => api.post('/api/users/update', data),
   // Profile endpoints
-  getProfile: () => api.get('/user/profile'),
-  updateProfile: (data: any) => api.post('/user/profile/update', data),
+  getProfile: () => api.get('/api/user/profile'),
+  updateProfile: (data: any) => api.post('/api/user/profile/update', data),
   // Removed: getStats, getExchangeStatus, getUsageStats (endpoints don't exist)
 };
 
 // Agents - routes already include /api prefix from baseURL
 export const agentsApi = {
-  getAll: () => cachedApi.get('/agents'),
-  get: (id: string) => api.get(`/agents/${id}`),
-  unlock: (agentName: string) => api.post('/agents/unlock', { agentName }),
-  getUnlocked: () => cachedApi.get('/agents/unlocked'),
+  getAll: () => cachedApi.get('/api/agents'),
+  get: (id: string) => api.get(`/api/agents/${id}`),
+  unlock: (agentName: string) => api.post('/api/agents/unlock', { agentName }),
+  getUnlocked: () => cachedApi.get('/api/agents/unlocked'),
   submitUnlockRequest: (data: { agentId: string; agentName: string; fullName: string; phoneNumber: string; email: string }) =>
-    api.post('/agents/submit-unlock-request', data),
-  updateAgentSettings: (agentId: string, settings: any) => api.put(`/agents/${agentId}/settings`, settings),
+    api.post('/api/agents/submit-unlock-request', data),
+  updateAgentSettings: (agentId: string, settings: any) => api.put(`/api/agents/${agentId}/settings`, settings),
 };
 
 // Activity Logs - routes already include /api prefix from baseURL
 export const activityLogsApi = {
-  get: (params?: { uid?: string; limit?: number }) => api.get('/activity-logs', { params }),
+  get: (params?: { uid?: string; limit?: number }) => api.get('/api/activity-logs', { params }),
 };
 
 // Trades - routes already include /api prefix from baseURL
 export const tradesApi = {
-  get: (params?: { uid?: string; limit?: number }) => api.get('/trades', { params }),
-  add: (data: any) => api.post('/trades/add', data),
+  get: (params?: { uid?: string; limit?: number }) => api.get('/api/trades', { params }),
+  add: (data: any) => api.post('/api/trades/add', data),
 };
 
 // Notifications - routes already include /api prefix from baseURL
 export const notificationsApi = {
-  get: (params?: { limit?: number }) => cachedApi.get('/notifications', { params }),
-  markRead: (notificationId: string) => api.post('/notifications/mark-read', { notificationId }),
+  get: (params?: { limit?: number }) => cachedApi.get('/api/notifications', { params }),
+  markRead: (notificationId: string) => api.post('/api/notifications/mark-read', { notificationId }),
   push: (data: { uid: string; type: 'success' | 'error' | 'info' | 'warning'; title: string; message: string; timestamp?: number }) =>
-    api.post('/notifications/push', data),
+    api.post('/api/notifications/push', data),
 };
 
 // System Logs - routes already include /api prefix from baseURL
 export const systemLogsApi = {
-  get: (params?: { limit?: number }) => api.get('/logs', { params }),
+  get: (params?: { limit?: number }) => api.get('/api/logs', { params }),
 };
 
 // UI Preferences - routes already include /api prefix from baseURL
@@ -363,7 +363,7 @@ export const autoTradeApi = {
 
 // Market - routes already include /api prefix from baseURL
 export const marketApi = {
-  getSymbols: () => api.get('/market/symbols'),
+  getSymbols: () => api.get('/api/market/symbols'),
 };
 
 // Chatbot - routes already include /api prefix from baseURL
