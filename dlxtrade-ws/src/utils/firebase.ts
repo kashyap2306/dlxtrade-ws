@@ -21,6 +21,7 @@ export function getFirebaseAdmin() {
 
     firebaseApp = {
       firestore: () => ({
+        listCollections: () => Promise.resolve([]),
         collection: (name: string) => ({
           doc: (id: string) => {
             const docPath = `${name}/${id}`;

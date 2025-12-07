@@ -1,6 +1,11 @@
 import axios, { AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
 import { getAuth } from 'firebase/auth';
-import { API_URL } from './env';
+import { auth } from './firebase';
+
+// Check if Firebase auth is available (not mock)
+const isFirebaseAuthAvailable = () => {
+  return auth && typeof auth.signInWithEmailAndPassword === 'function' && typeof auth.getIdToken === 'function' && !auth._isMockFirebase;
+};
 
 declare module 'axios' {
   export interface InternalAxiosRequestConfig {
@@ -12,20 +17,29 @@ declare module 'axios' {
   }
 }
 
-// Set baseURL to API_URL only
-const baseURL = API_URL;
-console.log('API_URL loaded:', API_URL);
-console.log("[API URL CHECK]", API_URL);
+// Set baseURL to VITE_API_BASE_URL with fallback
+const viteApiBaseUrl = import.meta.env.VITE_API_BASE_URL;
+const baseURL = (viteApiBaseUrl && viteApiBaseUrl.trim() !== '') ? viteApiBaseUrl : "http://localhost:4000";
+console.log('VITE_API_BASE_URL loaded:', viteApiBaseUrl);
+console.log("[API URL CHECK] baseURL:", baseURL);
+console.log("[API URL CHECK] final baseURL used:", baseURL);
 
 // Axios instance (CORS-safe)
 const api = axios.create({
   baseURL,
-  timeout: 30000,
+  timeout: 8000,
 });
+
+// Ensure baseURL is set correctly
+if (!api.defaults.baseURL) {
+  api.defaults.baseURL = baseURL;
+  console.log('[AXIOS] Manually set baseURL on instance');
+}
 
 console.log('[AXIOS] Axios instance created:');
 console.log('  - baseURL:', api.defaults.baseURL);
 console.log('  - timeout:', api.defaults.timeout);
+console.log('  - instance baseURL check:', api.defaults.baseURL === baseURL);
 
 // Logging
 const logRequest = (config: InternalAxiosRequestConfig, context: string) => {
@@ -98,35 +112,45 @@ const logError = (error: AxiosError, context: string, extra?: any) => {
 // Request Interceptor
 api.interceptors.request.use(
   async (config) => {
+    console.log('[AXIOS] Request interceptor called with config:', {
+      method: config.method,
+      url: config.url,
+      baseURL: config.baseURL,
+      fullUrl: config.baseURL ? `${config.baseURL}${config.url}` : config.url
+    });
+
     // Metadata
     config.metadata = {
       startTime: Date.now(),
       requestId: `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
     };
 
-    // Firebase Token - ALWAYS attach if user exists
-    try {
-      const auth = getAuth();
-      const user = auth.currentUser;
-      console.log('[AUTH] Request interceptor - user exists:', !!user);
+    // Firebase Token - attach only if Firebase auth is available and user exists
+    if (isFirebaseAuthAvailable()) {
+      try {
+        const user = auth.currentUser;
+        console.log('[AUTH] Request interceptor - user exists:', !!user);
 
-      if (user) {
-        console.log('[AUTH] Getting Firebase ID token...');
-        // Ensure we get a fresh token if needed, but standard getIdToken() handles expiration
-        const idToken = await user.getIdToken();
-        console.log('[AUTH] Token retrieved, length:', idToken?.length || 0);
+        if (user) {
+          console.log('[AUTH] Getting Firebase ID token...');
+          // Ensure we get a fresh token if needed, but standard getIdToken() handles expiration
+          const idToken = await user.getIdToken();
+          console.log('[AUTH] Token retrieved, length:', idToken?.length || 0);
 
-        // CRITICAL FIX: Secure header attachment
-        config.headers = {
-          ...(config.headers || {}),
-          Authorization: `Bearer ${idToken}`
-        } as any;
-        console.log('[AUTH] Authorization header attached');
-      } else {
-        console.warn('[AUTH] No authenticated user - request will be unauthenticated');
+          // CRITICAL FIX: Secure header attachment
+          config.headers = {
+            ...(config.headers || {}),
+            Authorization: `Bearer ${idToken}`
+          } as any;
+          console.log('[AUTH] Authorization header attached');
+        } else {
+          console.warn('[AUTH] No authenticated user - request will be unauthenticated');
+        }
+      } catch (e) {
+        console.error('[AUTH] Could not attach idToken:', e.message);
       }
-    } catch (e) {
-      console.error('[AUTH] Could not attach idToken:', e.message);
+    } else {
+      console.log('[AUTH] Firebase auth not available - skipping token attachment');
     }
 
     logRequest(config, 'REQUEST');
