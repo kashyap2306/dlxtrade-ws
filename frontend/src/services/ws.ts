@@ -3,15 +3,9 @@ import { auth } from '../config/firebase';
 import { API_URL, WS_URL } from '@/config/env';
 
 async function getAuthToken() {
-  const user = auth.currentUser;
-  if (!user) return null;
-
-  try {
-    return await user.getIdToken();
-  } catch (err) {
-    console.error("[WS] Token fetch failed:", err);
-    return null;
-  }
+  // Always use mock token for local development
+  console.log("[WS] Using mock token for WebSocket auth");
+  return 'mock-token';
 }
 
 type Timeout = ReturnType<typeof setTimeout>;

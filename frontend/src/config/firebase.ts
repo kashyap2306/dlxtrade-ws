@@ -1,29 +1,49 @@
-import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
-import { getAnalytics } from 'firebase/analytics';
-import { getFirestore } from 'firebase/firestore';
+// Force MOCK MODE for local development
+console.log('🔥 FRONTEND: Using LOCAL MOCK FIREBASE MODE');
 
-const firebaseConfig = {
-  apiKey: 'AIzaSyAiImG-UYlHy79ayanN-GX42o--CO_q43M',
-  authDomain: 'dlx-trading.firebaseapp.com',
-  projectId: 'dlx-trading',
-  storageBucket: 'dlx-trading.firebasestorage.app',
-  messagingSenderId: '561570439242',
-  appId: '1:561570439242:web:ab2153be757828ec1f46b3',
-  measurementId: 'G-WDVHXT9N5T',
+// Mock Firebase implementations
+const mockAuth = {
+  currentUser: {
+    uid: 'local-dev-user',
+    email: 'mock@example.com',
+    displayName: 'Mock User',
+    getIdToken: () => Promise.resolve('mock-token')
+  },
+  onAuthStateChanged: (callback: (user: any) => void) => {
+    // Immediately call with mock user
+    setTimeout(() => callback(mockAuth.currentUser), 100);
+    return () => {}; // unsubscribe function
+  },
+  signInWithEmailAndPassword: () => Promise.resolve({ user: mockAuth.currentUser }),
+  createUserWithEmailAndPassword: () => Promise.resolve({ user: mockAuth.currentUser }),
+  signOut: () => Promise.resolve(),
+  getIdToken: () => Promise.resolve('mock-token')
 };
 
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
+const mockDb = {
+  collection: () => ({
+    doc: () => ({
+      get: () => Promise.resolve({ exists: true, data: () => ({}) }),
+      set: () => Promise.resolve(),
+      update: () => Promise.resolve(),
+      delete: () => Promise.resolve()
+    }),
+    get: () => Promise.resolve({ docs: [], empty: true }),
+    where: () => ({ get: () => Promise.resolve({ docs: [] }) }),
+    limit: () => ({ get: () => Promise.resolve({ docs: [] }) })
+  })
+};
 
-// Initialize Firebase Authentication and get a reference to the service
-export const auth = getAuth(app);
+const mockApp = {
+  name: '[MOCK]',
+  options: { projectId: 'mock-project' }
+};
 
-// Initialize Analytics (only in browser)
-export const analytics = typeof window !== 'undefined' ? getAnalytics(app) : null;
-
-// Initialize Firestore
-export const db = getFirestore(app);
+// Export mock implementations
+export const auth = mockAuth;
+export const db = mockDb;
+export const app = mockApp;
+export const analytics = null; // No analytics in mock mode
 
 export default app;
 

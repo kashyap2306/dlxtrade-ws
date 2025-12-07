@@ -16,58 +16,53 @@ export function getFirebaseAdmin() {
     console.error("- FIREBASE_CLIENT_EMAIL:", !!clientEmail);
     console.error("- FIREBASE_PRIVATE_KEY:", !!privateKey);
 
-    // Return a dummy app instead of throwing - server should continue
-    let createdDocs = new Set<string>();
+    // FORCE MOCK MODE: Always use mock when Firebase env vars are missing
+    console.log("🔥 Running BACKEND in LOCAL MOCK FIREBASE MODE");
+    console.log("🔥 Firebase environment variables missing - using mock implementation");
 
     firebaseApp = {
+      name: '[MOCK]',
+      options: {
+        projectId: 'mock-project',
+        apiKey: 'mock-api-key',
+        authDomain: 'mock-project.firebaseapp.com',
+      },
       firestore: () => ({
         listCollections: () => Promise.resolve([]),
         collection: (name: string) => ({
-          doc: (id: string) => {
-            const docPath = `${name}/${id}`;
-            const docRef = {
-              get: () => Promise.resolve({
-                exists: createdDocs.has(docPath),
-                data: () => null,
-                id
+          doc: (id: string) => ({
+            get: () => Promise.resolve({
+              exists: true,
+              data: () => ({
+                uid: id,
+                email: 'mock@example.com',
+                displayName: 'Mock User',
+                createdAt: new Date()
               }),
-              set: (data: any) => {
-                createdDocs.add(docPath);
-                return Promise.resolve();
-              },
-              update: (data: any) => Promise.resolve(),
-              delete: () => {
-                createdDocs.delete(docPath);
-                return Promise.resolve();
-              },
-              collection: (subName: string) => ({
-                doc: (subId: string) => {
-                  const subDocPath = `${docPath}/${subName}/${subId}`;
-                  return {
-                    get: () => Promise.resolve({
-                      exists: createdDocs.has(subDocPath),
-                      data: () => null,
-                      id: subId
-                    }),
-                    set: (data: any) => {
-                      createdDocs.add(subDocPath);
-                      return Promise.resolve();
-                    },
-                    update: (data: any) => Promise.resolve(),
-                    delete: () => {
-                      createdDocs.delete(subDocPath);
-                      return Promise.resolve();
-                    }
-                  };
-                },
-                where: () => ({ get: () => Promise.resolve({ docs: [] }) }),
-                get: () => Promise.resolve({ docs: [] })
-              })
-            };
-            return docRef;
-          },
+              id
+            }),
+            set: (data: any) => Promise.resolve(),
+            update: (data: any) => Promise.resolve(),
+            delete: () => Promise.resolve(),
+            collection: (subName: string) => ({
+              doc: (subId: string) => ({
+                get: () => Promise.resolve({
+                  exists: true,
+                  data: () => ({}),
+                  id: subId
+                }),
+                set: (data: any) => Promise.resolve(),
+                update: (data: any) => Promise.resolve(),
+                delete: () => Promise.resolve()
+              }),
+              where: () => ({ get: () => Promise.resolve({ docs: [] }) }),
+              get: () => Promise.resolve({ docs: [] }),
+              limit: (n: number) => ({ get: () => Promise.resolve({ docs: [] }) })
+            })
+          }),
           where: () => ({ get: () => Promise.resolve({ docs: [] }) }),
-          get: () => Promise.resolve({ docs: [] })
+          get: () => Promise.resolve({ docs: [] }),
+          limit: (n: number) => ({ get: () => Promise.resolve({ docs: [] }) })
         }),
         Timestamp: {
           now: () => ({
@@ -78,8 +73,29 @@ export function getFirebaseAdmin() {
         }
       }),
       auth: () => ({
-        verifyIdToken: () => Promise.reject(new Error("Firebase not configured")),
-        getUser: () => Promise.reject(new Error("Firebase not configured"))
+        verifyIdToken: (token: string) => {
+          // Accept mock tokens
+          if (token === 'mock-token') {
+            return Promise.resolve({
+              uid: 'local-dev-user',
+              email: 'mock@example.com',
+              name: 'Mock User',
+              iat: Date.now() / 1000,
+              exp: (Date.now() / 1000) + 3600
+            });
+          }
+          return Promise.reject(new Error("Invalid token"));
+        },
+        getUser: (uid: string) => Promise.resolve({
+          uid: uid || 'local-dev-user',
+          email: 'mock@example.com',
+          displayName: 'Mock User',
+          customClaims: { role: 'user' }
+        }),
+        setCustomUserClaims: (uid: string, claims: any) => {
+          console.log('🔥 MOCK: setCustomUserClaims called for', uid, 'with claims:', claims);
+          return Promise.resolve();
+        }
       })
     } as any;
     return firebaseApp;

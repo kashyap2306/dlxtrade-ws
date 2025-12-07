@@ -237,7 +237,7 @@ export default function ExchangeAccountsSection() {
 
     try {
       setTesting(true);
-      const response = await api.post('/exchange/test', {
+      const response = await api.post('/api/exchange/test', {
         exchange: selectedExchange,
         apiKey: credentials.apiKey,
         secret: credentials.secretKey,
@@ -329,7 +329,7 @@ export default function ExchangeAccountsSection() {
 
     try {
       setTestTrading(true);
-      const response = await api.post('/exchange/test-trade', {
+      const response = await api.post('/api/exchange/test-trade', {
         exchange: selectedExchange,
         symbol: 'BTCUSDT',
         side: 'BUY',
