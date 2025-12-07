@@ -126,6 +126,9 @@ export const ordersApi = {
 // Engine - routes already include /api prefix from baseURL
 export const engineApi = {
   getStatus: () => api.get('/engine/status'),
+  update: (payload: any) => api.post('/engine/update', payload),
+  toggle: (payload: any) => api.post('/engine/toggle', payload),
+  // Legacy endpoints for backward compatibility
   start: (config: any) => api.post('/engine/start', config),
   stop: () => api.post('/engine/stop'),
   updateConfig: (config: any) => api.put('/engine/config', config),
@@ -156,17 +159,23 @@ export const researchApi = {
 // Settings - routes already include /api prefix from baseURL
 export const settingsApi = {
   load: () => cachedApi.get('/settings/load'),
-  update: async (settings: any) => {
-    const response = await api.post('/settings/update', settings);
+  save: async (settings: any) => {
+    const response = await api.post('/settings/save', settings);
     // Invalidate settings cache after update
     invalidateCache('/settings/load');
     return response;
   },
 
+  // Trading Settings (General Trading Config)
+  general: {
+    load: () => api.get('/settings/general'),
+    save: (settings: any) => api.post('/settings/general', settings),
+  },
+
   // Trading Settings
   trading: {
-    load: () => api.get('/trading/settings'),
-    update: (settings: any) => api.post('/trading/settings', settings),
+    load: () => api.get('/settings/trading/settings'),
+    update: (settings: any) => api.post('/settings/trading/settings', settings),
     autotrade: {
       status: () => api.get('/auto-trade/status'),
     },
@@ -224,7 +233,14 @@ export const executionApi = {
     api.post('/execution/execute', data),
 };
 
-// Integrations - routes already include /api prefix from baseURL
+// Provider Config - routes already include /api prefix from baseURL
+export const providerApi = {
+  list: (type?: string) => api.get(type ? `/provider/list?type=${type}` : '/provider/list'),
+  update: (data: any) => api.post('/provider/update', data),
+  test: (data: any) => api.post('/provider/test', data),
+};
+
+// Legacy integrations API (keeping for backward compatibility)
 export const integrationsApi = {
   load: () => api.get('/integrations'),
   update: (data: { apiName: string; enabled: boolean; apiKey?: string; secretKey?: string; apiType?: string; passphrase?: string }) =>
@@ -262,6 +278,9 @@ export const usersApi = {
   requestAccountDeletion: (uid: string) => api.post(`/users/${uid}/request-delete`),
   create: (data: any) => api.post('/users/create', data),
   update: (data: any) => api.post('/users/update', data),
+  // Profile endpoints
+  getProfile: () => api.get('/user/profile'),
+  updateProfile: (data: any) => api.post('/user/profile/update', data),
   // Removed: getStats, getExchangeStatus, getUsageStats (endpoints don't exist)
 };
 

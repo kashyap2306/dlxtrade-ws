@@ -30,7 +30,7 @@ export default function AdminTokenPage() {
       setStatus("❌ No logged-in user");
       return;
     }
-    const freshToken = await auth.currentUser.getIdToken(true);
+    const freshToken = await auth.currentUser.getIdToken();
     setToken(freshToken);
     setStatus("Token generated. Running promote…");
     promote(freshToken);

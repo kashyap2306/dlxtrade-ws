@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { settingsApi, integrationsApi, exchangeService, adminApi } from '../services/api';
+import { settingsApi, providerApi, integrationsApi, exchangeService, adminApi } from '../services/api';
 import Toast from '../components/Toast';
 import Sidebar from '../components/Sidebar';
 import { API_NAME_MAP } from "../constants/providers";
@@ -380,12 +380,17 @@ const Settings = () => {
           })
         ];
 
-        // REQ 7: Fire and forget top 100 coins (non-critical) so it doesn't block page load
+        // Load all data asynchronously without blocking - no Promise.all
+        loadPromises.forEach(promise => {
+          promise.catch(err => {
+            console.warn('[LOAD] Non-critical data load failed:', err);
+          });
+        });
+
+        // Fire and forget top 100 coins (non-critical)
         loadTop100Coins().catch(err => { console.warn('Failed to load top 100 coins (background):', err); });
 
-        console.log('[LOAD] Waiting for all initial data promises...');
-        await Promise.all(loadPromises);
-        console.log('[LOAD] All initial data promises completed');
+        console.log('[LOAD] All data loading initiated asynchronously');
       } catch (e) {
         // Only set error if all critical sections failed
         console.error('[LOAD] Multiple data loading failures:', e);
@@ -430,7 +435,12 @@ const Settings = () => {
         showToast(`Invalid provider: ${providerName}`, 'error');
         return;
       }
-      await integrationsApi.update({ apiName, enabled: true, apiKey });
+      await providerApi.update({
+        apiName,
+        enabled: true,
+        apiKey,
+        type: 'marketData' // Default type, can be determined by provider
+      });
       setSettings({ ...settings, [keyName]: apiKey });
       showToast(`${providerName} API key saved!`, 'success');
     } catch (err: any) {
@@ -459,7 +469,11 @@ const Settings = () => {
         showToast(`Invalid provider: ${providerName}`, 'error');
         return;
       }
-      const response = await integrationsApi.testProvider(apiName, { apiKey });
+      const response = await providerApi.test({
+        apiName,
+        apiKey,
+        type: 'marketData' // Default type, can be determined by provider
+      });
 
       setProviderTestResults(prev => ({
         ...prev,

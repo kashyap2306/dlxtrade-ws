@@ -1264,5 +1264,71 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: err.message || 'Error dismissing notification' });
     }
   });
+
+  // POST /settings/save - Save settings (alias for update)
+  fastify.post('/settings/save', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: any }>, reply: FastifyReply) => {
+    const user = (request as any).user;
+    const settings = request.body;
+
+    try {
+      await firestoreAdapter.saveSettings(user.uid, settings);
+      return { success: true, message: 'Settings saved successfully' };
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error saving settings' });
+    }
+  });
+
+  // GET /settings/general - Get general trading settings
+  fastify.get('/settings/general', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = (request as any).user;
+
+    try {
+      const settings = await firestoreAdapter.getSettings(user.uid);
+      if (!settings) {
+        // Return defaults
+        return {
+          symbol: 'BTCUSDT',
+          quoteSize: 0.001,
+          adversePct: 0.0002,
+          cancelMs: 40,
+          maxPos: 0.01,
+          minAccuracyThreshold: 0.85,
+          autoTradeEnabled: false,
+          strategy: 'orderbook_imbalance',
+          liveMode: false,
+          max_loss_pct: 5,
+          max_drawdown_pct: 10,
+          per_trade_risk_pct: 1,
+          status: 'active',
+        };
+      }
+
+      return {
+        ...settings,
+        updatedAt: settings.updatedAt?.toDate().toISOString(),
+      };
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error loading general settings' });
+    }
+  });
+
+  // POST /settings/general - Save general trading settings
+  fastify.post('/settings/general', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: any }>, reply: FastifyReply) => {
+    const user = (request as any).user;
+    const settings = request.body;
+
+    try {
+      await firestoreAdapter.saveSettings(user.uid, settings);
+      return { success: true, message: 'General settings saved successfully' };
+    } catch (err: any) {
+      return reply.code(500).send({ error: err.message || 'Error saving general settings' });
+    }
+  });
 }
 

@@ -127,14 +127,18 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(authRoutes, { prefix: '/api/auth' });
   await app.register(adminRoutes, { prefix: '/api/admin' });
   await app.register(ordersRoutes, { prefix: '/api' });
-  await app.register(engineRoutes, { prefix: '/api/engine' });
+  // Core routes required by frontend
+  await app.register(settingsRoutes, { prefix: '/api' });
+  await app.register(exchangeRoutes, { prefix: '/api' });
+  await app.register(integrationsRoutes, { prefix: '/api' });
+  await app.register(engineRoutes, { prefix: '/api' });
+  await app.register(usersRoutes, { prefix: '/api' });
+
+  // Additional routes
   await app.register(metricsRoutes, { prefix: '/api' });
   await app.register(researchRoutes, { prefix: '/api/research' });
-  await app.register(settingsRoutes, { prefix: '/api' });
   await app.register(executionRoutes, { prefix: '/api/execution' });
-  await app.register(integrationsRoutes, { prefix: '/api/integrations' });
   await app.register(hftRoutes, { prefix: '/api/hft' });
-  await app.register(usersRoutes, { prefix: '/api/users' });
   await app.register(agentsRoutes, { prefix: '/api/agents' });
   await app.register(activityLogsRoutes, { prefix: '/api/activity-logs' });
   await app.register(tradesRoutes, { prefix: '/api/trades' });
@@ -143,9 +147,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(uiPreferencesRoutes, { prefix: '/api/ui-preferences' });
   await app.register(globalStatsRoutes, { prefix: '/api/global-stats' });
   await app.register(engineStatusRoutes, { prefix: '/api/engine-status' });
-    await app.register(hftLogsRoutes, { prefix: '/api/hft-logs' });
-    await app.register(autoTradeRoutes, { prefix: '/api/auto-trade' });
-  await app.register(exchangeRoutes, { prefix: '/api' });
+  await app.register(hftLogsRoutes, { prefix: '/api/hft-logs' });
+  await app.register(autoTradeRoutes, { prefix: '/api/auto-trade' });
   await app.register(diagnosticsRoutes, { prefix: '/api/diagnostics' });
   await app.register(chatbotRoutes, { prefix: '/api' });
   await app.register(walletRoutes, { prefix: '/api/wallet' });

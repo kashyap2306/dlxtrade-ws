@@ -194,5 +194,102 @@ export async function engineRoutes(fastify: FastifyInstance) {
     // TODO: Implement per-user risk manager
     return { message: 'Risk limits update (per-user implementation pending)' };
   });
+
+  // POST /engine/update - Update engine settings
+  fastify.post('/update', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: any }>, reply: FastifyReply) => {
+    const user = (request as any).user;
+    const settings = request.body;
+
+    try {
+      // Update settings if provided
+      if (Object.keys(settings).length > 0) {
+        await firestoreAdapter.saveSettings(user.uid, settings);
+      }
+      return { success: true, message: 'Engine updated successfully' };
+    } catch (err: any) {
+      logger.error({ error: err.message, uid: user.uid }, 'Error updating engine');
+      return reply.code(500).send({ error: err.message || 'Error updating engine' });
+    }
+  });
+
+  // POST /engine/toggle - Start/stop engine
+  fastify.post('/toggle', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = (request as any).user;
+    const body = request.body as any;
+    const { enabled, symbol } = body;
+
+    try {
+      if (enabled) {
+        // Start engine
+        const settings = await firestoreAdapter.getSettings(user.uid);
+        if (!settings) {
+          return reply.code(400).send({ error: 'No trading settings found. Please configure your settings first.' });
+        }
+
+        const config = {
+          symbol: symbol || settings.symbol || 'BTCUSDT',
+          quoteSize: settings.quoteSize || 0.001,
+          adversePct: settings.adversePct || 0.0002,
+          cancelMs: settings.cancelMs || 40,
+          maxPos: settings.maxPos || 0.01,
+          enabled: true,
+        };
+
+        // Check if auto-trade is enabled
+        if (settings.autoTradeEnabled) {
+          // Use auto-trade flow
+          await userEngineManager.startAutoTrade(user.uid);
+          return { success: true, message: 'Auto-trade started', config };
+        } else {
+          // Use legacy flow - need exchange credentials
+          const exchangeCredentials = await firestoreAdapter.getExchangeCredentials(user.uid, 'binance');
+          if (!exchangeCredentials) {
+            return reply.code(400).send({
+              error: 'No exchange API keys configured. Please set up your exchange API credentials first.'
+            });
+          }
+
+          await userEngineManager.createUserEngine(
+            user.uid,
+            decrypt(exchangeCredentials.apiKeyEncrypted),
+            decrypt(exchangeCredentials.secretEncrypted),
+            exchangeCredentials.testnet
+          );
+
+          await userEngineManager.startUserEngine(user.uid, config.symbol, 5000);
+          await firestoreAdapter.saveEngineStatus(user.uid, {
+            active: true,
+            engineType: 'auto',
+            symbol: config.symbol,
+            config,
+          });
+
+          return { success: true, message: 'Engine started', config };
+        }
+      } else {
+        // Stop engine
+        const settings = await firestoreAdapter.getSettings(user.uid);
+        if (settings?.autoTradeEnabled) {
+          await userEngineManager.stopAutoTrade(user.uid);
+        } else {
+          await userEngineManager.stopUserEngineRunning(user.uid);
+        }
+
+        await firestoreAdapter.saveEngineStatus(user.uid, {
+          active: false,
+          engineType: 'auto',
+        });
+
+        return { success: true, message: 'Engine stopped' };
+      }
+    } catch (err: any) {
+      logger.error({ error: err.message, uid: user.uid }, `Error ${enabled ? 'starting' : 'stopping'} engine`);
+      return reply.code(500).send({ error: err.message || `Error ${enabled ? 'starting' : 'stopping'} engine` });
+    }
+  });
 }
 

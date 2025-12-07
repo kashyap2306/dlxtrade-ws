@@ -155,21 +155,54 @@ export default function AutoTrade() {
   const loadLiveData = useCallback(async () => {
     if (!user || !isMountedRef.current) return;
     try {
-      const [tradesRes, activityRes, proposalsRes, logsRes] = await Promise.all([
-        autoTradeApi.getActiveTrades(50),
-        autoTradeApi.getActivity(50),
-        autoTradeApi.getProposals(),
-        autoTradeApi.getLogs(20),
-      ]);
+      // Load all data asynchronously without Promise.all - no blocking
+      const loadPromises = [
+        autoTradeApi.getActiveTrades(50).then(tradesRes => {
+          if (isMountedRef.current) {
+            setActiveTrades(Array.isArray(tradesRes.data) ? tradesRes.data : []);
+          }
+        }).catch(err => {
+          console.warn('Failed to load active trades:', err);
+          if (isMountedRef.current) setActiveTrades([]);
+        }),
 
-      if (isMountedRef.current) {
-        setActiveTrades(Array.isArray(tradesRes.data) ? tradesRes.data : []);
-        setActivityLogs(Array.isArray(activityRes.data) ? activityRes.data : []);
-        setProposals(proposalsRes.data && typeof proposalsRes.data === 'object' ? proposalsRes.data : { recentProposals: [] });
-        setAutoTradeLogs(Array.isArray(logsRes.data?.logs) ? logsRes.data.logs : []);
-        // Update engine status based on config and current time
-        updateEngineStatus();
-      }
+        autoTradeApi.getActivity(50).then(activityRes => {
+          if (isMountedRef.current) {
+            setActivityLogs(Array.isArray(activityRes.data) ? activityRes.data : []);
+          }
+        }).catch(err => {
+          console.warn('Failed to load activity logs:', err);
+          if (isMountedRef.current) setActivityLogs([]);
+        }),
+
+        autoTradeApi.getProposals().then(proposalsRes => {
+          if (isMountedRef.current) {
+            setProposals(proposalsRes.data && typeof proposalsRes.data === 'object' ? proposalsRes.data : { recentProposals: [] });
+          }
+        }).catch(err => {
+          console.warn('Failed to load proposals:', err);
+          if (isMountedRef.current) setProposals({ recentProposals: [] });
+        }),
+
+        autoTradeApi.getLogs(20).then(logsRes => {
+          if (isMountedRef.current) {
+            setAutoTradeLogs(Array.isArray(logsRes.data?.logs) ? logsRes.data.logs : []);
+          }
+        }).catch(err => {
+          console.warn('Failed to load logs:', err);
+          if (isMountedRef.current) setAutoTradeLogs([]);
+        }),
+      ];
+
+      // Fire all promises asynchronously without waiting
+      loadPromises.forEach(promise => {
+        promise.catch(err => {
+          console.warn('[AUTOTRADE] Non-critical data load failed:', err);
+        });
+      });
+
+      // Update engine status based on config and current time
+      updateEngineStatus();
     } catch (error: any) {
       // Silent fail for live data to avoid spam
     }

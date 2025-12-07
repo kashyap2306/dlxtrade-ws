@@ -576,5 +576,120 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: err.message || 'Failed to get exchange status' });
     }
   });
+
+  // GET /exchange/connected - Get connected exchange status
+  fastify.get('/exchange/connected', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = (request as any).user;
+    try {
+      const exchanges: ExchangeName[] = ['binance', 'bitget', 'weex', 'bingx'];
+      const connectedExchanges = [];
+
+      for (const exchange of exchanges) {
+        const credentials = await firestoreAdapter.getExchangeCredentials(user.uid, exchange);
+        if (credentials) {
+          connectedExchanges.push({
+            exchange,
+            connected: true,
+            testnet: credentials.testnet || true
+          });
+        }
+      }
+
+      return {
+        connected: connectedExchanges.length > 0,
+        exchanges: connectedExchanges
+      };
+    } catch (err: any) {
+      logger.error({ error: err.message, uid: user.uid }, 'Exchange connected check failed');
+      return reply.code(500).send({ error: err.message || 'Failed to check connected exchanges' });
+    }
+  });
+
+  // POST /exchange/connect - Connect to exchange
+  fastify.post('/exchange/connect', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = (request as any).user;
+    try {
+      const body = request.body as any;
+      const { apiKey, secret, exchange } = body;
+
+      logger.info({
+        uid: user.uid,
+        exchange,
+        hasApiKey: !!apiKey,
+        hasSecret: !!secret
+      }, 'Exchange connect request');
+
+      // Save exchange configuration
+      const { getFirebaseAdmin } = await import('../utils/firebase');
+      const db = admin.firestore(getFirebaseAdmin());
+      const exchangeConfig: any = {
+        exchange,
+        apiKeyEncrypted: encrypt(apiKey),
+        secretEncrypted: encrypt(secret),
+        testnet: true,
+        updatedAt: admin.firestore.Timestamp.now(),
+      };
+
+      // Add createdAt only if document doesn't exist
+      const existingDoc = await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').get();
+      if (!existingDoc.exists) {
+        exchangeConfig.createdAt = admin.firestore.Timestamp.now();
+      }
+
+      await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').set(exchangeConfig, { merge: true });
+
+      logger.info({
+        uid: user.uid,
+        exchange
+      }, 'Exchange connected successfully');
+
+      return {
+        success: true,
+        connected: true,
+        exchange
+      };
+    } catch (err: any) {
+      logger.error({ error: err.message, uid: user.uid }, 'Exchange connect failed');
+      return reply.code(500).send({ error: err.message || 'Failed to connect to exchange' });
+    }
+  });
+
+  // POST /exchange/disconnect - Disconnect from exchange
+  fastify.post('/exchange/disconnect', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = (request as any).user;
+    try {
+      const body = request.body as any;
+      const { exchange } = body;
+
+      logger.info({
+        uid: user.uid,
+        exchange
+      }, 'Exchange disconnect request');
+
+      // Remove exchange configuration
+      const { getFirebaseAdmin } = await import('../utils/firebase');
+      const db = admin.firestore(getFirebaseAdmin());
+      await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').delete();
+
+      logger.info({
+        uid: user.uid,
+        exchange
+      }, 'Exchange disconnected successfully');
+
+      return {
+        success: true,
+        connected: false
+      };
+    } catch (err: any) {
+      logger.error({ error: err.message, uid: user.uid }, 'Exchange disconnect failed');
+      return reply.code(500).send({ error: err.message || 'Failed to disconnect from exchange' });
+    }
+  });
 }
 

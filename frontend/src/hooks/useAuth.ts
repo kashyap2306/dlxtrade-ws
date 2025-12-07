@@ -46,18 +46,7 @@ export function useAuth() {
       }
     });
 
-    // Refresh token periodically - Firebase handles this automatically, but we'll do it less frequently
-    const tokenRefreshInterval = setInterval(async () => {
-      try {
-        if (auth.currentUser && !loading) { // Only refresh if not currently loading
-          console.log('[useAuth] Refreshing token periodically');
-          const token = await auth.currentUser.getIdToken(true);
-          localStorage.setItem('firebaseToken', token);
-        }
-      } catch (error) {
-        console.error('Error refreshing token:', error);
-      }
-    }, 50 * 60 * 1000); // Refresh every 50 minutes
+    // Firebase handles token refresh automatically - no manual refresh needed
 
     console.log('[useAuth] Auth listener setup complete');
 
@@ -69,7 +58,6 @@ export function useAuth() {
       } catch (error) {
         console.error('Error unsubscribing from auth:', error);
       }
-      clearInterval(tokenRefreshInterval);
     };
   }, []);
 

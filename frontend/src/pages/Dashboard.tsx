@@ -110,23 +110,70 @@ export default function Dashboard() {
     loadingRef.current = true;
 
     try {
-      // Load multiple dashboard APIs in parallel with individual error handling
-      const results = await Promise.allSettled([
-        globalStatsApi.get().catch(err => ({ error: err, data: {} })),
-        engineStatusApi.get().catch(err => ({ error: err, data: {} })),
-        agentsApi.getUnlocked().catch(err => ({ error: err, data: { unlocked: [] } })),
-        settingsApi.load().catch(err => ({ error: err, data: {} })),
-        notificationsApi.get({ limit: 20 }).catch(err => ({ error: err, data: [] }))
-      ]);
+      // Load all dashboard data asynchronously without Promise.all - no blocking
+      const loadPromises = [
+        globalStatsApi.get().then(result => {
+          if (isMountedRef.current) {
+            setDashboardState(prev => ({ ...prev, userStats: result.data || {} }));
+          }
+        }).catch(err => {
+          console.warn('Failed to load global stats:', err);
+          if (isMountedRef.current) {
+            setDashboardState(prev => ({ ...prev, userStats: {} }));
+          }
+        }),
 
-      // Extract data with safe fallbacks
-      const extractedData = {
-        globalStats: results[0].status === 'fulfilled' ? results[0].value?.data || {} : {},
-        engineStatus: results[1].status === 'fulfilled' ? results[1].value?.data || {} : {},
-        agentsUnlocked: results[2].status === 'fulfilled' ? results[2].value?.data?.unlocked || [] : [],
-        settings: results[3].status === 'fulfilled' ? results[3].value?.data || {} : {},
-        notifications: results[4].status === 'fulfilled' ? results[4].value?.data || [] : []
-      };
+        engineStatusApi.get().then(result => {
+          if (isMountedRef.current) {
+            setDashboardState(prev => ({ ...prev, autoTradeStatus: result.data || {} }));
+          }
+        }).catch(err => {
+          console.warn('Failed to load engine status:', err);
+          if (isMountedRef.current) {
+            setDashboardState(prev => ({ ...prev, autoTradeStatus: {} }));
+          }
+        }),
+
+        agentsApi.getUnlocked().then(result => {
+          if (isMountedRef.current) {
+            setDashboardState(prev => ({ ...prev, agentsUnlocked: result.data?.unlocked || [] }));
+          }
+        }).catch(err => {
+          console.warn('Failed to load unlocked agents:', err);
+          if (isMountedRef.current) {
+            setDashboardState(prev => ({ ...prev, agentsUnlocked: [] }));
+          }
+        }),
+
+        settingsApi.load().then(result => {
+          if (isMountedRef.current) {
+            setDashboardState(prev => ({ ...prev, settings: result.data || {} }));
+          }
+        }).catch(err => {
+          console.warn('Failed to load settings:', err);
+          if (isMountedRef.current) {
+            setDashboardState(prev => ({ ...prev, settings: {} }));
+          }
+        }),
+
+        notificationsApi.get({ limit: 20 }).then(result => {
+          if (isMountedRef.current) {
+            setDashboardState(prev => ({ ...prev, notifications: result.data || [] }));
+          }
+        }).catch(err => {
+          console.warn('Failed to load notifications:', err);
+          if (isMountedRef.current) {
+            setDashboardState(prev => ({ ...prev, notifications: [] }));
+          }
+        }),
+      ];
+
+      // Fire all promises asynchronously without waiting
+      loadPromises.forEach(promise => {
+        promise.catch(err => {
+          console.warn('[DASHBOARD] Non-critical data load failed:', err);
+        });
+      });
 
       if (isMountedRef.current) {
         setDashboardState(prev => ({

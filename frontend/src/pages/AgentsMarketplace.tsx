@@ -43,62 +43,68 @@ export default function AgentsMarketplace() {
     setError(null);
 
     try {
-      // Load agents and unlocked agents
-      const [agentsResult, unlockedResult] = await Promise.allSettled([
-        agentsApi.getAll(),
-        agentsApi.getUnlocked()
-      ]);
-
-      // Handle agents loading
-      if (agentsResult.status === 'fulfilled') {
-        const backendAgents = agentsResult.value.data.agents || [];
-
-        if (backendAgents.length === 0) {
-          console.warn('No agents found in backend. Please add agents to Firestore.');
-          // Don't show error toast for empty agents list - might be normal during setup
-        }
-
-        // Map backend agents to frontend format
-        const mappedAgents = backendAgents.map((agent: any) => ({
-          id: agent.id || agent.name?.toLowerCase().replace(/\s+/g, '_') || '',
-          name: agent.name || '',
-          description: agent.description || '',
-          features: agent.features || [],
-          price: agent.price || 0,
-          whatsappNumber: agent.whatsappNumber || '9155604591',
-          category: agent.category || 'Trading',
-          badge: agent.badge,
-          imageUrl: agent.imageUrl,
-          enabled: agent.enabled !== false, // Default to enabled if not specified
-          displayOrder: agent.displayOrder || 999, // Default high number for sorting
-        }));
-
-        // Sort agents by displayOrder (Premium Trading Agent first)
-        const sortedAgents = mappedAgents.sort((a, b) => (a.displayOrder || 999) - (b.displayOrder || 999));
-        setAgents(sortedAgents);
-
-        // Handle unlocked agents loading
-        if (unlockedResult.status === 'fulfilled') {
-          const unlocked = unlockedResult.value.data.unlocked || [];
-          const unlockedMap: Record<string, boolean> = {};
-
-          unlocked.forEach((agentIdOrName: string) => {
-            const agent = mappedAgents.find(a => a.id === agentIdOrName || a.name === agentIdOrName);
-            if (agent) {
-              unlockedMap[agent.id] = true;
+      // Load agents and unlocked agents asynchronously without Promise.all - no blocking
+      const loadPromises = [
+        agentsApi.getAll().then(result => {
+          if (isMountedRef.current) {
+            const backendAgents = result.data.agents || [];
+            if (backendAgents.length === 0) {
+              console.warn('No agents found in backend. Please add agents to Firestore.');
             }
-          });
 
-          setUnlockedAgents(unlockedMap);
-        } else {
-          // Unlocked agents failed, but agents loaded - still show agents
-          suppressConsoleError(unlockedResult.reason, 'loadUnlockedAgents');
-          setUnlockedAgents({});
-        }
-      } else {
-        // Agents failed to load - this is a critical error
-        throw agentsResult.reason;
-      }
+            // Map backend agents to frontend format
+            const mappedAgents = backendAgents.map((agent: any) => ({
+              id: agent.id || agent.name?.toLowerCase().replace(/\s+/g, '_') || '',
+              name: agent.name || '',
+              description: agent.description || '',
+              features: agent.features || [],
+              price: agent.price || 0,
+              whatsappNumber: agent.whatsappNumber || '9155604591',
+              category: agent.category || 'Trading',
+              badge: agent.badge,
+              imageUrl: agent.imageUrl,
+              enabled: agent.enabled !== false,
+              displayOrder: agent.displayOrder || 999,
+            }));
+
+            // Sort agents by displayOrder (Premium Trading Agent first)
+            const sortedAgents = mappedAgents.sort((a, b) => (a.displayOrder || 999) - (b.displayOrder || 999));
+            setAgents(sortedAgents);
+          }
+        }).catch(err => {
+          console.error('Error loading agents:', err);
+          if (isMountedRef.current) {
+            setAgents([]);
+          }
+          throw err;
+        }),
+
+        agentsApi.getUnlocked().then(result => {
+          if (isMountedRef.current) {
+            const unlocked = result.data.unlocked || [];
+            const unlockedMap: Record<string, boolean> = {};
+
+            // We'll update this after agents are loaded
+            unlocked.forEach((agentIdOrName: string) => {
+              unlockedMap[agentIdOrName] = true;
+            });
+
+            setUnlockedAgents(unlockedMap);
+          }
+        }).catch(err => {
+          console.warn('Error loading unlocked agents:', err);
+          if (isMountedRef.current) {
+            setUnlockedAgents({});
+          }
+        }),
+      ];
+
+      // Fire all promises asynchronously without waiting
+      loadPromises.forEach(promise => {
+        promise.catch(err => {
+          console.warn('[AGENTS] Non-critical data load failed:', err);
+        });
+      });
 
       setRetryCount(0); // Reset retry count on successful load
 

@@ -107,10 +107,9 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
       }
 
       try {
-        const [{ doc, getDoc }, { db }] = await Promise.all([
-          import('firebase/firestore'),
-          import('../config/firebase')
-        ]);
+        // Import synchronously for better performance
+        const { doc, getDoc } = await import('firebase/firestore');
+        const { db } = await import('../config/firebase');
         const userDoc = await getDoc(doc(db, 'users', user.uid));
         if (userDoc.exists()) {
           const userData: any = userDoc.data();

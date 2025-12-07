@@ -5,6 +5,7 @@ import { logger } from '../utils/logger';
 import { ValidationError, NotFoundError } from '../utils/errors';
 import { ensureUser } from '../services/userOnboarding';
 import { getFirebaseAdmin } from '../utils/firebase';
+import * as admin from 'firebase-admin';
 
 const createUserSchema = z.object({
   name: z.string().optional(),
@@ -501,6 +502,71 @@ export async function usersRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       logger.error({ err }, 'Error getting user sessions');
       return reply.code(500).send({ error: err.message || 'Error fetching user sessions' });
+    }
+  });
+
+  // GET /user/profile - Get user profile
+  fastify.get('/user/profile', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = (request as any).user;
+
+    try {
+      const userData = await firestoreAdapter.getUser(user.uid);
+      if (!userData) {
+        return reply.code(404).send({ error: 'User not found' });
+      }
+
+      // Check if user has exchange API keys configured
+      const db = admin.firestore(getFirebaseAdmin());
+      const exchangeConfigDoc = await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').get();
+      const hasExchangeConfig = exchangeConfigDoc.exists && exchangeConfigDoc.data()?.apiKeyEncrypted;
+
+      // Convert timestamps
+      const result = { ...userData };
+      if (result.createdAt) {
+        result.createdAt = result.createdAt.toDate().toISOString();
+      }
+      if (result.updatedAt) {
+        result.updatedAt = result.updatedAt.toDate().toISOString();
+      }
+
+      // Override apiConnected with computed value
+      result.apiConnected = hasExchangeConfig || false;
+
+      return result;
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting user profile');
+      return reply.code(500).send({ error: err.message || 'Error fetching user profile' });
+    }
+  });
+
+  // POST /user/profile/update - Update user profile
+  fastify.post('/user/profile/update', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: any }>, reply: FastifyReply) => {
+    const user = (request as any).user;
+    const body = updateUserSchema.parse(request.body);
+
+    try {
+      await firestoreAdapter.createOrUpdateUser(user.uid, body);
+
+      // Log activity
+      const changedFields = Object.keys(body);
+      await firestoreAdapter.logActivity(user.uid, 'PROFILE_UPDATED', {
+        fields: changedFields,
+        hasName: !!body.name,
+        hasPhone: !!body.phone,
+        hasCountry: !!body.country,
+      });
+
+      return { success: true, message: 'Profile updated successfully', uid: user.uid };
+    } catch (err: any) {
+      if (err instanceof z.ZodError) {
+        return reply.code(400).send({ error: 'Invalid input', details: err.errors });
+      }
+      logger.error({ err }, 'Error updating user profile');
+      return reply.code(500).send({ error: err.message || 'Error updating user profile' });
     }
   });
 }

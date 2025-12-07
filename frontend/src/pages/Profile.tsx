@@ -47,20 +47,97 @@ export default function Profile() {
     setError(null);
 
     try {
-      // Load all profile data in parallel with Promise.allSettled for resilience
-      const [
-        userResponse,
-        sessionsResponse,
-        integrationsResponse,
-        agentsResponse,
-        unlockedAgentsResponse,
-      ] = await Promise.allSettled([
-        usersApi.get(user.uid),
-        usersApi.getSessions(user.uid),
-        integrationsApi.load(),
-        agentsApi.getAll(),
-        agentsApi.getUnlocked(),
-      ]);
+      // Load all profile data asynchronously without Promise.all - no blocking
+      const loadPromises = [
+        usersApi.get(user.uid).then(result => {
+          if (isMountedRef.current) {
+            setUserData(result.data);
+            setProfileData({
+              displayName: result.data?.name || user?.displayName || '',
+              profilePicture: result.data?.profilePicture || '',
+            });
+          }
+        }).catch(err => {
+          suppressConsoleError(err, 'loadUserData');
+          throw err; // User data is critical
+        }),
+
+        usersApi.getSessions(user.uid).then(result => {
+          if (isMountedRef.current) {
+            setSessions(result.data.sessions || []);
+          }
+        }).catch(err => {
+          suppressConsoleError(err, 'loadUserSessions');
+          if (isMountedRef.current) setSessions([]);
+        }),
+
+        integrationsApi.load().then(result => {
+          if (isMountedRef.current) {
+            const integrations = result.data || {};
+            setApiProvidersStatus({
+              cryptoCompare: {
+                connected: !!(integrations.cryptocompare?.apiKey),
+                status: integrations.cryptocompare?.apiKey ? 'Active' : 'Not Set',
+                hasData: true,
+                latencyMs: 0
+              },
+              newsData: {
+                connected: !!(integrations.newsdata?.apiKey),
+                status: integrations.newsdata?.apiKey ? 'Active' : 'Not Set',
+                hasData: true,
+                latencyMs: 0
+              },
+              coinGecko: {
+                connected: !!(integrations.coingecko?.apiKey),
+                status: integrations.coingecko?.apiKey ? 'Active' : 'Not Set',
+                hasData: true,
+                latencyMs: 0
+              },
+              binancePublic: {
+                connected: !!(integrations.binancepublic?.enabled),
+                status: integrations.binancepublic?.enabled ? 'Active' : 'Not Set',
+                hasData: true,
+                latencyMs: 0
+              },
+            });
+          }
+        }).catch(err => {
+          suppressConsoleError(err, 'loadIntegrations');
+          if (isMountedRef.current) {
+            setApiProvidersStatus({
+              cryptoCompare: { connected: false, status: 'Not Set', hasData: false, latencyMs: 0 },
+              newsData: { connected: false, status: 'Not Set', hasData: false, latencyMs: 0 },
+              coinGecko: { connected: false, status: 'Not Set', hasData: false, latencyMs: 0 },
+              binancePublic: { connected: false, status: 'Not Set', hasData: false, latencyMs: 0 }
+            });
+          }
+        }),
+
+        agentsApi.getAll().then(result => {
+          if (isMountedRef.current) {
+            setAllAgents(result.data.agents || []);
+          }
+        }).catch(err => {
+          suppressConsoleError(err, 'loadAllAgents');
+          if (isMountedRef.current) setAllAgents([]);
+        }),
+
+        agentsApi.getUnlocked().then(result => {
+          if (isMountedRef.current) {
+            setUnlockedAgents(result.data.unlocked || []);
+          }
+        }).catch(err => {
+          suppressConsoleError(err, 'loadUnlockedAgents');
+          if (isMountedRef.current) setUnlockedAgents([]);
+        }),
+      ];
+
+      // Fire all promises asynchronously without waiting
+      loadPromises.forEach(promise => {
+        promise.catch(err => {
+          console.warn('[PROFILE] Non-critical data load failed:', err);
+        });
+      });
 
       // Handle results - continue even if some APIs fail
       if (userResponse.status === 'fulfilled' && isMountedRef.current) {

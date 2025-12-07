@@ -76,13 +76,13 @@ const logError = (error: AxiosError, context: string, extra?: any) => {
 
   // Additional logging for debugging
   if (error.code === 'ECONNABORTED') {
-    console.error('[API TIMEOUT] Request timed out - check if backend is running on localhost:4000');
+    console.error('[API TIMEOUT] Request timed out - check if backend is running and accessible');
     console.error('[API TIMEOUT] Full URL attempted:', fullUrl);
   } else if (error.code === 'ENOTFOUND') {
     console.error('[API NETWORK] Host not found - check API_URL configuration');
     console.error('[API NETWORK] Attempted URL:', fullUrl);
   } else if (error.code === 'ECONNREFUSED') {
-    console.error('[API NETWORK] Connection refused - backend server not running');
+    console.error('[API NETWORK] Connection refused - backend server not running or unreachable');
     console.error('[API NETWORK] Attempted URL:', fullUrl);
   } else if (error.response?.status === 401) {
     console.error('[API AUTH] 401 Unauthorized - check Firebase authentication');
@@ -144,30 +144,8 @@ api.interceptors.response.use(
   async (error: AxiosError) => {
     const config = error.config as InternalAxiosRequestConfig;
 
-    // 401 Retry Logic
-    if (error.response?.status === 401 && config && !config._retry) {
-      config._retry = true;
-      try {
-        const auth = getAuth();
-        const user = auth.currentUser;
-        if (user) {
-          console.log('[API] 401 detected, refreshing token...');
-          // Force refresh token
-          const newToken = await user.getIdToken(true);
-
-          // Update header with new token
-          config.headers = {
-            ...(config.headers || {}),
-            Authorization: `Bearer ${newToken}`
-          } as any;
-
-          // Retry request
-          return api(config);
-        }
-      } catch (refreshError) {
-        console.error('Failed to refresh token on 401', refreshError);
-      }
-    }
+    // 401 errors - let Firebase SDK handle token refresh automatically
+    // No manual token refresh needed - Firebase handles this internally
 
     logError(error, 'ERROR');
     return Promise.reject(error);

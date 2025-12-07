@@ -46,8 +46,8 @@ export default function Login() {
 
   const handleAfterSignIn = async (userCredential: any) => {
     try {
-      const token = await userCredential.user.getIdToken();
-      localStorage.setItem('firebaseToken', token);
+      const idToken = await userCredential.user.getIdToken();
+      localStorage.setItem('firebaseToken', idToken);
       localStorage.setItem('firebaseUser', JSON.stringify({
         uid: userCredential.user.uid,
         email: userCredential.user.email,
@@ -57,11 +57,11 @@ export default function Login() {
       console.log("afterSignIn sent");
       const authResponse = await api.post('/auth/afterSignIn', { idToken });
 
-      if (!authResponse.ok) {
+      if (authResponse.status !== 200) {
         throw new Error(`Backend auth failed: ${authResponse.status}`);
       }
 
-      const authData = await authResponse.json();
+      const authData = authResponse.data;
 
       // Check if user needs onboarding
       const userDoc = await getDoc(doc(db, 'users', userCredential.user.uid));

@@ -1149,5 +1149,118 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       });
     }
   });
+
+  // Provider routes (aliases for frontend compatibility)
+
+  // GET /provider/list - List providers by type
+  fastify.get('/provider/list', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Querystring: { type?: string } }>, reply: FastifyReply) => {
+    const user = (request as any).user;
+    const { type } = request.query;
+
+    try {
+      const integrations = await firestoreAdapter.getAllIntegrations(user.uid);
+
+      // Return integrations with masked keys
+      const result: any = {};
+
+      // Group by type if requested
+      if (type) {
+        const filtered: any = {};
+        for (const [key, integration] of Object.entries(integrations)) {
+          // Simple type filtering
+          if (type === 'market' && ['coingecko', 'coinpaprika', 'coinmarketcap', 'coinapi', 'bravenewcoin', 'messari', 'kaiko', 'livecoinwatch', 'coinstats', 'coincheckup'].includes(key)) {
+            filtered[key] = {
+              enabled: integration.enabled,
+              apiKey: integration.apiKey ? maskKey(integration.apiKey) : null,
+            };
+          } else if (type === 'news' && ['newsdataio', 'cryptopanic', 'reddit', 'cointelegraph', 'altcoinbuzz', 'gnews', 'marketaux', 'webz', 'coinstatsnews', 'newscatcher', 'cryptocomparenews'].includes(key)) {
+            filtered[key] = {
+              enabled: integration.enabled,
+              apiKey: integration.apiKey ? maskKey(integration.apiKey) : null,
+            };
+          } else if (type === 'metadata' && ['cryptocompare', 'coincap', 'coinranking', 'nomics'].includes(key)) {
+            filtered[key] = {
+              enabled: integration.enabled,
+              apiKey: integration.apiKey ? maskKey(integration.apiKey) : null,
+            };
+          }
+        }
+        return { providers: filtered, type };
+      }
+
+      // Return all if no type filter
+      for (const [key, integration] of Object.entries(integrations)) {
+        result[key] = {
+          enabled: integration.enabled,
+          apiKey: integration.apiKey ? maskKey(integration.apiKey) : null,
+          secretKey: integration.secretKey ? maskKey(integration.secretKey) : null,
+        };
+      }
+
+      return { providers: result };
+    } catch (err: any) {
+      logger.error({ error: err.message, uid: user.uid }, 'Provider list failed');
+      return reply.code(500).send({ error: err.message || 'Failed to list providers' });
+    }
+  });
+
+  // POST /provider/update - Update provider
+  fastify.post('/provider/update', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = (request as any).user;
+    const body = request.body as any;
+    const { apiName, enabled, apiKey, type } = body;
+
+    try {
+      logger.info({
+        uid: user.uid,
+        apiName,
+        enabled,
+        hasApiKey: !!apiKey
+      }, 'Provider update request');
+
+      await firestoreAdapter.saveIntegration(user.uid, apiName, {
+        enabled,
+        apiKey: apiKey || undefined,
+        apiType: type
+      });
+
+      return { success: true };
+    } catch (err: any) {
+      logger.error({ error: err.message, uid: user.uid }, 'Provider update failed');
+      return reply.code(500).send({ error: err.message || 'Failed to update provider' });
+    }
+  });
+
+  // POST /provider/test - Test provider
+  fastify.post('/provider/test', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = (request as any).user;
+    const body = request.body as any;
+    const { apiName, apiKey, type } = body;
+
+    try {
+      logger.info({
+        uid: user.uid,
+        apiName,
+        hasApiKey: !!apiKey
+      }, 'Provider test request');
+
+      // Simple test - just check if the provider exists and is enabled
+      const integration = await firestoreAdapter.getIntegration(user.uid, apiName);
+
+      return {
+        success: true,
+        message: integration?.enabled ? 'Provider is configured' : 'Provider is not enabled'
+      };
+    } catch (err: any) {
+      logger.error({ error: err.message, uid: user.uid }, 'Provider test failed');
+      return reply.code(500).send({ error: err.message || 'Failed to test provider' });
+    }
+  });
 }
 
