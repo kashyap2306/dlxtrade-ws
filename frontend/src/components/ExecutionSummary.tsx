@@ -20,24 +20,16 @@ export default function ExecutionSummary() {
     try {
       const response = await executionApi.getLogs({ limit: 500 });
       const logs = response.data || [];
-<<<<<<< HEAD
 
       const executed = logs.filter((log: any) => log.action === 'EXECUTED').length;
       const skipped = logs.filter((log: any) => log.action === 'SKIPPED').length;
-
-=======
       
-      const executed = logs.filter((log: any) => log.action === 'EXECUTED').length;
-      const skipped = logs.filter((log: any) => log.action === 'SKIPPED').length;
-      
->>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
       setSummary({
         executed,
         skipped,
         total: logs.length,
       });
     } catch (err: any) {
-<<<<<<< HEAD
       // Safe fallback: if response status = 500 → return empty logs so that UI doesn't crash
       if (err.response?.status === 500) {
         console.warn('[ExecutionSummary] Backend returned 500 error, using empty logs fallback');
@@ -49,9 +41,7 @@ export default function ExecutionSummary() {
       } else {
         suppressConsoleError(err, 'loadExecutionSummary');
       }
-=======
       suppressConsoleError(err, 'loadExecutionSummary');
->>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
     } finally {
       setLoading(false);
     }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getAuth } from "firebase/auth";
+import { auth } from "../config/firebase";
 import { adminApi } from "../services/api";
 
 export default function AdminTokenPage() {
@@ -25,7 +25,6 @@ export default function AdminTokenPage() {
   };
 
   const generateToken = async () => {
-    const auth = getAuth();
     if (!auth.currentUser) {
       setStatus("❌ No logged-in user");
       return;

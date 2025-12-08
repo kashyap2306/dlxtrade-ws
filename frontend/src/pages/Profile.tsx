@@ -231,7 +231,7 @@ export default function Profile() {
   };
 
   const getAccountCreationDate = (user: User | null): string => {
-    if (!user || !user.metadata.creationTime) return 'N/A';
+    if (!user || !user.metadata || !user.metadata.creationTime) return 'N/A';
     return new Date(user.metadata.creationTime).toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'long',
@@ -240,7 +240,7 @@ export default function Profile() {
   };
 
   const getLastLogin = (user: User | null): string => {
-    if (!user || !user.metadata.lastSignInTime) return 'N/A';
+    if (!user || !user.metadata || !user.metadata.lastSignInTime) return 'N/A';
     return new Date(user.metadata.lastSignInTime).toLocaleString('en-US', {
       year: 'numeric',
       month: 'long',

@@ -1,13 +1,5 @@
 import axios, { AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
-import { getAuth, getIdToken, onAuthStateChanged } from 'firebase/auth';
-
-const auth = getAuth();
-let authReady = false;
-
-// Wait for Firebase auth to be ready
-onAuthStateChanged(auth, () => {
-  authReady = true;
-});
+import { auth, isUsingMockFirebase } from './firebase-config';
 
 declare module 'axios' {
   export interface InternalAxiosRequestConfig {
@@ -43,12 +35,14 @@ console.log('  - baseURL:', api.defaults.baseURL);
 console.log('  - timeout:', api.defaults.timeout);
 console.log('  - instance baseURL check:', api.defaults.baseURL === baseURL);
 
-// Logging
+// Logging with safe guards
 const logRequest = (config: InternalAxiosRequestConfig, context: string) => {
-  const fullUrl = config.baseURL ? `${config.baseURL}${config.url}` : config.url;
+  const method = config.method?.toUpperCase() || 'UNKNOWN';
+  const url = config.url || 'UNKNOWN_URL';
+  const fullUrl = config.baseURL ? `${config.baseURL}${url}` : url;
   console.log(`[API ${context}] REQUEST:`, {
-    method: config.method?.toUpperCase(),
-    url: config.url,
+    method: method,
+    url: url,
     fullUrl: fullUrl,
     timeout: config.timeout,
     headers: {
@@ -60,12 +54,14 @@ const logRequest = (config: InternalAxiosRequestConfig, context: string) => {
 
 const logResponse = (response: AxiosResponse, context: string) => {
   const duration = response.config.metadata ? Date.now() - response.config.metadata.startTime : 0;
-  const fullUrl = response.config.baseURL ? `${response.config.baseURL}${response.config.url}` : response.config.url;
+  const method = response.config.method?.toUpperCase() || 'UNKNOWN';
+  const url = response.config.url || 'UNKNOWN_URL';
+  const fullUrl = response.config.baseURL ? `${response.config.baseURL}${url}` : url;
   console.log(`[API ${context}] SUCCESS:`, {
     status: response.status,
     statusText: response.statusText,
-    method: response.config.method?.toUpperCase(),
-    url: response.config.url,
+    method: method,
+    url: url,
     fullUrl: fullUrl,
     duration: `${duration}ms`,
     dataSize: JSON.stringify(response.data).length + ' chars'
@@ -73,12 +69,14 @@ const logResponse = (response: AxiosResponse, context: string) => {
 };
 
 const logError = (error: AxiosError, context: string, extra?: any) => {
-  const fullUrl = error.config?.baseURL ? `${error.config.baseURL}${error.config.url}` : error.config?.url;
+  const method = error.config?.method?.toUpperCase() || 'UNKNOWN';
+  const url = error.config?.url || 'UNKNOWN_URL';
+  const fullUrl = error.config?.baseURL ? `${error.config.baseURL}${url}` : url;
   const duration = error.config?.metadata ? Date.now() - error.config.metadata.startTime : 0;
 
   console.error(`[API ${context}] ERROR:`, {
-    method: error.config?.method?.toUpperCase(),
-    url: error.config?.url,
+    method: method,
+    url: url,
     fullUrl: fullUrl,
     timeout: error.config?.timeout,
     duration: duration ? `${duration}ms` : 'unknown',
@@ -127,29 +125,32 @@ api.interceptors.request.use(
       requestId: `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
     };
 
-    // Wait until Firebase auth is ready
-    if (!authReady) {
-      await new Promise(resolve => {
-        const unsub = onAuthStateChanged(auth, () => {
-          resolve(null);
-          unsub();
-        });
-      });
+    // Only attach Firebase tokens if we're using real Firebase (not mock)
+    if (!isUsingMockFirebase()) {
+      const user = auth.currentUser;
+      let token: string | null = null;
+
+      if (user) {
+        try {
+          token = await user.getIdToken();
+          console.log('[AXIOS] Using real Firebase token:', token ? 'valid' : 'none');
+        } catch (error) {
+          console.error('[AXIOS] Failed to get real Firebase ID token:', error);
+        }
+      }
+
+      // Only attach Authorization header if we have a real token
+      if (token) {
+        config.headers = {
+          ...config.headers,
+          Authorization: `Bearer ${token}`,
+          uid: user!.uid,
+        };
+      }
+      // If no token, do NOT send Authorization header (for public endpoints)
+    } else {
+      console.log('[AXIOS] Using mock Firebase - not attaching tokens');
     }
-
-    const user = auth.currentUser;
-
-    if (!user) {
-      throw new axios.Cancel("No authenticated Firebase user");
-    }
-
-    const token = await getIdToken(user, true);
-
-    config.headers = {
-      ...config.headers,
-      Authorization: `Bearer ${token}`,
-      uid: user.uid,
-    };
 
     logRequest(config, 'REQUEST');
     return config;

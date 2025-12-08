@@ -15,13 +15,13 @@ const firebaseConfig = {
   measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
 };
 
-// Check if Firebase is properly configured
-const isFirebaseConfigured = () => {
-  return !!(
-    firebaseConfig.apiKey &&
-    firebaseConfig.authDomain &&
-    firebaseConfig.projectId
-  );
+// Check if Firebase environment variables are present and non-empty
+const hasFirebaseEnvVars = () => {
+  const requiredKeys = ['apiKey', 'authDomain', 'projectId'];
+  return requiredKeys.every(key => {
+    const value = firebaseConfig[key as keyof typeof firebaseConfig];
+    return value && typeof value === 'string' && value.trim() !== '';
+  });
 };
 
 // Check if we're in development mode
@@ -29,21 +29,27 @@ const isDevelopment = import.meta.env.MODE === 'development';
 
 console.log('[FIREBASE] Initializing Firebase...');
 console.log('  - Mode:', import.meta.env.MODE);
-console.log('  - Configured:', isFirebaseConfigured());
+console.log('  - Has Firebase env vars:', hasFirebaseEnvVars());
 console.log('  - Development:', isDevelopment);
 
-// Initialize Firebase only if configured and not in mock mode
+// Initialize Firebase only if environment variables are present
 let app: any = null;
 let auth: any = null;
 let db: any = null;
 let analytics: Analytics | null = null;
+let firebaseInitialized = false;
 
-if (isFirebaseConfigured() && !isDevelopment) {
+if (hasFirebaseEnvVars()) {
   try {
-    console.log('[FIREBASE] Initializing with real Firebase config...');
+    console.log('[FIREBASE] Attempting to initialize with real Firebase config...');
+    console.log('  - API Key present:', !!firebaseConfig.apiKey);
+    console.log('  - Auth Domain present:', !!firebaseConfig.authDomain);
+    console.log('  - Project ID present:', !!firebaseConfig.projectId);
+
     app = initializeApp(firebaseConfig);
     auth = getAuth(app);
     db = getFirestore(app);
+    firebaseInitialized = true;
 
     // Initialize Analytics in production only
     if (typeof window !== 'undefined' && firebaseConfig.measurementId) {
@@ -51,48 +57,62 @@ if (isFirebaseConfigured() && !isDevelopment) {
     }
 
     console.log('[FIREBASE] Successfully initialized with real Firebase');
+
+    // Set up auth state listener to log user changes
+    auth.onAuthStateChanged((user: any) => {
+      if (user) {
+        console.log('[FIREBASE] Real Firebase user active:', {
+          uid: user.uid,
+          email: user.email,
+          displayName: user.displayName
+        });
+      } else {
+        console.log('[FIREBASE] Real Firebase: No active user');
+      }
+    });
   } catch (error) {
-    console.error('[FIREBASE] Failed to initialize Firebase:', error);
-    // Fallback to mock mode
-    console.log('[FIREBASE] Falling back to mock mode due to initialization error');
+    console.error('[FIREBASE] Failed to initialize real Firebase:', error);
+    console.log('[FIREBASE] This is unexpected - env vars present but initialization failed');
+    // Reset to null so we use mock mode
+    app = null;
+    auth = null;
+    db = null;
+    analytics = null;
+    firebaseInitialized = false;
   }
+} else {
+  console.log('[FIREBASE] No Firebase environment variables found, using mock mode');
 }
 
-// If Firebase is not configured or we're in development, use mock implementations
-if (!app || isDevelopment) {
-  console.log('[FIREBASE] Using mock Firebase mode for development/local testing');
+// Use mock implementations if Firebase is not properly initialized
+if (!firebaseInitialized) {
+  console.log('[FIREBASE] Using mock Firebase mode');
 
   // Mock Firebase implementations
   const mockAuth = {
-    currentUser: {
-      uid: 'local-dev-user',
-      email: 'mock@example.com',
-      displayName: 'Mock User',
-      getIdToken: () => Promise.resolve('mock-token')
-    },
+    currentUser: null, // Start with null to match real Firebase behavior
     onAuthStateChanged: (callback: (user: any) => void) => {
-      // Immediately call with mock user
-      setTimeout(() => callback(mockAuth.currentUser), 100);
+      // Don't call callback immediately - let components handle initial null state
       return () => {}; // unsubscribe function
     },
-    signInWithEmailAndPassword: () => Promise.resolve({ user: mockAuth.currentUser }),
-    createUserWithEmailAndPassword: () => Promise.resolve({ user: mockAuth.currentUser }),
-    signOut: () => Promise.resolve(),
-    getIdToken: () => Promise.resolve('mock-token'),
+    signInWithEmailAndPassword: () => Promise.reject(new Error('Mock Firebase: Not implemented')),
+    createUserWithEmailAndPassword: () => Promise.reject(new Error('Mock Firebase: Not implemented')),
+    signOut: () => Promise.reject(new Error('Mock Firebase: Not implemented')),
+    getIdToken: () => Promise.reject(new Error('Mock Firebase: Not implemented')),
     _isMockFirebase: true
   };
 
   const mockDb = {
     collection: () => ({
       doc: () => ({
-        get: () => Promise.resolve({ exists: true, data: () => ({}) }),
-        set: () => Promise.resolve(),
-        update: () => Promise.resolve(),
-        delete: () => Promise.resolve()
+        get: () => Promise.reject(new Error('Mock Firebase: Firestore not available')),
+        set: () => Promise.reject(new Error('Mock Firebase: Firestore not available')),
+        update: () => Promise.reject(new Error('Mock Firebase: Firestore not available')),
+        delete: () => Promise.reject(new Error('Mock Firebase: Firestore not available'))
       }),
-      get: () => Promise.resolve({ docs: [], empty: true }),
-      where: () => ({ get: () => Promise.resolve({ docs: [] }) }),
-      limit: () => ({ get: () => Promise.resolve({ docs: [] }) })
+      get: () => Promise.reject(new Error('Mock Firebase: Firestore not available')),
+      where: () => ({ get: () => Promise.reject(new Error('Mock Firebase: Firestore not available')) }),
+      limit: () => ({ get: () => Promise.reject(new Error('Mock Firebase: Firestore not available')) })
     })
   };
 
@@ -112,11 +132,15 @@ export { app, auth, db, analytics };
 
 // Export helper functions for checking Firebase availability
 export const isFirebaseAvailable = () => {
-  return app && auth && db && !auth._isMockFirebase;
+  return firebaseInitialized && auth && !auth._isMockFirebase;
 };
 
 export const isUsingMockFirebase = () => {
   return auth && auth._isMockFirebase === true;
+};
+
+export const isFirebaseReady = () => {
+  return firebaseInitialized;
 };
 
 // Default export for backward compatibility

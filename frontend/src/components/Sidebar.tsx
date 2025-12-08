@@ -107,23 +107,7 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
       }
 
       try {
-<<<<<<< HEAD
-        // Try to get admin role from backend API
-        const response = await adminApi.getRole();
-        const isAdminRole = response.data?.isAdmin === true || response.data?.role === 'admin';
-        setIsAdmin(isAdminRole);
-      } catch (error: any) {
-        console.error('Error checking admin role:', error);
-
-        // Fallback: in development mode, treat user as admin if API fails
-        if (import.meta.env.MODE === 'development') {
-          console.log('[Sidebar] Development mode: treating user as admin due to API failure');
-          setIsAdmin(true);
-        } else {
-          setIsAdmin(false);
-        }
-=======
-        // Import synchronously for better performance
+        // Check admin role from Firestore
         const { doc, getDoc } = await import('firebase/firestore');
         const { db } = await import('../config/firebase');
         const userDoc = await getDoc(doc(db, 'users', user.uid));
@@ -133,10 +117,16 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
         } else {
           setIsAdmin(false);
         }
-      } catch (error) {
+      } catch (error: any) {
         console.error('Error checking admin role:', error);
-        setIsAdmin(false);
->>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
+
+        // Fallback: in development mode, treat user as admin if Firestore fails
+        if (import.meta.env.MODE === 'development') {
+          console.log('[Sidebar] Development mode: treating user as admin due to Firestore failure');
+          setIsAdmin(true);
+        } else {
+          setIsAdmin(false);
+        }
       }
     };
 
@@ -154,11 +144,6 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
     { path: '/profile', label: 'Profile', Icon: Icons.Profile },
   ];
 
-  const adminMenuItems = [
-    { path: '/admin', label: 'Admin Dashboard', Icon: Icons.Admin },
-    { path: '/admin/users', label: 'All Users', Icon: Icons.Users },
-    { path: '/admin/agents', label: 'Agents Manager', Icon: Icons.Agents },
-  ];
 
   const isActive = (path: string) => {
     if (path === '/dashboard') {
@@ -356,61 +341,6 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
               </>
             )}
 
-            {/* Admin Section */}
-            {isAdmin && (
-              <>
-                <div className="my-4 px-3">
-                  <div className="h-px bg-gradient-to-r from-transparent via-cyan-500/20 to-transparent" />
-                </div>
-                <div className="px-3 mb-2">
-                  <div className="text-xs font-semibold text-cyan-500/60 uppercase tracking-wider">
-                    Admin
-                  </div>
-                </div>
-                {adminMenuItems.map((item) => {
-                  const active = isActive(item.path);
-                  const Icon = item.Icon;
-                  return (
-                    <Link
-                      key={item.path}
-                      to={item.path}
-                      onClick={() => setMobileMenuOpen(false)}
-                      className={`
-                        group relative flex items-center space-x-3 px-4 py-3 lg:px-3 lg:py-2 rounded-xl transition-all duration-200
-                        ${active
-                          ? 'text-cyan-400 bg-cyan-500/10 border-l-2 border-cyan-400'
-                          : 'text-gray-400 hover:text-cyan-300 hover:bg-cyan-500/5 border-l-2 border-transparent'
-                        }
-                      `}
-                    >
-                      {active && (
-                        <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-8 bg-gradient-to-b from-cyan-400 to-blue-400 rounded-r-full shadow-lg shadow-cyan-400/50" />
-                      )}
-                      <div 
-                        className={`
-                          absolute inset-0 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-200
-                          ${active ? 'bg-cyan-500/5' : 'bg-[rgba(0,255,255,0.08)]'}
-                        `}
-                      />
-                      <div className={`
-                        relative z-10 flex-shrink-0 transition-colors
-                        ${active ? 'text-cyan-400' : 'text-gray-500 group-hover:text-cyan-400'}
-                      `}>
-                        <div className="w-6 h-6 lg:w-5 lg:h-5">
-                          <Icon />
-                        </div>
-                      </div>
-                      <span className={`
-                        relative z-10 font-medium text-base lg:text-sm tracking-wide
-                        ${active ? 'text-cyan-400' : 'text-gray-400 group-hover:text-cyan-300'}
-                      `}>
-                        {item.label}
-                      </span>
-                    </Link>
-                  );
-                })}
-              </>
-            )}
           </nav>
 
           {/* Logout Button */}

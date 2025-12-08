@@ -44,13 +44,28 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           const token = await getIdToken(firebaseUser, true); // Force refresh to ensure validity
           console.log('[AuthProvider] idToken obtained, length:', token?.length || 0);
 
-          setUser(firebaseUser);
+          // Create clean user object with proper metadata structure
+          const cleanUser = {
+            uid: firebaseUser.uid,
+            email: firebaseUser.email,
+            displayName: firebaseUser.displayName,
+            photoURL: firebaseUser.photoURL,
+            metadata: {
+              creationTime: firebaseUser.metadata?.creationTime || null,
+              lastSignInTime: firebaseUser.metadata?.lastSignInTime || null,
+            }
+          };
+
+          console.log('[AUTH] Active user:', cleanUser);
+          setUser(cleanUser);
 
           // Store in localStorage for persistence
           localStorage.setItem('firebaseToken', token);
           localStorage.setItem('firebaseUser', JSON.stringify({
-            uid: firebaseUser.uid,
-            email: firebaseUser.email,
+            uid: cleanUser.uid,
+            email: cleanUser.email,
+            displayName: cleanUser.displayName,
+            photoURL: cleanUser.photoURL,
           }));
 
         } else {

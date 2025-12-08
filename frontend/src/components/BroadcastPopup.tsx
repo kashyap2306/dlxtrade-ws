@@ -1,12 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../hooks/useAuth';
-<<<<<<< HEAD
 import { broadcastPopupApi } from '../services/api';
 import { isUsingMockFirebase } from '../config/firebase';
-=======
-import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
-import { db } from '../config/firebase';
->>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
 
 interface PopupData {
   title: string;
@@ -31,7 +26,6 @@ export default function BroadcastPopup() {
   useEffect(() => {
     if (!user) return;
 
-<<<<<<< HEAD
     // If using mock Firebase (development mode), disable popup system
     if (isUsingMockFirebase()) {
       console.log('[BroadcastPopup] Disabled in development mode');
@@ -64,56 +58,11 @@ export default function BroadcastPopup() {
             // Show popup anyway if check fails
             setPopup(popupData);
             setShow(true);
-=======
-    // Check if user has already seen this popup
-    const checkSeen = async () => {
-      try {
-        const userDoc = await getDoc(doc(db, 'users', user.uid));
-        const userData = userDoc.data();
-        const seenPopups = userData?.seenPopups || [];
-        const currentPopupId = 'current';
-        
-        if (seenPopups.includes(currentPopupId)) {
-          return; // User has already seen this popup
-        }
-      } catch (error) {
-        console.error('Error checking seen popups:', error);
-      }
-    };
-
-    checkSeen();
-
-    // Listen to Firestore for popup changes
-    const unsubscribe = onSnapshot(
-      doc(db, 'globalPopup', 'current'),
-      async (snapshot) => {
-        if (snapshot.exists()) {
-          const data = snapshot.data() as PopupData;
-          if (data.active && !dismissed) {
-            // Check if user has seen this popup
-            try {
-              const userDoc = await getDoc(doc(db, 'users', user.uid));
-              const userData = userDoc.data();
-              const seenPopups = userData?.seenPopups || [];
-              const currentPopupId = 'current';
-              
-              if (!seenPopups.includes(currentPopupId)) {
-                setPopup(data);
-                setShow(true);
-              }
-            } catch (error) {
-              console.error('Error checking seen popups:', error);
-              // Show popup anyway if check fails
-              setPopup(data);
-              setShow(true);
-            }
->>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
           }
         } else {
           setPopup(null);
           setShow(false);
         }
-<<<<<<< HEAD
       } catch (error) {
         console.error('Error loading broadcast popup:', error);
         // If API fails (e.g., backend not running), disable popup
@@ -133,15 +82,8 @@ export default function BroadcastPopup() {
         clearInterval(pollingInterval);
       }
     };
-=======
-      },
-      (error) => {
-        console.error('Error listening to popup:', error);
-      }
-    );
 
     return () => unsubscribe();
->>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
   }, [user, dismissed]);
 
   // Update countdown timer
@@ -177,7 +119,6 @@ export default function BroadcastPopup() {
     if (!user || !popup) return;
 
     try {
-<<<<<<< HEAD
       // If using mock Firebase (development mode), just dismiss locally
       if (isUsingMockFirebase()) {
         setDismissed(true);
@@ -189,31 +130,12 @@ export default function BroadcastPopup() {
       // Mark popup as seen via backend API
       await broadcastPopupApi.markAsSeen('current');
 
-=======
-      // Mark popup as seen in user's document
-      const userRef = doc(db, 'users', user.uid);
-      const userDoc = await getDoc(userRef);
-      const userData = userDoc.data();
-      const seenPopups = userData?.seenPopups || [];
-      
-      if (!seenPopups.includes('current')) {
-        await setDoc(userRef, {
-          ...userData,
-          seenPopups: [...seenPopups, 'current'],
-        }, { merge: true });
-      }
-
->>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
       setDismissed(true);
       setShow(false);
       setPopup(null);
     } catch (error) {
       console.error('Error dismissing popup:', error);
-<<<<<<< HEAD
       // Still dismiss locally even if API fails
-=======
-      // Still dismiss locally
->>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
       setDismissed(true);
       setShow(false);
       setPopup(null);

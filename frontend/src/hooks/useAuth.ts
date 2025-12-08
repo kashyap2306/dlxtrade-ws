@@ -1,58 +1,83 @@
 import { useState, useEffect } from 'react';
-import { onAuthStateChanged, signOut, User } from 'firebase/auth';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from '../config/firebase';
 
+interface CleanUser {
+  uid: string;
+  email: string | null;
+  displayName: string | null;
+  photoURL: string | null;
+  metadata: {
+    creationTime: string | null;
+    lastLoginTime: string | null;
+  };
+}
+
 export function useAuth() {
-  // Initialize with current Firebase user if available
-  const [user, setUser] = useState<User | null>(() => auth.currentUser);
+  const [user, setUser] = useState<CleanUser | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     console.log('[useAuth] Setting up auth state listener');
 
-    // Emergency fallback: force loading=false after 1 second to prevent infinite loading
-    const forceLoadingTimeout = setTimeout(() => {
-      setLoading(false);
-    }, 1000);
-
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      clearTimeout(forceLoadingTimeout); // Clear emergency timeout
+      console.log('[useAuth] Auth state changed:', {
+        hasUser: !!firebaseUser,
+        userEmail: firebaseUser?.email,
+        uid: firebaseUser?.uid
+      });
 
       try {
         if (firebaseUser) {
+          // Get fresh token
           const token = await firebaseUser.getIdToken();
-          localStorage.setItem('firebaseToken', token);
-          localStorage.setItem('firebaseUser', JSON.stringify({
+
+          // Create clean user object with proper metadata structure
+          const cleanUser: CleanUser = {
             uid: firebaseUser.uid,
             email: firebaseUser.email,
+            displayName: firebaseUser.displayName,
+            photoURL: firebaseUser.photoURL,
+            metadata: {
+              creationTime: firebaseUser.metadata?.creationTime || null,
+              lastLoginTime: firebaseUser.metadata?.lastSignInTime || null
+            }
+          };
+
+          console.log('[AUTH] Active user:', cleanUser);
+
+          // Store in localStorage for persistence
+          localStorage.setItem('firebaseToken', token);
+          localStorage.setItem('firebaseUser', JSON.stringify({
+            uid: cleanUser.uid,
+            email: cleanUser.email,
+            displayName: cleanUser.displayName,
+            photoURL: cleanUser.photoURL,
           }));
-          setUser(firebaseUser);
+
+          setUser(cleanUser);
         } else {
-          // Only clear if we're sure there's no user
-          const token = localStorage.getItem('firebaseToken');
-          if (!token) {
-            localStorage.removeItem('firebaseToken');
-            localStorage.removeItem('firebaseUser');
-            setUser(null);
-          }
+          // No user - clear everything
+          console.log('[useAuth] No user - clearing auth state');
+          setUser(null);
+          localStorage.removeItem('firebaseToken');
+          localStorage.removeItem('firebaseUser');
         }
       } catch (error) {
-        console.error('Auth state change error:', error);
+        console.error('[useAuth] Error in auth state change:', error);
+        setUser(null);
         localStorage.removeItem('firebaseToken');
         localStorage.removeItem('firebaseUser');
-        setUser(null);
       } finally {
+        // Set loading to false ONLY after the first auth state is resolved
         setLoading(false);
       }
     });
-
-    // Firebase handles token refresh automatically - no manual refresh needed
 
     console.log('[useAuth] Auth listener setup complete');
 
     return () => {
       console.log('[useAuth] Cleaning up auth listener');
-      clearTimeout(forceLoadingTimeout);
       try {
         unsubscribe();
       } catch (error) {

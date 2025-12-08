@@ -1,4 +1,5 @@
-import { getAuth, onIdTokenChanged } from 'firebase/auth';
+import { onIdTokenChanged } from 'firebase/auth';
+import { auth } from '../config/firebase';
 import { WS_URL } from '@/config/env';
 
 type MessageHandler = (data: any) => void;
@@ -22,7 +23,7 @@ class AdminWebSocketService {
 
     try {
       // Get fresh Firebase token
-      const token = await getAuth().currentUser?.getIdToken();
+      const token = await auth.currentUser?.getIdToken();
       const wsUrl = token ? `${ADMIN_WS_URL}?token=${token}` : ADMIN_WS_URL;
 
       this.ws = new WebSocket(wsUrl);
@@ -150,7 +151,7 @@ class AdminWebSocketService {
 
   initTokenRefreshHandler(): void {
     // Handle token refresh - reconnect WebSocket when token changes
-    onIdTokenChanged(getAuth(), async (user) => {
+    onIdTokenChanged(auth, async (user) => {
       if (user) {
         this.reconnectWebSocket();
       }

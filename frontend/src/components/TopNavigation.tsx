@@ -7,27 +7,48 @@ import { BellIcon, Bars3Icon, SparklesIcon, ChevronDownIcon } from '@heroicons/r
 
 // Memoized Profile Menu Component
 const ProfileMenu = memo(() => {
-  const { user, logout } = useAuth();
+  const { user, logout, loading } = useAuth();
   const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  // Memoize user initials
-  const userInitials = useMemo(() => {
-    if (!user) return 'U';
-    if (user.displayName) {
-      return user.displayName
+  // Memoize user avatar data with proper priority and safety checks
+  const userAvatar = useMemo(() => {
+    if (!user) {
+      return { type: 'fallback', content: null };
+    }
+
+    // Priority 1: photoURL
+    if (user.photoURL && user.photoURL.trim()) {
+      return { type: 'photo', content: user.photoURL };
+    }
+
+    // Priority 2: displayName initials
+    if (user.displayName && user.displayName.trim()) {
+      const initials = user.displayName
         .split(' ')
-        .map((n) => n[0])
+        .map((n) => n.trim()[0])
+        .filter(Boolean)
         .join('')
         .toUpperCase()
         .slice(0, 2);
+      if (initials) {
+        return { type: 'initials', content: initials };
+      }
     }
-    if (user.email) {
-      return user.email[0].toUpperCase();
+
+    // Priority 3: email initials (first 2 letters before @)
+    if (user.email && user.email.trim()) {
+      const emailPrefix = user.email.split('@')[0];
+      if (emailPrefix) {
+        const initials = emailPrefix.slice(0, 2).toUpperCase();
+        return { type: 'initials', content: initials };
+      }
     }
-    return 'U';
-  }, [user?.displayName, user?.email]);
+
+    // Priority 4: fallback dot icon
+    return { type: 'fallback', content: null };
+  }, [user?.photoURL, user?.displayName, user?.email]);
 
   // Handle click outside - memoized
   useEffect(() => {
@@ -77,7 +98,7 @@ const ProfileMenu = memo(() => {
     setIsOpen((prev) => !prev);
   }, []);
 
-  if (!user) return null;
+  if (loading || !user) return null;
 
   return (
     <div className="relative" ref={menuRef}>
@@ -88,8 +109,45 @@ const ProfileMenu = memo(() => {
         aria-haspopup="true"
         className="flex items-center gap-2 rounded-full bg-white/5 border border-white/10 pr-2 pl-1 py-1 text-white shadow-lg shadow-black/30 hover:bg-white/10 transition-all active:scale-95"
       >
-        <span className="relative w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-br from-purple-500 via-purple-400 to-blue-500 flex items-center justify-center text-xs sm:text-sm font-semibold shadow-md">
-          {userInitials}
+        <span className="relative w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-br from-purple-500 via-purple-400 to-blue-500 flex items-center justify-center text-xs sm:text-sm font-semibold shadow-md overflow-hidden">
+          {userAvatar.type === 'photo' ? (
+            <img
+              src={userAvatar.content}
+              alt="Profile"
+              className="w-full h-full object-cover rounded-full"
+              onError={(e) => {
+                // Fallback to initials if photo fails to load
+                const target = e.target as HTMLImageElement;
+                target.style.display = 'none';
+                const parent = target.parentElement;
+                if (parent && user) {
+                  // Recalculate initials on error
+                  let fallbackInitials = 'U';
+                  if (user.displayName && user.displayName.trim()) {
+                    const initials = user.displayName
+                      .split(' ')
+                      .map((n) => n.trim()[0])
+                      .filter(Boolean)
+                      .join('')
+                      .toUpperCase()
+                      .slice(0, 2);
+                    if (initials) fallbackInitials = initials;
+                  } else if (user.email && user.email.trim()) {
+                    const emailPrefix = user.email.split('@')[0];
+                    if (emailPrefix) {
+                      fallbackInitials = emailPrefix.slice(0, 2).toUpperCase();
+                    }
+                  }
+                  parent.textContent = fallbackInitials;
+                }
+              }}
+            />
+          ) : userAvatar.type === 'initials' ? (
+            userAvatar.content
+          ) : (
+            // Fallback dot icon
+            <div className="w-2 h-2 bg-white/80 rounded-full"></div>
+          )}
         </span>
         <ChevronDownIcon className={`w-4 h-4 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>

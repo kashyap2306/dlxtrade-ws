@@ -115,10 +115,9 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   }, [user]);
 
   useEffect(() => {
-    if (user) {
-      loadNotifications();
-      // Poll every 30 seconds to reduce API load
-      pollingIntervalRef.current = setInterval(loadNotifications, 30000);
+    loadNotifications();
+    // Poll every 30 seconds to reduce API load
+    pollingIntervalRef.current = setInterval(loadNotifications, 30000);
 
       // Subscribe to WebSocket alerts
       const unsubscribe = ws.subscribe('newAlert', (alertData: any) => {
@@ -149,18 +148,8 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         }
       });
 
-      return () => {
-        unsubscribe();
-        if (pollingIntervalRef.current) {
-          clearInterval(pollingIntervalRef.current);
-        }
-      };
-    } else {
-      setNotifications([]);
-      lastNotificationIdsRef.current.clear();
-    }
-
     return () => {
+      unsubscribe();
       if (pollingIntervalRef.current) {
         clearInterval(pollingIntervalRef.current);
       }

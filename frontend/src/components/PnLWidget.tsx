@@ -18,7 +18,6 @@ export default function PnLWidget() {
     setLoading(true);
     try {
       // Fetch recent trades to calculate PnL
-<<<<<<< HEAD
       let trades = [];
       try {
         const tradesResponse = await tradesApi.get({ uid: user.uid, limit: 1000 });
@@ -33,11 +32,6 @@ export default function PnLWidget() {
         }
       }
 
-=======
-      const tradesResponse = await tradesApi.get({ uid: user.uid, limit: 1000 });
-      const trades = tradesResponse.data?.trades || [];
-      
->>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
       // Calculate daily PnL
       const today = new Date().toISOString().split('T')[0];
       const dailyPnLValue = trades
@@ -74,7 +68,6 @@ export default function PnLWidget() {
           const avgAccuracy = executedLogs.reduce((sum: number, log: any) => sum + (log.accuracyUsed || 0), 0) / executedLogs.length;
           setAccuracy(avgAccuracy * 100);
         }
-<<<<<<< HEAD
       } catch (execErr: any) {
         // Safe fallback: if response status = 500 → skip accuracy calculation
         if (execErr.response?.status === 500) {
@@ -83,10 +76,6 @@ export default function PnLWidget() {
         } else {
           suppressConsoleError(execErr, 'loadAccuracy');
         }
-=======
-      } catch (err: any) {
-        suppressConsoleError(err, 'loadAccuracy');
->>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
       }
 
       // Create chart data from last 30 days of trades
@@ -104,11 +93,8 @@ export default function PnLWidget() {
           pnl: dayPnL,
         };
       });
-<<<<<<< HEAD
 
-=======
       
->>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
       setPnlData(last30Days);
     } catch (err: any) {
       suppressConsoleError(err, 'loadPnL');
