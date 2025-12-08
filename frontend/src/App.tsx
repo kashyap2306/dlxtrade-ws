@@ -1,6 +1,7 @@
 import React, { Suspense, useState, useEffect } from 'react';
 import { Routes, Route, Navigate, BrowserRouter, Outlet } from 'react-router-dom';
 import TopNavigation from './components/TopNavigation';
+import Sidebar from './components/Sidebar';
 import UserRoute from './components/UserRoute';
 import { ErrorProvider } from './contexts/ErrorContext';
 import { NotificationProvider } from './contexts/NotificationContext';
@@ -40,12 +41,15 @@ const AgentDetails = React.lazy(() => import('./pages/AgentDetails'));
 const AgentFeature = React.lazy(() => import('./pages/AgentFeature'));
 const Onboarding = React.lazy(() => import('./pages/Onboarding'));
 
-// Layout component that includes TopNavigation and renders page content via Outlet
+// Layout component that includes TopNavigation, Sidebar and renders page content via Outlet
 function Layout() {
   return (
     <>
       <TopNavigation />
-      <Outlet />
+      <Sidebar />
+      <main className="lg:ml-64">
+        <Outlet />
+      </main>
     </>
   );
 }

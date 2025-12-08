@@ -319,7 +319,7 @@ const TopNavigation = memo(() => {
               <button
                 aria-label="Toggle menu"
                 onClick={handleHamburgerClick}
-                className="p-2 rounded-xl bg-white/5 border border-white/10 text-white hover:bg-white/10 transition-all active:scale-95"
+                className="lg:hidden p-2 rounded-xl bg-white/5 border border-white/10 text-white hover:bg-white/10 transition-all active:scale-95"
               >
                 <Bars3Icon className="w-5 h-5" />
               </button>

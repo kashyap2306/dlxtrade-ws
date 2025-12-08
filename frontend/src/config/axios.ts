@@ -1,5 +1,16 @@
 import axios, { AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
-import { auth, isUsingMockFirebase } from './firebase-config';
+
+// KEEP THIS BLOCK: Firebase helpers used by axios interceptor.
+// These functions are dynamically relied upon elsewhere; DO NOT remove.
+import {
+  auth,
+  isUsingMockFirebase,
+  isFirebaseAvailable,
+  isFirebaseReady
+} from "../config/firebase";
+
+import { getAuthToken, firebaseReady } from "../config/firebase-utils";
+// END KEEP BLOCK
 
 declare module 'axios' {
   export interface InternalAxiosRequestConfig {
@@ -11,9 +22,9 @@ declare module 'axios' {
   }
 }
 
-// Set baseURL to VITE_API_BASE_URL with fallback
+// Set baseURL to VITE_API_BASE_URL with /api prefix
 const viteApiBaseUrl = import.meta.env.VITE_API_BASE_URL;
-const baseURL = (viteApiBaseUrl && viteApiBaseUrl.trim() !== '') ? viteApiBaseUrl : "http://localhost:4000";
+const baseURL = (viteApiBaseUrl && viteApiBaseUrl.trim() !== '') ? `${viteApiBaseUrl}/api` : "http://localhost:4000/api";
 console.log('VITE_API_BASE_URL loaded:', viteApiBaseUrl);
 console.log("[API URL CHECK] baseURL:", baseURL);
 console.log("[API URL CHECK] final baseURL used:", baseURL);
@@ -21,7 +32,7 @@ console.log("[API URL CHECK] final baseURL used:", baseURL);
 // Axios instance (CORS-safe)
 const api = axios.create({
   baseURL,
-  timeout: 8000,
+  timeout: 10000,
 });
 
 // Ensure baseURL is set correctly
@@ -35,7 +46,29 @@ console.log('  - baseURL:', api.defaults.baseURL);
 console.log('  - timeout:', api.defaults.timeout);
 console.log('  - instance baseURL check:', api.defaults.baseURL === baseURL);
 
-// Logging with safe guards
+// Runtime guard and interceptor setup
+const setupAxiosInterceptors = async () => {
+  // Wait for Firebase to be ready
+  await firebaseReady;
+
+  // Runtime guard: Ensure Firebase helpers are available
+  if (typeof isFirebaseAvailable !== "function" || typeof getAuthToken !== "function") {
+    console.error("[GUARD] Firebase helper missing in axios.ts — aborting interceptor setup");
+    return;
+  }
+
+  console.log("[GUARD] Firebase helpers present for axios, setting up interceptors");
+
+  // Runtime debugging - show what's actually imported
+  console.log("[DEBUG] axios.ts runtime imports:", {
+    isFirebaseAvailable: typeof isFirebaseAvailable,
+    getAuthToken: typeof getAuthToken,
+    auth: typeof auth,
+    isUsingMockFirebase: typeof isUsingMockFirebase,
+    axiosBaseURL: api.defaults.baseURL
+  });
+
+  // Logging with safe guards
 const logRequest = (config: InternalAxiosRequestConfig, context: string) => {
   const method = config.method?.toUpperCase() || 'UNKNOWN';
   const url = config.url || 'UNKNOWN_URL';
@@ -109,71 +142,88 @@ const logError = (error: AxiosError, context: string, extra?: any) => {
   }
 };
 
-// Request Interceptor
-api.interceptors.request.use(
-  async (config) => {
-    console.log('[AXIOS] Request interceptor called with config:', {
-      method: config.method,
-      url: config.url,
-      baseURL: config.baseURL,
-      fullUrl: config.baseURL ? `${config.baseURL}${config.url}` : config.url
-    });
+  // Request Interceptor
+  api.interceptors.request.use(
+    async (config) => {
+      // Metadata
+      config.metadata = {
+        startTime: Date.now(),
+        requestId: `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+      };
 
-    // Metadata
-    config.metadata = {
-      startTime: Date.now(),
-      requestId: `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-    };
+      // Wait until Firebase auth state is known
+      try {
+        await firebaseReady;
+      } catch (e) {
+        console.warn('[AXIOS] firebaseReady rejection (ignored):', e);
+      }
 
-    // Only attach Firebase tokens if we're using real Firebase (not mock)
-    if (!isUsingMockFirebase()) {
-      const user = auth.currentUser;
-      let token: string | null = null;
+      // Try to obtain a fresh token, but do not block indefinitely
+      try {
+        const token = await getAuthToken(false);
+        if (token) {
+          if (!config.headers) config.headers = {};
+          config.headers['Authorization'] = `Bearer ${token}`;
+          // optional: attach uid header if you rely on it
+          // config.headers['uid'] = auth.currentUser?.uid;
+          console.log('[AXIOS] 🔐 Request authenticated with Firebase token');
+        } else {
+          console.log('[AXIOS] ℹ️ No Firebase token available for request; sending unauthenticated');
+        }
+      } catch (err) {
+        console.warn('[AXIOS] failed to attach token:', err);
+      }
 
-      if (user) {
+      logRequest(config, 'REQUEST');
+      return config;
+    },
+    (error) => Promise.reject(error)
+  );
+
+  // Response Interceptor
+  api.interceptors.response.use(
+    (response) => {
+      logResponse(response, 'SUCCESS');
+      return response;
+    },
+    async (error: AxiosError) => {
+      const config = error.config as InternalAxiosRequestConfig;
+
+      // Handle 401 errors with token refresh retry
+      if (error.response?.status === 401 && config.url?.startsWith('/api') && !config._retry) {
+        console.log('[AXIOS] 401 received — forcing token refresh and retry');
+        config._retry = true;
+
         try {
-          token = await user.getIdToken();
-          console.log('[AXIOS] Using real Firebase token:', token ? 'valid' : 'none');
-        } catch (error) {
-          console.error('[AXIOS] Failed to get real Firebase ID token:', error);
+          const token = await getAuthToken(true); // Force refresh
+          if (token && auth?.currentUser) {
+            config.headers = {
+              ...config.headers,
+              Authorization: `Bearer ${token}`,
+              uid: auth.currentUser.uid,
+            };
+            console.log('[AXIOS] Retrying request with refreshed token');
+            return api(config);
+          }
+        } catch (retryError) {
+          console.error('[AXIOS] Token refresh failed:', retryError);
         }
       }
 
-      // Only attach Authorization header if we have a real token
-      if (token) {
-        config.headers = {
-          ...config.headers,
-          Authorization: `Bearer ${token}`,
-          uid: user!.uid,
-        };
-      }
-      // If no token, do NOT send Authorization header (for public endpoints)
-    } else {
-      console.log('[AXIOS] Using mock Firebase - not attaching tokens');
+      logError(error, 'ERROR');
+      return Promise.reject(error);
     }
+  );
+};
 
-    logRequest(config, 'REQUEST');
-    return config;
-  },
-  (error) => Promise.reject(error)
-);
+// Import the updated firebase utilities
+import { firebaseReady, getAuthToken } from './firebase-utils';
 
-// Response Interceptor
-api.interceptors.response.use(
-  (response) => {
-    logResponse(response, 'SUCCESS');
-    return response;
-  },
-  async (error: AxiosError) => {
-    const config = error.config as InternalAxiosRequestConfig;
-
-    // 401 errors - let Firebase SDK handle token refresh automatically
-    // No manual token refresh needed - Firebase handles this internally
-
-    logError(error, 'ERROR');
-    return Promise.reject(error);
-  }
-);
+// Setup interceptors after Firebase auth state is determined
+firebaseReady.then(() => {
+  setupAxiosInterceptors();
+  console.log("[AXIOS] Interceptors attached after Firebase ready");
+});
 
 // Health Ping Service
 class HealthPingService {

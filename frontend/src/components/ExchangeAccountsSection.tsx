@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import api from '../services/api';
+import api, { settingsApi } from '../services/api';
 import Toast from './Toast';
 import SuccessPopup from './SuccessPopup';
 import { useError } from '../contexts/ErrorContext';
@@ -176,14 +176,16 @@ export default function ExchangeAccountsSection() {
   const loadSavedConfig = async () => {
     if (!user) return;
     try {
-      const response = await api.get(`/users/${user.uid}/exchange-config`);
-      if (response.data && response.data.exchange) {
-        const exchange = response.data.exchange as ExchangeName;
+      const response = await settingsApi.loadExchangeConfig(user.uid);
+      if (response.data && response.data.accounts && response.data.accounts.length > 0) {
+        const account = response.data.accounts[0];
+        const exchange = account.exchange as ExchangeName;
         setCurrentExchange(exchange);
         setSavedConfig({
           exchange,
-          testnet: response.data.testnet ?? true,
-          lastTested: response.data.lastTested,
+          testnet: account.testnet ?? true,
+          lastTested: account.lastTested,
+          apiKey: account.apiKey
         });
       } else {
         setCurrentExchange(null);
@@ -237,7 +239,7 @@ export default function ExchangeAccountsSection() {
 
     try {
       setTesting(true);
-      const response = await api.post('/api/exchange/test', {
+      const response = await api.post('/exchange/test', {
         exchange: selectedExchange,
         apiKey: credentials.apiKey,
         secret: credentials.secretKey,
@@ -280,36 +282,27 @@ export default function ExchangeAccountsSection() {
     try {
       setLoading(true);
       // Save via exchange-config endpoint
-      await api.post(`/users/${user.uid}/exchange-config`, {
+      const exchangeBody = {
         exchange: selectedExchange,
         type: selectedExchange,
         apiKey: credentials.apiKey,
         secret: credentials.secretKey,
         passphrase: exchangeInfo.requiresPassphrase ? credentials.passphrase : undefined,
         testnet: true,
-      });
-      
-      // Also save to integrations for consistency
-      const { settingsApi } = await import('../services/api');
-      await settingsApi.providers.save({
-        providerId: selectedExchange,
-        providerType: 'marketData',
-        isPrimary: false,
-        enabled: true,
-        apiKey: credentials.apiKey,
-      });
-      
+      };
+      await settingsApi.saveExchangeConfig(user.uid, exchangeBody);
+
       // Show success popup
       setSuccessMessage('Exchange API connected successfully');
       setShowSuccessPopup(true);
-      
+
       showToast('Exchange credentials saved successfully', 'success');
       await addNotification({
         title: 'Exchange Credentials Updated',
         message: `${exchangeInfo.name} credentials saved and encrypted`,
         type: 'success',
       });
-      
+
       // Reload config to update status immediately
       await loadSavedConfig();
       handleCloseModal();
@@ -330,7 +323,7 @@ export default function ExchangeAccountsSection() {
 
     try {
       setTestTrading(true);
-      const response = await api.post('/api/exchange/test-trade', {
+      const response = await api.post('/exchange/test-trade', {
         exchange: selectedExchange,
         symbol: 'BTCUSDT',
         side: 'BUY',

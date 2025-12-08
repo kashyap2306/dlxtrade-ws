@@ -102,6 +102,9 @@ export default function Login() {
     setLoading(true);
 
     try {
+      if (!auth) {
+        throw new Error('Authentication service is not available. Please check your configuration.');
+      }
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
       await handleAfterSignIn(userCredential);
     } catch (err: any) {
@@ -116,6 +119,9 @@ export default function Login() {
   const handleGoogleLogin = async () => {
     setLoading(true);
     try {
+      if (!auth) {
+        throw new Error('Authentication service is not available. Please check your configuration.');
+      }
       const provider = new GoogleAuthProvider();
       const userCredential = await signInWithPopup(auth, provider);
       await handleAfterSignIn(userCredential);

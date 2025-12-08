@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { hftApi, settingsApi } from '../services/api';
 import Toast from '../components/Toast';
-import Sidebar from '../components/Sidebar';
 
 export default function HFTSettings() {
   const [loading, setLoading] = useState(false);
@@ -109,8 +108,6 @@ export default function HFTSettings() {
         <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-cyan-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-2000"></div>
         <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-80 h-80 bg-indigo-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-4000"></div>
       </div>
-
-      <Sidebar onLogout={handleLogout} />
 
       <main className="min-h-screen">
         <div className="max-w-4xl mx-auto py-8 px-4 sm:px-6 lg:px-8">

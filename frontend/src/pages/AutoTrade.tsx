@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import Sidebar from '../components/Sidebar';
 import { autoTradeApi, marketApi, settingsApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { usePolling } from '../hooks/usePerformance';
@@ -519,8 +518,6 @@ export default function AutoTrade() {
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob"></div>
         <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-blue-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-2000"></div>
       </div>
-
-      <Sidebar onLogout={() => {}} />
 
       <main className="min-h-screen">
         <div className="container py-4 sm:py-8">

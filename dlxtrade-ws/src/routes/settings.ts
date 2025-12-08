@@ -122,15 +122,30 @@ export async function settingsRoutes(fastify: FastifyInstance) {
   console.log("[ROUTE READY] GET /api/analytics/accuracy/history");
   console.log("[ROUTE READY] POST /api/analytics/accuracy/outcome");
 
-  // Load user settings
+  // Load user settings - DETAILED TIMING INSTRUMENTATION
   fastify.get('/settings/load', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const t0 = Date.now();
     const user = (request as any).user;
-    const settings = await firestoreAdapter.getSettings(user.uid);
 
-    // Get user provider settings
-    const userProviderSettings = await firestoreAdapter.getUserProviderSettings(user.uid) || {};
+    try {
+      fastify.log.info({ uid: user.uid }, 'settings.load:start');
+
+      // Time individual DB calls
+      const t1 = Date.now();
+      const settings = await firestoreAdapter.getSettings(user.uid);
+      const dt1 = Date.now() - t1;
+      fastify.log.info({ duration: dt1 }, 'settings.load:getSettings');
+
+      const t2 = Date.now();
+
+      // Get user provider settings
+      const userProviderSettings = await firestoreAdapter.getUserProviderSettings(user.uid) || {};
+      const dt2 = Date.now() - t2;
+      fastify.log.info({ duration: dt2 }, 'settings.load:getUserProviderSettings');
+
+      const t3 = Date.now();
 
     // Ensure providerConfig always has safe defaults
     const providerConfig = {
@@ -147,6 +162,8 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       thresholds: { minAccuracy: 80, maxFrequency: 10 },
       scheduleInterval: 5
     };
+    const dt3 = Date.now() - t3;
+    fastify.log.info({ duration: dt3 }, 'settings.load:getBackgroundResearchSettings-defaults');
 
     if (!settings) {
       return {
@@ -247,7 +264,14 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       updatedAt: settings.updatedAt?.toDate().toISOString(),
     };
 
-    return safeSettings;
+      const dt = Date.now() - t0;
+      fastify.log.info({ duration: dt }, 'settings.load:done');
+      return safeSettings;
+    } catch (err: any) {
+      const dt = Date.now() - t0;
+      fastify.log.error({ err, duration: dt }, 'settings.load:error');
+      return reply.code(500).send({ error: 'settings_load_failed' });
+    }
   });
 
   // Update user settings

@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import Sidebar from '../components/Sidebar';
 import { globalStatsApi, usersApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { suppressConsoleError } from '../utils/errorHandler';
@@ -117,8 +116,6 @@ export default function Home() {
         <div className="absolute top-0 left-1/4 w-px h-full bg-gradient-to-b from-transparent via-purple-500/20 to-transparent"></div>
         <div className="absolute top-0 right-1/4 w-px h-full bg-gradient-to-b from-transparent via-cyan-500/20 to-transparent"></div>
       </div>
-
-      {user && <Sidebar onMenuToggle={setMenuOpen} />}
 
       <main className="min-h-screen relative z-10">
         <div className={`max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 ${user ? '' : 'pt-8'}`}>

@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import Sidebar from './Sidebar';
 import Toast from './Toast';
 import { useAuth } from '../hooks/useAuth';
 import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
@@ -94,7 +93,6 @@ export default function AgentFeaturePage({ children }: AgentFeaturePageProps) {
         <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-80 h-80 bg-pink-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-4000"></div>
       </div>
 
-      <Sidebar onLogout={logout} onMenuToggle={setMenuOpen} />
       <div className="relative z-10 pt-16 lg:pt-0">
         {/* Header Banner */}
         <div className="relative overflow-hidden bg-gradient-to-br from-purple-900/30 via-pink-900/20 to-slate-900 border-b border-purple-500/20">

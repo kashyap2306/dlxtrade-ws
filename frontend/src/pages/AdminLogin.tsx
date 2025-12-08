@@ -19,6 +19,9 @@ export default function AdminLogin() {
     setBlocked(false);
 
     try {
+      if (!auth) {
+        throw new Error('Authentication service is not available. Please check your configuration.');
+      }
       // Sign in with Firebase Auth
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
       const user = userCredential.user;

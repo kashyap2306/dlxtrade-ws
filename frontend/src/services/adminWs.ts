@@ -23,7 +23,14 @@ class AdminWebSocketService {
 
     try {
       // Get fresh Firebase token
-      const token = await auth.currentUser?.getIdToken();
+      let token = null;
+      if (auth?.currentUser) {
+        try {
+          token = await auth.currentUser.getIdToken();
+        } catch (error) {
+          console.warn('[AdminWS] Failed to get Firebase token:', error);
+        }
+      }
       const wsUrl = token ? `${ADMIN_WS_URL}?token=${token}` : ADMIN_WS_URL;
 
       this.ws = new WebSocket(wsUrl);

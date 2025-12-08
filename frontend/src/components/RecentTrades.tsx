@@ -32,6 +32,12 @@ export default function RecentTrades() {
 
       setTrades(todayTrades);
     } catch (err: any) {
+      // Handle 401 errors gracefully - prevent infinite retries
+      if (err.response?.status === 401) {
+        console.warn('[RecentTrades] 401 Unauthorized - authentication issue, not retrying');
+        setTrades([]);
+        return;
+      }
       // Safe fallback: if response status = 500 → return [] so that UI doesn't crash
       if (err.response?.status === 500) {
         console.warn('[RecentTrades] Backend returned 500 error, using empty array fallback');

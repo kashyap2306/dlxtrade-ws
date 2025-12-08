@@ -38,6 +38,7 @@ import { walletRoutes } from './routes/wallet';
 import { marketRoutes } from './routes/market';
 import { telegramRoutes } from './routes/telegram';
 import { backgroundResearchRoutes } from './routes/backgroundResearch';
+import { broadcastPopupRoutes } from './routes/broadcastPopup';
 
 // Environment checks
 console.log("CHECK ENV:", !!process.env.FIREBASE_PROJECT_ID && !!process.env.FIREBASE_CLIENT_EMAIL && !!process.env.FIREBASE_PRIVATE_KEY);
@@ -48,6 +49,22 @@ logger.info("WS VERSION: 2025-DEC-05-ONBOARDING-PATCH");
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
     logger: logger.child({ component: 'fastify' }),
+  });
+
+  // REQUEST TIMING INSTRUMENTATION - STEP B
+  app.addHook('onRequest', async (req, reply) => {
+    (req as any).__startTime = Date.now();
+  });
+
+  app.addHook('onResponse', async (req, reply) => {
+    const start = (req as any).__startTime || Date.now();
+    const duration = Date.now() - start;
+    app.log.info({
+      url: req.raw.url,
+      method: req.raw.method,
+      duration,
+      userAgent: req.headers['user-agent']?.substring(0, 50)
+    }, 'request-timing');
   });
 
   // CORS middleware - MUST BE FIRST
@@ -132,7 +149,12 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(exchangeRoutes, { prefix: '/api' });
   await app.register(integrationsRoutes, { prefix: '/api' });
   await app.register(engineRoutes, { prefix: '/api' });
-  await app.register(usersRoutes, { prefix: '/api' });
+
+  // Broadcast popup routes (must be early)
+  await app.register(broadcastPopupRoutes, { prefix: "/api" });
+  console.log("[ROUTE READY] Broadcast popup routes mounted");
+
+  // await app.register(usersRoutes, { prefix: '/api/users' }); // Temporarily disabled
 
   // Additional routes
   await app.register(metricsRoutes, { prefix: '/api' });
@@ -182,6 +204,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   console.log('  - /api/metrics');
     console.log('  - /api/chatbot');
     console.log('  - /api/market/*');
+    console.log('  - /api/broadcast-popup/*');
     console.log('  - /ws (WebSocket)');
   console.log('  - /ws/admin (Admin WebSocket)');
   console.log('  - / (Root WebSocket - unauthenticated, for Render WS health)');

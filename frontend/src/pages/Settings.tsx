@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { settingsApi, providerApi, exchangeService, adminApi } from '../services/api';
 import Toast from '../components/Toast';
-import Sidebar from '../components/Sidebar';
 import { API_NAME_MAP } from "../constants/providers";
 import { EXCHANGES } from "../constants/exchanges";
 import { useAuth } from '../hooks/useAuth';
@@ -21,7 +20,6 @@ import {
   XMarkIcon
 } from '@heroicons/react/24/outline';
 import { SettingsGeneralSection } from './SettingsGeneralSection';
-import { SettingsPositionSizingSection } from './SettingsPositionSizingSection';
 import { SettingsApiProvidersSection } from './SettingsApiProvidersSection';
 import { SettingsExchangeSection } from './SettingsExchangeSection';
 import { BackgroundResearchWizard } from './BackgroundResearchWizard';
@@ -29,7 +27,6 @@ import { SettingsModals } from './SettingsModals';
 
 console.log("🟣 SETTINGS COMPONENT CHECK", {
   General: SettingsGeneralSection,
-  PositionSizing: SettingsPositionSizingSection,
   Providers: SettingsApiProvidersSection,
   Exchange: SettingsExchangeSection,
   Wizard: BackgroundResearchWizard,
@@ -48,7 +45,6 @@ const Settings = () => {
   const [retryCount, setRetryCount] = useState(0);
   const isMountedRef = useRef(true);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-  const isLoadingTopCoinsRef = useRef(false); 
   const [savingSettings, setSavingSettings] = useState(false);
   const [integrationsLoading, setIntegrationsLoading] = useState(false); 
   const [selectedExchange, setSelectedExchange] = useState<string>('');
@@ -59,14 +55,6 @@ const Settings = () => {
   const [savingProvider, setSavingProvider] = useState<string | null>(null);
   const [providerTestResults, setProviderTestResults] = useState<Record<string, { status: 'success' | 'error' | null; message: string }>>({});
   const [showProviderDetails, setShowProviderDetails] = useState<Record<string, boolean>>({});
-  const [top100Coins, setTop100Coins] = useState<string[]>([]);
-  const [coinSearch, setCoinSearch] = useState('');
-  const [showCoinDropdown, setShowCoinDropdown] = useState(false);
-  const [tradingSettings, setTradingSettings] = useState({
-    manualCoins: [] as string[],
-    positionSizingMap: [] as { min: number; max: number; percent: number }[],
-    maxPositionPerTrade: 10,
-  });
   const [notificationSettings, setNotificationSettings] = useState<any>({});
   const [showAutoTradeModal, setShowAutoTradeModal] = useState(false);
   const [notificationPrereqs, setNotificationPrereqs] = useState<any>(null);
@@ -74,6 +62,18 @@ const Settings = () => {
   const [accuracyThresholdInput, setAccuracyThresholdInput] = useState('80');
   const [telegramForAccuracy, setTelegramForAccuracy] = useState(false);
   const [sampleAccuracy, setSampleAccuracy] = useState(70);
+
+  // New state for backend-saved configs
+  const defaultTradingConfig = {
+    maxPositionPercent: 2,
+    maxDailyLossPercent: 3,
+    maxTradesPerDay: 10,
+    preferredTradeType: 'swing',
+    tradeConfirmationRequired: true
+  };
+  const [tradingConfig, setTradingConfig] = useState<any>(defaultTradingConfig);
+  const [providers, setProviders] = useState<any>({});
+  const [exchangeConfig, setExchangeConfig] = useState<any>(null);
 
   // Initial Settings State (from snippet 11 - defined before callbacks)
   const [settings, setSettings] = useState<any>({
@@ -128,24 +128,6 @@ const Settings = () => {
       }
   }, []);
   
-  const loadTradingSettings = useCallback(async () => {
-    console.log('[LOAD] Starting loadTradingSettings...');
-    try {
-      const response = await settingsApi.trading.load();
-      console.log('[LOAD] loadTradingSettings success:', response.data);
-      setTradingSettings(prev => ({
-        ...prev,
-        ...response.data
-      }));
-    } catch (err) {
-      console.error('[LOAD] Failed to load trading settings:', err);
-      console.error('[LOAD] Error details:', {
-        message: err.message,
-        status: err.response?.status,
-        data: err.response?.data
-      });
-    }
-  }, []);
 
   const loadConnectedExchange = useCallback(async () => {
       console.log('[LOAD] Starting loadConnectedExchange...');
@@ -204,44 +186,6 @@ const Settings = () => {
     setShowAccuracyModal(false);
   }, [accuracyThresholdInput, notificationSettings, telegramForAccuracy]);
 
-  const loadTop100Coins = useCallback(async () => {
-    console.log('[LOAD] Starting loadTop100Coins (getMarketData)...');
-    if (isLoadingTopCoinsRef.current) {
-      console.log('[LOAD] loadTop100Coins already in progress, skipping');
-      return;
-    }
-    isLoadingTopCoinsRef.current = true;
-    try {
-      console.log('[LOAD] Calling adminApi.getMarketData()...');
-      const response = await adminApi.getMarketData();
-      console.log('[LOAD] adminApi.getMarketData() response received');
-
-      // adminApi.getMarketData() returns axios response with data array
-      if (response?.data && Array.isArray(response.data)) {
-        const coins = response.data.map((coin: any) => coin.symbol || coin);
-        setTop100Coins(coins);
-        console.log('[LOAD] loadTop100Coins success: loaded', coins.length, 'coins');
-      } else {
-        // On any error or slow response, fallback to default list
-        console.warn('[LOAD] Invalid market data response, using fallback');
-        setTop100Coins(['BTCUSDT','ETHUSDT','BNBUSDT','ADAUSDT','SOLUSDT']);
-      }
-    } catch (err) {
-      console.error('[LOAD] Failed to load market data:', err);
-      console.error('[LOAD] Error details:', {
-        message: err.message,
-        status: err.response?.status,
-        data: err.response?.data
-      });
-      // Never throw errors to React - fallback silently
-      setTop100Coins(['BTCUSDT','ETHUSDT','BNBUSDT','ADAUSDT','SOLUSDT']);
-    } finally {
-      if (isMountedRef.current) {
-        isLoadingTopCoinsRef.current = false;
-        console.log('[LOAD] loadTop100Coins completed');
-      }
-    }
-  }, []);
 
 
   // REQ 4: Fix loadSettings() return mapping
@@ -343,101 +287,48 @@ const Settings = () => {
   // REQ 3 & 7: Fix token/401 errors and initialization order
   useEffect(() => {
     isMountedRef.current = true;
-    
-    // REQ 3: Ensure no request runs without a token (prevent undefined-token race conditions).
-    if (authLoading) return; // Wait for auth state to be loaded
-    if (!user) {
-      handleLogout(); // Redirect if auth finishes and user is null (401 fix)
+
+    console.log('[TEST] Settings mount - user:', user?.uid, 'authLoading:', authLoading);
+
+    // Wait for auth to finish loading
+    if (authLoading) {
+      console.log('[TEST] auth still loading - delaying settings load');
       return;
     }
-    
-    const fetchData = async () => {
+
+    // If auth resolved and there is no user, force logout/redirect to avoid 401
+    if (!user) {
+      console.warn('[Settings] No authenticated user after auth loading - logging out');
+      handleLogout();
+      return;
+    }
+
+    // Auth is ready and user exists — now load settings
+    const loadAll = async () => {
       try {
-        setLoadingAll(true);
-        console.log('[LOAD] Starting initial data prefetch...');
-        const loadPromises = [
-          // REQ 7: Only load critical data: user settings, integrations, notifications.
-          // REQ 7: Wrap loadSettings in catch to prevent blocking on failure
-          loadSettings().catch(err => {
-            console.warn('[LOAD] Failed to load user settings (non-critical block):', err);
-            console.error('[LOAD] Settings error details:', {
-              message: err.message,
-              status: err.response?.status,
-              data: err.response?.data
-            });
-            console.log("⚠ Settings section failed but UI recovered");
-            return Promise.resolve();
-          }),
-          loadIntegrations().catch(err => {
-            console.warn('[LOAD] Failed to load integrations:', err);
-            console.error('[LOAD] Integrations error details:', {
-              message: err.message,
-              status: err.response?.status,
-              data: err.response?.data
-            });
-            console.log("⚠ Settings section failed but UI recovered");
-            return Promise.resolve();
-          }),
-          loadConnectedExchange().catch(err => {
-            console.warn('[LOAD] Failed to load connected exchange:', err);
-            console.error('[LOAD] Exchange error details:', {
-              message: err.message,
-              status: err.response?.status,
-              data: err.response?.data
-            });
-            console.log("⚠ Settings section failed but UI recovered");
-            return Promise.resolve();
-          }),
-          loadNotificationSettings().catch(err => {
-            console.warn('[LOAD] Failed to load notification settings:', err);
-            console.error('[LOAD] Notifications error details:', {
-              message: err.message,
-              status: err.response?.status,
-              data: err.response?.data
-            });
-            console.log("⚠ Settings section failed but UI recovered");
-            return Promise.resolve();
-          }),
-          loadTradingSettings().catch(err => {
-            console.warn('[LOAD] Failed to load trading settings:', err);
-            console.error('[LOAD] Trading settings error details:', {
-              message: err.message,
-              status: err.response?.status,
-              data: err.response?.data
-            });
-            console.log("⚠ Trading settings failed but UI recovered");
-            return Promise.resolve();
-          })
-        ];
+        await loadSettings();
 
-        // Load all data asynchronously without blocking - no Promise.all
-        loadPromises.forEach(promise => {
-          promise.catch(err => {
-            console.warn('[LOAD] Non-critical data load failed:', err);
-          });
-        });
+        // Load new backend configs
+        const uid = user.uid;
+        Promise.allSettled([
+          settingsApi.loadTradingConfig(uid).then(r => setTradingConfig(r.data.config || defaultTradingConfig)),
+          settingsApi.loadProviderConfig(uid).then(r => setProviders(r.data.config || {})),
+          settingsApi.loadExchangeConfig(uid).then(r => setExchangeConfig(r.data || {})),
+        ]).then(() => console.log('[SETTINGS] loaded configs'));
 
-        // Fire and forget top 100 coins (non-critical)
-        loadTop100Coins().catch(err => { console.warn('Failed to load top 100 coins (background):', err); });
-
-        console.log('[LOAD] All data loading initiated asynchronously');
-      } catch (e) {
-        // Only set error if all critical sections failed
-        console.error('[LOAD] Multiple data loading failures:', e);
-        setError(e);
-      } finally {
-        if (isMountedRef.current) {
-          console.log('[LOAD] Setting loadingAll to false');
-          setLoadingAll(false);
-        }
+        // add other loads the same guarded way
+      } catch (err) {
+        console.warn('[LOAD] Failed to load user settings (guarded):', err);
       }
     };
-    
-    fetchData();
-    
-    // Cleanup function
-    return () => { isMountedRef.current = false; };
-  }, [retryCount, authLoading, user, handleLogout, loadNotificationSettings, loadIntegrations, loadConnectedExchange, loadTop100Coins, loadTradingSettings]); // REQ 3: Added authLoading, user, handleLogout to deps.
+
+    loadAll();
+
+    return () => {
+      isMountedRef.current = false;
+    };
+    // deliberately include authLoading and user in deps to re-run when auth is ready
+  }, [authLoading, user]);
   
   // Handlers (rest of existing handlers like handleSaveGeneralSettings, handleProviderKeyChange, etc.)
 
@@ -457,19 +348,21 @@ const Settings = () => {
     }
   };
 
-  const handleSaveTradingSettings = async () => {
-    setSavingSettings(true);
+
+  const handleSaveTradingConfig = async (newConfig: any) => {
     try {
-      await settingsApi.trading.update(tradingSettings);
-      showToast('Trading settings saved successfully', 'success');
+      const resp = await settingsApi.saveTradingConfig(user!.uid, newConfig);
+      if (resp?.data?.ok) {
+        setTradingConfig(resp.data.config); // immediate UI reflect
+        showToast('Trading settings saved', 'success');
+      }
     } catch (err: any) {
       if (err.response?.status === 401) {
         handleLogout();
         return;
       }
-      showToast(err.response?.data?.error || 'Failed to save trading settings', 'error');
-    } finally {
-      setSavingSettings(false);
+      showToast('Failed to save trading settings', 'error');
+      console.error(err);
     }
   };
   
@@ -497,7 +390,7 @@ const Settings = () => {
         }
       }
 
-      await settingsApi.providers.save({
+      await settingsApi.providers.save(user!.uid, {
         providerId: providerName.toLowerCase().replace(/\s+/g, ''),
         providerType,
         isPrimary,
@@ -577,47 +470,7 @@ const Settings = () => {
     });
   };
 
-  const calculatePositionForAccuracy = (accuracy: number): number => {
-    if (accuracy < 0 || accuracy > 100) {
-      return 0;
-    } 
-    // DEFENSIVE: Check if positionSizingMap exists and is valid
-    if (!tradingSettings.positionSizingMap || !Array.isArray(tradingSettings.positionSizingMap)) {
-      return 0;
-    }
-    const range = tradingSettings.positionSizingMap.find((r: any) => 
-      r && typeof r.min === 'number' && typeof r.max === 'number' && typeof r.percent === 'number' &&
-      accuracy >= r.min && accuracy <= r.max
-    );
-    if (!range) return 0;
-    const maxPosition = tradingSettings.maxPositionPerTrade || 10;
-    const result = Math.min(range.percent, maxPosition);
-    // DEFENSIVE: Ensure result is a valid number
-    return isNaN(result) ? 0 : Math.max(0, result);
-  };
   
-  const updatePositionSizingMap = (index: number, field: 'min' | 'max' | 'percent', value: number) => {
-    const newMap = [...tradingSettings.positionSizingMap];
-    newMap[index] = { ...newMap[index], [field]: value };
-    setTradingSettings({ ...tradingSettings, positionSizingMap: newMap });
-  };
-  
-  // Coin Selection Helpers
-  const addCoinToManual = (coin: string) => {
-    if (!tradingSettings.manualCoins.includes(coin)) {
-      setTradingSettings({ ...tradingSettings, manualCoins: [...tradingSettings.manualCoins, coin] });
-    }
-    setCoinSearch('');
-    setShowCoinDropdown(false);
-  };
-
-  const removeCoinFromManual = (coin: string) => {
-    setTradingSettings({ ...tradingSettings, manualCoins: tradingSettings.manualCoins.filter((c: string) => c !== coin) });
-  };
-
-  const filteredCoins = top100Coins.filter((coin) => 
-    coin.toLowerCase().includes(coinSearch.toLowerCase()) && !tradingSettings.manualCoins.includes(coin)
-  );
 
   // Exchange Handlers
   const handleExchangeSelect = (exchangeId: string) => {
@@ -798,7 +651,6 @@ const Settings = () => {
   if (error) {
     return (
       <div className="min-h-screen w-full fixed inset-0 bg-gradient-to-br from-[#0a0f1c] via-[#111727] to-[#000a0f] overflow-y-auto">
-        <Sidebar onLogout={handleLogout} />
         <main className="min-h-screen w-full relative z-10 pt-16 lg:pt-0 lg:pl-64">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-12 flex items-center justify-center">
             <ErrorState
@@ -819,7 +671,6 @@ const Settings = () => {
     // Should be caught by the useEffect above, but serves as a final guard
     return (
       <div className="min-h-screen w-full fixed inset-0 bg-gradient-to-br from-[#0a0f1c] via-[#111727] to-[#000a0f] overflow-y-auto">
-        <Sidebar onLogout={handleLogout} />
         <main className="min-h-screen w-full relative z-10 pt-16 lg:pt-0 lg:pl-64">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-12 flex items-center justify-center">
             <div className="text-center">
@@ -836,7 +687,6 @@ const Settings = () => {
     return (
       <ErrorBoundary>
         <div className="min-h-screen bg-gradient-to-br from-[#0a0f1c] via-[#111727] to-[#000a0f] overflow-y-auto">
-          <Sidebar onLogout={handleLogout} />
           <main className="min-h-screen w-full relative z-10 pt-16 lg:pt-0 lg:pl-64">
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-12">
               <h1 className="text-4xl font-extrabold text-white mb-10 border-b border-purple-500/30 pb-3">
@@ -851,25 +701,6 @@ const Settings = () => {
                 handleSaveGeneralSettings={handleSaveGeneralSettings}
               />
 
-              <SettingsPositionSizingSection
-                tradingSettings={tradingSettings}
-                setTradingSettings={setTradingSettings}
-                maxPositionPerTrade={tradingSettings.maxPositionPerTrade || 10}
-                sampleAccuracy={sampleAccuracy}
-                setSampleAccuracy={setSampleAccuracy}
-                updatePositionSizingMap={updatePositionSizingMap}
-                coinSearch={coinSearch}
-                setCoinSearch={setCoinSearch}
-                showCoinDropdown={showCoinDropdown}
-                setShowCoinDropdown={setShowCoinDropdown}
-                filteredCoins={filteredCoins}
-                addCoinToManual={addCoinToManual}
-                removeCoinFromManual={removeCoinFromManual}
-                savingSettings={savingSettings}
-                handleSaveTradingSettings={handleSaveTradingSettings}
-                calculatePositionForAccuracy={calculatePositionForAccuracy}
-              />
-
               <SettingsApiProvidersSection
                 settings={settings}
                 setSettings={setSettings}
@@ -878,7 +709,22 @@ const Settings = () => {
                 savingProvider={savingProvider}
                 providerTestResults={providerTestResults}
                 testProviderConnection={testProviderConnection}
-                handleProviderKeyChange={handleProviderKeyChange}
+                handleProviderKeyChange={(providerName, keyName, value, uid, setProviders) => {
+                  if (!user) return;
+                  const providerBody = {
+                    [providerName.toLowerCase().replace(/\s+/g, '')]: {
+                      apiKey: value,
+                      enabled: true
+                    }
+                  };
+                  settingsApi.saveProviderConfig(user.uid, providerBody).then(() => {
+                    setProviders(prev => ({ ...prev, [providerName]: providerBody }));
+                    setToast({ message: `${providerName} API key saved!`, type: 'success' });
+                  }).catch(err => {
+                    console.error(err);
+                    setToast({ message: `Failed to save ${providerName} key`, type: 'error' });
+                  });
+                }}
                 handleToggleProviderEnabled={handleToggleProviderEnabled}
               />
 

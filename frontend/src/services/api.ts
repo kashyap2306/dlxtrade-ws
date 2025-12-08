@@ -48,196 +48,204 @@ export const authApi = {
 
 // Admin API
 export const adminApi = {
-  listKeys: () => api.get('/api/admin/keys'),
-  getKey: (id: string) => api.get(`/api/admin/keys/${id}`),
-  createKey: (data: any) => api.post('/api/admin/keys', data),
-  updateKey: (id: string, data: any) => api.put(`/api/admin/keys/${id}`, data),
-  deleteKey: (id: string) => api.delete(`/api/admin/keys/${id}`),
-  toggleTestnet: () => api.post('/api/admin/toggle-testnet'),
+  listKeys: () => api.get('/admin/keys'),
+  getKey: (id: string) => api.get(`/admin/keys/${id}`),
+  createKey: (data: any) => api.post('/admin/keys', data),
+  updateKey: (id: string, data: any) => api.put(`/admin/keys/${id}`, data),
+  deleteKey: (id: string) => api.delete(`/admin/keys/${id}`),
+  toggleTestnet: () => api.post('/admin/toggle-testnet'),
   // New admin endpoints
-  getUsers: () => api.get('/api/admin/users'),
-  getUser: (uid: string) => api.get(`/api/admin/user/${uid}`),
-  getUserLogs: (uid: string, limit?: number) => api.get(`/api/admin/user/${uid}/logs`, { params: { limit } }),
-  getUserHFTLogs: (uid: string, limit?: number) => api.get(`/api/admin/user/${uid}/hft/logs`, { params: { limit } }),
-  stopEngine: (uid: string) => api.post(`/api/admin/user/${uid}/stop-engine`),
-  stopHFT: (uid: string) => api.post(`/api/admin/user/${uid}/stop-hft`),
-  resetRisk: (uid: string) => api.post(`/api/admin/user/${uid}/reset-risk`),
-  reloadKeys: (uid: string) => api.post(`/api/admin/user/${uid}/reload-keys`),
-  unlockAgent: (uid: string, agentName: string) => api.post(`/api/admin/user/${uid}/unlock-agent`, { agentName }),
-  lockAgent: (uid: string, agentName: string) => api.post(`/api/admin/user/${uid}/lock-agent`, { agentName }),
-  giveFullAccess: (uid: string) => api.post(`/api/admin/user/${uid}/give-full-access`),
-  getGlobalStats: () => api.get('/api/admin/global-stats'),
-  reloadAllEngines: () => api.post('/api/admin/reload-all-engines'),
-  getAgentStats: () => api.get('/api/admin/agents/stats'),
-  getAgentUsers: (agentName: string) => api.get(`/api/admin/agents/${encodeURIComponent(agentName)}/users`),
-  updateAgent: (agentId: string, data: any) => api.put(`/api/admin/agents/${agentId}`, data),
-  createAgent: (data: any) => api.post('/api/admin/agents', data),
-  deleteAgent: (agentId: string) => api.delete(`/api/admin/agents/${agentId}`),
-  toggleAgent: (agentId: string) => api.post(`/api/admin/agents/${agentId}/toggle`),
-  getUnlockRequests: () => api.get('/api/admin/unlock-requests'),
-  approveUnlockRequest: (requestId: string) => api.post(`/api/admin/unlock-requests/${requestId}/approve`),
-  denyUnlockRequest: (requestId: string, reason?: string) => api.post(`/api/admin/unlock-requests/${requestId}/deny`, { reason }),
-  updateUserAgentSettings: (uid: string, agentName: string, settings: any) => api.put(`/api/admin/user/${uid}/agent/${encodeURIComponent(agentName)}/settings`, settings),
-  getGlobalSettings: () => api.get('/api/admin/global-settings'),
-  updateGlobalSettings: (settings: any) => api.post('/api/admin/global-settings', settings),
-  getMarketData: () => timeoutApi.get('/api/market/top-coins', 8000),
-  deleteUser: (uid: string) => api.delete(`/api/admin/users/${uid}`),
+  getUsers: () => api.get('/admin/users'),
+  getUser: (uid: string) => api.get(`/admin/user/${uid}`),
+  getUserLogs: (uid: string, limit?: number) => api.get(`/admin/user/${uid}/logs`, { params: { limit } }),
+  getUserHFTLogs: (uid: string, limit?: number) => api.get(`/admin/user/${uid}/hft/logs`, { params: { limit } }),
+  stopEngine: (uid: string) => api.post(`/admin/user/${uid}/stop-engine`),
+  stopHFT: (uid: string) => api.post(`/admin/user/${uid}/stop-hft`),
+  resetRisk: (uid: string) => api.post(`/admin/user/${uid}/reset-risk`),
+  reloadKeys: (uid: string) => api.post(`/admin/user/${uid}/reload-keys`),
+  unlockAgent: (uid: string, agentName: string) => api.post(`/admin/user/${uid}/unlock-agent`, { agentName }),
+  lockAgent: (uid: string, agentName: string) => api.post(`/admin/user/${uid}/lock-agent`, { agentName }),
+  giveFullAccess: (uid: string) => api.post(`/admin/user/${uid}/give-full-access`),
+  getGlobalStats: () => api.get('/admin/global-stats'),
+  reloadAllEngines: () => api.post('/admin/reload-all-engines'),
+  getAgentStats: () => api.get('/admin/agents/stats'),
+  getAgentUsers: (agentName: string) => api.get(`/admin/agents/${encodeURIComponent(agentName)}/users`),
+  updateAgent: (agentId: string, data: any) => api.put(`/admin/agents/${agentId}`, data),
+  createAgent: (data: any) => api.post('/admin/agents', data),
+  deleteAgent: (agentId: string) => api.delete(`/admin/agents/${agentId}`),
+  toggleAgent: (agentId: string) => api.post(`/admin/agents/${agentId}/toggle`),
+  getUnlockRequests: () => api.get('/admin/unlock-requests'),
+  approveUnlockRequest: (requestId: string) => api.post(`/admin/unlock-requests/${requestId}/approve`),
+  denyUnlockRequest: (requestId: string, reason?: string) => api.post(`/admin/unlock-requests/${requestId}/deny`, { reason }),
+  updateUserAgentSettings: (uid: string, agentName: string, settings: any) => api.put(`/admin/user/${uid}/agent/${encodeURIComponent(agentName)}/settings`, settings),
+  getGlobalSettings: () => api.get('/admin/global-settings'),
+  updateGlobalSettings: (settings: any) => api.post('/admin/global-settings', settings),
+  getMarketData: () => timeoutApi.get('/market/top-coins', 8000),
+  deleteUser: (uid: string) => api.delete(`/admin/users/${uid}`),
   // Agent purchases
-  getPurchases: (params?: { status?: string; limit?: number }) => api.get('/api/admin/agents/purchases', { params }),
-  approvePurchase: (purchaseId: string) => api.post(`/api/admin/agents/purchases/${purchaseId}/approve`),
+  getPurchases: (params?: { status?: string; limit?: number }) => api.get('/admin/agents/purchases', { params }),
+  approvePurchase: (purchaseId: string) => api.post(`/admin/agents/purchases/${purchaseId}/approve`),
 
   // Background Research
   backgroundResearch: {
-    getSettings: () => api.get('/api/background-research/settings/get'),
+    getSettings: () => api.get('/background-research/settings/get'),
     saveSettings: (data: {
       backgroundResearchEnabled: boolean;
       telegramBotToken?: string;
       telegramChatId?: string;
       researchFrequencyMinutes: number;
       accuracyTrigger: number;
-    }) => api.post('/api/background-research/settings/save', data),
-    test: (data: { botToken: string; chatId: string }) => api.post('/api/background-research/settings/test', data),
+    }) => api.post('/background-research/settings/save', data),
+    test: (data: { botToken: string; chatId: string }) => api.post('/background-research/settings/test', data),
   },
 
   // Telegram
   telegram: {
-    test: (data: { botToken: string; chatId: string }) => api.post('/api/telegram/test', data),
+    test: (data: { botToken: string; chatId: string }) => api.post('/telegram/test', data),
   },
-  rejectPurchase: (purchaseId: string, reason?: string) => api.post(`/api/admin/agents/purchases/${purchaseId}/reject`, { reason }),
+  rejectPurchase: (purchaseId: string, reason?: string) => api.post(`/admin/agents/purchases/${purchaseId}/reject`, { reason }),
   // Broadcast Popup
-  broadcastPopup: (data: any) => api.post('/api/admin/popup-broadcast', data),
+  broadcastPopup: (data: any) => api.post('/admin/popup-broadcast', data),
   // Admin promotion
-  promote: (email: string) => api.post('/api/admin/promote', { email }, {
+  promote: (email: string) => api.post('/admin/promote', { email }, {
     headers: {
       'x-admin-setup': 'SUPER-SECRET-998877'
     }
   }),
 };
 
-// Orders - routes already include /api prefix from baseURL
+// Orders - routes include /api prefix from baseURL
 export const ordersApi = {
-  listOrders: (params?: any) => api.get('/api/orders', { params }),
-  getOrder: (id: string) => api.get(`/api/orders/${id}`),
-  placeOrder: (data: any) => api.post('/api/orders', data),
-  cancelOrder: (id: string) => api.delete(`/api/orders/${id}`),
-  listFills: (params?: any) => api.get('/api/fills', { params }),
+  listOrders: (params?: any) => api.get('/orders', { params }),
+  getOrder: (id: string) => api.get(`/orders/${id}`),
+  placeOrder: (data: any) => api.post('/orders', data),
+  cancelOrder: (id: string) => api.delete(`/orders/${id}`),
+  listFills: (params?: any) => api.get('/fills', { params }),
 };
 
 // Engine API
 export const engineApi = {
-  getStatus: () => api.get('/api/engine/status'),
-  update: (payload: any) => api.post('/api/engine/update', payload),
-  toggle: (payload: any) => api.post('/api/engine/toggle', payload),
+  getStatus: () => api.get('/engine/status'),
+  update: (payload: any) => api.post('/engine/update', payload),
+  toggle: (payload: any) => api.post('/engine/toggle', payload),
   // Legacy endpoints for backward compatibility
-  start: (config: any) => api.post('/api/engine/start', config),
-  stop: () => api.post('/api/engine/stop'),
-  updateConfig: (config: any) => api.put('/api/engine/config', config),
-  pauseRisk: () => api.post('/api/engine/risk/pause'),
-  resumeRisk: () => api.post('/api/engine/risk/resume'),
-  updateRiskLimits: (limits: any) => api.put('/api/engine/risk/limits', limits),
+  start: (config: any) => api.post('/engine/start', config),
+  stop: () => api.post('/engine/stop'),
+  updateConfig: (config: any) => api.put('/engine/config', config),
+  pauseRisk: () => api.post('/engine/risk/pause'),
+  resumeRisk: () => api.post('/engine/risk/resume'),
+  updateRiskLimits: (limits: any) => api.put('/engine/risk/limits', limits),
 };
 
-// Metrics - routes already include /api prefix from baseURL
+// Metrics - routes include /api prefix from baseURL
 export const metricsApi = {
-  health: () => api.get('/api/health'),
-  metrics: () => api.get('/api/metrics'),
+  health: () => api.get('/health'),
+  metrics: () => api.get('/metrics'),
 };
 
-// Research - routes already include /api prefix from baseURL
+// Research - routes include /api prefix from baseURL
 export const researchApi = {
   run: (data?: { uid?: string; symbol?: string; symbols?: string[] }) =>
-    api.post('/api/research/run', data), // Now internally calls FREE MODE
-  getLogs: (params?: any) => api.get('/api/research/logs', { params }),
+    api.post('/research/run', data), // Now internally calls FREE MODE
+  getLogs: (params?: any) => api.get('/research/logs', { params }),
 
   // Deep Research endpoints
   deepResearch: {
-    getTop10: () => api.get('/api/research/deep-research/top10'),
-    getCoin: (symbol: string) => api.get(`/api/research/deep-research/coin/${symbol}`),
+    getTop10: () => api.get('/research/deep-research/top10'),
+    getCoin: (symbol: string) => api.get(`/research/deep-research/coin/${symbol}`),
   },
 };
 
-// Settings - routes already include /api prefix from baseURL
+// Settings - routes include /api prefix from baseURL
 export const settingsApi = {
-  load: () => cachedApi.get('/api/settings/load'),
+  load: () => cachedApi.get('/settings/load'),
   save: async (settings: any) => {
-    const response = await api.post('/api/settings/save', settings);
+    const response = await api.post('/settings/save', settings);
     // Invalidate settings cache after update
-    invalidateCache('/api/settings/load');
+    invalidateCache('/settings/load');
     return response;
   },
 
   // Trading Settings (General Trading Config)
   general: {
-    load: () => api.get('/api/settings/general'),
-    save: (settings: any) => api.post('/api/settings/general', settings),
+    load: () => api.get('/settings/general'),
+    save: (settings: any) => api.post('/settings/general', settings),
   },
 
   // Trading Settings
   trading: {
-    load: () => api.get('/api/trading/settings'),
-    update: (settings: any) => api.post('/api/trading/settings', settings),
+    load: () => api.get('/trading/settings'),
+    update: (settings: any) => api.post('/trading/settings', settings),
     autotrade: {
-      status: () => api.get('/api/auto-trade/status'),
+      status: () => api.get('/auto-trade/status'),
     },
   },
 
   // Background Research Settings
   backgroundResearch: {
-    getSettings: () => api.get('/api/background-research/settings/get'),
+    getSettings: () => api.get('/background-research/settings/get'),
     saveSettings: (data: {
       backgroundResearchEnabled: boolean;
       telegramBotToken?: string;
       telegramChatId?: string;
       researchFrequencyMinutes: number;
       accuracyTrigger: number;
-    }) => api.post('/api/background-research/settings/save', data),
-    test: (data: { botToken: string; chatId: string }) => api.post('/api/background-research/settings/test', data),
+    }) => api.post('/background-research/settings/save', data),
+    test: (data: { botToken: string; chatId: string }) => api.post('/background-research/settings/test', data),
   },
 
   // Provider Settings
   providers: {
-    load: () => api.get('/api/settings/providers'),
-    save: (data: {
+    load: () => api.get('/settings/providers'),
+    save: (uid: string, data: {
       providerId: string;
       providerType: 'marketData' | 'news' | 'metadata';
       isPrimary: boolean;
       enabled: boolean;
       apiKey?: string;
-    }) => api.post('/api/settings/providers/save', data),
+    }) => api.post(`/users/${uid}/provider-config`, data),
     changeKey: (data: {
       providerId: string;
       providerType: 'marketData' | 'news' | 'metadata';
       isPrimary: boolean;
       newApiKey: string;
-    }) => api.post('/api/settings/providers/change', data),
+    }) => api.post('/settings/providers/change', data),
     test: (data: {
       providerName: string;
       type: 'marketData' | 'news' | 'metadata';
       apiKey?: string;
-    }) => api.post('/api/settings/providers/test', data),
+    }) => api.post('/settings/providers/test', data),
   },
 
   // Notification Settings
   notifications: {
-    load: () => api.get('/api/settings/notifications'),
-    update: (settings: any) => api.post('/api/settings/notifications', settings),
-    checkPrereq: () => api.get('/api/settings/notifications/prereq'),
+    load: () => api.get('/settings/notifications'),
+    update: (settings: any) => api.post('/settings/notifications', settings),
+    checkPrereq: () => api.get('/settings/notifications/prereq'),
   },
+
+  // New settings endpoints
+  saveTradingConfig: (uid: string, config: any) => api.post(`/users/${uid}/trading-config`, config),
+  loadTradingConfig: (uid: string) => api.get(`/users/${uid}/trading-config`),
+  saveProviderConfig: (uid: string, providerBody: any) => api.post(`/users/${uid}/provider-config`, providerBody),
+  loadProviderConfig: (uid: string) => api.get(`/users/${uid}/provider-config`),
+  saveExchangeConfig: (uid: string, exchangeBody: any) => api.post(`/users/${uid}/exchange-config`, exchangeBody),
+  loadExchangeConfig: (uid: string) => api.get(`/users/${uid}/exchange-config`),
 };
 
 // Execution API
 export const executionApi = {
-  getLogs: (params?: any) => api.get('/api/execution/logs', { params }),
-  close: (data: { symbol: string; orderId?: string }) => api.post('/api/execution/close', data),
+  getLogs: (params?: any) => api.get('/execution/logs', { params }),
+  close: (data: { symbol: string; orderId?: string }) => api.post('/execution/close', data),
   execute: (data: { symbol: string; signal: 'BUY' | 'SELL'; entry: number; size: number; sl?: number; tp?: number }) =>
-    api.post('/api/execution/execute', data),
+    api.post('/execution/execute', data),
 };
 
 // Provider Config API
 export const providerApi = {
-  list: (type?: string) => api.get(type ? `/api/provider/list?type=${type}` : '/api/provider/list'),
-  update: (data: any) => api.post('/api/provider/update', data),
-  test: (data: any) => api.post('/api/provider/test', data),
+  list: (type?: string) => api.get(type ? `/provider/list?type=${type}` : '/provider/list'),
+  update: (data: any) => api.post('/provider/update', data),
+  test: (data: any) => api.post('/provider/test', data),
 };
 
 // Removed: integrationsApi (invalid endpoint)
@@ -245,12 +253,12 @@ export const providerApi = {
 
 // HFT Engine API
 export const hftApi = {
-  getStatus: () => api.get('/api/hft/status'),
-  start: () => api.post('/api/hft/start'),
-  stop: () => api.post('/api/hft/stop'),
-  getLogs: (params?: any) => api.get('/api/hft/logs', { params }),
-  loadSettings: () => api.get('/api/hft/settings/load'),
-  updateSettings: (settings: any) => api.post('/api/hft/settings/update', settings),
+  getStatus: () => api.get('/hft/status'),
+  start: () => api.post('/hft/start'),
+  stop: () => api.post('/hft/stop'),
+  getLogs: (params?: any) => api.get('/hft/logs', { params }),
+  loadSettings: () => api.get('/hft/settings/load'),
+  updateSettings: (settings: any) => api.post('/hft/settings/update', settings),
 };
 
 // Users - routes already include /api prefix from baseURL
@@ -269,71 +277,73 @@ export const usersApi = {
 
 // Agents - routes already include /api prefix from baseURL
 export const agentsApi = {
+  getAll: () => api.get('/agents'),
   get: (id: string) => api.get(`/agents/${id}`),
   unlock: (agentName: string) => api.post('/agents/unlock', { agentName }),
+  getUnlocks: () => api.get('/agents/unlocks'),
+  getUnlocked: () => api.get('/agents/unlocked'),
   submitUnlockRequest: (data: { agentId: string; agentName: string; fullName: string; phoneNumber: string; email: string }) =>
     api.post('/agents/submit-unlock-request', data),
   updateAgentSettings: (agentId: string, settings: any) => api.put(`/agents/${agentId}/settings`, settings),
-  // Removed: getAll, getUnlocked (invalid endpoints)
 };
 
-// Activity Logs - routes already include /api prefix from baseURL
+// Activity Logs - routes include /api prefix from baseURL
 export const activityLogsApi = {
-  get: (params?: { uid?: string; limit?: number }) => api.get('/api/activity-logs', { params }),
+  get: (params?: { uid?: string; limit?: number }) => api.get('/activity-logs', { params }),
 };
 
-// Trades - routes already include /api prefix from baseURL
+// Trades - routes include /api prefix from baseURL
 export const tradesApi = {
-  get: (params?: { uid?: string; limit?: number }) => api.get('/api/trades', { params }),
-  add: (data: any) => api.post('/api/trades/add', data),
+  get: (params?: { uid?: string; limit?: number }) => api.get('/trades', { params }),
+  add: (data: any) => api.post('/trades/add', data),
 };
 
-// Notifications - routes already include /api prefix from baseURL
+// Notifications - routes include /api prefix from baseURL
 export const notificationsApi = {
-  get: (params?: { limit?: number }) => cachedApi.get('/api/notifications', { params }),
-  markRead: (notificationId: string) => api.post('/api/notifications/mark-read', { notificationId }),
+  get: (params?: { limit?: number }) => cachedApi.get('/notifications', { params }),
+  markRead: (notificationId: string) => api.post('/notifications/mark-read', { notificationId }),
   push: (data: { uid: string; type: 'success' | 'error' | 'info' | 'warning'; title: string; message: string; timestamp?: number }) =>
-    api.post('/api/notifications/push', data),
+    api.post('/notifications/push', data),
 };
 
 // Broadcast Popup API
 export const broadcastPopupApi = {
-  getCurrent: () => api.get('/api/broadcast-popup/current'),
-  markAsSeen: (popupId: string) => api.post('/api/broadcast-popup/mark-seen', { popupId }),
-  getSeenPopups: () => api.get('/api/broadcast-popup/seen'),
+  getCurrent: () => api.get('/broadcast-popup/current'),
+  markAsSeen: (popupId: string) => api.post('/broadcast-popup/mark-seen', { popupId }),
+  getSeenPopups: () => api.get('/broadcast-popup/seen'),
 };
-// System Logs - routes already include /api prefix from baseURL
+// System Logs - routes include /api prefix from baseURL
 export const systemLogsApi = {
-  get: (params?: { limit?: number }) => api.get('/api/logs', { params }),
+  get: (params?: { limit?: number }) => api.get('/logs', { params }),
 };
 
 // UI Preferences API
 export const uiPreferencesApi = {
-  get: () => api.get('/api/ui-preferences'),
-  update: (preferences: any) => api.post('/api/ui-preferences/update', preferences),
+  get: () => api.get('/ui-preferences'),
+  update: (preferences: any) => api.post('/ui-preferences/update', preferences),
 };
 
 // Global Stats API
 export const globalStatsApi = {
-  get: () => api.get('/api/global-stats').catch(() => ({ data: {} })),
+  get: () => api.get('/global-stats').catch(() => ({ data: {} })),
 };
 
 // Engine Status API
 export const engineStatusApi = {
-  get: (params?: { uid?: string }) => api.get('/api/engine-status/status', { params }).catch(() => ({ data: {} })),
+  get: (params?: { uid?: string }) => api.get('/engine-status/status', { params }).catch(() => ({ data: {} })),
 };
 
 // HFT Logs API
 export const hftLogsApi = {
-  get: (params?: { uid?: string; limit?: number }) => api.get('/api/hft-logs/logs', { params }),
+  get: (params?: { uid?: string; limit?: number }) => api.get('/hft-logs/logs', { params }),
 };
 
 // Auto Trade API
 export const autoTradeApi = {
-  getStatus: () => api.get('/api/trading/autotrade/status'),
-  getConfig: () => api.get('/api/auto-trade/config'),
-  updateConfig: (config: any) => api.post('/api/auto-trade/config', config),
-  toggle: (enabled: boolean) => api.post('/api/trading/autotrade/toggle', { enabled }),
+  getStatus: () => api.get('/trading/autotrade/status'),
+  getConfig: () => api.get('/auto-trade/config'),
+  updateConfig: (config: any) => api.post('/auto-trade/config', config),
+  toggle: (enabled: boolean) => api.post('/trading/autotrade/toggle', { enabled }),
   panicStop: (reason?: string) => api.post('/auto-trade/panic-stop', { reason }),
   getActiveTrades: (limit?: number) => api.get('/auto-trade/active-trades', { params: { limit } }),
   closeTrade: (tradeId: string) => api.post('/auto-trade/close-trade', { tradeId }),
@@ -345,18 +355,18 @@ export const autoTradeApi = {
   resetCircuitBreaker: () => api.post('/auto-trade/reset-circuit-breaker'),
   // New auto-trade endpoints
   trigger: (params?: { dryRun?: boolean; symbol?: string }) => api.post('/auto-trade/trigger', {}, { params }),
-  getProposals: () => api.get('/api/auto-trade/proposals'),
-  getLogs: (limit?: number) => api.get('/api/auto-trade/logs', { params: { limit } }),
+  getProposals: () => api.get('/auto-trade/proposals'),
+  getLogs: (limit?: number) => api.get('/auto-trade/logs', { params: { limit } }),
 };
 
 // Market API
 export const marketApi = {
-  getSymbols: () => api.get('/api/market/symbols'),
+  getSymbols: () => api.get('/market/symbols'),
 };
 
 // Chatbot API
 export const chatbotApi = {
-  sendMessage: (data: { message: string }) => api.post('/api/chatbot', data),
+  sendMessage: (data: { message: string }) => api.post('/chatbot', data),
 };
 
 // Wallet - removed, endpoints don't exist
@@ -367,27 +377,27 @@ export const chatbotApi = {
 // Exchange API
 export const exchangeApi = {
   connect: (config: { exchange: string; apiKey: string; secret: string; passphrase?: string; testnet?: boolean }) =>
-    api.post('/api/exchange/connect', config),
+    api.post('/exchange/connect', config),
   disconnect: (exchange: string) =>
-    api.post('/api/exchange/disconnect', { exchange }),
+    api.post('/exchange/disconnect', { exchange }),
   status: (exchange?: string) =>
-    api.get('/api/exchange/status', { params: exchange ? { exchange } : {} }),
+    api.get('/exchange/status', { params: exchange ? { exchange } : {} }),
   // Legacy endpoints for backward compatibility
   saveConfig: (config: { exchange: string; apiKey: string; secret: string; passphrase?: string; testnet?: boolean }) =>
     api.post('/exchange/connect', config),
   getConfig: () =>
-    api.get(`/api/users/${localStorage.getItem('firebaseUser') ? JSON.parse(localStorage.getItem('firebaseUser')!).uid : ''}/exchange-config`),
+    api.get(`/users/${localStorage.getItem('firebaseUser') ? JSON.parse(localStorage.getItem('firebaseUser')!).uid : ''}/exchange-config`),
   removeConfig: () =>
-    api.post(`/api/users/${localStorage.getItem('firebaseUser') ? JSON.parse(localStorage.getItem('firebaseUser')!).uid : ''}/exchange-config`, {
+    api.post(`/users/${localStorage.getItem('firebaseUser') ? JSON.parse(localStorage.getItem('firebaseUser')!).uid : ''}/exchange-config`, {
       exchange: 'binance',
       apiKey: '',
       secret: '',
       testnet: true
     }),
   testConnection: (config: { exchange?: string; apiKey?: string; secret?: string; passphrase?: string; testnet?: boolean }) =>
-    api.post('/api/exchange/test', config),
+    api.post('/exchange/test', config),
   loadConnected: () =>
-    api.get('/api/exchange/connected'),
+    api.get('/exchange/connected'),
 };
 
 // Alias for backward compatibility - export exchangeService as well

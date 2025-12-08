@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
-import Sidebar from '../components/Sidebar';
 import { autoTradeApi, usersApi, globalStatsApi, engineStatusApi, settingsApi, notificationsApi, agentsApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { suppressConsoleError } from '../utils/errorHandler';
@@ -175,22 +174,29 @@ export default function Dashboard() {
         });
       });
 
+      // Set initial safe state - individual promises will update state as they resolve
       if (isMountedRef.current) {
         setDashboardState(prev => ({
           ...prev,
-          data: extractedData,
-          settings: extractedData.settings, // Fix 2: Correctly store settings
+          data: {
+            globalStats: {},
+            engineStatus: {},
+            agentsUnlocked: [],
+            settings: {},
+            notifications: []
+          },
+          settings: {},
           error: null,
           loading: false,
           hasLoaded: true,
           // Legacy state
-          autoTradeStatus: extractedData.engineStatus || {},
-          userStats: extractedData.globalStats || {},
+          autoTradeStatus: {},
+          userStats: {},
           walletBalances: [],
-          activeTrades: extractedData.globalStats?.hftLogs?.activeTrades || [], // Populated for state access
-          aiSignals: extractedData.globalStats?.activityLogs || [],
-          performanceStats: extractedData.globalStats || {},
-          portfolioHistory: extractedData.globalStats?.trades || [],
+          activeTrades: [],
+          aiSignals: [],
+          performanceStats: {},
+          portfolioHistory: [],
         }));
       }
     } catch (err: any) {
@@ -404,8 +410,6 @@ export default function Dashboard() {
         {/* Subtle grid overlay */}
         <div className="absolute inset-0 bg-[linear-gradient(to_right,#64748b08_1px,transparent_1px),linear-gradient(to_bottom,#64748b08_1px,transparent_1px)] bg-[size:32px_32px]"></div>
       </div>
-
-      <Sidebar />
 
       <main className="min-h-screen">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8">

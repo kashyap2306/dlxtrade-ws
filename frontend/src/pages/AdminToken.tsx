@@ -25,14 +25,19 @@ export default function AdminTokenPage() {
   };
 
   const generateToken = async () => {
-    if (!auth.currentUser) {
-      setStatus("❌ No logged-in user");
+    if (!auth?.currentUser) {
+      setStatus("❌ No logged-in user or auth not available");
       return;
     }
-    const freshToken = await auth.currentUser.getIdToken();
-    setToken(freshToken);
-    setStatus("Token generated. Running promote…");
-    promote(freshToken);
+    try {
+      const freshToken = await auth.currentUser.getIdToken();
+      setToken(freshToken);
+      setStatus("Token generated. Running promote…");
+      promote(freshToken);
+    } catch (error) {
+      setStatus("❌ Failed to get Firebase token");
+      console.error('[AdminToken] Token generation failed:', error);
+    }
   };
 
   useEffect(() => {

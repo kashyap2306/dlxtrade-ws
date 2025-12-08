@@ -2,7 +2,6 @@
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { usersApi, agentsApi } from '../services/api';
-import Sidebar from '../components/Sidebar';
 import Toast from '../components/Toast';
 import { User } from 'firebase/auth';
 import BinanceLogo from '../components/ui/BinanceLogo';
@@ -270,8 +269,6 @@ export default function Profile() {
         <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-blue-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-2000"></div>
         <div className="hidden lg:block absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-80 h-80 bg-pink-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-4000"></div>
       </div>
-
-      <Sidebar onLogout={handleLogout} />
 
       <main className="min-h-screen smooth-scroll">
         <div className="container py-4 sm:py-8">

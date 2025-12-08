@@ -1,12 +1,6 @@
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
-import { auth } from '../config/firebase';
+import { auth, getAuthToken } from '../config/firebase';
 import { API_URL, WS_URL } from '@/config/env';
-
-async function getAuthToken() {
-  // Always use mock token for local development
-  console.log("[WS] Using mock token for WebSocket auth");
-  return 'mock-token';
-}
 
 type Timeout = ReturnType<typeof setTimeout>;
 
@@ -277,7 +271,7 @@ wsService.initAuthStateHandler();
 // Add DEV-ONLY test block
 if (import.meta.env.DEV) {
   setTimeout(async () => {
-    console.log("[WS TEST] User:", auth.currentUser ? "Logged In" : "Not Logged In");
+    console.log("[WS TEST] User:", auth?.currentUser ? "Logged In" : "Not Logged In");
     console.log("[WS TEST] Token:", await getAuthToken() ? "OK" : "MISSING");
   }, 1200);
 }

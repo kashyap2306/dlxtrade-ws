@@ -22,159 +22,6 @@ const exchangeConfigSchema = z.object({
 });
 
 export async function exchangeRoutes(fastify: FastifyInstance) {
-  // POST /api/users/:id/exchange-config - Save exchange configuration
-  fastify.post('/users/:id/exchange-config', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Params: { id: string }; Body: any }>, reply: FastifyReply) => {
-    try {
-      const { id } = request.params;
-      const user = (request as any).user;
-      
-      // Log request details
-      logger.info({ 
-        uid: user.uid, 
-        targetId: id,
-        body: JSON.stringify(request.body),
-        hasApiKey: !!(request.body as any).apiKey,
-        hasSecret: !!(request.body as any).secret,
-        hasPassphrase: !!(request.body as any).passphrase,
-        exchange: (request.body as any).exchange,
-        type: (request.body as any).type 
-      }, 'Exchange config save request received');
-      
-      // Users can only update their own config unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (id !== user.uid && !isAdmin) {
-        return reply.code(403).send({ error: 'Access denied' });
-      }
-
-      const body = exchangeConfigSchema.parse(request.body);
-      
-      // Determine type: use 'type' field if provided, otherwise use 'exchange' field, default to 'binance'
-      const configType = body.type || body.exchange || 'binance';
-      
-      // Validate required fields for trading exchanges only
-      if (['binance', 'bitget', 'weex', 'bingx'].includes(configType)) {
-        if (!body.secret) {
-          return reply.code(400).send({ error: 'Secret key is required for trading exchanges' });
-        }
-        const requiredFields = ExchangeConnectorFactory.getRequiredFields(configType as any);
-        if (requiredFields.includes('passphrase') && !body.passphrase) {
-          return reply.code(400).send({ error: 'Passphrase is required for this exchange' });
-        }
-      }
-
-      // Get existing document to check if createdAt should be set
-      const { getFirebaseAdmin } = await import('../utils/firebase');
-      const db = getFirebaseAdmin().firestore();
-      const existingDoc = await db.collection('users').doc(id).collection('exchangeConfig').doc('current').get();
-      const now = admin.firestore.Timestamp.now();
-
-      // Encrypt credentials
-      const encryptedConfig: any = {
-        exchange: configType, // Keep for backward compatibility
-        apiKeyEncrypted: encrypt(body.apiKey),
-        updatedAt: now,
-      };
-      
-      // Add createdAt only if document doesn't exist
-      if (!existingDoc.exists) {
-        encryptedConfig.createdAt = now;
-      }
-      
-      // Only add secret/passphrase for trading exchanges
-      if (['binance', 'bitget', 'weex', 'bingx'].includes(configType)) {
-        if (body.secret) {
-          encryptedConfig.secretEncrypted = encrypt(body.secret);
-        }
-        if (body.passphrase) {
-          encryptedConfig.passphraseEncrypted = encrypt(body.passphrase);
-        }
-        encryptedConfig.testnet = body.testnet ?? true;
-      }
-
-      // Save to Firestore in user's exchangeConfig collection
-      await db.collection('users').doc(id).collection('exchangeConfig').doc('current').set(encryptedConfig, { merge: true });
-
-      // Verify it was saved
-      const savedDoc = await db.collection('users').doc(id).collection('exchangeConfig').doc('current').get();
-      logger.info({ 
-        uid: id, 
-        type: configType,
-        saved: savedDoc.exists,
-        hasApiKey: !!savedDoc.data()?.apiKeyEncrypted,
-        hasSecret: !!savedDoc.data()?.secretEncrypted,
-        hasPassphrase: !!savedDoc.data()?.passphraseEncrypted,
-        hasCreatedAt: !!savedDoc.data()?.createdAt,
-        hasUpdatedAt: !!savedDoc.data()?.updatedAt
-      }, 'Exchange config saved and verified');
-
-      return {
-        success: true,
-        message: 'Configuration saved successfully',
-        type: configType,
-        exchange: configType, // Keep for backward compatibility
-      };
-    } catch (err: any) {
-      if (err instanceof z.ZodError) {
-        logger.warn({ err: err.errors, uid: (request as any).user?.uid }, 'Exchange config validation error');
-        return reply.code(400).send({ error: 'Invalid input', details: err.errors });
-      }
-      logger.error({ err: err.message, stack: err.stack, uid: (request as any).user?.uid }, 'Error saving exchange config');
-      return reply.code(500).send({ error: err.message || 'Error saving exchange configuration' });
-    }
-  });
-
-  // GET /api/users/:id/exchange-config - Get exchange configuration (masked)
-  fastify.get('/users/:id/exchange-config', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-    try {
-      const { id } = request.params;
-      const user = (request as any).user;
-      
-      // Users can only view their own config unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (id !== user.uid && !isAdmin) {
-        return reply.code(403).send({ error: 'Access denied' });
-      }
-
-      const { getFirebaseAdmin } = await import('../utils/firebase');
-      const db = getFirebaseAdmin().firestore();
-      const doc = await db.collection('users').doc(id).collection('exchangeConfig').doc('current').get();
-
-      if (!doc.exists) {
-        return reply.send({
-          success: false,
-          error: "Exchange configuration not found",
-          config: null
-        });
-      }
-
-      const data = doc.data()!;
-
-      // Return masked configuration
-      return {
-        success: true,
-        config: {
-          exchange: data.exchange,
-          testnet: data.testnet ?? true,
-          hasApiKey: !!data.apiKeyEncrypted,
-          hasSecret: !!data.secretEncrypted,
-          hasPassphrase: !!data.passphraseEncrypted,
-          updatedAt: safeDate(data.updatedAt),
-          createdAt: safeDate(data.createdAt),
-        }
-      };
-    } catch (err: any) {
-      logger.error({ err }, 'Error getting exchange config');
-      return reply.send({
-        success: false,
-        error: "Invalid exchange config data",
-        config: null
-      });
-    }
-  });
 
   // POST /api/exchange/test - Test exchange connection
   fastify.post('/test', {
@@ -432,15 +279,20 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // GET /exchange/connected - Get connected exchange status
+  // GET /exchange/connected - Get connected exchange status - DETAILED TIMING INSTRUMENTATION
   fastify.get('/exchange/connected', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const t0 = Date.now();
     const user = (request as any).user;
+
     try {
+      fastify.log.info({ uid: user.uid }, 'exchange.connected:start');
+
       const exchanges: ExchangeName[] = ['binance', 'bitget', 'weex', 'bingx'];
       const connectedExchanges = [];
 
+      const t1 = Date.now();
       for (const exchange of exchanges) {
         const credentials = await firestoreAdapter.getExchangeCredentials(user.uid, exchange);
         if (credentials) {
@@ -451,12 +303,19 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
           });
         }
       }
+      const dt1 = Date.now() - t1;
+      fastify.log.info({ duration: dt1, exchangeCount: exchanges.length }, 'exchange.connected:db-calls');
+
+      const dt = Date.now() - t0;
+      fastify.log.info({ duration: dt }, 'exchange.connected:done');
 
       return {
         connected: connectedExchanges.length > 0,
         exchanges: connectedExchanges
       };
     } catch (err: any) {
+      const dt = Date.now() - t0;
+      fastify.log.error({ err, duration: dt }, 'exchange.connected:error');
       logger.error({ error: err.message, uid: user.uid }, 'Exchange connected check failed');
       return reply.code(500).send({ error: err.message || 'Failed to check connected exchanges' });
     }

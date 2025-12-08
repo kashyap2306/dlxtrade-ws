@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { broadcastPopupApi } from '../services/api';
-import { isUsingMockFirebase } from '../config/firebase';
+import { isFirebaseAvailable } from '../config/firebase';
 
 interface PopupData {
   title: string;
@@ -26,9 +26,9 @@ export default function BroadcastPopup() {
   useEffect(() => {
     if (!user) return;
 
-    // If using mock Firebase (development mode), disable popup system
-    if (isUsingMockFirebase()) {
-      console.log('[BroadcastPopup] Disabled in development mode');
+    // Only enable popup system when Firebase is properly configured
+    if (!isFirebaseAvailable()) {
+      console.log('[BroadcastPopup] Disabled - Firebase not available');
       setPopup(null);
       setShow(false);
       return;
@@ -119,8 +119,8 @@ export default function BroadcastPopup() {
     if (!user || !popup) return;
 
     try {
-      // If using mock Firebase (development mode), just dismiss locally
-      if (isUsingMockFirebase()) {
+      // If Firebase is not available, just dismiss locally
+      if (!isFirebaseAvailable()) {
         setDismissed(true);
         setShow(false);
         setPopup(null);

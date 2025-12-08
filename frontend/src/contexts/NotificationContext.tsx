@@ -45,7 +45,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
     try {
       setLoading(true);
-      const response = await api.get('/api/notifications', { params: { limit: 50 } });
+      const response = await api.get('/notifications', { params: { limit: 50 } });
       // Handle both response formats: { notifications, unreadCount } or array
       const fetchedNotifications = Array.isArray(response.data)
         ? response.data
@@ -162,7 +162,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     if (!user) return;
 
     try {
-      const response = await api.post('/api/notifications/push', {
+      const response = await api.post('/notifications/push', {
         uid: user.uid,
         ...notification,
         timestamp: Date.now(),
@@ -201,7 +201,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
   const markAsRead = useCallback(async (id: string) => {
     try {
-      await api.post('/api/notifications/mark-read', { notificationId: id });
+      await api.post('/notifications/mark-read', { notificationId: id });
       setNotifications((prev) =>
         prev.map((n) => (n.id === id ? { ...n, read: true } : n))
       );
@@ -215,7 +215,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
   const markAllAsRead = useCallback(async () => {
     try {
-      await api.post('/api/notifications/read-all');
+      await api.post('/notifications/read-all');
       setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
     } catch (err: any) {
       // Optimistic update

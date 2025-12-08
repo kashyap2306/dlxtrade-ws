@@ -3,7 +3,6 @@ import { useThrottle } from '../hooks/usePerformance';
 import { researchApi, settingsApi, adminApi } from '../services/api';
 import { wsService } from '../services/ws';
 import Toast from '../components/Toast';
-import Sidebar from '../components/Sidebar';
 import { useError } from '../contexts/ErrorContext';
 import { useNotificationContext } from '../contexts/NotificationContext';
 import { getApiErrorMessage, suppressConsoleError } from '../utils/errorHandler';
@@ -440,8 +439,6 @@ export default function ResearchPanel() {
         {/* Subtle radial gradient overlay */}
         <div className="absolute inset-0 bg-gradient-radial from-transparent via-slate-900/20 to-slate-950/40"></div>
       </div>
-
-      <Sidebar onLogout={handleLogout} />
 
       <main className="w-full min-h-screen overflow-x-hidden relative">
         <div className="w-full max-w-full px-0 sm:px-1 md:px-2 lg:px-3 overflow-x-hidden py-6 sm:py-8 lg:py-12">

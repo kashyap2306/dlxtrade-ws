@@ -2,6 +2,7 @@ import React from 'react';
 import { ChevronDownIcon, ChevronUpIcon } from '@heroicons/react/24/outline';
 import { SettingsCard, SettingsInput, ToggleSwitch, ProviderTestResult } from './SettingsUtils';
 import { PROVIDER_CONFIG } from '../constants/providers';
+import { settingsApi } from '../services/api';
 
 interface SettingsApiProvidersSectionProps {
   settings: any;
@@ -11,7 +12,7 @@ interface SettingsApiProvidersSectionProps {
   savingProvider: string | null;
   providerTestResults: any;
   testProviderConnection: (providerName: string, apiKey: string, keyName: string) => void;
-  handleProviderKeyChange: (providerName: string, keyName: string, value: string) => void;
+  handleProviderKeyChange: (providerName: string, keyName: string, value: string, uid: string, setProviders: (providers: any) => void) => void;
   handleToggleProviderEnabled: (providerName: string, enabledKey: string, checked: boolean) => void;
 }
 
@@ -68,7 +69,7 @@ export const SettingsApiProvidersSection: React.FC<SettingsApiProvidersSectionPr
                       {savingProvider === config.primary.name ? 'Testing...' : 'Test'}
                     </button>
                     <button
-                      onClick={() => handleProviderKeyChange(config.primary.name, config.primary.key, settings[config.primary.key])}
+                      onClick={() => handleProviderKeyChange(config.primary.name, config.primary.key, settings[config.primary.key], '', () => {})}
                       disabled={savingProvider === config.primary.name || !settings[config.primary.key]}
                       className="px-3 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg text-sm hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all duration-300 disabled:opacity-50 hover:scale-[1.05]"
                     >
@@ -131,7 +132,7 @@ export const SettingsApiProvidersSection: React.FC<SettingsApiProvidersSectionPr
                             {savingProvider === backup.name ? 'Testing...' : 'Test'}
                           </button>
                           <button
-                            onClick={() => handleProviderKeyChange(backup.name, backup.key, settings[backup.key])}
+                            onClick={() => handleProviderKeyChange(backup.name, backup.key, settings[backup.key], '', () => {})}
                             disabled={savingProvider === backup.name || !settings[backup.key]}
                             className="px-3 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg text-sm hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all duration-300 disabled:opacity-50 hover:scale-[1.05]"
                           >
