@@ -48,7 +48,10 @@ export const authApi = {
 
 // Admin API
 export const adminApi = {
+<<<<<<< HEAD
   getRole: () => api.get('/api/admin/role'),
+=======
+>>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
   listKeys: () => api.get('/api/admin/keys'),
   getKey: (id: string) => api.get(`/api/admin/keys/${id}`),
   createKey: (data: any) => api.post('/api/admin/keys', data),
@@ -315,6 +318,7 @@ export const notificationsApi = {
     api.post('/api/notifications/push', data),
 };
 
+<<<<<<< HEAD
 // Broadcast Popup API
 export const broadcastPopupApi = {
   getCurrent: () => api.get('/api/broadcast-popup/current'),
@@ -322,6 +326,8 @@ export const broadcastPopupApi = {
   getSeenPopups: () => api.get('/api/broadcast-popup/seen'),
 };
 
+=======
+>>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
 // System Logs - routes already include /api prefix from baseURL
 export const systemLogsApi = {
   get: (params?: { limit?: number }) => api.get('/api/logs', { params }),

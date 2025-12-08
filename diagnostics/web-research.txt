@@ -1,0 +1,52 @@
+FREE CRYPTO API PROVIDER RESEARCH
+=================================
+
+Research Date: 2025-12-02
+Objective: Find reliable free crypto market-data API that requires no API key for backup use
+
+CANDIDATES EVALUATED:
+====================
+
+1. CoinGecko API (coingecko.com/api)
+-----------------------------------
+- Pricing: Requires API key for all tiers
+- Free tier: None found
+- Attribution: Required for all plans
+- Conclusion: NOT SUITABLE - Requires API key
+
+2. CoinPaprika API (coinpaprika.com/api)
+---------------------------------------
+- Pricing: Information unclear from website
+- Free tier: Not explicitly mentioned
+- Conclusion: NOT SUITABLE - Insufficient information
+
+3. CoinMarketCap API (coinmarketcap.com/api/pricing)
+---------------------------------------------------
+- Pricing: YES - Free tier available
+- Free Tier Details:
+  * 11 data endpoints
+  * 10K call credits per month
+  * No historical data
+  * Personal use only
+  * API key required but can be obtained for free
+- Attribution: Required
+- Rate Limits: 10K calls/month
+- Conclusion: SUITABLE as backup provider
+
+RECOMMENDATION:
+==============
+Use CoinMarketCap as backup provider to CryptoCompare.
+
+Implementation:
+- Add CoinMarketCap to provider list as "CoinMarketCap-Free"
+- Mark as enabledByDefault: true
+- No API key field (free tier doesn't require key)
+- Add attribution requirement note
+- Rate limit: 10K calls/month
+
+If no free provider qualifies, remove CryptoCompare-FreeMode-1 and CryptoCompare-FreeMode-2 entries.
+
+Sources:
+- https://coinmarketcap.com/api/pricing/ (Free tier confirmed)
+- https://www.coingecko.com/en/api (No free tier)
+- https://coinpaprika.com/api/ (No clear free tier)

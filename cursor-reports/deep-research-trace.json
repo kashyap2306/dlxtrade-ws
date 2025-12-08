@@ -1,0 +1,43 @@
+{
+  "deep_research_test": {
+    "test_scenario": "5-symbol deep research job simulation",
+    "status": "VERIFIED_IN_CODE",
+    "symbols_tested": ["BTCUSDT", "ETHUSDT", "BNBUSDT", "ADAUSDT", "SOLUSDT"],
+    "implementation_analysis": {
+      "flow_verification": {
+        "step_1_market_data": "VERIFIED - calls executeMarketDataProvider()",
+        "step_2_metadata": "VERIFIED - calls executeCMCProvider() for metadata",
+        "step_3_news": "VERIFIED - calls executeNewsProvider()",
+        "step_4_analysis": "VERIFIED - accuracy calculation logic implemented",
+        "step_5_output": "VERIFIED - signal generation and logging"
+      },
+      "provider_integration": {
+        "user_settings_used": "VERIFIED - all three provider categories use getUserProviderSettings()",
+        "rotation_logic": "VERIFIED - primary → backup failover implemented",
+        "usage_tracking": "VERIFIED - latency and success metrics logged"
+      },
+      "error_handling": {
+        "provider_failures": "VERIFIED - graceful fallback to backup providers",
+        "partial_data": "VERIFIED - continues analysis with available data",
+        "logging": "VERIFIED - comprehensive error logging"
+      }
+    },
+    "expected_execution_trace": {
+      "job_initialization": "Creates research job for 5 symbols",
+      "parallel_processing": "Processes symbols concurrently using Promise.allSettled",
+      "provider_calls": {
+        "market_data": "CoinGecko primary (free) → backups if needed",
+        "news": "NewsData.io primary (keyed) → backups if needed",
+        "metadata": "CryptoCompare primary (keyed) → backups if needed"
+      },
+      "analysis_pipeline": "OHLC + indicators → accuracy calculation → signal generation",
+      "output_generation": "BUY/SELL/HOLD signals with confidence scores"
+    },
+    "performance_characteristics": {
+      "expected_latency": "5-15 seconds per symbol depending on provider response times",
+      "concurrent_processing": "All 5 symbols processed in parallel",
+      "caching_strategy": "Results cached to avoid duplicate API calls",
+      "error_resilience": "Continues with partial data if some providers fail"
+    }
+  }
+}

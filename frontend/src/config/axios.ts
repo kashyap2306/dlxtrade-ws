@@ -1,9 +1,18 @@
 import axios, { AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
+<<<<<<< HEAD
 import { auth, isFirebaseAvailable, isUsingMockFirebase } from './firebase';
 
 // Check if Firebase auth is available (not mock)
 const isFirebaseAuthAvailable = () => {
   return isFirebaseAvailable() && auth && typeof auth.signInWithEmailAndPassword === 'function' && typeof auth.getIdToken === 'function';
+=======
+import { getAuth } from 'firebase/auth';
+import { auth } from './firebase';
+
+// Check if Firebase auth is available (not mock)
+const isFirebaseAuthAvailable = () => {
+  return auth && typeof auth.signInWithEmailAndPassword === 'function' && typeof auth.getIdToken === 'function' && !auth._isMockFirebase;
+>>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
 };
 
 declare module 'axios' {
@@ -149,6 +158,7 @@ api.interceptors.request.use(
         console.error('[AUTH] Could not attach idToken:', e.message);
       }
     } else {
+<<<<<<< HEAD
       console.log('[AUTH] Firebase auth not available - using development mode fallback');
 
       // In development mode, treat every user as admin by adding a mock admin token
@@ -160,6 +170,9 @@ api.interceptors.request.use(
           'x-dev-mode': 'true'
         } as any;
       }
+=======
+      console.log('[AUTH] Firebase auth not available - skipping token attachment');
+>>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
     }
 
     logRequest(config, 'REQUEST');

@@ -14,7 +14,11 @@ export default function RecentTrades() {
     try {
       const response = await tradesApi.get({ uid: user.uid, limit: 100 });
       const allTrades = response.data?.trades || [];
+<<<<<<< HEAD
 
+=======
+      
+>>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
       // Filter only today's trades
       const today = new Date().toISOString().split('T')[0];
       const todayTrades = allTrades
@@ -28,6 +32,7 @@ export default function RecentTrades() {
           return timeB - timeA; // Newest first
         })
         .slice(0, 10); // Show max 10 trades
+<<<<<<< HEAD
 
       setTrades(todayTrades);
     } catch (err: any) {
@@ -38,6 +43,12 @@ export default function RecentTrades() {
       } else {
         suppressConsoleError(err, 'loadRecentTrades');
       }
+=======
+      
+      setTrades(todayTrades);
+    } catch (err: any) {
+      suppressConsoleError(err, 'loadRecentTrades');
+>>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
     } finally {
       setLoading(false);
     }
