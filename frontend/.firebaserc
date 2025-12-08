@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "dlx-trading"
+  },
+  "targets": {
+    "dlx-trading": {
+      "hosting": {
+        "dlxfrontend": [
+          "dlx-trading"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}
