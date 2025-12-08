@@ -1,7 +1,7 @@
 ﻿import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
-import { usersApi, agentsApi, integrationsApi } from '../services/api';
+import { usersApi, agentsApi } from '../services/api';
 import Sidebar from '../components/Sidebar';
 import Toast from '../components/Toast';
 import { User } from 'firebase/auth';
@@ -47,181 +47,34 @@ export default function Profile() {
     setError(null);
 
     try {
-      // Load all profile data asynchronously without Promise.all - no blocking
-      const loadPromises = [
-        usersApi.get(user.uid).then(result => {
-          if (isMountedRef.current) {
-            setUserData(result.data);
-            setProfileData({
-              displayName: result.data?.name || user?.displayName || '',
-              profilePicture: result.data?.profilePicture || '',
-            });
-          }
-        }).catch(err => {
-          suppressConsoleError(err, 'loadUserData');
-          throw err; // User data is critical
-        }),
-
-        usersApi.getSessions(user.uid).then(result => {
-          if (isMountedRef.current) {
-            setSessions(result.data.sessions || []);
-          }
-        }).catch(err => {
-          suppressConsoleError(err, 'loadUserSessions');
-          if (isMountedRef.current) setSessions([]);
-        }),
-
-        integrationsApi.load().then(result => {
-          if (isMountedRef.current) {
-            const integrations = result.data || {};
-            setApiProvidersStatus({
-              cryptoCompare: {
-                connected: !!(integrations.cryptocompare?.apiKey),
-                status: integrations.cryptocompare?.apiKey ? 'Active' : 'Not Set',
-                hasData: true,
-                latencyMs: 0
-              },
-              newsData: {
-                connected: !!(integrations.newsdata?.apiKey),
-                status: integrations.newsdata?.apiKey ? 'Active' : 'Not Set',
-                hasData: true,
-                latencyMs: 0
-              },
-              coinGecko: {
-                connected: !!(integrations.coingecko?.apiKey),
-                status: integrations.coingecko?.apiKey ? 'Active' : 'Not Set',
-                hasData: true,
-                latencyMs: 0
-              },
-              binancePublic: {
-                connected: !!(integrations.binancepublic?.enabled),
-                status: integrations.binancepublic?.enabled ? 'Active' : 'Not Set',
-                hasData: true,
-                latencyMs: 0
-              },
-            });
-          }
-        }).catch(err => {
-          suppressConsoleError(err, 'loadIntegrations');
-          if (isMountedRef.current) {
-            setApiProvidersStatus({
-              cryptoCompare: { connected: false, status: 'Not Set', hasData: false, latencyMs: 0 },
-              newsData: { connected: false, status: 'Not Set', hasData: false, latencyMs: 0 },
-              coinGecko: { connected: false, status: 'Not Set', hasData: false, latencyMs: 0 },
-              binancePublic: { connected: false, status: 'Not Set', hasData: false, latencyMs: 0 }
-            });
-          }
-        }),
-
-        agentsApi.getAll().then(result => {
-          if (isMountedRef.current) {
-            setAllAgents(result.data.agents || []);
-          }
-        }).catch(err => {
-          suppressConsoleError(err, 'loadAllAgents');
-          if (isMountedRef.current) setAllAgents([]);
-        }),
-
-        agentsApi.getUnlocked().then(result => {
-          if (isMountedRef.current) {
-            setUnlockedAgents(result.data.unlocked || []);
-          }
-        }).catch(err => {
-          suppressConsoleError(err, 'loadUnlockedAgents');
-          if (isMountedRef.current) setUnlockedAgents([]);
-        }),
-      ];
-
-      // Fire all promises asynchronously without waiting
-      loadPromises.forEach(promise => {
-        promise.catch(err => {
-          console.warn('[PROFILE] Non-critical data load failed:', err);
-        });
-      });
-
-      // Handle results - continue even if some APIs fail
-      if (userResponse.status === 'fulfilled' && isMountedRef.current) {
-        setUserData(userResponse.value.data);
-        // Set profile data from user data
+      // Load profile data from Firebase user object only
+      if (isMountedRef.current) {
         setProfileData({
-          displayName: userResponse.value.data?.name || user?.displayName || '',
-          profilePicture: userResponse.value.data?.profilePicture || '',
+          displayName: user.displayName || '',
+          profilePicture: user.photoURL || '',
         });
-      } else if (userResponse.status === 'rejected') {
-        suppressConsoleError(userResponse.reason, 'loadUserData');
-        // User data is critical, so we might want to show an error
-        throw userResponse.reason;
-      }
-
-      if (sessionsResponse.status === 'fulfilled' && isMountedRef.current) {
-        setSessions(sessionsResponse.value.data.sessions || []);
-      } else if (sessionsResponse.status === 'rejected') {
-        suppressConsoleError(sessionsResponse.reason, 'loadUserSessions');
+        setUserData({
+          uid: user.uid,
+          email: user.email,
+          displayName: user.displayName,
+          photoURL: user.photoURL,
+          emailVerified: user.emailVerified,
+        });
+        // Set empty arrays for removed API data
         setSessions([]);
-      }
-
-      // Set API providers status from integrations data
-      if (integrationsResponse.status === 'fulfilled' && isMountedRef.current) {
-        const integrations = integrationsResponse.value.data || {};
-        setApiProvidersStatus({
-          cryptoCompare: {
-            connected: !!(integrations.cryptocompare?.apiKey),
-            status: integrations.cryptocompare?.apiKey ? 'Active' : 'Not Set',
-            hasData: true,
-            latencyMs: 0
-          },
-          newsData: {
-            connected: !!(integrations.newsdata?.apiKey),
-            status: integrations.newsdata?.apiKey ? 'Active' : 'Not Set',
-            hasData: true,
-            latencyMs: 0
-          },
-          coinGecko: {
-            connected: !!(integrations.coingecko?.apiKey),
-            status: integrations.coingecko?.apiKey ? 'Active' : 'Not Set',
-            hasData: true,
-            latencyMs: 0
-          },
-          binancePublic: {
-            connected: !!(integrations.binancepublic?.enabled),
-            status: integrations.binancepublic?.enabled ? 'Active' : 'Not Set',
-            hasData: true,
-            latencyMs: 0
-          }
-        });
-      } else if (integrationsResponse.status === 'rejected') {
-        suppressConsoleError(integrationsResponse.reason, 'loadIntegrations');
-        if (isMountedRef.current) {
-          setApiProvidersStatus({
-            cryptoCompare: { connected: false, status: 'Not Set', hasData: false, latencyMs: 0 },
-            newsData: { connected: false, status: 'Not Set', hasData: false, latencyMs: 0 },
-            coinGecko: { connected: false, status: 'Not Set', hasData: false, latencyMs: 0 },
-            binancePublic: { connected: false, status: 'Not Set', hasData: false, latencyMs: 0 }
-          });
-        }
-      }
-
-      if (agentsResponse.status === 'fulfilled' && isMountedRef.current) {
-        setAllAgents(agentsResponse.value.data.agents || []);
-      } else if (agentsResponse.status === 'rejected') {
-        suppressConsoleError(agentsResponse.reason, 'loadAllAgents');
         setAllAgents([]);
-      }
-
-      if (unlockedAgentsResponse.status === 'fulfilled' && isMountedRef.current) {
-        setUnlockedAgents(unlockedAgentsResponse.value.data.unlocked || []);
-      } else if (unlockedAgentsResponse.status === 'rejected') {
-        suppressConsoleError(unlockedAgentsResponse.reason, 'loadUnlockedAgents');
         setUnlockedAgents([]);
+        setApiProvidersStatus(null);
+        setUserStats(null);
+        setUsageStats(null);
       }
 
       setRetryCount(0); // Reset retry count on successful load
 
     } catch (err: any) {
-      suppressConsoleError(err, 'loadProfileData');
+      console.error('Failed to load profile data:', err);
       if (isMountedRef.current) {
         setError(err);
-        showToast(err.response?.data?.error || 'Failed to load profile data', 'error');
       }
     } finally {
       if (isMountedRef.current) {

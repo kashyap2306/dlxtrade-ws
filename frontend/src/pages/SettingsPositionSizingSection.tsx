@@ -8,7 +8,7 @@ interface SettingsPositionSizingSectionProps {
     manualCoins: string[];
   };
   setTradingSettings: (settings: any) => void;
-  settings: { maxPositionPercent: number };
+  maxPositionPerTrade: number;
   sampleAccuracy: number;
   setSampleAccuracy: (accuracy: number) => void;
   updatePositionSizingMap: (index: number, field: string, value: number) => void;
@@ -20,14 +20,14 @@ interface SettingsPositionSizingSectionProps {
   addCoinToManual: (coin: string) => void;
   removeCoinFromManual: (coin: string) => void;
   savingSettings: boolean;
-  handleSaveGeneralSettings: () => void;
+  handleSaveTradingSettings: () => void;
   calculatePositionForAccuracy: (accuracy: number) => number;
 }
 
 export const SettingsPositionSizingSection: React.FC<SettingsPositionSizingSectionProps> = ({
   tradingSettings,
   setTradingSettings,
-  settings,
+  maxPositionPerTrade,
   sampleAccuracy,
   setSampleAccuracy,
   updatePositionSizingMap,
@@ -39,7 +39,7 @@ export const SettingsPositionSizingSection: React.FC<SettingsPositionSizingSecti
   addCoinToManual,
   removeCoinFromManual,
   savingSettings,
-  handleSaveGeneralSettings,
+  handleSaveTradingSettings,
   calculatePositionForAccuracy,
 }) => {
   return (
@@ -80,7 +80,7 @@ export const SettingsPositionSizingSection: React.FC<SettingsPositionSizingSecti
                   <SettingsInput
                     type="number"
                     min="0"
-                    max={settings.maxPositionPercent}
+                    max={maxPositionPerTrade}
                     value={range.percent}
                     onChange={(e) => updatePositionSizingMap(index, 'percent', parseInt(e.target.value))}
                   />
@@ -125,7 +125,7 @@ export const SettingsPositionSizingSection: React.FC<SettingsPositionSizingSecti
             <span className="text-lg font-bold text-white w-12 flex-shrink-0">{sampleAccuracy}%</span>
           </div>
           <div className="mt-2 text-center text-lg font-bold text-white">
-            Position Size: <span className="text-purple-400">{calculatePositionForAccuracy(sampleAccuracy)}%</span> of Max ({settings.maxPositionPercent}%)
+            Position Size: <span className="text-purple-400">{calculatePositionForAccuracy(sampleAccuracy)}%</span> of Max ({maxPositionPerTrade}%)
           </div>
         </div>
 
@@ -178,7 +178,7 @@ export const SettingsPositionSizingSection: React.FC<SettingsPositionSizingSecti
         {/* Save Button for Trading Settings */}
         <div className="flex justify-end pt-4 border-t border-white/10">
           <button
-            onClick={handleSaveGeneralSettings} // Re-using general save for simplicity
+            onClick={handleSaveTradingSettings}
             disabled={savingSettings}
             className="px-8 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:scale-[1.01]"
           >

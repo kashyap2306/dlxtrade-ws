@@ -41,7 +41,7 @@ function DirectRenderer({ children }: { children: React.ReactNode }) {
 }
 
 export default function Dashboard() {
-  const { user, loading: loadingUser } = useAuth();
+  const { user } = useAuth();
   const navigate = useNavigate();
 
   // Trade confirmation modal state

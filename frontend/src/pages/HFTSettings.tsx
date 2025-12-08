@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { hftApi, integrationsApi } from '../services/api';
+import { hftApi, settingsApi } from '../services/api';
 import Toast from '../components/Toast';
 import Sidebar from '../components/Sidebar';
 
@@ -26,7 +26,7 @@ export default function HFTSettings() {
 
   const checkBinanceIntegration = async () => {
     try {
-      const response = await integrationsApi.load();
+      const response = await settingsApi.providers.load();
       const integrations = response.data;
       setHasBinance(integrations.binance?.enabled && !!integrations.binance?.apiKey);
     } catch (err) {

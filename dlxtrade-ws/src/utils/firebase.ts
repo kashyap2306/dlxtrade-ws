@@ -1,14 +1,51 @@
 import admin from "firebase-admin";
+import dotenv from "dotenv";
+import path from "path";
+
+dotenv.config({
+  path: path.resolve(process.cwd(), ".env")
+});
+
+console.log("DEBUG ENV:", process.env.FIREBASE_PROJECT_ID);
+
+const projectId = process.env.FIREBASE_PROJECT_ID;
+const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+
+let privateKey = process.env.FIREBASE_PRIVATE_KEY;
+
+// remove accidental surrounding quotes
+if (privateKey?.startsWith('"') && privateKey?.endsWith('"')) {
+  privateKey = privateKey.slice(1, -1);
+}
+
+// fallback to JSON service account
+if ((!projectId || !clientEmail || !privateKey) && process.env.FIREBASE_SERVICE_ACCOUNT) {
+  const json = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  privateKey = json.private_key;
+}
+
+export const firebaseConfig = {
+  projectId,
+  clientEmail,
+  privateKey
+};
 
 let firebaseApp: admin.app.App | null = null;
 
 export function getFirebaseAdmin() {
   if (firebaseApp) return firebaseApp;
 
-  // Use individual environment variables instead of JSON
   const projectId = process.env.FIREBASE_PROJECT_ID;
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n");
+  let privateKey = process.env.FIREBASE_PRIVATE_KEY;
+
+  if (!projectId || !clientEmail || !privateKey) {
+    const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+    if (raw) {
+      const json = JSON.parse(raw);
+      privateKey = json.private_key;
+    }
+  }
 
   if (!projectId || !clientEmail || !privateKey) {
     console.error("Missing Firebase environment variables:");

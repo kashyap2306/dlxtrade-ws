@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { settingsApi, providerApi, integrationsApi, exchangeService, adminApi } from '../services/api';
+import { settingsApi, providerApi, exchangeService, adminApi } from '../services/api';
 import Toast from '../components/Toast';
 import Sidebar from '../components/Sidebar';
 import { API_NAME_MAP } from "../constants/providers";
@@ -77,7 +77,7 @@ const Settings = () => {
 
   // Initial Settings State (from snippet 11 - defined before callbacks)
   const [settings, setSettings] = useState<any>({
-    maxPositionPercent: 10, tradeType: 'scalping', accuracyThreshold: 85, maxDailyLoss: 5, maxTradesPerDay: 50,
+    maxPositionPerTrade: 10, tradeType: 'scalping', accuracyThreshold: 85, maxDailyLoss: 5, maxTradesPerDay: 50,
     // Primary Providers
     coinGeckoKey: '', newsDataKey: '', cryptoCompareKey: '',
     // Market Data Backup Providers
@@ -128,33 +128,52 @@ const Settings = () => {
       }
   }, []);
   
+  const loadTradingSettings = useCallback(async () => {
+    console.log('[LOAD] Starting loadTradingSettings...');
+    try {
+      const response = await settingsApi.trading.load();
+      console.log('[LOAD] loadTradingSettings success:', response.data);
+      setTradingSettings(prev => ({
+        ...prev,
+        ...response.data
+      }));
+    } catch (err) {
+      console.error('[LOAD] Failed to load trading settings:', err);
+      console.error('[LOAD] Error details:', {
+        message: err.message,
+        status: err.response?.status,
+        data: err.response?.data
+      });
+    }
+  }, []);
+
   const loadConnectedExchange = useCallback(async () => {
       console.log('[LOAD] Starting loadConnectedExchange...');
       try {
-          // Defensive check for function existence
+          // Load exchange connection status
           if (!exchangeService || typeof exchangeService.loadConnected !== 'function') {
               console.error('[LOAD] exchangeService.loadConnected is not available');
               setToast({ message: 'Exchange connection check unavailable', type: 'error' });
               setConnectedExchange(null);
-              setTradingSettings(prev => ({
-                  ...prev,
-                  manualCoins: [],
-                  positionSizingMap: [],
-                  maxPositionPerTrade: 10,
-              }));
               return;
           }
 
           console.log('[LOAD] Calling exchangeService.loadConnected()...');
           const response = await exchangeService.loadConnected();
           console.log('[LOAD] exchangeService.loadConnected() success:', response.data);
-          setConnectedExchange(response.data.exchange || null);
-          setTradingSettings(prev => ({
-              ...prev,
-              manualCoins: response.data.manualCoins || [],
-              positionSizingMap: response.data.positionSizingMap || [],
-              maxPositionPerTrade: response.data.maxPositionPerTrade || 10,
-          }));
+
+          // Set connected exchange from the response
+          if (response.data.connected && response.data.exchanges && response.data.exchanges.length > 0) {
+              const primaryExchange = response.data.exchanges[0]; // Take first connected exchange
+              setConnectedExchange({
+                  exchangeId: primaryExchange.exchange,
+                  name: primaryExchange.exchange.charAt(0).toUpperCase() + primaryExchange.exchange.slice(1),
+                  apiKey: 'configured' // Masked for security
+              });
+          } else {
+              setConnectedExchange(null);
+          }
+
           console.log('[LOAD] loadConnectedExchange completed successfully');
       } catch (err) {
           console.error('[LOAD] Failed to load connected exchange:', err);
@@ -163,6 +182,7 @@ const Settings = () => {
               status: err.response?.status,
               data: err.response?.data
           });
+          setConnectedExchange(null);
       }
   }, []);
   
@@ -273,7 +293,7 @@ const Settings = () => {
     if (integrationsLoading) return;
     setIntegrationsLoading(true);
     try {
-      const response = await integrationsApi.load();
+      const response = await settingsApi.providers.load();
       // Robust check
       if (!response || response.status === 401) {
         if (response?.status === 401) {
@@ -377,6 +397,16 @@ const Settings = () => {
             });
             console.log("⚠ Settings section failed but UI recovered");
             return Promise.resolve();
+          }),
+          loadTradingSettings().catch(err => {
+            console.warn('[LOAD] Failed to load trading settings:', err);
+            console.error('[LOAD] Trading settings error details:', {
+              message: err.message,
+              status: err.response?.status,
+              data: err.response?.data
+            });
+            console.log("⚠ Trading settings failed but UI recovered");
+            return Promise.resolve();
           })
         ];
 
@@ -406,8 +436,8 @@ const Settings = () => {
     fetchData();
     
     // Cleanup function
-    return () => { isMountedRef.current = false; }; 
-  }, [retryCount, authLoading, user, handleLogout, loadNotificationSettings, loadIntegrations, loadConnectedExchange, loadTop100Coins]); // REQ 3: Added authLoading, user, handleLogout to deps.
+    return () => { isMountedRef.current = false; };
+  }, [retryCount, authLoading, user, handleLogout, loadNotificationSettings, loadIntegrations, loadConnectedExchange, loadTop100Coins, loadTradingSettings]); // REQ 3: Added authLoading, user, handleLogout to deps.
   
   // Handlers (rest of existing handlers like handleSaveGeneralSettings, handleProviderKeyChange, etc.)
 
@@ -426,21 +456,55 @@ const Settings = () => {
       setSavingSettings(false);
     }
   };
+
+  const handleSaveTradingSettings = async () => {
+    setSavingSettings(true);
+    try {
+      await settingsApi.trading.update(tradingSettings);
+      showToast('Trading settings saved successfully', 'success');
+    } catch (err: any) {
+      if (err.response?.status === 401) {
+        handleLogout();
+        return;
+      }
+      showToast(err.response?.data?.error || 'Failed to save trading settings', 'error');
+    } finally {
+      setSavingSettings(false);
+    }
+  };
   
   const handleProviderKeyChange = async (providerName: string, keyName: string, apiKey: string) => {
     setSavingProvider(providerName);
     try {
-      const apiName = API_NAME_MAP[providerName];
-      if (!apiName) {
-        showToast(`Invalid provider: ${providerName}`, 'error');
-        return;
+      // Determine provider type and if it's primary
+      let providerType: 'marketData' | 'news' | 'metadata' = 'marketData';
+      let isPrimary = false;
+
+      // Check if it's a primary provider
+      if (['CoinGecko', 'NewsData.io', 'CryptoCompare'].includes(providerName)) {
+        isPrimary = true;
+        if (providerName === 'CoinGecko') providerType = 'metadata';
+        else if (providerName === 'NewsData.io') providerType = 'news';
+        else if (providerName === 'CryptoCompare') providerType = 'metadata';
+      } else {
+        // Determine type from provider name
+        if (['CoinPaprika', 'CoinMarketCap', 'CoinLore', 'CoinAPI', 'BraveNewCoin', 'Messari', 'Kaiko', 'LiveCoinWatch', 'CoinStats', 'CoinCheckup'].includes(providerName)) {
+          providerType = 'marketData';
+        } else if (['CryptoPanic', 'Reddit', 'Cointelegraph RSS', 'AltcoinBuzz RSS', 'GNews', 'Marketaux', 'Webz.io', 'CoinStatsNews', 'NewsCatcher', 'CryptoCompare News'].includes(providerName)) {
+          providerType = 'news';
+        } else if (['CoinCap', 'CoinRanking', 'Nomics'].includes(providerName)) {
+          providerType = 'metadata';
+        }
       }
-      await providerApi.update({
-        apiName,
+
+      await settingsApi.providers.save({
+        providerId: providerName.toLowerCase().replace(/\s+/g, ''),
+        providerType,
+        isPrimary,
         enabled: true,
-        apiKey,
-        type: 'marketData' // Default type, can be determined by provider
+        apiKey
       });
+
       setSettings({ ...settings, [keyName]: apiKey });
       showToast(`${providerName} API key saved!`, 'success');
     } catch (err: any) {
@@ -457,35 +521,34 @@ const Settings = () => {
   const testProviderConnection = async (providerName: string, apiKey: string, keyName: string) => {
     setSavingProvider(providerName);
     try {
-      const apiName = API_NAME_MAP[providerName];
-      if (!apiName) {
-        setProviderTestResults(prev => ({
-          ...prev,
-          [providerName]: {
-            status: 'error',
-            message: `Invalid provider: ${providerName}`
-          }
-        }));
-        showToast(`Invalid provider: ${providerName}`, 'error');
-        return;
+      // Determine provider type
+      let providerType: 'marketData' | 'news' | 'metadata' = 'marketData';
+
+      if (['CoinPaprika', 'CoinMarketCap', 'CoinLore', 'CoinAPI', 'BraveNewCoin', 'Messari', 'Kaiko', 'LiveCoinWatch', 'CoinStats', 'CoinCheckup'].includes(providerName)) {
+        providerType = 'marketData';
+      } else if (['CryptoPanic', 'Reddit', 'Cointelegraph RSS', 'AltcoinBuzz RSS', 'GNews', 'Marketaux', 'Webz.io', 'CoinStatsNews', 'NewsCatcher', 'CryptoCompare News'].includes(providerName)) {
+        providerType = 'news';
+      } else if (['CoinCap', 'CoinRanking', 'Nomics', 'CoinGecko', 'CryptoCompare'].includes(providerName)) {
+        providerType = 'metadata';
       }
-      const response = await providerApi.test({
-        apiName,
-        apiKey,
-        type: 'marketData' // Default type, can be determined by provider
+
+      const response = await settingsApi.providers.test({
+        providerName,
+        type: providerType,
+        apiKey
       });
 
       setProviderTestResults(prev => ({
         ...prev,
         [providerName]: {
-          status: response.data?.valid ? 'success' : 'error',
-          message: response.data?.message || (response.data?.valid ? 'Connection successful.' : 'Invalid key or connection failed.')
+          status: response.data?.success ? 'success' : 'error',
+          message: response.data?.message || (response.data?.success ? 'Connection successful.' : 'Invalid key or connection failed.')
         }
       }));
-      showToast(`${providerName} test completed.`, response.data?.valid ? 'success' : 'error');
+      showToast(`${providerName} test completed.`, response.data?.success ? 'success' : 'error');
 
       // If test successful for a primary provider, ensure the key is saved/updated in state
-      if (response.data?.valid && keyName) {
+      if (response.data?.success && keyName) {
         setSettings(prev => ({ ...prev, [keyName]: apiKey }));
       }
     } catch (err: any) {
@@ -643,7 +706,8 @@ const Settings = () => {
 
   const handleDisconnectExchange = async () => {
     try {
-      await exchangeService.disconnect(selectedExchange);
+      const exchangeToDisconnect = connectedExchange?.exchangeId || selectedExchange;
+      await exchangeService.disconnect(exchangeToDisconnect);
       setConnectedExchange(null);
       setExchangeTestResult(undefined);
       showToast('Exchange disconnected successfully.', 'success');
@@ -790,7 +854,7 @@ const Settings = () => {
               <SettingsPositionSizingSection
                 tradingSettings={tradingSettings}
                 setTradingSettings={setTradingSettings}
-                settings={settings}
+                maxPositionPerTrade={tradingSettings.maxPositionPerTrade || 10}
                 sampleAccuracy={sampleAccuracy}
                 setSampleAccuracy={setSampleAccuracy}
                 updatePositionSizingMap={updatePositionSizingMap}
@@ -802,7 +866,7 @@ const Settings = () => {
                 addCoinToManual={addCoinToManual}
                 removeCoinFromManual={removeCoinFromManual}
                 savingSettings={savingSettings}
-                handleSaveGeneralSettings={handleSaveGeneralSettings}
+                handleSaveTradingSettings={handleSaveTradingSettings}
                 calculatePositionForAccuracy={calculatePositionForAccuracy}
               />
 

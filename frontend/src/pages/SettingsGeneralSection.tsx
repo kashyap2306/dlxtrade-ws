@@ -3,7 +3,7 @@ import { SettingsCard, SettingsInput, ToggleSwitch } from './SettingsUtils';
 
 interface SettingsGeneralSectionProps {
   settings: {
-    maxPositionPercent: number;
+    maxPositionPerTrade: number;
     maxDailyLoss: number;
     maxTradesPerDay: number;
     tradeType: string;
@@ -28,7 +28,7 @@ export const SettingsGeneralSection: React.FC<SettingsGeneralSectionProps> = ({
         ⚙️ General Trading Configuration
       </h2>
       <SettingsCard className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Max Position Percent */}
+        {/* Max Position Per Trade */}
         <div className="space-y-3">
           <label className="block text-sm font-semibold text-gray-200">
             Max Position % of Portfolio
@@ -37,8 +37,8 @@ export const SettingsGeneralSection: React.FC<SettingsGeneralSectionProps> = ({
             type="number"
             min="1"
             max="100"
-            value={settings.maxPositionPercent}
-            onChange={(e) => setSettings({ ...settings, maxPositionPercent: Math.max(1, Math.min(100, parseInt(e.target.value))) })}
+            value={settings.maxPositionPerTrade}
+            onChange={(e) => setSettings({ ...settings, maxPositionPerTrade: Math.max(1, Math.min(100, parseInt(e.target.value))) })}
             placeholder="e.g., 10"
           />
           <p className="text-xs text-gray-400">The maximum percentage of your total portfolio value allowed for a single trade.</p>

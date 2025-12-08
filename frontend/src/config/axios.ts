@@ -1,19 +1,13 @@
 import axios, { AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
-<<<<<<< HEAD
-import { auth, isFirebaseAvailable, isUsingMockFirebase } from './firebase';
+import { getAuth, getIdToken, onAuthStateChanged } from 'firebase/auth';
 
-// Check if Firebase auth is available (not mock)
-const isFirebaseAuthAvailable = () => {
-  return isFirebaseAvailable() && auth && typeof auth.signInWithEmailAndPassword === 'function' && typeof auth.getIdToken === 'function';
-=======
-import { getAuth } from 'firebase/auth';
-import { auth } from './firebase';
+const auth = getAuth();
+let authReady = false;
 
-// Check if Firebase auth is available (not mock)
-const isFirebaseAuthAvailable = () => {
-  return auth && typeof auth.signInWithEmailAndPassword === 'function' && typeof auth.getIdToken === 'function' && !auth._isMockFirebase;
->>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
-};
+// Wait for Firebase auth to be ready
+onAuthStateChanged(auth, () => {
+  authReady = true;
+});
 
 declare module 'axios' {
   export interface InternalAxiosRequestConfig {
@@ -133,47 +127,29 @@ api.interceptors.request.use(
       requestId: `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
     };
 
-    // Firebase Token - attach only if Firebase auth is available and user exists
-    if (isFirebaseAuthAvailable()) {
-      try {
-        const user = auth.currentUser;
-        console.log('[AUTH] Request interceptor - user exists:', !!user);
-
-        if (user) {
-          console.log('[AUTH] Getting Firebase ID token...');
-          // Ensure we get a fresh token if needed, but standard getIdToken() handles expiration
-          const idToken = await user.getIdToken();
-          console.log('[AUTH] Token retrieved, length:', idToken?.length || 0);
-
-          // CRITICAL FIX: Secure header attachment
-          config.headers = {
-            ...(config.headers || {}),
-            Authorization: `Bearer ${idToken}`
-          } as any;
-          console.log('[AUTH] Authorization header attached');
-        } else {
-          console.warn('[AUTH] No authenticated user - request will be unauthenticated');
-        }
-      } catch (e) {
-        console.error('[AUTH] Could not attach idToken:', e.message);
-      }
-    } else {
-<<<<<<< HEAD
-      console.log('[AUTH] Firebase auth not available - using development mode fallback');
-
-      // In development mode, treat every user as admin by adding a mock admin token
-      if (isUsingMockFirebase() && import.meta.env.MODE === 'development') {
-        console.log('[AUTH] Development mode: Adding mock admin token');
-        config.headers = {
-          ...(config.headers || {}),
-          Authorization: `Bearer mock-admin-token-${Date.now()}`,
-          'x-dev-mode': 'true'
-        } as any;
-      }
-=======
-      console.log('[AUTH] Firebase auth not available - skipping token attachment');
->>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
+    // Wait until Firebase auth is ready
+    if (!authReady) {
+      await new Promise(resolve => {
+        const unsub = onAuthStateChanged(auth, () => {
+          resolve(null);
+          unsub();
+        });
+      });
     }
+
+    const user = auth.currentUser;
+
+    if (!user) {
+      throw new axios.Cancel("No authenticated Firebase user");
+    }
+
+    const token = await getIdToken(user, true);
+
+    config.headers = {
+      ...config.headers,
+      Authorization: `Bearer ${token}`,
+      uid: user.uid,
+    };
 
     logRequest(config, 'REQUEST');
     return config;

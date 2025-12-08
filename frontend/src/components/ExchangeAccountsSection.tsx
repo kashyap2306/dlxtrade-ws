@@ -290,12 +290,13 @@ export default function ExchangeAccountsSection() {
       });
       
       // Also save to integrations for consistency
-      const { integrationsApi } = await import('../services/api');
-      await integrationsApi.update({
-        apiName: selectedExchange,
+      const { settingsApi } = await import('../services/api');
+      await settingsApi.providers.save({
+        providerId: selectedExchange,
+        providerType: 'marketData',
+        isPrimary: false,
         enabled: true,
         apiKey: credentials.apiKey,
-        secretKey: credentials.secretKey,
       });
       
       // Show success popup

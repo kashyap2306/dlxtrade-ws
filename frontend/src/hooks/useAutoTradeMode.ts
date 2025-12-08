@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { autoTradeApi, integrationsApi, settingsApi } from '../services/api';
+import { autoTradeApi, settingsApi } from '../services/api';
 import { useAuth } from './useAuth';
 import { suppressConsoleError } from '../utils/errorHandler';
 

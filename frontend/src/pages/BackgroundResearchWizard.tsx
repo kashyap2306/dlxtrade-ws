@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { settingsApi, integrationsApi } from '../services/api';
+import { settingsApi } from '../services/api';
 import Toast from '../components/Toast';
 import { LoadingState } from '../components/LoadingState';
 
@@ -134,7 +134,11 @@ export const BackgroundResearchWizard: React.FC<BackgroundResearchWizardProps> =
       for (const apiName of requiredApis) {
         try {
           // REQ 8: Ensure API loader returns plain JSON data. CheckKey should return a success object.
-          const response = await integrationsApi.checkKey(apiName);
+          const response = await settingsApi.providers.test({
+            providerName: apiName,
+            type: 'marketData',
+            apiKey: '' // Will be checked server-side
+          });
           if (!response.data?.valid) {
             missingKeys.push(apiName);
           }

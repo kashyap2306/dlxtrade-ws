@@ -5,6 +5,7 @@ import fastifyWebsocket from '@fastify/websocket';
 import fastifyCors from '@fastify/cors';
 import fastifyHelmet from '@fastify/helmet';
 import fastifyRateLimit from '@fastify/rate-limit';
+import admin from "firebase-admin";
 import { config } from './config';
 import { logger } from './utils/logger';
 import { firebaseAuthMiddleware } from './middleware/firebaseAuth';
@@ -49,27 +50,26 @@ export async function buildApp(): Promise<FastifyInstance> {
     logger: logger.child({ component: 'fastify' }),
   });
 
-  // CORS middleware - handle all requests
-  app.addHook('preHandler', (req, reply, done) => {
-    reply.header("Access-Control-Allow-Origin", "*");
-    reply.header("Access-Control-Allow-Headers", "Authorization, Content-Type");
-    reply.header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-    if (req.method === "OPTIONS") {
-      reply.code(200).send();
-      return;
-    }
-    done();
-  });
-
-  // CORS configuration - MUST BE FIRST
+  // CORS middleware - MUST BE FIRST
   await app.register(fastifyCors, {
     origin: "*",
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "uid",
+      "X-Requested-With",
+    ],
+    exposedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "uid"
+    ],
     credentials: false,
     strictPreflight: false,
     preflightContinue: false
   });
+
 
   // Security
   await app.register(fastifyHelmet);

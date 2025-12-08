@@ -48,10 +48,6 @@ export const authApi = {
 
 // Admin API
 export const adminApi = {
-<<<<<<< HEAD
-  getRole: () => api.get('/api/admin/role'),
-=======
->>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
   listKeys: () => api.get('/api/admin/keys'),
   getKey: (id: string) => api.get(`/api/admin/keys/${id}`),
   createKey: (data: any) => api.post('/api/admin/keys', data),
@@ -92,15 +88,15 @@ export const adminApi = {
 
   // Background Research
   backgroundResearch: {
-    getSettings: () => api.get('/api/research/background-research/settings'),
+    getSettings: () => api.get('/api/background-research/settings/get'),
     saveSettings: (data: {
       backgroundResearchEnabled: boolean;
       telegramBotToken?: string;
       telegramChatId?: string;
       researchFrequencyMinutes: number;
       accuracyTrigger: number;
-    }) => api.post('/api/research/background-research/settings', data),
-    test: (data: { botToken: string; chatId: string }) => api.post('/api/research/background-research/settings/test', data),
+    }) => api.post('/api/background-research/settings/save', data),
+    test: (data: { botToken: string; chatId: string }) => api.post('/api/background-research/settings/test', data),
   },
 
   // Telegram
@@ -178,8 +174,8 @@ export const settingsApi = {
 
   // Trading Settings
   trading: {
-    load: () => api.get('/api/settings/trading/settings'),
-    update: (settings: any) => api.post('/api/settings/trading/settings', settings),
+    load: () => api.get('/api/trading/settings'),
+    update: (settings: any) => api.post('/api/trading/settings', settings),
     autotrade: {
       status: () => api.get('/api/auto-trade/status'),
     },
@@ -187,14 +183,14 @@ export const settingsApi = {
 
   // Background Research Settings
   backgroundResearch: {
-    getSettings: () => api.get('/api/background-research/settings'),
+    getSettings: () => api.get('/api/background-research/settings/get'),
     saveSettings: (data: {
       backgroundResearchEnabled: boolean;
       telegramBotToken?: string;
       telegramChatId?: string;
       researchFrequencyMinutes: number;
       accuracyTrigger: number;
-    }) => api.post('/api/background-research/settings', data),
+    }) => api.post('/api/background-research/settings/save', data),
     test: (data: { botToken: string; chatId: string }) => api.post('/api/background-research/settings/test', data),
   },
 
@@ -244,24 +240,8 @@ export const providerApi = {
   test: (data: any) => api.post('/api/provider/test', data),
 };
 
-// Legacy integrations API (keeping for backward compatibility)
-export const integrationsApi = {
-  load: () => api.get('/api/integrations'),
-  update: (data: { apiName: string; enabled: boolean; apiKey?: string; secretKey?: string; apiType?: string; passphrase?: string }) =>
-    api.post('/api/settings/provider/save', {
-      providerName: PROVIDER_ID_TO_NAME[data.apiName] || data.apiName,
-      type: data.apiType || 'marketData',
-      enabled: data.enabled,
-      apiKey: data.apiKey
-    }),
-  checkKey: (apiName: string) => api.get(`/api/integrations/check/${apiName}`),
-  testProvider: (apiName: string, data: { apiKey?: string }) =>
-    api.post('/api/settings/provider/test', {
-      providerName: PROVIDER_ID_TO_NAME[apiName] || apiName,
-      type: 'marketData', // Default, will be determined by backend
-      apiKey: data.apiKey
-    }),
-};
+// Removed: integrationsApi (invalid endpoint)
+// Use settingsApi.providers instead
 
 // HFT Engine API
 export const hftApi = {
@@ -275,28 +255,26 @@ export const hftApi = {
 
 // Users - routes already include /api prefix from baseURL
 export const usersApi = {
-  getAll: () => api.get('/api/users'),
-  get: (uid: string) => api.get(`/api/users/${uid}/details`),
-  getSessions: (uid: string) => api.get(`/api/users/${uid}/sessions`),
-  logoutAllSessions: (uid: string) => api.post(`/api/users/${uid}/logout-all`),
-  requestAccountDeletion: (uid: string) => api.post(`/api/users/${uid}/request-delete`),
-  create: (data: any) => api.post('/api/users/create', data),
-  update: (data: any) => api.post('/api/users/update', data),
+  getAll: () => api.get('/users'),
+  logoutAllSessions: (uid: string) => api.post(`/users/${uid}/logout-all`),
+  requestAccountDeletion: (uid: string) => api.post(`/users/${uid}/request-delete`),
+  create: (data: any) => api.post('/users/create', data),
+  update: (data: any) => api.post('/users/update', data),
   // Profile endpoints
-  getProfile: () => api.get('/api/user/profile'),
-  updateProfile: (data: any) => api.post('/api/user/profile/update', data),
+  getProfile: () => api.get('/user/profile'),
+  updateProfile: (data: any) => api.post('/user/profile/update', data),
+  // Removed: get, getSessions (invalid endpoints)
   // Removed: getStats, getExchangeStatus, getUsageStats (endpoints don't exist)
 };
 
 // Agents - routes already include /api prefix from baseURL
 export const agentsApi = {
-  getAll: () => cachedApi.get('/api/agents'),
-  get: (id: string) => api.get(`/api/agents/${id}`),
-  unlock: (agentName: string) => api.post('/api/agents/unlock', { agentName }),
-  getUnlocked: () => cachedApi.get('/api/agents/unlocked'),
+  get: (id: string) => api.get(`/agents/${id}`),
+  unlock: (agentName: string) => api.post('/agents/unlock', { agentName }),
   submitUnlockRequest: (data: { agentId: string; agentName: string; fullName: string; phoneNumber: string; email: string }) =>
-    api.post('/api/agents/submit-unlock-request', data),
-  updateAgentSettings: (agentId: string, settings: any) => api.put(`/api/agents/${agentId}/settings`, settings),
+    api.post('/agents/submit-unlock-request', data),
+  updateAgentSettings: (agentId: string, settings: any) => api.put(`/agents/${agentId}/settings`, settings),
+  // Removed: getAll, getUnlocked (invalid endpoints)
 };
 
 // Activity Logs - routes already include /api prefix from baseURL
@@ -318,16 +296,12 @@ export const notificationsApi = {
     api.post('/api/notifications/push', data),
 };
 
-<<<<<<< HEAD
 // Broadcast Popup API
 export const broadcastPopupApi = {
   getCurrent: () => api.get('/api/broadcast-popup/current'),
   markAsSeen: (popupId: string) => api.post('/api/broadcast-popup/mark-seen', { popupId }),
   getSeenPopups: () => api.get('/api/broadcast-popup/seen'),
 };
-
-=======
->>>>>>> 1155e8a13d2107df42fd79541eae28eca41a1947
 // System Logs - routes already include /api prefix from baseURL
 export const systemLogsApi = {
   get: (params?: { limit?: number }) => api.get('/api/logs', { params }),
@@ -400,7 +374,7 @@ export const exchangeApi = {
     api.get('/api/exchange/status', { params: exchange ? { exchange } : {} }),
   // Legacy endpoints for backward compatibility
   saveConfig: (config: { exchange: string; apiKey: string; secret: string; passphrase?: string; testnet?: boolean }) =>
-    api.post(`/api/users/${localStorage.getItem('firebaseUser') ? JSON.parse(localStorage.getItem('firebaseUser')!).uid : ''}/exchange-config`, config),
+    api.post('/exchange/connect', config),
   getConfig: () =>
     api.get(`/api/users/${localStorage.getItem('firebaseUser') ? JSON.parse(localStorage.getItem('firebaseUser')!).uid : ''}/exchange-config`),
   removeConfig: () =>
