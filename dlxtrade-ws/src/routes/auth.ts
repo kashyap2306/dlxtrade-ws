@@ -15,9 +15,12 @@ const afterSignInSchema = z.object({
  * All user document creation happens on backend only
  */
 export async function authRoutes(fastify: FastifyInstance) {
+  console.log("[RUNTIME] authRoutes executed");
+
   // POST /api/auth/afterSignIn - Called by frontend after successful Firebase Auth sign-in
   // Backend verifies idToken and runs idempotent user onboarding
   fastify.post('/afterSignIn', async (request: FastifyRequest, reply: FastifyReply) => {
+    console.log("[RUNTIME] afterSignIn HIT");
     try {
       const body = afterSignInSchema.parse(request.body);
       

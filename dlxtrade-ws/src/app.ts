@@ -21,6 +21,9 @@ import { executionRoutes } from './routes/execution';
 import { integrationsRoutes } from './routes/integrations';
 import { hftRoutes } from './routes/hft';
 import { usersRoutes } from './routes/users';
+
+console.log("USERS ROUTES PATH:", __dirname);
+console.log("USERS ROUTES RESOLVE:", require.resolve("./routes/users"));
 import { agentsRoutes } from './routes/agents';
 import { activityLogsRoutes } from './routes/activityLogs';
 import { tradesRoutes } from './routes/trades';
@@ -141,6 +144,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   console.log('WS ROUTE READY');
 
   // Routes
+  console.log("[DEBUG] registering authRoutes");
   await app.register(authRoutes, { prefix: '/api/auth' });
   await app.register(adminRoutes, { prefix: '/api/admin' });
   await app.register(ordersRoutes, { prefix: '/api' });
@@ -154,7 +158,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(broadcastPopupRoutes, { prefix: "/api" });
   console.log("[ROUTE READY] Broadcast popup routes mounted");
 
-  // await app.register(usersRoutes, { prefix: '/api/users' }); // Temporarily disabled
+  // USERS ROUTES REGISTRATION - ACTIVE
+  console.log("[DEBUG] registering usersRoutes");
+  await app.register(usersRoutes, { prefix: '/api/users' });
+  console.log("[DEBUG] usersRoutes registration completed"); // Final
 
   // Additional routes
   await app.register(metricsRoutes, { prefix: '/api' });
@@ -208,6 +215,11 @@ export async function buildApp(): Promise<FastifyInstance> {
     console.log('  - /ws (WebSocket)');
   console.log('  - /ws/admin (Admin WebSocket)');
   console.log('  - / (Root WebSocket - unauthenticated, for Render WS health)');
+
+  // FORCED ROUTE TREE PRINT - IMMEDIATE CHECK
+  console.log("=== FASTIFY ROUTE TREE START ===");
+  console.log(app.printRoutes());
+  console.log("=== FASTIFY ROUTE TREE END ===");
 
 // Test route to verify server is running (no auth required)
 app.get('/api/test', async (request, reply) => {
@@ -362,6 +374,18 @@ console.log("[RENDER ENV] Build timestamp:", Date.now());
     connection.socket.on('close', () => {
       logger.info('Root WebSocket client disconnected');
     });
+  });
+
+  // Print all registered routes for debugging
+  app.ready(() => {
+    console.log("\n=== REGISTERED ROUTES ===");
+    console.log(app.printRoutes());
+    console.log("=== END ROUTES ===\n");
+
+    // Check if users routes are present
+    const routes = app.printRoutes();
+    const hasUsersRoutes = routes.includes('/api/users');
+    console.log("USERS ROUTES DETECTED:", hasUsersRoutes);
   });
 
   return app;

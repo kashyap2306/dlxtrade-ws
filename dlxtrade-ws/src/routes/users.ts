@@ -1,3 +1,5 @@
+console.log("[DEBUG] usersRoutes file EXECUTED");
+
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { firestoreAdapter } from '../services/firestoreAdapter';
@@ -39,7 +41,7 @@ const updateUserSchema = z.object({
 });
 
 export async function usersRoutes(fastify: FastifyInstance) {
-  console.log("[DEBUG] usersRoutes function called!");
+  console.log("[CHECK] usersRoutes EXECUTED");
   console.log("[ROUTE READY] GET /api/users/:uid/exchange-config");
   console.log("[ROUTE READY] POST /api/users/:uid/exchange-config");
   console.log("[ROUTE READY] GET /api/users/:uid/trading-config");
@@ -57,6 +59,254 @@ export async function usersRoutes(fastify: FastifyInstance) {
   console.log("[ROUTE READY] GET /api/users/:id/usage-stats");
   console.log("[ROUTE READY] GET /api/users/:id/sessions");
   console.log("[ROUTE READY] POST /api/users/:uid/provider-config");
+
+  // GET /api/users/:uid/exchange-config - Get exchange configuration
+  fastify.get('/:uid/exchange-config', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
+    try {
+      const { uid } = request.params;
+      const user = (request as any).user;
+
+      // Users can only view their own config unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (uid !== user.uid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      const db = getFirebaseAdmin().firestore();
+      const doc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+
+      if (!doc.exists) {
+        return reply.send({ accounts: [] });
+      }
+
+      const data = doc.data() || {};
+      return reply.send({
+        accounts: [{
+          exchange: data.exchange,
+          apiKey: data.apiKeyEncrypted ? '[ENCRYPTED]' : '',
+          secret: data.secretEncrypted ? '[ENCRYPTED]' : '',
+          passphrase: data.passphraseEncrypted ? '[ENCRYPTED]' : '',
+          testnet: data.testnet ?? true
+        }]
+      });
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting exchange config');
+      return reply.code(500).send({ error: 'Failed to get exchange config' });
+    }
+  });
+
+  // POST /api/users/:uid/exchange-config - Save exchange configuration
+  fastify.post('/:uid/exchange-config', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { uid: string }; Body: any }>, reply: FastifyReply) => {
+    try {
+      const { uid } = request.params;
+      const user = (request as any).user;
+
+      // Users can only update their own config unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (uid !== user.uid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      const db = getFirebaseAdmin().firestore();
+      const configRef = db.collection('users').doc(uid).collection('exchangeConfig').doc('current');
+
+      await configRef.set({
+        ...(request.body as any),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedBy: user.uid
+      }, { merge: true });
+
+      return reply.send({ success: true });
+    } catch (err: any) {
+      logger.error({ err }, 'Error saving exchange config');
+      return reply.code(500).send({ error: 'Failed to save exchange config' });
+    }
+  });
+
+  // GET /api/users/:uid/trading-config - Get trading configuration
+  fastify.get('/:uid/trading-config', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
+    try {
+      const { uid } = request.params;
+      const user = (request as any).user;
+
+      // Users can only view their own config unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (uid !== user.uid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      const db = getFirebaseAdmin().firestore();
+      const doc = await db.collection('trading-config').doc(uid).get();
+
+      const data = doc.exists ? doc.data() : null;
+      return reply.send({ ok: true, config: data });
+    } catch (err: any) {
+      logger.error({ err }, 'Failed to load trading-config');
+      return reply.code(500).send({ error: 'Failed to load trading config' });
+    }
+  });
+
+  // POST /api/users/:uid/trading-config - Save trading configuration
+  fastify.post('/:uid/trading-config', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { uid: string }; Body: any }>, reply: FastifyReply) => {
+    try {
+      const { uid } = request.params;
+      const user = (request as any).user;
+
+      // Users can only update their own config unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (uid !== user.uid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      const db = getFirebaseAdmin().firestore();
+      await db.collection('trading-config').doc(uid).set(request.body, { merge: true });
+
+      request.log.info({ uid, body: request.body }, 'Saved trading-config');
+
+      return reply.send({ ok: true, config: request.body });
+    } catch (err: any) {
+      request.log.error({ err }, 'Failed to save trading-config');
+      return reply.code(500).send({ error: 'Failed to save trading config' });
+    }
+  });
+
+  // GET /api/users/:uid/provider-config - Get provider configuration
+  fastify.get('/:uid/provider-config', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
+    try {
+      const { uid } = request.params;
+      const user = (request as any).user;
+
+      // Users can only view their own config unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (uid !== user.uid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      const db = getFirebaseAdmin().firestore();
+      const doc = await db.collection('provider-config').doc(uid).get();
+
+      const data = doc.exists ? doc.data() : null;
+      return reply.send({ ok: true, config: data });
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting provider config');
+      return reply.code(500).send({ error: 'Failed to get provider config' });
+    }
+  });
+
+  // POST /api/users/:uid/provider-config - Save provider configuration
+  fastify.post('/:uid/provider-config', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { uid: string }; Body: any }>, reply: FastifyReply) => {
+    try {
+      const { uid } = request.params;
+      const user = (request as any).user;
+
+      // Users can only update their own config unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (uid !== user.uid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      // Validate the provider config structure
+      const requestBody = request.body as any;
+      if (!requestBody || typeof requestBody !== 'object') {
+        reply.status(400).send({ success: false, error: "invalid_request" });
+        return;
+      }
+
+      const providerConfig = requestBody.providerConfig;
+      if (!providerConfig || typeof providerConfig !== 'object') {
+        reply.status(400).send({ success: false, error: "invalid_request" });
+        return;
+      }
+
+      const providerName = providerConfig.providerName;
+      const type = providerConfig.type;
+      const enabled = providerConfig.enabled;
+      const apiKey = providerConfig.apiKey;
+      const usageStats = providerConfig.usageStats;
+
+      if (!providerName || !type) {
+        reply.status(400).send({ success: false, error: "invalid_request" });
+        return;
+      }
+
+      const db = getFirebaseAdmin().firestore();
+
+      // Save to users/{uid}/settings/providerConfig (DOC, not collection!)
+      const userRef = db
+        .collection('users')
+        .doc(uid)
+        .collection('settings')
+        .doc('providerConfig');
+
+      await userRef.set(
+        {
+          [providerName]: {
+            providerName,
+            type,
+            enabled,
+            apiKey,
+            usageStats
+          }
+        },
+        { merge: true }
+      );
+
+      console.log("[provider-config] Saved provider:", providerName);
+
+      return { success: true };
+    } catch (err: any) {
+      console.error("[provider-config] Firestore error:", err);
+      reply.status(500).send({ success: false, error: "firestore_write_failed" });
+      return;
+    }
+  });
+
+  // POST /api/users/:uid/request-delete - Request user account deletion
+  fastify.post('/:uid/request-delete', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
+    try {
+      const { uid } = request.params;
+      const user = (request as any).user;
+
+      // Users can only request deletion for their own account unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (uid !== user.uid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      const db = getFirebaseAdmin().firestore();
+
+      // Mark user for deletion
+      await db.collection('users').doc(uid).update({
+        deleteRequested: true,
+        requestedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      // Log the deletion request
+      await firestoreAdapter.logActivity(uid, 'ACCOUNT_DELETION_REQUESTED', {
+        message: 'User requested account deletion',
+        requestedAt: new Date().toISOString(),
+      });
+
+      return { success: true };
+    } catch (err: any) {
+      logger.error({ err }, 'Error requesting user deletion');
+      return reply.code(500).send({ error: 'Failed to request account deletion' });
+    }
+  });
 
   // GET /api/users - Get all users (admin only)
   fastify.get('/users', {
@@ -202,7 +452,7 @@ export async function usersRoutes(fastify: FastifyInstance) {
         hasCountry: !!body.country,
       });
 
-      return { message: 'User updated successfully', uid: user.uid };
+      return { success: true, updated: body };
     } catch (err: any) {
       if (err instanceof ValidationError) {
         return reply.code(400).send({ error: err.message });
@@ -577,163 +827,12 @@ export async function usersRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // GET /api/users/:uid/exchange-config - Get exchange configuration
-  fastify.get('/users/:uid/exchange-config', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
-    try {
-      const { uid } = request.params;
-      const user = (request as any).user;
-
-      // Users can only view their own config unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (uid !== user.uid && !isAdmin) {
-        return reply.code(403).send({ error: 'Access denied' });
-      }
-
-      const db = getFirebaseAdmin().firestore();
-      const doc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
-
-      if (!doc.exists) {
-        return reply.send({ accounts: [] });
-      }
-
-      const data = doc.data() || {};
-      return reply.send({
-        accounts: [{
-          exchange: data.exchange,
-          apiKey: data.apiKeyEncrypted ? '[ENCRYPTED]' : '',
-          secret: data.secretEncrypted ? '[ENCRYPTED]' : '',
-          passphrase: data.passphraseEncrypted ? '[ENCRYPTED]' : '',
-          testnet: data.testnet ?? true
-        }]
-      });
-    } catch (err: any) {
-      logger.error({ err }, 'Error getting exchange config');
-      return reply.code(500).send({ error: 'Failed to get exchange config' });
-    }
-  });
-
-  // POST /api/users/:uid/exchange-config - Save exchange configuration
-  fastify.post('/users/:uid/exchange-config', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Params: { uid: string }; Body: any }>, reply: FastifyReply) => {
-    try {
-      const { uid } = request.params;
-      const user = (request as any).user;
-
-      // Users can only update their own config unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (uid !== user.uid && !isAdmin) {
-        return reply.code(403).send({ error: 'Access denied' });
-      }
-
-      const db = getFirebaseAdmin().firestore();
-      const configRef = db.collection('users').doc(uid).collection('exchangeConfig').doc('current');
-
-      await configRef.set({
-        ...(request.body as any),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        updatedBy: user.uid
-      }, { merge: true });
-
-      return reply.send({ success: true });
-    } catch (err: any) {
-      logger.error({ err }, 'Error saving exchange config');
-      return reply.code(500).send({ error: 'Failed to save exchange config' });
-    }
-  });
-
-  // GET /api/users/:uid/trading-config - Get trading configuration
-  fastify.get('/:uid/trading-config', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
-    try {
-      const { uid } = request.params;
-      const user = (request as any).user;
-
-      // Users can only view their own config unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (uid !== user.uid && !isAdmin) {
-        return reply.code(403).send({ error: 'Access denied' });
-      }
-
-      const db = getFirebaseAdmin().firestore();
-      const doc = await db.collection('trading-config').doc(uid).get();
-
-      const data = doc.exists ? doc.data() : null;
-      return reply.send({ ok: true, config: data });
-    } catch (err: any) {
-      logger.error({ err }, 'Failed to load trading-config');
-      return reply.code(500).send({ error: 'Failed to load trading config' });
-    }
-  });
-
-  // POST /api/users/:uid/trading-config - Save trading configuration
-  fastify.post('/:uid/trading-config', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Params: { uid: string }; Body: any }>, reply: FastifyReply) => {
-    try {
-      const { uid } = request.params;
-      const user = (request as any).user;
-
-      // Users can only update their own config unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (uid !== user.uid && !isAdmin) {
-        return reply.code(403).send({ error: 'Access denied' });
-      }
-
-      const db = getFirebaseAdmin().firestore();
-      await db.collection('trading-config').doc(uid).set(request.body, { merge: true });
-
-      request.log.info({ uid, body: request.body }, 'Saved trading-config');
-
-      return reply.send({ ok: true, config: request.body });
-    } catch (err: any) {
-      request.log.error({ err }, 'Failed to save trading-config');
-      return reply.code(500).send({ error: 'Failed to save trading config' });
-    }
-  });
-
   // POST /api/users/test-route - Test route
   fastify.post('/test-route', {
     // preHandler: [fastify.authenticate], // Temporarily disabled for testing
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     console.log("[TEST ROUTE] Called!");
     return reply.send({ ok: true, message: "Test route works" });
-  });
-
-  // POST /api/users/:uid/provider-config - Save provider configuration
-  fastify.post('/:uid/provider-config', {
-    // preHandler: [fastify.authenticate], // Temporarily disabled for testing
-  }, async (request: FastifyRequest<{ Params: { uid: string }; Body: any }>, reply: FastifyReply) => {
-    try {
-      const { uid } = request.params;
-      const user = (request as any).user;
-
-      console.log("[PROVIDER-CONFIG] incoming uid:", uid);
-      console.log("[PROVIDER-CONFIG] body:", request.body);
-
-      // Users can only update their own config unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (uid !== user.uid && !isAdmin) {
-        return reply.code(403).send({ error: 'Access denied' });
-      }
-
-      const db = getFirebaseAdmin().firestore();
-
-      await db
-        .collection("provider-config")
-        .doc(uid)
-        .set(request.body, { merge: true });
-
-      console.log("[PROVIDER-CONFIG] saved successfully for uid:", uid);
-
-      return reply.send({ ok: true, message: "Provider config saved successfully" });
-    } catch (err: any) {
-      logger.error({ err }, 'Error saving provider config');
-      return reply.code(500).send({ error: 'Failed to save provider config' });
-    }
   });
 }
 

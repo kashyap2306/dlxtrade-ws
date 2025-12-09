@@ -25,6 +25,68 @@ import { SettingsExchangeSection } from './SettingsExchangeSection';
 import { BackgroundResearchWizard } from './BackgroundResearchWizard';
 import { SettingsModals } from './SettingsModals';
 
+// Provider ID mapping - maps UI names to backend IDs (corrected)
+const PROVIDER_ID_MAP: Record<string, string> = {
+  "NewsData.io": "newsdata",
+  "CryptoCompare": "cryptocompare",
+  "CoinGecko": "coingecko",
+  "CoinPaprika": "coinpaprika",
+  "CoinMarketCap": "coinmarketcap",
+  "CoinLore": "coinlore",
+  "CoinStats": "coinstats",
+  "CoinAPI": "coinapi",
+  "BraveNewCoin": "bravenewcoin",
+  "Messari": "messari",
+  "Kaiko": "kaiko",
+  "LiveCoinWatch": "livecoinwatch",
+  "CoinCheckup": "coincheckup",
+  "Cointelegraph RSS": "cointelegraph_rss",
+  "AltcoinBuzz RSS": "altcoinbuzz_rss",
+  "GNews": "gnews",
+  "Marketaux": "marketaux",
+  "Webz.io": "webzio",
+  "CryptoPanic": "cryptopanic",
+  "Reddit": "reddit",
+  "CoinStatsNews": "coinstatsnews",
+  "NewsCatcher": "newscatcher",
+  "CryptoCompare News": "cryptocompare_news"
+};
+
+// Strict provider type mapping - matches backend expectations (using corrected backend IDs as keys)
+const PROVIDER_TYPE_MAP: Record<string, 'marketData' | 'news' | 'metadata'> = {
+  // Market Data Providers
+  'cryptocompare': 'marketData',
+  'coingecko': 'marketData',
+  'coinpaprika': 'marketData',
+  'coinmarketcap': 'marketData',
+  'coinlore': 'marketData',
+  'coinapi': 'marketData',
+  'bravenewcoin': 'marketData',
+  'messari': 'marketData',
+  'kaiko': 'marketData',
+  'livecoinwatch': 'marketData',
+  'coinstats': 'marketData',
+  'coincheckup': 'marketData',
+
+  // News Providers
+  'newsdata': 'news',
+  'cryptopanic': 'news',
+  'reddit': 'news',
+  'gnews': 'news',
+  'cointelegraph_rss': 'news',
+  'altcoinbuzz_rss': 'news',
+  'marketaux': 'news',
+  'webzio': 'news',
+  'coinstatsnews': 'news',
+  'newscatcher': 'news',
+  'cryptocompare_news': 'news',
+
+  // Metadata Providers
+  'coincap': 'metadata',
+  'coinranking': 'metadata',
+  'nomics': 'metadata'
+};
+
 console.log("🟣 SETTINGS COMPONENT CHECK", {
   General: SettingsGeneralSection,
   Providers: SettingsApiProvidersSection,
@@ -352,7 +414,7 @@ const Settings = () => {
   const handleSaveTradingConfig = async (newConfig: any) => {
     try {
       const resp = await settingsApi.saveTradingConfig(user!.uid, newConfig);
-      if (resp?.data?.ok) {
+      if (resp?.data?.success) {
         setTradingConfig(resp.data.config); // immediate UI reflect
         showToast('Trading settings saved', 'success');
       }
@@ -711,13 +773,33 @@ const Settings = () => {
                 testProviderConnection={testProviderConnection}
                 handleProviderKeyChange={(providerName, keyName, value, uid, setProviders) => {
                   if (!user) return;
+
+                  // Get backend provider ID from UI name
+                  const providerId = PROVIDER_ID_MAP[providerName];
+                  if (!providerId) {
+                    console.error("Unknown provider ID:", providerName);
+                    setToast({ message: `Unknown provider: ${providerName}`, type: 'error' });
+                    return;
+                  }
+
+                  // Get provider type using backend ID
+                  const providerType = PROVIDER_TYPE_MAP[providerId];
+                  if (!providerType) {
+                    console.error("Unknown provider type for ID:", providerId);
+                    setToast({ message: `Unknown provider type: ${providerName}`, type: 'error' });
+                    return;
+                  }
+
                   const providerBody = {
-                    [providerName.toLowerCase().replace(/\s+/g, '')]: {
-                      apiKey: value,
-                      enabled: true
-                    }
+                    providerName: providerId, // Send backend ID as providerName
+                    type: providerType,
+                    enabled: true,
+                    apiKey: value,
+                    usageStats: {}
                   };
-                  settingsApi.saveProviderConfig(user.uid, providerBody).then(() => {
+                  settingsApi.saveProviderConfig(user.uid, {
+                    providerConfig: providerBody
+                  }).then(() => {
                     setProviders(prev => ({ ...prev, [providerName]: providerBody }));
                     setToast({ message: `${providerName} API key saved!`, type: 'success' });
                   }).catch(err => {
