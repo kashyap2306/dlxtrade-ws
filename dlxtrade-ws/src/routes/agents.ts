@@ -16,205 +16,22 @@ export async function agentsRoutes(fastify: FastifyInstance) {
   console.log("[ROUTE READY] GET /api/agents/:id");
   console.log("[ROUTE READY] POST /api/agents/submit-unlock-request");
   console.log("[ROUTE READY] PUT /api/agents/:agentId/settings");
+  console.log("[ROUTE READY] GET /api/users/:uid/agents");
+  console.log("[ROUTE READY] POST /api/agents/purchase-request");
+  console.log("[ROUTE READY] POST /api/admin/agents/approve");
+  console.log("[ROUTE READY] GET /api/users/:uid/features");
 
-  // GET /api/agents - Get all agents
+  // GET /api/agents - Get user's available agents
   fastify.get('/', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      // Try to get agents from Firestore first
-      const agents = await firestoreAdapter.getAllAgents();
-
-      // If no agents in Firestore, return default agents
-      if (!agents || agents.length === 0) {
-        const defaultAgents = [
-          {
-            id: 'airdrop_multiverse',
-            name: 'Airdrop Multiverse Agent',
-            price: 350,
-            description: 'Creates 100–500 wallets, auto airdrop tasks runner, auto-claim, auto-merge profits',
-            features: [
-              'Creates 100–500 wallets automatically',
-              'Auto airdrop tasks runner',
-              'Auto-claim rewards',
-              'Auto-merge profits',
-            ],
-            icon: '🎁',
-            category: 'Airdrop',
-            badge: 'Popular',
-          },
-          {
-            id: 'liquidity_sniper_arbitrage',
-            name: 'Liquidity Sniper & Arbitrage Agent',
-            price: 500,
-            description: 'DEX–CEX arbitrage with micro-second gap execution',
-            features: [
-              'DEX–CEX arbitrage detection',
-              'Micro-second gap execution',
-              'Real-time opportunity scanning',
-              'Automated profit capture',
-            ],
-            icon: '⚡',
-            category: 'Arbitrage',
-            badge: 'Premium',
-          },
-          {
-            id: 'ai_launchpad_hunter',
-            name: 'AI Launchpad Hunter & Presale Sniper',
-            price: 450,
-            description: 'Whitelists, presales, early launch detection, auto-entry & auto-exit',
-            features: [
-              'Whitelist detection',
-              'Presale monitoring',
-              'Early launch detection',
-              'Auto-entry & auto-exit',
-            ],
-            icon: '🚀',
-            category: 'Launchpad',
-            badge: 'Hot',
-          },
-          {
-            id: 'whale_movement_tracker',
-            name: 'Whale Movement Tracker Agent',
-            price: 250,
-            description: 'Tracks big wallets (whales), auto-buy/sell on accumulation & distribution',
-            features: [
-              'Tracks big wallets (whales)',
-              'Auto-buy on accumulation',
-              'Auto-sell on distribution',
-              'Real-time alerts',
-            ],
-            icon: '🐋',
-            category: 'Tracking',
-          },
-          {
-            id: 'pre_market_ai_alpha',
-            name: 'Pre-Market AI Alpha Agent',
-            price: 300,
-            description: 'On-chain + sentiment + funding + volatility analysis, predicts next pump tokens',
-            features: [
-              'On-chain analysis',
-              'Sentiment analysis',
-              'Funding rate monitoring',
-              'Volatility prediction',
-              'Pump token prediction',
-            ],
-            icon: '🧠',
-            category: 'AI Prediction',
-          },
-          {
-            id: 'whale_copy_trade',
-            name: 'Whale Copy Trade Agent',
-            price: 400,
-            description: 'Tracks top 500 whales, copies entries/exits automatically',
-            features: [
-              'Tracks top 500 whales',
-              'Copies entries automatically',
-              'Copies exits automatically',
-              'Real-time synchronization',
-            ],
-            icon: '📊',
-            category: 'Copy Trading',
-          },
-        ];
-        return { agents: defaultAgents };
-      }
-
+      const user = (request as any).user;
+      const agents = await firestoreAdapter.getUserAgents(user.uid);
       return { agents };
     } catch (err: any) {
-      logger.error({ err }, 'Error getting agents');
-      // Return default agents even on error
-      const defaultAgents = [
-        {
-          id: 'airdrop_multiverse',
-          name: 'Airdrop Multiverse Agent',
-          price: 350,
-          description: 'Creates 100–500 wallets, auto airdrop tasks runner, auto-claim, auto-merge profits',
-          features: [
-            'Creates 100–500 wallets automatically',
-            'Auto airdrop tasks runner',
-            'Auto-claim rewards',
-            'Auto-merge profits',
-          ],
-          icon: '🎁',
-          category: 'Airdrop',
-          badge: 'Popular',
-        },
-        {
-          id: 'liquidity_sniper_arbitrage',
-          name: 'Liquidity Sniper & Arbitrage Agent',
-          price: 500,
-          description: 'DEX–CEX arbitrage with micro-second gap execution',
-          features: [
-            'DEX–CEX arbitrage detection',
-            'Micro-second gap execution',
-            'Real-time opportunity scanning',
-            'Automated profit capture',
-          ],
-          icon: '⚡',
-          category: 'Arbitrage',
-          badge: 'Premium',
-        },
-        {
-          id: 'ai_launchpad_hunter',
-          name: 'AI Launchpad Hunter & Presale Sniper',
-          price: 450,
-          description: 'Whitelists, presales, early launch detection, auto-entry & auto-exit',
-          features: [
-            'Whitelist detection',
-            'Presale monitoring',
-            'Early launch detection',
-            'Auto-entry & auto-exit',
-          ],
-          icon: '🚀',
-          category: 'Launchpad',
-          badge: 'Hot',
-        },
-        {
-          id: 'whale_movement_tracker',
-          name: 'Whale Movement Tracker Agent',
-          price: 250,
-          description: 'Tracks big wallets (whales), auto-buy/sell on accumulation & distribution',
-          features: [
-            'Tracks big wallets (whales)',
-            'Auto-buy on accumulation',
-            'Auto-sell on distribution',
-            'Real-time alerts',
-          ],
-          icon: '🐋',
-          category: 'Tracking',
-        },
-        {
-          id: 'pre_market_ai_alpha',
-          name: 'Pre-Market AI Alpha Agent',
-          price: 300,
-          description: 'On-chain + sentiment + funding + volatility analysis, predicts next pump tokens',
-          features: [
-            'On-chain analysis',
-            'Sentiment analysis',
-            'Funding rate monitoring',
-            'Volatility prediction',
-            'Pump token prediction',
-          ],
-          icon: '🧠',
-          category: 'AI Prediction',
-        },
-        {
-          id: 'whale_copy_trade',
-          name: 'Whale Copy Trade Agent',
-          price: 400,
-          description: 'Tracks top 500 whales, copies entries/exits automatically',
-          features: [
-            'Tracks top 500 whales',
-            'Copies entries automatically',
-            'Copies exits automatically',
-            'Real-time synchronization',
-          ],
-          icon: '📊',
-          category: 'Copy Trading',
-        },
-      ];
-      return { agents: defaultAgents };
+      logger.error({ err }, 'Error getting user agents');
+      return reply.code(500).send({ error: err.message || 'Error fetching agents' });
     }
   });
 
@@ -397,12 +214,120 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       };
       Object.assign(updateData, settings);
       await userAgentRef.set(updateData, { merge: true });
-      
+
       logger.info({ uid: user.uid, agentName: agent.name }, 'Agent settings updated');
       return { message: 'Settings updated successfully' };
     } catch (err: any) {
       logger.error({ err }, 'Error updating agent settings');
       return reply.code(500).send({ error: err.message || 'Error updating agent settings' });
+    }
+  });
+
+  // GET /api/users/:uid/agents - Get specific user's agents (admin endpoint)
+  fastify.get('/users/:uid/agents', {
+    preHandler: [fastify.authenticate, fastify.isAdmin],
+  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
+    try {
+      const { uid } = request.params;
+      const agents = await firestoreAdapter.getUserAgents(uid);
+      return { agents };
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting user agents');
+      return reply.code(500).send({ error: err.message || 'Error fetching user agents' });
+    }
+  });
+
+  // POST /api/agents/purchase-request - Create agent purchase request
+  fastify.post('/purchase-request', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: { agentId: string; agentName: string; userName: string; email: string; phoneNumber: string } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const body = z.object({
+        agentId: z.string().min(1),
+        agentName: z.string().min(1),
+        userName: z.string().min(1),
+        email: z.string().email(),
+        phoneNumber: z.string().min(1),
+      }).parse(request.body);
+
+      // Create purchase request
+      const requestId = await firestoreAdapter.createAgentPurchaseRequest({
+        uid: user.uid,
+        agentId: body.agentId,
+        agentName: body.agentName,
+        userName: body.userName,
+        email: body.email,
+        phoneNumber: body.phoneNumber,
+        status: 'pending',
+      });
+
+      // Log activity
+      await firestoreAdapter.logActivity(user.uid, 'AGENT_PURCHASE_REQUEST_CREATED', {
+        agentId: body.agentId,
+        agentName: body.agentName,
+        requestId,
+      });
+
+      logger.info({ uid: user.uid, agentId: body.agentId, requestId }, 'Agent purchase request created');
+      return {
+        success: true,
+        message: 'Purchase request submitted successfully',
+        requestId,
+      };
+    } catch (err: any) {
+      if (err instanceof z.ZodError) {
+        return reply.code(400).send({ error: 'Invalid input', details: err.errors });
+      }
+      logger.error({ err }, 'Error creating purchase request');
+      return reply.code(500).send({ error: err.message || 'Error creating purchase request' });
+    }
+  });
+
+  // POST /api/admin/agents/approve - Admin approve agent purchase request
+  fastify.post('/admin/approve', {
+    preHandler: [fastify.authenticate, fastify.isAdmin],
+  }, async (request: FastifyRequest<{ Body: { requestId: string } }>, reply: FastifyReply) => {
+    try {
+      const admin = (request as any).user;
+      const body = z.object({
+        requestId: z.string().min(1),
+      }).parse(request.body);
+
+      await firestoreAdapter.approveAgentPurchaseRequest(body.requestId, admin.uid);
+
+      logger.info({ requestId: body.requestId, approvedBy: admin.uid }, 'Agent purchase request approved');
+      return {
+        success: true,
+        message: 'Agent purchase request approved and feature enabled',
+      };
+    } catch (err: any) {
+      if (err instanceof z.ZodError) {
+        return reply.code(400).send({ error: 'Invalid input', details: err.errors });
+      }
+      logger.error({ err }, 'Error approving purchase request');
+      return reply.code(500).send({ error: err.message || 'Error approving purchase request' });
+    }
+  });
+
+  // GET /api/users/:uid/features - Get user's enabled features
+  fastify.get('/users/:uid/features', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const { uid } = request.params;
+
+      // Users can only see their own features, admins can see anyone's
+      if (uid !== user.uid && !user.isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      const features = await firestoreAdapter.getUserFeatures(uid);
+      return { features };
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting user features');
+      return reply.code(500).send({ error: err.message || 'Error fetching user features' });
     }
   });
 }

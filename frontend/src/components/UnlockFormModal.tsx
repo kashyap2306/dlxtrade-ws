@@ -34,21 +34,21 @@ export default function UnlockFormModal({ agent, isOpen, onClose, onSuccess }: U
 
     setSubmitting(true);
     try {
-      // Submit unlock request to backend
-      await agentsApi.submitUnlockRequest({
+      // Submit purchase request to backend
+      await agentsApi.createPurchaseRequest({
         agentId: agent.id || agent.name,
         agentName: agent.name,
-        fullName: formData.fullName,
-        phoneNumber: formData.phoneNumber,
+        userName: formData.fullName,
         email: formData.email,
+        phoneNumber: formData.phoneNumber,
       });
-      
+
       setSubmitted(true);
       if (onSuccess) {
         onSuccess();
       }
     } catch (err: any) {
-      console.error('Error submitting unlock request:', err);
+      console.error('Error submitting purchase request:', err);
       // Still show success message to user
       setSubmitted(true);
     } finally {

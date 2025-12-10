@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
-import { autoTradeApi, usersApi, globalStatsApi, engineStatusApi, settingsApi, notificationsApi, agentsApi } from '../services/api';
+import { autoTradeApi, usersApi, globalStatsApi, engineStatusApi, settingsApi, notificationsApi, agentsApi, exchangeApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { suppressConsoleError } from '../utils/errorHandler';
 import { SettingsExchangeSection } from './SettingsExchangeSection';
@@ -13,6 +13,12 @@ import { ArrowTrendingUpIcon, ArrowTrendingDownIcon, WalletIcon, ChartBarIcon, B
 import TradeConfirmationModal from '../components/TradeConfirmationModal';
 import { EXCHANGES } from '../constants/exchanges';
 
+// Helper function to get exchange logo component
+const getExchangeLogo = (exchangeName: string) => {
+  const exchange = EXCHANGES.find(ex => ex.id === exchangeName);
+  return exchange?.logo || null;
+};
+
 // Wallet balances are now loaded from global-stats endpoint
 
 // Lazy load heavy components for better performance
@@ -20,7 +26,7 @@ const MarketScanner = lazy(() => import('../components/MarketScanner'));
 
 // Debounce utility for API calls
 function useDebounce<T extends (...args: any[]) => any>(callback: T, delay: number): T {
-  const timeoutRef = useRef<NodeJS.Timeout>();
+  const timeoutRef = useRef<number>();
 
   return useCallback((...args: Parameters<T>) => {
     if (timeoutRef.current) {
@@ -93,7 +99,8 @@ export default function Dashboard() {
     userStats,
     activeTrades,
     aiSignals,
-    settings
+    settings,
+    performanceStats
   } = dashboardState;
 
   // Debounced dashboard data loading (200ms debounce as requested)
@@ -165,6 +172,28 @@ export default function Dashboard() {
           console.warn('Failed to load notifications:', err);
           if (isMountedRef.current) {
             setDashboardState(prev => ({ ...prev, notifications: [] }));
+          }
+        }),
+
+        usersApi.getPerformanceStats(user.uid).then(result => {
+          if (isMountedRef.current) {
+            setDashboardState(prev => ({ ...prev, performanceStats: result.data || {} }));
+          }
+        }).catch(err => {
+          console.warn('Failed to load performance stats:', err);
+          if (isMountedRef.current) {
+            setDashboardState(prev => ({ ...prev, performanceStats: {} }));
+          }
+        }),
+
+        usersApi.getActiveTrades(user.uid).then(result => {
+          if (isMountedRef.current) {
+            setDashboardState(prev => ({ ...prev, activeTrades: result.data || [] }));
+          }
+        }).catch(err => {
+          console.warn('Failed to load active trades:', err);
+          if (isMountedRef.current) {
+            setDashboardState(prev => ({ ...prev, activeTrades: [] }));
           }
         }),
       ];
@@ -435,7 +464,7 @@ export default function Dashboard() {
     if (!selectedExchange) return;
     setSavingExchange(true);
     try {
-      const response = await settingsApi.testExchangeConnection(selectedExchange);
+      const response = await exchangeApi.testExchangeConnection(selectedExchange);
       setExchangeTestResult({
         status: response.data.success ? 'success' : 'error',
         message: response.data.message
@@ -702,34 +731,33 @@ export default function Dashboard() {
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="text-center p-4 bg-slate-700/30 rounded-xl">
-                  {/* Fix 3: Replace dashboardData?.stats?.user with dashboardData?.globalStats?.user */}
                   <div className={`text-2xl font-bold mb-1 ${
-                    (dashboardData?.globalStats?.user?.pnlToday || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'
+                    (performanceStats?.dailyPnL || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'
                   }`}>
-                    ${(dashboardData?.globalStats?.user?.pnlToday || 0).toFixed(2)}
+                    ${(performanceStats?.dailyPnL || 0).toFixed(2)}
                   </div>
                   <div className="text-xs text-slate-400">Today</div>
                 </div>
 
                 <div className="text-center p-4 bg-slate-700/30 rounded-xl">
                   <div className={`text-2xl font-bold mb-1 ${
-                    (dashboardData?.globalStats?.user?.pnlTotal || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'
+                    (performanceStats?.allTimePnL || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'
                   }`}>
-                    ${(dashboardData?.globalStats?.user?.pnlTotal || 0).toFixed(2)}
+                    ${(performanceStats?.allTimePnL || 0).toFixed(2)}
                   </div>
                   <div className="text-xs text-slate-400">All Time</div>
                 </div>
 
                 <div className="text-center p-4 bg-slate-700/30 rounded-xl">
                   <div className="text-2xl font-bold mb-1 text-blue-400">
-                    {dashboardData?.globalStats?.user?.winRate || 0}%
+                    {performanceStats?.winRate || 0}%
                   </div>
                   <div className="text-xs text-slate-400">Win Rate</div>
                 </div>
 
                 <div className="text-center p-4 bg-slate-700/30 rounded-xl">
                   <div className="text-2xl font-bold mb-1 text-purple-400">
-                    {dashboardData?.globalStats?.user?.totalTrades || 0}
+                    {performanceStats?.totalTrades || 0}
                   </div>
                   <div className="text-xs text-slate-400">Total Trades</div>
                 </div>
@@ -752,29 +780,38 @@ export default function Dashboard() {
               </div>
 
               <div className="space-y-3 max-h-64 overflow-y-auto">
-                {/* Fix 4: Use dashboardState.activeTrades instead of hftLogs.activeTrades */}
                 {activeTrades.length > 0 ? (
-                  activeTrades.slice(0, 5).map((trade: any, index: number) => (
-                    <div key={trade.id || index} className="flex items-center justify-between p-3 bg-slate-700/30 rounded-lg">
-                      <div>
-                        <div className="font-medium text-white">{trade.symbol}</div>
-                        <div className="text-xs text-slate-400">
-                          Entry: ${trade.entryPrice?.toFixed(4) || '0.0000'}
+                  activeTrades.slice(0, 5).map((trade: any, index: number) => {
+                    const ExchangeLogoComponent = exchangeConfig?.exchange ? getExchangeLogo(exchangeConfig.exchange) : null;
+                    const tradeTime = new Date(trade.timestamp);
+                    const timeAgo = Math.floor((Date.now() - tradeTime.getTime()) / (1000 * 60)); // minutes ago
+
+                    return (
+                      <div key={trade.tradeId || index} className="flex items-center justify-between p-3 bg-slate-700/30 rounded-lg">
+                        <div className="flex items-center gap-3">
+                          {ExchangeLogoComponent && (
+                            <ExchangeLogoComponent className="w-6 h-6" />
+                          )}
+                          <div>
+                            <div className="font-medium text-white">{trade.pair}</div>
+                            <div className="text-xs text-slate-400">
+                              Entry: ${trade.entryPrice?.toFixed(4) || '0.0000'}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className={`font-medium text-sm ${
+                            trade.side === 'buy' ? 'text-emerald-400' : 'text-red-400'
+                          }`}>
+                            {trade.side?.toUpperCase() || 'BUY'}
+                          </div>
+                          <div className="text-xs text-slate-400">
+                            {timeAgo}m ago
+                          </div>
                         </div>
                       </div>
-                      <div className="text-right">
-                        {/* Fix 9: Safe PnL rendering */}
-                        <div className={`font-medium ${
-                          (trade.pnl || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'
-                        }`}>
-                          {(trade.pnl || 0) >= 0 ? '+' : ''}{(trade.pnl || 0).toFixed(2)}%
-                        </div>
-                        <div className="text-xs text-slate-400">
-                          {trade.timeInTrade || '0m'} ago
-                        </div>
-                      </div>
-                    </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <div className="text-center text-slate-400 py-8">
                     <ArrowTrendingUpIcon className="w-8 h-8 mx-auto mb-2 opacity-50" />

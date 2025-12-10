@@ -72,7 +72,12 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   // CORS middleware - MUST BE FIRST
   await app.register(fastifyCors, {
-    origin: "*",
+    origin: [
+      "http://localhost:5173", // Vite dev server
+      "https://dlx-trading.web.app", // Deployed frontend
+      "https://dlx-trading-backend.web.app", // Backend domain (if different)
+      /\.web\.app$/, // Allow all *.web.app subdomains
+    ],
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: [
       "Content-Type",
@@ -85,7 +90,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       "Authorization",
       "uid"
     ],
-    credentials: false,
+    credentials: true, // Enable credentials for authentication
     strictPreflight: false,
     preflightContinue: false
   });
@@ -128,6 +133,11 @@ export async function buildApp(): Promise<FastifyInstance> {
   // Firebase Authentication decorator
   app.decorate('authenticate', firebaseAuthMiddleware);
 
+  // USERS ROUTES REGISTRATION - MOVED BEFORE WEBSOCKET PLUGIN
+  console.log("[DEBUG] registering usersRoutes BEFORE websocket plugin");
+  await app.register(usersRoutes, { prefix: '/api/users' });
+  console.log("[DEBUG] usersRoutes registration completed");
+
   // Global preHandler middleware - runs ensureUser BEFORE all WS and REST logic
   app.addHook("preHandler", async (req, reply) => {
     if ((req as any).user && (req as any).user.uid) {
@@ -158,11 +168,6 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(broadcastPopupRoutes, { prefix: "/api" });
   console.log("[ROUTE READY] Broadcast popup routes mounted");
 
-  // USERS ROUTES REGISTRATION - ACTIVE
-  console.log("[DEBUG] registering usersRoutes");
-  await app.register(usersRoutes, { prefix: '/api/users' });
-  console.log("[DEBUG] usersRoutes registration completed"); // Final
-
   // Additional routes
   await app.register(metricsRoutes, { prefix: '/api' });
   await app.register(researchRoutes, { prefix: '/api/research' });
@@ -181,7 +186,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(diagnosticsRoutes, { prefix: '/api/diagnostics' });
   await app.register(chatbotRoutes, { prefix: '/api' });
   await app.register(walletRoutes, { prefix: '/api/wallet' });
-  await app.register(marketRoutes, { prefix: '/api/market' });
+  await app.register(marketRoutes);
   await app.register(telegramRoutes, { prefix: '/api/telegram' });
   await app.register(backgroundResearchRoutes, { prefix: '/api/background-research' });
 
@@ -210,7 +215,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     console.log('  - /api/health');
   console.log('  - /api/metrics');
     console.log('  - /api/chatbot');
-    console.log('  - /api/market/*');
+    console.log('  - /api/market/top-movers');
     console.log('  - /api/broadcast-popup/*');
     console.log('  - /ws (WebSocket)');
   console.log('  - /ws/admin (Admin WebSocket)');

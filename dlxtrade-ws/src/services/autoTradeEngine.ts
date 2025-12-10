@@ -782,6 +782,33 @@ export class AutoTradeEngine {
           }, 'TP/SL order placement failed, continuing with main order');
         }
 
+        // Save trade to trades collection for performance stats
+        const db = getFirebaseAdmin().firestore();
+        const exchangeConfigDoc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+        const exchangeConfig = exchangeConfigDoc.exists ? exchangeConfigDoc.data() : null;
+        const exchangeName = exchangeConfig?.exchange || 'unknown';
+
+        await firestoreAdapter.saveTrade(uid, {
+          symbol: signal.symbol,
+          side: signal.signal,
+          qty: quantity,
+          entryPrice: signal.entryPrice,
+          exitPrice: undefined, // Will be set when trade is closed
+          pnl: 0, // Will be calculated when trade is closed
+          engineType: 'AI',
+          orderId: trade.orderId,
+          exchange: exchangeName,
+          signalAccuracy: signal.accuracy,
+          status: 'open',
+          metadata: {
+            requestId,
+            takeProfitOrderId: tpOrderId,
+            stopLossOrderId: slOrderId,
+            fillPrice: trade.fillPrice,
+            mode: 'AUTO'
+          }
+        });
+
         await this.logTradeEvent(uid, 'TRADE_EXECUTED', {
           trade,
           signal,

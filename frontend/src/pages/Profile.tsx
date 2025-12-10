@@ -3,12 +3,16 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { usersApi, agentsApi } from '../services/api';
 import Toast from '../components/Toast';
-import { User } from 'firebase/auth';
+import { User, updatePassword, sendPasswordResetEmail, reauthenticateWithCredential, EmailAuthProvider } from 'firebase/auth';
+import { getAuth } from 'firebase/auth';
+import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { app } from '../config/firebase';
 import BinanceLogo from '../components/ui/BinanceLogo';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { LoadingState } from '../components/LoadingState';
 import { ErrorState } from '../components/ErrorState';
 import { suppressConsoleError } from '../utils/errorHandler';
+import { PROVIDER_CONFIG, API_NAME_MAP } from '../constants/providers';
 
 export default function Profile() {
   const { user, logout } = useAuth();
@@ -19,10 +23,12 @@ export default function Profile() {
   const [retryCount, setRetryCount] = useState(0);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [userData, setUserData] = useState<any>(null);
-  const [userStats, setUserStats] = useState<any>(null);
   const [sessions, setSessions] = useState<any[]>([]);
   const [apiProvidersStatus, setApiProvidersStatus] = useState<any>(null);
+  const [providersLoading, setProvidersLoading] = useState(false);
+  const [providersError, setProvidersError] = useState<string | null>(null);
   const [usageStats, setUsageStats] = useState<any>(null);
+  const [exchangeConfig, setExchangeConfig] = useState<any>(null);
   const [allAgents, setAllAgents] = useState<any[]>([]);
   const [unlockedAgents, setUnlockedAgents] = useState<any[]>([]);
   const [profileData, setProfileData] = useState({
@@ -46,26 +52,75 @@ export default function Profile() {
     setError(null);
 
     try {
-      // Load profile data from Firebase user object only
+      // Load profile data from Firebase user object and Firestore
       if (isMountedRef.current) {
+        // Get profile photo from Firestore
+        const db = app.firestore();
+        const userDoc = await db.collection('users').doc(user.uid).get();
+        const userDataFromFirestore = userDoc.data() || {};
+
         setProfileData({
           displayName: user.displayName || '',
-          profilePicture: user.photoURL || '',
+          profilePicture: userDataFromFirestore.profilePhoto || user.photoURL || '',
         });
         setUserData({
           uid: user.uid,
           email: user.email,
           displayName: user.displayName,
-          photoURL: user.photoURL,
+          photoURL: userDataFromFirestore.profilePhoto || user.photoURL,
           emailVerified: user.emailVerified,
         });
         // Set empty arrays for removed API data
         setSessions([]);
         setAllAgents([]);
         setUnlockedAgents([]);
-        setApiProvidersStatus(null);
-        setUserStats(null);
         setUsageStats(null);
+      }
+
+      // Load provider configuration
+      setProvidersLoading(true);
+      setProvidersError(null);
+      try {
+        const providerConfigResponse = await usersApi.getProviderConfig(user.uid);
+        if (isMountedRef.current) {
+          setApiProvidersStatus(providerConfigResponse.data);
+        }
+      } catch (providerErr: any) {
+        console.warn('Failed to load provider config:', providerErr);
+        if (isMountedRef.current) {
+          setProvidersError('Failed to load provider status');
+          setApiProvidersStatus(null);
+        }
+      } finally {
+        if (isMountedRef.current) {
+          setProvidersLoading(false);
+        }
+      }
+
+      // Load exchange configuration
+      try {
+        const exchangeConfigResponse = await usersApi.getExchangeConfig(user.uid);
+        if (isMountedRef.current) {
+          setExchangeConfig(exchangeConfigResponse.data);
+        }
+      } catch (exchangeErr: any) {
+        console.warn('Failed to load exchange config:', exchangeErr);
+        if (isMountedRef.current) {
+          setExchangeConfig(null);
+        }
+      }
+
+      // Load usage statistics
+      try {
+        const usageStatsResponse = await usersApi.getUsageStats(user.uid);
+        if (isMountedRef.current) {
+          setUsageStats(usageStatsResponse.data);
+        }
+      } catch (usageErr: any) {
+        console.warn('Failed to load usage stats:', usageErr);
+        if (isMountedRef.current) {
+          setUsageStats(null);
+        }
       }
 
       setRetryCount(0); // Reset retry count on successful load
@@ -135,15 +190,53 @@ export default function Profile() {
     }
   };
 
-  const handleProfilePictureUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleProfilePictureUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const base64 = e.target?.result as string;
-        setProfileData({ ...profileData, profilePicture: base64 });
-      };
-      reader.readAsDataURL(file);
+    if (!file || !user) return;
+
+    // Validate file type and size
+    if (!file.type.startsWith('image/')) {
+      showToast('Please select a valid image file', 'error');
+      return;
+    }
+
+    if (file.size > 5 * 1024 * 1024) { // 5MB limit
+      showToast('Image size must be less than 5MB', 'error');
+      return;
+    }
+
+    setSaving(true);
+
+    try {
+      const storage = getStorage(app);
+      const storageRef = ref(storage, `profilePhotos/${user.uid}.jpg`);
+
+      // Upload file to Firebase Storage
+      await uploadBytes(storageRef, file);
+
+      // Get download URL
+      const downloadURL = await getDownloadURL(storageRef);
+
+      // Save to Firestore
+      const db = getFirebaseApp().firestore();
+      await db.collection('users').doc(user.uid).update({
+        profilePhoto: downloadURL,
+        updatedAt: new Date()
+      });
+
+      // Update local state
+      setProfileData({ ...profileData, profilePicture: downloadURL });
+
+      showToast('Profile photo updated successfully', 'success');
+    } catch (error: any) {
+      console.error('Profile photo upload error:', error);
+      showToast('Failed to upload profile photo', 'error');
+    } finally {
+      setSaving(false);
+      // Clear the input
+      if (event.target) {
+        event.target.value = '';
+      }
     }
   };
 
@@ -160,12 +253,40 @@ export default function Profile() {
 
     setSaving(true);
     try {
-      // TODO: Connect to backend password change endpoint
+      const auth = getAuth();
+      const user = auth.currentUser;
+
+      if (!user || !user.email) {
+        throw new Error('User not authenticated');
+      }
+
+      // Reauthenticate user before changing password
+      const credential = EmailAuthProvider.credential(
+        user.email,
+        changePasswordData.currentPassword
+      );
+
+      await reauthenticateWithCredential(user, credential);
+
+      // Update password
+      await updatePassword(user, changePasswordData.newPassword);
+
       showToast('Password changed successfully', 'success');
       setChangePasswordData({ currentPassword: '', newPassword: '', confirmPassword: '' });
       setShowChangePasswordModal(false);
     } catch (err: any) {
-      showToast('Failed to change password', 'error');
+      console.error('Password change error:', err);
+
+      let errorMessage = 'Failed to change password';
+      if (err.code === 'auth/wrong-password') {
+        errorMessage = 'Current password is incorrect';
+      } else if (err.code === 'auth/weak-password') {
+        errorMessage = 'New password is too weak';
+      } else if (err.code === 'auth/requires-recent-login') {
+        errorMessage = 'Please log in again before changing your password';
+      }
+
+      showToast(errorMessage, 'error');
     } finally {
       setSaving(false);
     }
@@ -174,11 +295,27 @@ export default function Profile() {
   const handleForgotPassword = async () => {
     setSaving(true);
     try {
-      // TODO: Connect to backend forgot password endpoint
+      const auth = getAuth();
+      const user = auth.currentUser;
+
+      if (!user || !user.email) {
+        throw new Error('User email not available');
+      }
+
+      await sendPasswordResetEmail(auth, user.email);
       showToast('Password reset link sent to your email', 'success');
       setShowForgotPasswordModal(false);
     } catch (err: any) {
-      showToast('Failed to send reset link', 'error');
+      console.error('Password reset error:', err);
+
+      let errorMessage = 'Failed to send reset link';
+      if (err.code === 'auth/user-not-found') {
+        errorMessage = 'User account not found';
+      } else if (err.code === 'auth/invalid-email') {
+        errorMessage = 'Invalid email address';
+      }
+
+      showToast(errorMessage, 'error');
     } finally {
       setSaving(false);
     }
@@ -300,7 +437,7 @@ export default function Profile() {
                           getInitials(user)
                         )}
                       </div>
-                      <label className="absolute bottom-0 right-0 bg-purple-600 hover:bg-purple-700 rounded-full p-1 cursor-pointer transition-colors">
+                      <label className="absolute bottom-0 right-0 bg-purple-600 hover:bg-purple-700 rounded-full p-2 cursor-pointer transition-colors shadow-lg">
                         <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
                         </svg>
@@ -309,27 +446,15 @@ export default function Profile() {
                           accept="image/*"
                           onChange={handleProfilePictureUpload}
                           className="hidden"
+                          disabled={saving}
                         />
                       </label>
                     </div>
                     <div className="flex-1 space-y-3">
                       <div>
-                        <label className="block text-sm font-medium text-gray-300 mb-1">Full Name</label>
-                        <input
-                          type="text"
-                          className="w-full px-3 py-2 text-sm bg-slate-900/50 backdrop-blur-sm border border-purple-500/30 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
-                          value={profileData.displayName}
-                          onChange={(e) => setProfileData({ ...profileData, displayName: e.target.value })}
-                          placeholder="Enter your full name"
-                        />
+                        <div className="text-sm text-gray-400">Full Name</div>
+                        <div className="text-white">{profileData.displayName || 'Not set'}</div>
                       </div>
-                      <button
-                        onClick={handleSaveProfile}
-                        className="px-4 py-2 text-sm font-medium text-white bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50"
-                        disabled={saving}
-                      >
-                        {saving ? 'Saving...' : 'Save Changes'}
-                      </button>
                     </div>
                   </div>
                   <div className="space-y-4">
@@ -393,67 +518,84 @@ export default function Profile() {
               {/* 3. API PROVIDERS STATUS */}
               <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
                 <h2 className="text-xl font-semibold text-white mb-4">API Providers Status</h2>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* CryptoCompare API */}
-                  <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-slate-700/50 flex items-center justify-center text-white font-bold text-xs">
-                        CC
-                      </div>
-                      <div>
-                        <div className="text-sm font-medium text-white">CryptoCompare API</div>
-                        <div className="text-xs text-gray-400">Market Data</div>
-                      </div>
-                    </div>
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                      apiProvidersStatus?.cryptoCompare?.connected
-                        ? 'bg-green-500/20 text-green-300 border border-green-400/30'
-                        : 'bg-red-500/20 text-red-300 border border-red-400/30'
-                    }`}>
-                      {apiProvidersStatus?.cryptoCompare?.status || 'Loading...'}
-                    </span>
-                  </div>
 
-                  {/* NewsData */}
-                  <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-slate-700/50 flex items-center justify-center text-white font-bold text-xs">
-                        ND
-                      </div>
-                      <div>
-                        <div className="text-sm font-medium text-white">NewsData</div>
-                        <div className="text-xs text-gray-400">News & Sentiment</div>
-                      </div>
-                    </div>
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                      apiProvidersStatus?.newsData?.connected
-                        ? 'bg-green-500/20 text-green-300 border border-green-400/30'
-                        : 'bg-red-500/20 text-red-300 border border-red-400/30'
-                    }`}>
-                      {apiProvidersStatus?.newsData?.status || 'Loading...'}
-                    </span>
+                {providersLoading ? (
+                  <div className="flex justify-center items-center py-8">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500"></div>
                   </div>
+                ) : providersError ? (
+                  <div className="text-center py-8">
+                    <div className="text-red-400 text-sm">{providersError}</div>
+                    <button
+                      onClick={loadAllData}
+                      className="mt-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm rounded transition-colors"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {/* Market Data - CryptoCompare */}
+                    <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center text-white font-bold text-xs">
+                          CC
+                        </div>
+                        <div>
+                          <div className="text-sm font-medium text-white">CryptoCompare</div>
+                          <div className="text-xs text-gray-400">Market Data</div>
+                        </div>
+                      </div>
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                        apiProvidersStatus?.config?.cryptocompare?.enabled === true
+                          ? 'bg-green-500/20 text-green-300 border border-green-400/30'
+                          : 'bg-gray-500/20 text-gray-300 border border-gray-400/30'
+                      }`}>
+                        {apiProvidersStatus?.config?.cryptocompare?.enabled === true ? 'ENABLED' : 'DISABLED'}
+                      </span>
+                    </div>
 
-                  {/* CoinGecko API */}
-                  <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-slate-700/50 flex items-center justify-center text-white font-bold text-xs">
-                        CG
+                    {/* News - NewsData */}
+                    <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-green-500/20 flex items-center justify-center text-white font-bold text-xs">
+                          ND
+                        </div>
+                        <div>
+                          <div className="text-sm font-medium text-white">NewsData.io</div>
+                          <div className="text-xs text-gray-400">News</div>
+                        </div>
                       </div>
-                      <div>
-                        <div className="text-sm font-medium text-white">CoinGecko API</div>
-                        <div className="text-xs text-gray-400">Metadata</div>
-                      </div>
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                        apiProvidersStatus?.config?.newsdataio?.enabled === true
+                          ? 'bg-green-500/20 text-green-300 border border-green-400/30'
+                          : 'bg-gray-500/20 text-gray-300 border border-gray-400/30'
+                      }`}>
+                        {apiProvidersStatus?.config?.newsdataio?.enabled === true ? 'ENABLED' : 'DISABLED'}
+                      </span>
                     </div>
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                      apiProvidersStatus?.coinGecko?.connected
-                        ? 'bg-green-500/20 text-green-300 border border-green-400/30'
-                        : 'bg-red-500/20 text-red-300 border border-red-400/30'
-                    }`}>
-                      {apiProvidersStatus?.coinGecko?.status || 'Loading...'}
-                    </span>
+
+                    {/* Metadata - CoinGecko */}
+                    <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center text-white font-bold text-xs">
+                          CG
+                        </div>
+                        <div>
+                          <div className="text-sm font-medium text-white">CoinGecko</div>
+                          <div className="text-xs text-gray-400">Metadata</div>
+                        </div>
+                      </div>
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                        apiProvidersStatus?.config?.coingecko?.enabled === true
+                          ? 'bg-green-500/20 text-green-300 border border-green-400/30'
+                          : 'bg-gray-500/20 text-gray-300 border border-gray-400/30'
+                      }`}>
+                        {apiProvidersStatus?.config?.coingecko?.enabled === true ? 'ENABLED' : 'DISABLED'}
+                      </span>
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
 
               {/* 4. EXCHANGE API KEYS */}
@@ -469,74 +611,37 @@ export default function Profile() {
                 </div>
 
                 <div className="space-y-3">
-                  {/* Binance */}
-                  <div className="flex items-center justify-between p-3 bg-slate-900/30 rounded-lg">
-                    <div className="flex items-center gap-3">
-                      <BinanceLogo className="w-6 h-6" />
-                      <div>
-                        <div className="text-sm font-medium text-white">Binance</div>
-                        <div className="text-xs text-gray-400">
-                          {userData?.exchangeConfig?.binance?.apiKeyEncrypted ?
-                            '••••••••••••••••' : 'Not configured'}
+                  {exchangeConfig?.exchange ? (
+                    <div className="flex items-center justify-between p-3 bg-slate-900/30 rounded-lg">
+                      <div className="flex items-center gap-3">
+                        <BinanceLogo className="w-6 h-6" />
+                        <div>
+                          <div className="text-sm font-medium text-white capitalize">
+                            {exchangeConfig.exchange || exchangeConfig.providerName}
+                          </div>
+                          <div className="text-xs text-gray-400">
+                            {exchangeConfig.apiKey ? '••••••••••••••••' : 'No API key'} •
+                            Last updated: {exchangeConfig.lastUpdated ?
+                              new Date(exchangeConfig.lastUpdated).toLocaleDateString() :
+                              'Unknown'}
+                          </div>
                         </div>
                       </div>
+                      <span className="px-2 py-1 rounded-full text-xs font-medium bg-green-500/20 text-green-300 border border-green-400/30">
+                        Connected
+                      </span>
                     </div>
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                      userData?.exchangeConfig?.binance?.apiKeyEncrypted
-                        ? 'bg-green-500/20 text-green-300 border border-green-400/30'
-                        : 'bg-red-500/20 text-red-300 border border-red-400/30'
-                    }`}>
-                      {userData?.exchangeConfig?.binance?.apiKeyEncrypted ? 'Connected' : 'Not Set'}
-                    </span>
-                  </div>
-
-                  {/* Placeholder for other exchanges */}
-                  <div className="text-center py-4 text-gray-400 text-sm">
-                    Configure exchange API keys in Settings for automated trading
-                  </div>
+                  ) : (
+                    <div className="text-center py-8 text-gray-400 text-sm">
+                      <BinanceLogo className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                      No exchange configured. Set up API keys in Settings for automated trading.
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {/* 5. TRADING STATISTICS */}
-              <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
-                <h2 className="text-xl font-semibold text-white mb-4">Trading Statistics</h2>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="text-center">
-                    <div className="text-2xl font-bold text-white">{userStats?.totalTrades || 0}</div>
-                    <div className="text-sm text-gray-400">Total Trades</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="text-2xl font-bold text-white">{userStats?.winRate ? userStats.winRate.toFixed(1) : 0}%</div>
-                    <div className="text-sm text-gray-400">Win Rate</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="text-2xl font-bold text-white">{userStats?.avgPnL ? userStats.avgPnL.toFixed(2) : 0}%</div>
-                    <div className="text-sm text-gray-400">Avg Accuracy</div>
-                  </div>
-                  <div className="text-center">
-                    <div className={`text-2xl font-bold ${(userStats?.totalPnL || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      ${(userStats?.totalPnL || 0).toFixed(2)}
-                    </div>
-                    <div className="text-sm text-gray-400">Total P&L</div>
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
-                  <div>
-                    <div className="text-sm text-gray-400">Best Trade</div>
-                    <div className="text-white font-medium">
-                      {userStats?.bestTrade ? `$${userStats.bestTrade.toFixed(2)}` : 'N/A'}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-sm text-gray-400">Worst Trade</div>
-                    <div className={`font-medium ${userStats?.worstTrade < 0 ? 'text-red-400' : 'text-green-400'}`}>
-                      {userStats?.worstTrade ? `$${userStats.worstTrade.toFixed(2)}` : 'N/A'}
-                    </div>
-                  </div>
-                </div>
-              </div>
 
-              {/* 5. USAGE STATS */}
+              {/* 5. USAGE STATISTICS */}
               <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
                 <h2 className="text-xl font-semibold text-white mb-6">Usage Statistics</h2>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">

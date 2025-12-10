@@ -715,6 +715,122 @@ export class FirestoreAdapter {
     return { id: doc.id, ...doc.data() };
   }
 
+  // ========== USER AGENTS METHODS ==========
+  async getUserAgents(uid: string): Promise<Array<{ id: string; name: string; price: number; features: string[]; [key: string]: any }>> {
+    const snapshot = await db().collection('users').doc(uid).collection('agents').get();
+    return snapshot.docs
+      .filter((doc) => doc.id !== '_init' && !doc.id.startsWith('_')) // Filter out _init and other system documents
+      .map((doc) => ({ id: doc.id, ...doc.data() } as any));
+  }
+
+  async getUserAgent(uid: string, agentId: string): Promise<any | null> {
+    const doc = await db().collection('users').doc(uid).collection('agents').doc(agentId).get();
+    if (!doc.exists) return null;
+    return { id: doc.id, ...doc.data() };
+  }
+
+  // ========== USER FEATURES METHODS ==========
+  async getUserFeatures(uid: string): Promise<Array<{ id: string; name: string; enabled: boolean; [key: string]: any }>> {
+    const snapshot = await db().collection('users').doc(uid).collection('features').get();
+    return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as any));
+  }
+
+  async enableUserFeature(uid: string, featureId: string, featureData: any): Promise<void> {
+    const featureRef = db().collection('users').doc(uid).collection('features').doc(featureId);
+    await featureRef.set({
+      id: featureId,
+      enabled: true,
+      enabledAt: admin.firestore.Timestamp.now(),
+      ...featureData,
+    }, { merge: true });
+    logger.info({ uid, featureId }, 'User feature enabled');
+  }
+
+  async disableUserFeature(uid: string, featureId: string): Promise<void> {
+    const featureRef = db().collection('users').doc(uid).collection('features').doc(featureId);
+    await featureRef.update({
+      enabled: false,
+      disabledAt: admin.firestore.Timestamp.now(),
+    });
+    logger.info({ uid, featureId }, 'User feature disabled');
+  }
+
+  // ========== AGENT PURCHASE REQUESTS METHODS ==========
+  async createAgentPurchaseRequest(requestData: {
+    uid: string;
+    agentId: string;
+    agentName: string;
+    userName: string;
+    email: string;
+    phoneNumber: string;
+    status?: string;
+  }): Promise<string> {
+    const requestRef = db().collection('agentPurchaseRequests').doc();
+    const data = {
+      id: requestRef.id,
+      status: requestData.status || 'pending',
+      createdAt: admin.firestore.Timestamp.now(),
+      ...requestData,
+    };
+    await requestRef.set(data);
+    logger.info({ uid: requestData.uid, agentId: requestData.agentId, requestId: requestRef.id }, 'Agent purchase request created');
+    return requestRef.id;
+  }
+
+  async getAgentPurchaseRequests(): Promise<any[]> {
+    const snapshot = await db().collection('agentPurchaseRequests').orderBy('createdAt', 'desc').get();
+    return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+  }
+
+  async approveAgentPurchaseRequest(requestId: string, adminUid: string): Promise<void> {
+    const requestRef = db().collection('agentPurchaseRequests').doc(requestId);
+    const requestDoc = await requestRef.get();
+
+    if (!requestDoc.exists) {
+      throw new Error('Purchase request not found');
+    }
+
+    const requestData = requestDoc.data();
+    if (!requestData) {
+      throw new Error('Invalid purchase request data');
+    }
+
+    // Update request status
+    await requestRef.update({
+      status: 'approved',
+      approvedAt: admin.firestore.Timestamp.now(),
+      approvedBy: adminUid,
+    });
+
+    // Mark the agent as unlocked in the user's agents collection
+    const userAgentRef = db().collection('users').doc(requestData.uid).collection('agents').doc(requestData.agentId);
+    await userAgentRef.update({
+      unlocked: true,
+      unlockedAt: admin.firestore.Timestamp.now(),
+      purchaseRequestId: requestId,
+    });
+
+    // Enable the feature for the user (for sidebar)
+    await this.enableUserFeature(requestData.uid, requestData.agentId, {
+      name: requestData.agentName,
+      type: 'agent',
+      purchaseRequestId: requestId,
+    });
+
+    logger.info({ requestId, uid: requestData.uid, agentId: requestData.agentId }, 'Agent purchase request approved, agent unlocked, and feature enabled');
+  }
+
+  async rejectAgentPurchaseRequest(requestId: string, adminUid: string, reason?: string): Promise<void> {
+    const requestRef = db().collection('agentPurchaseRequests').doc(requestId);
+    await requestRef.update({
+      status: 'rejected',
+      rejectedAt: admin.firestore.Timestamp.now(),
+      rejectedBy: adminUid,
+      rejectionReason: reason,
+    });
+    logger.info({ requestId }, 'Agent purchase request rejected');
+  }
+
   // ========== AGENT UNLOCKS COLLECTION METHODS ==========
   async createAgentUnlock(uid: string, agentName: string, metadata?: any): Promise<void> {
     const unlockRef = db().collection('agentUnlocks').doc();
@@ -939,9 +1055,13 @@ export class FirestoreAdapter {
     engineType: 'AI' | 'HFT' | 'Manual' | 'auto';
     orderId?: string;
     metadata?: any;
+    exchange?: string;
+    signalAccuracy?: number;
+    status?: 'open' | 'closed';
   }): Promise<string> {
     const tradeRef = db().collection('trades').doc();
     const side = tradeData.side.toLowerCase() as 'buy' | 'sell';
+    const status = tradeData.status || (tradeData.exitPrice ? 'closed' : 'open');
     await tradeRef.set({
       uid,
       symbol: tradeData.symbol,
@@ -952,10 +1072,13 @@ export class FirestoreAdapter {
       pnl: tradeData.pnl,
       timestamp: tradeData.timestamp || admin.firestore.Timestamp.now(),
       engineType: tradeData.engineType,
+      exchange: tradeData.exchange,
+      signalAccuracy: tradeData.signalAccuracy,
+      status,
       ...(tradeData.orderId && { orderId: tradeData.orderId }),
       ...(tradeData.metadata && { metadata: tradeData.metadata }),
     });
-    logger.info({ uid, symbol: tradeData.symbol, side }, 'Trade saved');
+    logger.info({ uid, symbol: tradeData.symbol, side, exchange: tradeData.exchange, status }, 'Trade saved');
     return tradeRef.id;
   }
 

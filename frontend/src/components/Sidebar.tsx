@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
 import { useChatbot } from '../contexts/ChatbotContext';
+import { agentsApi } from '../services/api';
 
 interface SidebarProps {
   onLogout?: () => void;
@@ -87,6 +88,7 @@ const Icons = {
 export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [userFeatures, setUserFeatures] = useState<any[]>([]);
   const location = useLocation();
   const { user } = useAuth();
   const { unlockedAgents } = useUnlockedAgents();
@@ -130,12 +132,26 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
       }
     };
 
+    const loadUserFeatures = async () => {
+      if (!user) return;
+
+      try {
+        const response = await agentsApi.getUserFeatures(user.uid);
+        const features = response.data.features || [];
+        setUserFeatures(features.filter((feature: any) => feature.enabled));
+      } catch (err) {
+        console.warn('Error loading user features:', err);
+        setUserFeatures([]);
+      }
+    };
+
     if (user) {
       checkAdmin();
+      loadUserFeatures();
     }
   }, [user]);
 
-  const menuItems = [
+  const staticMenuItems = [
     { path: '/dashboard', label: 'Dashboard', Icon: Icons.Dashboard },
     { path: '/agents', label: 'Agents Marketplace', Icon: Icons.Agents },
     { path: '/research', label: 'Research', Icon: Icons.Research },
@@ -143,6 +159,33 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
     { path: '/settings', label: 'Settings', Icon: Icons.Settings },
     { path: '/profile', label: 'Profile', Icon: Icons.Profile },
   ];
+
+  // Dynamic menu items from user features (purchased agents)
+  const getAgentDisplayInfo = (agentId: string, agentName: string) => {
+    const agentMap: Record<string, { name: string; icon: string }> = {
+      'ai_launchpad_hunter': { name: 'AI Launchpad Hunter', icon: '🚀' },
+      'whale_movement_tracker': { name: 'Whale Tracker', icon: '🐋' },
+      'liquidity_sniper_arbitrage': { name: 'Liquidity Sniper', icon: '⚡' },
+      'whale_copy_trade': { name: 'Whale Copy Trade', icon: '📊' },
+      'pre_market_ai_alpha': { name: 'Pre-Market AI', icon: '🧠' },
+      'airdrop_multiverse': { name: 'Airdrop Multiverse', icon: '🎁' },
+      'premium_trading_agent': { name: 'Premium Trading', icon: '🤖' },
+    };
+
+    return agentMap[agentId] || { name: agentName, icon: '🤖' };
+  };
+
+  const dynamicMenuItems = userFeatures.map((feature: any) => {
+    const displayInfo = getAgentDisplayInfo(feature.id, feature.name);
+    return {
+      path: `/agent/${feature.id}`,
+      label: displayInfo.name,
+      icon: displayInfo.icon,
+    };
+  });
+
+  // Combine static and dynamic menu items
+  const menuItems = [...staticMenuItems, ...dynamicMenuItems];
 
 
   const isActive = (path: string) => {
@@ -262,8 +305,12 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
                     relative z-10 flex-shrink-0 transition-colors
                     ${active ? 'text-cyan-400' : 'text-gray-500 group-hover:text-cyan-400'}
                   `}>
-                    <div className="w-6 h-6 lg:w-5 lg:h-5">
-                      <Icon />
+                    <div className="w-6 h-6 lg:w-5 lg:h-5 flex items-center justify-center">
+                      {item.icon ? (
+                        <span className="text-lg lg:text-base">{item.icon}</span>
+                      ) : (
+                        <Icon />
+                      )}
                     </div>
                   </div>
                   
@@ -443,8 +490,12 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
                     relative z-10 flex-shrink-0 transition-colors
                     ${active ? 'text-cyan-400' : 'text-gray-500 group-hover:text-cyan-400'}
                   `}>
-                    <div className="w-6 h-6 lg:w-5 lg:h-5">
-                      <Icon />
+                    <div className="w-6 h-6 lg:w-5 lg:h-5 flex items-center justify-center">
+                      {item.icon ? (
+                        <span className="text-lg lg:text-base">{item.icon}</span>
+                      ) : (
+                        <Icon />
+                      )}
                     </div>
                   </div>
 

@@ -23,6 +23,7 @@ const Home = React.lazy(() => import('./pages/Home'));
 const EngineControl = React.lazy(() => import('./pages/EngineControl'));
 const ResearchPanel = React.lazy(() => import('./pages/ResearchPanel'));
 const AutoTrade = React.lazy(() => import('./pages/AutoTrade'));
+const AutoTradeTerms = React.lazy(() => import('./pages/AutoTradeTerms'));
 const Settings = React.lazy(() => import('./pages/Settings'));
 const Profile = React.lazy(() => import('./pages/Profile'));
 const HFTSettings = React.lazy(() => import('./pages/HFTSettings'));
@@ -38,6 +39,7 @@ const AdminToken = React.lazy(() => import('./pages/AdminToken'));
 const AdminRoute = React.lazy(() => import('./components/AdminRoute'));
 const AgentsMarketplace = React.lazy(() => import('./pages/AgentsMarketplace'));
 const AgentDetails = React.lazy(() => import('./pages/AgentDetails'));
+const AgentControl = React.lazy(() => import('./pages/AgentControl'));
 const AgentFeature = React.lazy(() => import('./pages/AgentFeature'));
 const Onboarding = React.lazy(() => import('./pages/Onboarding'));
 
@@ -181,10 +183,12 @@ function App() {
                   <Route path="engine" element={<SafeRoute><EngineControl /></SafeRoute>} />
                   <Route path="research" element={<SafeRoute><ResearchPanel /></SafeRoute>} />
                   <Route path="auto-trade" element={<SafeRoute><AutoTrade /></SafeRoute>} />
+                  <Route path="auto-trade/terms" element={<SafeRoute><AutoTradeTerms /></SafeRoute>} />
                   <Route path="settings" element={<SafeRoute><Settings /></SafeRoute>} />
                   <Route path="profile" element={<SafeRoute><Profile /></SafeRoute>} />
                   <Route path="agents" element={<SafeRoute><AgentsMarketplace /></SafeRoute>} />
                   <Route path="agents/:agentId" element={<SafeRoute><AgentDetails /></SafeRoute>} />
+                  <Route path="agent/:agentId" element={<SafeRoute><AgentControl /></SafeRoute>} />
                   <Route path="agent/:agentId" element={<SafeRoute><AgentFeature /></SafeRoute>} />
                   <Route path="hft/settings" element={<SafeRoute><HFTSettings /></SafeRoute>} />
                   <Route path="hft/logs" element={<SafeRoute><HFTLogs /></SafeRoute>} />

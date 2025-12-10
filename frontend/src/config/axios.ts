@@ -250,9 +250,10 @@ class HealthPingService {
 
 export const healthPingService = new HealthPingService();
 
-if (typeof window !== 'undefined') {
-  setTimeout(() => healthPingService.start(), 2000);
-}
+// Temporarily disabled health polling to reduce noise during debugging
+// if (typeof window !== 'undefined') {
+//   setTimeout(() => healthPingService.start(), 2000);
+// }
 
 // Timeout wrapper for long-running calls
 export const timeoutApi = {

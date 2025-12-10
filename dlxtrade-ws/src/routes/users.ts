@@ -319,6 +319,9 @@ export async function usersRoutes(fastify: FastifyInstance) {
   console.log("[ROUTE READY] GET /api/users/:id/logs");
   console.log("[ROUTE READY] GET /api/users/:id/usage-stats");
   console.log("[ROUTE READY] GET /api/users/:id/sessions");
+  console.log("[ROUTE READY] GET /api/users/:uid/performance-stats");
+  console.log("[ROUTE READY] GET /api/users/:uid/active-trades");
+  console.log("[ROUTE READY] GET /api/users/:uid/usage-stats");
   console.log("[ROUTE READY] POST /api/users/:uid/provider-config");
 
   // GET /api/users/:uid/exchange-config - Get exchange configuration
@@ -382,11 +385,9 @@ export async function usersRoutes(fastify: FastifyInstance) {
       const data = doc.data() || {};
       return reply.send({
         exchange: data.exchange || null,
-        apiKey: data.apiKeyEncrypted ? '[ENCRYPTED]' : '',
-        secret: data.secretEncrypted ? '[ENCRYPTED]' : '',
-        passphrase: data.passphraseEncrypted ? '[ENCRYPTED]' : '',
-        testnet: data.testnet ?? true,
-        message: "Exchange config loaded"
+        lastUpdated: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
+        providerName: data.exchange || null,
+        apiKey: data.apiKeyEncrypted ? '[ENCRYPTED]' : null
       });
     } catch (err: any) {
       logger.error({ err }, 'Error getting current exchange config');
@@ -1016,6 +1017,204 @@ export async function usersRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       logger.error({ err }, 'Error getting user sessions');
       return reply.code(500).send({ error: err.message || 'Error fetching user sessions' });
+    }
+  });
+
+  // GET /api/users/:uid/performance-stats - Get user performance statistics
+  fastify.get('/:uid/performance-stats', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
+    try {
+      const { uid } = request.params;
+      const user = (request as any).user;
+
+      // Users can only view their own performance stats unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (uid !== user.uid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      // Get all trades for the user
+      const trades = await firestoreAdapter.getTrades(uid, 10000); // Get up to 10k trades
+
+      // Calculate performance stats
+      let totalTrades = trades.length;
+      let allTimePnL = 0;
+      let dailyPnL = 0;
+      let winningTrades = 0;
+      let closedTrades = 0;
+
+      // Today's date for daily PnL calculation
+      const today = new Date();
+      const todayString = today.toDateString();
+
+      for (const trade of trades) {
+        // Calculate all-time PnL
+        if (trade.pnl !== undefined && trade.pnl !== null) {
+          allTimePnL += trade.pnl;
+
+          // Count closed trades (trades with pnl)
+          closedTrades++;
+
+          // Count winning trades
+          if (trade.pnl > 0) {
+            winningTrades++;
+          }
+        }
+
+        // Calculate daily PnL (today only)
+        if (trade.timestamp) {
+          const tradeDate = new Date(trade.timestamp);
+          if (tradeDate.toDateString() === todayString && trade.pnl !== undefined && trade.pnl !== null) {
+            dailyPnL += trade.pnl;
+          }
+        }
+      }
+
+      // Calculate win rate
+      const winRate = closedTrades > 0 ? (winningTrades / closedTrades) * 100 : 0;
+
+      return {
+        dailyPnL: parseFloat(dailyPnL.toFixed(2)),
+        allTimePnL: parseFloat(allTimePnL.toFixed(2)),
+        winRate: parseFloat(winRate.toFixed(2)),
+        totalTrades,
+      };
+    } catch (err: any) {
+      logger.error({ err, uid: request.params.uid }, 'Error getting user performance stats');
+      return reply.code(500).send({ error: err.message || 'Error fetching user performance stats' });
+    }
+  });
+
+  // GET /api/users/:uid/active-trades - Get user's active trades
+  fastify.get('/:uid/active-trades', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
+    try {
+      const { uid } = request.params;
+      const user = (request as any).user;
+
+      // Users can only view their own active trades unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (uid !== user.uid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      // Get user's active exchange
+      const db = getFirebaseAdmin().firestore();
+      const exchangeConfigDoc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+      const exchangeConfig = exchangeConfigDoc.exists ? exchangeConfigDoc.data() : null;
+      const activeExchange = exchangeConfig?.exchange;
+
+      if (!activeExchange) {
+        return reply.send([]);
+      }
+
+      // Query trades collection for open trades on the active exchange
+      const tradesRef = db.collection('trades');
+      const snapshot = await tradesRef
+        .where('uid', '==', uid)
+        .where('status', '==', 'open')
+        .where('exchange', '==', activeExchange)
+        .orderBy('timestamp', 'desc')
+        .limit(50)
+        .get();
+
+      const activeTrades = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          tradeId: doc.id,
+          pair: data.symbol || '',
+          side: data.side || 'buy',
+          entryPrice: data.entryPrice || 0,
+          signalAccuracy: data.signalAccuracy || 0,
+          timestamp: data.timestamp?.toDate?.()?.toISOString() || new Date(data.timestamp).toISOString(),
+          currentPrice: null, // Optional: could be populated with live price
+        };
+      });
+
+      return reply.send(activeTrades);
+    } catch (err: any) {
+      logger.error({ err, uid: request.params.uid }, 'Error getting user active trades');
+      return reply.code(500).send({ error: err.message || 'Error fetching user active trades' });
+    }
+  });
+
+  // GET /api/users/:uid/usage-stats - Get user's usage statistics
+  fastify.get('/:uid/usage-stats', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
+    try {
+      const { uid } = request.params;
+      const user = (request as any).user;
+
+      // Users can only view their own usage stats unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (uid !== user.uid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      const db = getFirebaseAdmin().firestore();
+
+      // Get research logs count (Deep Research runs)
+      const researchLogsSnapshot = await db
+        .collection('users')
+        .doc(uid)
+        .collection('researchLogs')
+        .get();
+
+      // Get auto-trade logs count (Auto-Trade runs)
+      const autoTradeLogsSnapshot = await db
+        .collection('users')
+        .doc(uid)
+        .collection('autoTradeLogs')
+        .get();
+
+      // Get last research activity timestamp
+      let lastResearchTimestamp = null;
+      const lastResearchQuery = await db
+        .collection('users')
+        .doc(uid)
+        .collection('researchLogs')
+        .orderBy('timestamp', 'desc')
+        .limit(1)
+        .get();
+
+      if (!lastResearchQuery.empty) {
+        const lastResearchDoc = lastResearchQuery.docs[0];
+        lastResearchTimestamp = lastResearchDoc.data().timestamp?.toDate().toISOString();
+      }
+
+      // Check if last activity is more recent from auto-trade logs
+      const lastAutoTradeQuery = await db
+        .collection('users')
+        .doc(uid)
+        .collection('autoTradeLogs')
+        .orderBy('timestamp', 'desc')
+        .limit(1)
+        .get();
+
+      if (!lastAutoTradeQuery.empty) {
+        const lastAutoTradeDoc = lastAutoTradeQuery.docs[0];
+        const autoTradeTimestamp = lastAutoTradeDoc.data().timestamp?.toDate().toISOString();
+        if (!lastResearchTimestamp || autoTradeTimestamp > lastResearchTimestamp) {
+          lastResearchTimestamp = autoTradeTimestamp;
+        }
+      }
+
+      // For now, assume manual research is research logs that aren't from auto-trade
+      // This is a simplification - in a real implementation, you'd have a type field
+      const manualResearchRuns = researchLogsSnapshot.size;
+
+      return reply.send({
+        totalDeepResearchRuns: researchLogsSnapshot.size,
+        totalAutoTradeRuns: autoTradeLogsSnapshot.size,
+        totalManualResearchRuns: manualResearchRuns,
+        lastResearchTimestamp,
+      });
+    } catch (err: any) {
+      logger.error({ err, uid: request.params.uid }, 'Error getting user usage stats');
+      return reply.code(500).send({ error: err.message || 'Error fetching user usage stats' });
     }
   });
 

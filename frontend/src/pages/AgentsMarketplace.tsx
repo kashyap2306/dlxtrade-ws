@@ -48,7 +48,7 @@ export default function AgentsMarketplace() {
           if (isMountedRef.current) {
             const backendAgents = result.data.agents || [];
             if (backendAgents.length === 0) {
-              console.warn('No agents found in backend. Please add agents to Firestore.');
+              console.warn('No agents found in backend. Using fallback default agents.');
             }
 
             // Map backend agents to frontend format
@@ -67,8 +67,110 @@ export default function AgentsMarketplace() {
             }));
 
             // Sort agents by displayOrder (Premium Trading Agent first)
-            const sortedAgents = mappedAgents.sort((a, b) => (a.displayOrder || 999) - (b.displayOrder || 999));
-            setAgents(sortedAgents);
+            let finalAgents = mappedAgents.sort((a, b) => (a.displayOrder || 999) - (b.displayOrder || 999));
+
+            // Fallback: If no agents from backend, use default agents
+            if (finalAgents.length === 0) {
+              console.warn('[FALLBACK] No agents from backend, using default agents');
+              finalAgents = [
+                {
+                  id: 'airdrop_multiverse',
+                  name: 'Airdrop Multiverse Agent',
+                  price: 350,
+                  description: 'Creates 100–500 wallets, auto airdrop tasks runner, auto-claim, auto-merge profits',
+                  features: [
+                    'Creates 100–500 wallets automatically',
+                    'Auto airdrop tasks runner',
+                    'Auto-claim rewards',
+                    'Auto-merge profits',
+                  ],
+                  icon: '🎁',
+                  category: 'Airdrop',
+                  badge: 'Popular',
+                  enabled: true,
+                },
+                {
+                  id: 'liquidity_sniper_arbitrage',
+                  name: 'Liquidity Sniper & Arbitrage Agent',
+                  price: 500,
+                  description: 'DEX–CEX arbitrage with micro-second gap execution',
+                  features: [
+                    'DEX–CEX arbitrage detection',
+                    'Micro-second gap execution',
+                    'Real-time opportunity scanning',
+                    'Automated profit capture',
+                  ],
+                  icon: '⚡',
+                  category: 'Arbitrage',
+                  badge: 'Premium',
+                  enabled: true,
+                },
+                {
+                  id: 'ai_launchpad_hunter',
+                  name: 'AI Launchpad Hunter & Presale Sniper',
+                  price: 450,
+                  description: 'Whitelists, presales, early launch detection, auto-entry & auto-exit',
+                  features: [
+                    'Whitelist detection',
+                    'Presale monitoring',
+                    'Early launch detection',
+                    'Auto-entry & auto-exit',
+                  ],
+                  icon: '🚀',
+                  category: 'Launchpad',
+                  badge: 'Hot',
+                  enabled: true,
+                },
+                {
+                  id: 'whale_movement_tracker',
+                  name: 'Whale Movement Tracker Agent',
+                  price: 250,
+                  description: 'Tracks big wallets (whales), auto-buy/sell on accumulation & distribution',
+                  features: [
+                    'Tracks big wallets (whales)',
+                    'Auto-buy on accumulation',
+                    'Auto-sell on distribution',
+                    'Real-time alerts',
+                  ],
+                  icon: '🐋',
+                  category: 'Tracking',
+                  enabled: true,
+                },
+                {
+                  id: 'pre_market_ai_alpha',
+                  name: 'Pre-Market AI Alpha Agent',
+                  price: 300,
+                  description: 'On-chain + sentiment + funding + volatility analysis, predicts next pump tokens',
+                  features: [
+                    'On-chain analysis',
+                    'Sentiment analysis',
+                    'Funding rate monitoring',
+                    'Volatility prediction',
+                    'Pump token prediction',
+                  ],
+                  icon: '🧠',
+                  category: 'AI Prediction',
+                  enabled: true,
+                },
+                {
+                  id: 'whale_copy_trade',
+                  name: 'Whale Copy Trade Agent',
+                  price: 400,
+                  description: 'Tracks top 500 whales, copies entries/exits automatically',
+                  features: [
+                    'Tracks top 500 whales',
+                    'Copies entries automatically',
+                    'Copies exits automatically',
+                    'Real-time synchronization',
+                  ],
+                  icon: '📊',
+                  category: 'Copy Trading',
+                  enabled: true,
+                },
+              ];
+            }
+
+            setAgents(finalAgents);
           }
         }).catch(err => {
           console.error('Error loading agents:', err);
@@ -238,7 +340,7 @@ export default function AgentsMarketplace() {
               {agents
                 .filter((agent) => agent.enabled !== false)
                 .map((agent, index) => {
-                  const isUnlocked = unlockedAgents[agent.id] || false;
+                  const isUnlocked = agent.unlocked === true;
 
                   return (
                     <AgentCard

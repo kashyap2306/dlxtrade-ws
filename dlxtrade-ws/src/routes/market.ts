@@ -154,73 +154,123 @@ export async function marketRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // GET /api/market/top-movers - Get top 5 movers using CoinGecko
-  fastify.get('/top-movers', async (request: FastifyRequest, reply: FastifyReply) => {
+  // GET /api/market/top-movers - Get top 5 movers using CoinGecko (top 250 coins only)
+  fastify.get('/api/market/top-movers', async (request: FastifyRequest, reply: FastifyReply) => {
+    console.log('TOP MOVERS ROUTE HIT');
+
     try {
-      const allCoins = [];
-      const perPage = 250;
-      const totalPages = 12; // Fetch up to 3000 coins (250 * 12)
+      // Create AbortController for timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+        console.log('TOP MOVERS: Request timed out after 8 seconds');
+      }, 8000); // 8 second timeout
 
-      // Fetch data from multiple pages of CoinGecko
-      for (let page = 1; page <= totalPages; page++) {
-        try {
-          const response = await fetch(
-            `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&per_page=${perPage}&page=${page}&price_change_percentage=24h&order=market_cap_desc`,
-            {
-              method: 'GET',
-              headers: {
-                'Accept': 'application/json',
-              },
-            }
-          );
+      console.log('TOP MOVERS: Starting CoinGecko API request');
 
-          if (!response.ok) {
-            logger.warn({ page, status: response.status }, 'CoinGecko API request failed');
-            continue;
-          }
-
-          const pageData = await response.json();
-
-          if (Array.isArray(pageData)) {
-            allCoins.push(...pageData);
-          }
-
-          // Add a small delay to avoid rate limiting
-          await new Promise(resolve => setTimeout(resolve, 100));
-
-        } catch (pageError: any) {
-          logger.warn({ page, error: pageError.message }, 'Error fetching CoinGecko page');
-          continue;
+      // Fetch only top 250 coins from CoinGecko (single request for performance)
+      const response = await fetch(
+        'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=1&price_change_percentage=24h',
+        {
+          method: 'GET',
+          headers: {
+            'Accept': 'application/json',
+          },
+          signal: controller.signal,
         }
+      );
+
+      clearTimeout(timeoutId);
+      console.log('TOP MOVERS: CoinGecko API responded with status:', response.status);
+
+      if (!response.ok) {
+        console.log('TOP MOVERS: CoinGecko API failed with status:', response.status);
+        return reply.send({
+          success: false,
+          message: 'CoinGecko API failed',
+          error: `HTTP ${response.status}`
+        });
       }
 
-      // Transform and sort by highest 24h price change
-      const transformedCoins = allCoins
-        .filter((coin: any) => coin.price_change_percentage_24h !== null && coin.price_change_percentage_24h !== undefined)
+      const allCoins = await response.json();
+      console.log('TOP MOVERS: Received data from CoinGecko, count:', allCoins?.length);
+
+      // Validate response
+      if (!Array.isArray(allCoins)) {
+        console.log('TOP MOVERS: Invalid response format from CoinGecko');
+        return reply.send({
+          success: false,
+          message: 'Invalid response format',
+          error: 'CoinGecko did not return array'
+        });
+      }
+
+      if (allCoins.length === 0) {
+        console.log('TOP MOVERS: CoinGecko returned empty array');
+        return reply.send({
+          success: false,
+          message: 'No market data available',
+          error: 'CoinGecko returned empty data'
+        });
+      }
+
+      // Process the data safely
+      console.log('TOP MOVERS: Processing coin data');
+      const validCoins = allCoins.filter((coin: any) =>
+        coin.price_change_percentage_24h !== null &&
+        coin.price_change_percentage_24h !== undefined &&
+        coin.symbol &&
+        coin.current_price > 0
+      );
+
+      console.log('TOP MOVERS: Found', validCoins.length, 'valid coins with price change data');
+
+      if (validCoins.length === 0) {
+        return reply.send({
+          success: false,
+          message: 'No valid coin data found',
+          error: 'All coins missing price change data'
+        });
+      }
+
+      const topMovers = validCoins
         .map((coin: any) => ({
-          symbol: coin.symbol.toUpperCase() + 'USDT', // Convert to trading pair format
+          symbol: coin.symbol.toUpperCase() + 'USDT',
           price: coin.current_price || 0,
           volume24h: coin.total_volume || 0,
           priceChangePercent24h: coin.price_change_percentage_24h || 0,
           marketCap: coin.market_cap || 0,
         }))
-        .sort((a, b) => Math.abs(b.priceChangePercent24h) - Math.abs(a.priceChangePercent24h))
+        .sort((a, b) => (b.priceChangePercent24h || 0) - (a.priceChangePercent24h || 0))
         .slice(0, 5);
 
-      return {
+      console.log('TOP MOVERS: Returning', topMovers.length, 'top movers');
+
+      return reply.send({
         success: true,
-        data: transformedCoins,
-        count: transformedCoins.length,
-        timestamp: safeDate(new Date()),
+        topMovers: topMovers,
+        count: topMovers.length,
+        timestamp: new Date().toISOString(),
         source: 'coingecko'
-      };
+      });
 
     } catch (error: any) {
-      logger.error({ error: error.message }, 'Error in top-movers endpoint');
-      return reply.code(500).send({
+      console.log('TOP MOVERS: Error occurred:', error.message);
+
+      if (error.name === 'AbortError') {
+        console.log('TOP MOVERS: Request was aborted due to timeout');
+        return reply.send({
+          success: false,
+          message: 'Request timed out',
+          error: 'CoinGecko API took too long to respond'
+        });
+      }
+
+      console.log('TOP MOVERS: Unexpected error:', error);
+      return reply.send({
         success: false,
-        error: 'Failed to fetch market data',
-        details: error.message,
+        message: 'Fetcher failed',
+        error: error.message || 'Unknown error'
       });
     }
   });

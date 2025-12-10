@@ -277,6 +277,16 @@ export const usersApi = {
   // Profile endpoints
   getProfile: () => api.get('/user/profile'),
   updateProfile: (data: any) => api.post('/user/profile/update', data),
+  // Performance stats
+  getPerformanceStats: (uid: string) => api.get(`/users/${uid}/performance-stats`),
+  // Active trades
+  getActiveTrades: (uid: string) => api.get(`/users/${uid}/active-trades`),
+  // Provider config
+  getProviderConfig: (uid: string) => api.get(`/users/${uid}/provider-config`),
+  // Exchange config
+  getExchangeConfig: (uid: string) => api.get(`/users/${uid}/exchangeConfig/current`),
+  // Usage stats
+  getUsageStats: (uid: string) => api.get(`/users/${uid}/usage-stats`),
   // Removed: get, getSessions (invalid endpoints)
   // Removed: getStats, getExchangeStatus, getUsageStats (endpoints don't exist)
 };
@@ -291,6 +301,12 @@ export const agentsApi = {
   submitUnlockRequest: (data: { agentId: string; agentName: string; fullName: string; phoneNumber: string; email: string }) =>
     api.post('/agents/submit-unlock-request', data),
   updateAgentSettings: (agentId: string, settings: any) => api.put(`/agents/${agentId}/settings`, settings),
+  // New endpoints for agent marketplace
+  getUserAgents: (uid: string) => api.get(`/users/${uid}/agents`),
+  createPurchaseRequest: (data: { agentId: string; agentName: string; userName: string; email: string; phoneNumber: string }) =>
+    api.post('/agents/purchase-request', data),
+  approvePurchaseRequest: (requestId: string) => api.post('/admin/agents/approve', { requestId }),
+  getUserFeatures: (uid: string) => api.get(`/users/${uid}/features`),
 };
 
 // Activity Logs - routes include /api prefix from baseURL
