@@ -1,4 +1,4 @@
-import crypto from 'crypto';
+import * as crypto from 'crypto';
 import { config } from '../config';
 import { query } from '../db';
 import { logger } from '../utils/logger';

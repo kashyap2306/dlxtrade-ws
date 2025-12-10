@@ -1,6 +1,6 @@
-import admin from "firebase-admin";
-import dotenv from "dotenv";
-import path from "path";
+import * as admin from "firebase-admin";
+import * as dotenv from "dotenv";
+import * as path from "path";
 
 dotenv.config({
   path: path.resolve(process.cwd(), ".env")

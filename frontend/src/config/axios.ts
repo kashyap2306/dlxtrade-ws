@@ -8,8 +8,6 @@ import {
   isFirebaseAvailable,
   isFirebaseReady
 } from "../config/firebase";
-
-import { getAuthToken, firebaseReady } from "../config/firebase-utils";
 // END KEEP BLOCK
 
 declare module 'axios' {
@@ -22,29 +20,28 @@ declare module 'axios' {
   }
 }
 
-// Set baseURL to VITE_API_BASE_URL with /api prefix
-const viteApiBaseUrl = import.meta.env.VITE_API_BASE_URL;
-const baseURL = (viteApiBaseUrl && viteApiBaseUrl.trim() !== '') ? `${viteApiBaseUrl}/api` : "http://localhost:4000/api";
-console.log('VITE_API_BASE_URL loaded:', viteApiBaseUrl);
-console.log("[API URL CHECK] baseURL:", baseURL);
-console.log("[API URL CHECK] final baseURL used:", baseURL);
+// Dynamic API base URL detection
+const isLocalhost = window.location.hostname === 'localhost';
+const DEPLOYED_BACKEND_URL = 'https://dlx-trading-backend.web.app'; // Replace with actual backend URL
+
+const API_BASE_URL = isLocalhost
+  ? "http://localhost:4000/api"
+  : `${DEPLOYED_BACKEND_URL}/api`;
+
+console.log('[API CONFIG] Environment detection:');
+console.log('  - hostname:', window.location.hostname);
+console.log('  - isLocalhost:', isLocalhost);
+console.log('  - API_BASE_URL:', API_BASE_URL);
 
 // Axios instance (CORS-safe)
 const api = axios.create({
-  baseURL,
+  baseURL: API_BASE_URL,
   timeout: 10000,
 });
-
-// Ensure baseURL is set correctly
-if (!api.defaults.baseURL) {
-  api.defaults.baseURL = baseURL;
-  console.log('[AXIOS] Manually set baseURL on instance');
-}
 
 console.log('[AXIOS] Axios instance created:');
 console.log('  - baseURL:', api.defaults.baseURL);
 console.log('  - timeout:', api.defaults.timeout);
-console.log('  - instance baseURL check:', api.defaults.baseURL === baseURL);
 
 // Runtime guard and interceptor setup
 const setupAxiosInterceptors = async () => {
@@ -162,10 +159,10 @@ const logError = (error: AxiosError, context: string, extra?: any) => {
       try {
         const token = await getAuthToken(false);
         if (token) {
-          if (!config.headers) config.headers = {};
-          config.headers['Authorization'] = `Bearer ${token}`;
+          if (!config.headers) config.headers = {} as any;
+          (config.headers as any)['Authorization'] = `Bearer ${token}`;
           // optional: attach uid header if you rely on it
-          // config.headers['uid'] = auth.currentUser?.uid;
+          // (config.headers as any)['uid'] = auth.currentUser?.uid;
           console.log('[AXIOS] 🔐 Request authenticated with Firebase token');
         } else {
           console.log('[AXIOS] ℹ️ No Firebase token available for request; sending unauthenticated');
@@ -201,7 +198,7 @@ const logError = (error: AxiosError, context: string, extra?: any) => {
               ...config.headers,
               Authorization: `Bearer ${token}`,
               uid: auth.currentUser.uid,
-            };
+            } as any;
             console.log('[AXIOS] Retrying request with refreshed token');
             return api(config);
           }
@@ -223,6 +220,8 @@ import { firebaseReady, getAuthToken } from './firebase-utils';
 firebaseReady.then(() => {
   setupAxiosInterceptors();
   console.log("[AXIOS] Interceptors attached after Firebase ready");
+}).catch(err => {
+  console.warn("[AXIOS] Firebase ready failed:", err);
 });
 
 // Health Ping Service
@@ -235,7 +234,7 @@ class HealthPingService {
 
     this.intervalId = window.setInterval(async () => {
       try {
-        const healthUrl = `${baseURL}/health`;
+        const healthUrl = `${API_BASE_URL.replace('/api', '')}/health`;
         const res = await axios.get(healthUrl, { timeout: 5000 });
         this.isHealthy = res.data?.status === 'ok';
       } catch {

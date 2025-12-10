@@ -92,13 +92,19 @@ export const BackgroundResearchWizard: React.FC<BackgroundResearchWizardProps> =
   const saveBackgroundResearchSettings = async () => {
     setSavingSettings(true);
     try {
-      await settingsApi.backgroundResearch.saveSettings({
+      const settingsData: any = {
         backgroundResearchEnabled: bgResearchEnabled,
-        telegramBotToken: bgResearchEnabled ? telegramBotToken : undefined,
-        telegramChatId: bgResearchEnabled ? telegramChatId : undefined,
         researchFrequencyMinutes: researchFrequency,
         accuracyTrigger: accuracyTrigger,
-      });
+      };
+
+      // Only include Telegram fields if background research is enabled
+      if (bgResearchEnabled) {
+        settingsData.telegramBotToken = telegramBotToken;
+        settingsData.telegramChatId = telegramChatId;
+      }
+
+      await settingsApi.backgroundResearch.saveSettings(settingsData);
       showToast('Background research settings saved successfully!', 'success');
       setCurrentStep(0); // Reset to API validation step
     } catch (error: any) {

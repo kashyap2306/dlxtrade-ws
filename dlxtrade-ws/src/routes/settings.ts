@@ -1345,12 +1345,30 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Body: any }>, reply: FastifyReply) => {
     const user = (request as any).user;
-    const settings = request.body;
+    const newSettings = request.body;
 
     try {
-      await firestoreAdapter.saveSettings(user.uid, settings);
-      return { success: true, message: 'General settings saved successfully' };
+      // Get existing settings to merge
+      const existingSettings = await firestoreAdapter.getSettings(user.uid) || {};
+
+      // Merge new settings with existing ones
+      const updatedSettings = {
+        ...existingSettings,
+        ...(newSettings as object),
+        updatedAt: admin.firestore.Timestamp.now()
+      };
+
+      await firestoreAdapter.saveSettings(user.uid, updatedSettings);
+
+      fastify.log.info({ uid: user.uid }, 'General settings saved successfully');
+
+      return {
+        success: true,
+        message: 'General settings saved successfully',
+        settings: updatedSettings
+      };
     } catch (err: any) {
+      fastify.log.error({ uid: user.uid, error: err.message }, 'Error saving general settings');
       return reply.code(500).send({ error: err.message || 'Error saving general settings' });
     }
   });

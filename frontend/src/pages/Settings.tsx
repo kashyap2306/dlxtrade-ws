@@ -108,7 +108,6 @@ const Settings = () => {
   const isMountedRef = useRef(true);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
-  const [integrationsLoading, setIntegrationsLoading] = useState(false); 
   const [selectedExchange, setSelectedExchange] = useState<string>('');
   const [exchangeForm, setExchangeForm] = useState({ apiKey: '', secretKey: '', passphrase: '' });
   const [connectedExchange, setConnectedExchange] = useState<any>(null);
@@ -119,6 +118,8 @@ const Settings = () => {
   const [showProviderDetails, setShowProviderDetails] = useState<Record<string, boolean>>({});
   const [notificationSettings, setNotificationSettings] = useState<any>({});
   const [showAutoTradeModal, setShowAutoTradeModal] = useState(false);
+  const [showTradeConfirmationModal, setShowTradeConfirmationModal] = useState(false);
+  const [showSoundSelectorModal, setShowSoundSelectorModal] = useState(false);
   const [notificationPrereqs, setNotificationPrereqs] = useState<any>(null);
   const [showAccuracyModal, setShowAccuracyModal] = useState(false);
   const [accuracyThresholdInput, setAccuracyThresholdInput] = useState('80');
@@ -135,6 +136,7 @@ const Settings = () => {
   };
   const [tradingConfig, setTradingConfig] = useState<any>(defaultTradingConfig);
   const [providers, setProviders] = useState<any>({});
+  const [apiKeys, setApiKeys] = useState<Record<string, { apiKey: string; saved: boolean }>>({});
   const [exchangeConfig, setExchangeConfig] = useState<any>(null);
 
   // Initial Settings State (from snippet 11 - defined before callbacks)
@@ -160,7 +162,6 @@ const Settings = () => {
     enableAutoTradeAlerts: false, enablePositionAlerts: false, enableWhaleAlerts: false,
     tradeConfirmationRequired: false, notificationSounds: false, notificationVibration: false
   });
-  const [integrations, setIntegrations] = useState<any>({});
   
   // REQ 2: Fix handleLogout TDZ fatal error: Move handleLogout ABOVE any JSX or function that uses it.
   const handleLogout = useCallback(() => {
@@ -191,44 +192,6 @@ const Settings = () => {
   }, []);
   
 
-  const loadConnectedExchange = useCallback(async () => {
-      console.log('[LOAD] Starting loadConnectedExchange...');
-      try {
-          // Load exchange connection status
-          if (!exchangeService || typeof exchangeService.loadConnected !== 'function') {
-              console.error('[LOAD] exchangeService.loadConnected is not available');
-              setToast({ message: 'Exchange connection check unavailable', type: 'error' });
-              setConnectedExchange(null);
-              return;
-          }
-
-          console.log('[LOAD] Calling exchangeService.loadConnected()...');
-          const response = await exchangeService.loadConnected();
-          console.log('[LOAD] exchangeService.loadConnected() success:', response.data);
-
-          // Set connected exchange from the response
-          if (response.data.connected && response.data.exchanges && response.data.exchanges.length > 0) {
-              const primaryExchange = response.data.exchanges[0]; // Take first connected exchange
-              setConnectedExchange({
-                  exchangeId: primaryExchange.exchange,
-                  name: primaryExchange.exchange.charAt(0).toUpperCase() + primaryExchange.exchange.slice(1),
-                  apiKey: 'configured' // Masked for security
-              });
-          } else {
-              setConnectedExchange(null);
-          }
-
-          console.log('[LOAD] loadConnectedExchange completed successfully');
-      } catch (err) {
-          console.error('[LOAD] Failed to load connected exchange:', err);
-          console.error('[LOAD] Error details:', {
-              message: err.message,
-              status: err.response?.status,
-              data: err.response?.data
-          });
-          setConnectedExchange(null);
-      }
-  }, []);
   
   const handleSaveAccuracySettings = useCallback(async () => {
     const threshold = parseInt(accuracyThresholdInput);
@@ -293,58 +256,62 @@ const Settings = () => {
     }
   };
 
-  // REQ 5: Fix loadIntegrations() wrong merging
-  const loadIntegrations = useCallback(async () => {
-    // Prevent multiple simultaneous calls
-    if (integrationsLoading) return;
-    setIntegrationsLoading(true);
+  // Helper functions for refreshing state
+  const loadProviderConfig = useCallback(async (uid: string) => {
     try {
-      const response = await settingsApi.providers.load();
-      // Robust check
-      if (!response || response.status === 401) {
-        if (response?.status === 401) {
-          console.warn('[Integrations] 401 Unauthorized');
-          handleLogout();
-        }
-        setIntegrations({});
-        return;
-      }
-      // REQ 8: Ensure loader returns plain JSON data
-      const integrationsData = response.data || {};
-      setIntegrations(integrationsData);
+      const response = await settingsApi.loadProviderConfig(uid);
+      if (response.data) {
+        const providerConfig = response.data.config || {};
 
-      // REQ 5: Do NOT merge arbitrary backend objects into settings. Map keys explicitly.
-      setSettings((prev: any) => {
-        const newSettings = { ...prev };
-        
-        // Keys to map are all keys ending in Key or Enabled from the initial state
-        const keysToMap = Object.keys(prev).filter(key => 
-          key.endsWith('Key') || key.endsWith('Enabled')
+        // Update providers state
+        setProviders(providerConfig);
+
+        // Update apiKeys state
+        setApiKeys(
+          Object.fromEntries(
+            Object.entries(providerConfig).map(([pid, data]: any) => [
+              pid,
+              {
+                apiKey: data.apiKey || "",
+                saved: !!data.apiKey
+              }
+            ])
+          )
         );
-        
-        keysToMap.forEach(key => {
-            if (integrationsData.hasOwnProperty(key)) {
-                // Safely update with backend data, falling back to previous value if backend value is null/undefined
-                newSettings[key] = integrationsData[key] ?? newSettings[key];
-            }
-        });
-        
-        return newSettings;
-      });
-    } catch (err: any) {
-      console.warn('Load integrations failed:', err);
-      // Handle authentication errors specifically
-      if (err.response?.status === 401) {
-        showToast('Authentication required. Please log in again.', 'error');
-        handleLogout();
-        return;
-      }
-      setIntegrations({});
-    } finally {
-      setIntegrationsLoading(false);
-    }
-  }, [handleLogout]);
 
+        // Update settings state with provider API keys
+        setSettings(prevSettings => {
+          const newSettings = { ...prevSettings };
+
+          // Map provider IDs back to settings keys
+          Object.entries(providerConfig).forEach(([providerId, data]: [string, any]) => {
+            if (data.apiKey) {
+              // Map provider ID to settings key
+              const settingsKey = getSettingsKeyFromProviderId(providerId);
+              if (settingsKey) {
+                newSettings[settingsKey] = data.apiKey;
+              }
+            }
+          });
+
+          return newSettings;
+        });
+      }
+    } catch (err) {
+      console.warn('[LOAD] Failed to load provider config:', err);
+    }
+  }, []);
+
+  const loadExchangeConfig = useCallback(async (uid: string) => {
+    try {
+      const response = await settingsApi.loadExchangeConfig(uid);
+      console.log('[LOAD] Exchange config response:', response.data);
+      setExchangeConfig(response.data || {});
+    } catch (err) {
+      console.warn('[LOAD] Failed to load exchange config:', err);
+      setExchangeConfig({});
+    }
+  }, []);
 
   // REQ 3 & 7: Fix token/401 errors and initialization order
   useEffect(() => {
@@ -365,39 +332,90 @@ const Settings = () => {
       return;
     }
 
-    // Auth is ready and user exists — now load settings
-    const loadAll = async () => {
+    // Auth is ready and user exists — load all data
+    const loadAllData = async () => {
       try {
         await loadSettings();
-
-        // Load new backend configs
-        const uid = user.uid;
-        Promise.allSettled([
-          settingsApi.loadTradingConfig(uid).then(r => setTradingConfig(r.data.config || defaultTradingConfig)),
-          settingsApi.loadProviderConfig(uid).then(r => setProviders(r.data.config || {})),
-          settingsApi.loadExchangeConfig(uid).then(r => setExchangeConfig(r.data || {})),
-        ]).then(() => console.log('[SETTINGS] loaded configs'));
-
-        // add other loads the same guarded way
-      } catch (err) {
-        console.warn('[LOAD] Failed to load user settings (guarded):', err);
+        if (user) {
+          await loadProviderConfig(user.uid);
+          await loadExchangeConfig(user.uid);
+        }
+      } catch (error: any) {
+        console.error('[Settings] Error loading data:', error);
+        // Don't crash the page, just log the error
       }
     };
 
-    loadAll();
+    loadAllData();
 
     return () => {
       isMountedRef.current = false;
     };
     // deliberately include authLoading and user in deps to re-run when auth is ready
-  }, [authLoading, user]);
-  
+  }, [authLoading, user, loadProviderConfig, loadExchangeConfig]);
+
+  // Helper function to map provider ID to settings key
+  const getSettingsKeyFromProviderId = (providerId: string): string | null => {
+    const mapping: Record<string, string> = {
+      'coingecko': 'coinGeckoKey',
+      'newsdata': 'newsDataKey',
+      'cryptocompare': 'cryptoCompareKey',
+      'coinpaprika': 'coinPaprikaKey',
+      'coinmarketcap': 'coinMarketCapKey',
+      'coinlore': 'coinLoreKey',
+      'coinapi': 'coinApiKey',
+      'bravenewcoin': 'braveNewCoinKey',
+      'messari': 'messariKey',
+      'kaiko': 'kaikoKey',
+      'livecoinwatch': 'liveCoinWatchKey',
+      'coinstats': 'coinStatsKey',
+      'coincheckup': 'coinCheckupKey',
+      'cryptopanic': 'cryptoPanicKey',
+      'reddit': 'redditKey',
+      'cointelegraph_rss': 'cointelegraphKey',
+      'altcoinbuzz_rss': 'altcoinBuzzKey',
+      'gnews': 'gnewsKey',
+      'marketaux': 'marketauxKey',
+      'webzio': 'webzKey',
+      'coinstatsnews': 'coinStatsNewsKey',
+      'newscatcher': 'newsCatcherKey',
+      'cryptocompare_news': 'cryptoCompareNewsKey'
+    };
+    return mapping[providerId] || null;
+  };
+
   // Handlers (rest of existing handlers like handleSaveGeneralSettings, handleProviderKeyChange, etc.)
 
   const handleSaveGeneralSettings = async () => {
+    if (!user) {
+      showToast('Authentication required', 'error');
+      return;
+    }
+
     setSavingSettings(true);
     try {
-      await settingsApi.update(settings);
+      const payload = {
+        maxPositionPercent: Number(settings.maxPositionPerTrade || 10),
+        maxDailyLossPercent: Number(settings.maxDailyLoss || 5),
+        maxTradesPerDay: Number(settings.maxTradesPerDay || 50),
+        preferredTradeType: settings.tradeType || 'Scalping',
+        tradeConfirmationRequired: Boolean(settings.tradeConfirmationRequired || false),
+        notifications: {
+          autoTradeAlerts: Boolean(settings.notifications?.autoTradeAlerts || false),
+          accuracyAlerts: Boolean(settings.notifications?.accuracyAlerts || false),
+          whaleAlerts: Boolean(settings.notifications?.whaleAlerts || false),
+          playSound: Boolean(settings.notifications?.playSound || false),
+          vibrate: Boolean(settings.notifications?.vibrate || false),
+          soundPreferences: settings.notifications?.soundPreferences || {}
+        }
+      };
+
+      const response = await settingsApi.general.save(payload);
+
+      if (response.data?.settings) {
+        setSettings(response.data.settings);
+      }
+
       showToast('General settings saved successfully', 'success');
     } catch (err: any) {
       if (err.response?.status === 401) {
@@ -408,6 +426,43 @@ const Settings = () => {
     } finally {
       setSavingSettings(false);
     }
+  };
+
+  const handleNotificationToggle = (type: string, checked: boolean) => {
+    // Special handling for autoTradeAlerts - requires Auto Trade Mode to be enabled
+    if (type === 'autoTradeAlerts' && checked && !settings.enableAutoTrade) {
+      setShowAutoTradeModal(true);
+      showToast('Auto Trade Mode must be enabled first', 'warning');
+      return; // Do not enable toggle
+    }
+
+    // Special handling for whaleAlerts - requires primary market API key
+    if (type === 'whaleAlerts' && checked) {
+      // Check if any market data provider has an API key
+      const hasPrimaryMarketApiKey = Object.values(providers).some((provider: any) =>
+        provider.type === 'marketData' && provider.apiKey && provider.apiKey.trim() !== ''
+      );
+
+      if (!hasPrimaryMarketApiKey) {
+        showToast('Primary Market Data API Key required for Whale Alerts', 'warning');
+        // Could open a modal here to guide user to add API key
+        return; // Do not enable toggle
+      }
+    }
+
+    // Special handling for playSound - open sound selector modal instead of direct toggle
+    if (type === 'playSound' && checked) {
+      setShowSoundSelectorModal(true);
+      return; // Don't toggle directly, modal will handle it
+    }
+
+    setSettings((prev: any) => ({
+      ...prev,
+      notifications: {
+        ...prev.notifications,
+        [type]: checked
+      }
+    }));
   };
 
 
@@ -546,13 +601,13 @@ const Settings = () => {
   };
 
   const handleSaveExchange = async () => {
-    if (!selectedExchange) return;
+    if (!selectedExchange || !user) return;
     setSavingExchange(true);
     try {
       const exchangeData = EXCHANGES.find(e => e.id === selectedExchange);
       if (!exchangeData) throw new Error('Invalid exchange selected');
 
-      // Simple validation check (API Key and Secret Key must be present)
+      // Validation: Check required fields for the selected exchange
       if (exchangeData.fields.includes('apiKey') && !exchangeForm.apiKey) {
         showToast('API Key is required.', 'error');
         return;
@@ -561,20 +616,26 @@ const Settings = () => {
         showToast('Secret Key is required.', 'error');
         return;
       }
+      if (exchangeData.fields.includes('passphrase') && !exchangeForm.passphrase) {
+        showToast('Passphrase is required for this exchange.', 'error');
+        return;
+      }
 
-      await exchangeService.saveConfig({
-        exchange: selectedExchange,
-        apiKey: exchangeForm.apiKey,
-        secret: exchangeForm.secretKey,
-        passphrase: exchangeForm.passphrase,
-      });
+      // Send the exact payload structure requested
+      const exchangeConfigPayload = {
+        exchangeConfig: {
+          exchange: selectedExchange,
+          apiKey: exchangeForm.apiKey,
+          secretKey: exchangeForm.secretKey,
+          passphrase: exchangeForm.passphrase || null,
+          enabled: true
+        }
+      };
 
-      // Update connected exchange state
-      setConnectedExchange({ 
-        exchangeId: selectedExchange, 
-        name: exchangeData.name, 
-        apiKey: exchangeForm.apiKey 
-      });
+      await settingsApi.saveExchangeConfig(user.uid, exchangeConfigPayload);
+
+      // Refresh exchangeConfig state
+      await loadExchangeConfig(user.uid);
 
       showToast(`${exchangeData.name} credentials saved successfully!`, 'success');
       setExchangeForm({ apiKey: '', secretKey: '', passphrase: '' });
@@ -594,17 +655,26 @@ const Settings = () => {
     if (!selectedExchange) return;
     setSavingExchange(true);
     try {
-      const response = await exchangeService.testConnection({
-        exchange: selectedExchange,
-        apiKey: exchangeForm.apiKey,
-        secret: exchangeForm.secretKey,
-        passphrase: exchangeForm.passphrase,
-      });
-      
-      setExchangeTestResult({ 
-        status: response.data?.valid ? 'success' : 'error', 
-        message: response.data?.message || (response.data?.valid ? 'Test successful.' : 'Test failed.') 
-      });
+      // Call GET /api/exchange/test?exchange=X
+      const response = await exchangeService.testExchangeConnection(selectedExchange);
+
+      // Backend returns: { balance: { USDT: number, BTC: number, ... } }
+      if (response.data?.balance) {
+        const balance = response.data.balance;
+        const balanceMessage = Object.entries(balance)
+          .map(([currency, amount]) => `${currency}: ${amount}`)
+          .join(', ');
+
+        setExchangeTestResult({
+          status: 'success',
+          message: `Connection successful. Balance: ${balanceMessage}`
+        });
+      } else {
+        setExchangeTestResult({
+          status: 'error',
+          message: 'Test completed but no balance data received.'
+        });
+      }
     } catch (err: any) {
       if (err.response?.status === 401) {
         handleLogout();
@@ -620,10 +690,23 @@ const Settings = () => {
   };
 
   const handleDisconnectExchange = async () => {
+    if (!user) return;
     try {
-      const exchangeToDisconnect = connectedExchange?.exchangeId || selectedExchange;
-      await exchangeService.disconnect(exchangeToDisconnect);
-      setConnectedExchange(null);
+      // Send empty exchangeConfig to disconnect
+      const exchangeConfigPayload = {
+        exchangeConfig: {
+          exchange: '',
+          apiKey: '',
+          secretKey: '',
+          enabled: false
+        }
+      };
+
+      await settingsApi.saveExchangeConfig(user.uid, exchangeConfigPayload);
+
+      // Refresh exchangeConfig state
+      await loadExchangeConfig(user.uid);
+
       setExchangeTestResult(undefined);
       showToast('Exchange disconnected successfully.', 'success');
     } catch (err: any) {
@@ -636,13 +719,51 @@ const Settings = () => {
   };
 
   const handleToggleTradeConfirmation = async (isChecked: boolean) => {
+    // Check if Auto Trade Mode is enabled first
+    if (isChecked && !settings.enableAutoTrade) {
+      setShowTradeConfirmationModal(true);
+      return; // Do not enable toggle
+    }
+
+    // If enabling or disabling is allowed, proceed
     setSettings((prev: any) => ({ ...prev, tradeConfirmationRequired: isChecked }));
     try {
-      await settingsApi.update({ tradeConfirmationRequired: isChecked });
+      await settingsApi.general.save({ tradeConfirmationRequired: isChecked });
       showToast('Trade confirmation setting saved.', 'success');
     } catch (err: any) {
       showToast(err.response?.data?.error || 'Failed to save setting', 'error');
     }
+  };
+
+  const handleTradeConfirmationModalClose = () => {
+    setShowTradeConfirmationModal(false);
+    // Reset toggle state since modal was closed without enabling auto trade
+    setSettings((prev: any) => ({ ...prev, tradeConfirmationRequired: false }));
+  };
+
+  const handleGoToAutoTradeSettings = () => {
+    setShowTradeConfirmationModal(false);
+    setSettings((prev: any) => ({ ...prev, tradeConfirmationRequired: false }));
+    // Scroll to auto trade section (could be enhanced with actual navigation)
+    const autoTradeSection = document.querySelector('[data-section="auto-trade"]');
+    if (autoTradeSection) {
+      autoTradeSection.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
+  const handleSoundSelectorSave = (preferences: any) => {
+    setSettings((prev: any) => ({
+      ...prev,
+      notifications: {
+        ...prev.notifications,
+        playSound: true,
+        soundPreferences: preferences
+      }
+    }));
+  };
+
+  const handleSoundSelectorClose = () => {
+    setShowSoundSelectorModal(false);
   };
 
   const handleToggleAutoTrade = async (isChecked: boolean) => {
@@ -653,7 +774,7 @@ const Settings = () => {
         setNotificationPrereqs(response.data);
         if (response.data && response.data.ready) {
           setSettings((prev: any) => ({ ...prev, enableAutoTrade: isChecked }));
-          await settingsApi.update({ enableAutoTrade: isChecked });
+          await settingsApi.general.save({ enableAutoTrade: isChecked });
           showToast('Auto-Trade enabled!', 'success');
         } else {
           setShowAutoTradeModal(true);
@@ -673,7 +794,7 @@ const Settings = () => {
       // Disable immediately
       setSettings((prev: any) => ({ ...prev, enableAutoTrade: isChecked }));
       try {
-        await settingsApi.update({ enableAutoTrade: isChecked });
+        await settingsApi.general.save({ enableAutoTrade: isChecked });
         showToast('Auto-Trade disabled.', 'success');
       } catch (err: any) {
         if (err.response?.status === 401) {
@@ -761,6 +882,7 @@ const Settings = () => {
                 savingSettings={savingSettings}
                 handleToggleTradeConfirmation={handleToggleTradeConfirmation}
                 handleSaveGeneralSettings={handleSaveGeneralSettings}
+                handleNotificationToggle={handleNotificationToggle}
               />
 
               <SettingsApiProvidersSection
@@ -771,47 +893,77 @@ const Settings = () => {
                 savingProvider={savingProvider}
                 providerTestResults={providerTestResults}
                 testProviderConnection={testProviderConnection}
-                handleProviderKeyChange={(providerName, keyName, value, uid, setProviders) => {
-                  if (!user) return;
+                apiKeys={apiKeys}
+                handleProviderKeyChange={async (providerName, keyName, value, uid, setProviders) => {
+                  if (!user) return Promise.resolve();
 
-                  // Get backend provider ID from UI name
-                  const providerId = PROVIDER_ID_MAP[providerName];
-                  if (!providerId) {
-                    console.error("Unknown provider ID:", providerName);
-                    setToast({ message: `Unknown provider: ${providerName}`, type: 'error' });
-                    return;
-                  }
+                  try {
+                    // Show loading state
+                    setSavingProvider(providerName);
 
-                  // Get provider type using backend ID
-                  const providerType = PROVIDER_TYPE_MAP[providerId];
-                  if (!providerType) {
-                    console.error("Unknown provider type for ID:", providerId);
-                    setToast({ message: `Unknown provider type: ${providerName}`, type: 'error' });
-                    return;
-                  }
+                    // Get backend provider ID from UI name
+                    const providerId = PROVIDER_ID_MAP[providerName];
+                    if (!providerId) {
+                      console.error("Unknown provider ID:", providerName);
+                      setToast({ message: `Unknown provider: ${providerName}`, type: 'error' });
+                      setSavingProvider(null);
+                      return;
+                    }
 
-                  const providerBody = {
-                    providerName: providerId, // Send backend ID as providerName
-                    type: providerType,
-                    enabled: true,
-                    apiKey: value,
-                    usageStats: {}
-                  };
-                  settingsApi.saveProviderConfig(user.uid, {
-                    providerConfig: providerBody
-                  }).then(() => {
-                    setProviders(prev => ({ ...prev, [providerName]: providerBody }));
-                    setToast({ message: `${providerName} API key saved!`, type: 'success' });
-                  }).catch(err => {
+                    // Get provider type using backend ID
+                    const providerType = PROVIDER_TYPE_MAP[providerId];
+                    if (!providerType) {
+                      console.error("Unknown provider type for ID:", providerId);
+                      setToast({ message: `Unknown provider type: ${providerName}`, type: 'error' });
+                      setSavingProvider(null);
+                      return;
+                    }
+
+                    // Construct providerConfig as object keyed by provider name
+                    const providerConfig = {
+                      [providerId]: {
+                        apiKey: value,
+                        enabled: true,
+                        type: providerType,
+                        usageStats: {}
+                      }
+                    };
+
+                    console.log("FRONTEND SENT PAYLOAD:", providerConfig);
+                    console.log("FRONTEND: Sending provider config save request");
+                    console.log("FRONTEND: Payload:", {
+                      providerConfig: providerConfig
+                    });
+                    console.log("FRONTEND: User ID:", user.uid);
+                    console.log("FRONTEND: Provider ID:", providerId);
+                    console.log("FRONTEND: Provider Name:", providerName);
+
+                    const response = await settingsApi.saveProviderConfig(user.uid, {
+                      providerConfig: providerConfig
+                    });
+
+                    console.log("FRONTEND: Received response:", response);
+                    if (response.success) {
+                      // Refresh provider config state
+                      await loadProviderConfig(user.uid);
+
+                      setToast({ message: `${providerName} API key saved!`, type: 'success' });
+                    } else {
+                      setToast({ message: `Failed to save ${providerName} key`, type: 'error' });
+                    }
+                  } catch (err) {
                     console.error(err);
                     setToast({ message: `Failed to save ${providerName} key`, type: 'error' });
-                  });
+                  } finally {
+                    // Hide loading state
+                    setSavingProvider(null);
+                  }
                 }}
                 handleToggleProviderEnabled={handleToggleProviderEnabled}
               />
 
               <SettingsExchangeSection
-                connectedExchange={connectedExchange}
+                exchangeConfig={exchangeConfig}
                 selectedExchange={selectedExchange}
                 handleExchangeSelect={handleExchangeSelect}
                 exchangeForm={exchangeForm}
@@ -834,8 +986,15 @@ const Settings = () => {
 
               <SettingsModals
                 showAutoTradeModal={showAutoTradeModal}
+                showTradeConfirmationModal={showTradeConfirmationModal}
+                showSoundSelectorModal={showSoundSelectorModal}
                 notificationPrereqs={notificationPrereqs}
+                currentSoundPreferences={settings.notifications?.soundPreferences || {}}
                 handleAutoTradeModalClose={handleAutoTradeModalClose}
+                handleTradeConfirmationModalClose={handleTradeConfirmationModalClose}
+                handleGoToAutoTradeSettings={handleGoToAutoTradeSettings}
+                handleSoundSelectorSave={handleSoundSelectorSave}
+                handleSoundSelectorClose={handleSoundSelectorClose}
               />
 
               {/* Toast Notification */}

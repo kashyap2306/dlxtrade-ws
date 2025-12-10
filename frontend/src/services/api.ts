@@ -227,10 +227,16 @@ export const settingsApi = {
   // New settings endpoints
   saveTradingConfig: (uid: string, config: any) => api.post(`/users/${uid}/trading-config`, config),
   loadTradingConfig: (uid: string) => api.get(`/users/${uid}/trading-config`),
-  saveProviderConfig: (uid: string, providerBody: any) => api.post(`/users/${uid}/provider-config`, providerBody),
+  saveProviderConfig: async (uid: string, providerBody: any) => {
+    const response = await api.post(`/users/${uid}/provider-config`, providerBody);
+    return {
+      success: response.data.success,
+      providerConfig: response.data.providerConfig
+    };
+  },
   loadProviderConfig: (uid: string) => api.get(`/users/${uid}/provider-config`),
   saveExchangeConfig: (uid: string, exchangeBody: any) => api.post(`/users/${uid}/exchange-config`, exchangeBody),
-  loadExchangeConfig: (uid: string) => api.get(`/users/${uid}/exchange-config`),
+  loadExchangeConfig: (uid: string) => api.get(`/users/${uid}/exchangeConfig/current`),
 };
 
 // Execution API
@@ -396,6 +402,8 @@ export const exchangeApi = {
     }),
   testConnection: (config: { exchange?: string; apiKey?: string; secret?: string; passphrase?: string; testnet?: boolean }) =>
     api.post('/exchange/test', config),
+  testExchangeConnection: (exchange: string) =>
+    api.get('/api/exchange/test', { params: { exchange } }),
   loadConnected: () =>
     api.get('/exchange/connected'),
 };

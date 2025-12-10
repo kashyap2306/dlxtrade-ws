@@ -49,16 +49,25 @@ export function useAutoTradeMode(): UseAutoTradeModeReturn {
   const loadIntegrations = useCallback(async () => {
     if (!user) return;
     try {
-      const response = await settingsApi.load();
-      const data = response.data || {};
+      const response = await settingsApi.loadProviderConfig(user.uid);
+      if (response.success) {
+        const providerConfig = response.config || {};
 
-      const loaded: any = {
-        cryptocompare: data.cryptocompare || { enabled: false, apiKey: null },
-        newsdata: data.newsdata || { enabled: false, apiKey: null },
-        coinmarketcap: data.coinmarketcap || { enabled: false, apiKey: null },
-      };
+        const loaded: any = {
+          cryptocompare: providerConfig.cryptocompare || { enabled: false, apiKey: null },
+          newsdata: providerConfig.newsdata || { enabled: false, apiKey: null },
+          coinmarketcap: providerConfig.coinmarketcap || { enabled: false, apiKey: null },
+        };
 
-      setIntegrations(loaded);
+        setIntegrations(loaded);
+      } else {
+        // Set safe defaults
+        setIntegrations({
+          cryptocompare: { enabled: false, apiKey: null },
+          newsdata: { enabled: false, apiKey: null },
+          coinmarketcap: { enabled: false, apiKey: null },
+        });
+      }
     } catch (err: any) {
       suppressConsoleError(err, 'loadIntegrations');
       // Set safe defaults

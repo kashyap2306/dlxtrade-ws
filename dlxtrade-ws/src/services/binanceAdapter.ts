@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import crypto from 'crypto';
+import * as crypto from 'crypto';
 import WebSocket from 'ws';
 import { config } from '../config';
 import { logger } from '../utils/logger';

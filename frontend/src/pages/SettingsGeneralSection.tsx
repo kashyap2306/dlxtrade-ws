@@ -8,11 +8,19 @@ interface SettingsGeneralSectionProps {
     maxTradesPerDay: number;
     tradeType: string;
     tradeConfirmationRequired: boolean;
+    notifications?: {
+      autoTradeAlerts: boolean;
+      accuracyAlerts: boolean;
+      whaleAlerts: boolean;
+      playSound: boolean;
+      vibrate: boolean;
+    };
   };
   setSettings: (settings: any) => void;
   savingSettings: boolean;
   handleToggleTradeConfirmation: (checked: boolean) => void;
   handleSaveGeneralSettings: () => void;
+  handleNotificationToggle?: (type: string, checked: boolean) => void;
 }
 
 export const SettingsGeneralSection: React.FC<SettingsGeneralSectionProps> = ({
@@ -21,6 +29,7 @@ export const SettingsGeneralSection: React.FC<SettingsGeneralSectionProps> = ({
   savingSettings,
   handleToggleTradeConfirmation,
   handleSaveGeneralSettings,
+  handleNotificationToggle,
 }) => {
   return (
     <section id="general-settings" className="mb-12">
@@ -104,6 +113,83 @@ export const SettingsGeneralSection: React.FC<SettingsGeneralSectionProps> = ({
             onChange={handleToggleTradeConfirmation}
             ariaLabel="Toggle trade confirmation requirement"
           />
+        </div>
+
+        {/* Notification Settings */}
+        <div className="md:col-span-2 space-y-4">
+          <h3 className="text-lg font-semibold text-white border-b border-white/10 pb-2">Notification Settings</h3>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Auto Trade Alerts */}
+            <div className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg border border-white/10">
+              <div>
+                <h4 className="text-sm font-medium text-white">Auto Trade Alerts</h4>
+                <p className="text-xs text-gray-400">Trigger on automatic executions</p>
+              </div>
+              <ToggleSwitch
+                id="auto-trade-alerts-toggle"
+                checked={settings.notifications?.autoTradeAlerts || false}
+                onChange={(checked) => handleNotificationToggle?.('autoTradeAlerts', checked)}
+                ariaLabel="Toggle auto trade alerts"
+              />
+            </div>
+
+            {/* Accuracy Alerts */}
+            <div className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg border border-white/10">
+              <div>
+                <h4 className="text-sm font-medium text-white">Accuracy Alerts</h4>
+                <p className="text-xs text-gray-400">Trigger when accuracy &lt; 75%</p>
+              </div>
+              <ToggleSwitch
+                id="accuracy-alerts-toggle"
+                checked={settings.notifications?.accuracyAlerts || false}
+                onChange={(checked) => handleNotificationToggle?.('accuracyAlerts', checked)}
+                ariaLabel="Toggle accuracy alerts"
+              />
+            </div>
+
+            {/* Whale Alerts */}
+            <div className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg border border-white/10">
+              <div>
+                <h4 className="text-sm font-medium text-white">Whale Alerts</h4>
+                <p className="text-xs text-gray-400">Trigger on &gt;2.5% candle move or volume spike</p>
+              </div>
+              <ToggleSwitch
+                id="whale-alerts-toggle"
+                checked={settings.notifications?.whaleAlerts || false}
+                onChange={(checked) => handleNotificationToggle?.('whaleAlerts', checked)}
+                ariaLabel="Toggle whale alerts"
+              />
+            </div>
+
+            {/* Sound Notifications */}
+            <div className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg border border-white/10">
+              <div>
+                <h4 className="text-sm font-medium text-white">Sound Notifications</h4>
+                <p className="text-xs text-gray-400">Play sound for notifications</p>
+              </div>
+              <ToggleSwitch
+                id="sound-notifications-toggle"
+                checked={settings.notifications?.playSound || false}
+                onChange={(checked) => handleNotificationToggle?.('playSound', checked)}
+                ariaLabel="Toggle sound notifications"
+              />
+            </div>
+
+            {/* Vibration */}
+            <div className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg border border-white/10 md:col-span-2">
+              <div>
+                <h4 className="text-sm font-medium text-white">Vibration</h4>
+                <p className="text-xs text-gray-400">Vibrate device for notifications</p>
+              </div>
+              <ToggleSwitch
+                id="vibration-toggle"
+                checked={settings.notifications?.vibrate || false}
+                onChange={(checked) => handleNotificationToggle?.('vibrate', checked)}
+                ariaLabel="Toggle vibration notifications"
+              />
+            </div>
+          </div>
         </div>
 
         {/* Save Button */}

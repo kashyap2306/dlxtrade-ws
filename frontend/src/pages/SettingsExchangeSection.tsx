@@ -4,7 +4,7 @@ import { SettingsCard, SettingsInput, ProviderTestResult } from './SettingsUtils
 import { EXCHANGES } from '../constants/exchanges';
 
 interface SettingsExchangeSectionProps {
-  connectedExchange: any;
+  exchangeConfig: any;
   selectedExchange: string | null;
   handleExchangeSelect: (exchangeId: string) => void;
   exchangeForm: any;
@@ -17,8 +17,12 @@ interface SettingsExchangeSectionProps {
   settings: { showUnmaskedKeys: boolean };
 }
 
+interface BalanceData {
+  [currency: string]: number;
+}
+
 export const SettingsExchangeSection: React.FC<SettingsExchangeSectionProps> = ({
-  connectedExchange,
+  exchangeConfig,
   selectedExchange,
   handleExchangeSelect,
   exchangeForm,
@@ -36,12 +40,12 @@ export const SettingsExchangeSection: React.FC<SettingsExchangeSectionProps> = (
         🏦 Exchange Connection
       </h2>
       <SettingsCard>
-        {connectedExchange ? (
+        {exchangeConfig && exchangeConfig.exchange ? (
           <div className="p-6 bg-green-500/10 border border-green-500/30 rounded-xl space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <CheckCircleIcon className="w-6 h-6 text-green-400" />
-                <span className="text-xl font-bold text-white">Connected to {connectedExchange.name}</span>
+                <span className="text-xl font-bold text-white">Connected to: {exchangeConfig.exchange.charAt(0).toUpperCase() + exchangeConfig.exchange.slice(1)}</span>
               </div>
               <button
                 onClick={handleDisconnectExchange}
@@ -50,7 +54,7 @@ export const SettingsExchangeSection: React.FC<SettingsExchangeSectionProps> = (
                 Disconnect
               </button>
             </div>
-            <p className="text-sm text-green-300">API Key: {connectedExchange.apiKey.slice(0, 4)}...{connectedExchange.apiKey.slice(-4)}</p>
+            <p className="text-sm text-green-300">API Key: {exchangeConfig.apiKey ? `${exchangeConfig.apiKey.slice(0, 4)}...${exchangeConfig.apiKey.slice(-4)}` : '••••'}</p>
             <p className="text-xs text-green-400">The trading engine can now execute trades directly on your account.</p>
           </div>
         ) : (
@@ -97,6 +101,21 @@ export const SettingsExchangeSection: React.FC<SettingsExchangeSectionProps> = (
                 ))}
 
                 <ProviderTestResult result={exchangeTestResult} />
+
+                {/* Balance Display */}
+                {exchangeTestResult?.balance && (
+                  <div className="mt-4 p-4 bg-green-500/10 border border-green-500/30 rounded-xl">
+                    <h4 className="text-sm font-semibold text-green-400 mb-2">Account Balance</h4>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {Object.entries(exchangeTestResult.balance as BalanceData).map(([currency, amount]) => (
+                        <div key={currency} className="bg-green-500/20 rounded-lg p-2 text-center">
+                          <div className="text-lg font-bold text-green-300">{amount.toFixed(4)}</div>
+                          <div className="text-xs text-green-400">{currency}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 <div className="flex justify-end gap-3 pt-4 border-t border-white/10">
                   <button

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import { autoTradeApi, usersApi, globalStatsApi, engineStatusApi, settingsApi, notificationsApi, agentsApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { suppressConsoleError } from '../utils/errorHandler';
-import ExchangeAccountsSection from '../components/ExchangeAccountsSection';
+import { SettingsExchangeSection } from './SettingsExchangeSection';
 import { useThrottle, useLazyLoad, usePolling } from '../hooks/usePerformance';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { LoadingState, CardSkeleton } from '../components/LoadingState';
@@ -11,16 +11,12 @@ import { useNavigate } from 'react-router-dom';
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
 import { ArrowTrendingUpIcon, ArrowTrendingDownIcon, WalletIcon, ChartBarIcon, BoltIcon, CpuChipIcon } from '@heroicons/react/24/outline';
 import TradeConfirmationModal from '../components/TradeConfirmationModal';
+import { EXCHANGES } from '../constants/exchanges';
 
 // Wallet balances are now loaded from global-stats endpoint
 
 // Lazy load heavy components for better performance
-const AutoTradeMode = lazy(() => import('../components/AutoTradeMode'));
-const RecentTrades = lazy(() => import('../components/RecentTrades'));
 const MarketScanner = lazy(() => import('../components/MarketScanner'));
-const WalletCard = lazy(() => import('../components/Wallet/WalletCard'));
-const ExecutionSummary = lazy(() => import('../components/ExecutionSummary'));
-const PnLWidget = lazy(() => import('../components/PnLWidget'));
 
 // Debounce utility for API calls
 function useDebounce<T extends (...args: any[]) => any>(callback: T, delay: number): T {
@@ -75,8 +71,14 @@ export default function Dashboard() {
   });
 
   const [showExchangeModal, setShowExchangeModal] = useState(false);
+  const [selectedExchange, setSelectedExchange] = useState<string>('');
+  const [exchangeForm, setExchangeForm] = useState({ apiKey: '', secretKey: '', passphrase: '' });
+  const [exchangeTestResult, setExchangeTestResult] = useState<{ status: 'success' | 'error' | null; message: string } | undefined>(undefined);
+  const [savingExchange, setSavingExchange] = useState(false);
+  const [exchangeConfig, setExchangeConfig] = useState<any>(null);
   const isMountedRef = useRef(true);
   const loadingRef = useRef(false); // Prevent concurrent API calls
+  const prevShowModalRef = useRef(false);
 
   // Lazy load triggers for heavy components
   const { ref: marketScannerRef, hasIntersected: marketScannerVisible } = useLazyLoad(0.1);
@@ -305,6 +307,20 @@ export default function Dashboard() {
 
   // No emergency timeout needed - no global loading state like Research page
 
+  // Load exchange config on mount
+  useEffect(() => {
+    refreshExchangeConfig();
+  }, [user]);
+
+  // Refresh exchange config when modal closes
+  useEffect(() => {
+    if (prevShowModalRef.current && !showExchangeModal) {
+      // Modal just closed, refresh the exchange config
+      refreshExchangeConfig();
+    }
+    prevShowModalRef.current = showExchangeModal;
+  }, [showExchangeModal]);
+
   // Use centralized polling with visibility detection (reduced frequency to 5 minutes)
   // Always poll if user exists like Research page
   usePolling(loadData, 300000, !!user);
@@ -391,11 +407,131 @@ export default function Dashboard() {
     setShowExchangeModal(true);
   };
 
-  const handleAutoTradeStatusChange = async (enabled: boolean) => {
-    // Reload unified dashboard data after toggle
-    await loadDashboardData();
+  // Function to refresh exchange config
+  const refreshExchangeConfig = async () => {
+    if (user) {
+      try {
+        const config = await settingsApi.loadExchangeConfig(user.uid);
+        setExchangeConfig(config.data);
+      } catch (err) {
+        console.warn('Failed to refresh exchange config:', err);
+        setExchangeConfig(null);
+      }
+    }
   };
 
+  // Exchange Handlers
+  const handleExchangeSelect = (exchangeId: string) => {
+    setSelectedExchange(exchangeId);
+    // Reset form for new selection
+    setExchangeForm({ apiKey: '', secretKey: '', passphrase: '' });
+  };
+
+  const handleExchangeFormChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setExchangeForm({ ...exchangeForm, [e.target.name]: e.target.value });
+  };
+
+  const handleTestExchange = async () => {
+    if (!selectedExchange) return;
+    setSavingExchange(true);
+    try {
+      const response = await settingsApi.testExchangeConnection(selectedExchange);
+      setExchangeTestResult({
+        status: response.data.success ? 'success' : 'error',
+        message: response.data.message
+      });
+    } catch (err: any) {
+      setExchangeTestResult({
+        status: 'error',
+        message: err.response?.data?.message || 'Connection test failed'
+      });
+    } finally {
+      setSavingExchange(false);
+    }
+  };
+
+  const handleSaveExchange = async () => {
+    if (!selectedExchange || !user) return;
+    setSavingExchange(true);
+    try {
+      const exchangeData = EXCHANGES.find((e: any) => e.id === selectedExchange);
+      if (!exchangeData) throw new Error('Invalid exchange selected');
+
+      // Validation: Check required fields for the selected exchange
+      if (exchangeData.fields.includes('apiKey') && !exchangeForm.apiKey) {
+        console.error('API Key is required.');
+        return;
+      }
+      if (exchangeData.fields.includes('secretKey') && !exchangeForm.secretKey) {
+        console.error('Secret Key is required.');
+        return;
+      }
+      if (exchangeData.fields.includes('passphrase') && !exchangeForm.passphrase) {
+        console.error('Passphrase is required for this exchange.');
+        return;
+      }
+
+      // Send the exact payload structure requested
+      const exchangeConfigPayload = {
+        exchangeConfig: {
+          exchange: selectedExchange,
+          apiKey: exchangeForm.apiKey,
+          secretKey: exchangeForm.secretKey,
+          passphrase: exchangeForm.passphrase || null,
+        }
+      };
+
+      await settingsApi.saveExchangeConfig(user.uid, exchangeConfigPayload);
+
+      // Refresh exchangeConfig state
+      await refreshExchangeConfig();
+
+      setExchangeTestResult({
+        status: 'success',
+        message: 'Exchange connected successfully!'
+      });
+
+      // Close modal after short delay
+      setTimeout(() => setShowExchangeModal(false), 2000);
+
+    } catch (err: any) {
+      console.error('Save exchange error:', err);
+      setExchangeTestResult({
+        status: 'error',
+        message: err.response?.data?.message || 'Failed to save exchange configuration'
+      });
+    } finally {
+      setSavingExchange(false);
+    }
+  };
+
+  const handleDisconnectExchange = async () => {
+    if (!user) return;
+    setSavingExchange(true);
+    try {
+      // Send empty exchangeConfig to disconnect
+      const exchangeConfigPayload = {
+        exchangeConfig: {
+          exchange: '',
+          apiKey: '',
+          secretKey: '',
+          passphrase: null,
+        }
+      };
+
+      await settingsApi.saveExchangeConfig(user.uid, exchangeConfigPayload);
+
+      // Refresh exchangeConfig state
+      setExchangeConfig(null);
+      setSelectedExchange('');
+      setExchangeForm({ apiKey: '', secretKey: '', passphrase: '' });
+
+    } catch (err: any) {
+      console.error('Disconnect exchange error:', err);
+    } finally {
+      setSavingExchange(false);
+    }
+  };
 
   return (
     <DirectRenderer>
@@ -450,23 +586,23 @@ export default function Dashboard() {
                   Exchange API Status
                 </h3>
                 <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${
-                  autoTradeStatus?.isApiConnected === true
+                  exchangeConfig && exchangeConfig.exchange
                     ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30'
                     : 'bg-red-500/10 text-red-300 border border-red-500/30'
                 }`}>
                   <div className={`w-2 h-2 rounded-full ${
-                    autoTradeStatus?.isApiConnected === true ? 'bg-emerald-400' : 'bg-red-400'
+                    exchangeConfig && exchangeConfig.exchange ? 'bg-emerald-400' : 'bg-red-400'
                   }`}></div>
-                  {autoTradeStatus?.isApiConnected === true ? 'Connected' : 'Not Connected'}
+                  {exchangeConfig && exchangeConfig.exchange ? 'Connected' : 'Not Connected'}
                 </div>
               </div>
               <p className="text-slate-400 text-sm">
-                {autoTradeStatus?.isApiConnected === true
+                {exchangeConfig && exchangeConfig.exchange
                   ? 'Your exchange API is connected and ready for trading.'
                   : 'Connect your exchange API keys to enable auto-trading features.'
                 }
               </p>
-              {autoTradeStatus?.isApiConnected !== true && (
+              {!(exchangeConfig && exchangeConfig.exchange) && (
                 <button
                   onClick={handleConnectClick}
                   className="mt-4 px-4 py-2 bg-slate-700/50 border border-slate-600/50 text-slate-300 rounded-lg hover:bg-slate-600/50 transition-colors text-sm font-medium"
@@ -486,21 +622,20 @@ export default function Dashboard() {
                   Required APIs
                 </h3>
                 <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${
-                  autoTradeStatus?.isApiConnected && autoTradeStatus?.apiStatus === 'connected'
+                  exchangeConfig && exchangeConfig.exchange
                     ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30'
                     : 'bg-red-500/10 text-red-300 border border-red-400/30'
                 }`}>
                   <div className={`w-2 h-2 rounded-full ${
-                    autoTradeStatus?.isApiConnected && autoTradeStatus?.apiStatus === 'connected'
-                      ? 'bg-emerald-400' : 'bg-red-400'
+                    exchangeConfig && exchangeConfig.exchange ? 'bg-emerald-400' : 'bg-red-400'
                   }`}></div>
-                  {autoTradeStatus?.isApiConnected && autoTradeStatus?.apiStatus === 'connected' ? 'Connected' : 'Not Connected'}
+                  {exchangeConfig && exchangeConfig.exchange ? 'Connected' : 'Not Connected'}
                 </div>
               </div>
 
               <div className="space-y-3">
                 {[
-                  { name: 'Exchange API', key: 'isApiConnected', status: autoTradeStatus?.isApiConnected ? 'connected' : 'disconnected' },
+                  { name: 'Exchange API', key: 'isApiConnected', status: (exchangeConfig && exchangeConfig.exchange) ? 'connected' : 'disconnected' },
                   { name: 'Market Data', key: 'marketData', status: 'connected' },
                   { name: 'News API', key: 'news', status: 'connected' },
                   { name: 'Metadata API', key: 'metadata', status: 'connected' }
@@ -686,85 +821,6 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* Auto-Trade Mode Section */}
-          <div className="mb-8">
-            <Suspense fallback={
-              <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-2xl p-8">
-                <div className="h-8 bg-slate-700/50 rounded-lg mb-4 w-1/3"></div>
-                <div className="h-4 bg-slate-700/50 rounded w-2/3 mb-6"></div>
-                <div className="h-12 bg-slate-700/50 rounded-xl w-full"></div>
-                <div className="text-slate-400 text-sm mt-4">Loading Auto-Trade Mode...</div>
-              </div>
-            }>
-              <AutoTradeMode onStatusChange={handleAutoTradeStatusChange} />
-            </Suspense>
-          </div>
-
-          {/* Recent Trades Section */}
-          <div className="mb-8">
-            <Suspense fallback={
-              <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-2xl p-8 animate-pulse">
-                <div className="h-6 bg-slate-700/50 rounded-lg mb-6 w-1/4"></div>
-                <div className="space-y-4">
-                  {[1,2,3].map(i => (
-                    <div key={i} className="h-16 bg-slate-700/50 rounded-xl"></div>
-                  ))}
-                </div>
-              </div>
-            }>
-              <RecentTrades />
-            </Suspense>
-          </div>
-
-          {/* Main Content Grid */}
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-8 mb-8">
-            {/* Left Column - Wallet & Execution */}
-            <div className="space-y-8">
-              {/* Wallet Balance Card */}
-              <Suspense fallback={
-                <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-2xl p-8 animate-pulse">
-                  <div className="h-6 bg-slate-700/50 rounded-lg mb-6 w-1/3"></div>
-                  <div className="space-y-4">
-                    <div className="h-8 bg-slate-700/50 rounded w-2/3"></div>
-                    <div className="h-6 bg-slate-700/50 rounded w-1/2"></div>
-                  </div>
-                </div>
-              }>
-                <WalletCard onConnectClick={handleConnectClick} />
-              </Suspense>
-
-              {/* Execution Summary */}
-              <Suspense fallback={
-                <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-2xl p-8 animate-pulse">
-                  <div className="h-6 bg-slate-700/50 rounded-lg mb-6 w-1/3"></div>
-                  <div className="grid grid-cols-3 gap-4">
-                    {[1,2,3].map(i => (
-                      <div key={i} className="h-20 bg-slate-700/50 rounded-xl"></div>
-                    ))}
-                  </div>
-                </div>
-              }>
-                <ExecutionSummary />
-              </Suspense>
-            </div>
-
-            {/* Right Column - PnL & Performance */}
-            <div>
-              <Suspense fallback={
-                <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-2xl p-8 animate-pulse">
-                  <div className="h-6 bg-slate-700/50 rounded-lg mb-6 w-1/3"></div>
-                  <div className="grid grid-cols-2 gap-4">
-                    {[1,2,3,4].map(i => (
-                      <div key={i} className="h-24 bg-slate-700/50 rounded-xl"></div>
-                    ))}
-                  </div>
-                </div>
-              }>
-                <PnLWidget />
-              </Suspense>
-            </div>
-          </div>
-
           {/* Market Scanner Section */}
           <div ref={marketScannerRef}>
             {marketScannerVisible && (
@@ -785,19 +841,33 @@ export default function Dashboard() {
         </div>
       </main>
 
-      {/* Exchange Accounts Modal */}
+      {/* Exchange Connection Modal/Drawer */}
       {showExchangeModal && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
-          <div className="relative bg-slate-900/95 border border-slate-700/50 rounded-2xl shadow-2xl shadow-slate-900/50 max-w-5xl w-full max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-end justify-center p-0 md:items-center md:p-4">
+          <div className="relative bg-slate-900/95 border border-slate-700/50 rounded-t-2xl md:rounded-2xl shadow-2xl shadow-slate-900/50 w-full h-full md:max-w-4xl md:w-full md:max-h-[90vh] overflow-y-auto">
             <button
               onClick={() => setShowExchangeModal(false)}
-              className="absolute top-6 right-6 text-slate-400 hover:text-white transition-colors p-3 hover:bg-slate-800/50 rounded-xl z-10"
+              className="absolute top-4 right-4 md:top-6 md:right-6 text-slate-400 hover:text-white transition-colors p-3 hover:bg-slate-800/50 rounded-xl z-10"
             >
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
-            <ExchangeAccountsSection />
+            <div className="p-4 md:p-6">
+              <SettingsExchangeSection
+                exchangeConfig={exchangeConfig}
+                selectedExchange={selectedExchange}
+                handleExchangeSelect={handleExchangeSelect}
+                exchangeForm={exchangeForm}
+                handleExchangeFormChange={handleExchangeFormChange}
+                exchangeTestResult={exchangeTestResult}
+                handleTestExchange={handleTestExchange}
+                handleSaveExchange={handleSaveExchange}
+                handleDisconnectExchange={handleDisconnectExchange}
+                savingExchange={savingExchange}
+                settings={{ showUnmaskedKeys: false }}
+              />
+            </div>
           </div>
         </div>
       )}

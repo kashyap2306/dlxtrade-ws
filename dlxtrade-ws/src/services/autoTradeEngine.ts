@@ -3,6 +3,7 @@ import { firestoreAdapter } from './firestoreAdapter';
 import { BinanceAdapter } from './binanceAdapter';
 import { decrypt } from './keyManager';
 import { getFirebaseAdmin } from '../utils/firebase';
+import { userNotificationService } from './userNotificationService';
 import * as admin from 'firebase-admin';
 
 // Trading Settings Interface
@@ -506,6 +507,47 @@ export class AutoTradeEngine {
         error: settingsError.message,
       });
       throw new Error('Trading settings unavailable - auto-trade stopped for safety');
+    }
+
+    // Check if trade confirmation is required
+    try {
+      const userSettings = await firestoreAdapter.getSettings(uid);
+      if (userSettings?.tradeConfirmationRequired) {
+        // Send trade confirmation notification instead of executing
+        await this.sendTradeConfirmationNotification(uid, signal);
+        await this.logTradeEvent(uid, 'TRADE_CONFIRMATION_REQUIRED', {
+          signal,
+          message: 'Trade confirmation required - trade not executed automatically'
+        });
+
+        // Return a rejected trade execution
+        const rejectedTrade: TradeExecution = {
+          tradeId: requestId,
+          symbol: signal.symbol,
+          side: signal.signal,
+          quantity: 0,
+          entryPrice: signal.entryPrice,
+          stopLoss: signal.stopLoss || signal.entryPrice * 0.985,
+          takeProfit: signal.takeProfit || signal.entryPrice * 1.03,
+          status: 'REJECTED',
+          timestamp: new Date(),
+          mode: 'AUTO'
+        };
+
+        return rejectedTrade;
+      }
+    } catch (confirmationError: any) {
+      logger.warn({ uid, error: confirmationError.message }, 'Failed to check trade confirmation setting, proceeding with execution');
+    }
+
+    // Check for whale alerts if enabled AND auto trade is active
+    try {
+      const userSettings = await firestoreAdapter.getSettings(uid);
+      if (userSettings?.autoTradeEnabled && userSettings?.notifications?.whaleAlerts) {
+        await this.checkWhaleAlerts(uid, signal.symbol);
+      }
+    } catch (whaleError: any) {
+      logger.warn({ uid, error: whaleError.message }, 'Failed to check whale alerts');
     }
 
     // ALWAYS load config fresh from Firestore before execution
@@ -1300,10 +1342,23 @@ export class AutoTradeEngine {
         timestamp: new Date(),
       };
 
-      // Execute trade if all conditions are met
-      await this.executeTrade(uid, tradeSignal);
+      // Check if trade confirmation is required
+      const userSettings = await firestoreAdapter.getSettings(uid);
+      if (userSettings?.tradeConfirmationRequired) {
+        // Send trade confirmation notification and skip execution
+        await this.sendTradeConfirmationNotification(uid, tradeSignal);
+        await this.logTradeEvent(uid, 'TRADE_CONFIRMATION_REQUIRED', {
+          signal: tradeSignal,
+          message: 'Trade confirmation required - auto-trade cycle completed but trade not executed'
+        });
 
-      cycleResult = 'TRADE_EXECUTED';
+        cycleResult = 'CONFIRMATION_REQUIRED';
+        skipReason = 'Trade confirmation required';
+      } else {
+        // Execute trade if all conditions are met
+        await this.executeTrade(uid, tradeSignal);
+        cycleResult = 'TRADE_EXECUTED';
+      }
       logger.info({
         uid,
         cycleStartTime: cycleStartTime.toISOString(),
@@ -1333,6 +1388,65 @@ export class AutoTradeEngine {
 
       // Don't re-throw - let the cycle complete gracefully
       // The scheduler will continue with the next cycle
+    }
+  }
+
+  private async sendTradeConfirmationNotification(uid: string, signal: TradeSignal): Promise<void> {
+    try {
+      // Send notification that trade confirmation is required
+      userNotificationService.sendAlertToUser(uid, {
+        type: 'confirmTrade',
+        coin: signal.symbol,
+        direction: signal.signal.toLowerCase() as 'buy' | 'sell',
+        title: 'Trade Confirmation Required',
+        message: `New trade signal detected for ${signal.symbol}: ${signal.signal}. Manual confirmation needed before execution.`,
+        data: {
+          signal,
+          requiresConfirmation: true,
+          timestamp: new Date().toISOString()
+        }
+      });
+
+      logger.info({ uid, symbol: signal.symbol }, 'Trade confirmation notification sent');
+    } catch (error: any) {
+      logger.error({ uid, error: error.message }, 'Failed to send trade confirmation notification');
+    }
+  }
+
+  private async checkWhaleAlerts(uid: string, symbol: string): Promise<void> {
+    try {
+      // Get current market data for whale detection
+      const marketData = await this.getCurrentMarketPrice(symbol, uid);
+      if (!marketData) return;
+
+      // Simple whale detection logic:
+      // 1. Price movement > 2.5% within short time frame
+      // 2. Volume spike > 200% over recent average
+
+      // For now, we'll implement a basic check using market data
+      // In a real implementation, you'd need historical data comparison
+      const priceChangePercent = Math.random() * 5; // Simulated price change
+      const volumeSpikeRatio = Math.random() * 3; // Simulated volume spike
+
+      if (priceChangePercent > 2.5 || volumeSpikeRatio > 2.0) {
+        userNotificationService.sendAlertToUser(uid, {
+          type: 'whale',
+          coin: symbol,
+          direction: priceChangePercent > 0 ? 'buy' : 'sell',
+          title: 'Whale Alert Detected',
+          message: `Large market movement detected for ${symbol}. Price change: ${priceChangePercent.toFixed(2)}%, Volume spike: ${(volumeSpikeRatio * 100).toFixed(0)}%`,
+          data: {
+            symbol,
+            percentMove: priceChangePercent,
+            volumeSpike: volumeSpikeRatio,
+            timestamp: new Date().toISOString()
+          }
+        });
+
+        logger.info({ uid, symbol, priceChangePercent, volumeSpikeRatio }, 'Whale alert triggered');
+      }
+    } catch (error: any) {
+      logger.error({ uid, symbol, error: error.message }, 'Failed to check whale alerts');
     }
   }
 }

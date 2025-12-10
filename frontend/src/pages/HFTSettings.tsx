@@ -25,9 +25,12 @@ export default function HFTSettings() {
 
   const checkBinanceIntegration = async () => {
     try {
-      const response = await settingsApi.providers.load();
-      const integrations = response.data;
-      setHasBinance(integrations.binance?.enabled && !!integrations.binance?.apiKey);
+      const response = await settingsApi.loadProviderConfig(user?.uid || '');
+      if (response.success) {
+        const providerConfig = response.config || {};
+        const binanceConfig = providerConfig.binance || providerConfig.binanceus || {};
+        setHasBinance(binanceConfig.enabled && !!binanceConfig.apiKey);
+      }
     } catch (err) {
       console.error('Error checking Binance integration:', err);
     }

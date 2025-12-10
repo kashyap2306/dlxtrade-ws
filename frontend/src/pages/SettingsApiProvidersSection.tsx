@@ -1,7 +1,7 @@
 import React from 'react';
 import { ChevronDownIcon, ChevronUpIcon } from '@heroicons/react/24/outline';
 import { SettingsCard, SettingsInput, ToggleSwitch, ProviderTestResult } from './SettingsUtils';
-import { PROVIDER_CONFIG } from '../constants/providers';
+import { PROVIDER_CONFIG, API_NAME_MAP as PROVIDER_ID_MAP } from '../constants/providers';
 import { settingsApi } from '../services/api';
 
 interface SettingsApiProvidersSectionProps {
@@ -11,6 +11,7 @@ interface SettingsApiProvidersSectionProps {
   setShowProviderDetails: (details: any) => void;
   savingProvider: string | null;
   providerTestResults: any;
+  apiKeys: Record<string, { apiKey: string; saved: boolean }>;
   testProviderConnection: (providerName: string, apiKey: string, keyName: string) => void;
   handleProviderKeyChange: (providerName: string, keyName: string, value: string, uid: string, setProviders: (providers: any) => void) => void;
   handleToggleProviderEnabled: (providerName: string, enabledKey: string, checked: boolean) => void;
@@ -23,6 +24,7 @@ export const SettingsApiProvidersSection: React.FC<SettingsApiProvidersSectionPr
   setShowProviderDetails,
   savingProvider,
   providerTestResults,
+  apiKeys,
   testProviderConnection,
   handleProviderKeyChange,
   handleToggleProviderEnabled,
@@ -57,7 +59,7 @@ export const SettingsApiProvidersSection: React.FC<SettingsApiProvidersSectionPr
                   <SettingsInput
                     type={settings.showUnmaskedKeys ? 'text' : 'password'}
                     placeholder={config.primary.placeholder}
-                    value={settings[config.primary.key] || ''}
+                    value={apiKeys[PROVIDER_ID_MAP[config.primary.name]]?.apiKey || settings[config.primary.key] || ''}
                     onChange={(e) => setSettings({ ...settings, [config.primary.key]: e.target.value })}
                   />
                   <div className="flex justify-end gap-2">
@@ -73,7 +75,11 @@ export const SettingsApiProvidersSection: React.FC<SettingsApiProvidersSectionPr
                       disabled={savingProvider === config.primary.name || !settings[config.primary.key]}
                       className="px-3 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg text-sm hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all duration-300 disabled:opacity-50 hover:scale-[1.05]"
                     >
-                      {savingProvider === config.primary.name ? 'Saving...' : 'Save'}
+                      {savingProvider === config.primary.name ? 'Saving...' : (() => {
+                        const providerId = PROVIDER_ID_MAP[config.primary.name];
+                        const hasApiKey = apiKeys[providerId]?.saved === true;
+                        return hasApiKey ? 'Change API' : 'Enter API Key';
+                      })()}
                     </button>
                   </div>
                   <ProviderTestResult result={providerTestResults[config.primary.name]} />
@@ -120,7 +126,7 @@ export const SettingsApiProvidersSection: React.FC<SettingsApiProvidersSectionPr
                         <SettingsInput
                           type={settings.showUnmaskedKeys ? 'text' : 'password'}
                           placeholder={backup.placeholder}
-                          value={settings[backup.key] || ''}
+                          value={apiKeys[PROVIDER_ID_MAP[backup.name]]?.apiKey || settings[backup.key] || ''}
                           onChange={(e) => setSettings({ ...settings, [backup.key]: e.target.value })}
                         />
                         <div className="flex justify-end gap-2">
@@ -136,7 +142,11 @@ export const SettingsApiProvidersSection: React.FC<SettingsApiProvidersSectionPr
                             disabled={savingProvider === backup.name || !settings[backup.key]}
                             className="px-3 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-medium rounded-lg text-sm hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all duration-300 disabled:opacity-50 hover:scale-[1.05]"
                           >
-                            {savingProvider === backup.name ? 'Saving...' : 'Save'}
+                            {savingProvider === backup.name ? 'Saving...' : (() => {
+                              const providerId = PROVIDER_ID_MAP[backup.name];
+                              const hasApiKey = apiKeys[providerId]?.saved === true;
+                              return hasApiKey ? 'Change API' : 'Enter API Key';
+                            })()}
                           </button>
                         </div>
                         <ProviderTestResult result={providerTestResults[backup.name]} size="small" />

@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import crypto from 'crypto';
+import * as crypto from 'crypto';
 import { logger } from '../utils/logger';
 import { ExchangeError } from '../utils/errors';
 import type { Orderbook, Trade, Quote } from '../types';

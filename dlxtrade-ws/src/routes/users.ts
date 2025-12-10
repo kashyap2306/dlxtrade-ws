@@ -8,6 +8,7 @@ import { ValidationError, NotFoundError } from '../utils/errors';
 import { ensureUser } from '../services/userOnboarding';
 import { getFirebaseAdmin } from '../utils/firebase';
 import * as admin from 'firebase-admin';
+import { keyManager } from '../services/keyManager';
 
 const createUserSchema = z.object({
   name: z.string().optional(),
@@ -42,6 +43,266 @@ const updateUserSchema = z.object({
 
 export async function usersRoutes(fastify: FastifyInstance) {
   console.log("[CHECK] usersRoutes EXECUTED");
+
+  // 🚨 PROVIDER-CONFIG ROUTE MOVED TO TOP - BEFORE ANY OTHER ROUTES
+  // POST /api/users/:uid/provider-config - Save provider configuration
+  fastify.post('/:uid/provider-config', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { uid: string }; Body: any }>, reply: FastifyReply) => {
+    try {
+      console.log("=== PROVIDER CONFIG SAVE START ===");
+      console.log("RAW BODY:", request.body);
+
+      const { uid } = request.params;
+      const authUid = (request as any).user?.uid;
+      const urlUid = request.params.uid;
+
+      // Auth check: ensure user is authenticated
+      if (!authUid) {
+        console.error("AUTH ERROR: User token missing - request.user is null");
+        return reply.status(401).send({ error: "Unauthorized: user token missing" });
+      }
+
+      const user = (request as any).user;
+
+      // Auth check: user can only update their own config unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (uid !== authUid && !isAdmin) {
+        logger.warn({ authUid, urlUid }, 'Access denied: user can only update their own provider config');
+        return reply.code(403).send({ success: false, message: 'Forbidden' });
+      }
+
+      const body = request.body as any;
+      console.log("Raw body received:", JSON.stringify(body, null, 2));
+
+      // Validate the provider config structure
+      const requestBody = request.body as any;
+      if (!requestBody || typeof requestBody !== 'object') {
+        logger.error({ body }, 'Invalid request body - not an object');
+        return reply.status(400).send({ success: false, message: 'Invalid request body' });
+      }
+
+      const providerConfig = requestBody.providerConfig;
+      if (!providerConfig || typeof providerConfig !== 'object') {
+        logger.error({ providerConfig }, 'Invalid providerConfig - not an object');
+        return reply.status(400).send({ success: false, message: 'providerConfig required' });
+      }
+
+      const db = getFirebaseAdmin().firestore();
+      const userRef = db.collection('users').doc(uid);
+
+      console.log("Processing providerConfig object with keys:", Object.keys(providerConfig));
+
+      // Process each provider in the config (supports single or multi-provider payloads)
+      let processedCount = 0;
+      let encryptedCount = 0;
+      const processedProviders: string[] = [];
+
+      console.log("SYNC INPUT: Processing", Object.keys(providerConfig).length, "providers");
+      console.log("SYNC INPUT: Provider config keys:", Object.keys(providerConfig));
+
+      for (const providerName of Object.keys(providerConfig)) {
+        console.log("PROVIDER LOOP:", providerName);
+        const providerBody = providerConfig[providerName];
+        console.log("providerBody:", providerBody);
+
+        if (!providerName) {
+          console.error("SYNC ERROR: Missing providerName");
+          continue;
+        }
+
+        const { apiKey, secretKey, enabled = true, type, usageStats } = providerBody || {};
+
+        // Validate apiKey is not an error message or invalid string
+        if (apiKey && typeof apiKey === 'string') {
+          if (apiKey.length > 200) {
+            console.error(`❌ VALIDATION FAILED: apiKey for ${providerName} appears to be an error message (length: ${apiKey.length})`);
+            continue; // Skip this provider
+          }
+          if (apiKey.includes('Fix DLXTRADE') || apiKey.includes('backend expects') || apiKey.includes('frontend is sending')) {
+            console.error(`❌ VALIDATION FAILED: apiKey for ${providerName} contains error message text`);
+            continue; // Skip this provider
+          }
+        }
+
+        console.log("apiKey:", apiKey ? '[PRESENT]' : '[MISSING]');
+        console.log("secretKey:", secretKey ? '[PRESENT]' : '[MISSING]');
+        console.log(`SYNC INPUT: ${providerName} - apiKey: ${apiKey ? '[PRESENT]' : '[MISSING]'}, secretKey: ${secretKey ? '[PRESENT]' : '[MISSING]'}, enabled: ${enabled}, type: ${type}`);
+
+        // Encrypt API keys if present and non-empty
+        let encryptedApiKey = '';
+        let encryptedSecretKey = '';
+        let encryptionSuccess = true;
+
+        try {
+          if (apiKey && apiKey.trim() !== '') {
+            console.log("TRYING TO ENCRYPT:", apiKey ? "HAS KEY" : "EMPTY STRING");
+            console.log("providerName typeof:", typeof providerName);
+            console.log(`SYNC ENCRYPT: Attempting to encrypt apiKey for ${providerName}`);
+            encryptedApiKey = keyManager.encrypt(apiKey);
+            console.log("ENCRYPTED:", encryptedApiKey);
+            console.log(`SYNC ENCRYPT: ✅ Successfully encrypted apiKey for ${providerName} (length: ${encryptedApiKey.length})`);
+            encryptedCount++;
+          } else {
+            console.log(`SYNC ENCRYPT: Skipping apiKey encryption for ${providerName} - empty or missing`);
+          }
+
+          if (secretKey && secretKey.trim() !== '') {
+            console.log(`SYNC ENCRYPT: Attempting to encrypt secretKey for ${providerName}`);
+            encryptedSecretKey = keyManager.encrypt(secretKey);
+            console.log(`SYNC ENCRYPT: ✅ Successfully encrypted secretKey for ${providerName} (length: ${encryptedSecretKey.length})`);
+            encryptedCount++;
+          } else {
+            console.log(`SYNC ENCRYPT: Skipping secretKey encryption for ${providerName} - empty or missing`);
+          }
+        } catch (err: any) {
+          console.error("ENCRYPT ERROR:", err);
+          encryptionSuccess = false;
+          // Continue with other providers but log the error
+        }
+
+        // Save to integrations collection with encrypted keys
+        console.log(`SYNC SAVE: Preparing to save ${providerName} to integrations collection`);
+        const integrationsDocRef = userRef.collection('integrations').doc(providerName);
+        const integrationsPayload: any = {
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          type: type || 'api'
+        };
+
+        // Only set encrypted keys if encryption succeeded
+        if (encryptedApiKey) {
+          integrationsPayload.apiKey = encryptedApiKey;
+          console.log(`SYNC SAVE: Including encrypted apiKey in payload`);
+        }
+        if (encryptedSecretKey) {
+          integrationsPayload.secretKey = encryptedSecretKey;
+          console.log(`SYNC SAVE: Including encrypted secretKey in payload`);
+        }
+
+        // Set enabled only if there's an encrypted key present
+        const hasEncryptedKey = !!encryptedApiKey || !!encryptedSecretKey;
+        integrationsPayload.enabled = hasEncryptedKey ? true : (enabled || false);
+
+        console.log(`SYNC SAVE: Final integrations payload for ${providerName}:`, {
+          hasApiKey: !!encryptedApiKey,
+          hasSecretKey: !!encryptedSecretKey,
+          enabled: integrationsPayload.enabled,
+          type: integrationsPayload.type,
+          payloadKeys: Object.keys(integrationsPayload)
+        });
+
+        try {
+          console.log(`SYNC SAVE: Calling Firestore set() for integrations/${providerName}`);
+          await integrationsDocRef.set(integrationsPayload, { merge: true });
+          console.log(`✅ SYNCED provider=${providerName} for uid=${uid} -> integrations (encrypted)`);
+
+          // VERIFICATION: Check that the document was saved correctly
+          console.log(`SYNC VERIFY: Fetching saved document for verification`);
+          const savedDoc = await integrationsDocRef.get();
+          if (savedDoc.exists) {
+            const savedData = savedDoc.data();
+            console.log(`🔍 VERIFICATION: integrations/${providerName} saved successfully:`, {
+              hasApiKey: !!savedData?.apiKey,
+              hasSecretKey: !!savedData?.secretKey,
+              enabled: savedData?.enabled,
+              type: savedData?.type,
+              updatedAt: savedData?.updatedAt?.toDate?.()?.toISOString()
+            });
+          } else {
+            console.error(`❌ VERIFICATION FAILED: integrations/${providerName} not found after save`);
+          }
+        } catch (err: any) {
+          console.error("FIRESTORE SAVE ERROR:", err);
+          // Continue with other providers but log the error
+        }
+
+        // Save to settings/providerConfig (existing behavior for backward compatibility)
+        const settingsDocRef = userRef.collection('settings').doc('providerConfig');
+
+        function sanitize(obj: any): any {
+          if (obj === null || typeof obj !== 'object') {
+            return obj;
+          }
+
+          if (Array.isArray(obj)) {
+            return obj.map(sanitize).filter(item => item !== undefined);
+          }
+
+          const result: any = {};
+          for (const [key, value] of Object.entries(obj)) {
+            if (value !== undefined) {
+              result[key] = sanitize(value);
+            }
+          }
+          return result;
+        }
+
+        const cleanProviderBody = sanitize({
+          apiKey,
+          enabled,
+          type,
+          usageStats
+        });
+
+        // Do NOT include providerName or secretKey for providerConfig.
+        // providerName is already the key.
+        // secretKey should only exist for exchanges, not providerConfig.
+
+        try {
+          const settingsPayload = {
+            providerConfig: {
+              [providerName]: cleanProviderBody
+            }
+          };
+
+          console.log("SETTINGS SAVE PAYLOAD:", JSON.stringify(settingsPayload, null, 2));
+          await settingsDocRef.set(settingsPayload, { merge: true });
+
+          console.log("✅ SETTINGS SAVE SUCCESS:", providerName, cleanProviderBody);
+
+          // Verify the settings were saved
+          try {
+            const savedSettingsDoc = await settingsDocRef.get();
+            const savedData = savedSettingsDoc.data();
+            console.log("VERIFICATION - Settings saved successfully:", JSON.stringify(savedData, null, 2));
+          } catch (verifyError: any) {
+            console.error("VERIFICATION FAILED:", verifyError.message);
+          }
+        } catch (settingsError: any) {
+          console.error(`❌ Failed to save settings for ${providerName}:`, settingsError.message);
+          // Continue with next provider but log the error
+        }
+
+        processedProviders.push(providerName);
+        processedCount++;
+      }
+
+      console.log(`PROVIDER CONFIG SAVE COMPLETE: processed=${processedCount}, encrypted=${encryptedCount}, providers=${processedProviders.join(',')}`);
+
+      // Log activity for audit trail
+      if (processedCount > 0) {
+        await firestoreAdapter.logActivity(uid, 'PROVIDER_CONFIG_UPDATED', {
+          message: `Updated provider configurations: ${processedProviders.join(', ')}`,
+          providers: processedProviders,
+          encryptedKeysCount: encryptedCount
+        });
+      }
+
+      return reply.send({
+        success: true,
+        message: `Saved and synced ${processedCount} provider(s) to integrations`,
+        processed: processedCount,
+        encrypted: encryptedCount,
+        providers: processedProviders
+      });
+
+    } catch (err: any) {
+      console.error("PROVIDER CONFIG SAVE ERROR:", err);
+      logger.error({ err, uid: request.params.uid }, 'Error saving provider config & syncing to integrations');
+      return reply.status(500).send({ error: String(err), stack: err.stack });
+    }
+  });
+
   console.log("[ROUTE READY] GET /api/users/:uid/exchange-config");
   console.log("[ROUTE READY] POST /api/users/:uid/exchange-config");
   console.log("[ROUTE READY] GET /api/users/:uid/trading-config");
@@ -97,6 +358,42 @@ export async function usersRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // GET /api/users/:uid/exchangeConfig/current - Get current exchange configuration (matches frontend expectation)
+  fastify.get('/:uid/exchangeConfig/current', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
+    try {
+      const { uid } = request.params;
+      const user = (request as any).user;
+
+      // Users can only view their own config unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (uid !== user.uid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      const db = getFirebaseAdmin().firestore();
+      const doc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+
+      if (!doc.exists) {
+        return reply.send({ exchange: null, message: "No exchange config found" });
+      }
+
+      const data = doc.data() || {};
+      return reply.send({
+        exchange: data.exchange || null,
+        apiKey: data.apiKeyEncrypted ? '[ENCRYPTED]' : '',
+        secret: data.secretEncrypted ? '[ENCRYPTED]' : '',
+        passphrase: data.passphraseEncrypted ? '[ENCRYPTED]' : '',
+        testnet: data.testnet ?? true,
+        message: "Exchange config loaded"
+      });
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting current exchange config');
+      return reply.send({ exchange: null, message: "No exchange config found" });
+    }
+  });
+
   // POST /api/users/:uid/exchange-config - Save exchange configuration
   fastify.post('/:uid/exchange-config', {
     preHandler: [fastify.authenticate],
@@ -114,8 +411,27 @@ export async function usersRoutes(fastify: FastifyInstance) {
       const db = getFirebaseAdmin().firestore();
       const configRef = db.collection('users').doc(uid).collection('exchangeConfig').doc('current');
 
+      // Encrypt sensitive fields
+      const body = request.body as any;
+      const encryptedBody: any = { ...body };
+
+      if (body.apiKey && body.apiKey.trim() !== '') {
+        encryptedBody.apiKeyEncrypted = keyManager.encrypt(body.apiKey);
+        delete encryptedBody.apiKey; // Remove plain text
+      }
+
+      if (body.secret && body.secret.trim() !== '') {
+        encryptedBody.secretEncrypted = keyManager.encrypt(body.secret);
+        delete encryptedBody.secret; // Remove plain text
+      }
+
+      if (body.passphrase && body.passphrase.trim() !== '') {
+        encryptedBody.passphraseEncrypted = keyManager.encrypt(body.passphrase);
+        delete encryptedBody.passphrase; // Remove plain text
+      }
+
       await configRef.set({
-        ...(request.body as any),
+        ...encryptedBody,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedBy: user.uid
       }, { merge: true });
@@ -193,83 +509,24 @@ export async function usersRoutes(fastify: FastifyInstance) {
       }
 
       const db = getFirebaseAdmin().firestore();
-      const doc = await db.collection('provider-config').doc(uid).get();
 
-      const data = doc.exists ? doc.data() : null;
-      return reply.send({ ok: true, config: data });
+      // Read from users/{uid}/settings/providerConfig
+      const userRef = db.collection('users').doc(uid);
+      const doc = await userRef.collection('settings').doc('providerConfig').get();
+
+      const data = doc.exists ? doc.data() : {};
+      const providerConfig = data.providerConfig || {};
+
+      console.log("GET PROVIDER CONFIG - Raw data:", JSON.stringify(data, null, 2));
+      console.log("GET PROVIDER CONFIG - Returning providerConfig:", JSON.stringify(providerConfig, null, 2));
+
+      return reply.send({
+        success: true,
+        config: providerConfig
+      });
     } catch (err: any) {
       logger.error({ err }, 'Error getting provider config');
       return reply.code(500).send({ error: 'Failed to get provider config' });
-    }
-  });
-
-  // POST /api/users/:uid/provider-config - Save provider configuration
-  fastify.post('/:uid/provider-config', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Params: { uid: string }; Body: any }>, reply: FastifyReply) => {
-    try {
-      const { uid } = request.params;
-      const user = (request as any).user;
-
-      // Users can only update their own config unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (uid !== user.uid && !isAdmin) {
-        return reply.code(403).send({ error: 'Access denied' });
-      }
-
-      // Validate the provider config structure
-      const requestBody = request.body as any;
-      if (!requestBody || typeof requestBody !== 'object') {
-        reply.status(400).send({ success: false, error: "invalid_request" });
-        return;
-      }
-
-      const providerConfig = requestBody.providerConfig;
-      if (!providerConfig || typeof providerConfig !== 'object') {
-        reply.status(400).send({ success: false, error: "invalid_request" });
-        return;
-      }
-
-      const providerName = providerConfig.providerName;
-      const type = providerConfig.type;
-      const enabled = providerConfig.enabled;
-      const apiKey = providerConfig.apiKey;
-      const usageStats = providerConfig.usageStats;
-
-      if (!providerName || !type) {
-        reply.status(400).send({ success: false, error: "invalid_request" });
-        return;
-      }
-
-      const db = getFirebaseAdmin().firestore();
-
-      // Save to users/{uid}/settings/providerConfig (DOC, not collection!)
-      const userRef = db
-        .collection('users')
-        .doc(uid)
-        .collection('settings')
-        .doc('providerConfig');
-
-      await userRef.set(
-        {
-          [providerName]: {
-            providerName,
-            type,
-            enabled,
-            apiKey,
-            usageStats
-          }
-        },
-        { merge: true }
-      );
-
-      console.log("[provider-config] Saved provider:", providerName);
-
-      return { success: true };
-    } catch (err: any) {
-      console.error("[provider-config] Firestore error:", err);
-      reply.status(500).send({ success: false, error: "firestore_write_failed" });
-      return;
     }
   });
 

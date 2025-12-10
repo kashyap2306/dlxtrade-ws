@@ -414,10 +414,10 @@ export default function ExchangeAccountsSection() {
 
       {/* Modal */}
       {showModal && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end justify-center p-0 md:items-center md:p-4">
           <div
             ref={modalRef}
-            className="bg-slate-800 border border-purple-500/50 rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto"
+            className="bg-slate-800 border border-purple-500/50 rounded-t-2xl md:rounded-2xl shadow-2xl w-full h-full md:max-w-4xl md:w-full md:max-h-[90vh] overflow-y-auto"
           >
             {/* Modal Header */}
             <div className="sticky top-0 bg-slate-800/95 backdrop-blur-xl border-b border-purple-500/30 px-6 py-4 flex items-center justify-between">
@@ -440,7 +440,7 @@ export default function ExchangeAccountsSection() {
             </div>
 
             {/* Modal Content */}
-            <div className="p-6">
+            <div className="p-4 md:p-6">
               {modalStep === 'selection' ? (
                 <>
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 mb-6">

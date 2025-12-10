@@ -57,31 +57,7 @@ export default function AutoTradeMode({ onStatusChange }: AutoTradeModeProps) {
 
         <div className="space-y-4">
           {/* Status Indicators */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div className={`p-3 rounded-xl border ${
-              isApiConnected 
-                ? 'bg-green-500/10 border-green-400/30' 
-                : 'bg-red-500/10 border-red-400/30'
-            }`}>
-              <div className="text-xs text-gray-400 mb-1">Exchange API</div>
-              <div className={`text-sm font-semibold ${
-                isApiConnected ? 'text-green-400' : 'text-red-400'
-              }`}>
-                {isApiConnected ? 'Connected' : 'Not Connected'}
-              </div>
-            </div>
-            <div className={`p-3 rounded-xl border ${
-              allRequiredAPIsConnected 
-                ? 'bg-green-500/10 border-green-400/30' 
-                : 'bg-yellow-500/10 border-yellow-400/30'
-            }`}>
-              <div className="text-xs text-gray-400 mb-1">Required APIs</div>
-              <div className={`text-sm font-semibold ${
-                allRequiredAPIsConnected ? 'text-green-400' : 'text-yellow-400'
-              }`}>
-                {allRequiredAPIsConnected ? 'All Connected' : 'Missing APIs'}
-              </div>
-            </div>
+          <div className="grid grid-cols-2 gap-3">
             <div className="p-3 rounded-xl border border-purple-500/20 bg-black/40">
               <div className="text-xs text-gray-400 mb-1">Mode Status</div>
               <div className={`text-sm font-semibold ${
