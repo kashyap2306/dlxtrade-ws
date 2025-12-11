@@ -7,6 +7,7 @@ import { tradingStrategies, OHLCData, StrategyResult, IndicatorResult } from './
 import { BinanceAdapter } from './binanceAdapter';
 import { CryptoCompareAdapter } from './cryptocompareAdapter';
 import * as admin from 'firebase-admin';
+import axios from 'axios';
 import { config } from '../config';
 import { getUserIntegrations } from '../routes/integrations';
 import { accuracyEngine, AccuracyResult } from './accuracyEngine';
@@ -3085,26 +3086,92 @@ export class DeepResearchEngine {
   /**
    * Get top 10 coins by market cap for deep research
    */
-  async getTop10Coins(uid: string): Promise<any[]> {
+  async getTop50Coins(uid: string): Promise<any[]> {
     try {
-      logger.info({ uid }, 'Fetching top 10 coins for deep research');
+      logger.info({ uid }, 'Fetching top 50 coins for deep research');
 
-      // For now, return hardcoded top 10 coins
-      // In production, this would fetch from multiple providers with failover
+      const integrations = await getUserIntegrations(uid);
+
+      // Try CoinMarketCap first
+      try {
+        const cmcApiKey = integrations.coinmarketcap?.apiKey;
+        if (cmcApiKey) {
+          const { fetchCoinMarketCapListings } = await import('./coinMarketCapAdapter');
+          const cmcData = await fetchCoinMarketCapListings(cmcApiKey, 50);
+
+          if (cmcData && cmcData.length > 0) {
+            logger.info({ uid, count: cmcData.length }, 'Successfully fetched top 50 coins from CoinMarketCap');
+
+            return cmcData.map((coin: any, index: number) => ({
+              symbol: `${coin.symbol}USDT`,
+              name: coin.name,
+              logo: coin.logo || `https://assets.coingecko.com/coins/images/${coin.id}/small/${coin.symbol.toLowerCase()}.png`,
+              marketCap: coin.quote?.USD?.market_cap || 0,
+              rank: coin.cmc_rank || (index + 1),
+              current_price: coin.quote?.USD?.price || 0,
+              price_change_percentage_24h: coin.quote?.USD?.percent_change_24h || 0,
+              thumbnail: coin.logo || `https://assets.coingecko.com/coins/images/${coin.id}/small/${coin.symbol.toLowerCase()}.png`
+            }));
+          }
+        }
+      } catch (error) {
+        logger.warn({ uid, error: error.message }, 'CoinMarketCap failed, trying CoinGecko fallback');
+      }
+
+      // Fallback to CoinGecko API (free tier)
+      try {
+        const response = await axios.get('https://api.coingecko.com/api/v3/coins/markets', {
+          params: {
+            vs_currency: 'usd',
+            order: 'market_cap_desc',
+            per_page: 50,
+            page: 1,
+            sparkline: false,
+            price_change_percentage: '24h'
+          },
+          timeout: 10000
+        });
+
+        if (response.data && response.data.length > 0) {
+          logger.info({ uid, count: response.data.length }, 'Successfully fetched top 50 coins from CoinGecko (fallback)');
+
+          return response.data.map((coin: any, index: number) => ({
+            symbol: `${coin.symbol.toUpperCase()}USDT`,
+            name: coin.name,
+            logo: coin.image,
+            marketCap: coin.market_cap,
+            rank: index + 1,
+            current_price: coin.current_price,
+            price_change_percentage_24h: coin.price_change_percentage_24h,
+            thumbnail: coin.image
+          }));
+        }
+      } catch (error) {
+        logger.warn({ uid, error: error.message }, 'CoinGecko fallback also failed');
+      }
+
+      // Final fallback: hardcoded top coins
+      logger.warn({ uid }, 'All providers failed, using hardcoded fallback');
       return [
-        { id: 'bitcoin', symbol: 'BTCUSDT', name: 'Bitcoin', thumbnail: 'https://assets.coingecko.com/coins/images/1/small/bitcoin.png', current_price: 43000, price_change_percentage_24h: 2.5 },
-        { id: 'ethereum', symbol: 'ETHUSDT', name: 'Ethereum', thumbnail: 'https://assets.coingecko.com/coins/images/279/small/ethereum.png', current_price: 2500, price_change_percentage_24h: 1.8 },
-        { id: 'binancecoin', symbol: 'BNBUSDT', name: 'Binance Coin', thumbnail: 'https://assets.coingecko.com/coins/images/825/small/binance-coin-logo.png', current_price: 310, price_change_percentage_24h: 3.2 },
-        { id: 'cardano', symbol: 'ADAUSDT', name: 'Cardano', thumbnail: 'https://assets.coingecko.com/coins/images/975/small/cardano.png', current_price: 0.45, price_change_percentage_24h: -1.2 },
-        { id: 'ripple', symbol: 'XRPUSDT', name: 'XRP', thumbnail: 'https://assets.coingecko.com/coins/images/44/small/xrp-symbol-white-128.png', current_price: 0.62, price_change_percentage_24h: 0.8 },
-        { id: 'solana', symbol: 'SOLUSDT', name: 'Solana', thumbnail: 'https://assets.coingecko.com/coins/images/4128/small/solana.png', current_price: 95, price_change_percentage_24h: 4.1 },
-        { id: 'polkadot', symbol: 'DOTUSDT', name: 'Polkadot', thumbnail: 'https://assets.coingecko.com/coins/images/12171/small/polkadot.png', current_price: 7.2, price_change_percentage_24h: -0.5 },
-        { id: 'dogecoin', symbol: 'DOGEUSDT', name: 'Dogecoin', thumbnail: 'https://assets.coingecko.com/coins/images/5/small/dogecoin.png', current_price: 0.085, price_change_percentage_24h: 2.1 },
-        { id: 'avalanche-2', symbol: 'AVAXUSDT', name: 'Avalanche', thumbnail: 'https://assets.coingecko.com/coins/images/12559/small/coin-round-red.png', current_price: 35, price_change_percentage_24h: 1.9 },
-        { id: 'litecoin', symbol: 'LTCUSDT', name: 'Litecoin', thumbnail: 'https://assets.coingecko.com/coins/images/2/small/litecoin.png', current_price: 75, price_change_percentage_24h: 0.3 },
+        { symbol: 'BTCUSDT', name: 'Bitcoin', logo: 'https://assets.coingecko.com/coins/images/1/small/bitcoin.png', marketCap: 800000000000, rank: 1, current_price: 43000, price_change_percentage_24h: 2.5, thumbnail: 'https://assets.coingecko.com/coins/images/1/small/bitcoin.png' },
+        { symbol: 'ETHUSDT', name: 'Ethereum', logo: 'https://assets.coingecko.com/coins/images/279/small/ethereum.png', marketCap: 300000000000, rank: 2, current_price: 2500, price_change_percentage_24h: 1.8, thumbnail: 'https://assets.coingecko.com/coins/images/279/small/ethereum.png' },
+        { symbol: 'BNBUSDT', name: 'Binance Coin', logo: 'https://assets.coingecko.com/coins/images/825/small/binance-coin-logo.png', marketCap: 45000000000, rank: 3, current_price: 310, price_change_percentage_24h: 3.2, thumbnail: 'https://assets.coingecko.com/coins/images/825/small/binance-coin-logo.png' },
+        { symbol: 'ADAUSDT', name: 'Cardano', logo: 'https://assets.coingecko.com/coins/images/975/small/cardano.png', marketCap: 15000000000, rank: 4, current_price: 0.45, price_change_percentage_24h: -1.2, thumbnail: 'https://assets.coingecko.com/coins/images/975/small/cardano.png' },
+        { symbol: 'XRPUSDT', name: 'XRP', logo: 'https://assets.coingecko.com/coins/images/44/small/xrp-symbol-white-128.png', marketCap: 25000000000, rank: 5, current_price: 0.62, price_change_percentage_24h: 0.8, thumbnail: 'https://assets.coingecko.com/coins/images/44/small/xrp-symbol-white-128.png' },
+        { symbol: 'SOLUSDT', name: 'Solana', logo: 'https://assets.coingecko.com/coins/images/4128/small/solana.png', marketCap: 18000000000, rank: 6, current_price: 95, price_change_percentage_24h: 4.1, thumbnail: 'https://assets.coingecko.com/coins/images/4128/small/solana.png' },
+        { symbol: 'DOTUSDT', name: 'Polkadot', logo: 'https://assets.coingecko.com/coins/images/12171/small/polkadot.png', marketCap: 8000000000, rank: 7, current_price: 7.2, price_change_percentage_24h: -0.5, thumbnail: 'https://assets.coingecko.com/coins/images/12171/small/polkadot.png' },
+        { symbol: 'DOGEUSDT', name: 'Dogecoin', logo: 'https://assets.coingecko.com/coins/images/5/small/dogecoin.png', marketCap: 12000000000, rank: 8, current_price: 0.085, price_change_percentage_24h: 2.1, thumbnail: 'https://assets.coingecko.com/coins/images/5/small/dogecoin.png' },
+        { symbol: 'AVAXUSDT', name: 'Avalanche', logo: 'https://assets.coingecko.com/coins/images/12559/small/coin-round-red.png', marketCap: 6000000000, rank: 9, current_price: 35, price_change_percentage_24h: 1.9, thumbnail: 'https://assets.coingecko.com/coins/images/12559/small/coin-round-red.png' },
+        { symbol: 'LTCUSDT', name: 'Litecoin', logo: 'https://assets.coingecko.com/coins/images/2/small/litecoin.png', marketCap: 5000000000, rank: 10, current_price: 75, price_change_percentage_24h: 0.3, thumbnail: 'https://assets.coingecko.com/coins/images/2/small/litecoin.png' },
+        // Add more coins to reach 50...
+        { symbol: 'LINKUSDT', name: 'Chainlink', logo: 'https://assets.coingecko.com/coins/images/877/small/chainlink-new-logo.png', marketCap: 4000000000, rank: 11, current_price: 15, price_change_percentage_24h: 1.5, thumbnail: 'https://assets.coingecko.com/coins/images/877/small/chainlink-new-logo.png' },
+        { symbol: 'UNIUSDT', name: 'Uniswap', logo: 'https://assets.coingecko.com/coins/images/12504/small/uniswap-uni.png', marketCap: 3500000000, rank: 12, current_price: 6.8, price_change_percentage_24h: 2.2, thumbnail: 'https://assets.coingecko.com/coins/images/12504/small/uniswap-uni.png' },
+        { symbol: 'ALGOUSDT', name: 'Algorand', logo: 'https://assets.coingecko.com/coins/images/4380/small/download.png', marketCap: 2000000000, rank: 13, current_price: 0.15, price_change_percentage_24h: 0.8, thumbnail: 'https://assets.coingecko.com/coins/images/4380/small/download.png' },
+        { symbol: 'VETUSDT', name: 'VeChain', logo: 'https://assets.coingecko.com/coins/images/1167/small/VeChain-Logo-768x725.png', marketCap: 1800000000, rank: 14, current_price: 0.025, price_change_percentage_24h: -0.3, thumbnail: 'https://assets.coingecko.com/coins/images/1167/small/VeChain-Logo-768x725.png' },
+        { symbol: 'ICPUSDT', name: 'Internet Computer', logo: 'https://assets.coingecko.com/coins/images/14495/small/Internet_Computer_logo.png', marketCap: 1600000000, rank: 15, current_price: 8.5, price_change_percentage_24h: 3.1, thumbnail: 'https://assets.coingecko.com/coins/images/14495/small/Internet_Computer_logo.png' },
       ];
     } catch (error) {
-      logger.error({ uid, error: error.message }, 'Error fetching top 10 coins');
+      logger.error({ uid, error: error.message }, 'Error fetching top 50 coins');
       return [];
     }
   }

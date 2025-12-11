@@ -152,6 +152,7 @@ export const researchApi = {
   // Deep Research endpoints
   deepResearch: {
     getTop10: () => api.get('/research/deep-research/top10'),
+    getTop50: () => api.get('/research/deep-research/top50'),
     getCoin: (symbol: string) => api.get(`/research/deep-research/coin/${symbol}`),
   },
 };
@@ -203,7 +204,14 @@ export const settingsApi = {
       isPrimary: boolean;
       enabled: boolean;
       apiKey?: string;
-    }) => api.post(`/users/${uid}/provider-config`, data),
+    }) => {
+      const maskedApiKeyLength = data.apiKey ? data.apiKey.length : 0;
+      console.log('Saving provider:', data.providerId, data.providerType, 'maskedApiKeyLength:', maskedApiKeyLength);
+      if (data.providerId === 'newsdata') {
+        console.log('Saving NewsData payload:', data);
+      }
+      return api.post('/settings/providers/save', data);
+    },
     changeKey: (data: {
       providerId: string;
       providerType: 'marketData' | 'news' | 'metadata';
@@ -282,7 +290,11 @@ export const usersApi = {
   // Active trades
   getActiveTrades: (uid: string) => api.get(`/users/${uid}/active-trades`),
   // Provider config
-  getProviderConfig: (uid: string) => api.get(`/users/${uid}/provider-config`),
+  getProviderConfig: async (uid: string) => {
+    const response = await api.get(`/users/${uid}/provider-config`, { withCredentials: true });
+    console.log('[API LOG] Raw providerConfig response from backend:', JSON.stringify(response.data, null, 2));
+    return response.data.providerConfig;
+  },
   // Exchange config
   getExchangeConfig: (uid: string) => api.get(`/users/${uid}/exchangeConfig/current`),
   // Usage stats
@@ -306,6 +318,7 @@ export const agentsApi = {
   createPurchaseRequest: (data: { agentId: string; agentName: string; userName: string; email: string; phoneNumber: string }) =>
     api.post('/agents/purchase-request', data),
   approvePurchaseRequest: (requestId: string) => api.post('/admin/agents/approve', { requestId }),
+  getPurchaseRequests: (status?: string) => api.get('/admin/agents/purchase-requests', { params: status ? { status } : {} }),
   getUserFeatures: (uid: string) => api.get(`/users/${uid}/features`),
 };
 

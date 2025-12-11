@@ -902,7 +902,6 @@ export default function Dashboard() {
                 handleSaveExchange={handleSaveExchange}
                 handleDisconnectExchange={handleDisconnectExchange}
                 savingExchange={savingExchange}
-                settings={{ showUnmaskedKeys: false }}
               />
             </div>
           </div>

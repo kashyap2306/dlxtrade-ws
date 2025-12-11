@@ -112,6 +112,14 @@ export async function usersRoutes(fastify: FastifyInstance) {
         }
 
         const { apiKey, secretKey, enabled = true, type, usageStats } = providerBody || {};
+        const normalizedProviderName = (providerName || '').toLowerCase().trim();
+        const normalizedType =
+          normalizedProviderName.includes('newsdata')
+            ? 'news'
+            : normalizedProviderName.includes('cryptocompare')
+              ? (type === 'marketData' ? 'metadata' : (type || 'metadata'))
+              : type;
+        const enabledValue = enabled ?? true;
 
         // Validate apiKey is not an error message or invalid string
         if (apiKey && typeof apiKey === 'string') {
@@ -166,7 +174,7 @@ export async function usersRoutes(fastify: FastifyInstance) {
         const integrationsDocRef = userRef.collection('integrations').doc(providerName);
         const integrationsPayload: any = {
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          type: type || 'api'
+          type: normalizedType || type || 'api'
         };
 
         // Only set encrypted keys if encryption succeeded
@@ -181,7 +189,7 @@ export async function usersRoutes(fastify: FastifyInstance) {
 
         // Set enabled only if there's an encrypted key present
         const hasEncryptedKey = !!encryptedApiKey || !!encryptedSecretKey;
-        integrationsPayload.enabled = hasEncryptedKey ? true : (enabled || false);
+        integrationsPayload.enabled = hasEncryptedKey ? true : (enabledValue || false);
 
         console.log(`SYNC SAVE: Final integrations payload for ${providerName}:`, {
           hasApiKey: !!encryptedApiKey,
@@ -238,14 +246,14 @@ export async function usersRoutes(fastify: FastifyInstance) {
         }
 
         const cleanProviderBody = sanitize({
-          apiKey,
-          enabled,
-          type,
+          providerName: normalizedProviderName || providerName,
+          apiKey: apiKey && apiKey.trim() !== '' ? apiKey : (encryptedApiKey ? '[ENCRYPTED]' : undefined),
+          enabled: enabledValue,
+          type: normalizedType || type,
           usageStats
         });
 
-        // Do NOT include providerName or secretKey for providerConfig.
-        // providerName is already the key.
+        // Do NOT include secretKey for providerConfig.
         // secretKey should only exist for exchanges, not providerConfig.
 
         try {
@@ -303,6 +311,70 @@ export async function usersRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // POST /api/users/complete-signup - initialize blank provider integrations
+  fastify.post('/complete-signup', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: { idToken?: string } }>, reply: FastifyReply) => {
+    try {
+      const uid = (request as any).user?.uid;
+      if (!uid) {
+        return reply.code(401).send({ success: false, error: 'Unauthorized' });
+      }
+
+      const db = getFirebaseAdmin().firestore();
+      const now = admin.firestore.Timestamp.now();
+
+      const integrationsRef = db.collection('users').doc(uid).collection('integrations');
+
+      const baseDocs = [
+        { id: 'cryptocompare', type: 'market' },
+        { id: 'newsdata', type: 'news' },
+      ];
+
+      for (const doc of baseDocs) {
+        await integrationsRef.doc(doc.id).set({
+          providerName: doc.id,
+          enabled: false,
+          type: doc.type,
+          apiKey: '',
+          updatedAt: now,
+        }, { merge: true });
+      }
+
+      return { success: true };
+    } catch (err: any) {
+      logger.error({ err: err.message }, 'complete-signup failed');
+      return reply.code(500).send({ success: false, error: err.message || 'Failed to complete signup' });
+    }
+  });
+
+  // GET /api/users/:uid/features - Get user features
+  fastify.get('/:uid/features', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
+    try {
+      const { uid } = request.params;
+      const user = (request as any).user;
+
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (uid !== user.uid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      return reply.send({
+        success: true,
+        features: {
+          news: true,
+          metadata: true,
+          marketData: true
+        }
+      });
+    } catch (err) {
+      console.error("FEATURE ROUTE ERROR:", err);
+      return reply.code(500).send({ error: 'Failed to load features' });
+    }
+  });
+
   console.log("[ROUTE READY] GET /api/users/:uid/exchange-config");
   console.log("[ROUTE READY] POST /api/users/:uid/exchange-config");
   console.log("[ROUTE READY] GET /api/users/:uid/trading-config");
@@ -317,12 +389,12 @@ export async function usersRoutes(fastify: FastifyInstance) {
   console.log("[ROUTE READY] GET /api/users/:id/pnl");
   console.log("[ROUTE READY] GET /api/users/:id/trades");
   console.log("[ROUTE READY] GET /api/users/:id/logs");
-  console.log("[ROUTE READY] GET /api/users/:id/usage-stats");
   console.log("[ROUTE READY] GET /api/users/:id/sessions");
   console.log("[ROUTE READY] GET /api/users/:uid/performance-stats");
   console.log("[ROUTE READY] GET /api/users/:uid/active-trades");
   console.log("[ROUTE READY] GET /api/users/:uid/usage-stats");
   console.log("[ROUTE READY] POST /api/users/:uid/provider-config");
+  console.log("[ROUTE READY] GET /api/users/:uid/features");
 
   // GET /api/users/:uid/exchange-config - Get exchange configuration
   fastify.get('/:uid/exchange-config', {
@@ -412,23 +484,41 @@ export async function usersRoutes(fastify: FastifyInstance) {
       const db = getFirebaseAdmin().firestore();
       const configRef = db.collection('users').doc(uid).collection('exchangeConfig').doc('current');
 
-      // Encrypt sensitive fields
+      // Encrypt sensitive fields, or explicitly clear them when empty/null
       const body = request.body as any;
       const encryptedBody: any = { ...body };
+
+      const shouldClearApiKey = body.apiKey === '' || body.apiKey === null || body.apiKey === undefined;
+      const shouldClearSecret = body.secret === '' || body.secret === null || body.secret === undefined;
+      const shouldClearPassphrase = body.passphrase === '' || body.passphrase === null || body.passphrase === undefined;
 
       if (body.apiKey && body.apiKey.trim() !== '') {
         encryptedBody.apiKeyEncrypted = keyManager.encrypt(body.apiKey);
         delete encryptedBody.apiKey; // Remove plain text
+      } else if (shouldClearApiKey) {
+        encryptedBody.apiKeyEncrypted = admin.firestore.FieldValue.delete();
+        delete encryptedBody.apiKey;
       }
 
       if (body.secret && body.secret.trim() !== '') {
         encryptedBody.secretEncrypted = keyManager.encrypt(body.secret);
         delete encryptedBody.secret; // Remove plain text
+      } else if (shouldClearSecret) {
+        encryptedBody.secretEncrypted = admin.firestore.FieldValue.delete();
+        delete encryptedBody.secret;
       }
 
       if (body.passphrase && body.passphrase.trim() !== '') {
         encryptedBody.passphraseEncrypted = keyManager.encrypt(body.passphrase);
         delete encryptedBody.passphrase; // Remove plain text
+      } else if (shouldClearPassphrase) {
+        encryptedBody.passphraseEncrypted = admin.firestore.FieldValue.delete();
+        delete encryptedBody.passphrase;
+      }
+
+      // Clear exchange field when explicitly emptied
+      if (!body.exchange) {
+        encryptedBody.exchange = admin.firestore.FieldValue.delete();
       }
 
       await configRef.set({
@@ -510,20 +600,65 @@ export async function usersRoutes(fastify: FastifyInstance) {
       }
 
       const db = getFirebaseAdmin().firestore();
-
-      // Read from users/{uid}/settings/providerConfig
       const userRef = db.collection('users').doc(uid);
-      const doc = await userRef.collection('settings').doc('providerConfig').get();
 
-      const data = doc.exists ? doc.data() : {};
-      const providerConfig = data.providerConfig || {};
+      const [newsdataDoc, cryptocompareDoc] = await Promise.all([
+        userRef.collection('integrations').doc('newsdata').get(),
+        userRef.collection('integrations').doc('cryptocompare').get(),
+      ]);
 
-      console.log("GET PROVIDER CONFIG - Raw data:", JSON.stringify(data, null, 2));
-      console.log("GET PROVIDER CONFIG - Returning providerConfig:", JSON.stringify(providerConfig, null, 2));
+      const decryptSafe = (value?: string) => {
+        if (!value) return '';
+        try {
+          return keyManager.decrypt(value) || '';
+        } catch (err: any) {
+          logger.warn({ err: err.message }, 'Failed to decrypt provider key, returning empty string');
+          return '';
+        }
+      };
+
+      const newsdataData = newsdataDoc.exists ? newsdataDoc.data() : null;
+      const cryptocompareData = cryptocompareDoc.exists ? cryptocompareDoc.data() : null;
+
+      console.log("[BACKEND TRACE] NewsData integration:", JSON.stringify(newsdataData, null, 2));
+      console.log("[BACKEND TRACE] CryptoCompare integration:", JSON.stringify(cryptocompareData, null, 2));
+
+      const providerConfig = {
+        news: {
+          primary: newsdataDoc.exists ? {
+            providerName: "newsdata",
+            enabled: newsdataData?.enabled ?? false,
+            apiKey: decryptSafe(newsdataData?.apiKey),
+            type: "news",
+            updatedAt: newsdataData?.updatedAt?.toDate?.()?.toISOString?.() || null
+          } : null,
+          backups: []
+        },
+        metadata: {
+          primary: cryptocompareDoc.exists ? {
+            providerName: "cryptocompare",
+            enabled: cryptocompareData?.enabled ?? false,
+            apiKey: decryptSafe(cryptocompareData?.apiKey),
+            type: "metadata",
+            updatedAt: cryptocompareData?.updatedAt?.toDate?.()?.toISOString?.() || null
+          } : null,
+          backups: []
+        },
+        marketData: {
+          primary: {
+            providerName: "coingecko",
+            enabled: true,
+            type: "marketData"
+          },
+          backups: []
+        }
+      };
+
+      console.log("[BACKEND TRACE] Nested providerConfig being returned:", JSON.stringify(providerConfig, null, 2));
 
       return reply.send({
         success: true,
-        config: providerConfig
+        providerConfig
       });
     } catch (err: any) {
       logger.error({ err }, 'Error getting provider config');
@@ -949,38 +1084,6 @@ export async function usersRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // GET /api/users/:id/usage-stats - Get user usage statistics
-  fastify.get('/:id/usage-stats', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-    try {
-      const { id } = request.params;
-      const user = (request as any).user;
-
-      // Users can only view their own usage stats unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (id !== user.uid && !isAdmin) {
-        return reply.code(403).send({ error: 'Access denied' });
-      }
-
-      const usageStats = await firestoreAdapter.getApiUsage(id);
-
-      return {
-        usageStats: usageStats || {
-          totalRequests: 0,
-          monthlyRequests: 0,
-          lastRequest: null,
-          apiLimits: {
-            monthly: 10000,
-            daily: 1000,
-          },
-        },
-      };
-    } catch (err: any) {
-      logger.error({ err }, 'Error getting user usage stats');
-      return reply.code(500).send({ error: err.message || 'Error fetching user usage stats' });
-    }
-  });
 
   // GET /api/users/:id/sessions - Get user sessions
   fastify.get('/:id/sessions', {

@@ -76,11 +76,12 @@ export default function ResearchPanel() {
   const [isAdmin, setIsAdmin] = useState(false);
 
   // Deep Research state
-  const [top10Coins, setTop10Coins] = useState<any[]>([]);
+  const [topCoins, setTopCoins] = useState<any[]>([]);
+  const [showAll, setShowAll] = useState(false);
   const [selectedCoinData, setSelectedCoinData] = useState<any>(null);
   const [selectedCoinSymbol, setSelectedCoinSymbol] = useState<string | null>(null);
   const [coinResearchLoading, setCoinResearchLoading] = useState(false);
-  const [top10Loading, setTop10Loading] = useState(false);
+  const [topCoinsLoading, setTopCoinsLoading] = useState(false);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(null);
   const [mobileSectionsOpen, setMobileSectionsOpen] = useState({
@@ -134,18 +135,22 @@ export default function ResearchPanel() {
   }, [user]);
 
   // Load top 10 coins for deep research
-  const loadTop10Coins = useCallback(async () => {
+  const loadTopCoins = useCallback(async () => {
     if (!user?.uid) return;
 
-    setTop10Loading(true);
+    setTopCoinsLoading(true);
     try {
-      const response = await researchApi.deepResearch.getTop10();
-      setTop10Coins(response.data?.coins || []);
+      const response = await researchApi.deepResearch.getTop50();
+      const coins = Array.isArray(response.data)
+        ? response.data
+        : response.data?.coins || response.data?.data || [];
+      console.log("Top50 coins loaded:", coins);
+      setTopCoins(coins);
     } catch (err: any) {
-      console.error('Error loading top 10 coins:', err);
-      showError('Failed to load top 10 coins', 'api');
+      console.error('Error loading top 50 coins:', err);
+      showError('Failed to load top coins', 'api');
     } finally {
-      setTop10Loading(false);
+      setTopCoinsLoading(false);
     }
   }, [user?.uid, showError]);
 
@@ -155,6 +160,7 @@ export default function ResearchPanel() {
 
     setCoinResearchLoading(true);
     setSelectedCoinSymbol(symbol);
+    setSelectedSymbol(symbol); // Also update the main selected symbol for deep research
 
     try {
       const response = await researchApi.deepResearch.getCoin(symbol);
@@ -182,8 +188,8 @@ export default function ResearchPanel() {
 
   // Load top 10 coins on component mount
   useEffect(() => {
-    loadTop10Coins();
-  }, [loadTop10Coins]);
+    loadTopCoins();
+  }, [loadTopCoins]);
 
   const loadSettings = useCallback(async () => {
     try {
@@ -406,6 +412,14 @@ export default function ResearchPanel() {
     setCooldownSeconds(30);
   };
 
+  // Handle coin selection for deep research
+  const handleSelectCoin = useCallback(async (symbol: string) => {
+    setSelectedSymbol(symbol);
+    await loadCoinResearch(symbol);
+    // Automatically trigger deep research for the selected coin
+    setTimeout(() => handleDeepResearch(), 500); // Small delay to ensure coin data is loaded
+  }, [loadCoinResearch, handleDeepResearch]);
+
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
@@ -590,6 +604,31 @@ export default function ResearchPanel() {
               </div>
             </div>
           </section>
+
+          {/* Top 50 Coins Grid */}
+          {topCoins.length > 0 && (
+            <div className="mt-6 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+              {topCoins.map((coin, index) => (
+                <div
+                  key={coin.symbol}
+                  className="flex items-center gap-2 bg-slate-800/40 px-3 py-2 rounded-lg border border-slate-700 hover:bg-slate-700/50 cursor-pointer transition"
+                  onClick={() => handleSelectCoin(coin.symbol)}
+                >
+                  {/* Show logo only for top 20 */}
+                  {index < 20 && coin.logo && (
+                    <img
+                      src={coin.logo}
+                      className="w-6 h-6 rounded-full"
+                      onError={(e) => (e.currentTarget.style.display = 'none')}
+                    />
+                  )}
+                  <span className="text-white text-sm font-semibold">{coin.symbol.replace('USDT', '')}</span>
+                  <span className="text-slate-300 text-xs">{coin.name}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
           <div className="space-y-8">
             {/* Live Research Card */}
             {liveData && (
@@ -3164,52 +3203,6 @@ export default function ResearchPanel() {
                 )}
               </div>
 
-                  {/* Top 10 Coins Selector */}
-              <div className="mb-8">
-                <h3 className="text-xl font-semibold text-white mb-4">Top 10 Coins by Market Cap</h3>
-                {top10Loading ? (
-                  <div className="flex items-center justify-center py-8">
-                    <div className="w-8 h-8 border-4 border-purple-500/30 border-t-purple-500 rounded-full animate-spin"></div>
-                    <span className="ml-3 text-slate-400">Loading top coins...</span>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4">
-                    {top10Coins.map((coin) => (
-                      <button
-                        key={coin.symbol}
-                        onClick={() => loadCoinResearch(coin.symbol)}
-                        disabled={coinResearchLoading}
-                        className={`p-4 bg-slate-800/50 backdrop-blur-sm border rounded-xl hover:bg-slate-700/50 transition-all duration-300 ${
-                          selectedCoinSymbol === coin.symbol
-                            ? 'border-purple-500 bg-purple-500/10'
-                            : 'border-slate-600/30 hover:border-slate-500/60'
-                        } ${coinResearchLoading ? 'opacity-50 cursor-not-allowed' : 'transform hover:scale-105'}`}
-                      >
-                        <div className="flex flex-col items-center text-center">
-                          {coin.thumbnail && (
-                            <img
-                              src={coin.thumbnail}
-                              alt={coin.name}
-                              className="w-8 h-8 rounded-full mb-2"
-                              onError={(e) => {
-                                e.currentTarget.style.display = 'none';
-                              }}
-                            />
-                          )}
-                          <span className="text-sm font-medium text-white">{coin.symbol.replace('USDT', '')}</span>
-                          <span className="text-xs text-slate-400 truncate w-full">{coin.name}</span>
-                          <div className={`text-xs mt-1 ${coin.price_change_percentage_24h >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {coin.price_change_percentage_24h >= 0 ? '+' : ''}{coin.price_change_percentage_24h?.toFixed(2)}%
-                          </div>
-                          <div className="text-xs text-slate-300 mt-1">
-                            ${coin.current_price?.toLocaleString()}
-                          </div>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
 
               {/* Coin Research Display */}
               {selectedCoinSymbol && (

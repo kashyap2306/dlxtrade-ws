@@ -24,18 +24,32 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
 
     try {
       const integrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
-      const { decrypt } = await import('../services/keyManager');
+
+      const getKeyFromIntegrations = (name: string) => (integrations as any)?.[name]?.apiKey || '';
 
       switch (apiName) {
         case 'cryptocompare': {
-          const apiKey = body.apiKey || integrations.cryptocompare?.apiKey;
+          const apiKey = (body.apiKey || getKeyFromIntegrations('cryptocompare') || '').trim();
+          const decryptedLen = apiKey.length;
+          const maskedKey = apiKey ? `${apiKey.slice(0, 3)}***${apiKey.slice(-2)}` : '***';
+          const finalURL = `https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=USD,USDT&api_key=${maskedKey}`;
+
+          logger.info({
+            providerId: 'cryptocompare',
+            uid: user.uid,
+            decryptedLen,
+            fromBody: !!body.apiKey,
+            fromIntegrations: !!integrations.cryptocompare?.apiKey,
+            finalURL
+          }, 'Diagnostics: resolved API key for CryptoCompare');
+
           if (!apiKey) {
             return {
               apiName: 'cryptocompare',
               success: false,
               reachable: false,
               credentialsValid: false,
-              error: 'CryptoCompare API key not configured',
+              error: 'Key undecryptable — re-enter key in Settings',
               latency: Date.now() - startTime,
             };
           }
@@ -43,8 +57,22 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
           try {
             const { CryptoCompareAdapter } = await import('../services/cryptocompareAdapter');
             const adapter = new CryptoCompareAdapter(apiKey);
+            logger.info({
+              providerId: 'cryptocompare',
+              uid: user.uid,
+              decryptedLen,
+              finalURL
+            }, 'Diagnostics: calling CryptoCompare');
             const testData = await adapter.getMarketData('BTCUSDT');
             const latency = Date.now() - startTime;
+
+            logger.info({
+              providerId: 'cryptocompare',
+              uid: user.uid,
+              decryptedLen,
+              finalURL,
+              statusCode: 200
+            }, 'Diagnostics: CryptoCompare succeeded');
 
             return {
               apiName: 'cryptocompare',
@@ -58,11 +86,20 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
               },
             };
           } catch (err: any) {
+            const statusCode = err?.response?.status;
+            logger.error({
+              providerId: 'cryptocompare',
+              uid: user.uid,
+              decryptedLen,
+              finalURL,
+              statusCode,
+              data: err?.response?.data
+            }, 'Diagnostics: CryptoCompare test failed');
             return {
               apiName: 'cryptocompare',
               success: false,
-              reachable: err.response?.status !== 404 && err.response?.status !== 403,
-              credentialsValid: err.response?.status !== 401 && err.response?.status !== 403,
+              reachable: statusCode !== 404 && statusCode !== 403,
+              credentialsValid: statusCode !== 401 && statusCode !== 403,
               error: err.message || 'CryptoCompare test failed',
               latency: Date.now() - startTime,
             };
@@ -70,14 +107,27 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
         }
 
         case 'newsdata': {
-          const apiKey = body.apiKey || integrations.newsdata?.apiKey;
+          const apiKey = (body.apiKey || getKeyFromIntegrations('newsdata') || '').trim();
+          const decryptedLen = apiKey.length;
+          const maskedKey = apiKey ? `${apiKey.slice(0, 3)}***${apiKey.slice(-2)}` : '***';
+          const finalURL = `https://newsdata.io/api/1/news?apikey=${maskedKey}&q=bitcoin&language=en&size=1`;
+
+          logger.info({
+            providerId: 'newsdata',
+            uid: user.uid,
+            decryptedLen,
+            fromBody: !!body.apiKey,
+            fromIntegrations: !!integrations.newsdata?.apiKey,
+            finalURL
+          }, 'Diagnostics: resolved API key for NewsData');
+
           if (!apiKey) {
             return {
               apiName: 'newsdata',
               success: false,
               reachable: false,
               credentialsValid: false,
-              error: 'NewsData API key not configured',
+              error: 'Key undecryptable — re-enter key in Settings',
               latency: Date.now() - startTime,
             };
           }
@@ -85,27 +135,68 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
           try {
             const { NewsDataAdapter } = await import('../services/newsDataAdapter');
             const adapter = new NewsDataAdapter(apiKey);
-            // Use placeholder test data since adapter may not have all methods
-            const testData = { sentiment: 0.5, articleCount: 10 };
+            logger.info({
+              providerId: 'newsdata',
+              uid: user.uid,
+              decryptedLen,
+              finalURL
+            }, 'Diagnostics: calling NewsData');
+            const testResult = await adapter.testConnection();
             const latency = Date.now() - startTime;
+            const statusCode = (testResult as any)?.statusCode || (testResult.success ? 200 : 400);
 
-            return {
-              apiName: 'newsdata',
-              success: true,
-              reachable: true,
-              credentialsValid: true,
-              latency,
-              details: {
-                sentiment: testData.sentiment,
-                articleCount: testData.articleCount,
-              },
-            };
-          } catch (err: any) {
+            if (testResult.success) {
+              logger.info({
+                providerId: 'newsdata',
+                uid: user.uid,
+                decryptedLen,
+                finalURL,
+                statusCode
+              }, 'Diagnostics: NewsData succeeded');
+
+              return {
+                apiName: 'newsdata',
+                success: true,
+                reachable: true,
+                credentialsValid: true,
+                latency,
+                details: {
+                  message: testResult.message,
+                },
+              };
+            }
+
+            logger.error({
+              providerId: 'newsdata',
+              uid: user.uid,
+              decryptedLen,
+              finalURL,
+              statusCode,
+              error: testResult.message
+            }, 'Diagnostics: NewsData test failed (API response)');
             return {
               apiName: 'newsdata',
               success: false,
-              reachable: err.response?.status !== 404 && err.response?.status !== 403,
-              credentialsValid: err.response?.status !== 401 && err.response?.status !== 403,
+              reachable: false,
+              credentialsValid: false,
+              error: testResult.message,
+              latency,
+            };
+          } catch (err: any) {
+            const statusCode = err?.response?.status;
+            logger.error({
+              providerId: 'newsdata',
+              uid: user.uid,
+              decryptedLen,
+              finalURL,
+              statusCode,
+              data: err?.response?.data
+            }, 'Diagnostics: NewsData test threw error');
+            return {
+              apiName: 'newsdata',
+              success: false,
+              reachable: statusCode !== 404 && statusCode !== 403,
+              credentialsValid: statusCode !== 401 && statusCode !== 403,
               error: err.message || 'NewsData test failed',
               latency: Date.now() - startTime,
             };

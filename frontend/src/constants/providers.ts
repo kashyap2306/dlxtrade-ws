@@ -75,7 +75,7 @@ export const PROVIDER_CONFIG = {
 export const API_NAME_MAP: Record<string, string> = {
   // Primary Providers
   'CoinGecko': 'coingecko',
-  'NewsData.io': 'newsdataio',
+  'NewsData.io': 'newsdata',
   'CryptoCompare': 'cryptocompare',
   // Market Data Backups
   'CoinPaprika': 'coinpaprika',
@@ -91,14 +91,14 @@ export const API_NAME_MAP: Record<string, string> = {
   // News Backups
   'CryptoPanic': 'cryptopanic',
   'Reddit': 'reddit',
-  'Cointelegraph RSS': 'cointelegraph',
-  'AltcoinBuzz RSS': 'altcoinbuzz',
+  'Cointelegraph RSS': 'cointelegraph_rss',
+  'AltcoinBuzz RSS': 'altcoinbuzz_rss',
   'GNews': 'gnews',
   'Marketaux': 'marketaux',
   'Webz.io': 'webzio',
   'CoinStatsNews': 'coinstatsnews',
   'NewsCatcher': 'newscatcher',
-  'CryptoCompare News': 'cryptocomparenews',
+  'CryptoCompare News': 'cryptocompare_news',
   // Metadata Backups
   'CoinCap.io': 'coincap',
   'CoinRanking': 'coinranking',

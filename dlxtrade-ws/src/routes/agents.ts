@@ -18,6 +18,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
   console.log("[ROUTE READY] PUT /api/agents/:agentId/settings");
   console.log("[ROUTE READY] GET /api/users/:uid/agents");
   console.log("[ROUTE READY] POST /api/agents/purchase-request");
+  console.log("[ROUTE READY] GET /api/admin/agents/purchase-requests");
   console.log("[ROUTE READY] POST /api/admin/agents/approve");
   console.log("[ROUTE READY] GET /api/users/:uid/features");
 
@@ -225,10 +226,18 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
   // GET /api/users/:uid/agents - Get specific user's agents (admin endpoint)
   fastify.get('/users/:uid/agents', {
-    preHandler: [fastify.authenticate, fastify.isAdmin],
+    preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
     try {
       const { uid } = request.params;
+      const user = (request as any).user;
+
+      // Users can only view their own agents unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (uid !== user.uid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
       const agents = await firestoreAdapter.getUserAgents(uid);
       return { agents };
     } catch (err: any) {
@@ -284,11 +293,43 @@ export async function agentsRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // GET /api/admin/agents/purchase-requests - Admin get purchase requests
+  fastify.get('/admin/purchase-requests', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Querystring: { status?: string } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      // Check if user is admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (!isAdmin) {
+        return reply.code(403).send({ error: 'Admin access required' });
+      }
+      const { status } = request.query;
+      let purchaseRequests = await firestoreAdapter.getAgentPurchaseRequests();
+
+      // Filter by status if provided
+      if (status) {
+        purchaseRequests = purchaseRequests.filter(req => req.status === status);
+      }
+
+      return { purchaseRequests };
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting purchase requests');
+      return reply.code(500).send({ error: err.message || 'Error fetching purchase requests' });
+    }
+  });
+
   // POST /api/admin/agents/approve - Admin approve agent purchase request
   fastify.post('/admin/approve', {
-    preHandler: [fastify.authenticate, fastify.isAdmin],
+    preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Body: { requestId: string } }>, reply: FastifyReply) => {
     try {
+      const user = (request as any).user;
+      // Check if user is admin
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (!isAdmin) {
+        return reply.code(403).send({ error: 'Admin access required' });
+      }
       const admin = (request as any).user;
       const body = z.object({
         requestId: z.string().min(1),
@@ -319,7 +360,8 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       const { uid } = request.params;
 
       // Users can only see their own features, admins can see anyone's
-      if (uid !== user.uid && !user.isAdmin) {
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (uid !== user.uid && !isAdmin) {
         return reply.code(403).send({ error: 'Access denied' });
       }
 

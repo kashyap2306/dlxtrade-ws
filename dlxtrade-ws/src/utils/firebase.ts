@@ -1,12 +1,4 @@
 import * as admin from "firebase-admin";
-import * as dotenv from "dotenv";
-import * as path from "path";
-
-dotenv.config({
-  path: path.resolve(process.cwd(), ".env")
-});
-
-console.log("DEBUG ENV:", process.env.FIREBASE_PROJECT_ID);
 
 const projectId = process.env.FIREBASE_PROJECT_ID;
 const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
@@ -152,14 +144,16 @@ export function getFirebaseAdmin() {
     console.log("🔥 NO EXISTING FIREBASE APP, creating new one");
   }
 
+  const serviceAccount = {
+    project_id: projectId,
+    client_email: clientEmail,
+    private_key: privateKey.replace(/\\n/g, '\n'),
+  };
+
   // Initialize with individual environment variables
   if (!admin.apps.length) {
     firebaseApp = admin.initializeApp({
-      credential: admin.credential.cert({
-        projectId: projectId,
-        clientEmail: clientEmail,
-        privateKey: privateKey,
-      }),
+      credential: admin.credential.cert(serviceAccount as unknown as admin.ServiceAccount),
     });
   } else {
     firebaseApp = admin.app();

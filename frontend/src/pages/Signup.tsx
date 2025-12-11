@@ -46,14 +46,14 @@ export default function Signup() {
   };
 
 
-  const handleAfterSignUp = async (userCredential: any) => {
+  const handleAfterSignUp = async (idToken: string, userCredential: any) => {
     try {
       // Update profile with display name
       if (fullName) {
         await updateProfile(userCredential.user, { displayName: fullName });
       }
 
-      const token = await userCredential.user.getIdToken();
+      const token = idToken;
       localStorage.setItem('firebaseToken', token);
       localStorage.setItem('firebaseUser', JSON.stringify({
         uid: userCredential.user.uid,
@@ -62,16 +62,9 @@ export default function Signup() {
 
       // Call backend POST /api/auth/afterSignIn with idToken - this triggers ensureUser() which creates all Firestore documents
       console.log("afterSignIn sent");
-      const authResponse = await api.post('/auth/afterSignIn', { idToken });
-
-      if (!authResponse.ok) {
-        throw new Error(`Backend auth failed: ${authResponse.status}`);
-      }
-
-      const authData = await authResponse.json();
-      if (!authData.success) {
-        throw new Error(authData.error || 'User onboarding failed');
-      }
+      await api.post('/auth/afterSignIn', { idToken });
+      console.log("completeSignUp sent");
+      await api.post('/users/complete-signup', { idToken });
 
       // New users always go to onboarding
       navigate('/onboarding');
@@ -116,7 +109,8 @@ export default function Signup() {
 
     try {
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      await handleAfterSignUp(userCredential);
+      const idToken = await userCredential.user.getIdToken(true);
+      await handleAfterSignUp(idToken, userCredential);
     } catch (err: any) {
       suppressConsoleError(err, 'signup');
       const { message, type } = getFirebaseErrorMessage(err);
@@ -131,7 +125,8 @@ export default function Signup() {
     try {
       const provider = new GoogleAuthProvider();
       const userCredential = await signInWithPopup(auth, provider);
-      await handleAfterSignUp(userCredential);
+      const idToken = await userCredential.user.getIdToken(true);
+      await handleAfterSignUp(idToken, userCredential);
     } catch (err: any) {
       suppressConsoleError(err, 'googleSignup');
       const { message, type } = getFirebaseErrorMessage(err);
@@ -146,7 +141,8 @@ export default function Signup() {
     try {
       const provider = new GithubAuthProvider();
       const userCredential = await signInWithPopup(auth, provider);
-      await handleAfterSignUp(userCredential);
+      const idToken = await userCredential.user.getIdToken(true);
+      await handleAfterSignUp(idToken, userCredential);
     } catch (err: any) {
       suppressConsoleError(err, 'githubSignup');
       const { message, type } = getFirebaseErrorMessage(err);

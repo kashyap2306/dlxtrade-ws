@@ -3,9 +3,11 @@ import { firestoreAdapter } from '../services/firestoreAdapter';
 import { z } from 'zod';
 import { accuracyEngine } from '../services/accuracyEngine';
 import { API_PROVIDERS_CONFIG, ProviderConfig } from '../config/apiProviders';
-import { keyManager } from '../services/keyManager';
+import { keyManager, getEncryptionKeyHash } from '../services/keyManager';
 import { ProviderTester } from '../services/providerTester';
 import * as admin from 'firebase-admin';
+import { logger } from '../utils/logger';
+import { getFirebaseAdmin } from '../utils/firebase';
 
 // Provider config schema
 const providerConfigSchema = z.object({
@@ -121,6 +123,9 @@ export async function settingsRoutes(fastify: FastifyInstance) {
   console.log("[ROUTE READY] GET /api/analytics/accuracy/snapshot");
   console.log("[ROUTE READY] GET /api/analytics/accuracy/history");
   console.log("[ROUTE READY] POST /api/analytics/accuracy/outcome");
+
+  const BACKEND_SECRET_HASH = getEncryptionKeyHash();
+  logger.info({ BACKEND_SECRET_HASH }, 'BACKEND_SECRET_HASH initialized for settings routes');
 
   // Load user settings - DETAILED TIMING INSTRUMENTATION
   fastify.get('/settings/load', {
@@ -652,27 +657,31 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     try {
       const user = (request as any).user;
       const body = z.object({
-        providerId: z.string(),
+        providerId: z.string().min(1),
         providerType: z.enum(['marketData', 'news', 'metadata']),
         isPrimary: z.boolean(),
         enabled: z.boolean(),
         apiKey: z.string().optional()
       }).parse(request.body);
 
-      const { providerId, providerType, isPrimary, enabled, apiKey } = body;
+      const providerId = body.providerId.trim().toLowerCase();
+      const providerType = body.providerType;
 
-      // Get current user settings
-      const userProviderSettings = await firestoreAdapter.getUserProviderSettings(user.uid) || {};
+      const BACKEND_SECRET_HASH = getEncryptionKeyHash();
+      const SAVE_SECRET_HASH = BACKEND_SECRET_HASH;
+      logger.info({ uid: user.uid, providerId, BACKEND_SECRET_HASH, SAVE_SECRET_HASH }, 'Provider save secret hash check');
 
-      // Initialize provider type if not exists
-      if (!userProviderSettings[providerType]) {
-        userProviderSettings[providerType] = { primary: {}, backups: {} };
-      }
-
-      const providerPath = isPrimary ? 'primary' : `backups.${providerId}`;
+      const normalizedType = (() => {
+        if (providerId === 'cryptocompare') return 'market';
+        if (providerId === 'newsdata') return 'news';
+        if (providerId === 'coingecko') return 'metadata';
+        if (providerType === 'news') return 'news';
+        if (providerType === 'metadata') return 'metadata';
+        return 'market';
+      })();
 
       // Validate API key requirement
-      const providerConfig = isPrimary
+      const providerConfig = body.isPrimary
         ? API_PROVIDERS_CONFIG[providerType].primary
         : API_PROVIDERS_CONFIG[providerType].backups.find(p => p.id === providerId);
 
@@ -680,42 +689,60 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         return reply.code(400).send({ error: 'Invalid provider configuration' });
       }
 
-      if (providerConfig.apiKeyRequired && enabled && !apiKey) {
+      if (providerConfig.apiKeyRequired && body.enabled && !body.apiKey) {
         return reply.code(400).send({ error: `API key is required for ${providerConfig.providerName}` });
       }
 
-      // Encrypt API key if provided
-      let encryptedApiKey = undefined;
-      if (apiKey) {
-        encryptedApiKey = keyManager.encrypt(apiKey);
+      const saveSecretHash = getEncryptionKeyHash();
+      logger.debug({
+        uid: user.uid,
+        providerId,
+        BACKEND_SECRET_HASH,
+        SAVE_SECRET_HASH: saveSecretHash
+      }, 'Saving provider with enforced backend encryption key');
+
+      if (saveSecretHash !== BACKEND_SECRET_HASH) {
+        logger.warn({ uid: user.uid, providerId, BACKEND_SECRET_HASH, SAVE_SECRET_HASH: saveSecretHash }, 'Mismatch between backend and save encryption hashes; enforcing backend secret');
       }
 
-      // Update settings
-      if (isPrimary) {
-        userProviderSettings[providerType].primary = {
-          ...userProviderSettings[providerType].primary,
-          enabled,
-          encryptedApiKey,
-          updatedAt: new Date()
-        };
-      } else {
-        if (!userProviderSettings[providerType].backups) {
-          userProviderSettings[providerType].backups = {};
-        }
-        userProviderSettings[providerType].backups[providerId] = {
-          ...userProviderSettings[providerType].backups[providerId],
-          enabled,
-          encryptedApiKey,
-          updatedAt: new Date()
-        };
+      // Encrypt API key if provided (no overwrite when missing)
+      const encryptedApiKey = body.apiKey ? keyManager.encrypt(body.apiKey) : undefined;
+
+      // Persist to integrations (source of truth)
+      const updatedAt = admin.firestore.Timestamp.now();
+      const integrationDoc: any = {
+        providerName: providerId,
+        type: normalizedType,
+        enabled: body.enabled,
+        updatedAt
+      };
+      if (encryptedApiKey) {
+        integrationDoc.apiKey = encryptedApiKey;
+        integrationDoc.needsReencrypt = false;
+        integrationDoc.decryptable = true;
       }
 
-      // Save to Firestore
-      await firestoreAdapter.saveUserProviderSettings(user.uid, userProviderSettings);
+      await getFirebaseAdmin()
+        .firestore()
+        .collection('users')
+        .doc(user.uid)
+        .collection('integrations')
+        .doc(providerId)
+        .set(integrationDoc, { merge: true });
+
+      logger.info({
+        uid: user.uid,
+        providerId,
+        encryptedKeyLength: encryptedApiKey ? encryptedApiKey.length : 0,
+        updatedAt: updatedAt.toDate().toISOString(),
+        type: normalizedType,
+        BACKEND_SECRET_HASH,
+        SAVE_SECRET_HASH
+      }, 'Provider saved to integrations with encrypted key');
 
       return {
         success: true,
-        message: `${providerConfig.providerName} ${enabled ? 'enabled' : 'disabled'} successfully`
+        message: `${providerConfig.providerName} ${body.enabled ? 'enabled' : 'disabled'} successfully`
       };
     } catch (err: any) {
       return reply.code(500).send({ error: err.message || 'Error saving provider settings' });

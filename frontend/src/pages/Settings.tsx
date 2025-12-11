@@ -56,7 +56,7 @@ const PROVIDER_ID_MAP: Record<string, string> = {
 const PROVIDER_TYPE_MAP: Record<string, 'marketData' | 'news' | 'metadata'> = {
   // Market Data Providers
   'cryptocompare': 'marketData',
-  'coingecko': 'marketData',
+  'coingecko': 'metadata',
   'coinpaprika': 'marketData',
   'coinmarketcap': 'marketData',
   'coinlore': 'marketData',
@@ -158,7 +158,7 @@ const Settings = () => {
     newsCatcherKey: '', newsCatcherEnabled: false, cryptoCompareNewsKey: '', cryptoCompareNewsEnabled: false,
     // Metadata Backup Providers
     coinCapKey: '', coinCapEnabled: false, coinRankingKey: '', coinRankingEnabled: false,
-    nomicsKey: '', nomicsEnabled: false, enableAutoTrade: false, exchanges: [], showUnmaskedKeys: false,
+    nomicsKey: '', nomicsEnabled: false, enableAutoTrade: false, exchanges: [],
     enableAutoTradeAlerts: false, enablePositionAlerts: false, enableWhaleAlerts: false,
     tradeConfirmationRequired: false, notificationSounds: false, notificationVibration: false
   });
@@ -261,7 +261,14 @@ const Settings = () => {
     try {
       const response = await settingsApi.loadProviderConfig(uid);
       if (response.data) {
-        const providerConfig = response.data.config || {};
+        const nestedProviderConfig = response.data.config || {};
+
+        // Convert nested structure back to flat structure for Settings compatibility
+        const providerConfig = {
+          newsdata: nestedProviderConfig.news?.primary,
+          cryptocompare: nestedProviderConfig.metadata?.primary,
+          coingecko: nestedProviderConfig.marketData?.primary
+        };
 
         // Update providers state
         setProviders(providerConfig);
@@ -272,8 +279,8 @@ const Settings = () => {
             Object.entries(providerConfig).map(([pid, data]: any) => [
               pid,
               {
-                apiKey: data.apiKey || "",
-                saved: !!data.apiKey
+                apiKey: data?.apiKey || "",
+                saved: !!(data?.apiKey)
               }
             ])
           )
@@ -285,7 +292,7 @@ const Settings = () => {
 
           // Map provider IDs back to settings keys
           Object.entries(providerConfig).forEach(([providerId, data]: [string, any]) => {
-            if (data.apiKey) {
+            if (data?.apiKey) {
               // Map provider ID to settings key
               const settingsKey = getSettingsKeyFromProviderId(providerId);
               if (settingsKey) {
@@ -483,41 +490,38 @@ const Settings = () => {
     }
   };
   
-  const handleProviderKeyChange = async (providerName: string, keyName: string, apiKey: string) => {
+  const handleProviderKeyChange = async (providerName: string, keyName: string, apiKey: string, _uid?: string, _setProviders?: (providers: any) => void) => {
+    if (!user) {
+      showToast('Authentication required', 'error');
+      return;
+    }
     setSavingProvider(providerName);
     try {
-      // Determine provider type and if it's primary
-      let providerType: 'marketData' | 'news' | 'metadata' = 'marketData';
-      let isPrimary = false;
+      const providerId = PROVIDER_ID_MAP[providerName] || providerName.toLowerCase().replace(/\s+/g, '');
+      const providerType = PROVIDER_TYPE_MAP[providerId] || 'marketData';
+      const isPrimary = ['cryptocompare', 'newsdata', 'coingecko'].includes(providerId);
+      const maskedApiKeyLength = apiKey ? apiKey.length : 0;
 
-      // Check if it's a primary provider
-      if (['CoinGecko', 'NewsData.io', 'CryptoCompare'].includes(providerName)) {
-        isPrimary = true;
-        if (providerName === 'CoinGecko') providerType = 'metadata';
-        else if (providerName === 'NewsData.io') providerType = 'news';
-        else if (providerName === 'CryptoCompare') providerType = 'metadata';
-      } else {
-        // Determine type from provider name
-        if (['CoinPaprika', 'CoinMarketCap', 'CoinLore', 'CoinAPI', 'BraveNewCoin', 'Messari', 'Kaiko', 'LiveCoinWatch', 'CoinStats', 'CoinCheckup'].includes(providerName)) {
-          providerType = 'marketData';
-        } else if (['CryptoPanic', 'Reddit', 'Cointelegraph RSS', 'AltcoinBuzz RSS', 'GNews', 'Marketaux', 'Webz.io', 'CoinStatsNews', 'NewsCatcher', 'CryptoCompare News'].includes(providerName)) {
-          providerType = 'news';
-        } else if (['CoinCap', 'CoinRanking', 'Nomics'].includes(providerName)) {
-          providerType = 'metadata';
-        }
+      console.log('Saving provider:', providerId, providerType, 'maskedApiKeyLength:', maskedApiKeyLength);
+      if (providerId === 'newsdata') {
+        console.log('Saving NewsData:', { providerId, providerType, isPrimary, maskedApiKeyLength });
       }
 
-      await settingsApi.providers.save(user!.uid, {
-        providerId: providerName.toLowerCase().replace(/\s+/g, ''),
+      const payload = {
+        providerId,
         providerType,
         isPrimary,
         enabled: true,
         apiKey
-      });
+      };
+
+      const resp = await settingsApi.providers.save(user.uid, payload);
+      console.log('[PROVIDER-SAVE] response', resp?.data || resp?.status);
 
       setSettings({ ...settings, [keyName]: apiKey });
       showToast(`${providerName} API key saved!`, 'success');
     } catch (err: any) {
+      console.error('[PROVIDER-SAVE] error', err?.response?.data || err);
       if (err.response?.status === 401) {
         handleLogout();
         return;
@@ -621,18 +625,23 @@ const Settings = () => {
         return;
       }
 
-      // Send the exact payload structure requested
+      // Backend expects a flat payload; keep it deterministic for immediate UI updates
       const exchangeConfigPayload = {
-        exchangeConfig: {
-          exchange: selectedExchange,
-          apiKey: exchangeForm.apiKey,
-          secretKey: exchangeForm.secretKey,
-          passphrase: exchangeForm.passphrase || null,
-          enabled: true
-        }
+        exchange: selectedExchange,
+        apiKey: exchangeForm.apiKey,
+        secret: exchangeForm.secretKey,
+        passphrase: exchangeForm.passphrase || undefined,
+        testnet: true,
       };
 
       await settingsApi.saveExchangeConfig(user.uid, exchangeConfigPayload);
+
+      // Optimistically reflect the connection while the reload fetches the authoritative value
+      setExchangeConfig({
+        exchange: selectedExchange,
+        apiKey: '[ENCRYPTED]',
+        lastUpdated: new Date().toISOString(),
+      });
 
       // Refresh exchangeConfig state
       await loadExchangeConfig(user.uid);
@@ -692,14 +701,13 @@ const Settings = () => {
   const handleDisconnectExchange = async () => {
     if (!user) return;
     try {
-      // Send empty exchangeConfig to disconnect
+      // Explicitly clear exchange config so downstream checks see it as disconnected
       const exchangeConfigPayload = {
-        exchangeConfig: {
-          exchange: '',
-          apiKey: '',
-          secretKey: '',
-          enabled: false
-        }
+        exchange: null,
+        apiKey: '',
+        secret: '',
+        passphrase: '',
+        testnet: false,
       };
 
       await settingsApi.saveExchangeConfig(user.uid, exchangeConfigPayload);
@@ -894,71 +902,7 @@ const Settings = () => {
                 providerTestResults={providerTestResults}
                 testProviderConnection={testProviderConnection}
                 apiKeys={apiKeys}
-                handleProviderKeyChange={async (providerName, keyName, value, uid, setProviders) => {
-                  if (!user) return Promise.resolve();
-
-                  try {
-                    // Show loading state
-                    setSavingProvider(providerName);
-
-                    // Get backend provider ID from UI name
-                    const providerId = PROVIDER_ID_MAP[providerName];
-                    if (!providerId) {
-                      console.error("Unknown provider ID:", providerName);
-                      setToast({ message: `Unknown provider: ${providerName}`, type: 'error' });
-                      setSavingProvider(null);
-                      return;
-                    }
-
-                    // Get provider type using backend ID
-                    const providerType = PROVIDER_TYPE_MAP[providerId];
-                    if (!providerType) {
-                      console.error("Unknown provider type for ID:", providerId);
-                      setToast({ message: `Unknown provider type: ${providerName}`, type: 'error' });
-                      setSavingProvider(null);
-                      return;
-                    }
-
-                    // Construct providerConfig as object keyed by provider name
-                    const providerConfig = {
-                      [providerId]: {
-                        apiKey: value,
-                        enabled: true,
-                        type: providerType,
-                        usageStats: {}
-                      }
-                    };
-
-                    console.log("FRONTEND SENT PAYLOAD:", providerConfig);
-                    console.log("FRONTEND: Sending provider config save request");
-                    console.log("FRONTEND: Payload:", {
-                      providerConfig: providerConfig
-                    });
-                    console.log("FRONTEND: User ID:", user.uid);
-                    console.log("FRONTEND: Provider ID:", providerId);
-                    console.log("FRONTEND: Provider Name:", providerName);
-
-                    const response = await settingsApi.saveProviderConfig(user.uid, {
-                      providerConfig: providerConfig
-                    });
-
-                    console.log("FRONTEND: Received response:", response);
-                    if (response.success) {
-                      // Refresh provider config state
-                      await loadProviderConfig(user.uid);
-
-                      setToast({ message: `${providerName} API key saved!`, type: 'success' });
-                    } else {
-                      setToast({ message: `Failed to save ${providerName} key`, type: 'error' });
-                    }
-                  } catch (err) {
-                    console.error(err);
-                    setToast({ message: `Failed to save ${providerName} key`, type: 'error' });
-                  } finally {
-                    // Hide loading state
-                    setSavingProvider(null);
-                  }
-                }}
+                handleProviderKeyChange={handleProviderKeyChange}
                 handleToggleProviderEnabled={handleToggleProviderEnabled}
               />
 

@@ -14,7 +14,6 @@ interface SettingsExchangeSectionProps {
   handleSaveExchange: () => void;
   handleDisconnectExchange: () => void;
   savingExchange: boolean;
-  settings: { showUnmaskedKeys: boolean };
 }
 
 interface BalanceData {
@@ -32,7 +31,6 @@ export const SettingsExchangeSection: React.FC<SettingsExchangeSectionProps> = (
   handleSaveExchange,
   handleDisconnectExchange,
   savingExchange,
-  settings,
 }) => {
   return (
     <section id="exchange-connection" className="mb-12">
@@ -90,8 +88,7 @@ export const SettingsExchangeSection: React.FC<SettingsExchangeSectionProps> = (
                       {field.replace('Key', ' Key').replace('passphrase', 'Passphrase')}
                     </label>
                     <SettingsInput
-                      // Adjust type based on field name or global 'Show Keys' setting
-                      type={field.toLowerCase().includes('passphrase') || settings.showUnmaskedKeys ? 'text' : 'password'}
+                      type="password"
                       name={field}
                       placeholder={`Enter ${field.replace('Key', ' Key').replace('passphrase', 'Passphrase')}`}
                       value={exchangeForm[field as keyof typeof exchangeForm]}

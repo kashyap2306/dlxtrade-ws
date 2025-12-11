@@ -49,3 +49,9 @@ pnpm build
 - React Router
 - Axios
 
+## Manual verification
+
+- Submit a provider API key in Settings → API Provider Configuration; after success the input hides and shows a masked row with a Change API button.
+- Submit an exchange API key in Settings; the connected state should update immediately and Auto-Trade should detect the submission without refreshing.
+- Use the Test controls (provider or exchange) to validate connectivity; Change API should reopen the edit flow.
+

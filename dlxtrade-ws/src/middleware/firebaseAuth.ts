@@ -10,6 +10,18 @@ export async function firebaseAuthMiddleware(
   try {
     const authHeader = request.headers.authorization;
 
+    // Test-mode bypass for automated testing (non-production)
+    if (process.env.TEST_MODE === '1' && authHeader === 'Bearer mock-token') {
+      (request as any).user = {
+        uid: 'q8S8bOTaebd0af64PuTZdlpntg42',
+        email: 'test-mode@local',
+        emailVerified: true,
+        claims: { testMode: true }
+      };
+      logger.warn({ uid: 'q8S8bOTaebd0af64PuTZdlpntg42' }, 'TEST_MODE bypass engaged (mock-token)');
+      return;
+    }
+
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       reply.code(401).send({ error: 'Missing or invalid authorization header' });
       return; // Don't throw, just return after sending response

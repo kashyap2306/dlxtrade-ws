@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { firestoreAdapter } from '../services/firestoreAdapter';
 import { z } from 'zod';
-import { maskKey, encrypt, decrypt } from '../services/keyManager';
+import { maskKey, encrypt, decrypt, getEncryptionKeyHash } from '../services/keyManager';
 import { BinanceAdapter } from '../services/binanceAdapter';
 import { fetchNewsData } from '../services/newsDataAdapter';
 import { logger } from '../utils/logger';
@@ -45,77 +45,219 @@ export async function getUserIntegrations(uid: string) {
     alternativeme: { apiKey: '' }
   };
 
-  for (const [apiName, integration] of Object.entries(allIntegrations)) {
+  const defaultTypeByProvider: Record<string, string> = {
+    // Trading exchanges
+    binance: 'exchange',
+    bitget: 'exchange',
+    bingx: 'exchange',
+    weex: 'exchange',
+    // Market data
+    cryptocompare: 'marketData',
+    binancepublic: 'marketData',
+    kucoinpublic: 'marketData',
+    bybitpublic: 'marketData',
+    okxpublic: 'marketData',
+    bitgetpublic: 'marketData',
+    'cryptocompare-freemode-1': 'marketData',
+    'cryptocompare-freemode-2': 'marketData',
+    // Metadata
+    coingecko: 'metadata',
+    coinmarketcap: 'metadata',
+    coinpaprika: 'metadata',
+    nomics: 'metadata',
+    messari: 'metadata',
+    cryptorank: 'metadata',
+    // News
+    newsdata: 'news',
+    cryptopanic: 'news',
+    gnews: 'news',
+    reddit: 'news',
+    twitter: 'news',
+    alternativeme: 'news'
+  };
+
+  const setEntry = (target: any, key: string, value: any) => {
+    target[key] = {
+      providerName: key,
+      ...target[key],
+      ...value,
+    };
+  };
+
+  const firestore = getFirebaseAdmin().firestore();
+
+  const safeDecrypt = (value?: string) => {
+    if (!value) return '';
     try {
-      if (integration.enabled) {
-        // Trading exchanges
-        if (apiName === 'binance' && integration.apiKey && integration.secretKey) {
-          result.binance.apiKey = decrypt(integration.apiKey) || '';
-          result.binance.secret = decrypt(integration.secretKey) || '';
-        } else if (apiName === 'bitget' && integration.apiKey && integration.secretKey) {
-          result.bitget.apiKey = decrypt(integration.apiKey) || '';
-          result.bitget.secret = decrypt(integration.secretKey) || '';
-          // Note: passphrase is stored in exchangeConfig, not integrations
-          result.bitget.passphrase = '';
-        } else if (apiName === 'bingx' && integration.apiKey && integration.secretKey) {
-          result.bingx.apiKey = decrypt(integration.apiKey) || '';
-          result.bingx.secret = decrypt(integration.secretKey) || '';
-        } else if (apiName === 'weex' && integration.apiKey && integration.secretKey) {
-          result.weex.apiKey = decrypt(integration.apiKey) || '';
-          result.weex.secret = decrypt(integration.secretKey) || '';
-        }
-        // Market data providers
-        else if (apiName === 'cryptocompare' && integration.apiKey) {
-          result.cryptocompare.apiKey = decrypt(integration.apiKey) || '';
-        } else if (apiName === 'binancepublic' && integration.apiKey) {
-          result.binancepublic.apiKey = decrypt(integration.apiKey) || '';
-        } else if (apiName === 'kucoinpublic' && integration.apiKey) {
-          result.kucoinpublic.apiKey = decrypt(integration.apiKey) || '';
-        } else if (apiName === 'bybitpublic' && integration.apiKey) {
-          result.bybitpublic.apiKey = decrypt(integration.apiKey) || '';
-        } else if (apiName === 'okxpublic' && integration.apiKey) {
-          result.okxpublic.apiKey = decrypt(integration.apiKey) || '';
-        } else if (apiName === 'bitgetpublic' && integration.apiKey) {
-          result.bitgetpublic.apiKey = decrypt(integration.apiKey) || '';
-        } else if (apiName === 'cryptocompare-freemode-1') {
-          // No API key required for free mode providers
-          result['cryptocompare-freemode-1'].apiKey = 'FREE_MODE';
-        } else if (apiName === 'cryptocompare-freemode-2') {
-          // No API key required for free mode providers
-          result['cryptocompare-freemode-2'].apiKey = 'FREE_MODE';
-        }
-        // Metadata providers
-        else if (apiName === 'coingecko' && integration.apiKey) {
-          result.coingecko.apiKey = decrypt(integration.apiKey) || '';
-        } else if (apiName === 'coinmarketcap' && integration.apiKey) {
-          result.coinmarketcap.apiKey = decrypt(integration.apiKey) || '';
-        } else if (apiName === 'coinpaprika' && integration.apiKey) {
-          result.coinpaprika.apiKey = decrypt(integration.apiKey) || '';
-        } else if (apiName === 'nomics' && integration.apiKey) {
-          result.nomics.apiKey = decrypt(integration.apiKey) || '';
-        } else if (apiName === 'messari' && integration.apiKey) {
-          result.messari.apiKey = decrypt(integration.apiKey) || '';
-        } else if (apiName === 'cryptorank' && integration.apiKey) {
-          result.cryptorank.apiKey = decrypt(integration.apiKey) || '';
-        }
-        // News providers
-        else if (apiName === 'newsdata' && integration.apiKey) {
-          result.newsdata.apiKey = decrypt(integration.apiKey) || '';
-        } else if (apiName === 'cryptopanic' && integration.apiKey) {
-          result.cryptopanic.apiKey = decrypt(integration.apiKey) || '';
-        } else if (apiName === 'gnews' && integration.apiKey) {
-          result.gnews.apiKey = decrypt(integration.apiKey) || '';
-        } else if (apiName === 'reddit' && integration.apiKey) {
-          result.reddit.apiKey = decrypt(integration.apiKey) || '';
-        } else if (apiName === 'twitter' && integration.apiKey) {
-          result.twitter.apiKey = decrypt(integration.apiKey) || '';
-        } else if (apiName === 'alternativeme' && integration.apiKey) {
-          result.alternativeme.apiKey = decrypt(integration.apiKey) || '';
-        }
-      }
+      return decrypt(value) || '';
     } catch (error: any) {
-      logger.warn({ error: error.message, uid, apiName }, 'Failed to decrypt integration key, using empty string');
-      // Continue with empty strings for missing/invalid keys
+      logger.warn({ error: error.message, uid }, 'Failed to decrypt integration key, defaulting to empty string');
+      return '';
+    }
+  };
+
+  for (const [apiName, integration] of Object.entries(allIntegrations)) {
+    const enabled = !!integration.enabled;
+    const updatedAt = integration.updatedAt?.toDate?.()?.toISOString?.() || null;
+    const type = (integration as any).type || integration.apiType || defaultTypeByProvider[apiName] || null;
+    const encryptedApiKey = integration.apiKey || '';
+    const decryptedApiKey = encryptedApiKey ? safeDecrypt(encryptedApiKey) : '';
+    const encryptedLen = encryptedApiKey.length;
+    const decryptedLen = decryptedApiKey.length;
+    const decryptedSecret = integration.secretKey ? safeDecrypt(integration.secretKey) : '';
+
+    logger.debug({ uid, providerName: apiName, encryptedLen, decryptedLen }, 'Integration decrypt check');
+
+    if (encryptedLen > 0 && decryptedLen < 6) {
+      await firestore
+        .collection('users')
+        .doc(uid)
+        .collection('integrations')
+        .doc(apiName)
+        .set({ needsReencrypt: true, decryptable: false }, { merge: true });
+    }
+
+    // Base object stored for every provider so auto-trade always knows enabled/type/updatedAt
+    const baseMeta = { enabled, type, updatedAt };
+
+    // Trading exchanges
+    if (apiName === 'binance') {
+      setEntry(result, 'binance', {
+        ...baseMeta,
+        apiKey: enabled ? decryptedApiKey : '',
+        secret: enabled ? decryptedSecret : '',
+      });
+      continue;
+    }
+    if (apiName === 'bitget') {
+      setEntry(result, 'bitget', {
+        ...baseMeta,
+        apiKey: enabled ? decryptedApiKey : '',
+        secret: enabled ? decryptedSecret : '',
+        passphrase: '', // Stored in exchangeConfig/current, not integrations
+      });
+      continue;
+    }
+    if (apiName === 'bingx') {
+      setEntry(result, 'bingx', {
+        ...baseMeta,
+        apiKey: enabled ? decryptedApiKey : '',
+        secret: enabled ? decryptedSecret : '',
+      });
+      continue;
+    }
+    if (apiName === 'weex') {
+      setEntry(result, 'weex', {
+        ...baseMeta,
+        apiKey: enabled ? decryptedApiKey : '',
+        secret: enabled ? decryptedSecret : '',
+      });
+      continue;
+    }
+
+    // Market data providers
+    if (apiName === 'cryptocompare') {
+      setEntry(result, 'cryptocompare', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      continue;
+    }
+    if (apiName === 'binancepublic') {
+      setEntry(result, 'binancepublic', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      continue;
+    }
+    if (apiName === 'kucoinpublic') {
+      setEntry(result, 'kucoinpublic', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      continue;
+    }
+    if (apiName === 'bybitpublic') {
+      setEntry(result, 'bybitpublic', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      continue;
+    }
+    if (apiName === 'okxpublic') {
+      setEntry(result, 'okxpublic', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      continue;
+    }
+    if (apiName === 'bitgetpublic') {
+      setEntry(result, 'bitgetpublic', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      continue;
+    }
+    if (apiName === 'cryptocompare-freemode-1') {
+      setEntry(result, 'cryptocompare-freemode-1', { ...baseMeta, apiKey: 'FREE_MODE' });
+      continue;
+    }
+    if (apiName === 'cryptocompare-freemode-2') {
+      setEntry(result, 'cryptocompare-freemode-2', { ...baseMeta, apiKey: 'FREE_MODE' });
+      continue;
+    }
+
+    // Metadata providers
+    if (apiName === 'coingecko') {
+      setEntry(result, 'coingecko', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      continue;
+    }
+    if (apiName === 'coinmarketcap') {
+      setEntry(result, 'coinmarketcap', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      continue;
+    }
+    if (apiName === 'coinpaprika') {
+      setEntry(result, 'coinpaprika', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      continue;
+    }
+    if (apiName === 'nomics') {
+      setEntry(result, 'nomics', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      continue;
+    }
+    if (apiName === 'messari') {
+      setEntry(result, 'messari', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      continue;
+    }
+    if (apiName === 'cryptorank') {
+      setEntry(result, 'cryptorank', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      continue;
+    }
+
+    // News providers
+    if (apiName === 'newsdata') {
+      setEntry(result, 'newsdata', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      continue;
+    }
+    if (apiName === 'cryptopanic') {
+      setEntry(result, 'cryptopanic', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      continue;
+    }
+    if (apiName === 'gnews') {
+      setEntry(result, 'gnews', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      continue;
+    }
+    if (apiName === 'reddit') {
+      setEntry(result, 'reddit', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      continue;
+    }
+    if (apiName === 'twitter') {
+      setEntry(result, 'twitter', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      continue;
+    }
+    if (apiName === 'alternativeme') {
+      setEntry(result, 'alternativeme', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      continue;
+    }
+  }
+
+  // Optional debug logging to trace provider loader output for diagnostics
+  if (process.env.DEBUG_PROVIDER_LOG === '1') {
+    try {
+      ['cryptocompare', 'newsdata'].forEach((name) => {
+        const entry = result[name];
+        if (!entry) {
+          console.log(`[PROVIDER-DEBUG] ${uid} -> ${name}: missing entry`);
+          return;
+        }
+        const apiKeyLen = entry.apiKey ? entry.apiKey.length : 0;
+        console.log(
+          `[PROVIDER-DEBUG] ${uid} -> ${name}: enabled=${entry.enabled} type=${entry.type} apiKeyLen=${apiKeyLen} updatedAt=${entry.updatedAt || 'null'}`
+        );
+      });
+    } catch (err: any) {
+      logger.warn({ uid, err: err.message }, 'Provider debug logging failed');
     }
   }
 
@@ -1067,10 +1209,59 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     const user = (request as any).user;
     try {
       const integrations = await getUserIntegrations(user.uid);
-      return integrations;
+      logger.info({
+        uid: user.uid,
+        providers: Object.entries(integrations || {}).map(([k, v]: any) => ({
+          provider: k,
+          enabled: !!v?.enabled,
+          type: v?.type,
+          providerName: v?.providerName || k,
+          decryptedLen: typeof v?.apiKey === 'string' ? v.apiKey.length : 0
+        }))
+      }, 'Integrations response snapshot (lengths only)');
+      return { integrations };
     } catch (err: any) {
       logger.error({ err, uid: user.uid }, 'Error getting user integrations');
       return reply.code(500).send({ error: err.message || 'Error fetching integrations' });
+    }
+  });
+
+  fastify.get('/internal/debug/integrations', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = (request as any).user;
+    try {
+      const BACKEND_SECRET_HASH = getEncryptionKeyHash();
+      const integrations = await firestoreAdapter.getAllIntegrations(user.uid);
+      const providers: Record<string, { encryptedLen: number; decryptedLen: number; needsReencrypt?: boolean; type?: any; enabled?: boolean }> = {};
+
+      for (const [providerId, integration] of Object.entries(integrations)) {
+        const encryptedKey = integration.apiKey || '';
+        let decryptedKey = '';
+        try {
+          decryptedKey = encryptedKey ? decrypt(encryptedKey) || '' : '';
+        } catch {
+          decryptedKey = '';
+        }
+
+        providers[providerId] = {
+          encryptedLen: encryptedKey.length,
+          decryptedLen: decryptedKey.length,
+          needsReencrypt: (integration as any).needsReencrypt || false,
+          type: (integration as any).type || integration.apiType,
+          enabled: integration.enabled
+        };
+      }
+
+      logger.debug({ uid: user.uid, BACKEND_SECRET_HASH }, 'Internal integrations debug snapshot');
+
+      return {
+        BACKEND_SECRET_HASH,
+        providers
+      };
+    } catch (err: any) {
+      logger.error({ uid: user.uid, err: err.message }, 'Failed to load internal integrations debug snapshot');
+      return reply.code(500).send({ error: err.message || 'Failed to load integrations debug data' });
     }
   });
 

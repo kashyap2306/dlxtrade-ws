@@ -83,7 +83,16 @@ export default function Profile() {
       try {
         const providerConfigResponse = await usersApi.getProviderConfig(user.uid);
         if (isMountedRef.current) {
-          setApiProvidersStatus(providerConfigResponse.data);
+          // Convert nested structure to flat structure for Profile compatibility
+          const nestedConfig = providerConfigResponse.data;
+          const flatConfig = {
+            config: {
+              cryptocompare: nestedConfig.metadata?.primary,
+              newsdataio: nestedConfig.news?.primary,
+              coingecko: nestedConfig.marketData?.primary
+            }
+          };
+          setApiProvidersStatus(flatConfig);
         }
       } catch (providerErr: any) {
         console.warn('Failed to load provider config:', providerErr);

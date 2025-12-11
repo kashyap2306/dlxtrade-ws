@@ -407,7 +407,45 @@ export async function researchRoutes(fastify: FastifyInstance) {
 
   // Deep Research Endpoints
 
-  // GET /api/deep-research/top10 - Returns top 10 coins by market cap
+  // GET /api/deep-research/top50 - Returns top 50 coins by market cap
+  fastify.get('/deep-research/top50', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = (request as any).user;
+    const uid = user.uid;
+
+    try {
+      logger.info({ uid }, 'Fetching top 50 coins for deep research');
+
+      // Check cache first (market data cached for 30 seconds)
+      const cacheKey = `top50_coins_${uid}`;
+      let top50Coins = cacheService.get('price', cacheKey);
+
+      if (!top50Coins) {
+        const deepResearchEngine = new DeepResearchEngine();
+        top50Coins = await deepResearchEngine.getTop50Coins(uid);
+        cacheService.set('price', cacheKey, top50Coins);
+        logger.info({ uid }, 'Top 50 coins fetched from providers and cached');
+      } else {
+        logger.info({ uid }, 'Top 50 coins served from cache');
+      }
+
+      return {
+        success: true,
+        coins: top50Coins,
+        timestamp: new Date().toISOString(),
+        cached: !!cacheService.get('price', cacheKey),
+      };
+    } catch (error: any) {
+      logger.error({ uid, error: error.message }, 'Error fetching top 50 coins');
+      return reply.code(500).send({
+        success: false,
+        error: error.message || 'Failed to fetch top 50 coins'
+      });
+    }
+  });
+
+  // GET /api/deep-research/top10 - Returns top 10 coins by market cap (backward compatibility)
   fastify.get('/deep-research/top10', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
@@ -415,24 +453,25 @@ export async function researchRoutes(fastify: FastifyInstance) {
     const uid = user.uid;
 
     try {
-      logger.info({ uid }, 'Fetching top 10 coins for deep research');
+      logger.info({ uid }, 'Fetching top 10 coins for deep research (backward compatibility)');
 
       // Check cache first (market data cached for 30 seconds)
-      const cacheKey = `top10_coins_${uid}`;
-      let top10Coins = cacheService.get('price', cacheKey);
+      const cacheKey = `top50_coins_${uid}`;
+      let top50Coins = cacheService.get('price', cacheKey);
 
-      if (!top10Coins) {
+      if (!top50Coins) {
         const deepResearchEngine = new DeepResearchEngine();
-        top10Coins = await deepResearchEngine.getTop10Coins(uid);
-        cacheService.set('price', cacheKey, top10Coins);
-        logger.info({ uid }, 'Top 10 coins fetched from providers and cached');
+        top50Coins = await deepResearchEngine.getTop50Coins(uid);
+        cacheService.set('price', cacheKey, top50Coins);
+        logger.info({ uid }, 'Top 50 coins fetched from providers and cached');
       } else {
-        logger.info({ uid }, 'Top 10 coins served from cache');
+        logger.info({ uid }, 'Top 50 coins served from cache');
       }
 
+      // Return first 10 coins for backward compatibility
       return {
         success: true,
-        coins: top10Coins,
+        coins: top50Coins.slice(0, 10),
         timestamp: new Date().toISOString(),
         cached: !!cacheService.get('price', cacheKey),
       };

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { autoTradeApi, settingsApi } from '../services/api';
+import { autoTradeApi, settingsApi, usersApi } from '../services/api';
 import { useAuth } from './useAuth';
 import { suppressConsoleError } from '../utils/errorHandler';
 
@@ -30,14 +30,24 @@ export function useAutoTradeMode(): UseAutoTradeModeReturn {
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(false);
 
+  const toArray = (obj: any) =>
+    Object.entries(obj || {}).map(([providerName, cfg]) => ({ providerName, ...(cfg || {}) }));
+
+  const normalize = (v?: string) => (typeof v === 'string' ? v.toLowerCase().trim() : '');
+
   const loadStatus = useCallback(async () => {
     if (!user) return;
     try {
       // Auto-trade status not available from current valid endpoints
       // Set defaults and load from settings
       const settingsResponse = await settingsApi.load();
+      const exchangeResponse = await usersApi.getExchangeConfig(user.uid);
+
+      const exchangeData = exchangeResponse?.data || {};
+      const hasExchange = !!(exchangeData.exchange || exchangeData.providerName);
+
       setEnabled(settingsResponse.data?.autoTradeEnabled || false);
-      setIsApiConnected(settingsResponse.data?.isApiConnected || false);
+      setIsApiConnected(hasExchange);
     } catch (err: any) {
       suppressConsoleError(err, 'loadAutoTradeStatus');
       // Set safe defaults
@@ -50,24 +60,49 @@ export function useAutoTradeMode(): UseAutoTradeModeReturn {
     if (!user) return;
     try {
       const response = await settingsApi.loadProviderConfig(user.uid);
-      if (response.success) {
-        const providerConfig = response.config || {};
+      const payload = response?.data || response || {};
+      const map =
+        payload?.config?.providerConfig ??
+        payload?.providerConfig ??
+        payload ??
+        {};
 
-        const loaded: any = {
-          cryptocompare: providerConfig.cryptocompare || { enabled: false, apiKey: null },
-          newsdata: providerConfig.newsdata || { enabled: false, apiKey: null },
-          coinmarketcap: providerConfig.coinmarketcap || { enabled: false, apiKey: null },
+      const normalized: Record<string, any> = {};
+      Object.entries(map || {}).forEach(([k, v]) => {
+        const entry = (v as any) || {};
+        const providerName = entry.providerName || k;
+        const key = typeof providerName === 'string' ? providerName.toLowerCase().trim() : String(k).toLowerCase().trim();
+
+        const forcedType =
+          key.includes('newsdata')
+            ? 'news'
+            : key.includes('cryptocompare')
+              ? 'metadata'
+              : (entry.type || '').toLowerCase();
+
+        const apiKeyValue =
+          entry.apiKey ||
+          entry.apiKeyEncrypted ||
+          entry.secretEncrypted ||
+          (entry.apiKey === '[ENCRYPTED]' ? '[ENCRYPTED]' : undefined) ||
+          '[ENCRYPTED]';
+
+        const enabledValue = entry.enabled === undefined ? true : !!entry.enabled;
+
+        normalized[key] = {
+          ...entry,
+          providerName: key,
+          type: forcedType,
+          enabled: enabledValue,
+          apiKey: apiKeyValue,
         };
+      });
 
-        setIntegrations(loaded);
-      } else {
-        // Set safe defaults
-        setIntegrations({
-          cryptocompare: { enabled: false, apiKey: null },
-          newsdata: { enabled: false, apiKey: null },
-          coinmarketcap: { enabled: false, apiKey: null },
-        });
-      }
+      setIntegrations({
+        cryptocompare: normalized['cryptocompare'] || { enabled: false, apiKey: null },
+        newsdata: normalized['newsdata'] || { enabled: false, apiKey: null },
+        coinmarketcap: normalized['coinmarketcap'] || { enabled: false, apiKey: null },
+      });
     } catch (err: any) {
       suppressConsoleError(err, 'loadIntegrations');
       // Set safe defaults

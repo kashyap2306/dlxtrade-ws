@@ -1,6 +1,14 @@
+import path from "path";
 import dotenv from "dotenv";
 
-dotenv.config();
+dotenv.config({
+  path: path.join(process.cwd(), ".env"),
+});
+
+console.log("ENV CHECK project_id:", process.env.FIREBASE_PROJECT_ID);
+console.log("ENV CHECK client_email:", process.env.FIREBASE_CLIENT_EMAIL);
+console.log("ENV CHECK private_key exists:", !!process.env.FIREBASE_PRIVATE_KEY);
+
 import { buildApp } from './app';
 import { initDb } from './db';
 import { initRedis } from './db/redis';

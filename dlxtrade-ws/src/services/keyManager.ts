@@ -3,6 +3,7 @@ import { config } from '../config';
 import { query } from '../db';
 import { logger } from '../utils/logger';
 import type { ApiKey } from '../types';
+import { createHash } from 'crypto';
 
 const ALGORITHM = 'aes-256-cbc';
 const IV_LENGTH = 16;
@@ -110,6 +111,12 @@ export function decrypt(cipherText: string): string {
     // Return empty string instead of throwing to prevent crashes
     return '';
   }
+}
+
+export function getEncryptionKeyHash(prefixLength: number = 8): string {
+  const key = config.encryption.key || '';
+  const digest = createHash('sha256').update(key).digest('hex');
+  return digest.slice(0, prefixLength);
 }
 
 export async function listKeys(): Promise<Omit<ApiKey, 'apiKey' | 'apiSecret'>[]> {

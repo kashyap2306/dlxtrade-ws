@@ -1,7 +1,3 @@
-import * as dotenv from 'dotenv';
-
-dotenv.config();
-
 export const config = {
   env: process.env.NODE_ENV || 'development',
   // Use PORT from environment (Render sets this automatically)

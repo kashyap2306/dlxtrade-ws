@@ -512,6 +512,12 @@ export class FirestoreAdapter {
               apiKey: decryptedApiKey,
               ...(decryptedSecretKey && decryptedSecretKey.trim() !== '' ? { secretKey: decryptedSecretKey } : {}),
             };
+            logger.debug({
+              uid,
+              apiName,
+              apiKeyLen: decryptedApiKey.length,
+              hasSecret: !!decryptedSecretKey,
+            }, 'Enabled integration loaded with decrypted key');
           } else {
             logger.warn({ uid, apiName }, 'Skipping integration with invalid/empty decrypted API key');
           }
@@ -519,6 +525,13 @@ export class FirestoreAdapter {
           logger.error({ error: error.message, uid, apiName }, 'Failed to decrypt integration keys, skipping');
           // Continue to next integration instead of breaking the entire operation
         }
+      } else {
+        logger.debug({
+          uid,
+          apiName,
+          enabled: integration.enabled,
+          hasApiKey: !!integration.apiKey,
+        }, 'Integration not enabled or missing apiKey, skipping for diagnostics');
       }
     }
 
