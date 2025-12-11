@@ -260,50 +260,49 @@ const Settings = () => {
   const loadProviderConfig = useCallback(async (uid: string) => {
     try {
       const response = await settingsApi.loadProviderConfig(uid);
-      if (response.data) {
-        const nestedProviderConfig = response.data.config || {};
+      const nestedProviderConfig = response.data?.providerConfig || response.data?.config || {};
 
-        // Convert nested structure back to flat structure for Settings compatibility
-        const providerConfig = {
-          newsdata: nestedProviderConfig.news?.primary,
-          cryptocompare: nestedProviderConfig.metadata?.primary,
-          coingecko: nestedProviderConfig.marketData?.primary
-        };
+      console.log('[SETTINGS] Loaded providerConfig keys:', Object.keys(nestedProviderConfig || {}));
 
-        // Update providers state
-        setProviders(providerConfig);
+      // Convert nested structure back to flat structure for Settings compatibility
+      const providerConfig = {
+        newsdata: nestedProviderConfig.news?.primary,
+        cryptocompare: nestedProviderConfig.metadata?.primary,
+        coingecko: nestedProviderConfig.marketData?.primary
+      };
 
-        // Update apiKeys state
-        setApiKeys(
-          Object.fromEntries(
-            Object.entries(providerConfig).map(([pid, data]: any) => [
-              pid,
-              {
-                apiKey: data?.apiKey || "",
-                saved: !!(data?.apiKey)
-              }
-            ])
-          )
-        );
+      // Update providers state
+      setProviders(providerConfig);
 
-        // Update settings state with provider API keys
-        setSettings(prevSettings => {
-          const newSettings = { ...prevSettings };
-
-          // Map provider IDs back to settings keys
-          Object.entries(providerConfig).forEach(([providerId, data]: [string, any]) => {
-            if (data?.apiKey) {
-              // Map provider ID to settings key
-              const settingsKey = getSettingsKeyFromProviderId(providerId);
-              if (settingsKey) {
-                newSettings[settingsKey] = data.apiKey;
-              }
+      // Update apiKeys state
+      setApiKeys(
+        Object.fromEntries(
+          Object.entries(providerConfig).map(([pid, data]: any) => [
+            pid,
+            {
+              apiKey: data?.apiKey || "",
+              saved: !!(data?.apiKey)
             }
-          });
+          ])
+        )
+      );
 
-          return newSettings;
+      // Update settings state with provider API keys
+      setSettings(prevSettings => {
+        const newSettings = { ...prevSettings };
+
+        // Map provider IDs back to settings keys
+        Object.entries(providerConfig).forEach(([providerId, data]: [string, any]) => {
+          if (data?.apiKey) {
+            const settingsKey = getSettingsKeyFromProviderId(providerId);
+            if (settingsKey) {
+              newSettings[settingsKey] = data.apiKey;
+            }
+          }
         });
-      }
+
+        return newSettings;
+      });
     } catch (err) {
       console.warn('[LOAD] Failed to load provider config:', err);
     }
@@ -499,26 +498,28 @@ const Settings = () => {
     try {
       const providerId = PROVIDER_ID_MAP[providerName] || providerName.toLowerCase().replace(/\s+/g, '');
       const providerType = PROVIDER_TYPE_MAP[providerId] || 'marketData';
-      const isPrimary = ['cryptocompare', 'newsdata', 'coingecko'].includes(providerId);
       const maskedApiKeyLength = apiKey ? apiKey.length : 0;
 
-      console.log('Saving provider:', providerId, providerType, 'maskedApiKeyLength:', maskedApiKeyLength);
-      if (providerId === 'newsdata') {
-        console.log('Saving NewsData:', { providerId, providerType, isPrimary, maskedApiKeyLength });
-      }
+      console.log('[SETTINGS] Saving provider via /users/:uid/provider-config', { providerId, providerType, maskedApiKeyLength });
 
+      // Build payload for backend provider-config endpoint (integrations collection)
       const payload = {
-        providerId,
-        providerType,
-        isPrimary,
-        enabled: true,
-        apiKey
+        providerConfig: {
+          [providerId]: {
+            providerName: providerId,
+            apiKey,
+            enabled: true,
+            type: providerType
+          }
+        }
       };
 
-      const resp = await settingsApi.providers.save(user.uid, payload);
-      console.log('[PROVIDER-SAVE] response', resp?.data || resp?.status);
+      const resp = await settingsApi.saveProviderConfig(user.uid, payload);
+      console.log('[PROVIDER-SAVE] response', resp?.providerConfig || resp);
 
       setSettings({ ...settings, [keyName]: apiKey });
+      // Refresh local provider state from backend to reflect latest saved values
+      await loadProviderConfig(user.uid);
       showToast(`${providerName} API key saved!`, 'success');
     } catch (err: any) {
       console.error('[PROVIDER-SAVE] error', err?.response?.data || err);

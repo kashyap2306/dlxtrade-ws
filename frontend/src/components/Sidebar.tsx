@@ -88,7 +88,11 @@ const Icons = {
 export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
-  const [userFeatures, setUserFeatures] = useState<any[]>([]);
+  const [userFeatures, setUserFeatures] = useState<{autoTrade: boolean, research: boolean, agents: boolean, [key: string]: boolean}>({
+    autoTrade: false,
+    research: false,
+    agents: false
+  });
   const location = useLocation();
   const { user } = useAuth();
   const { unlockedAgents } = useUnlockedAgents();
@@ -137,11 +141,33 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
 
       try {
         const response = await agentsApi.getUserFeatures(user.uid);
-        const features = response.data.features || [];
-        setUserFeatures(features.filter((feature: any) => feature.enabled));
+        const features = response.data.features || {};
+
+        // Ensure features is an object with the expected boolean properties
+        if (typeof features !== 'object' || Array.isArray(features)) {
+          console.warn("INVALID_FEATURE_FORMAT - expected object, got:", features);
+          setUserFeatures({
+            autoTrade: false,
+            research: false,
+            agents: false
+          });
+          return;
+        }
+
+        // Extract the new features structure
+        setUserFeatures({
+          autoTrade: !!features.autoTrade,
+          research: !!features.research,
+          agents: !!features.agents,
+          ...features // Include any additional features
+        });
       } catch (err) {
         console.warn('Error loading user features:', err);
-        setUserFeatures([]);
+        setUserFeatures({
+          autoTrade: false,
+          research: false,
+          agents: false
+        });
       }
     };
 
@@ -175,14 +201,10 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
     return agentMap[agentId] || { name: agentName, icon: '🤖' };
   };
 
-  const dynamicMenuItems = userFeatures.map((feature: any) => {
-    const displayInfo = getAgentDisplayInfo(feature.id, feature.name);
-    return {
-      path: `/agent/${feature.id}`,
-      label: displayInfo.name,
-      icon: displayInfo.icon,
-    };
-  });
+  // For now, we'll keep this as an empty array since the new features structure
+  // doesn't include individual agent purchases in the same way
+  // This will need to be updated when the agent purchase system is implemented
+  const dynamicMenuItems: any[] = [];
 
   // Combine static and dynamic menu items
   const menuItems = [...staticMenuItems, ...dynamicMenuItems];
