@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { firestoreAdapter } from '../services/firestoreAdapter';
 import { logger } from '../utils/logger';
 import { z } from 'zod';
+import { decrypt } from '../services/keyManager';
 
 export async function diagnosticsRoutes(fastify: FastifyInstance) {
   // POST /api/diagnostics/test - Test API connectivity and credentials
@@ -23,9 +24,17 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
     const startTime = Date.now();
 
     try {
-      const integrations = await firestoreAdapter.getEnabledIntegrations(user.uid);
+      const integrations = await firestoreAdapter.getAllIntegrations(user.uid);
 
-      const getKeyFromIntegrations = (name: string) => (integrations as any)?.[name]?.apiKey || '';
+      const getKeyFromIntegrations = (name: string) => {
+        const encrypted = integrations?.[name]?.apiKeyEncrypted || '';
+        if (!encrypted) return '';
+        try {
+          return decrypt(encrypted) || '';
+        } catch {
+          return '';
+        }
+      };
 
       switch (apiName) {
         case 'cryptocompare': {
@@ -204,7 +213,7 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
         }
 
         case 'coinmarketcap': {
-          const apiKey = body.apiKey || integrations.coinmarketcap?.apiKey;
+          const apiKey = (body.apiKey || getKeyFromIntegrations('coinmarketcap') || '').trim();
           if (!apiKey) {
             return {
               apiName: 'coinmarketcap',

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { settingsApi, providerApi, exchangeService, adminApi } from '../services/api';
 import Toast from '../components/Toast';
-import { API_NAME_MAP } from "../constants/providers";
+import { API_NAME_MAP, PROVIDER_CONFIG } from "../constants/providers";
 import { EXCHANGES } from "../constants/exchanges";
 import { useAuth } from '../hooks/useAuth';
 import { ErrorBoundary } from '../components/ErrorBoundary';
@@ -260,24 +260,36 @@ const Settings = () => {
   const loadProviderConfig = useCallback(async (uid: string) => {
     try {
       const response = await settingsApi.loadProviderConfig(uid);
-      const nestedProviderConfig = response.data?.providerConfig || response.data?.config || {};
+      const raw =
+        response?.providerConfig ??
+        response?.config ??
+        response?.data?.providerConfig ??
+        response?.data?.config ??
+        response?.data ??
+        response ??
+        {};
 
-      console.log('[SETTINGS] Loaded providerConfig keys:', Object.keys(nestedProviderConfig || {}));
+      console.log('[SETTINGS] Loaded providerConfig keys:', Object.keys(raw || {}));
 
-      // Convert nested structure back to flat structure for Settings compatibility
       const providerConfig = {
-        newsdata: nestedProviderConfig.news?.primary,
-        cryptocompare: nestedProviderConfig.metadata?.primary,
-        coingecko: nestedProviderConfig.marketData?.primary
+        marketData: raw.marketData || {},
+        news: raw.news || {},
+        metadata: raw.metadata || {}
       };
 
-      // Update providers state
-      setProviders(providerConfig);
+      const flatProviders = {
+        ...(providerConfig.marketData || {}),
+        ...(providerConfig.news || {}),
+        ...(providerConfig.metadata || {})
+      };
+
+      // Update providers state with flat map for UI consumers
+      setProviders(flatProviders);
 
       // Update apiKeys state
       setApiKeys(
         Object.fromEntries(
-          Object.entries(providerConfig).map(([pid, data]: any) => [
+          Object.entries(flatProviders).map(([pid, data]: any) => [
             pid,
             {
               apiKey: data?.apiKey || "",
@@ -287,17 +299,20 @@ const Settings = () => {
         )
       );
 
-      // Update settings state with provider API keys
+      // Update settings state with provider API keys and enabled toggles
       setSettings(prevSettings => {
         const newSettings = { ...prevSettings };
 
-        // Map provider IDs back to settings keys
-        Object.entries(providerConfig).forEach(([providerId, data]: [string, any]) => {
-          if (data?.apiKey) {
-            const settingsKey = getSettingsKeyFromProviderId(providerId);
-            if (settingsKey) {
-              newSettings[settingsKey] = data.apiKey;
-            }
+        Object.entries(flatProviders).forEach(([providerId, data]: [string, any]) => {
+          const apiKey = data?.apiKey || '';
+          const settingsKey = getSettingsKeyFromProviderId(providerId);
+          if (settingsKey) {
+            newSettings[settingsKey] = apiKey;
+          }
+
+          const enabledKey = getEnabledKeyFromProviderId(providerId);
+          if (enabledKey) {
+            newSettings[enabledKey] = data?.enabled ?? newSettings[enabledKey] ?? false;
           }
         });
 
@@ -388,6 +403,24 @@ const Settings = () => {
       'cryptocompare_news': 'cryptoCompareNewsKey'
     };
     return mapping[providerId] || null;
+  };
+
+  const getEnabledKeyFromProviderId = (providerId: string): string | null => {
+    const nameEntry = Object.entries(API_NAME_MAP).find(([, id]) => id === providerId);
+    if (!nameEntry) return null;
+    const providerName = nameEntry[0];
+
+    for (const config of Object.values(PROVIDER_CONFIG)) {
+      if ((config as any).primary?.name === providerName && (config as any).primary?.enabledKey) {
+        return (config as any).primary.enabledKey;
+      }
+      const backup = config.backups.find(b => b.name === providerName);
+      if (backup?.enabledKey) {
+        return backup.enabledKey;
+      }
+    }
+
+    return null;
   };
 
   // Handlers (rest of existing handlers like handleSaveGeneralSettings, handleProviderKeyChange, etc.)

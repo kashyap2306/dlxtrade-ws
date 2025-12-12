@@ -296,14 +296,7 @@ export const usersApi = {
   // Active trades
   getActiveTrades: (uid: string) => api.get(`/users/${uid}/active-trades`),
   // Provider config
-  getProviderConfig: async (uid: string) => {
-    const response = await api.get(`/users/${uid}/provider-config`, { withCredentials: true });
-    console.log('[API LOG] Raw providerConfig response from backend:', JSON.stringify(response.data, null, 2));
-    const raw = response?.data;
-    const cfg = raw?.providerConfig ?? raw?.config ?? raw ?? {};
-    const flat = cfg?.providerConfig ?? cfg ?? {};
-    return flat;
-  },
+  getProviderConfig: (uid: string) => api.get(`/users/${uid}/provider-config`),
   // Exchange config
   getExchangeConfig: (uid: string) => api.get(`/users/${uid}/exchangeConfig/current`),
   // Temp test

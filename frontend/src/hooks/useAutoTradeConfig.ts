@@ -136,13 +136,11 @@ export const useAutoTradeConfig = (user: any) => {
   // Exchange config state
   const [exchangeConfig, setExchangeConfig] = useState<any>({});
 
-  // Provider config state - initialize with proper structure
+  // Provider config state - initialize with proper structure (objects, not arrays)
   const [providerConfig, setProviderConfig] = useState<any>({
-    market: [],
-    news: [],
-    metadata: [],
-    exchange: [],
-    features: { autoTrade: true }
+    marketData: {},
+    news: {},
+    metadata: {},
   });
 
   // Configs loaded state
@@ -232,21 +230,23 @@ export const useAutoTradeConfig = (user: any) => {
   const loadAllData = useCallback(async () => {
     if (!isMountedRef.current) return;
 
-    // Force safe defaults before any network activity
-    setProviderConfig({
-      market: [],
-      news: [],
-      metadata: [],
-      exchange: [],
-      features: { autoTrade: true }
-    });
-    setExchangeConfig({});
-
-    if (!user) {
+    // EARLY GUARD: Wait for user.uid before running
+    if (!user?.uid) {
+      console.log('[AUTO-TRADE] loadAllData() skipped - waiting for user.uid');
       return;
     }
 
+    // Set safe defaults BEFORE network activity (but don't wipe existing data)
+    // Only set if we don't already have data
+    setExchangeConfig({});
+
     console.log('[AUTO-TRADE] loadAllData() STARTED');
+
+    let finalProviderConfig = {
+      marketData: {},
+      news: {},
+      metadata: {}
+    };
 
     try {
       // Load config and initial data in parallel with Promise.allSettled
@@ -264,6 +264,8 @@ export const useAutoTradeConfig = (user: any) => {
         ]);
       };
 
+      console.log("[ATC_FETCH] Starting provider config fetch");
+
       const promises = [
         createTimeoutPromise(autoTradeApi.getConfig(), 10000, 'getConfig'),
         authUid ? createTimeoutPromise(usersApi.getPerformanceStats(authUid), 10000, 'getPerformanceStats') : Promise.reject(new Error('Missing UID')),
@@ -279,6 +281,10 @@ export const useAutoTradeConfig = (user: any) => {
         exchangeRes: exchangeRes.status,
         providerRes: providerRes.status
       });
+
+      if (providerRes.status === 'fulfilled') {
+        console.log("[RAW BACKEND PROVIDER CONFIG]", JSON.stringify(providerRes.value?.data, null, 2));
+      }
 
       // Handle config result - always set a safe config
       if (configRes.status === 'fulfilled' && isMountedRef.current) {
@@ -343,69 +349,29 @@ export const useAutoTradeConfig = (user: any) => {
           console.log('[AUTO-TRADE] exchangeRes fulfilled with data:', !!data);
           const safeExchange = data || {};
           setExchangeConfig(safeExchange);
-        } else {
-          console.log('[AUTO-TRADE] exchangeRes rejected:', exchangeRes.reason?.message);
+        } else if (exchangeRes.status === 'rejected') {
+          const reason = (exchangeRes as PromiseRejectedResult).reason as any;
+          console.log('[AUTO-TRADE] exchangeRes rejected:', reason?.message || reason);
           // Always set safe fallback on any failure
           setExchangeConfig({});
         }
       };
       handleExchangeConfig();
 
-      // Handle provider config - ALWAYS set a safe structure, NEVER null
-      if (isMountedRef.current) {
-        let finalProviderConfig = {
-          market: [],
-          news: [],
-          metadata: [],
-          exchange: [],
-          features: {
-            autoTrade: true // ENSURE autoTrade is ALWAYS enabled by default
-          }
+      // Handle provider config - always maintain bucket structure
+      if (isMountedRef.current && providerRes.status === 'fulfilled') {
+        const fetched = providerRes.value?.data || {};
+        finalProviderConfig = {
+          marketData: fetched.marketData || {},
+          news: fetched.news || {},
+          metadata: fetched.metadata || {},
         };
-
-        if (providerRes.status === 'fulfilled') {
-          console.log('[AUTO-TRADE] providerRes fulfilled');
-          const fetched = providerRes.value?.data?.providerConfig ?? {};
-          // Merge with safe defaults - only override what succeeded
-          finalProviderConfig = {
-            market: fetched.market || [],
-            news: fetched.news || [],
-            metadata: fetched.metadata || [],
-            exchange: fetched.exchange || [],
-            features: {
-              ...fetched.features,
-              autoTrade: true // FORCE autoTrade to ALWAYS be true regardless of API response
-            }
-          };
-        } else {
-          console.log('[AUTO-TRADE] providerRes rejected:', providerRes.reason?.message);
-        }
-        // Always set provider config, even if rejected (use safe defaults with autoTrade enabled)
 
         setProviderConfig(finalProviderConfig);
 
-        // Log for debugging
-        const cc = finalProviderConfig.market?.find((p: any) => p.providerName === 'cryptocompare');
-        const nd = finalProviderConfig.news?.find((p: any) => p.providerName === 'newsdata');
-        console.log("[AutoTrade] integrations received", {
-          market: finalProviderConfig.market.length,
-          news: finalProviderConfig.news.length,
-          metadata: finalProviderConfig.metadata.length,
-          exchange: finalProviderConfig.exchange.length,
-          features: Object.keys(finalProviderConfig.features).length,
-          cryptocompare: {
-            enabled: cc?.enabled,
-            type: cc?.type,
-            providerName: cc?.providerName,
-            decryptedLen: typeof cc?.apiKey === 'string' ? cc.apiKey.length : 0
-          },
-          newsdata: {
-            enabled: nd?.enabled,
-            type: nd?.type,
-            providerName: nd?.providerName,
-            decryptedLen: typeof nd?.apiKey === 'string' ? nd.apiKey.length : 0
-          }
-        });
+        console.log("[ATC_FINAL_CONFIG]", finalProviderConfig);
+      } else {
+        setProviderConfig(finalProviderConfig);
       }
 
       // Set default portfolio data since wallet API is not available
@@ -421,22 +387,26 @@ export const useAutoTradeConfig = (user: any) => {
       }
 
     } catch (error: any) {
-      // suppressConsoleError(error, 'loadAutoTradeData');
+      console.error("[ATC_ERROR]", error?.response?.data || error);
     } finally {
-      console.log('AUTO-TRADE FULLY LOADED - UI UNLOCKED', {
+      setProviderConfig(finalProviderConfig);
+      setConfigsLoaded(true);
+
+      console.log("[ATC_READY_FINAL]", {
         configsLoaded: true,
-        providerConfig: providerConfig,
-        exchangeConfig: exchangeConfig,
-        autoTradeGuaranteed: providerConfig?.features?.autoTrade === true
+        providerConfig: finalProviderConfig
       });
     }
   }, [user, loadLiveData]);
 
   useEffect(() => {
-    setConfigsLoaded(true); // UNLOCK UI IMMEDIATELY
-    loadAllData(); // API calls run in background ONCE
-    // NO DEPENDENCIES - run only on initial mount
-  }, []);
+    if (!user?.uid) {
+      console.log("[AutoTrade] Waiting for valid user UID...");
+      return;
+    }
+    console.log("[AutoTrade] user.uid ready, running loadAllData()");
+    loadAllData();
+  }, [user?.uid]);
 
   const isExchangeConnected = useCallback((config: any) => {
     if (!config) return false;
@@ -506,21 +476,7 @@ export const useAutoTradeConfig = (user: any) => {
 
   // Placeholder for runDiagnostics - will be implemented in the diagnostics component
   const runDiagnostics = async () => {
-    console.log('[RUN-SELF-TEST] Triggered');
-    try {
-      return {
-        status: 'ok',
-        timestamp: new Date().toISOString(),
-        message: 'Diagnostics stub (client-side)'
-      };
-    } catch (e: any) {
-      console.error('[RUN-SELF-TEST ERROR]', e);
-      return {
-        status: 'error',
-        timestamp: new Date().toISOString(),
-        message: e?.message || 'Diagnostics failed'
-      };
-    }
+    return null;
   };
 
   return {

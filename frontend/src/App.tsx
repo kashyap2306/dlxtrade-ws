@@ -15,6 +15,17 @@ import { useAuth } from './hooks/useAuth';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { LoadingState } from './components/LoadingState';
 
+function ErrorCatcher({ children }: { children: React.ReactNode }) {
+  try {
+    return <>{children}</>;
+  } catch (err) {
+    console.error("[AUTOTRADE RUNTIME ERROR]", err);
+    return <div style={{ padding: 20, color: "red" }}>
+      AutoTrade crashed: {String(err)}
+    </div>;
+  }
+}
+
 // Lazy load pages to break circular dependencies and improve performance
 const Login = React.lazy(() => import('./pages/Login'));
 const Signup = React.lazy(() => import('./pages/Signup'));
@@ -182,7 +193,16 @@ function App() {
                   <Route path="dashboard" element={<SafeRoute><Dashboard /></SafeRoute>} />
                   <Route path="engine" element={<SafeRoute><EngineControl /></SafeRoute>} />
                   <Route path="research" element={<SafeRoute><ResearchPanel /></SafeRoute>} />
-                  <Route path="auto-trade" element={<SafeRoute><AutoTrade /></SafeRoute>} />
+                  <Route
+                    path="auto-trade"
+                    element={
+                      <SafeRoute>
+                        <ErrorCatcher>
+                          <AutoTrade />
+                        </ErrorCatcher>
+                      </SafeRoute>
+                    }
+                  />
                   <Route path="auto-trade/terms" element={<SafeRoute><AutoTradeTerms /></SafeRoute>} />
                   <Route path="settings" element={<SafeRoute><Settings /></SafeRoute>} />
                   <Route path="profile" element={<SafeRoute><Profile /></SafeRoute>} />

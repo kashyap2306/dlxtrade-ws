@@ -138,17 +138,6 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(usersRoutes, { prefix: '/api/users' });
   console.log("[DEBUG] usersRoutes registration completed");
 
-  // Global preHandler middleware - runs ensureUser BEFORE all WS and REST logic
-  app.addHook("preHandler", async (req, reply) => {
-    if ((req as any).user && (req as any).user.uid) {
-      const { ensureUser } = await import('./services/userOnboarding');
-      await ensureUser((req as any).user.uid, {
-        email: (req as any).user.email,
-        name: (req as any).user.name || (req as any).user.displayName
-      });
-    }
-  });
-
   // WebSocket
   await app.register(fastifyWebsocket);
   console.log('WS ROUTE READY');

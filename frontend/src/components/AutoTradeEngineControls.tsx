@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { autoTradeApi } from '../services/api';
 
 interface AutoTradeEngineControlsProps {
@@ -16,11 +15,7 @@ interface AutoTradeEngineControlsProps {
   updateEngineStatus: () => void;
   setAutoTradeStatus: (status: any) => void;
   setConfig: (config: any) => void;
-  setShowEnableModal: (show: boolean) => void;
-  setEnableError: (errors: any[]) => void;
-  setShowDiagnosticModal: (show: boolean) => void;
-  setDiagnosticResults: (results: any) => void;
-  runDiagnostics: () => Promise<any>;
+  runSelfTest: () => Promise<any>;
   isRunningDiagnostics: boolean;
   showToast: (message: string, type: 'success' | 'error') => void;
 }
@@ -36,15 +31,10 @@ export const AutoTradeEngineControls: React.FC<AutoTradeEngineControlsProps> = (
   updateEngineStatus,
   setAutoTradeStatus,
   setConfig,
-  setShowEnableModal,
-  setEnableError,
-  setShowDiagnosticModal,
-  setDiagnosticResults,
-  runDiagnostics,
+  runSelfTest,
   isRunningDiagnostics,
   showToast,
 }) => {
-  const navigate = useNavigate();
   const togglingRef = useRef(false);
   const [saving, setSaving] = useState(false);
 
@@ -126,8 +116,7 @@ export const AutoTradeEngineControls: React.FC<AutoTradeEngineControlsProps> = (
           });
         }
 
-        setEnableError(errors);
-        setShowEnableModal(true);
+        showToast(errors[0].title, 'error');
       } finally {
         setSaving(false);
         togglingRef.current = false;
@@ -194,12 +183,8 @@ export const AutoTradeEngineControls: React.FC<AutoTradeEngineControlsProps> = (
           ) : (
             <div className="flex gap-3">
               <button
-                onClick={async () => {
-                  const results = await runDiagnostics();
-                  setDiagnosticResults(results);
-                  setShowDiagnosticModal(true);
-                }}
-                disabled={false}
+                onClick={runSelfTest}
+                disabled={isRunningDiagnostics}
                 className="px-3 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm rounded-lg shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
               >
                 {isRunningDiagnostics ? (

@@ -1,5 +1,6 @@
 import { logger } from '../utils/logger';
 import { firestoreAdapter } from './firestoreAdapter';
+import { getProviderConfig } from '../routes/users/providerConfig';
 import type { Orderbook, Trade } from '../types';
 
 export interface ResearchResult {
@@ -92,15 +93,16 @@ export class ResearchEngine {
     }
 
     try {
-      const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
+      const providerConfig = await getProviderConfig(uid);
       let bullishSignals = 0;
       let bearishSignals = 0;
 
-      // Analyze available research integrations
-      if (integrations.cryptocompare) {
+      // Analyze available research integrations from providerConfig
+      const cryptoCompareProvider = providerConfig.marketData?.cryptocompare;
+      if (cryptoCompareProvider && cryptoCompareProvider.enabled && cryptoCompareProvider.apiKey) {
         try {
           const { CryptoCompareAdapter } = await import('./cryptocompareAdapter');
-          const cryptoCompareAdapter = new CryptoCompareAdapter(integrations.cryptocompare.apiKey);
+          const cryptoCompareAdapter = new CryptoCompareAdapter(cryptoCompareProvider.apiKey);
           const marketData = await cryptoCompareAdapter.getMarketData(symbol);
           if (marketData && marketData.priceChangePercent24h !== undefined) {
             const priceChange = marketData.priceChangePercent24h;
@@ -116,10 +118,11 @@ export class ResearchEngine {
         }
       }
 
-      if (integrations.newsdata) {
+      const newsDataProvider = providerConfig.news?.newsdata;
+      if (newsDataProvider && newsDataProvider.enabled && newsDataProvider.apiKey) {
         try {
           const { fetchNewsData } = await import('./newsDataAdapter');
-          const newsData = await fetchNewsData(integrations.newsdata.apiKey, symbol);
+          const newsData = await fetchNewsData(newsDataProvider.apiKey, symbol);
           if (newsData && newsData.sentiment !== undefined) {
             const sentiment = newsData.sentiment;
             if (sentiment > 0.6) {
@@ -134,10 +137,11 @@ export class ResearchEngine {
         }
       }
 
-      if (integrations.coinmarketcap) {
+      const coinMarketCapProvider = providerConfig.metadata?.coinmarketcap;
+      if (coinMarketCapProvider && coinMarketCapProvider.enabled && coinMarketCapProvider.apiKey) {
         try {
           const { fetchCoinMarketCapMarketData } = await import('./coinMarketCapAdapter');
-          const marketData = await fetchCoinMarketCapMarketData(symbol, integrations.coinmarketcap.apiKey);
+          const marketData = await fetchCoinMarketCapMarketData(symbol, coinMarketCapProvider.apiKey);
           if (marketData && marketData.success && marketData.priceChangePercent24h !== undefined) {
             const priceChange = marketData.priceChangePercent24h;
             if (priceChange > 3) {
@@ -281,13 +285,14 @@ export class ResearchEngine {
     // 5. Fetch external data sources if integrations are available
     if (uid) {
       try {
-        const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
+        const providerConfig = await getProviderConfig(uid);
         
         // Analyze available research integrations
-        if (integrations.cryptocompare) {
+        const cryptoCompareProvider = providerConfig.marketData?.cryptocompare;
+        if (cryptoCompareProvider && cryptoCompareProvider.enabled && cryptoCompareProvider.apiKey) {
           try {
             const { CryptoCompareAdapter } = await import('./cryptocompareAdapter');
-            const cryptoCompareAdapter = new CryptoCompareAdapter(integrations.cryptocompare.apiKey);
+            const cryptoCompareAdapter = new CryptoCompareAdapter(cryptoCompareProvider.apiKey);
             const marketData = await cryptoCompareAdapter.getMarketData(symbol);
             if (marketData && marketData.priceChangePercent24h !== undefined) {
               const priceChangePercent = marketData.priceChangePercent24h;
@@ -303,10 +308,11 @@ export class ResearchEngine {
           }
         }
 
-        if (integrations.newsdata) {
+        const newsDataProvider = providerConfig.news?.newsdata;
+        if (newsDataProvider && newsDataProvider.enabled && newsDataProvider.apiKey) {
           try {
             const { fetchNewsData } = await import('./newsDataAdapter');
-            const newsData = await fetchNewsData(integrations.newsdata.apiKey, symbol);
+            const newsData = await fetchNewsData(newsDataProvider.apiKey, symbol);
             if (newsData && newsData.sentiment !== undefined) {
               const sentimentScore = newsData.sentiment;
               if (sentimentScore > 0.6) {
@@ -321,10 +327,11 @@ export class ResearchEngine {
           }
         }
 
-        if (integrations.coinmarketcap) {
+        const coinMarketCapProvider = providerConfig.metadata?.coinmarketcap;
+        if (coinMarketCapProvider && coinMarketCapProvider.enabled && coinMarketCapProvider.apiKey) {
           try {
             const { fetchCoinMarketCapMarketData } = await import('./coinMarketCapAdapter');
-            const marketData = await fetchCoinMarketCapMarketData(symbol, integrations.coinmarketcap.apiKey);
+            const marketData = await fetchCoinMarketCapMarketData(symbol, coinMarketCapProvider.apiKey);
             if (marketData && marketData.success && marketData.priceChangePercent24h !== undefined) {
               const priceChangePercent = marketData.priceChangePercent24h;
               if (priceChangePercent > 3) {

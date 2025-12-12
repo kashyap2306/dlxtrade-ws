@@ -1,5 +1,6 @@
 import { logger } from '../utils/logger';
 import { firestoreAdapter } from './firestoreAdapter';
+import { getProviderConfig } from '../routes/users/providerConfig';
 import { getFirebaseAdmin } from '../utils/firebase';
 import * as admin from 'firebase-admin';
 import { AdapterError } from '../utils/adapterErrorHandler';
@@ -142,13 +143,13 @@ export class ScheduledResearchService {
     errors?: Array<{ adapter: string; error: string; isAuthError: boolean }>;
   }> {
     try {
-      // Get enabled research integrations (NO trading exchange credentials needed)
-      const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
+      // Get provider config for research APIs (marketData, news, metadata)
+      const providerConfig = await getProviderConfig(uid);
       
       // Check if at least one research API is configured
-      const hasCryptoCompare = integrations.cryptocompare?.apiKey;
-      const hasNewsData = integrations.newsdata?.apiKey;
-      const hasCoinMarketCap = integrations.coinmarketcap?.apiKey;
+      const hasCryptoCompare = providerConfig.marketData?.cryptocompare?.enabled && providerConfig.marketData?.cryptocompare?.apiKey;
+      const hasNewsData = providerConfig.news?.newsdata?.enabled && providerConfig.news?.newsdata?.apiKey;
+      const hasCoinMarketCap = providerConfig.metadata?.coinmarketcap?.enabled && providerConfig.metadata?.coinmarketcap?.apiKey;
 
       if (!hasCryptoCompare && !hasNewsData && !hasCoinMarketCap) {
         // Silently skip users without research API credentials (no log spam)
@@ -181,7 +182,7 @@ export class ScheduledResearchService {
         try {
           logger.debug({ uid, symbol }, 'CryptoCompare: Processing research data');
           const { CryptoCompareAdapter } = await import('./cryptocompareAdapter');
-          const cryptoCompareAdapter = new CryptoCompareAdapter(integrations.cryptocompare.apiKey);
+          const cryptoCompareAdapter = new CryptoCompareAdapter(providerConfig.marketData.cryptocompare.apiKey);
           const marketData = await cryptoCompareAdapter.getMarketData(symbol);
           researchData.cryptocompare = {
             price: marketData.price || Math.random() * 50000 + 20000,
@@ -199,7 +200,7 @@ export class ScheduledResearchService {
         try {
           logger.debug({ uid, symbol }, 'NewsData: Processing research data');
           const { fetchNewsData } = await import('./newsDataAdapter');
-          const newsData = await fetchNewsData(integrations.newsdata.apiKey, symbol);
+          const newsData = await fetchNewsData(providerConfig.news.newsdata.apiKey, symbol);
           researchData.newsdata = {
             sentiment: newsData.sentiment || Math.random() * 2 - 1,
             articleCount: newsData.articles?.length || Math.floor(Math.random() * 20) + 1,
@@ -216,7 +217,7 @@ export class ScheduledResearchService {
         try {
           logger.debug({ uid, symbol }, 'CoinMarketCap: Processing research data');
           const { fetchCoinMarketCapMarketData } = await import('./coinMarketCapAdapter');
-          const marketData = await fetchCoinMarketCapMarketData(symbol, integrations.coinmarketcap.apiKey);
+          const marketData = await fetchCoinMarketCapMarketData(symbol, providerConfig.metadata.coinmarketcap.apiKey);
           researchData.coinmarketcap = {
             marketCap: (marketData.success ? marketData.marketCap : null) || Math.random() * 1000000000000 + 1000000000,
             volume24h: (marketData.success ? marketData.volume24h : null) || Math.random() * 10000000000 + 100000000,

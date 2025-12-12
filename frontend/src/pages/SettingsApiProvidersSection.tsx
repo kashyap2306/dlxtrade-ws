@@ -13,7 +13,7 @@ interface SettingsApiProvidersSectionProps {
   providerTestResults: any;
   apiKeys: Record<string, { apiKey: string; saved: boolean }>;
   testProviderConnection: (providerName: string, apiKey: string, keyName: string) => void;
-  handleProviderKeyChange: (providerName: string, keyName: string, value: string, uid?: string, setProviders?: (providers: any) => void) => void;
+  handleProviderKeyChange: (providerId: string, data: { apiKey: string; enabled: boolean }) => Promise<void> | void;
   handleToggleProviderEnabled: (providerName: string, enabledKey: string, checked: boolean) => void;
 }
 
@@ -56,8 +56,8 @@ export const SettingsApiProvidersSection: React.FC<SettingsApiProvidersSectionPr
   };
 
   const getSavedKey = (providerName: string) => {
-    const providerId = PROVIDER_ID_MAP[providerName];
-    return apiKeys[providerId]?.apiKey || settings[getProviderKey(providerName)] || '';
+    const providerId = (PROVIDER_ID_MAP[providerName] || '').toLowerCase();
+    return apiKeys[providerId]?.apiKey || '';
   };
 
   const handleChangeApiClick = (providerName: string) => {
@@ -67,8 +67,8 @@ export const SettingsApiProvidersSection: React.FC<SettingsApiProvidersSectionPr
 
   const confirmEditApi = () => {
     const providerName = pendingEditProvider;
-    const providerId = PROVIDER_ID_MAP[providerName];
-    const currentKey = apiKeys[providerId]?.apiKey || settings[getProviderKey(providerName)] || '';
+    const providerId = (PROVIDER_ID_MAP[providerName] || '').toLowerCase();
+    const currentKey = apiKeys[providerId]?.apiKey || '';
     setOriginalApiKey(currentKey);
     setEditingProvider(providerName);
     setShowConfirmDialog(false);
@@ -88,7 +88,12 @@ export const SettingsApiProvidersSection: React.FC<SettingsApiProvidersSectionPr
 
   const saveApiKey = async (providerName: string) => {
     const providerKey = getProviderKey(providerName);
-    await handleProviderKeyChange(providerName, providerKey, settings[providerKey], '', () => {});
+    const providerId = (PROVIDER_ID_MAP[providerName] || '').toLowerCase();
+    await handleProviderKeyChange(providerId, {
+      apiKey: settings[providerKey],
+      enabled: true
+    });
+    setSettings((prev: any) => ({ ...prev, [providerKey]: '' }));
     setEditingProvider(null);
     setOriginalApiKey('');
   };
@@ -134,7 +139,7 @@ export const SettingsApiProvidersSection: React.FC<SettingsApiProvidersSectionPr
                           </div>
                           <div className="flex flex-wrap gap-2 justify-end">
                             <button
-                              onClick={() => testProviderConnection(config.primary.name, settings[config.primary.key], config.primary.key)}
+                              onClick={() => testProviderConnection(config.primary.name, savedKey, config.primary.key)}
                               disabled={savingProvider === config.primary.name}
                               className="px-3 py-2 bg-slate-700/60 text-slate-200 text-xs rounded-lg hover:bg-slate-600/70 transition-all duration-300 disabled:opacity-50"
                             >
@@ -163,8 +168,8 @@ export const SettingsApiProvidersSection: React.FC<SettingsApiProvidersSectionPr
 
                         <div className="flex flex-col sm:flex-row gap-2 sm:justify-end">
                           <button
-                            onClick={() => saveApiKey(config.primary.name)}
-                            disabled={savingProvider === config.primary.name || !settings[config.primary.key]}
+                          onClick={() => saveApiKey(config.primary.name)}
+                          disabled={savingProvider === config.primary.name || !settings[config.primary.key]}
                             className="px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-500 text-white font-medium rounded-lg text-sm hover:from-green-600 hover:to-emerald-600 focus:outline-none focus:ring-2 focus:ring-green-500 transition-all duration-300 disabled:opacity-50 hover:scale-[1.05]"
                           >
                             {savingProvider === config.primary.name ? 'Saving...' : hasKey ? 'Update' : 'Save'}
@@ -245,7 +250,7 @@ export const SettingsApiProvidersSection: React.FC<SettingsApiProvidersSectionPr
                                 </div>
                                 <div className="flex flex-wrap gap-2 justify-end">
                                   <button
-                                    onClick={() => testProviderConnection(backup.name, settings[backup.key], backup.key)}
+                                    onClick={() => testProviderConnection(backup.name, savedKey, backup.key)}
                                     disabled={savingProvider === backup.name}
                                     className="px-3 py-2 bg-slate-700/60 text-slate-200 text-xs rounded-lg hover:bg-slate-600/70 transition-all duration-300 disabled:opacity-50"
                                   >

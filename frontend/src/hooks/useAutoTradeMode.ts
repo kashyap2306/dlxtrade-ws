@@ -62,8 +62,8 @@ export function useAutoTradeMode(): UseAutoTradeModeReturn {
       const response = await settingsApi.loadProviderConfig(user.uid);
       const payload = response?.data || response || {};
       const map =
-        payload?.config?.providerConfig ??
         payload?.providerConfig ??
+        payload?.config ??
         payload ??
         {};
 
@@ -72,29 +72,10 @@ export function useAutoTradeMode(): UseAutoTradeModeReturn {
         const entry = (v as any) || {};
         const providerName = entry.providerName || k;
         const key = typeof providerName === 'string' ? providerName.toLowerCase().trim() : String(k).toLowerCase().trim();
-
-        const forcedType =
-          key.includes('newsdata')
-            ? 'news'
-            : key.includes('cryptocompare')
-              ? 'metadata'
-              : (entry.type || '').toLowerCase();
-
-        const apiKeyValue =
-          entry.apiKey ||
-          entry.apiKeyEncrypted ||
-          entry.secretEncrypted ||
-          (entry.apiKey === '[ENCRYPTED]' ? '[ENCRYPTED]' : undefined) ||
-          '[ENCRYPTED]';
-
-        const enabledValue = entry.enabled === undefined ? true : !!entry.enabled;
-
         normalized[key] = {
-          ...entry,
-          providerName: key,
-          type: forcedType,
-          enabled: enabledValue,
-          apiKey: apiKeyValue,
+          enabled: entry.enabled ?? false,
+          apiKey: entry.apiKey || '',
+          secretKey: entry.secretKey || '',
         };
       });
 

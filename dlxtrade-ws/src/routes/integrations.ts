@@ -8,6 +8,34 @@ import { logger } from '../utils/logger';
 import * as admin from 'firebase-admin';
 import { getFirebaseAdmin } from '../utils/firebase';
 
+// REQUIRED HARD MAPPING - STRICT PROVIDER TYPE NORMALIZATION
+const MARKET_DATA_PROVIDERS = new Set([
+  "cryptocompare", "bybit", "okx", "kucoin", "bitget", "coinstats",
+  "livecoinwatch", "marketaux", "kaiko", "messari", "coinapi",
+  "coincap_metadata", "coingecko_metadata", "coinlore_metadata",
+  "coinmarketcap_metadata", "coinpaprika_metadata"
+]);
+
+const NEWS_PROVIDERS = new Set([
+  "newsdata", "cryptopanic", "reddit", "webzio",
+  "gnews", "newscatcher", "coinstatsnews",
+  "altcoinbuzz_rss", "cointelegraph_rss"
+]);
+
+const METADATA_PROVIDERS = new Set([
+  "coingecko", "coinpaprika", "coincap", "coinlore",
+  "coinmarketcap", "livecoinwatch_metadata"
+]);
+
+function normalizeProviderType(name: string): "marketData" | "news" | "metadata" {
+  const normalizedName = name.toLowerCase().trim();
+  if (MARKET_DATA_PROVIDERS.has(normalizedName)) return "marketData";
+  if (NEWS_PROVIDERS.has(normalizedName)) return "news";
+  if (METADATA_PROVIDERS.has(normalizedName)) return "metadata";
+  console.error("UNKNOWN PROVIDER:", normalizedName, "- DEFAULTING TO marketData");
+  return "marketData";
+}
+
 /**
  * Get user integrations with decrypted keys in the exact format required by deep research
  */
@@ -45,201 +73,154 @@ export async function getUserIntegrations(uid: string) {
     alternativeme: { apiKey: '' }
   };
 
-  const defaultTypeByProvider: Record<string, string> = {
-    // Trading exchanges
-    binance: 'exchange',
-    bitget: 'exchange',
-    bingx: 'exchange',
-    weex: 'exchange',
-    // Market data
-    cryptocompare: 'marketData',
-    binancepublic: 'marketData',
-    kucoinpublic: 'marketData',
-    bybitpublic: 'marketData',
-    okxpublic: 'marketData',
-    bitgetpublic: 'marketData',
-    'cryptocompare-freemode-1': 'marketData',
-    'cryptocompare-freemode-2': 'marketData',
-    // Metadata
-    coingecko: 'metadata',
-    coinmarketcap: 'metadata',
-    coinpaprika: 'metadata',
-    nomics: 'metadata',
-    messari: 'metadata',
-    cryptorank: 'metadata',
-    // News
-    newsdata: 'news',
-    cryptopanic: 'news',
-    gnews: 'news',
-    reddit: 'news',
-    twitter: 'news',
-    alternativeme: 'news'
-  };
-
-  const setEntry = (target: any, key: string, value: any) => {
-    target[key] = {
-      providerName: key,
-      ...target[key],
-      ...value,
-    };
-  };
-
-  const firestore = getFirebaseAdmin().firestore();
-
   const safeDecrypt = (value?: string) => {
     if (!value) return '';
     try {
       return decrypt(value) || '';
     } catch (error: any) {
-      logger.warn({ error: error.message, uid }, 'Failed to decrypt integration key, defaulting to empty string');
-      return '';
+      logger.error({ error: error.message }, 'Failed to decrypt integration key');
+      throw new Error(`Decryption failed: ${error.message}`);
     }
   };
 
   for (const [apiName, integration] of Object.entries(allIntegrations)) {
     const enabled = !!integration.enabled;
     const updatedAt = integration.updatedAt?.toDate?.()?.toISOString?.() || null;
-    const type = (integration as any).type || integration.apiType || defaultTypeByProvider[apiName] || null;
-    const encryptedApiKey = integration.apiKey || '';
-    const decryptedApiKey = encryptedApiKey ? safeDecrypt(encryptedApiKey) : '';
-    const encryptedLen = encryptedApiKey.length;
-    const decryptedLen = decryptedApiKey.length;
-    const decryptedSecret = integration.secretKey ? safeDecrypt(integration.secretKey) : '';
 
-    logger.debug({ uid, providerName: apiName, encryptedLen, decryptedLen }, 'Integration decrypt check');
-
-    if (encryptedLen > 0 && decryptedLen < 6) {
-      await firestore
-        .collection('users')
-        .doc(uid)
-        .collection('integrations')
-        .doc(apiName)
-        .set({ needsReencrypt: true, decryptable: false }, { merge: true });
-    }
+    // CRITICAL: Use STRICT HARD MAPPED TYPES - IGNORE FIRESTORE integration.type COMPLETELY
+    const type = normalizeProviderType(apiName);
+    const decryptedApiKey = integration.apiKeyEncrypted ? safeDecrypt(integration.apiKeyEncrypted) : '';
+    const decryptedSecret = integration.secretKeyEncrypted ? safeDecrypt(integration.secretKeyEncrypted) : '';
 
     // Base object stored for every provider so auto-trade always knows enabled/type/updatedAt
     const baseMeta = { enabled, type, updatedAt };
 
+    // CRITICAL: Only decrypt from apiKeyEncrypted fields, never fallback to plain text
+    // This ensures consistency and prevents double-decryption issues
+
     // Trading exchanges
     if (apiName === 'binance') {
-      setEntry(result, 'binance', {
+      result.binance = {
         ...baseMeta,
         apiKey: enabled ? decryptedApiKey : '',
         secret: enabled ? decryptedSecret : '',
-      });
+      };
       continue;
     }
     if (apiName === 'bitget') {
-      setEntry(result, 'bitget', {
+      result.bitget = {
         ...baseMeta,
         apiKey: enabled ? decryptedApiKey : '',
         secret: enabled ? decryptedSecret : '',
         passphrase: '', // Stored in exchangeConfig/current, not integrations
-      });
+      };
       continue;
     }
     if (apiName === 'bingx') {
-      setEntry(result, 'bingx', {
+      result.bingx = {
         ...baseMeta,
         apiKey: enabled ? decryptedApiKey : '',
         secret: enabled ? decryptedSecret : '',
-      });
+      };
       continue;
     }
     if (apiName === 'weex') {
-      setEntry(result, 'weex', {
+      result.weex = {
         ...baseMeta,
         apiKey: enabled ? decryptedApiKey : '',
         secret: enabled ? decryptedSecret : '',
-      });
+      };
       continue;
     }
 
     // Market data providers
     if (apiName === 'cryptocompare') {
-      setEntry(result, 'cryptocompare', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      result.cryptocompare = { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' };
       continue;
     }
     if (apiName === 'binancepublic') {
-      setEntry(result, 'binancepublic', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      result.binancepublic = { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' };
       continue;
     }
     if (apiName === 'kucoinpublic') {
-      setEntry(result, 'kucoinpublic', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      result.kucoinpublic = { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' };
       continue;
     }
     if (apiName === 'bybitpublic') {
-      setEntry(result, 'bybitpublic', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      result.bybitpublic = { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' };
       continue;
     }
     if (apiName === 'okxpublic') {
-      setEntry(result, 'okxpublic', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      result.okxpublic = { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' };
       continue;
     }
     if (apiName === 'bitgetpublic') {
-      setEntry(result, 'bitgetpublic', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      result.bitgetpublic = { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' };
       continue;
     }
     if (apiName === 'cryptocompare-freemode-1') {
-      setEntry(result, 'cryptocompare-freemode-1', { ...baseMeta, apiKey: 'FREE_MODE' });
+      result['cryptocompare-freemode-1'] = { ...baseMeta, apiKey: 'FREE_MODE' };
       continue;
     }
     if (apiName === 'cryptocompare-freemode-2') {
-      setEntry(result, 'cryptocompare-freemode-2', { ...baseMeta, apiKey: 'FREE_MODE' });
+      result['cryptocompare-freemode-2'] = { ...baseMeta, apiKey: 'FREE_MODE' };
       continue;
     }
 
     // Metadata providers
     if (apiName === 'coingecko') {
-      setEntry(result, 'coingecko', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      result.coingecko = { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' };
       continue;
     }
     if (apiName === 'coinmarketcap') {
-      setEntry(result, 'coinmarketcap', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      result.coinmarketcap = { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' };
       continue;
     }
     if (apiName === 'coinpaprika') {
-      setEntry(result, 'coinpaprika', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      result.coinpaprika = { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' };
       continue;
     }
     if (apiName === 'nomics') {
-      setEntry(result, 'nomics', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      result.nomics = { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' };
       continue;
     }
     if (apiName === 'messari') {
-      setEntry(result, 'messari', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      result.messari = { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' };
       continue;
     }
     if (apiName === 'cryptorank') {
-      setEntry(result, 'cryptorank', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      result.cryptorank = { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' };
       continue;
     }
 
     // News providers
     if (apiName === 'newsdata') {
-      setEntry(result, 'newsdata', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      result.newsdata = { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' };
       continue;
     }
     if (apiName === 'cryptopanic') {
-      setEntry(result, 'cryptopanic', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      result.cryptopanic = { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' };
       continue;
     }
     if (apiName === 'gnews') {
-      setEntry(result, 'gnews', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      result.gnews = { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' };
       continue;
     }
     if (apiName === 'reddit') {
-      setEntry(result, 'reddit', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      result.reddit = { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' };
       continue;
     }
     if (apiName === 'twitter') {
-      setEntry(result, 'twitter', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      result.twitter = { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' };
       continue;
     }
     if (apiName === 'alternativeme') {
-      setEntry(result, 'alternativeme', { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' });
+      result.alternativeme = { ...baseMeta, apiKey: enabled ? decryptedApiKey : '' };
       continue;
     }
+
+    // Log unknown providers but don't fail
+    logger.warn({ uid, apiName, type }, 'Unknown provider in integrations, skipping');
   }
 
   // Optional debug logging to trace provider loader output for diagnostics
@@ -359,6 +340,9 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
     // Integration name is used directly (no CoinAPI sub-types)
     const docName: string = body.apiName;
 
+    // CRITICAL: Use STRICT HARD MAPPED TYPES - IGNORE MANUAL MAPPING
+    const providerType = normalizeProviderType(body.apiName);
+
     // Check if this is a trading exchange (Binance, Bitget, BingX, Weex)
     const tradingExchanges = ['binance', 'bitget', 'bingx', 'weex'];
     const isTradingExchange = tradingExchanges.includes(body.apiName);
@@ -467,8 +451,9 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       });
     } else {
       // Research APIs: Save to integrations/{integrationName}
-      const integrationData: { enabled: boolean; apiKey?: string } = {
-        enabled: true
+      const integrationData: { enabled: boolean; apiKey?: string; type: string } = {
+        enabled: true,
+        type: providerType
       };
 
       // Only set API key for providers that require it
@@ -656,39 +641,9 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       }
     } else {
       // Research APIs: Save to integrations/{integrationName}
-      const integrationData: { enabled: boolean; apiKey?: string } = {
+      await firestoreAdapter.saveIntegration(user.uid, docName, {
         enabled: true,
-      };
-
-      // Only set API key for providers that require it
-      if (!isFreeProvider && body.apiKey) {
-        integrationData.apiKey = body.apiKey;
-      } else if (!isFreeProvider && !body.apiKey) {
-        return reply.code(400).send({
-          error: `${body.apiName} API requires an API key`,
-          saved: false
-        });
-      }
-      // For free providers, no API key is needed
-
-      // Add required logging
-      console.log("BACKEND-SAVE", { uid: user.uid, provider: body.apiName, apiKeyLength: body.apiKey?.length || 0 });
-
-      logger.info({
-        uid: user.uid,
-        apiName: body.apiName,
-        docName,
-        hasApiKey: !!body.apiKey
-      }, 'Saving research API integration');
-
-      await firestoreAdapter.saveIntegration(user.uid, docName, integrationData);
-
-      const saved = await firestoreAdapter.getIntegration(user.uid, docName);
-      if (saved) {
-        logger.info({ uid: user.uid, apiName: docName, saved: !!saved.apiKey }, 'Research API integration saved and verified');
-      } else {
-        logger.error({ uid: user.uid, apiName: docName }, 'Research API integration save verification failed');
-      }
+      });
     }
 
     return {
@@ -1361,7 +1316,7 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         const filtered: any = {};
         for (const [key, integration] of Object.entries(integrations)) {
           // Simple type filtering
-          if (type === 'market' && ['coingecko', 'coinpaprika', 'coinmarketcap', 'coinapi', 'bravenewcoin', 'messari', 'kaiko', 'livecoinwatch', 'coinstats', 'coincheckup'].includes(key)) {
+          if (type === 'marketData' && ['coingecko', 'coinpaprika', 'coinmarketcap', 'coinapi', 'bravenewcoin', 'messari', 'kaiko', 'livecoinwatch', 'coinstats', 'coincheckup'].includes(key)) {
             filtered[key] = {
               enabled: integration.enabled,
               apiKey: integration.apiKey ? maskKey(integration.apiKey) : null,

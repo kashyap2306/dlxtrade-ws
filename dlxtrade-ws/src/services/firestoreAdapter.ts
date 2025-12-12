@@ -3,7 +3,7 @@ import { getFirebaseAdmin } from '../utils/firebase';
 import { logger } from '../utils/logger';
 import { encrypt, decrypt, maskKey } from './keyManager';
 
-const db = () => admin.firestore(getFirebaseAdmin());
+const db = () => getFirebaseAdmin().firestore();
 
 export interface ApiKeyDocument {
   id?: string;
@@ -132,7 +132,10 @@ export interface IntegrationDocument {
   enabled: boolean;
   apiKey?: string; // encrypted
   secretKey?: string; // encrypted (only for Binance)
+  apiKeyEncrypted?: string; // encrypted
+  secretKeyEncrypted?: string; // encrypted (only for Binance)
   apiType?: string; // For CoinAPI: 'market' | 'flatfile' | 'exchangerate'
+  type?: string; // provider type: 'marketData' | 'news' | 'metadata' | 'trading'
   backupApis?: Array<{
     name: string;
     apiKey: string; // encrypted
@@ -425,17 +428,61 @@ export class FirestoreAdapter {
 
   async getAllIntegrations(uid: string): Promise<Record<string, IntegrationDocument>> {
     const snapshot = await db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('integrations')
+      .collection("integrations")
       .get();
 
-    const integrations: Record<string, IntegrationDocument> = {};
+    console.log("[FIRESTORE_INTEGRATIONS]", uid, snapshot.docs.map((d) => d.id));
+
+    const out: Record<string, any> = {};
+
     snapshot.docs.forEach((doc) => {
-      integrations[doc.id] = doc.data() as IntegrationDocument;
+      const data = doc.data() || {};
+      const providerId = (doc.id || '').toLowerCase();
+
+      // Never drop providers; normalize minimal fields while preserving data
+      const rawType = data.type || data.apiType;
+      const normalizedType = (rawType === 'marketData' || rawType === 'news' || rawType === 'metadata')
+        ? rawType
+        : 'marketData';
+
+      if (normalizedType === 'marketData' && rawType && rawType !== 'marketData') {
+        logger.warn({ uid, providerId, rawType }, 'Unknown provider type; defaulting to marketData');
+      }
+
+      const entry: any = {
+        ...data,
+        providerName: data.providerName || providerId,
+        enabled: typeof data.enabled === 'boolean' ? data.enabled : false,
+        type: normalizedType,
+        updatedAt: data.updatedAt || null,
+      };
+
+      // Ensure encrypted keys are present if only plaintext exists (no decryption here)
+      if (!entry.apiKeyEncrypted && data.apiKey) {
+        try {
+          entry.apiKeyEncrypted = encrypt(data.apiKey);
+        } catch {
+          entry.apiKeyEncrypted = undefined;
+        }
+      }
+      if (!entry.secretKeyEncrypted && data.secretKey) {
+        try {
+          entry.secretKeyEncrypted = encrypt(data.secretKey);
+        } catch {
+          entry.secretKeyEncrypted = undefined;
+        }
+      }
+
+      // Remove any accidental plaintext leakage
+      delete entry.apiKey;
+      delete entry.secretKey;
+
+      out[providerId] = entry;
     });
 
-    return integrations;
+    return out;
   }
 
   async saveIntegration(uid: string, apiName: string, data: {
@@ -443,6 +490,7 @@ export class FirestoreAdapter {
     apiKey?: string; // plain text, will be encrypted
     secretKey?: string; // plain text, will be encrypted (only for Binance)
     apiType?: string; // For CoinAPI type
+    type?: string; // provider type: 'marketData' | 'news' | 'metadata' | 'trading'
   }): Promise<void> {
     const docRef = db()
       .collection('users')
@@ -473,6 +521,9 @@ export class FirestoreAdapter {
     if (data.apiType) {
       docData.apiType = data.apiType;
     }
+    if (data.type) {
+      docData.type = data.type;
+    }
 
     await docRef.set(docData, { merge: true });
     logger.info({ 
@@ -501,12 +552,13 @@ export class FirestoreAdapter {
     const enabled: Record<string, { apiKey: string; secretKey?: string }> = {};
 
     for (const [apiName, integration] of Object.entries(allIntegrations)) {
-      if (integration.enabled && integration.apiKey) {
+      if (integration.enabled && integration.apiKeyEncrypted) {
         try {
-          const decryptedApiKey = decrypt(integration.apiKey);
-          const decryptedSecretKey = integration.secretKey ? decrypt(integration.secretKey) : undefined;
+          const decryptedApiKey = decrypt(integration.apiKeyEncrypted);
+          const decryptedSecretKey = integration.secretKeyEncrypted
+            ? decrypt(integration.secretKeyEncrypted)
+            : undefined;
 
-          // Only include integrations with valid (non-empty) decrypted keys
           if (decryptedApiKey && decryptedApiKey.trim() !== '') {
             enabled[apiName] = {
               apiKey: decryptedApiKey,
@@ -523,15 +575,14 @@ export class FirestoreAdapter {
           }
         } catch (error: any) {
           logger.error({ error: error.message, uid, apiName }, 'Failed to decrypt integration keys, skipping');
-          // Continue to next integration instead of breaking the entire operation
         }
       } else {
         logger.debug({
           uid,
           apiName,
           enabled: integration.enabled,
-          hasApiKey: !!integration.apiKey,
-        }, 'Integration not enabled or missing apiKey, skipping for diagnostics');
+          hasApiKeyEncrypted: !!integration.apiKeyEncrypted,
+        }, 'Integration not enabled or missing apiKeyEncrypted, skipping for diagnostics');
       }
     }
 
