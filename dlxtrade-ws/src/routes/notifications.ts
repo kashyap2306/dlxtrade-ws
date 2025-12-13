@@ -19,13 +19,29 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
   fastify.get('/', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Querystring: { limit?: number } }>, reply: FastifyReply) => {
+    console.log("[DEBUG] GET /notifications - REQUEST ENTERS ROUTE");
     const user = (request as any).user;
+    console.log("[DEBUG] GET /notifications - AUTH UID VERIFIED:", user.uid);
     const limit = request.query.limit ? parseInt(String(request.query.limit)) || 50 : 50;
 
     try {
-      // Use optimized method that handles both paths efficiently
-      const notifications = await firestoreAdapter.getUserNotificationsFromSubcollection(user.uid, limit);
-      return notifications;
+      console.log("[DEBUG] GET /notifications - BEFORE FIRESTORE READ");
+      let notifications;
+      try {
+        notifications = await firestoreAdapter.getUserNotificationsFromSubcollection(user.uid, limit);
+        console.log("[DEBUG] GET /notifications - AFTER FIRESTORE READ");
+      } catch (firestoreErr: any) {
+        console.error("[DEBUG] GET /notifications - FIRESTORE ERROR:", firestoreErr?.message, firestoreErr?.stack);
+        throw firestoreErr;
+      }
+
+      console.log("[DEBUG] GET /notifications - BEFORE DECRYPT/NORMALIZATION");
+      console.log("[DEBUG] GET /notifications - AFTER DECRYPT/NORMALIZATION");
+
+      console.log("[DEBUG] GET /notifications - BEFORE RESPONSE.SEND");
+      const result = reply.send(notifications);
+      console.log("[DEBUG] GET /notifications - AFTER RESPONSE.SEND");
+      return result;
     } catch (err: any) {
       logger.error({ err, uid: user.uid }, 'Error fetching notifications');
       return reply.code(500).send({

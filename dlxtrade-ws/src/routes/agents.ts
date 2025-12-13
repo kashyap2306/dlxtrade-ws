@@ -26,10 +26,28 @@ export async function agentsRoutes(fastify: FastifyInstance) {
   fastify.get('/', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
+    console.log("[DEBUG] GET /agents - REQUEST ENTERS ROUTE");
     try {
       const user = (request as any).user;
-      const agents = await firestoreAdapter.getUserAgents(user.uid);
-      return { agents };
+      console.log("[DEBUG] GET /agents - AUTH UID VERIFIED:", user.uid);
+
+      console.log("[DEBUG] GET /agents - BEFORE FIRESTORE READ");
+      let agents;
+      try {
+        agents = await firestoreAdapter.getUserAgents(user.uid);
+        console.log("[DEBUG] GET /agents - AFTER FIRESTORE READ");
+      } catch (firestoreErr: any) {
+        console.error("[DEBUG] GET /agents - FIRESTORE ERROR:", firestoreErr?.message, firestoreErr?.stack);
+        throw firestoreErr;
+      }
+
+      console.log("[DEBUG] GET /agents - BEFORE DECRYPT/NORMALIZATION");
+      console.log("[DEBUG] GET /agents - AFTER DECRYPT/NORMALIZATION");
+
+      console.log("[DEBUG] GET /agents - BEFORE RESPONSE.SEND");
+      const result = reply.send({ agents });
+      console.log("[DEBUG] GET /agents - AFTER RESPONSE.SEND");
+      return result;
     } catch (err: any) {
       logger.error({ err }, 'Error getting user agents');
       return reply.code(500).send({ error: err.message || 'Error fetching agents' });

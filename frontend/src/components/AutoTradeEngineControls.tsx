@@ -18,6 +18,8 @@ interface AutoTradeEngineControlsProps {
   runSelfTest: () => Promise<any>;
   isRunningDiagnostics: boolean;
   showToast: (message: string, type: 'success' | 'error') => void;
+  configsLoaded: boolean;
+  isReady: boolean;
 }
 
 export const AutoTradeEngineControls: React.FC<AutoTradeEngineControlsProps> = ({
@@ -34,6 +36,8 @@ export const AutoTradeEngineControls: React.FC<AutoTradeEngineControlsProps> = (
   runSelfTest,
   isRunningDiagnostics,
   showToast,
+  configsLoaded,
+  isReady,
 }) => {
   const togglingRef = useRef(false);
   const [saving, setSaving] = useState(false);
@@ -200,24 +204,65 @@ export const AutoTradeEngineControls: React.FC<AutoTradeEngineControlsProps> = (
               </button>
               <button
                 onClick={async () => {
+                  // LOG ALL BLOCKING FLAGS: Exact point where AutoTrade decides to start or stop
                   const isAutoTradeEnabled = () => {
-                    return exchangeConfig?.apiKey === "[ENCRYPTED]"
-                        || exchangeConfig?.secret === "[ENCRYPTED]"
-                        || (exchangeConfig?.apiKeyEncrypted && exchangeConfig?.secretEncrypted);
+                    // Exchange is properly configured if encrypted fields exist in backend
+                    // Check apiKeyEncrypted and secretKeyEncrypted flags from backend
+                    const hasApiKeyEncrypted = !!exchangeConfig?.apiKeyEncrypted;
+                    const hasSecretKeyEncrypted = !!exchangeConfig?.secretKeyEncrypted;
+                    const hasExchange = !!exchangeConfig?.exchange;
+
+                    console.log('[GUARANTEED_ACCESS_CHECK]', {
+                      exchangeConfig,
+                      apiKeyEncrypted: exchangeConfig?.apiKeyEncrypted,
+                      secretKeyEncrypted: exchangeConfig?.secretKeyEncrypted,
+                      hasApiKeyEncrypted,
+                      hasSecretKeyEncrypted,
+                      hasExchange,
+                      result: hasApiKeyEncrypted && hasSecretKeyEncrypted && hasExchange
+                    });
+
+                    return hasApiKeyEncrypted && hasSecretKeyEncrypted && hasExchange;
                   };
 
-                  if (isAutoTradeEnabled()) {
+                  const hasMarketProvider = !!providerConfig?.marketData && Object.keys(providerConfig.marketData).length > 0;
+                  const hasNewsProvider = !!providerConfig?.news && Object.keys(providerConfig.news).length > 0;
+                  const exchangeConfigLoaded = !!exchangeConfig && Object.keys(exchangeConfig).length > 0;
+                  const exchangeConnected = isExchangeConnected(exchangeConfig);
+                  const guaranteedAccess = isAutoTradeEnabled();
+
+                  console.log("[AUTOTRADE_DECISION_GATE]", {
+                    hasMarketProvider,
+                    hasNewsProvider,
+                    exchangeConfigLoaded,
+                    exchangeConnected,
+                    configsLoaded,
+                    guaranteedAccess,
+                    isReady,
+                    canRunAutoTrade: guaranteedAccess
+                  });
+
+                  if (canRunAutoTrade) {
                     await handleAutoTradeToggle(true);
                     showToast("Auto-Trade Enabled", "success");
                   } else {
+                    // WARNING: marketProvider exists but AutoTrade does not proceed
+                    console.warn("[AUTOTRADE_BLOCKED]", {
+                      reason: guaranteedAccess ? "Unknown" : "Exchange not properly configured",
+                      guaranteedAccess,
+                      exchangeConfig
+                    });
                     showToast("Connect your exchange first", "error");
                   }
                 }}
                 disabled={saving || (() => {
                   const isAutoTradeEnabled = () => {
-                    return exchangeConfig?.apiKey === "[ENCRYPTED]"
-                        || exchangeConfig?.secret === "[ENCRYPTED]"
-                        || (exchangeConfig?.apiKeyEncrypted && exchangeConfig?.secretEncrypted);
+                    // Exchange is properly configured if encrypted fields exist in backend
+                    // Check apiKeyEncrypted and secretKeyEncrypted flags from backend
+                    const hasApiKeyEncrypted = !!exchangeConfig?.apiKeyEncrypted;
+                    const hasSecretKeyEncrypted = !!exchangeConfig?.secretKeyEncrypted;
+                    const hasExchange = !!exchangeConfig?.exchange;
+                    return hasApiKeyEncrypted && hasSecretKeyEncrypted && hasExchange;
                   };
                   return !isAutoTradeEnabled();
                 })()}

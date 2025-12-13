@@ -279,16 +279,22 @@ const Settings = () => {
 
       const normalizedProviders = Object.fromEntries(
         Object.entries(flatProviders).map(([pid, data]: any) => {
-          const apiKey = data?.apiKey || '';
+          const apiKey = data?.apiKey || ''; // Will be empty for encrypted keys
           const normalizedType = PROVIDER_TYPE_MAP[pid] || data?.type || 'marketData';
-          const enabled = data?.enabled ?? !!apiKey;
+          // FIX: Provider is enabled if backend says so OR if it has encrypted keys
+          // Default to true if encrypted keys exist (backend should set this, but be safe)
+          const hasEncryptedKeys = !!(data?.apiKeyEncrypted || data?.secretKeyEncrypted);
+          const enabled = data?.enabled ?? hasEncryptedKeys;
+          // FIX: Treat as saved if enabled=true OR provider exists in config
+          const saved = enabled || !!data;
           return [
             pid,
             {
               providerName: pid,
-              apiKey,
+              apiKey, // Keep empty for encrypted keys - UI will show "API key saved"
               enabled,
-              type: normalizedType
+              type: normalizedType,
+              saved
             }
           ];
         })
@@ -346,6 +352,11 @@ const Settings = () => {
     try {
       const response = await settingsApi.loadExchangeConfig(uid);
       console.log('[LOAD] Exchange config response:', response.data);
+      console.log('[LOAD] Exchange encrypted fields:', {
+        apiKeyEncrypted: response.data?.apiKeyEncrypted,
+        secretKeyEncrypted: response.data?.secretKeyEncrypted,
+        passphraseEncrypted: response.data?.passphraseEncrypted
+      });
       setExchangeConfig(response.data || {});
     } catch (err) {
       console.warn('[LOAD] Failed to load exchange config:', err);
@@ -552,45 +563,106 @@ const Settings = () => {
       const providerType = PROVIDER_TYPE_MAP[providerId] || 'marketData';
       const maskedApiKeyLength = apiKey ? apiKey.length : 0;
 
-      console.log('[SETTINGS] Saving provider via /users/:uid/provider-config', { providerId, providerType, maskedApiKeyLength });
+      // FORCE CORRECT VALUES FOR CRYPTOCOMPARE
+      let finalProviderId = providerId;
+      let finalProviderType = providerType;
+      if (providerName === 'CryptoCompare' || providerId === 'cryptocompare') {
+        finalProviderId = 'cryptocompare';
+        finalProviderType = 'marketData';
+        console.log('[CRYPTOCOMPARE_SAVE] Forced correct values:', { finalProviderId, finalProviderType });
+      }
 
-      // Build payload for backend provider-config endpoint (integrations collection)
-      const payload = {
-        providerConfig: {
-          [providerId]: {
-            providerName: providerId,
-            apiKey,
-            enabled: true,
-            type: providerType
+      // SPECIAL LOGGING FOR CRYPTOCOMPARE
+      if (providerName === 'CryptoCompare' || finalProviderId === 'cryptocompare') {
+        console.log('[CRYPTOCOMPARE_SAVE] BEFORE calling save API', {
+          providerName,
+          finalProviderId,
+          finalProviderType,
+          enabled: true,
+          apiKeyLength: apiKey?.length || 0,
+          hasApiKey: !!apiKey,
+          apiKeyPreview: apiKey ? apiKey.substring(0, 4) + '...' : 'EMPTY'
+        });
+      }
+
+      console.log('[SETTINGS] Saving provider via /users/:uid/provider-config', { providerId: finalProviderId, providerType: finalProviderType, maskedApiKeyLength });
+
+      // Build FLAT payload for backend provider-config endpoint (integrations collection)
+      // REMOVE nested providerConfig wrapper - send flat payload only
+      if (providerName === 'CryptoCompare' || finalProviderId === 'cryptocompare') {
+        console.log('[CRYPTOCOMPARE_SAVE] About to call POST /users/:uid/provider-config with FLAT payload:', {
+          uid: user.uid,
+          payload: {
+            providerId: finalProviderId,
+            providerType: finalProviderType,
+            apiKey: apiKey ? apiKey.substring(0, 4) + '...' : 'EMPTY',
+            enabled: true
           }
-        }
+        });
+      }
+
+      const payload = {
+        providerId: finalProviderId,
+        providerType: finalProviderType,
+        apiKey,
+        enabled: true
       };
 
-      const resp = await settingsApi.saveProviderConfig(user.uid, payload);
-      console.log('[PROVIDER-SAVE] response', resp?.providerConfig || resp);
+      // FORCE API CALL - no early returns allowed for CryptoCompare
+      if (providerName === 'CryptoCompare' || finalProviderId === 'cryptocompare') {
+        console.log('[CRYPTOCOMPARE_SAVE] FORCE API CALL - calling POST /users/:uid/provider-config NOW');
+      }
 
-      // Update local provider caches
+      console.log('[PROVIDER-SAVE] Making API call to saveProviderConfig...');
+      const resp = await settingsApi.saveProviderConfig(user.uid, payload);
+      console.log('[PROVIDER-SAVE] API response received:', resp?.providerConfig || resp);
+
+      // VERIFY API CALL SUCCESS FOR CRYPTOCOMPARE
+      if (providerName === 'CryptoCompare' || finalProviderId === 'cryptocompare') {
+        if (!resp) {
+          console.error('[CRYPTOCOMPARE_SAVE] ERROR: No response from API call!');
+          throw new Error('No response from save API');
+        }
+        console.log('[CRYPTOCOMPARE_SAVE] API call completed successfully');
+      }
+
+      // LOG SUCCESS FOR CRYPTOCOMPARE
+      if (providerName === 'CryptoCompare' || finalProviderId === 'cryptocompare') {
+        console.log('[CRYPTOCOMPARE_SAVE] POST success! Response:', resp);
+      }
+
+      // FIX: Don't store plaintext apiKey in local state - backend never returns it
+      // Instead, mark as saved/enabled based on successful save
       setProviders(prev => ({
         ...prev,
         [providerId]: {
           ...(prev?.[providerId] || {}),
           providerName: providerId,
-          apiKey,
-          enabled: !!apiKey,
-          type: providerType
+          apiKey: '', // Keep empty - UI will show "API key saved" status
+          enabled: true, // Mark as enabled since save was successful
+          type: providerType,
+          saved: true // Mark as saved
         }
       }));
       setApiKeys(prev => ({
         ...prev,
         [providerId]: {
-          apiKey,
-          saved: !!apiKey,
-          enabled: !!apiKey,
+          apiKey: '', // Keep empty - don't store plaintext
+          saved: true, // Mark as saved regardless of apiKey value
+          enabled: true, // Mark as enabled
           type: providerType
         }
       }));
 
-      // Refresh local provider state from backend to reflect latest saved values
+      // ONLY show success toast AFTER successful POST response
+      if (providerName === 'CryptoCompare' || finalProviderId === 'cryptocompare') {
+        console.log('[CRYPTOCOMPARE_SAVE] POST successful, showing success toast');
+      }
+
+      // FORCE re-fetch: GET /users/:uid/provider-config after save
+      if (providerName === 'CryptoCompare' || finalProviderId === 'cryptocompare') {
+        console.log('[CRYPTOCOMPARE_SAVE] Forcing re-fetch GET /users/:uid/provider-config');
+      }
       await loadProviderConfig(user.uid);
       showToast(`${providerName} API key saved!`, 'success');
     } catch (err: any) {

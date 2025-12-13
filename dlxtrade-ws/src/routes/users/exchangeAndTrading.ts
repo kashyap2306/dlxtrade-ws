@@ -83,7 +83,11 @@ export async function exchangeAndTradingRoutes(fastify: FastifyInstance) {
         exchange: data.exchange || null,
         lastUpdated: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
         providerName: data.exchange || null,
-        apiKey: data.apiKeyEncrypted ? '[ENCRYPTED]' : null
+        apiKey: data.apiKeyEncrypted ? '[ENCRYPTED]' : null,
+        // Expose encrypted field presence for guaranteedAccess logic
+        apiKeyEncrypted: !!data.apiKeyEncrypted,
+        secretKeyEncrypted: !!data.secretKeyEncrypted,
+        passphraseEncrypted: !!data.passphraseEncrypted
       });
     } catch (err: any) {
       logger.error({ err }, 'Error getting current exchange config');

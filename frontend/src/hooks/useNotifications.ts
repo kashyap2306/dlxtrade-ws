@@ -32,7 +32,7 @@ export function useNotifications() {
     try {
       setLoadingRef(true);
       setLoading(true);
-      const response = await api.get('/api/notifications', { params: { limit: 50 } });
+      const response = await api.get('/notifications', { params: { limit: 50 } });
       setNotifications(response.data || []);
     } catch (err: any) {
       // Silent fail - don't show errors for notification loading
@@ -55,7 +55,7 @@ export function useNotifications() {
 
   const markAllAsRead = async () => {
     try {
-      await api.post('/api/notifications/read-all');
+      await api.post('/notifications/read-all');
       setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
     } catch (err: any) {
       // Silent fail
@@ -64,7 +64,7 @@ export function useNotifications() {
 
   const addNotification = async (notification: Omit<Notification, 'id' | 'timestamp' | 'read'>) => {
     try {
-      const response = await api.post('/api/notifications', notification);
+      const response = await api.post('/notifications', notification);
       setNotifications((prev) => [response.data, ...prev].slice(0, 50));
     } catch (err: any) {
       // Silent fail

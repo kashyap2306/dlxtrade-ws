@@ -28,6 +28,15 @@ export const AutoTradeDiagnostics: React.FC<AutoTradeDiagnosticsProps> = ({
   const market = results?.marketData;
   const exchange = results?.exchange;
 
+  // VERIFY: Log diagnostics UI condition that marks Market Data as FAIL
+  console.log("[VERIFY_DIAGNOSTICS] MARKET DATA STATUS CHECK:", {
+    marketStatus: market?.status,
+    marketProvider: market?.provider,
+    marketReason: market?.reason,
+    isFail: market?.status === 'FAIL',
+    failCondition: market?.status === 'FAIL' ? 'status === FAIL' : 'status !== FAIL'
+  });
+
   const badgeClass = (status?: string) => {
     if (status === 'PASS') return 'bg-green-600/40 text-green-300';
     if (status === 'FAIL') return 'bg-red-600/40 text-red-300';

@@ -49,6 +49,7 @@ export default function AutoTrade() {
     setAutoTradeStatus,
     configsLoaded,
     isReady,
+    exchangeLoaded,
     loadAllData,
     loadLiveData,
     loadAutoTradeStatus,
@@ -91,6 +92,38 @@ export default function AutoTrade() {
   const runDiagnostics = async () => {
     const timestamp = new Date().toISOString();
 
+    // GUARD: Allow diagnostics to run with actual providerConfig data (don't wait for configsLoaded flag)
+    // Only require exchange to be loaded since providerConfig may be available before configsLoaded is set
+    const hasProviderData = providerConfig && Object.keys(providerConfig).length > 0;
+    if (!hasProviderData) {
+      console.log("[DIAGNOSTICS_GUARD] Provider config not available yet:", { hasProviderData, providerConfigKeys: Object.keys(providerConfig || {}) });
+      return {
+        timestamp,
+        exchange: { status: 'PENDING', reason: 'Provider configuration loading...' },
+        marketData: { status: 'PENDING', reason: 'Provider configuration loading...' },
+        news: { status: 'PENDING', reason: 'Provider configuration loading...' },
+      };
+    }
+
+    // Allow diagnostics to proceed with provider data even if exchange is still loading
+    if (!exchangeLoaded()) {
+      console.log("[DIAGNOSTICS_GUARD] Exchange config not loaded yet, proceeding with provider checks only");
+    }
+
+    // DEBUG: Log diagnostics input state (reading fresh configs)
+    console.log("[DIAGNOSTICS INPUT] Reading fresh configs:", {
+      providerConfigLoaded: configsLoaded,
+      exchangeConfigLoaded: exchangeLoaded(),
+      providerConfigKeys: Object.keys(providerConfig || {}),
+      exchangeConfigKeys: Object.keys(exchangeConfig || {}),
+      providerConfig,
+      exchangeConfig
+    });
+
+    // NORMALIZE ENABLED HELPER: Handle various boolean representations
+    const normalizeEnabled = (v: any) =>
+      v === true || v === "true" || v === 1 || v === "1";
+
     const fallback = {
       timestamp,
       exchange: { status: 'FAIL', reason: 'Missing exchange configuration' },
@@ -115,38 +148,99 @@ export default function AutoTrade() {
 
       const finalExchangeConnected = isExchangeConnected(verifiedExchange);
 
+      console.log("[DEBUG_AUTOTRADE] RUNNING PROVIDER RESOLUTION - providerConfig:", JSON.stringify(providerConfig, null, 2));
+
       const resolveFirstEnabledProvider = (bucket: Record<string, any>) => {
+        console.log("[DEBUG_AUTOTRADE] RESOLVING PROVIDERS IN BUCKET:", Object.keys(bucket || {}));
         const values = Object.values(bucket || {});
-        return values.find((p: any) => p && p.enabled && typeof p.apiKey === 'string' && p.apiKey.trim().length > 0) as any;
+        const found = values.find((p: any) => {
+          // Provider PASS condition: exists + normalized enabled (DO NOT check apiKey length)
+          const exists = !!p;
+          const enabled = p && normalizeEnabled(p.enabled);
+          console.log("[DEBUG_AUTOTRADE] PROVIDER CHECK:", {
+            providerName: p?.providerName || p?.id,
+            exists,
+            enabledRaw: p?.enabled,
+            enabledNormalized: enabled,
+            passesCheck: exists && enabled
+          });
+          return exists && enabled;
+        }) as any;
+        console.log("[DEBUG_AUTOTRADE] SELECTED PROVIDER:", found?.providerName || found?.id || 'NONE');
+        return found;
       };
 
       const marketProvider = resolveFirstEnabledProvider(providerConfig?.marketData || {});
-      const marketKey = (marketProvider as any)?.apiKey as string | undefined;
-      const marketPass = !!(marketProvider && (marketProvider as any).enabled && typeof marketKey === 'string' && marketKey.trim().length > 0);
+      // Provider is PASS when it exists and is enabled (no apiKey length check)
+      const marketPass = !!marketProvider;
 
       const newsProvider = resolveFirstEnabledProvider(providerConfig?.news || {});
-      const newsKey = (newsProvider as any)?.apiKey as string | undefined;
-      const newsPass = !!(newsProvider && (newsProvider as any).enabled && typeof newsKey === 'string' && newsKey.trim().length > 0);
+      // Provider is PASS when it exists and is enabled (no apiKey length check)
+      const newsPass = !!newsProvider;
 
-      console.log("PROVIDER_CONFIG_FINAL", providerConfig);
-      console.log("MARKET_DATA_KEYS", Object.keys(providerConfig?.marketData || {}));
+      console.log("[DEBUG_AUTOTRADE] FINAL PROVIDER SELECTION:", {
+        marketProvider: marketProvider?.providerName || marketProvider?.id || 'NONE',
+        marketPass,
+        newsProvider: newsProvider?.providerName || newsProvider?.id || 'NONE',
+        newsPass
+      });
+
+      // FINAL DEBUG LOG: Selected marketData provider after all checks
+      console.log("[AUTOTRADE_FINAL_MARKET_PROVIDER]", {
+        selected: marketProvider?.providerName || marketProvider?.id || 'NONE',
+        enabled: marketProvider?.enabled,
+        valid: marketPass
+      });
+
+      // FINAL DEBUG LOG: Normalized check results
+      console.log("[DIAGNOSTICS NORMALIZED CHECK]", {
+        providerEnabled: marketProvider ? normalizeEnabled(marketProvider.enabled) : false,
+        exchangeHasKey: !!(verifiedExchange?.apiKey && verifiedExchange.apiKey.length > 0)
+      });
+
+      // VERIFY: Log all marketData provider enabled flags before diagnostics
+      console.log("[VERIFY] PROVIDER ENABLED FLAGS BEFORE DIAGNOSTICS:");
+      Object.entries(providerConfig?.marketData || {}).forEach(([providerId, provider]: [string, any]) => {
+        console.log(`[VERIFY] ${providerId}: enabled=${provider?.enabled}, type=${provider?.type}`);
+      });
+
+      // VERIFY: Log diagnostics decision inputs
+      const marketDataProviders = Object.keys(providerConfig?.marketData || {});
+      const enabledMarketDataProviders = Object.values(providerConfig?.marketData || {}).filter((p: any) => p?.enabled === true);
+      const selectedMarketProvider = marketProvider?.providerName || marketProvider?.id || null;
+
+      console.log("[VERIFY] DIAGNOSTICS DECISION INPUTS:", {
+        marketDataProviders,
+        enabledMarketDataProviders: enabledMarketDataProviders.map((p: any) => p?.providerName || p?.id),
+        selectedMarketProvider
+      });
+
+      // VERIFY: Warning if CryptoCompare exists but enabled === false
+      const cryptoCompare = providerConfig?.marketData?.cryptocompare;
+      if (cryptoCompare && cryptoCompare.enabled !== true) {
+        console.warn("[VERIFY_WARNING] CRYPTOCOMPARE EXISTS BUT DISABLED:", {
+          exists: !!cryptoCompare,
+          enabled: cryptoCompare.enabled,
+          fullProvider: cryptoCompare
+        });
+      }
 
       return {
         timestamp,
         exchange: {
-          status: finalExchangeConnected ? 'PASS' : 'FAIL',
+          status: (verifiedExchange?.apiKey && verifiedExchange.apiKey.length > 0) ? 'PASS' : 'FAIL',
           exchange: resolveExchangeName(verifiedExchange),
-          reason: finalExchangeConnected ? 'Configuration detected' : 'No valid exchange configuration',
+          reason: (verifiedExchange?.apiKey && verifiedExchange.apiKey.length > 0) ? 'Configuration detected' : 'No valid exchange configuration',
         },
         marketData: {
           status: marketPass ? 'PASS' : 'FAIL',
           provider: (marketProvider as any)?.providerName || 'N/A',
-          reason: marketPass ? 'API key present' : 'Missing or disabled market data key',
+          reason: marketPass ? 'Market data provider enabled' : 'No enabled market data provider',
         },
         news: {
           status: newsPass ? 'PASS' : 'FAIL',
           provider: (newsProvider as any)?.providerName || 'N/A',
-          reason: newsPass ? 'API key present' : 'Missing or disabled news key',
+          reason: newsPass ? 'News provider enabled' : 'No enabled news provider',
         },
       };
     } catch (err: any) {
@@ -159,10 +253,22 @@ export default function AutoTrade() {
 
   const runSelfTest = async () => {
     console.log("[RUN SELF TEST CLICKED]");
+
+    // EXPLICIT RESET: Set diagnostics to PENDING before computing
+    const pendingResult = {
+      timestamp: new Date().toISOString(),
+      exchange: { status: 'PENDING', reason: 'Running diagnostics...' },
+      marketData: { status: 'PENDING', reason: 'Running diagnostics...' },
+      news: { status: 'PENDING', reason: 'Running diagnostics...' },
+    };
+
     setDiagnosticsVisible(true);
-    setDiagnosticResults(null);
+    setDiagnosticResults(pendingResult);
     setIsRunningDiagnostics(true);
+
     try {
+      // Always read fresh configs and produce completely new diagnostics object
+      // Do NOT merge with previous diagnostics state
       const result = await runDiagnostics();
       setDiagnosticResults(result);
       return result;
@@ -265,6 +371,27 @@ export default function AutoTrade() {
     user: !!user,
     ready: isReady,
   });
+  // TRACE: Final values before AutoTrade readiness check
+  console.log("[TRACE] BEFORE AUTOTRADE READINESS CHECK:", {
+    exchangeConfig,
+    exchangeConfigLoaded: !!exchangeConfig && Object.keys(exchangeConfig).length > 0,
+    exchangeConnected: isExchangeConnected(exchangeConfig),
+    providerConfig,
+    providerConfigMarketData: providerConfig?.marketData,
+    enabledProviderCount,
+    configsLoaded,
+    isReady
+  });
+
+  // WARN if marketData is missing/overwritten
+  const currentMarketDataKeys = Object.keys(providerConfig?.marketData || {});
+  if (currentMarketDataKeys.length === 0) {
+    console.warn("[TRACE_WARNING] providerConfig.marketData is empty!", {
+      fullProviderConfig: providerConfig,
+      previousStateCheck: "Check previous logs for when it was last populated"
+    });
+  }
+
   console.log("[AT READY CHECK]", { configsLoaded, enabledProviderCount, providerConfig });
 
   // Memoized component props to prevent unnecessary re-renders
@@ -282,7 +409,9 @@ export default function AutoTrade() {
     runSelfTest,
     isRunningDiagnostics,
     showToast,
-  }), [config, engineStatus, cooldownRemaining, setCooldownRemaining, exchangeConfig, providerConfig, isExchangeConnected, updateEngineStatus, setAutoTradeStatus, setConfig, runSelfTest, isRunningDiagnostics, showToast]);
+    configsLoaded,
+    isReady,
+  }), [config, engineStatus, cooldownRemaining, setCooldownRemaining, exchangeConfig, providerConfig, isExchangeConnected, updateEngineStatus, setAutoTradeStatus, setConfig, runSelfTest, isRunningDiagnostics, showToast, configsLoaded, isReady]);
 
   const statsProps = useMemo(() => ({
     performanceStats,

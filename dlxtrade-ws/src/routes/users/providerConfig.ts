@@ -156,7 +156,8 @@ export async function getProviderConfig(uid: string) {
       const providerData = {
         providerName: normalized.id,
         apiKey: decryptedKey || "",
-        enabled: decryptedKey.length > 0,
+        // FIX: Provider is enabled if encrypted key exists, not if decryption succeeds
+        enabled: !!safeDoc.apiKeyEncrypted,
         type: normalized.type,
         usageStats: safeDoc.usageStats || {},
         updatedAt: safeDoc.updatedAt ?? null
@@ -191,39 +192,90 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
 
       const { uid: paramUid } = request.params;
       console.log("[UID-DEBUG] provider-config route called with uid =", paramUid);
-      console.log("[UID-DEBUG] Firestore path = users/" + paramUid + "/integrations");
       const authUid = (request as any).userId;
-      const urlUid = paramUid;
+      console.log("[PROVIDER_SAVE_UID] authUid:", authUid, "paramUid:", paramUid, "firestorePathUid:", authUid);
 
-      // Auth check: ensure user is authenticated
+      // HARD ASSERTION: Auth UID must exist
       if (!authUid) {
         console.error("AUTH ERROR: User token missing - request.user is null");
         return reply.status(401).send({ error: "Unauthorized: user token missing" });
       }
 
       // Auth check: user can only update their own config unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      let isAdmin = false;
+      try {
+        isAdmin = await firestoreAdapter.isAdmin(authUid);
+      } catch (adminErr: any) {
+        console.warn('[PROVIDER_SAVE] Failed to check admin status:', adminErr?.message);
+        // Default to non-admin on error to be safe
+        isAdmin = false;
+      }
+      console.log("[PROVIDER_SAVE_AUTH] authUid:", authUid, "paramUid:", paramUid, "isAdmin:", isAdmin, "uidsMatch:", paramUid === authUid);
+
       if (paramUid !== authUid && !isAdmin) {
-        logger.warn({ authUid, urlUid }, 'Access denied: user can only update their own provider config');
+        logger.warn({ authUid, paramUid }, 'Access denied: user can only update their own provider config');
         return reply.code(403).send({ success: false, message: 'Forbidden' });
       }
 
-      const targetUid = isAdmin ? paramUid : authUid;
+      // CRITICAL: For non-admin users, FORCE use of authUid only
+      // Never allow paramUid to override authUid for regular users
+      const targetUid = authUid; // Always use auth UID for saves
+
+      console.log("[PROVIDER_SAVE_TARGET] FORCED targetUid to authUid:", targetUid, "(ignoring admin logic for safety)");
+
+      // HARD ASSERTION: Reject test/demo UIDs
+      if (targetUid.startsWith('test_') || targetUid.startsWith('demo_') || targetUid.includes('seed') || targetUid.includes('mock')) {
+        console.error("[PROVIDER_SAVE_REJECT] Test/demo/mock UID rejected:", targetUid);
+        return reply.code(403).send({ success: false, message: 'Test UIDs not allowed' });
+      }
 
       const body = request.body as any;
 
-      // Validate the provider config structure
+      // Validate the provider config structure - accept BOTH legacy and flat formats
       const requestBody = request.body as any;
       if (!requestBody || typeof requestBody !== 'object') {
         logger.error({ body }, 'Invalid request body - not an object');
         return reply.status(400).send({ success: false, message: 'Invalid request body' });
       }
 
-      const providerConfig = requestBody.providerConfig;
-      if (!providerConfig || typeof providerConfig !== 'object') {
-        logger.error({ providerConfig }, 'Invalid providerConfig - not an object');
-        return reply.status(400).send({ success: false, message: 'providerConfig required' });
+      // FIRST: Normalize payload - detect flat vs legacy and convert to consistent format
+      let providerConfig: any;
+      let payloadType = 'unknown';
+
+      if (requestBody.providerId && requestBody.providerType) {
+        // FLAT PAYLOAD (NEW): { providerId, providerType, apiKey, enabled }
+        payloadType = 'flat';
+        console.log('[PROVIDER_SAVE] payload=flat - normalizing to legacy format');
+
+        // Normalize flat payload to legacy format internally
+        providerConfig = {
+          [requestBody.providerId]: {
+            providerName: requestBody.providerId,
+            apiKey: requestBody.apiKey,
+            enabled: requestBody.enabled ?? true,
+            type: requestBody.providerType
+          }
+        };
+      } else if (requestBody.providerConfig) {
+        // LEGACY PAYLOAD: { providerConfig: { ... } }
+        payloadType = 'legacy';
+        console.log('[PROVIDER_SAVE] payload=legacy - using as-is');
+        providerConfig = requestBody.providerConfig;
+      } else {
+        // Neither format - invalid
+        logger.error({ requestBody }, 'Invalid payload - missing providerId/providerType or providerConfig');
+        return reply.status(400).send({ success: false, message: 'Invalid payload format - missing providerId/providerType or providerConfig' });
       }
+
+      console.log('[PROVIDER_SAVE_FLOW] stage=normalized');
+
+      // AFTER normalization, validate providerConfig
+      if (!providerConfig || typeof providerConfig !== 'object') {
+        logger.error({ providerConfig }, 'Invalid normalized providerConfig - not an object');
+        return reply.status(400).send({ success: false, message: 'Invalid provider configuration' });
+      }
+
+      console.log('[PROVIDER_SAVE_FLOW] stage=validated');
     const providerPreview = Object.entries(providerConfig || {}).slice(0, 2).map(([id, val]: any) => ({
       id,
       type: val?.type,
@@ -231,12 +283,14 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
       apiKeyLength: val?.apiKey?.length || 0
     }));
     console.log("[PROVIDER_SAVE_REQUEST_BODY]", {
+      payloadType,
       providerCount: Object.keys(providerConfig || {}).length,
       preview: providerPreview
     });
 
       const db = getFirebaseAdmin().firestore();
       const userRef = db.collection('users').doc(targetUid);
+      console.log("[PROVIDER_SAVE_FIRESTORE] Final Firestore path: users/" + targetUid + "/integrations");
 
       // Process each provider in the config (supports single or multi-provider payloads)
       const flatProviderConfig: Record<string, any> = {};
@@ -383,14 +437,20 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
       console.log("FINAL_FLAT_CONFIG_SAVED", flatProviderConfig);
 
       console.log(`PROVIDER CONFIG SAVE COMPLETE: processed=${processedCount}, encrypted=${encryptedCount}, providers=${processedProviders.join(',')}`);
+      console.log('[PROVIDER_SAVE_FLOW] stage=saved');
 
       // Log activity for audit trail
       if (processedCount > 0) {
-        await firestoreAdapter.logActivity(targetUid, 'PROVIDER_CONFIG_UPDATED', {
-          message: `Updated provider configurations: ${processedProviders.join(', ')}`,
-          providers: processedProviders,
-          encryptedKeysCount: encryptedCount
-        });
+        try {
+          await firestoreAdapter.logActivity(targetUid, 'PROVIDER_CONFIG_UPDATED', {
+            message: `Updated provider configurations: ${processedProviders.join(', ')}`,
+            providers: processedProviders,
+            encryptedKeysCount: encryptedCount
+          });
+        } catch (activityErr: any) {
+          console.warn('[PROVIDER_SAVE] Activity logging failed:', activityErr?.message);
+          // Don't fail the whole save for activity logging
+        }
       }
 
       return reply.send({
@@ -413,18 +473,22 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
   fastify.get('/:uid/provider-config', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
-    console.log("[PROVCFG] GET handler hit for uid =", request.params.uid);
+    console.log("[DEBUG] GET /users/:uid/provider-config - REQUEST ENTERS ROUTE");
     try {
       const { uid: paramUid } = request.params;
       const authUid = (request as any).userId;
-      console.log("[PROVCFG-INCOMING] reqId:", request.id || 'no-reqid', "authUid:", authUid || 'no-auth-uid', "paramUid:", paramUid);
-      console.log("[UID-DEBUG] provider-config route called with uid =", paramUid);
-      console.log("[UID-DEBUG] Firestore path = users/" + paramUid + "/integrations");
+      console.log("[DEBUG] GET /users/:uid/provider-config - AUTH UID VERIFIED:", authUid);
 
-      // STRICT AUTH CHECK: Param UID must match authenticated user UID
+      // HARD ASSERTION: Auth UID must exist
       if (!authUid) {
         console.error("[PROVCFG-AUTH-FAIL] No authenticated user found");
         return reply.code(401).send({ error: 'Authentication required' });
+      }
+
+      // HARD ASSERTION: Reject test/demo UIDs
+      if (authUid.startsWith('test_') || authUid.startsWith('demo_') || authUid.includes('seed') || authUid.includes('mock')) {
+        console.error("[PROVIDER_GET_REJECT] Test/demo/mock UID rejected:", authUid);
+        return reply.code(403).send({ error: 'Test UIDs not allowed' });
       }
       if (paramUid !== authUid) {
         console.error("[PROVCFG-AUTH-FAIL] UID mismatch - param:", paramUid, "auth:", authUid);
@@ -435,21 +499,50 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
       // Skip auth check if auth is disabled (for testing)
       let isAdmin = false;
       if (authUid) {
-        isAdmin = await firestoreAdapter.isAdmin(authUid);
+        try {
+          isAdmin = await firestoreAdapter.isAdmin(authUid);
+        } catch (adminErr: any) {
+          console.warn('[PROVIDER_GET] Failed to check admin status:', adminErr?.message);
+          // Default to non-admin on error
+          isAdmin = false;
+        }
       }
       if (paramUid !== authUid && !isAdmin) {
         return reply.code(403).send({ error: 'Access denied' });
       }
 
-      // Use the centralized getProviderConfig function
-      const providerConfig = await getProviderConfig(paramUid);
+      console.log("[DEBUG] GET /users/:uid/provider-config - BEFORE FIRESTORE READ");
+      let providerConfig;
+      try {
+        providerConfig = await getProviderConfig(paramUid);
+        console.log("[DEBUG] GET /users/:uid/provider-config - AFTER FIRESTORE READ");
+      } catch (firestoreErr: any) {
+        console.error("[DEBUG] GET /users/:uid/provider-config - FIRESTORE ERROR:", firestoreErr?.message, firestoreErr?.stack);
+        throw firestoreErr;
+      }
 
-      console.log("[PROVCFG-RESPONSE]", paramUid, JSON.stringify(providerConfig, null, 2));
+      console.log("[DEBUG] GET /users/:uid/provider-config - BEFORE DECRYPT/NORMALIZATION");
+      console.log("[DEBUG] GET /users/:uid/provider-config - AFTER DECRYPT/NORMALIZATION");
 
-      return reply.send(providerConfig);
+      console.log("[PROVIDER_GET] sending response");
+      const result = reply.send(providerConfig);
+      console.log("[DEBUG] GET /users/:uid/provider-config - AFTER RESPONSE.SEND");
+      return result;
     } catch (err: any) {
       logger.error({ err }, 'Error getting provider config');
-      return reply.code(500).send({ error: 'Failed to get provider config' });
+      if (!reply.sent) {
+        return reply.code(500).send({ error: 'Failed to get provider config' });
+      }
+    }
+
+    // SAFETY NET: Ensure response is always sent
+    if (!reply.sent) {
+      console.log("[PROVIDER_GET] SAFETY NET - sending empty provider config");
+      return reply.send({
+        marketData: {},
+        news: {},
+        metadata: {}
+      });
     }
   });
 }

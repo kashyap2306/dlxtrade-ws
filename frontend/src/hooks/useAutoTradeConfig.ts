@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import api, { autoTradeApi, marketApi, settingsApi, usersApi } from '../services/api';
 import { auth } from '../config/firebase';
 
@@ -45,6 +45,7 @@ interface PortfolioSnapshot {
 
 export const useAutoTradeConfig = (user: any) => {
   const isMountedRef = useRef(true);
+  const providerConfigFetchedRef = useRef<string | null>(null); // Track which user ID we've fetched for
 
   const normalizeEnabled = (value: any) => {
     return value === true || value === "true" || value === 1 || value === "1";
@@ -148,6 +149,16 @@ export const useAutoTradeConfig = (user: any) => {
   });
   const [enabledProviderCount, setEnabledProviderCount] = useState<number>(0);
 
+  // Calculate enabled market data count (moved outside useEffect for proper scoping)
+  const enabledMarketDataCount = useMemo(() => {
+    return Object.values(providerConfig?.marketData || {}).filter((p: any) => {
+      const exists = !!p;
+      const isEnabled = normalizeEnabled(p?.enabled);
+      const hasApiKey = p && p.apiKey && p.apiKey.length > 0;
+      return exists && isEnabled && hasApiKey;
+    }).length;
+  }, [providerConfig.marketData]);
+
   // Configs loaded state
   const [configsLoaded, setConfigsLoaded] = useState(false);
 
@@ -236,20 +247,43 @@ export const useAutoTradeConfig = (user: any) => {
     return config?.exchange || config?.exchangeName || config?.providerName || null;
   }, []);
 
-  // Independent providerConfig loader - ALWAYS runs when user.uid exists
+  // Independent providerConfig loader - ONLY runs ONCE per user session
   const loadProviderConfig = useCallback(async () => {
     if (!user?.uid) return;
 
-    console.log("[AUTOTRADE] Fetching provider-config for uid", user.uid);
+    // FIX: Prevent multiple fetches for the same user ID
+    if (providerConfigFetchedRef.current === user.uid) {
+      console.log("[DEBUG_AUTOTRADE] Provider config already fetched for uid:", user.uid);
+      return;
+    }
+
+    console.log("[TRACE] BEFORE provider-config fetch - uid:", user.uid);
 
     try {
       const response = await usersApi.getProviderConfig(user.uid);
+      console.log("[TRACE] RAW provider-config backend response:", JSON.stringify(response.data, null, 2));
+
       const data = response.data.providerConfig || response.data;
+      console.log("[TRACE] AFTER normalization - processed provider data:", JSON.stringify(data, null, 2));
+
+      // LOG FINAL providerConfig received from GET /users/:uid/provider-config
+      console.log("[DIAGNOSTICS_FINAL_PROVIDER_CONFIG]", {
+        receivedFromAPI: JSON.stringify(data, null, 2),
+        marketDataCount: Object.keys(data?.marketData || {}).length,
+        marketDataKeys: Object.keys(data?.marketData || {}),
+        cryptocompareExists: !!data?.marketData?.cryptocompare,
+        cryptocompareEnabled: data?.marketData?.cryptocompare?.enabled === true,
+        cryptocompareFull: data?.marketData?.cryptocompare
+      });
+
+      console.log("[TRACE] BEFORE setProviderConfig - current providerConfig:", JSON.stringify(providerConfig, null, 2));
       setProviderConfig(data);
+      console.log("[TRACE] AFTER setProviderConfig - new providerConfig state:", JSON.stringify(data, null, 2));
+
       setConfigsLoaded(true);
-      console.log("[AUTOTRADE_PROVIDER_CONFIG_LOADED]", data);
+      providerConfigFetchedRef.current = user.uid; // Mark as fetched for this user
     } catch (error) {
-      console.error("[AUTOTRADE] provider-config fetch failed", error);
+      console.error("[TRACE] provider-config fetch FAILED:", error);
       // Keep existing providerConfig if any, don't reset to empty
     }
   }, [user?.uid]);
@@ -273,8 +307,10 @@ export const useAutoTradeConfig = (user: any) => {
     console.log("[ATC RUN] Using uid:", user.uid);
 
     // Set safe defaults BEFORE network activity (but don't wipe existing data)
-    // Only set if we don't already have data
-    setExchangeConfig({});
+    // Only set empty exchangeConfig if we don't already have data
+    if (!exchangeConfig || Object.keys(exchangeConfig).length === 0) {
+      setExchangeConfig({});
+    }
 
     console.log('[AUTO-TRADE] loadAllData() STARTED');
 
@@ -297,7 +333,12 @@ export const useAutoTradeConfig = (user: any) => {
       const promises = [
         createTimeoutPromise(() => autoTradeApi.getConfig(), 10000, 'getConfig'),
         createTimeoutPromise(() => usersApi.getPerformanceStats(authUid), 10000, 'getPerformanceStats'),
-        createTimeoutPromise(() => usersApi.getExchangeConfig(authUid), 8000, 'getExchangeConfig'),
+        createTimeoutPromise(async () => {
+          console.log("[TRACE] BEFORE exchange-config fetch - uid:", authUid);
+          const result = await usersApi.getExchangeConfig(authUid);
+          console.log("[TRACE] RAW exchange-config backend response:", JSON.stringify(result.data, null, 2));
+          return result;
+        }, 8000, 'getExchangeConfig'),
       ];
 
       console.log("[ATC DEBUG] Promises array created, about to call Promise.allSettled");
@@ -368,16 +409,22 @@ export const useAutoTradeConfig = (user: any) => {
 
       // Handle exchange config - ALWAYS set safe fallback, never block loading
       const handleExchangeConfig = () => {
+        console.log("[TRACE] BEFORE handleExchangeConfig - current exchangeConfig:", JSON.stringify(exchangeConfig, null, 2));
+
         if (exchangeRes.status === 'fulfilled' && isMountedRef.current) {
           const data = exchangeRes.value.data;
-          console.log('[AUTO-TRADE] exchangeRes fulfilled with data:', !!data);
+          console.log('[TRACE] exchangeRes fulfilled with data:', !!data, 'data:', JSON.stringify(data, null, 2));
           const safeExchange = data || {};
+          console.log("[TRACE] BEFORE setExchangeConfig - will set:", JSON.stringify(safeExchange, null, 2));
           setExchangeConfig(safeExchange);
+          console.log("[TRACE] AFTER setExchangeConfig - exchangeConfig state set");
         } else if (exchangeRes.status === 'rejected') {
           const reason = (exchangeRes as PromiseRejectedResult).reason as any;
-          console.log('[AUTO-TRADE] exchangeRes rejected:', reason?.message || reason);
+          console.log('[TRACE] exchangeRes rejected:', reason?.message || reason);
           // Always set safe fallback on any failure
+          console.log("[TRACE] BEFORE setExchangeConfig (rejected) - will set empty object");
           setExchangeConfig({});
+          console.log("[TRACE] AFTER setExchangeConfig (rejected) - exchangeConfig state set to empty");
         }
       };
       handleExchangeConfig();
@@ -401,32 +448,73 @@ export const useAutoTradeConfig = (user: any) => {
   }, [user, loadLiveData]);
 
   useEffect(() => {
+    console.log("[DEBUG_AUTOTRADE] USEEFFECT TRIGGERED - user:", user ? { uid: user.uid, email: user.email } : 'null');
+
     if (user && user.uid) {
-      console.log("[AutoTrade] user and uid ready, loading configs");
+      // FIX: Only reset fetched flag if user ID changed (new session)
+      // Do NOT reset providerConfig state - preserve any existing data
+      if (providerConfigFetchedRef.current !== user.uid) {
+        console.log("[DEBUG_AUTOTRADE] New user session detected, resetting fetch flag only");
+        setConfigsLoaded(false);
+        providerConfigFetchedRef.current = null;
+      }
+
+      console.log("[DEBUG_AUTOTRADE] user and uid ready, loading configs");
       loadProviderConfig();
       loadAllData();
     } else {
-      console.log("[AutoTrade] Waiting for user and uid...");
+      // FIX: Only reset fetch flag if user is completely logged out
+      // Keep providerConfig state for potential re-auth
+      if (user === null) {
+        console.log("[DEBUG_AUTOTRADE] User logged out, resetting fetch flag only");
+        setConfigsLoaded(false);
+        providerConfigFetchedRef.current = null;
+      } else {
+        console.log("[DEBUG_AUTOTRADE] Waiting for user and uid...");
+      }
     }
-  }, [user, loadProviderConfig, loadAllData]);
+  }, [user]);
 
   // Debug provider config transitions to catch unexpected empties
   useEffect(() => {
+    console.log("[DEBUG_AUTOTRADE] PROVIDER CONFIG UPDATE - raw providerConfig:", JSON.stringify(providerConfig, null, 2));
+
     const counts = {
       marketData: Object.keys(providerConfig?.marketData || {}).length,
       news: Object.keys(providerConfig?.news || {}).length,
       metadata: Object.keys(providerConfig?.metadata || {}).length,
     };
+
+    console.log("[DEBUG_AUTOTRADE] PROVIDER BUCKETS:", {
+      marketDataKeys: Object.keys(providerConfig?.marketData || {}),
+      newsKeys: Object.keys(providerConfig?.news || {}),
+      metadataKeys: Object.keys(providerConfig?.metadata || {})
+    });
+
     const enabledCount = [
       ...Object.values(providerConfig?.marketData || {}),
       ...Object.values(providerConfig?.news || {}),
       ...Object.values(providerConfig?.metadata || {}),
     ].filter((p: any) => {
+      // CONSISTENCY FIX: Provider is enabled if it exists, enabled === true, AND has apiKey
+      // This matches diagnostics logic and DEV_MODE logic
+      const exists = !!p;
       const isEnabled = normalizeEnabled(p?.enabled);
-      return Boolean(isEnabled);
+      const hasApiKey = p && p.apiKey && p.apiKey.length > 0;
+      console.log("[DEBUG_AUTOTRADE] PROVIDER FILTER CHECK:", {
+        providerId: p?.providerName || p?.id,
+        exists,
+        enabled: p?.enabled,
+        enabledNormalized: isEnabled,
+        hasApiKey,
+        apiKeyLength: p?.apiKey?.length || 0,
+        passesFilter: exists && isEnabled && hasApiKey
+      });
+      return exists && isEnabled && hasApiKey;
     }).length;
+
     setEnabledProviderCount(enabledCount);
-    console.log("[ATC_PROVIDER_CONFIG_UPDATE]", { counts, enabledCount, configsLoaded, providerConfig });
+    console.log("[DEBUG_AUTOTRADE] FINAL ENABLED COUNT:", enabledCount);
   }, [providerConfig, configsLoaded]);
 
   const exchangeLoaded = useCallback(() => {
@@ -434,11 +522,42 @@ export const useAutoTradeConfig = (user: any) => {
     return !!hasKeys;
   }, [exchangeConfig]);
 
-  const isReady =
-    !!user?.uid &&
-    configsLoaded &&
-    enabledProviderCount > 0 &&
-    exchangeLoaded();
+  // DEV_MODE: Allow AutoTrade ready state without exchange for development/testing
+  const DEV_MODE = process.env.NODE_ENV === 'development' || process.env.DEV_MODE === '1';
+
+  const isReady = DEV_MODE
+    ? (
+        // DEV MODE: Require only MarketData providers (skip exchange)
+        !!user?.uid &&
+        configsLoaded &&
+        enabledMarketDataCount > 0
+      )
+    : (
+        // PRODUCTION: Require all conditions including exchange
+        !!user?.uid &&
+        configsLoaded &&
+        enabledProviderCount > 0 &&
+        exchangeLoaded()
+      );
+
+  // Log DEV_MODE status and readiness conditions
+  console.log("[AUTOTRADE_READINESS]", {
+    DEV_MODE,
+    userUid: !!user?.uid,
+    configsLoaded,
+    enabledProviderCount,
+    enabledMarketDataCount,
+    exchangeLoaded: exchangeLoaded(),
+    isReady
+  });
+
+  // DEV MODE specific logging
+  if (DEV_MODE) {
+    console.log("[DEV_MODE_READINESS_CHECK]", {
+      enabledMarketDataCount,
+      marketDataProviders: providerConfig.marketData
+    });
+  }
 
   const isExchangeConnected = useCallback((config: any) => {
     if (!config) return false;
@@ -450,15 +569,12 @@ export const useAutoTradeConfig = (user: any) => {
 
     if (!name) return false;
 
-    const hasKey =
-      config.apiKeyEncrypted ||
-      config.secretEncrypted ||
-      config.apiKey === '[ENCRYPTED]' ||
-      config.secret === '[ENCRYPTED]' ||
-      (typeof config.apiKey === 'string' && config.apiKey.startsWith('ENCRYPTED:')) ||
-      (typeof config.secret === 'string' && config.secret.startsWith('ENCRYPTED:'));
+    // Only check for encrypted field presence - no placeholder strings
+    const hasEncryptedKeys =
+      config.apiKeyEncrypted &&
+      config.secretKeyEncrypted;
 
-    return !!name && !!hasKey;
+    return !!name && hasEncryptedKeys;
   }, []);
 
   const fetchExchangeConfigWithRetry = useCallback(async () => {
@@ -532,10 +648,12 @@ export const useAutoTradeConfig = (user: any) => {
     providerConfig,
     setProviderConfig,
     enabledProviderCount,
+    enabledMarketDataCount,
     autoTradeStatus,
     setAutoTradeStatus,
     configsLoaded,
     isReady,
+    exchangeLoaded,
 
     // Functions
     loadAllData,
