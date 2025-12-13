@@ -44,9 +44,11 @@ export default function AutoTrade() {
     setExchangeConfig,
     providerConfig,
     setProviderConfig,
+    enabledProviderCount,
     autoTradeStatus,
     setAutoTradeStatus,
     configsLoaded,
+    isReady,
     loadAllData,
     loadLiveData,
     loadAutoTradeStatus,
@@ -62,6 +64,18 @@ export default function AutoTrade() {
   useEffect(() => {
     console.log("[AT_RERENDER] configsLoaded changed:", configsLoaded);
   }, [configsLoaded]);
+
+  useEffect(() => {
+    const counts = {
+      marketData: Object.keys(providerConfig?.marketData || {}).length,
+      news: Object.keys(providerConfig?.news || {}).length,
+      metadata: Object.keys(providerConfig?.metadata || {}).length,
+    };
+    console.log("[AT_PROVIDER_CONFIG_RECEIVED]", { counts, configsLoaded, providerConfig });
+    if (configsLoaded && counts.marketData === 0 && counts.news === 0 && counts.metadata === 0) {
+      console.warn("[AT_PROVIDER_BUCKETS_EMPTY_AFTER_LOAD]");
+    }
+  }, [providerConfig, configsLoaded]);
 
   // Memoized toast function
   const showToast = useCallback((message: string, type: 'success' | 'error') => {
@@ -221,7 +235,11 @@ export default function AutoTrade() {
 
   // DEBUG: Log all state values at render time
   // Determine readiness based on provider keys and exchange connectivity
-  const isReady = true;
+  const providerCounts = {
+    marketData: Object.keys(providerConfig?.marketData || {}).length,
+    news: Object.keys(providerConfig?.news || {}).length,
+    metadata: Object.keys(providerConfig?.metadata || {}).length,
+  };
 
   console.log("[DEBUG] AutoTrade runtime state", {
     configsLoaded,
@@ -233,15 +251,21 @@ export default function AutoTrade() {
   console.log("[AT] Runtime state:", { configsLoaded, providerConfig, exchangeConfig, user });
   console.log("[AT_RUNTIME_STATE]", {
     configsLoaded,
+    providerCounts,
+    enabledProviderCount,
   });
   console.log("CURRENT PROVIDER CONFIG FULL:", JSON.stringify(providerConfig, null, 2));
   console.log("[AUTO-TRADE READY - FINAL VERIFICATION]", {
     configsLoaded,
+    providerCounts,
+    enabledProviderCount,
+    isReady,
     providerConfig,
     exchangeConfig,
     user: !!user,
     ready: isReady,
   });
+  console.log("[AT READY CHECK]", { configsLoaded, enabledProviderCount, providerConfig });
 
   // Memoized component props to prevent unnecessary re-renders
   const engineControlsProps = useMemo(() => ({

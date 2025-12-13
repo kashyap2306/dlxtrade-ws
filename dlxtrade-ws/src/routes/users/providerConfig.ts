@@ -70,23 +70,49 @@ function normalizeProviderType(name: string): "marketData" | "news" | "metadata"
 // Extract provider config logic into a separate function for testing
 export async function getProviderConfig(uid: string) {
   try {
+    const dbgDb = getFirebaseAdmin().firestore();
+    console.log("[INT DEBUG] Attempt path:", `users/${uid}/integrations`);
+    const dbgSnap = await dbgDb.collection(`users/${uid}/integrations`).get();
+    console.log("[INT DEBUG RESULT] snapshot size:", dbgSnap.size);
+    if (dbgSnap.empty) {
+      try {
+        const cols = await dbgDb.collection('users').doc(uid).listCollections();
+        console.log("[INT DEBUG DOCS] Subcollections:", cols.map((c) => c.id));
+      } catch (err: any) {
+        console.log("[INT DEBUG DOCS] Failed to list subcollections:", err?.message);
+      }
+    }
     // Read all provider integration docs for this user
     const allIntegrations = await firestoreAdapter.getAllIntegrations(uid);
+    console.log("[PCONFIG_STAGE1_RAW_INTEGRATIONS]", allIntegrations);
+    console.log("[PROVCFG-FIRESTORE-COUNT]", uid, Object.keys(allIntegrations || {}).length, allIntegrations ? Object.keys(allIntegrations).slice(0,20) : []);
     console.log("[BACKEND_RAW_INTEGRATIONS]", allIntegrations);
+    const rawPreview = Object.entries(allIntegrations || {}).slice(0, 2).map(([id, data]: any) => ({
+      id,
+      type: data?.type,
+      enabled: data?.enabled,
+      apiKeyEncryptedLength: data?.apiKeyEncrypted?.length || 0
+    }));
+    console.log("[BACKEND_INTEGRATIONS_PREVIEW]", rawPreview);
+    console.log("[BACKEND_INTEGRATIONS_COUNTS]", {
+      marketData: Object.values(allIntegrations || {}).filter((p: any) => p?.type === 'marketData').length,
+      news: Object.values(allIntegrations || {}).filter((p: any) => p?.type === 'news').length,
+      metadata: Object.values(allIntegrations || {}).filter((p: any) => p?.type === 'metadata').length,
+    });
 
     // Safe decrypt helper - returns empty string on any failure
-    const decryptSafe = (value?: string): string => {
+    const decryptSafe = (value?: string, providerId?: string): string => {
       if (!value) {
-        console.log(`DECRYPT_DEBUG: No encrypted value provided`);
+        console.log(`DECRYPT_DEBUG: No encrypted value provided for ${providerId || 'unknown'}`);
         return '';
       }
       try {
         const decrypted = keyManager.decrypt(value) || '';
-        console.log(`DECRYPT_DEBUG: Attempting to decrypt value of length ${value.length}`);
+        console.log(`DECRYPT_DEBUG: Attempting to decrypt value of length ${value.length} for ${providerId || 'unknown'}`);
         console.log(`DECRYPT_DEBUG: Decryption result length: ${decrypted.length}, starts with: ${decrypted.substring(0, 10)}...`);
         return decrypted;
       } catch (err: any) {
-        console.error("DECRYPT_ERROR", err);
+        console.error("[PROVCFG-DECRYPT-ERR]", providerId || 'unknown', String(err));
         return '';
       }
     };
@@ -107,18 +133,22 @@ export async function getProviderConfig(uid: string) {
         ? safeDoc.providerName
         : (typeof providerId === 'string' ? providerId : '');
       const providerKey = (rawName || '').toLowerCase().trim();
+      console.log("[PROVIDER_SAFE_DOC]", providerKey, {
+        hasEncrypted: !!safeDoc.apiKeyEncrypted,
+        encryptedLen: safeDoc.apiKeyEncrypted?.length || 0,
+        hasPlain: !!safeDoc.apiKey,
+        type: safeDoc.type,
+        enabled: safeDoc.enabled
+      });
 
       const normalized = normalizeProviderId(providerKey, safeDoc.type, providerId);
+      console.log("[PCONFIG_STAGE2_NORMALIZED]", { providerId, normalized });
 
       // CRITICAL: Only decrypt if we have encrypted keys - never fallback to plain text
       let decryptedKey = '';
       console.log("[DECRYPT_ATTEMPT]", providerKey, safeDoc.apiKeyEncrypted?.length);
       if (safeDoc.apiKeyEncrypted) {
-        decryptedKey = decryptSafe(safeDoc.apiKeyEncrypted);
-      } else if (safeDoc.apiKey) {
-        // If no encrypted version exists, try to decrypt the plain text key
-        // This handles legacy data that might not be encrypted
-        decryptedKey = decryptSafe(safeDoc.apiKey);
+        decryptedKey = decryptSafe(safeDoc.apiKeyEncrypted, providerKey);
       }
       console.log("[DECRYPT_RESULT]", providerKey, decryptedKey ? "non-empty" : "EMPTY");
       console.log("FINAL_KEY", providerKey, decryptedKey.length);
@@ -133,13 +163,16 @@ export async function getProviderConfig(uid: string) {
       };
 
       providerConfig[normalized.type][normalized.id] = providerData;
+      console.log("[PCONFIG_STAGE3_GROUPED]", { type: normalized.type, id: normalized.id, providerData });
     }
 
-    console.log("BACKEND_FINAL_PROVIDER_CONFIG", JSON.stringify(providerConfig, null, 2));
-    console.log("BACKEND_PROVIDER_CONFIG_FINAL", JSON.stringify(providerConfig, null, 2));
-    console.log("[BACKEND_PROVIDER_FINAL]", providerConfig);
+    const finalConfig = providerConfig;
+    console.log("[PCONFIG_STAGE4_FINAL]", finalConfig);
+    console.log("BACKEND_FINAL_PROVIDER_CONFIG", JSON.stringify(finalConfig, null, 2));
+    console.log("BACKEND_PROVIDER_CONFIG_FINAL", JSON.stringify(finalConfig, null, 2));
+    console.log("[BACKEND_PROVIDER_FINAL]", finalConfig);
 
-    return providerConfig;
+    return finalConfig;
 
   } catch (err: any) {
     logger.error({ err }, "Error getting provider config");
@@ -156,9 +189,11 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
     try {
       console.log("=== PROVIDER CONFIG SAVE START ===");
 
-      const { uid } = request.params;
-      const authUid = (request as any).user?.uid;
-      const urlUid = request.params.uid;
+      const { uid: paramUid } = request.params;
+      console.log("[UID-DEBUG] provider-config route called with uid =", paramUid);
+      console.log("[UID-DEBUG] Firestore path = users/" + paramUid + "/integrations");
+      const authUid = (request as any).userId;
+      const urlUid = paramUid;
 
       // Auth check: ensure user is authenticated
       if (!authUid) {
@@ -166,14 +201,14 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
         return reply.status(401).send({ error: "Unauthorized: user token missing" });
       }
 
-      const user = (request as any).user;
-
       // Auth check: user can only update their own config unless they're admin
       const isAdmin = await firestoreAdapter.isAdmin(authUid);
-      if (uid !== authUid && !isAdmin) {
+      if (paramUid !== authUid && !isAdmin) {
         logger.warn({ authUid, urlUid }, 'Access denied: user can only update their own provider config');
         return reply.code(403).send({ success: false, message: 'Forbidden' });
       }
+
+      const targetUid = isAdmin ? paramUid : authUid;
 
       const body = request.body as any;
 
@@ -189,9 +224,19 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
         logger.error({ providerConfig }, 'Invalid providerConfig - not an object');
         return reply.status(400).send({ success: false, message: 'providerConfig required' });
       }
+    const providerPreview = Object.entries(providerConfig || {}).slice(0, 2).map(([id, val]: any) => ({
+      id,
+      type: val?.type,
+      enabled: val?.enabled,
+      apiKeyLength: val?.apiKey?.length || 0
+    }));
+    console.log("[PROVIDER_SAVE_REQUEST_BODY]", {
+      providerCount: Object.keys(providerConfig || {}).length,
+      preview: providerPreview
+    });
 
       const db = getFirebaseAdmin().firestore();
-      const userRef = db.collection('users').doc(uid);
+      const userRef = db.collection('users').doc(targetUid);
 
       // Process each provider in the config (supports single or multi-provider payloads)
       const flatProviderConfig: Record<string, any> = {};
@@ -213,8 +258,17 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
 
         // Use the normalizeProviderId function to determine correct type
         const normalized = normalizeProviderId(normalizedProviderName);
+        const normalizedId = normalized?.id || normalizedProviderName;
         const normalizedType = normalized ? normalized.type : type || 'marketData';
         const enabledValue = enabled ?? true;
+
+        console.log("[PROVIDER_SAVE_INPUT]", {
+          providerName,
+          normalizedId,
+          normalizedType,
+          apiKeyLength: apiKey?.length || 0,
+          secretKeyLength: secretKey?.length || 0,
+        });
 
         // Validate apiKey is not an error message or invalid string
         if (apiKey && typeof apiKey === 'string') {
@@ -232,13 +286,10 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
         let encryptedApiKey = '';
         let encryptedSecretKey = '';
         let encryptionSuccess = true;
+        const isApiKeyEmpty = !apiKey || apiKey.trim() === '';
 
         try {
-          if (!apiKey || apiKey.trim() === '') {
-            console.log("SKIPPING EMPTY PROVIDER:", providerName);
-            continue;
-          }
-          if (apiKey && apiKey.trim() !== '') {
+          if (!isApiKeyEmpty) {
             encryptedApiKey = keyManager.encrypt(apiKey);
             encryptedCount++;
           }
@@ -253,25 +304,36 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
           // Continue with other providers but log the error
         }
 
+        console.log("[PROVIDER_SAVE_ENCRYPTED]", {
+          providerId: normalizedId,
+          encryptedApiKeyLength: encryptedApiKey?.length || 0,
+          encryptedSecretKeyLength: encryptedSecretKey?.length || 0,
+          encryptionSuccess,
+        });
+
         // Save to integrations collection with encrypted keys
-        const integrationsDocRef = userRef.collection('integrations').doc(normalizedProviderName);
+        const integrationsDocRef = userRef.collection('integrations').doc(normalizedId);
         const integrationsPayload: any = {
+          providerName: normalizedId,
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           type: normalizedType,
           usageStats: usageStats || {}
         };
 
-        // Only set encrypted keys if encryption succeeded
-        if (encryptedApiKey) {
-          integrationsPayload.apiKeyEncrypted = encryptedApiKey;
-        }
-        if (encryptedSecretKey) {
-          integrationsPayload.secretKeyEncrypted = encryptedSecretKey;
-        }
+        // Always set encrypted fields (null when absent) to ensure schema consistency
+        integrationsPayload.apiKeyEncrypted = encryptedApiKey || null;
+        integrationsPayload.secretKeyEncrypted = encryptedSecretKey || null;
 
         // Set enabled only if there's an encrypted key present
         const hasEncryptedKey = !!encryptedApiKey || !!encryptedSecretKey;
         integrationsPayload.enabled = hasEncryptedKey ? enabledValue : false;
+        console.log("[PROVIDER_SAVE_FIRESTORE_PAYLOAD]", {
+          providerId: normalizedId,
+          enabled: integrationsPayload.enabled,
+          apiKeyEncryptedLength: encryptedApiKey?.length || 0,
+          secretKeyEncryptedLength: encryptedSecretKey?.length || 0,
+          type: integrationsPayload.type
+        });
 
         try {
           await integrationsDocRef.set(integrationsPayload, { merge: true });
@@ -280,10 +342,32 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
           // Continue with other providers but log the error
         }
 
+        // Fetch back to confirm fields exist
+        try {
+          const savedSnap = await integrationsDocRef.get();
+          const savedData = savedSnap.data() || {};
+          if (!savedData.apiKeyEncrypted || savedData.apiKeyEncrypted === '') {
+            logger.warn({ providerId: normalizedId }, 'Post-save missing apiKeyEncrypted; defaulting to null');
+          }
+          if (!savedData.secretKeyEncrypted) {
+            logger.debug({ providerId: normalizedId }, 'Post-save missing secretKeyEncrypted (may be expected)');
+          }
+          console.log("[PROVIDER_SAVE_VERIFIED]", {
+            providerId: normalizedId,
+            hasApiKeyEncrypted: !!savedData.apiKeyEncrypted,
+            hasSecretKeyEncrypted: !!savedData.secretKeyEncrypted,
+            enabled: savedData.enabled,
+            type: savedData.type,
+          });
+        } catch (verifyErr: any) {
+          logger.warn({ providerId: normalizedId, error: verifyErr?.message }, 'Failed to verify integration after save');
+        }
+
         // Accumulate provider config for response
-        flatProviderConfig[normalizedProviderName] = {
-          providerName: normalizedProviderName,
-          apiKeyEncrypted: encryptedApiKey,
+        flatProviderConfig[normalizedId] = {
+          providerName: normalizedId,
+          apiKeyEncrypted: encryptedApiKey || null,
+          secretKeyEncrypted: encryptedSecretKey || null,
           type: normalizedType,
           enabled: integrationsPayload.enabled,
           usageStats: usageStats || {},
@@ -302,7 +386,7 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
 
       // Log activity for audit trail
       if (processedCount > 0) {
-        await firestoreAdapter.logActivity(uid, 'PROVIDER_CONFIG_UPDATED', {
+        await firestoreAdapter.logActivity(targetUid, 'PROVIDER_CONFIG_UPDATED', {
           message: `Updated provider configurations: ${processedProviders.join(', ')}`,
           providers: processedProviders,
           encryptedKeysCount: encryptedCount
@@ -329,24 +413,38 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
   fastify.get('/:uid/provider-config', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
+    console.log("[PROVCFG] GET handler hit for uid =", request.params.uid);
     try {
-      const { uid } = request.params;
-      const user = (request as any).user;
+      const { uid: paramUid } = request.params;
+      const authUid = (request as any).userId;
+      console.log("[PROVCFG-INCOMING] reqId:", request.id || 'no-reqid', "authUid:", authUid || 'no-auth-uid', "paramUid:", paramUid);
+      console.log("[UID-DEBUG] provider-config route called with uid =", paramUid);
+      console.log("[UID-DEBUG] Firestore path = users/" + paramUid + "/integrations");
+
+      // STRICT AUTH CHECK: Param UID must match authenticated user UID
+      if (!authUid) {
+        console.error("[PROVCFG-AUTH-FAIL] No authenticated user found");
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
+      if (paramUid !== authUid) {
+        console.error("[PROVCFG-AUTH-FAIL] UID mismatch - param:", paramUid, "auth:", authUid);
+        return reply.code(403).send({ error: 'Access denied: UID mismatch' });
+      }
 
       // Users can only view their own config unless they're admin
       // Skip auth check if auth is disabled (for testing)
       let isAdmin = false;
-      if (user && user.uid) {
-        isAdmin = await firestoreAdapter.isAdmin(user.uid);
-        if (uid !== user.uid && !isAdmin) {
-          return reply.code(403).send({ error: 'Access denied' });
-        }
+      if (authUid) {
+        isAdmin = await firestoreAdapter.isAdmin(authUid);
+      }
+      if (paramUid !== authUid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
       }
 
       // Use the centralized getProviderConfig function
-      const providerConfig = await getProviderConfig(uid);
+      const providerConfig = await getProviderConfig(paramUid);
 
-      console.log("FINAL_PROVIDER_CONFIG", providerConfig);
+      console.log("[PROVCFG-RESPONSE]", paramUid, JSON.stringify(providerConfig, null, 2));
 
       return reply.send(providerConfig);
     } catch (err: any) {

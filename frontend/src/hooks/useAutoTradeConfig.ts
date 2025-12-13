@@ -46,6 +46,10 @@ interface PortfolioSnapshot {
 export const useAutoTradeConfig = (user: any) => {
   const isMountedRef = useRef(true);
 
+  const normalizeEnabled = (value: any) => {
+    return value === true || value === "true" || value === 1 || value === "1";
+  };
+
   // Auto-trade state
   const [config, setConfig] = useState<AutoTradeConfig>({
     autoTradeEnabled: false,
@@ -142,6 +146,7 @@ export const useAutoTradeConfig = (user: any) => {
     news: {},
     metadata: {},
   });
+  const [enabledProviderCount, setEnabledProviderCount] = useState<number>(0);
 
   // Configs loaded state
   const [configsLoaded, setConfigsLoaded] = useState(false);
@@ -161,6 +166,10 @@ export const useAutoTradeConfig = (user: any) => {
 
   const loadAutoTradeStatus = useCallback(async () => {
     if (!user || !isMountedRef.current) return;
+    if (!user?.uid) {
+      console.log("[ATC BLOCKED] No valid uid yet, waiting...");
+      return;
+    }
     try {
       const response = await settingsApi.trading.autotrade.status();
       if (isMountedRef.current) {
@@ -188,7 +197,7 @@ export const useAutoTradeConfig = (user: any) => {
     if (!user || !isMountedRef.current) return;
     try {
       // Load all data asynchronously without Promise.all - no blocking
-      const loadPromises = [
+    const loadPromises = [
         autoTradeApi.getActiveTrades(50).then(tradesRes => {
           if (isMountedRef.current) {
             setActiveTrades(Array.isArray(tradesRes.data) ? tradesRes.data : []);
@@ -227,14 +236,41 @@ export const useAutoTradeConfig = (user: any) => {
     return config?.exchange || config?.exchangeName || config?.providerName || null;
   }, []);
 
+  // Independent providerConfig loader - ALWAYS runs when user.uid exists
+  const loadProviderConfig = useCallback(async () => {
+    if (!user?.uid) return;
+
+    console.log("[AUTOTRADE] Fetching provider-config for uid", user.uid);
+
+    try {
+      const response = await usersApi.getProviderConfig(user.uid);
+      const data = response.data.providerConfig || response.data;
+      setProviderConfig(data);
+      setConfigsLoaded(true);
+      console.log("[AUTOTRADE_PROVIDER_CONFIG_LOADED]", data);
+    } catch (error) {
+      console.error("[AUTOTRADE] provider-config fetch failed", error);
+      // Keep existing providerConfig if any, don't reset to empty
+    }
+  }, [user?.uid]);
+
   const loadAllData = useCallback(async () => {
+    console.log("[ATC LOAD] running loadAllData for uid:", user?.uid);
     if (!isMountedRef.current) return;
 
-    // EARLY GUARD: Wait for user.uid before running
-    if (!user?.uid) {
-      console.log('[AUTO-TRADE] loadAllData() skipped - waiting for user.uid');
+    // BLOCK until Firebase gives a real UID
+    if (user === null) {
+      console.log("[ATC BLOCKED: user=null]");
       return;
     }
+
+    if (!user.uid) {
+      console.log("[ATC BLOCKED: UID NOT READY]");
+      setTimeout(() => loadAllData(), 300);
+      return;
+    }
+
+    console.log("[ATC RUN] Using uid:", user.uid);
 
     // Set safe defaults BEFORE network activity (but don't wipe existing data)
     // Only set if we don't already have data
@@ -242,49 +278,37 @@ export const useAutoTradeConfig = (user: any) => {
 
     console.log('[AUTO-TRADE] loadAllData() STARTED');
 
-    let finalProviderConfig = {
-      marketData: {},
-      news: {},
-      metadata: {}
-    };
-
     try {
       // Load config and initial data in parallel with Promise.allSettled
-      const authUid = user?.uid || auth.currentUser?.uid;
+      const authUid = user.uid;
 
       console.log('[AUTO-TRADE] Starting Promise.allSettled with authUid:', authUid);
 
       // Create promises with timeout handling
-      const createTimeoutPromise = (promise: Promise<any>, timeoutMs: number, label: string) => {
+      const createTimeoutPromise = (fn: () => Promise<any>, timeoutMs: number, label: string) => {
         return Promise.race([
-          promise,
+          fn(),
           new Promise((_, reject) =>
             setTimeout(() => reject(new Error(`${label} timeout after ${timeoutMs}ms`)), timeoutMs)
           )
         ]);
       };
 
-      console.log("[ATC_FETCH] Starting provider config fetch");
-
       const promises = [
-        createTimeoutPromise(autoTradeApi.getConfig(), 10000, 'getConfig'),
-        authUid ? createTimeoutPromise(usersApi.getPerformanceStats(authUid), 10000, 'getPerformanceStats') : Promise.reject(new Error('Missing UID')),
-        authUid ? createTimeoutPromise(usersApi.getExchangeConfig(authUid), 8000, 'getExchangeConfig') : Promise.reject(new Error('Missing UID')),
-        createTimeoutPromise(usersApi.getProviderConfig(user.uid), 10000, 'getProviderConfig'),
+        createTimeoutPromise(() => autoTradeApi.getConfig(), 10000, 'getConfig'),
+        createTimeoutPromise(() => usersApi.getPerformanceStats(authUid), 10000, 'getPerformanceStats'),
+        createTimeoutPromise(() => usersApi.getExchangeConfig(authUid), 8000, 'getExchangeConfig'),
       ];
 
-      const [configRes, performanceRes, exchangeRes, providerRes] = await Promise.allSettled(promises);
+      console.log("[ATC DEBUG] Promises array created, about to call Promise.allSettled");
+
+      const [configRes, performanceRes, exchangeRes] = await Promise.allSettled(promises);
 
       console.log('[AUTO-TRADE] Promise.allSettled completed:', {
         configRes: configRes.status,
         performanceRes: performanceRes.status,
-        exchangeRes: exchangeRes.status,
-        providerRes: providerRes.status
+        exchangeRes: exchangeRes.status
       });
-
-      if (providerRes.status === 'fulfilled') {
-        console.log("[RAW BACKEND PROVIDER CONFIG]", JSON.stringify(providerRes.value?.data, null, 2));
-      }
 
       // Handle config result - always set a safe config
       if (configRes.status === 'fulfilled' && isMountedRef.current) {
@@ -358,21 +382,6 @@ export const useAutoTradeConfig = (user: any) => {
       };
       handleExchangeConfig();
 
-      // Handle provider config - always maintain bucket structure
-      if (isMountedRef.current && providerRes.status === 'fulfilled') {
-        const fetched = providerRes.value?.data || {};
-        finalProviderConfig = {
-          marketData: fetched.marketData || {},
-          news: fetched.news || {},
-          metadata: fetched.metadata || {},
-        };
-
-        setProviderConfig(finalProviderConfig);
-
-        console.log("[ATC_FINAL_CONFIG]", finalProviderConfig);
-      } else {
-        setProviderConfig(finalProviderConfig);
-      }
 
       // Set default portfolio data since wallet API is not available
       if (isMountedRef.current) {
@@ -388,25 +397,48 @@ export const useAutoTradeConfig = (user: any) => {
 
     } catch (error: any) {
       console.error("[ATC_ERROR]", error?.response?.data || error);
-    } finally {
-      setProviderConfig(finalProviderConfig);
-      setConfigsLoaded(true);
-
-      console.log("[ATC_READY_FINAL]", {
-        configsLoaded: true,
-        providerConfig: finalProviderConfig
-      });
     }
   }, [user, loadLiveData]);
 
   useEffect(() => {
-    if (!user?.uid) {
-      console.log("[AutoTrade] Waiting for valid user UID...");
-      return;
+    if (user && user.uid) {
+      console.log("[AutoTrade] user and uid ready, loading configs");
+      loadProviderConfig();
+      loadAllData();
+    } else {
+      console.log("[AutoTrade] Waiting for user and uid...");
     }
-    console.log("[AutoTrade] user.uid ready, running loadAllData()");
-    loadAllData();
-  }, [user?.uid]);
+  }, [user, loadProviderConfig, loadAllData]);
+
+  // Debug provider config transitions to catch unexpected empties
+  useEffect(() => {
+    const counts = {
+      marketData: Object.keys(providerConfig?.marketData || {}).length,
+      news: Object.keys(providerConfig?.news || {}).length,
+      metadata: Object.keys(providerConfig?.metadata || {}).length,
+    };
+    const enabledCount = [
+      ...Object.values(providerConfig?.marketData || {}),
+      ...Object.values(providerConfig?.news || {}),
+      ...Object.values(providerConfig?.metadata || {}),
+    ].filter((p: any) => {
+      const isEnabled = normalizeEnabled(p?.enabled);
+      return Boolean(isEnabled);
+    }).length;
+    setEnabledProviderCount(enabledCount);
+    console.log("[ATC_PROVIDER_CONFIG_UPDATE]", { counts, enabledCount, configsLoaded, providerConfig });
+  }, [providerConfig, configsLoaded]);
+
+  const exchangeLoaded = useCallback(() => {
+    const hasKeys = exchangeConfig && Object.keys(exchangeConfig || {}).length > 0;
+    return !!hasKeys;
+  }, [exchangeConfig]);
+
+  const isReady =
+    !!user?.uid &&
+    configsLoaded &&
+    enabledProviderCount > 0 &&
+    exchangeLoaded();
 
   const isExchangeConnected = useCallback((config: any) => {
     if (!config) return false;
@@ -499,9 +531,11 @@ export const useAutoTradeConfig = (user: any) => {
     setExchangeConfig,
     providerConfig,
     setProviderConfig,
+    enabledProviderCount,
     autoTradeStatus,
     setAutoTradeStatus,
     configsLoaded,
+    isReady,
 
     // Functions
     loadAllData,

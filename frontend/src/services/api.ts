@@ -236,14 +236,18 @@ export const settingsApi = {
   saveTradingConfig: (uid: string, config: any) => api.post(`/users/${uid}/trading-config`, config),
   loadTradingConfig: (uid: string) => api.get(`/users/${uid}/trading-config`),
   saveProviderConfig: async (uid: string, providerBody: any) => {
-    const response = await api.post(`/users/${uid}/provider-config`, providerBody);
+    const fullUrl = `/users/${uid}/provider-config`;
+    console.log("[FETCH-PROVIDER-CONFIG]", uid, fullUrl);
+    const response = await api.post(fullUrl, providerBody);
     return {
       success: response.data.success,
       providerConfig: response.data.providerConfig
     };
   },
   loadProviderConfig: async (uid: string) => {
-    const response = await api.get(`/users/${uid}/provider-config`);
+    const fullUrl = `/users/${uid}/provider-config`;
+    console.log("[FETCH-PROVIDER-CONFIG]", uid, fullUrl);
+    const response = await api.get(fullUrl);
     const raw = response?.data;
     const cfg = raw?.providerConfig ?? raw?.config ?? raw ?? {};
     const flat = cfg?.providerConfig ?? cfg ?? {};
@@ -296,7 +300,11 @@ export const usersApi = {
   // Active trades
   getActiveTrades: (uid: string) => api.get(`/users/${uid}/active-trades`),
   // Provider config
-  getProviderConfig: (uid: string) => api.get(`/users/${uid}/provider-config`),
+  getProviderConfig: (uid: string) => {
+    const fullUrl = `/users/${uid}/provider-config`;
+    console.log("[FETCH-PROVIDER-CONFIG] fullUrl =", fullUrl);
+    return api.get(fullUrl);
+  },
   // Exchange config
   getExchangeConfig: (uid: string) => api.get(`/users/${uid}/exchangeConfig/current`),
   // Temp test
@@ -424,10 +432,10 @@ export const exchangeApi = {
   // Legacy endpoints for backward compatibility
   saveConfig: (config: { exchange: string; apiKey: string; secret: string; passphrase?: string; testnet?: boolean }) =>
     api.post('/exchange/connect', config),
-  getConfig: () =>
-    api.get(`/users/${localStorage.getItem('firebaseUser') ? JSON.parse(localStorage.getItem('firebaseUser')!).uid : ''}/exchange-config`),
-  removeConfig: () =>
-    api.post(`/users/${localStorage.getItem('firebaseUser') ? JSON.parse(localStorage.getItem('firebaseUser')!).uid : ''}/exchange-config`, {
+  getConfig: (user: any) =>
+    api.get(`/users/${user?.uid || ''}/exchange-config`),
+  removeConfig: (user: any) =>
+    api.post(`/users/${user?.uid || ''}/exchange-config`, {
       exchange: 'binance',
       apiKey: '',
       secret: '',

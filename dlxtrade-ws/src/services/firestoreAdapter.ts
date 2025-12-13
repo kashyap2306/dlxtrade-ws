@@ -427,59 +427,102 @@ export class FirestoreAdapter {
   }
 
   async getAllIntegrations(uid: string): Promise<Record<string, IntegrationDocument>> {
-    const snapshot = await db()
+    const firestore = db();
+    console.log("[INT-LOAD] Reading integrations for UID =", uid);
+    console.log("[INT-LOAD] Path =", `users/${uid}/integrations`);
+
+    const snapshot = await firestore
       .collection("users")
       .doc(uid)
       .collection("integrations")
       .get();
 
+    console.log("[INT-LOAD] Snap size =", snapshot.size);
+    snapshot.forEach((doc) => console.log("[INT-LOAD DOC]", doc.id, doc.data()));
+
+    if (snapshot.size === 0) {
+      console.log("[INT-LOAD] FIRESTORE CLIENT =", firestore.constructor.name);
+      if (firestore.constructor.name.toLowerCase().includes('mock')) {
+        console.log("[INT-LOAD WARNING] Using mock Firestore - data will always be empty");
+      }
+      try {
+        const cols = await firestore.collection('users').doc(uid).listCollections();
+        console.log("[INT DEBUG DOCS] Listing all subcollections:", cols.map((c) => c.id));
+      } catch (err: any) {
+        console.log("[INT DEBUG DOCS] Failed to list subcollections:", err?.message);
+      }
+    }
+
     console.log("[FIRESTORE_INTEGRATIONS]", uid, snapshot.docs.map((d) => d.id));
 
     const out: Record<string, any> = {};
 
+    const OFFICIAL_PROVIDERS = new Set<string>([
+      "coinstats","cryptocompare","kaiko","livecoinwatch","marketaux","messari",
+      "altcoinbuzz_rss","coinstatsnews","cointelegraph_rss","cryptopanic","gnews",
+      "newsdata","reddit","webzio","coingecko","coinpaprika"
+    ]);
+    const PROVIDER_TYPES: Record<string, 'marketData' | 'news' | 'metadata'> = {
+      coinstats: 'marketData',
+      cryptocompare: 'marketData',
+      kaiko: 'marketData',
+      livecoinwatch: 'marketData',
+      marketaux: 'marketData',
+      messari: 'marketData',
+      coingecko: 'marketData',
+      coinpaprika: 'marketData',
+      altcoinbuzz_rss: 'news',
+      coinstatsnews: 'news',
+      cointelegraph_rss: 'news',
+      cryptopanic: 'news',
+      gnews: 'news',
+      newsdata: 'news',
+      reddit: 'news',
+      webzio: 'news',
+    };
+    const ALLOWED_TYPES = new Set(['marketData', 'news', 'metadata']);
+
     snapshot.docs.forEach((doc) => {
       const data = doc.data() || {};
       const providerId = (doc.id || '').toLowerCase();
-
-      // Never drop providers; normalize minimal fields while preserving data
-      const rawType = data.type || data.apiType;
-      const normalizedType = (rawType === 'marketData' || rawType === 'news' || rawType === 'metadata')
-        ? rawType
-        : 'marketData';
-
-      if (normalizedType === 'marketData' && rawType && rawType !== 'marketData') {
-        logger.warn({ uid, providerId, rawType }, 'Unknown provider type; defaulting to marketData');
+      if (!OFFICIAL_PROVIDERS.has(providerId)) {
+        out[providerId] = {
+          ...data,
+          providerName: data.providerName || providerId,
+          enabled: typeof data.enabled === 'boolean' ? data.enabled : false,
+          type: (data.type && ALLOWED_TYPES.has(data.type)) ? data.type : (data.apiType || 'marketData'),
+          updatedAt: data.updatedAt || null,
+        };
+        console.log("[FIRESTORE_INTEGRATIONS_UNOFFICIAL]", providerId, out[providerId]);
+        return;
       }
+
+      const rawType = data.type || data.apiType;
+      const resolvedType = (rawType && ALLOWED_TYPES.has(rawType))
+        ? rawType
+        : (PROVIDER_TYPES[providerId] || 'marketData');
 
       const entry: any = {
         ...data,
-        providerName: data.providerName || providerId,
+        providerName: (typeof data.providerName === 'string' && data.providerName.trim())
+          ? data.providerName
+          : providerId,
         enabled: typeof data.enabled === 'boolean' ? data.enabled : false,
-        type: normalizedType,
+        type: resolvedType,
         updatedAt: data.updatedAt || null,
       };
 
-      // Ensure encrypted keys are present if only plaintext exists (no decryption here)
-      if (!entry.apiKeyEncrypted && data.apiKey) {
-        try {
-          entry.apiKeyEncrypted = encrypt(data.apiKey);
-        } catch {
-          entry.apiKeyEncrypted = undefined;
-        }
-      }
-      if (!entry.secretKeyEncrypted && data.secretKey) {
-        try {
-          entry.secretKeyEncrypted = encrypt(data.secretKey);
-        } catch {
-          entry.secretKeyEncrypted = undefined;
-        }
-      }
+      // Ensure required fields always exist for downstream consumers
+      entry.apiKeyEncrypted = data.apiKeyEncrypted !== undefined ? data.apiKeyEncrypted : null;
+      entry.secretKeyEncrypted = data.secretKeyEncrypted !== undefined ? data.secretKeyEncrypted : null;
+      entry.usageStats = (entry.usageStats && typeof entry.usageStats === 'object') ? entry.usageStats : { calls: 0 };
 
-      // Remove any accidental plaintext leakage
-      delete entry.apiKey;
-      delete entry.secretKey;
+      // Remove any accidental plaintext leakage (do not transform or re-encrypt)
+      delete (entry as any).apiKey;
+      delete (entry as any).secretKey;
 
       out[providerId] = entry;
+      console.log("[FIRESTORE_INTEGRATIONS_KEEP]", { providerId, resolvedType, hasApiKeyEncrypted: !!entry.apiKeyEncrypted, enabled: entry.enabled });
     });
 
     return out;

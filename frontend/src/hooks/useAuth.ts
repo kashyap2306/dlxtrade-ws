@@ -27,21 +27,9 @@ export function useAuth() {
       return;
     }
 
-    // Set up emergency timeout to prevent infinite loading
-    const emergencyTimeout = setTimeout(() => {
-      console.warn('[useAuth] ⚠️ Emergency timeout: Auth state taking too long, resolving loading');
-      setLoading(false);
-    }, 10000); // 10 second timeout
-
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      console.log('[useAuth] Auth state changed:', {
-        hasUser: !!firebaseUser,
-        userEmail: firebaseUser?.email,
-        uid: firebaseUser?.uid
-      });
-
-      // Clear emergency timeout since we got a response
-      clearTimeout(emergencyTimeout);
+      console.log("[AUTH EVENT REAL]", firebaseUser?.uid);
+      console.log('[AUTH EVENT] firebaseUid=', firebaseUser?.uid);
       console.log('[useAuth] Auth state changed:', {
         hasUser: !!firebaseUser,
         userEmail: firebaseUser?.email,
@@ -66,32 +54,26 @@ export function useAuth() {
           };
 
           console.log('[useAuth] ✅ User authenticated:', cleanUser.email);
-
-          // Store in localStorage for persistence
-          localStorage.setItem('firebaseToken', token);
-          localStorage.setItem('firebaseUser', JSON.stringify({
-            uid: cleanUser.uid,
-            email: cleanUser.email,
-            displayName: cleanUser.displayName,
-            photoURL: cleanUser.photoURL,
-          }));
+          console.log("[AUTH-READY] firebaseUid=", cleanUser.uid);
 
           setUser(cleanUser);
+          console.log("[useAuth] Auth processing complete, setting loading=false");
+          setLoading(false);
         } else {
           // No user - clear everything
           console.log('[useAuth] ℹ️ No authenticated user');
           setUser(null);
           localStorage.removeItem('firebaseToken');
-          localStorage.removeItem('firebaseUser');
+          // Do NOT resolve loading until a real uid arrives
+          return;
         }
       } catch (error) {
         console.error('[useAuth] ❌ Error in auth state change:', error);
         setUser(null);
         localStorage.removeItem('firebaseToken');
-        localStorage.removeItem('firebaseUser');
+        return;
       } finally {
-        // Always set loading to false after processing auth state
-        setLoading(false);
+        // loading is set false only when we have a real uid
       }
     });
 

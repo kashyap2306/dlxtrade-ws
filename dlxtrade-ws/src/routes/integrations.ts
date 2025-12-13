@@ -39,7 +39,9 @@ function normalizeProviderType(name: string): "marketData" | "news" | "metadata"
 /**
  * Get user integrations with decrypted keys in the exact format required by deep research
  */
-export async function getUserIntegrations(uid: string) {
+async function getUserIntegrationsLegacy(uid: string) {
+  console.log("[UID-DEBUG] provider-config route called with uid =", uid);
+  console.log("[UID-DEBUG] Firestore path = users/" + uid + "/integrations");
   const allIntegrations = await firestoreAdapter.getAllIntegrations(uid);
 
   const result: any = {
@@ -245,6 +247,50 @@ export async function getUserIntegrations(uid: string) {
   return result;
 }
 
+export async function getUserIntegrations(uid: string) {
+  console.log("[PROVIDER-CONFIG][UID]", uid);
+  console.log("[PROVIDER-CONFIG][PATH]", `users/${uid}/integrations`);
+
+  const db = getFirebaseAdmin().firestore();
+  const snap = await db.collection(`users/${uid}/integrations`).get();
+  console.log("[PROVIDER-CONFIG][COUNT]", snap.size);
+
+  const providerConfig: any = {
+    marketData: {},
+    news: {},
+    metadata: {}
+  };
+
+  for (const doc of snap.docs) {
+    const providerId = doc.id.toLowerCase();
+    const data = doc.data() || {};
+
+    let type: "marketData" | "news" | "metadata" = "marketData";
+    const providerName = (data.providerName || providerId || '').toString().toLowerCase();
+    if (providerName.includes('metadata')) {
+      type = "metadata";
+    } else if (NEWS_PROVIDERS.has(providerName)) {
+      type = "news";
+    } else {
+      type = "marketData";
+    }
+
+    const normalized = {
+      providerName: providerName || providerId,
+      enabled: typeof data.enabled === 'boolean' ? data.enabled : false,
+      apiKeyEncrypted: data.apiKeyEncrypted ?? null,
+      decryptable: !!data.apiKeyEncrypted,
+      needsReencrypt: false,
+      usageStats: (data.usageStats && typeof data.usageStats === 'object') ? data.usageStats : { calls: 0 },
+      updatedAt: data.updatedAt || null
+    };
+
+    providerConfig[type][providerId] = normalized;
+  }
+
+  return { success: true, providerConfig };
+}
+
 // Validation schemas - ALL providers including new ones
 const integrationUpdateSchema = z.object({
   apiName: z.enum([
@@ -292,8 +338,14 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
   fastify.get('/load', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = (request as any).user;
-    const integrations = await firestoreAdapter.getAllIntegrations(user.uid);
+    const userId = (request as any).userId;
+    console.log("[INTEGRATIONS UID USED]", userId);
+
+    if (!userId) {
+      return reply.code(401).send({ error: 'Authentication required' });
+    }
+
+    const integrations = await firestoreAdapter.getAllIntegrations(userId);
 
     // Return integrations with masked keys - ONLY 5 research providers
     const result: Record<string, any> = {};

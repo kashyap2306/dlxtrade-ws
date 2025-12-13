@@ -7,6 +7,10 @@ import { ensureUser } from '../../services/userOnboarding';
 import { getFirebaseAdmin } from '../../utils/firebase';
 import * as admin from 'firebase-admin';
 
+const getAuthUid = (request: FastifyRequest): string | undefined => {
+  return (request as any).userId || (request as any).user?.uid;
+};
+
 const createUserSchema = z.object({
   name: z.string().optional(),
   email: z.string().email().optional(),
@@ -44,7 +48,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Body: { idToken?: string } }>, reply: FastifyReply) => {
     try {
-      const uid = (request as any).user?.uid;
+      const uid = getAuthUid(request);
       if (!uid) {
         return reply.code(401).send({ success: false, error: 'Unauthorized' });
       }
@@ -96,11 +100,14 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
     try {
-      const { uid } = request.params;
-      const user = (request as any).user;
+      const { uid: paramUid } = request.params;
+      const authUid = getAuthUid(request);
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
 
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (uid !== user.uid && !isAdmin) {
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (paramUid !== authUid && !isAdmin) {
         return reply.code(403).send({ error: 'Access denied' });
       }
 
@@ -123,25 +130,30 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
     try {
-      const { uid } = request.params;
-      const user = (request as any).user;
+      const { uid: paramUid } = request.params;
+      const authUid = getAuthUid(request);
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
 
       // Users can only request deletion for their own account unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (uid !== user.uid && !isAdmin) {
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (paramUid !== authUid && !isAdmin) {
         return reply.code(403).send({ error: 'Access denied' });
       }
+
+      const targetUid = isAdmin ? paramUid : authUid;
 
       const db = getFirebaseAdmin().firestore();
 
       // Mark user for deletion
-      await db.collection('users').doc(uid).update({
+      await db.collection('users').doc(targetUid).update({
         deleteRequested: true,
         requestedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
       // Log the deletion request
-      await firestoreAdapter.logActivity(uid, 'ACCOUNT_DELETION_REQUESTED', {
+      await firestoreAdapter.logActivity(targetUid, 'ACCOUNT_DELETION_REQUESTED', {
         message: 'User requested account deletion',
         requestedAt: new Date().toISOString(),
       });
@@ -158,9 +170,12 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      const user = (request as any).user;
+      const authUid = getAuthUid(request);
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
       // Check if user is admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
       if (!isAdmin) {
         return reply.code(403).send({ error: 'Admin access required' });
       }
@@ -178,16 +193,21 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
     try {
-      const { uid } = request.params;
-      const user = (request as any).user;
+      const { uid: paramUid } = request.params;
+      const authUid = getAuthUid(request);
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
 
       // Users can only view their own data unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (uid !== user.uid && !isAdmin) {
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (paramUid !== authUid && !isAdmin) {
         return reply.code(403).send({ error: 'Access denied' });
       }
 
-      const userData = await firestoreAdapter.getUser(uid);
+      const targetUid = isAdmin ? paramUid : authUid;
+
+      const userData = await firestoreAdapter.getUser(targetUid);
       if (!userData) {
         throw new NotFoundError('User not found');
       }
@@ -195,7 +215,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
       // Check if user has exchange API keys configured (read from exchangeConfig/current)
       const { getFirebaseAdmin } = await import('../../utils/firebase');
       const db = getFirebaseAdmin().firestore();
-      const exchangeConfigDoc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+      const exchangeConfigDoc = await db.collection('users').doc(targetUid).collection('exchangeConfig').doc('current').get();
       const hasExchangeConfig = exchangeConfigDoc.exists && exchangeConfigDoc.data()?.apiKeyEncrypted && exchangeConfigDoc.data()?.secretEncrypted;
 
       // Convert timestamps
@@ -226,18 +246,22 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
+      const authUid = getAuthUid(request);
       const user = (request as any).user;
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
       const body = createUserSchema.parse(request.body);
 
       // PART 1: Comprehensive onboarding - creates ALL required documents (idempotent)
-      const onboardingResult = await ensureUser(user.uid, {
-        name: body.name || user.displayName || '',
-        email: body.email || user.email || '',
+      const onboardingResult = await ensureUser(authUid, {
+        name: body.name || user?.displayName || '',
+        email: body.email || user?.email || '',
         phone: body.phone || null,
       });
 
       if (!onboardingResult.success) {
-        logger.error({ uid: user.uid, error: onboardingResult.error }, 'User onboarding failed');
+        logger.error({ uid: authUid, error: onboardingResult.error }, 'User onboarding failed');
         return reply.code(500).send({
           error: onboardingResult.error || 'User onboarding failed'
         });
@@ -245,7 +269,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
 
       // Update additional fields if provided
       if (body.plan || body.profilePicture || body.unlockedAgents) {
-        await firestoreAdapter.createOrUpdateUser(user.uid, {
+        await firestoreAdapter.createOrUpdateUser(authUid, {
           plan: body.plan,
           profilePicture: body.profilePicture,
           unlockedAgents: body.unlockedAgents,
@@ -253,7 +277,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
       }
 
       // Log login activity (signup already logged in onboardNewUser)
-      const existingUser = await firestoreAdapter.getUser(user.uid);
+      const existingUser = await firestoreAdapter.getUser(authUid);
       if (existingUser && existingUser.createdAt) {
         // Check if this is a returning user (created > 1 minute ago)
         const createdTime = existingUser.createdAt.toDate();
@@ -261,14 +285,14 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
         const minutesSinceCreation = (now.getTime() - createdTime.getTime()) / 1000 / 60;
 
         if (minutesSinceCreation > 1) {
-          await firestoreAdapter.logActivity(user.uid, 'USER_LOGIN', {
-            message: `User ${body.email || user.email} logged in`,
-            email: body.email || user.email,
+          await firestoreAdapter.logActivity(authUid, 'USER_LOGIN', {
+            message: `User ${body.email || user?.email} logged in`,
+            email: body.email || user?.email,
           });
         }
       }
 
-      return { message: 'User created/updated successfully', uid: user.uid };
+      return { message: 'User created/updated successfully', uid: authUid };
     } catch (err: any) {
       if (err instanceof ValidationError) {
         return reply.code(400).send({ error: err.message });
@@ -283,14 +307,17 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      const user = (request as any).user;
+      const authUid = getAuthUid(request);
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
       const body = updateUserSchema.parse(request.body);
 
-      await firestoreAdapter.createOrUpdateUser(user.uid, body);
+      await firestoreAdapter.createOrUpdateUser(authUid, body);
 
       // Log activity
       const changedFields = Object.keys(body);
-      await firestoreAdapter.logActivity(user.uid, 'PROFILE_UPDATED', {
+      await firestoreAdapter.logActivity(authUid, 'PROFILE_UPDATED', {
         fields: changedFields,
         hasName: !!body.name,
         hasPhone: !!body.phone,
@@ -313,15 +340,20 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
     try {
       const { id } = request.params;
-      const user = (request as any).user;
+      const authUid = getAuthUid(request);
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
 
       // Users can only view their own data unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (id !== user.uid && !isAdmin) {
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (id !== authUid && !isAdmin) {
         return reply.code(403).send({ error: 'Access denied' });
       }
 
-      const userData = await firestoreAdapter.getUser(id);
+      const targetUid = isAdmin ? id : authUid;
+
+      const userData = await firestoreAdapter.getUser(targetUid);
       if (!userData) {
         throw new NotFoundError('User not found');
       }
@@ -329,7 +361,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
       // Check if user has exchange API keys configured (read from exchangeConfig/current)
       const { getFirebaseAdmin } = await import('../../utils/firebase');
       const db = getFirebaseAdmin().firestore();
-      const exchangeConfigDoc = await db.collection('users').doc(id).collection('exchangeConfig').doc('current').get();
+      const exchangeConfigDoc = await db.collection('users').doc(targetUid).collection('exchangeConfig').doc('current').get();
       const hasExchangeConfig = exchangeConfigDoc.exists && exchangeConfigDoc.data()?.apiKeyEncrypted && exchangeConfigDoc.data()?.secretEncrypted;
 
       // Convert timestamps
@@ -360,21 +392,26 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
     try {
       const { id } = request.params;
-      const user = (request as any).user;
+      const authUid = getAuthUid(request);
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
 
       // Users can only view their own stats unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (id !== user.uid && !isAdmin) {
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (id !== authUid && !isAdmin) {
         return reply.code(403).send({ error: 'Access denied' });
       }
 
-      const userData = await firestoreAdapter.getUser(id);
+      const targetUid = isAdmin ? id : authUid;
+
+      const userData = await firestoreAdapter.getUser(targetUid);
       if (!userData) {
         throw new NotFoundError('User not found');
       }
 
       // Get trades for PnL calculation
-      const trades = await firestoreAdapter.getTrades(id, 1000);
+      const trades = await firestoreAdapter.getTrades(targetUid, 1000);
       const totalPnL = trades.reduce((sum, trade) => sum + (trade.pnl || 0), 0);
       const winningTrades = trades.filter(t => (t.pnl || 0) > 0).length;
       const losingTrades = trades.filter(t => (t.pnl || 0) < 0).length;
@@ -402,21 +439,26 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
     try {
       const { id } = request.params;
-      const user = (request as any).user;
+      const authUid = getAuthUid(request);
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
 
       // Users can only view their own PnL unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (id !== user.uid && !isAdmin) {
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (id !== authUid && !isAdmin) {
         return reply.code(403).send({ error: 'Access denied' });
       }
 
-      const userData = await firestoreAdapter.getUser(id);
+      const targetUid = isAdmin ? id : authUid;
+
+      const userData = await firestoreAdapter.getUser(targetUid);
       if (!userData) {
         throw new NotFoundError('User not found');
       }
 
       // Get trades for PnL calculation
-      const trades = await firestoreAdapter.getTrades(id, 1000);
+      const trades = await firestoreAdapter.getTrades(targetUid, 1000);
       const totalPnL = trades.reduce((sum, trade) => sum + (trade.pnl || 0), 0);
 
       return {
@@ -482,15 +524,20 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
     try {
       const { id } = request.params;
       const { limit = 100 } = request.query;
-      const user = (request as any).user;
+      const authUid = getAuthUid(request);
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
 
       // Users can only view their own trades unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (id !== user.uid && !isAdmin) {
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (id !== authUid && !isAdmin) {
         return reply.code(403).send({ error: 'Access denied' });
       }
 
-      const trades = await firestoreAdapter.getTrades(id, limit);
+      const targetUid = isAdmin ? id : authUid;
+
+      const trades = await firestoreAdapter.getTrades(targetUid, limit);
 
       return {
         trades: trades.map(trade => ({
@@ -513,15 +560,20 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
     try {
       const { id } = request.params;
       const { limit = 100 } = request.query;
-      const user = (request as any).user;
+      const authUid = getAuthUid(request);
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
 
       // Users can only view their own logs unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (id !== user.uid && !isAdmin) {
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (id !== authUid && !isAdmin) {
         return reply.code(403).send({ error: 'Access denied' });
       }
 
-      const logs = await firestoreAdapter.getActivityLogs(id, limit);
+      const targetUid = isAdmin ? id : authUid;
+
+      const logs = await firestoreAdapter.getActivityLogs(targetUid, limit);
 
       return {
         logs: logs.map(log => ({
@@ -542,19 +594,24 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
     try {
       const { id } = request.params;
-      const user = (request as any).user;
+      const authUid = getAuthUid(request);
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
 
       // Users can only view their own sessions unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (id !== user.uid && !isAdmin) {
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (id !== authUid && !isAdmin) {
         return reply.code(403).send({ error: 'Access denied' });
       }
+
+      const targetUid = isAdmin ? id : authUid;
 
       // Get sessions from Firestore - assuming sessions are stored in a sessions collection
       const db = getFirebaseAdmin().firestore();
       const sessionsSnapshot = await db
         .collection('users')
-        .doc(id)
+        .doc(targetUid)
         .collection('sessions')
         .orderBy('lastActive', 'desc')
         .limit(10)
@@ -579,17 +636,22 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
     try {
-      const { uid } = request.params;
-      const user = (request as any).user;
+      const { uid: paramUid } = request.params;
+      const authUid = getAuthUid(request);
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
 
       // Users can only view their own performance stats unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (uid !== user.uid && !isAdmin) {
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (paramUid !== authUid && !isAdmin) {
         return reply.code(403).send({ error: 'Access denied' });
       }
 
+      const targetUid = isAdmin ? paramUid : authUid;
+
       // Get all trades for the user
-      const trades = await firestoreAdapter.getTrades(uid, 10000); // Get up to 10k trades
+      const trades = await firestoreAdapter.getTrades(targetUid, 10000); // Get up to 10k trades
 
       // Calculate performance stats
       let totalTrades = trades.length;
@@ -645,18 +707,23 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
     try {
-      const { uid } = request.params;
-      const user = (request as any).user;
+      const { uid: paramUid } = request.params;
+      const authUid = getAuthUid(request);
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
 
       // Users can only view their own active trades unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (uid !== user.uid && !isAdmin) {
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (paramUid !== authUid && !isAdmin) {
         return reply.code(403).send({ error: 'Access denied' });
       }
 
+      const targetUid = isAdmin ? paramUid : authUid;
+
       // Get user's active exchange
       const db = getFirebaseAdmin().firestore();
-      const exchangeConfigDoc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+      const exchangeConfigDoc = await db.collection('users').doc(targetUid).collection('exchangeConfig').doc('current').get();
       const exchangeConfig = exchangeConfigDoc.exists ? exchangeConfigDoc.data() : null;
       const activeExchange = exchangeConfig?.exchange;
 
@@ -667,7 +734,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
       // Query trades collection for open trades on the active exchange
       const tradesRef = db.collection('trades');
       const snapshot = await tradesRef
-        .where('uid', '==', uid)
+        .where('uid', '==', targetUid)
         .where('status', '==', 'open')
         .where('exchange', '==', activeExchange)
         .orderBy('timestamp', 'desc')
@@ -699,28 +766,33 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
     try {
-      const { uid } = request.params;
-      const user = (request as any).user;
+      const { uid: paramUid } = request.params;
+      const authUid = getAuthUid(request);
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
 
       // Users can only view their own usage stats unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (uid !== user.uid && !isAdmin) {
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (paramUid !== authUid && !isAdmin) {
         return reply.code(403).send({ error: 'Access denied' });
       }
+
+      const targetUid = isAdmin ? paramUid : authUid;
 
       const db = getFirebaseAdmin().firestore();
 
       // Get research logs count (Deep Research runs)
       const researchLogsSnapshot = await db
         .collection('users')
-        .doc(uid)
+        .doc(targetUid)
         .collection('researchLogs')
         .get();
 
       // Get auto-trade logs count (Auto-Trade runs)
       const autoTradeLogsSnapshot = await db
         .collection('users')
-        .doc(uid)
+        .doc(targetUid)
         .collection('autoTradeLogs')
         .get();
 
@@ -728,7 +800,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
       let lastResearchTimestamp = null;
       const lastResearchQuery = await db
         .collection('users')
-        .doc(uid)
+        .doc(targetUid)
         .collection('researchLogs')
         .orderBy('timestamp', 'desc')
         .limit(1)
@@ -742,7 +814,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
       // Check if last activity is more recent from auto-trade logs
       const lastAutoTradeQuery = await db
         .collection('users')
-        .doc(uid)
+        .doc(targetUid)
         .collection('autoTradeLogs')
         .orderBy('timestamp', 'desc')
         .limit(1)
@@ -776,17 +848,21 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
   fastify.get('/user/profile', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = (request as any).user;
+    const authUid = getAuthUid(request);
 
     try {
-      const userData = await firestoreAdapter.getUser(user.uid);
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
+
+      const userData = await firestoreAdapter.getUser(authUid);
       if (!userData) {
         return reply.code(404).send({ error: 'User not found' });
       }
 
       // Check if user has exchange API keys configured
       const db = admin.firestore(getFirebaseAdmin());
-      const exchangeConfigDoc = await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').get();
+      const exchangeConfigDoc = await db.collection('users').doc(authUid).collection('exchangeConfig').doc('current').get();
       const hasExchangeConfig = exchangeConfigDoc.exists && exchangeConfigDoc.data()?.apiKeyEncrypted;
 
       // Convert timestamps
@@ -812,22 +888,26 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
   fastify.post('/user/profile/update', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Body: any }>, reply: FastifyReply) => {
-    const user = (request as any).user;
+    const authUid = getAuthUid(request);
     const body = updateUserSchema.parse(request.body);
 
     try {
-      await firestoreAdapter.createOrUpdateUser(user.uid, body);
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
+
+      await firestoreAdapter.createOrUpdateUser(authUid, body);
 
       // Log activity
       const changedFields = Object.keys(body);
-      await firestoreAdapter.logActivity(user.uid, 'PROFILE_UPDATED', {
+      await firestoreAdapter.logActivity(authUid, 'PROFILE_UPDATED', {
         fields: changedFields,
         hasName: !!body.name,
         hasPhone: !!body.phone,
         hasCountry: !!body.country,
       });
 
-      return { success: true, message: 'Profile updated successfully', uid: user.uid };
+      return { success: true, message: 'Profile updated successfully', uid: authUid };
     } catch (err: any) {
       if (err instanceof z.ZodError) {
         return reply.code(400).send({ error: 'Invalid input', details: err.errors });
@@ -877,14 +957,10 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
   // GET /api/temp-test - Temporary Firestore connectivity test
   fastify.get('/temp-test', {}, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      // Allow optional auth; fallback to uid passed via query/header for local testing
-      const uid =
-        (request as any).user?.uid ||
-        (request as any).query?.uid ||
-        (request as any).headers?.['x-uid'];
+      const uid = getAuthUid(request);
 
       if (!uid) {
-        console.log('[TEMP-TEST] Missing uid (auth or query/header uid)');
+        console.log('[TEMP-TEST] Missing uid (auth required)');
         return reply.code(401).send({ ok: false, error: 'Unauthorized' });
       }
 

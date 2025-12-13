@@ -3090,11 +3090,15 @@ export class DeepResearchEngine {
     try {
       logger.info({ uid }, 'Fetching top 50 coins for deep research');
 
-      const integrations = await getUserIntegrations(uid);
+      const integrationsResult: any = await getUserIntegrations(uid);
+      const integrations = integrationsResult?.providerConfig || {};
 
       // Try CoinMarketCap first
       try {
-        const cmcApiKey = integrations.coinmarketcap?.apiKey;
+        const cmcApiKey =
+          integrations?.metadata?.coinmarketcap?.apiKey ||
+          integrations?.marketData?.coinmarketcap?.apiKey ||
+          integrations?.coinmarketcap?.apiKey;
         if (cmcApiKey) {
           const { fetchCoinMarketCapListings } = await import('./coinMarketCapAdapter');
           const cmcData = await fetchCoinMarketCapListings(cmcApiKey, 50);
@@ -3190,7 +3194,8 @@ export class DeepResearchEngine {
     try {
       logger.info({ uid, symbol, source }, 'Starting comprehensive coin research');
 
-      const integrations = await getUserIntegrations(uid);
+      const integrationsResult: any = await getUserIntegrations(uid);
+      const integrations = integrationsResult?.providerConfig || {};
 
       // Use existing provider execution methods for basic functionality
       const marketDataResult = await this.executeMarketDataProvider(symbol, { primary: 'cryptocompare', backups: ['coingecko'] }, integrations, uid);

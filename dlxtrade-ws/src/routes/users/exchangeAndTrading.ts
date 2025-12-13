@@ -11,21 +11,24 @@ export async function exchangeAndTradingRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
     try {
-      const { uid } = request.params;
-      const user = (request as any).user;
+      const { uid: paramUid } = request.params;
+      const authUid = (request as any).userId;
+
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
 
       // Users can only view their own config unless they're admin
       // Skip auth check if auth is disabled (for testing)
-      let isAdmin = false;
-      if (user && user.uid) {
-        isAdmin = await firestoreAdapter.isAdmin(user.uid);
-        if (uid !== user.uid && !isAdmin) {
-          return reply.code(403).send({ error: 'Access denied' });
-        }
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (paramUid !== authUid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
       }
 
+      const targetUid = isAdmin ? paramUid : authUid;
+
       const db = getFirebaseAdmin().firestore();
-      const doc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+      const doc = await db.collection('users').doc(targetUid).collection('exchangeConfig').doc('current').get();
 
       if (!doc.exists) {
         return reply.send({ accounts: [] });
@@ -52,21 +55,24 @@ export async function exchangeAndTradingRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
     try {
-      const { uid } = request.params;
-      const user = (request as any).user;
+      const { uid: paramUid } = request.params;
+      const authUid = (request as any).userId;
+
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
 
       // Users can only view their own config unless they're admin
       // Skip auth check if auth is disabled (for testing)
-      let isAdmin = false;
-      if (user && user.uid) {
-        isAdmin = await firestoreAdapter.isAdmin(user.uid);
-        if (uid !== user.uid && !isAdmin) {
-          return reply.code(403).send({ error: 'Access denied' });
-        }
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (paramUid !== authUid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
       }
 
+      const targetUid = isAdmin ? paramUid : authUid;
+
       const db = getFirebaseAdmin().firestore();
-      const doc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+      const doc = await db.collection('users').doc(targetUid).collection('exchangeConfig').doc('current').get();
 
       if (!doc.exists) {
         return reply.send({ exchange: null, message: "No exchange config found" });
@@ -90,17 +96,23 @@ export async function exchangeAndTradingRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string }; Body: any }>, reply: FastifyReply) => {
     try {
-      const { uid } = request.params;
-      const user = (request as any).user;
+      const { uid: paramUid } = request.params;
+      const authUid = (request as any).userId;
+
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
 
       // Users can only update their own config unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (uid !== user.uid && !isAdmin) {
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (paramUid !== authUid && !isAdmin) {
         return reply.code(403).send({ error: 'Access denied' });
       }
 
+      const targetUid = isAdmin ? paramUid : authUid;
+
       const db = getFirebaseAdmin().firestore();
-      const configRef = db.collection('users').doc(uid).collection('exchangeConfig').doc('current');
+      const configRef = db.collection('users').doc(targetUid).collection('exchangeConfig').doc('current');
 
       // Encrypt sensitive fields, or explicitly clear them when empty/null
       const body = request.body as any;
@@ -142,7 +154,7 @@ export async function exchangeAndTradingRoutes(fastify: FastifyInstance) {
       await configRef.set({
         ...encryptedBody,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        updatedBy: user.uid
+        updatedBy: authUid
       }, { merge: true });
 
       return reply.send({ success: true });
@@ -157,21 +169,24 @@ export async function exchangeAndTradingRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
     try {
-      const { uid } = request.params;
-      const user = (request as any).user;
+      const { uid: paramUid } = request.params;
+      const authUid = (request as any).userId;
+
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
 
       // Users can only view their own config unless they're admin
       // Skip auth check if auth is disabled (for testing)
-      let isAdmin = false;
-      if (user && user.uid) {
-        isAdmin = await firestoreAdapter.isAdmin(user.uid);
-        if (uid !== user.uid && !isAdmin) {
-          return reply.code(403).send({ error: 'Access denied' });
-        }
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (paramUid !== authUid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
       }
 
+      const targetUid = isAdmin ? paramUid : authUid;
+
       const db = getFirebaseAdmin().firestore();
-      const doc = await db.collection('trading-config').doc(uid).get();
+      const doc = await db.collection('trading-config').doc(targetUid).get();
 
       const data = doc.exists ? doc.data() : null;
       return reply.send({ ok: true, config: data });
@@ -186,19 +201,25 @@ export async function exchangeAndTradingRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string }; Body: any }>, reply: FastifyReply) => {
     try {
-      const { uid } = request.params;
-      const user = (request as any).user;
+      const { uid: paramUid } = request.params;
+      const authUid = (request as any).userId;
+
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
 
       // Users can only update their own config unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (uid !== user.uid && !isAdmin) {
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (paramUid !== authUid && !isAdmin) {
         return reply.code(403).send({ error: 'Access denied' });
       }
 
-      const db = getFirebaseAdmin().firestore();
-      await db.collection('trading-config').doc(uid).set(request.body, { merge: true });
+      const targetUid = isAdmin ? paramUid : authUid;
 
-      request.log.info({ uid, body: request.body }, 'Saved trading-config');
+      const db = getFirebaseAdmin().firestore();
+      await db.collection('trading-config').doc(targetUid).set(request.body, { merge: true });
+
+      request.log.info({ uid: targetUid, body: request.body }, 'Saved trading-config');
 
       return reply.send({ ok: true, config: request.body });
     } catch (err: any) {

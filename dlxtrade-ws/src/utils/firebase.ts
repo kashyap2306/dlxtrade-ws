@@ -2,8 +2,14 @@ import * as admin from "firebase-admin";
 
 const projectId = process.env.FIREBASE_PROJECT_ID;
 const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+const serviceAccountPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
 
 let privateKey = process.env.FIREBASE_PRIVATE_KEY;
+
+console.log("[FIREBASE_DEBUG] ENV projectId:", projectId);
+console.log("[FIREBASE_DEBUG] ENV clientEmail exists:", !!clientEmail);
+console.log("[FIREBASE_DEBUG] ENV privateKey length:", privateKey?.length || 0);
+console.log("[FIREBASE_DEBUG] GOOGLE_APPLICATION_CREDENTIALS:", serviceAccountPath || "not set");
 
 // remove accidental surrounding quotes
 if (privateKey?.startsWith('"') && privateKey?.endsWith('"')) {
@@ -13,6 +19,7 @@ if (privateKey?.startsWith('"') && privateKey?.endsWith('"')) {
 // fallback to JSON service account
 if ((!projectId || !clientEmail || !privateKey) && process.env.FIREBASE_SERVICE_ACCOUNT) {
   const json = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  console.log("[FIREBASE_DEBUG] Loaded FIREBASE_SERVICE_ACCOUNT JSON");
   privateKey = json.private_key;
 }
 
@@ -35,104 +42,24 @@ export function getFirebaseAdmin() {
     const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
     if (raw) {
       const json = JSON.parse(raw);
+      console.log("[FIREBASE_DEBUG] Using FIREBASE_SERVICE_ACCOUNT from env");
       privateKey = json.private_key;
     }
   }
 
   if (!projectId || !clientEmail || !privateKey) {
-    console.error("Missing Firebase environment variables:");
+    console.error("FIREBASE ENV VARS MISSING – BACKEND CANNOT RUN");
     console.error("- FIREBASE_PROJECT_ID:", !!projectId);
     console.error("- FIREBASE_CLIENT_EMAIL:", !!clientEmail);
     console.error("- FIREBASE_PRIVATE_KEY:", !!privateKey);
-
-    // FORCE MOCK MODE: Always use mock when Firebase env vars are missing
-    console.log("🔥 Running BACKEND in LOCAL MOCK FIREBASE MODE");
-    console.log("🔥 Firebase environment variables missing - using mock implementation");
-
-    firebaseApp = {
-      name: '[MOCK]',
-      options: {
-        projectId: 'mock-project',
-        apiKey: 'mock-api-key',
-        authDomain: 'mock-project.firebaseapp.com',
-      },
-      firestore: () => ({
-        listCollections: () => Promise.resolve([]),
-        collection: (name: string) => ({
-          doc: (id: string) => ({
-            get: () => Promise.resolve({
-              exists: true,
-              data: () => ({
-                uid: id,
-                email: 'mock@example.com',
-                displayName: 'Mock User',
-                createdAt: new Date()
-              }),
-              id
-            }),
-            set: (data: any) => Promise.resolve(),
-            update: (data: any) => Promise.resolve(),
-            delete: () => Promise.resolve(),
-            collection: (subName: string) => ({
-              doc: (subId: string) => ({
-                get: () => Promise.resolve({
-                  exists: true,
-                  data: () => ({}),
-                  id: subId
-                }),
-                set: (data: any) => Promise.resolve(),
-                update: (data: any) => Promise.resolve(),
-                delete: () => Promise.resolve()
-              }),
-              where: () => ({ get: () => Promise.resolve({ docs: [] }) }),
-              get: () => Promise.resolve({ docs: [] }),
-              limit: (n: number) => ({ get: () => Promise.resolve({ docs: [] }) })
-            })
-          }),
-          where: () => ({ get: () => Promise.resolve({ docs: [] }) }),
-          get: () => Promise.resolve({ docs: [] }),
-          limit: (n: number) => ({ get: () => Promise.resolve({ docs: [] }) })
-        }),
-        Timestamp: {
-          now: () => ({
-            toDate: () => new Date(),
-            toMillis: () => Date.now(),
-            toISOString: () => new Date().toISOString()
-          })
-        }
-      }),
-      auth: () => ({
-        verifyIdToken: (token: string) => {
-          // Accept mock tokens
-          if (token === 'mock-token') {
-            return Promise.resolve({
-              uid: 'local-dev-user',
-              email: 'mock@example.com',
-              name: 'Mock User',
-              iat: Date.now() / 1000,
-              exp: (Date.now() / 1000) + 3600
-            });
-          }
-          return Promise.reject(new Error("Invalid token"));
-        },
-        getUser: (uid: string) => Promise.resolve({
-          uid: uid || 'local-dev-user',
-          email: 'mock@example.com',
-          displayName: 'Mock User',
-          customClaims: { role: 'user' }
-        }),
-        setCustomUserClaims: (uid: string, claims: any) => {
-          console.log('🔥 MOCK: setCustomUserClaims called for', uid, 'with claims:', claims);
-          return Promise.resolve();
-        }
-      })
-    } as any;
-    return firebaseApp;
+    throw new Error("FIREBASE ENV VARS MISSING – BACKEND CANNOT RUN");
   }
 
   console.log("🔥 FIREBASE_PROJECT_ID =", projectId);
   console.log("🔥 FIREBASE_CLIENT_EMAIL =", clientEmail);
   console.log("🔥 FIREBASE_PRIVATE_KEY length =", privateKey.length);
+  console.log(`🔥 Using REAL FIREBASE project: ${projectId}`);
+  console.log("[FIREBASE_DEBUG] privateKey has literal \\n:", privateKey.includes("\\n"));
 
   // Check if there's already a default app
   try {
@@ -150,10 +77,19 @@ export function getFirebaseAdmin() {
     private_key: privateKey.replace(/\\n/g, '\n'),
   };
 
+  if (!serviceAccount.project_id) {
+    console.error("[FIREBASE_DEBUG] serviceAccount.project_id missing");
+    throw new Error("FIREBASE serviceAccount.project_id missing");
+  }
+  console.log("[FIREBASE_DEBUG] serviceAccount.project_id:", serviceAccount.project_id);
+  console.log("[FIREBASE_DEBUG] serviceAccount.client_email exists:", !!serviceAccount.client_email);
+  console.log("[FIREBASE_DEBUG] serviceAccount.private_key length:", serviceAccount.private_key?.length || 0);
+
   // Initialize with individual environment variables
   if (!admin.apps.length) {
     firebaseApp = admin.initializeApp({
       credential: admin.credential.cert(serviceAccount as unknown as admin.ServiceAccount),
+      projectId: serviceAccount.project_id,
     });
   } else {
     firebaseApp = admin.app();
@@ -161,6 +97,7 @@ export function getFirebaseAdmin() {
 
   // Verify the app was initialized correctly
   console.log("🔥 FIREBASE ADMIN APP PROJECT ID =", firebaseApp.options.projectId);
+  console.log("[FIREBASE_DEBUG] firebaseApp.options:", firebaseApp.options);
 
   return firebaseApp;
 }

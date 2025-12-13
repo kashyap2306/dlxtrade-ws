@@ -7,18 +7,21 @@ export async function firebaseAuthMiddleware(
   request: FastifyRequest,
   reply: FastifyReply
 ): Promise<void> {
+  console.log("[AUTH] Incoming request to", request.url);
   try {
     const authHeader = request.headers.authorization;
 
     // Test-mode bypass for automated testing (non-production)
     if (process.env.TEST_MODE === '1' && authHeader === 'Bearer mock-token') {
+      const mockUid = 'q8S8bOTaebd0af64PuTZdlpntg42';
+      (request as any).userId = mockUid;
       (request as any).user = {
-        uid: 'q8S8bOTaebd0af64PuTZdlpntg42',
+        uid: mockUid,
         email: 'test-mode@local',
         emailVerified: true,
         claims: { testMode: true }
       };
-      logger.warn({ uid: 'q8S8bOTaebd0af64PuTZdlpntg42' }, 'TEST_MODE bypass engaged (mock-token)');
+      logger.warn({ uid: mockUid }, 'TEST_MODE bypass engaged (mock-token)');
       return;
     }
 
@@ -31,8 +34,10 @@ export async function firebaseAuthMiddleware(
 
     try {
       const decodedToken = await verifyFirebaseToken(token);
+      console.log("[AUTH DEBUG] Token UID =", decodedToken.uid);
       
       // Attach user info + claims to request
+      (request as any).userId = decodedToken.uid;
       (request as any).user = {
         uid: decodedToken.uid,
         email: decodedToken.email,

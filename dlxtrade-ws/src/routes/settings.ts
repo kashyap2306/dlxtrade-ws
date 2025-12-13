@@ -672,12 +672,30 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       logger.info({ uid: user.uid, providerId, BACKEND_SECRET_HASH, SAVE_SECRET_HASH }, 'Provider save secret hash check');
 
       const normalizedType = (() => {
-        if (providerId === 'cryptocompare') return 'market';
-        if (providerId === 'newsdata') return 'news';
-        if (providerId === 'coingecko') return 'metadata';
-        if (providerType === 'news') return 'news';
-        if (providerType === 'metadata') return 'metadata';
-        return 'market';
+        const MARKET_PROVIDERS = new Set([
+          'cryptocompare',
+          'coingecko',
+          'coinpaprika',
+          'marketaux',
+          'kaiko',
+          'livecoinwatch',
+          'coinstats'
+        ]);
+        const NEWS_PROVIDERS = new Set([
+          'newsdata',
+          'cryptopanic',
+          'reddit',
+          'webzio',
+          'gnews',
+          'newscatcher',
+          'coinstatsnews',
+          'altcoinbuzz_rss',
+          'cointelegraph_rss'
+        ]);
+
+        if (MARKET_PROVIDERS.has(providerId)) return 'marketData';
+        if (NEWS_PROVIDERS.has(providerId)) return 'news';
+        return 'metadata';
       })();
 
       // Validate API key requirement
@@ -717,7 +735,8 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         updatedAt
       };
       if (encryptedApiKey) {
-        integrationDoc.apiKey = encryptedApiKey;
+        // Write to apiKeyEncrypted so diagnostics/provider-config can read it
+        integrationDoc.apiKeyEncrypted = encryptedApiKey;
         integrationDoc.needsReencrypt = false;
         integrationDoc.decryptable = true;
       }
@@ -729,6 +748,13 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         .collection('integrations')
         .doc(providerId)
         .set(integrationDoc, { merge: true });
+
+      console.log("[SETTINGS_PROVIDER_SAVE] Firestore path written:", `users/${user.uid}/integrations/${providerId}`, {
+        fields: Object.keys(integrationDoc),
+        type: normalizedType,
+        enabled: body.enabled,
+        hasEncryptedKey: !!encryptedApiKey
+      });
 
       logger.info({
         uid: user.uid,

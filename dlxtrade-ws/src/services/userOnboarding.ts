@@ -58,6 +58,60 @@ const ALL_PROVIDERS = [
   ...PROVIDERS.METADATA
 ];
 
+async function seedProviderIntegrations(
+  uid: string,
+  db: admin.firestore.Firestore,
+  now: admin.firestore.Timestamp
+) {
+  const userRef = db.collection('users').doc(uid);
+  const integrationsRef = userRef.collection('integrations');
+  const snap = await integrationsRef.get();
+  const existingMap: Record<string, any> = {};
+  snap.docs.forEach((d) => {
+    existingMap[d.id.toLowerCase()] = d.data() || {};
+  });
+
+  let writes = 0;
+
+  for (const provider of ALL_PROVIDERS) {
+    const type = PROVIDERS.MARKET_DATA.includes(provider)
+      ? 'marketData'
+      : PROVIDERS.NEWS.includes(provider)
+      ? 'news'
+      : 'metadata';
+
+    const existing = existingMap[provider] || {};
+    const payload: any = {
+      providerName: typeof existing.providerName === 'string' && existing.providerName.trim()
+        ? existing.providerName.trim()
+        : provider,
+      type,
+      usageStats: (existing.usageStats && typeof existing.usageStats === 'object')
+        ? existing.usageStats
+        : { calls: 0 },
+      updatedAt: existing.updatedAt || now,
+    };
+
+    if (typeof existing.enabled === 'boolean') {
+      payload.enabled = existing.enabled;
+    } else {
+      payload.enabled = false;
+    }
+
+    if (existing.apiKeyEncrypted !== undefined) {
+      payload.apiKeyEncrypted = existing.apiKeyEncrypted;
+    } else {
+      payload.apiKeyEncrypted = null;
+    }
+
+    const docRef = integrationsRef.doc(provider);
+    await docRef.set(payload, { merge: true });
+    writes++;
+  }
+
+  console.log("[SEED COMPLETE]", uid, "count =", ALL_PROVIDERS.length, "writes =", writes);
+}
+
 // Providers that require API keys
 const KEY_REQUIRED_PROVIDERS = [
   'newsdata',
@@ -491,6 +545,9 @@ export async function ensureUser(
 
       logger.info({ uid, createdNew: false, path: `users/${uid}` }, '✅ Main user document exists: users/{uid}');
     }
+
+    // Ensure integrations are always seeded/normalized for every user
+    await seedProviderIntegrations(uid, db, now);
 
     // 2. API keys are now stored in users/{uid}/exchangeConfig/current and users/{uid}/integrations/{apiName}
     // No need to create apiKeys collection document

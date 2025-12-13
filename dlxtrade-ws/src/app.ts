@@ -54,6 +54,15 @@ export async function buildApp(): Promise<FastifyInstance> {
     logger: logger.child({ component: 'fastify' }),
   });
 
+  // Track registration of /api/users routes explicitly
+  let usersRoutesRegistered = false;
+  app.addHook('onRoute', (route) => {
+    const url = (route as any).url || route.path || '';
+    if (typeof url === 'string' && url.startsWith('/api/users')) {
+      usersRoutesRegistered = true;
+    }
+  });
+
   // REQUEST TIMING INSTRUMENTATION - STEP B
   app.addHook('onRequest', async (req, reply) => {
     (req as any).__startTime = Date.now();
@@ -378,7 +387,7 @@ console.log("[RENDER ENV] Build timestamp:", Date.now());
 
     // Check if users routes are present
     const routes = app.printRoutes();
-    const hasUsersRoutes = routes.includes('/api/users');
+    const hasUsersRoutes = usersRoutesRegistered || routes.includes('/api/users');
     console.log("USERS ROUTES DETECTED:", hasUsersRoutes);
   });
 

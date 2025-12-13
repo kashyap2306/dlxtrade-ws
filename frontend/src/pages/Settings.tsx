@@ -106,7 +106,7 @@ const Settings = () => {
   const [error, setError] = useState<any>(null);
   const [retryCount, setRetryCount] = useState(0);
   const isMountedRef = useRef(true);
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'warning' } | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
   const [selectedExchange, setSelectedExchange] = useState<string>('');
   const [exchangeForm, setExchangeForm] = useState({ apiKey: '', secretKey: '', passphrase: '' });
@@ -141,26 +141,20 @@ const Settings = () => {
 
   // Initial Settings State (from snippet 11 - defined before callbacks)
   const [settings, setSettings] = useState<any>({
-    maxPositionPerTrade: 10, tradeType: 'scalping', accuracyThreshold: 85, maxDailyLoss: 5, maxTradesPerDay: 50,
-    // Primary Providers
-    coinGeckoKey: '', newsDataKey: '', cryptoCompareKey: '',
-    // Market Data Backup Providers
-    coinPaprikaKey: '', coinPaprikaEnabled: false, coinMarketCapKey: '', coinMarketCapEnabled: false,
-    coinLoreKey: '', coinLoreEnabled: false, coinApiKey: '', coinApiEnabled: false,
-    braveNewCoinKey: '', braveNewCoinEnabled: false, messariKey: '', messariEnabled: false,
-    kaikoKey: '', kaikoEnabled: false, liveCoinWatchKey: '', liveCoinWatchEnabled: false,
-    coinStatsKey: '', coinStatsEnabled: false, coinCheckupKey: '', coinCheckupEnabled: false,
-    // News Backup Providers
-    cryptoPanicKey: '', cryptoPanicEnabled: false, redditKey: '', redditEnabled: false,
-    cointelegraphKey: '', cointelegraphEnabled: false, altcoinBuzzKey: '', altcoinBuzzEnabled: false,
-    gnewsKey: '', gnewsEnabled: false, marketauxKey: '', marketauxEnabled: false,
-    webzKey: '', webzEnabled: false, coinStatsNewsKey: '', coinStatsNewsEnabled: false,
-    newsCatcherKey: '', newsCatcherEnabled: false, cryptoCompareNewsKey: '', cryptoCompareNewsEnabled: false,
-    // Metadata Backup Providers
-    coinCapKey: '', coinCapEnabled: false, coinRankingKey: '', coinRankingEnabled: false,
-    nomicsKey: '', nomicsEnabled: false, enableAutoTrade: false, exchanges: [],
-    enableAutoTradeAlerts: false, enablePositionAlerts: false, enableWhaleAlerts: false,
-    tradeConfirmationRequired: false, notificationSounds: false, notificationVibration: false
+    maxPositionPerTrade: 10,
+    tradeType: 'scalping',
+    accuracyThreshold: 85,
+    maxDailyLoss: 5,
+    maxTradesPerDay: 50,
+    enableAutoTrade: false,
+    exchanges: [],
+    enableAutoTradeAlerts: false,
+    enablePositionAlerts: false,
+    enableWhaleAlerts: false,
+    tradeConfirmationRequired: false,
+    notificationSounds: false,
+    notificationVibration: false,
+    notifications: {}
   });
   
   // REQ 2: Fix handleLogout TDZ fatal error: Move handleLogout ABOVE any JSX or function that uses it.
@@ -175,7 +169,7 @@ const Settings = () => {
     setRetryCount(prev => prev + 1);
   }, []);
   
-  const showToast = useCallback((message: string, type: 'success' | 'error') => {
+  const showToast = useCallback((message: string, type: 'success' | 'error' | 'warning') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
   }, []);
@@ -283,40 +277,65 @@ const Settings = () => {
         ...(providerConfig.metadata || {})
       };
 
-      // Update providers state with flat map for UI consumers
-      setProviders(flatProviders);
+      const normalizedProviders = Object.fromEntries(
+        Object.entries(flatProviders).map(([pid, data]: any) => {
+          const apiKey = data?.apiKey || '';
+          const normalizedType = PROVIDER_TYPE_MAP[pid] || data?.type || 'marketData';
+          const enabled = data?.enabled ?? !!apiKey;
+          return [
+            pid,
+            {
+              providerName: pid,
+              apiKey,
+              enabled,
+              type: normalizedType
+            }
+          ];
+        })
+      );
 
-      // Update apiKeys state
+      // Update providers state with normalized map for UI consumers
+      setProviders(normalizedProviders);
+
+      // Update apiKeys state with minimal fields
       setApiKeys(
         Object.fromEntries(
-          Object.entries(flatProviders).map(([pid, data]: any) => [
+          Object.entries(normalizedProviders).map(([pid, data]: any) => [
             pid,
             {
               apiKey: data?.apiKey || "",
-              saved: !!(data?.apiKey)
+              saved: !!(data?.apiKey),
+              enabled: data?.enabled || false,
+              type: data?.type || (PROVIDER_TYPE_MAP[pid] || 'marketData')
             }
           ])
         )
       );
 
-      // Update settings state with provider API keys and enabled toggles
+      // Remove legacy provider keys from settings state
       setSettings(prevSettings => {
-        const newSettings = { ...prevSettings };
-
-        Object.entries(flatProviders).forEach(([providerId, data]: [string, any]) => {
-          const apiKey = data?.apiKey || '';
-          const settingsKey = getSettingsKeyFromProviderId(providerId);
-          if (settingsKey) {
-            newSettings[settingsKey] = apiKey;
-          }
-
-          const enabledKey = getEnabledKeyFromProviderId(providerId);
-          if (enabledKey) {
-            newSettings[enabledKey] = data?.enabled ?? newSettings[enabledKey] ?? false;
+        const cleaned = { ...prevSettings };
+        const legacyKeys = [
+          'coinGeckoKey', 'newsDataKey', 'cryptoCompareKey',
+          'coinPaprikaKey', 'coinPaprikaEnabled', 'coinMarketCapKey', 'coinMarketCapEnabled',
+          'coinLoreKey', 'coinLoreEnabled', 'coinApiKey', 'coinApiEnabled',
+          'braveNewCoinKey', 'braveNewCoinEnabled', 'messariKey', 'messariEnabled',
+          'kaikoKey', 'kaikoEnabled', 'liveCoinWatchKey', 'liveCoinWatchEnabled',
+          'coinStatsKey', 'coinStatsEnabled', 'coinCheckupKey', 'coinCheckupEnabled',
+          'cryptoPanicKey', 'cryptoPanicEnabled', 'redditKey', 'redditEnabled',
+          'cointelegraphKey', 'cointelegraphEnabled', 'altcoinBuzzKey', 'altcoinBuzzEnabled',
+          'gnewsKey', 'gnewsEnabled', 'marketauxKey', 'marketauxEnabled',
+          'webzKey', 'webzEnabled', 'coinStatsNewsKey', 'coinStatsNewsEnabled',
+          'newsCatcherKey', 'newsCatcherEnabled', 'cryptoCompareNewsKey', 'cryptoCompareNewsEnabled',
+          'coinCapKey', 'coinCapEnabled', 'coinRankingKey', 'coinRankingEnabled',
+          'nomicsKey', 'nomicsEnabled'
+        ];
+        legacyKeys.forEach(k => {
+          if (k in cleaned) {
+            delete cleaned[k];
           }
         });
-
-        return newSettings;
+        return cleaned;
       });
     } catch (err) {
       console.warn('[LOAD] Failed to load provider config:', err);
@@ -550,7 +569,27 @@ const Settings = () => {
       const resp = await settingsApi.saveProviderConfig(user.uid, payload);
       console.log('[PROVIDER-SAVE] response', resp?.providerConfig || resp);
 
-      setSettings({ ...settings, [keyName]: apiKey });
+      // Update local provider caches
+      setProviders(prev => ({
+        ...prev,
+        [providerId]: {
+          ...(prev?.[providerId] || {}),
+          providerName: providerId,
+          apiKey,
+          enabled: !!apiKey,
+          type: providerType
+        }
+      }));
+      setApiKeys(prev => ({
+        ...prev,
+        [providerId]: {
+          apiKey,
+          saved: !!apiKey,
+          enabled: !!apiKey,
+          type: providerType
+        }
+      }));
+
       // Refresh local provider state from backend to reflect latest saved values
       await loadProviderConfig(user.uid);
       showToast(`${providerName} API key saved!`, 'success');
@@ -566,20 +605,16 @@ const Settings = () => {
     }
   };
 
+  const handleProviderKeyChangeBridge = useCallback(async (providerId: string, data: { apiKey: string; enabled: boolean; }) => {
+    const providerName = Object.entries(PROVIDER_ID_MAP).find(([, id]) => id === providerId)?.[0] || providerId;
+    await handleProviderKeyChange(providerName, 'apiKey', data.apiKey);
+  }, [handleProviderKeyChange]);
+
   const testProviderConnection = async (providerName: string, apiKey: string, keyName: string) => {
+    const providerId = PROVIDER_ID_MAP[providerName] || providerName.toLowerCase().replace(/\s+/g, '');
+    const providerType: 'marketData' | 'news' | 'metadata' = PROVIDER_TYPE_MAP[providerId] || 'marketData';
     setSavingProvider(providerName);
     try {
-      // Determine provider type
-      let providerType: 'marketData' | 'news' | 'metadata' = 'marketData';
-
-      if (['CoinPaprika', 'CoinMarketCap', 'CoinLore', 'CoinAPI', 'BraveNewCoin', 'Messari', 'Kaiko', 'LiveCoinWatch', 'CoinStats', 'CoinCheckup'].includes(providerName)) {
-        providerType = 'marketData';
-      } else if (['CryptoPanic', 'Reddit', 'Cointelegraph RSS', 'AltcoinBuzz RSS', 'GNews', 'Marketaux', 'Webz.io', 'CoinStatsNews', 'NewsCatcher', 'CryptoCompare News'].includes(providerName)) {
-        providerType = 'news';
-      } else if (['CoinCap', 'CoinRanking', 'Nomics', 'CoinGecko', 'CryptoCompare'].includes(providerName)) {
-        providerType = 'metadata';
-      }
-
       const response = await settingsApi.providers.test({
         providerName,
         type: providerType,
@@ -588,7 +623,7 @@ const Settings = () => {
 
       setProviderTestResults(prev => ({
         ...prev,
-        [providerName]: {
+        [providerId]: {
           status: response.data?.success ? 'success' : 'error',
           message: response.data?.message || (response.data?.success ? 'Connection successful.' : 'Invalid key or connection failed.')
         }
@@ -597,7 +632,16 @@ const Settings = () => {
 
       // If test successful for a primary provider, ensure the key is saved/updated in state
       if (response.data?.success && keyName) {
-        setSettings(prev => ({ ...prev, [keyName]: apiKey }));
+        setApiKeys(prev => ({
+          ...prev,
+          [providerId]: {
+            ...(prev?.[providerId] || {}),
+            apiKey,
+            saved: !!apiKey,
+            enabled: !!apiKey,
+            type: providerType
+          }
+        }));
       }
     } catch (err: any) {
       if (err.response?.status === 401) {
@@ -606,7 +650,7 @@ const Settings = () => {
       }
       setProviderTestResults(prev => ({
         ...prev,
-        [providerName]: {
+        [providerId]: {
           status: 'error',
           message: err.response?.data?.error || 'Connection failed due to network error.'
         }
@@ -936,7 +980,7 @@ const Settings = () => {
                 providerTestResults={providerTestResults}
                 testProviderConnection={testProviderConnection}
                 apiKeys={apiKeys}
-                handleProviderKeyChange={handleProviderKeyChange}
+                handleProviderKeyChange={handleProviderKeyChangeBridge}
                 handleToggleProviderEnabled={handleToggleProviderEnabled}
               />
 
@@ -951,7 +995,6 @@ const Settings = () => {
                 handleSaveExchange={handleSaveExchange}
                 handleDisconnectExchange={handleDisconnectExchange}
                 savingExchange={savingExchange}
-                settings={settings}
               />
 
               {/* Background Research Wizard */}
@@ -976,7 +1019,12 @@ const Settings = () => {
               />
 
               {/* Toast Notification */}
-              {toast && <Toast message={toast.message} type={toast.type} />}
+              {toast && (
+                <Toast
+                  message={toast.message}
+                  type={toast.type === 'warning' ? 'error' : toast.type}
+                />
+              )}
 
             </div>
           </main>
