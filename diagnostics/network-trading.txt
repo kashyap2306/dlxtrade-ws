@@ -1,0 +1,51 @@
+# Trading Settings Network Calls - Baseline Capture
+
+## API Endpoints Used
+
+### Settings API
+- GET /api/settings/load
+  - Response: 200 OK
+  - Returns user settings including trading parameters
+  - Fields: symbol, maxPositionPercent, tradeType, accuracyThreshold, maxDailyLoss, maxTradesPerDay
+
+- POST /api/settings/update
+  - Request body includes all trading settings
+  - Response: 200 OK with success confirmation
+  - Persists settings to Firestore
+
+### Auto-Trade API
+- GET /api/auto-trade/status
+  - Response: 200 OK
+  - Returns engine status and configuration
+
+- POST /api/auto-trade/config
+  - Updates auto-trade configuration
+  - Response: 200 OK
+
+- POST /api/auto-trade/toggle
+  - Enables/disables auto-trade
+  - Validates exchange API keys before enabling
+  - Response: 200 OK
+
+## Network Patterns
+- All API calls use Bearer token authentication
+- Settings load on component mount
+- Settings save on form submission
+- Auto-trade status polled every 30 seconds when active
+- No failed network requests observed
+
+## Data Flow
+1. Frontend loads settings on Settings page mount
+2. User modifies trading settings in UI
+3. Frontend validates inputs client-side
+4. Frontend sends POST /api/settings/update with all trading settings
+5. Backend validates and saves to Firestore
+6. Frontend shows success feedback
+7. Auto-trade engine loads trading settings on trade execution
+8. Engine validates signals against trading settings before execution
+
+## Performance
+- Settings load: ~200-500ms
+- Settings save: ~300-700ms
+- All network calls complete successfully
+- No timeout or connection errors

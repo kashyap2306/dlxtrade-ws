@@ -1,0 +1,141 @@
+import { getFirebaseAdmin } from '../utils/firebase';
+import { ExchangeConnectorFactory, type ExchangeName } from './exchangeConnector';
+import { decrypt, decryptOrThrow } from './keyManager';
+import { firestoreAdapter } from './firestoreAdapter';
+import { logger } from '../utils/logger';
+
+export interface ResolvedExchangeConnector {
+  exchange: ExchangeName;
+  connector: any;
+  credentials: {
+    apiKey: string;
+    secret: string;
+    passphrase?: string;
+    testnet: boolean;
+  };
+}
+
+/**
+ * Unified exchange connector resolver
+ * Primary source: users/{uid}/exchangeConfig/current
+ * Secondary fallback: integrations system
+ * 
+ * Returns null if no credentials found, with detailed logging
+ */
+export async function resolveExchangeConnector(
+  uid: string
+): Promise<ResolvedExchangeConnector | null> {
+  try {
+    const db = getFirebaseAdmin().firestore();
+
+    // PRIMARY: Check exchangeConfig subcollection (where frontend saves credentials)
+    const configDoc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+
+    if (configDoc.exists) {
+      const config = configDoc.data()!;
+
+      // Validate required fields EARLY - return null immediately if invalid
+      if (!config.exchange) {
+        logger.warn({ uid }, 'Exchange config exists but missing exchange field');
+        return null;
+      }
+
+      if (!config.apiKeyEncrypted || !(config.secretKeyEncrypted || config.secretEncrypted)) {
+        logger.warn({ uid, exchange: config.exchange }, 'Exchange config exists but missing encrypted credentials');
+        return null;
+      }
+
+      try {
+        // Normalize exchange name
+        const exchange = (config.exchange as string).toLowerCase().trim() as ExchangeName;
+        const validExchanges: ExchangeName[] = ['binance', 'bitget', 'bingx', 'weex'];
+
+        // Validate exchange name EARLY - return null immediately if invalid
+        if (!validExchanges.includes(exchange)) {
+          logger.warn({ uid, exchange: config.exchange }, 'Unsupported exchange name in config');
+          return null;
+        }
+
+        // Proceed with decryption and connector creation
+        // CRITICAL: Use decryptOrThrow to fail hard on decryption failure
+        let apiKey: string;
+        let secret: string;
+        let passphrase: string | undefined;
+        let decryptionFailed = false;
+        let decryptionError: string | null = null;
+
+        try {
+          apiKey = decryptOrThrow(config.apiKeyEncrypted, 'API key');
+          secret = decryptOrThrow(config.secretKeyEncrypted || config.secretEncrypted, 'secret key');
+          passphrase = config.passphraseEncrypted ? decryptOrThrow(config.passphraseEncrypted, 'passphrase') : undefined;
+        } catch (decryptErr: any) {
+          decryptionFailed = true;
+          decryptionError = decryptErr.message || 'Unknown decryption error';
+          logger.error({ 
+            uid, 
+            exchange, 
+            error: decryptErr.message,
+            errorCode: decryptErr.message?.includes('EXCHANGE_KEY_DECRYPTION_FAILED') ? 'DECRYPTION_FAILED' : 'UNKNOWN'
+          }, 'EXCHANGE_KEY_DECRYPTION_FAILED: Failed to decrypt exchange credentials');
+          // Store error in a way that diagnostic can access
+          (config as any).__decryptionError = decryptionError;
+          return null;
+        }
+
+        const testnet = config.testnet ?? true;
+
+        // CRITICAL: Validate decrypted credentials before creating connector
+        if (!apiKey || apiKey.trim() === '') {
+          logger.error({ uid, exchange }, 'EXCHANGE_KEY_DECRYPTION_FAILED: Decrypted API key is empty');
+          return null;
+        }
+        if (!secret || secret.trim() === '') {
+          logger.error({ uid, exchange }, 'EXCHANGE_KEY_DECRYPTION_FAILED: Decrypted secret is empty');
+          return null;
+        }
+        // Passphrase is optional for some exchanges, but required for Bitget
+        if (exchange === 'bitget' && (!passphrase || passphrase.trim() === '')) {
+          logger.error({ uid, exchange }, 'EXCHANGE_KEY_DECRYPTION_FAILED: Decrypted passphrase is empty (required for Bitget)');
+          return null;
+        }
+
+        // Create connector using factory
+        try {
+          const connector = ExchangeConnectorFactory.create(exchange, {
+            apiKey,
+            secret,
+            passphrase,
+            testnet,
+          });
+
+          logger.info({ uid, exchange, testnet }, 'Exchange connector resolved from exchangeConfig');
+
+          return {
+            exchange,
+            connector,
+            credentials: {
+              apiKey,
+              secret,
+              passphrase,
+              testnet,
+            },
+          };
+        } catch (createErr: any) {
+          logger.error({ uid, exchange, error: createErr.message }, 'Failed to create exchange connector');
+          return null;
+        }
+      } catch (parseErr: any) {
+        logger.error({ uid, error: parseErr.message }, 'Error parsing exchange config');
+        return null;
+      }
+    }
+
+    // No credentials found in exchangeConfig/current
+    logger.warn({ uid }, 'No exchange credentials found in users/{uid}/exchangeConfig/current. Please configure your exchange API credentials in Settings → Trading API Integration.');
+    return null;
+  } catch (err: any) {
+    logger.error({ uid, error: err.message, stack: err.stack }, 'Error resolving exchange connector');
+    return null;
+  }
+}
+

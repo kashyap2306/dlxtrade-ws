@@ -1,0 +1,3964 @@
+import { logger } from '../utils/logger';
+import { firestoreAdapter } from './firestoreAdapter';
+import { BinanceAdapter } from './binanceAdapter';
+import { decrypt } from './keyManager';
+import { getFirebaseAdmin } from '../utils/firebase';
+import { userNotificationService } from './userNotificationService';
+import * as admin from 'firebase-admin';
+import {
+  safeSetInterval,
+  shouldRunBackgroundTasks,
+  withTimeout,
+  yieldToEventLoop,
+  safeExternalCall,
+  runBackgroundTask
+} from '../utils/safeBackgroundRunner';
+
+// Accuracy-based Risk Configuration (Single Source of Truth)
+export interface AccuracyRiskConfigItem {
+  minAccuracy: number; // Minimum accuracy for this range (inclusive)
+  maxAccuracy: number | null; // Maximum accuracy for this range (inclusive, null = no upper limit)
+  tradeSizePct: number; // Trade size as % of wallet balance (0-10) - percentage of total account equity, NOT margin-based or fixed amount
+  leverage: number; // Leverage multiplier (1-10) - hard cap is 10x, default for ≥90% is 9x
+}
+
+// Trading Settings Interface
+export interface TradingSettings {
+  coinSelectionMode: 'manual' | 'top100' | 'top10';
+  selectedCoins: string[];
+  maxPositionPct: number;
+  accuracyTrigger: {
+    min: number;
+    max: number;
+  };
+  maxDailyLossPct: number;
+  maxTradesPerDay: number;
+  autoTradeIntervalMinutes: number;
+  tradeConfirmationRequired: boolean;
+  tradeType: 'Scalping' | 'Swing' | 'Position';
+  positionSizingMap: {
+    '0-84': number;
+    '85-89': number;
+    '90-94': number;
+    '95-99': number;
+    '100': number;
+  };
+  // NEW: Accuracy-based risk configuration (replaces hardcoded calculateDynamicParams logic)
+  accuracyRiskConfig?: AccuracyRiskConfigItem[];
+}
+
+// Position Sizing Result
+export interface PositionSizingResult {
+  positionPercent: number;
+  reason: string;
+}
+
+// Research result interface for auto trade
+interface ResearchDataResult {
+  symbol: string;
+  signal: 'BUY' | 'SELL' | 'HOLD';
+  accuracy: number;
+  result: any;
+  processingTimeMs: number;
+}
+
+interface ResearchData {
+  results: ResearchDataResult[];
+  coinsAnalyzed: string[];
+}
+
+export interface AutoTradeConfig {
+  autoTradeEnabled: boolean;
+  perTradeRiskPct: number; // percent of account equity per trade (default 1)
+  maxConcurrentTrades: number; // default 3
+  maxDailyLossPct: number; // stop trading if loss exceeds (default 5)
+  stopLossPct: number; // default 1.5
+  takeProfitPct: number; // default 3
+  manualOverride: boolean; // when true, engine pauses for user actions
+  mode: 'AUTO' | 'MANUAL';
+  maxTradesPerDay?: number; // max trades per day
+  cooldownSeconds?: number; // cooldown between trades in seconds
+  panicStopEnabled?: boolean; // enable panic stop functionality
+  slippageBlocker?: boolean; // enable slippage protection
+
+  lastRun?: Date;
+  // P3-A: Over-trading protection state
+  consecutiveLosses?: number;
+  cooldownUntil?: Date;
+  stats?: {
+    totalTrades: number;
+    winningTrades: number;
+    losingTrades: number;
+    totalPnL: number;
+    dailyPnL: number;
+    dailyTrades: number;
+  };
+  equitySnapshot?: number;
+}
+
+export interface TradeSignal {
+  symbol: string;
+  signal: 'BUY' | 'SELL';
+  entryPrice: number;
+  accuracy: number;
+  stopLoss: number;
+  takeProfit: number;
+  takeProfit1?: number;
+  takeProfit2?: number;
+  takeProfit3?: number;
+  reasoning: string;
+  requestId: string;
+  timestamp: Date;
+  // P3-C: High-impact news detection
+  highImpactNewsDetected?: boolean;
+  newsEvent?: string;
+  leverage?: number;
+}
+
+export interface TradeExecution {
+  tradeId: string;
+  symbol: string;
+  side: 'BUY' | 'SELL';
+  quantity: number;
+  entryPrice: number;
+  stopLoss: number;
+  takeProfit: number;
+  status: 'PENDING' | 'FILLED' | 'CANCELLED' | 'REJECTED' | 'PANIC_CLOSED';
+  orderId?: string;
+  fillPrice?: number;
+  pnl?: number;
+  timestamp: Date;
+  mode: 'AUTO' | 'MANUAL';
+  takeProfitOrderId?: string;
+  stopLossOrderId?: string;
+  takeProfitPct?: number;
+  stopLossPct?: number;
+  exitPrice?: number;
+  leverage?: number;
+  // Scalping-specific fields
+  takeProfit1?: number;
+  takeProfit2?: number;
+  takeProfit3?: number;
+  takeProfit1OrderId?: string;
+  takeProfit2OrderId?: string;
+  takeProfit3OrderId?: string;
+  originalQuantity?: number; // Original position size for partial close calculations
+  remainingQuantity?: number; // Remaining position after partial closes
+  tp1Hit?: boolean;
+  tp2Hit?: boolean;
+  tp3Hit?: boolean;
+  isScalping?: boolean; // Track if this is a scalping trade
+  trailingStopLoss?: number; // Current trailing SL price
+}
+const DEFAULT_CONFIG: AutoTradeConfig = {
+  autoTradeEnabled: false,
+  perTradeRiskPct: 1, // 1% of equity per trade
+  maxConcurrentTrades: 3,
+  maxDailyLossPct: 5, // 5% max daily loss
+  stopLossPct: 1.5, // 1.5% stop loss
+  takeProfitPct: 3, // 3% take profit
+  manualOverride: false,
+  mode: 'MANUAL', // Start in manual mode for safety
+  maxTradesPerDay: 5, // P3-A: Reduced to SAFE default (was 50)
+  cooldownSeconds: 30,
+  panicStopEnabled: false,
+  slippageBlocker: false,
+
+  stats: {
+    totalTrades: 0,
+    winningTrades: 0,
+    losingTrades: 0,
+    totalPnL: 0,
+    dailyPnL: 0,
+    dailyTrades: 0,
+  },
+};
+
+export const AUTO_TRADE_REASONS = {
+  ACCURACY_TOO_LOW: 'ACCURACY_TOO_LOW',
+  HOLD_SIGNAL: 'HOLD_SIGNAL',
+  NO_SIGNAL: 'NO_SIGNAL',
+  DAILY_LOSS_LIMIT: 'DAILY_LOSS_LIMIT',
+  DAILY_TRADES_LIMIT: 'DAILY_TRADES_LIMIT',
+  COOLDOWN_ACTIVE: 'COOLDOWN_ACTIVE',
+  NEWS_BLOCK: 'NEWS_BLOCK',
+  EXTREME_VOLATILITY: 'EXTREME_VOLATILITY',
+  HIGH_VOLATILITY_SKIP: 'HIGH_VOLATILITY_SKIP',
+  INSUFFICIENT_LIQUIDITY: 'INSUFFICIENT_LIQUIDITY',
+  MIN_NOTIONAL: 'MIN_NOTIONAL',
+  NO_RESEARCH_KEYS: 'NO_RESEARCH_KEYS',
+  RISK_REJECTION: 'RISK_REJECTION',
+  MANUAL_OVERRIDE: 'MANUAL_OVERRIDE',
+  PENDING_CONFIRMATION: 'PENDING_CONFIRMATION',
+  TRADE_EXECUTED: 'TRADE_EXECUTED',
+  TRADE_FAILED: 'TRADE_FAILED',
+  TRADE_SKIPPED: 'TRADE_SKIPPED',
+  NO_CONNECTED_EXCHANGE: 'NO_CONNECTED_EXCHANGE',
+  AUTO_TRADE_SKIPPED_LOW_ACCURACY: 'AUTO_TRADE_SKIPPED_LOW_ACCURACY',
+  SYSTEM_RISK_FAILURE: 'SYSTEM_RISK_FAILURE',
+  SKIPPED_EXCHANGE_UNAVAILABLE: 'SKIPPED_EXCHANGE_UNAVAILABLE',
+};
+
+// Research result interface for auto trade
+interface ResearchDataResult {
+  symbol: string;
+  signal: 'BUY' | 'SELL' | 'HOLD';
+  accuracy: number;
+  result: any;
+  processingTimeMs: number;
+  metadata: {
+    symbol: string;
+    [key: string]: any;
+  };
+}
+
+interface ResearchData {
+  results: ResearchDataResult[];
+  coinsAnalyzed: string[];
+}
+
+// Helper function to run deep research with coin selection based on trading settings
+// REFACTORED: Now uses UNIFIED selectBestCoinByAccuracy logic (only 1 best coin)
+async function runDeepResearchWithCoinSelection(
+  uid: string,
+  settings: TradingSettings,
+  providerConfigs: any,
+  integrations: any
+): Promise<ResearchData> {
+  const coinsAnalyzed: string[] = [];
+  const results: ResearchDataResult[] = [];
+
+  // STATS: Increment Auto Trade Runs
+  try {
+    const { firestoreAdapter } = await import('./firestoreAdapter');
+    firestoreAdapter.incrementUserStat(uid, 'autoTradeRuns', 1, {
+      lastActivity: {
+        type: 'Auto Trade',
+        timestamp: new Date().toISOString(),
+        symbol: 'BATCH_SCAN'
+      }
+    });
+  } catch (err) {
+    logger.error({ uid, error: err }, 'Failed to update stats for Auto Trade');
+  }
+
+  // CRITICAL: Use the unified selectBestCoinByAccuracy logic
+  // This ensures rotation, cooldowns, and TOP 100 scan (not just BTC)
+  const { selectBestCoinByAccuracy } = await import('./researchModes');
+
+  // Exclude nothing for start, selectBestCoinByAccuracy handles internal cooldowns
+  const selectionResult = await selectBestCoinByAccuracy(uid, []);
+
+  if (!selectionResult) {
+    logger.warn({ uid }, 'Auto-trade selection: No suitable coin found by accuracy scan');
+    return { results: [], coinsAnalyzed: [] };
+  }
+
+  const { symbol, accuracy: estimatedAccuracy } = selectionResult;
+  coinsAnalyzed.push(symbol);
+
+  // Run deep research for ONLY the selected best coin
+  try {
+    logger.info({ uid, symbol, estimatedAccuracy }, 'Running deep research for selected best coin');
+    const { runFreeModeDeepResearch } = await import('./deepResearchEngine');
+    const startTime = Date.now();
+
+    // Execute research with background mode (parallel providers internally)
+    const result = await runFreeModeDeepResearch(uid, symbol, providerConfigs, integrations, true) as any;
+    const processingTimeMs = Date.now() - startTime;
+
+    if (result) {
+      // CRITICAL: Ensure result structure includes tradePlan for signal propagation
+      // result is FreeModeDeepResearchResult which has tradePlan at root level
+      results.push({
+        symbol,
+        signal: result.signal as 'BUY' | 'SELL' | 'HOLD',
+        accuracy: result.accuracy,
+        result, // Contains full FreeModeDeepResearchResult with tradePlan
+        processingTimeMs,
+        metadata: {
+          symbol,
+          ...(result.metadata || {})
+        }
+      });
+
+      // Log signal/tradePlan consistency for verification
+      if (result.signal === 'HOLD' || (result.accuracy < 0.60 && result.accuracy > 0)) {
+        logger.info({ uid, symbol, signal: result.signal, accuracy: result.accuracy, hasTradePlan: !!result.tradePlan },
+          '[RESEARCH_RESULT] HOLD or low accuracy → tradePlan should be null');
+      } else if (result.signal !== 'HOLD' && result.accuracy >= 0.60) {
+        logger.info({
+          uid, symbol, signal: result.signal, accuracy: result.accuracy, hasTradePlan: !!result.tradePlan,
+          hasEntry: !!result.tradePlan?.entryPrice, hasSL: !!result.tradePlan?.stopLoss,
+          hasTP1: !!result.tradePlan?.takeProfit1, hasTP2: !!result.tradePlan?.takeProfit2, hasTP3: !!result.tradePlan?.takeProfit3
+        },
+          '[RESEARCH_RESULT] BUY/SELL with accuracy >= 60% → tradePlan should exist with Entry/SL/TP1/TP2/TP3');
+      }
+      logger.info({ uid, symbol, signal: result.signal, accuracy: result.accuracy }, 'Deep research completed for selected best coin');
+    }
+  } catch (error: any) {
+    logger.error({ uid, symbol, error: error.message }, 'Research failed for selected coin');
+    results.push({
+      symbol,
+      signal: 'HOLD',
+      accuracy: 0,
+      result: null,
+      processingTimeMs: 0,
+      metadata: { symbol }
+    });
+  }
+
+  return {
+    results,
+    coinsAnalyzed
+  };
+}
+
+
+export class AutoTradeEngine {
+  private userEngines: Map<string, {
+    config: AutoTradeConfig;
+    adapter: BinanceAdapter | null;
+    activeTrades: Map<string, TradeExecution>;
+    circuitBreaker: boolean;
+    lastEquityCheck: Date;
+  }> = new Map();
+
+  // Auto-trade background loop tracking
+  private autoTradeLoops: Map<string, {
+    intervalId: NodeJS.Timeout | null;
+    isRunning: boolean;
+    lastResearchTime: Date | null;
+    researchInProgress: boolean;
+  }> = new Map();
+
+  // Guard to prevent infinite recursion and redundant default config creation
+  private static configCreatedOnce: Set<string> = new Set();
+
+  /**
+   * Calculate simplified news score for sentiment-aware trading
+   */
+  private calculateNewsScoreFromArticles(news: any[]): number {
+    if (!news || news.length === 0) return 50;
+
+    let totalSentiment = 0;
+    let count = 0;
+
+    for (const item of news) {
+      let val = 0;
+      if (typeof item.sentiment === 'number') val = item.sentiment;
+      else if (item.sentiment === 'positive' || item.sentiment === 'buy') val = 1;
+      else if (item.sentiment === 'negative' || item.sentiment === 'sell') val = -1;
+      totalSentiment += val;
+      count++;
+    }
+
+    const avg = count > 0 ? totalSentiment / count : 0;
+    return 50 + (avg * 50); // 0 to 100
+  }
+
+  /**
+   * Get or create user engine instance
+   */
+  private async getUserEngine(uid: string): Promise<{
+    config: AutoTradeConfig;
+    adapter: BinanceAdapter | null;
+    activeTrades: Map<string, TradeExecution>;
+    circuitBreaker: boolean;
+    lastEquityCheck: Date;
+  }> {
+    if (!this.userEngines.has(uid)) {
+      const config = await this.loadConfig(uid);
+      this.userEngines.set(uid, {
+        config,
+        adapter: null,
+        activeTrades: new Map(),
+        circuitBreaker: false,
+        lastEquityCheck: new Date(0),
+      });
+    }
+    return this.userEngines.get(uid)!;
+  }
+
+  /**
+   * P4: Calculate dynamic trade parameters based on accuracy and volatility
+   * CRITICAL: Uses user's accuracyRiskConfig (single source of truth) instead of hardcoded values
+   */
+  private async calculateDynamicParams(uid: string, accuracy: number, volatilityClassification: string, newsScore: number): Promise<{
+    sizePct: number,
+    leverage: number,
+    skip?: string,
+    matchedRange?: AccuracyRiskConfigItem
+  }> {
+    // Accuracy comes in 0-100 scale from research
+    const acc = accuracy > 1 ? accuracy : accuracy * 100;
+
+    // Get user's trading settings (includes accuracyRiskConfig)
+    const settings = await AutoTradeEngine.getTradingSettings(uid);
+    let config = settings.accuracyRiskConfig || [];
+    let usingFallback = false;
+    let fallbackReason = '';
+
+    // CRITICAL: Execution-time fallback guard - validate config structure
+    // If config is missing, invalid, partially invalid, or non-continuous, fallback to defaults
+    if (!Array.isArray(config) || config.length === 0) {
+      config = AutoTradeEngine.getDefaultAccuracyRiskConfig();
+      usingFallback = true;
+      fallbackReason = 'Config missing or empty';
+      logger.warn({ uid, reason: fallbackReason }, '⚠️ [ACCURACY_RISK_CONFIG] Falling back to system defaults - config missing or empty');
+    } else {
+      // Validate each item structure
+      const invalidItems = config.filter((item: any) => 
+        typeof item.minAccuracy !== 'number' ||
+        (item.maxAccuracy !== null && typeof item.maxAccuracy !== 'number') ||
+        typeof item.tradeSizePct !== 'number' ||
+        typeof item.leverage !== 'number' ||
+        item.minAccuracy < 75 ||
+        item.tradeSizePct < 0 || item.tradeSizePct > 10 ||
+        item.leverage < 1 || item.leverage > 10
+      );
+
+      if (invalidItems.length > 0) {
+        config = AutoTradeEngine.getDefaultAccuracyRiskConfig();
+        usingFallback = true;
+        fallbackReason = 'Config contains invalid items';
+        logger.warn({ uid, reason: fallbackReason, invalidCount: invalidItems.length }, '⚠️ [ACCURACY_RISK_CONFIG] Falling back to system defaults - config contains invalid items');
+      } else {
+        // Validate continuity (ranges must be continuous and non-overlapping)
+        const sorted = [...config].sort((a, b) => a.minAccuracy - b.minAccuracy);
+        let isContinuous = true;
+        
+        for (let i = 1; i < sorted.length; i++) {
+          const prev = sorted[i - 1];
+          const curr = sorted[i];
+          const prevMax = prev.maxAccuracy ?? 100;
+          if (curr.minAccuracy !== prevMax + 1 && curr.minAccuracy !== prevMax) {
+            isContinuous = false;
+            break;
+          }
+        }
+        
+        // Last range should cover up to 100%
+        const last = sorted[sorted.length - 1];
+        if (last && last.maxAccuracy !== null && last.maxAccuracy < 100) {
+          isContinuous = false;
+        }
+
+        if (!isContinuous) {
+          config = AutoTradeEngine.getDefaultAccuracyRiskConfig();
+          usingFallback = true;
+          fallbackReason = 'Config ranges are not continuous or do not cover up to 100%';
+          logger.warn({ uid, reason: fallbackReason }, '⚠️ [ACCURACY_RISK_CONFIG] Falling back to system defaults - ranges not continuous');
+        }
+      }
+    }
+
+    // Default: no trade if accuracy < minimum configured threshold
+    let params = { sizePct: 0, leverage: 1 };
+    let matchedRange: AccuracyRiskConfigItem | undefined = undefined;
+
+    // Find matching accuracy range from config (user config or fallback defaults)
+    for (const range of config) {
+      const minMatch = acc >= range.minAccuracy;
+      const maxMatch = range.maxAccuracy === null || acc <= range.maxAccuracy;
+      
+      if (minMatch && maxMatch) {
+        // CRITICAL: Trade size % is calculated as percentage of wallet balance (not margin-based or fixed amount)
+        // sizePct represents the percentage of total account equity to allocate to this trade
+        params = {
+          sizePct: Math.min(10, Math.max(0, range.tradeSizePct)), // Hard cap at 10% of wallet balance
+          leverage: Math.min(10, Math.max(1, range.leverage)) // Hard cap at 10x
+        };
+        matchedRange = range;
+        logger.info({
+          uid,
+          accuracy: acc,
+          matchedRange: `${range.minAccuracy}-${range.maxAccuracy ?? '∞'}%`,
+          sizePct: params.sizePct,
+          leverage: params.leverage,
+          usingFallback,
+          fallbackReason: usingFallback ? fallbackReason : undefined
+        }, usingFallback 
+          ? '✅ [ACCURACY_RISK_CONFIG] Matched accuracy range from system defaults (user config invalid)'
+          : '✅ [ACCURACY_RISK_CONFIG] Matched accuracy range from user config');
+        break;
+      }
+    }
+
+    // If no match found and accuracy < 75%, skip trade
+    if (!matchedRange && acc < 75) {
+      logger.info({ uid, accuracy: acc }, '⏭️ [ACCURACY_RISK_CONFIG] Accuracy below minimum threshold (75%) - skipping trade');
+      return { sizePct: 0, leverage: 1, skip: 'ACCURACY_BELOW_MINIMUM' };
+    }
+
+    // If no match found but accuracy >= 75%, use lowest configured range as fallback
+    if (!matchedRange && acc >= 75 && config.length > 0) {
+      const lowestRange = config[0];
+      params = {
+        sizePct: Math.min(10, Math.max(0, lowestRange.tradeSizePct)),
+        leverage: Math.min(10, Math.max(1, lowestRange.leverage))
+      };
+      matchedRange = lowestRange;
+      logger.warn({
+        uid,
+        accuracy: acc,
+        fallbackRange: `${lowestRange.minAccuracy}-${lowestRange.maxAccuracy ?? '∞'}%`,
+        sizePct: params.sizePct,
+        leverage: params.leverage,
+        usingFallback,
+        fallbackReason: usingFallback ? fallbackReason : 'No exact match found'
+      }, '⚠️ [ACCURACY_RISK_CONFIG] No exact match found, using lowest configured range as fallback');
+    }
+
+    // Defensive log if params computed without valid user config
+    if (usingFallback) {
+      logger.info({
+        uid,
+        accuracy: acc,
+        matchedRange: matchedRange ? `${matchedRange.minAccuracy}-${matchedRange.maxAccuracy ?? '∞'}%` : 'none',
+        sizePct: params.sizePct,
+        leverage: params.leverage,
+        fallbackReason
+      }, '🔍 [ACCURACY_RISK_CONFIG] Computed params using system defaults due to invalid user config');
+    }
+
+    // 3. Volatility Adjustment Rules (Safety Rules)
+    // HIGH -> reduce leverage by 2x and trade size by 25%
+    if (volatilityClassification === 'high') {
+      params.leverage = Math.max(1, params.leverage - 2);
+      params.sizePct = params.sizePct * 0.75;
+      logger.info({ uid, acc, volatilityClassification, originalParams: params }, 'Volatility HIGH: Reduced leverage and size');
+    }
+    // EXTREME -> skip trade completely
+    else if (volatilityClassification === 'extreme') {
+      return { sizePct: 0, leverage: 1, skip: AUTO_TRADE_REASONS.EXTREME_VOLATILITY };
+    }
+
+    // 4. Sentiment & News Logic
+    // If strong NEGATIVE news: Prefer REDUCING position size. If sentiment is extremely negative, trade MAY be skipped.
+    // newsScore: < 30 = negative, < 15 = extremely negative
+    if (newsScore < 15) {
+      logger.info({ uid, acc, newsScore }, 'Extremely negative news detected: Skipping trade');
+      return { sizePct: 0, leverage: 1, skip: 'EXTREMELY_NEGATIVE_SENTIMENT' };
+    } else if (newsScore < 30) {
+      params.sizePct = params.sizePct * 0.5; // Reduce size by 50% for strong negative news
+      logger.info({ uid, acc, newsScore, originalSize: params.sizePct * 2 }, 'Strong negative news detected: Reduced size by 50%');
+    }
+
+    return { ...params, matchedRange };
+  }
+
+  /**
+   * P5: Deterministic SL/TP Logic
+   */
+  private calculateSLTP(
+    side: 'BUY' | 'SELL',
+    price: number,
+    accuracy: number,
+    atr: number,
+    sr: { supportLevel?: number, resistanceLevel?: number },
+    isScalping: boolean = false
+  ): { stopLoss: number, takeProfit: number, takeProfit1?: number, takeProfit2?: number, takeProfit3?: number } {
+    // Ensure accuracy is 0-100 scale
+    const acc = accuracy > 1 ? accuracy : accuracy * 100;
+
+    // SCALPING RULES - STRICT ENFORCEMENT
+    if (isScalping) {
+      const SL_MAX_DISTANCE_PCT = 0.01; // 1% HARD CAP - NEVER exceed
+      const SL_DEFAULT_DISTANCE_PCT = 0.005; // 0.5% default
+      const SL_MIN_DISTANCE_PCT = 0.003; // 0.3% minimum
+      const SL_MAX_DISTANCE_PCT_ATR = 0.008; // 0.8% maximum (ATR-based)
+      const TP1_DISTANCE_PCT = 0.008; // 0.8%
+      const TP2_DISTANCE_PCT = 0.015; // 1.5%
+      const TP3_DISTANCE_PCT = 0.022; // 2.2%
+
+      let stopLoss = 0;
+      let takeProfit1 = 0;
+      let takeProfit2 = 0;
+      let takeProfit3 = 0;
+
+      if (side === 'BUY') {
+        // SCALPING SL: Ignore support/resistance, ignore wide ATR
+        // Use ATR if available but clamp strictly
+        const atrDistance = atr > 0 ? (atr / price) : 0;
+        // Clamp SL distance: 0.3% - 0.8% range, default 0.5%
+        const slDistance = Math.max(SL_MIN_DISTANCE_PCT, Math.min(SL_MAX_DISTANCE_PCT_ATR, atrDistance || SL_DEFAULT_DISTANCE_PCT));
+        stopLoss = price * (1 - slDistance);
+
+        // HARD CAP: NEVER exceed 1% under any condition
+        if (price - stopLoss > price * SL_MAX_DISTANCE_PCT) {
+          stopLoss = price * (1 - SL_MAX_DISTANCE_PCT);
+          logger.warn({ price, calculatedSL: price * (1 - slDistance), clampedSL: stopLoss }, 'SCALPING SL clamped to 1% hard cap');
+        }
+
+        // TP levels
+        takeProfit1 = price * (1 + TP1_DISTANCE_PCT);
+        takeProfit2 = price * (1 + TP2_DISTANCE_PCT);
+        takeProfit3 = price * (1 + TP3_DISTANCE_PCT);
+
+        logger.info({
+          entry: price,
+          sl: stopLoss,
+          slDistance: ((price - stopLoss) / price * 100).toFixed(3) + '%',
+          tp1: takeProfit1,
+          tp2: takeProfit2,
+          tp3: takeProfit3
+        }, '[SCALPING_PLAN] BUY - Strict scalping SL/TP calculated');
+      } else {
+        // SELL side
+        const atrDistance = atr > 0 ? (atr / price) : 0;
+        const slDistance = Math.max(SL_MIN_DISTANCE_PCT, Math.min(SL_MAX_DISTANCE_PCT_ATR, atrDistance || SL_DEFAULT_DISTANCE_PCT));
+        stopLoss = price * (1 + slDistance);
+
+        // HARD CAP: NEVER exceed 1%
+        if (stopLoss - price > price * SL_MAX_DISTANCE_PCT) {
+          stopLoss = price * (1 + SL_MAX_DISTANCE_PCT);
+          logger.warn({ price, calculatedSL: price * (1 + slDistance), clampedSL: stopLoss }, 'SCALPING SL clamped to 1% hard cap');
+        }
+
+        // TP levels
+        takeProfit1 = price * (1 - TP1_DISTANCE_PCT);
+        takeProfit2 = price * (1 - TP2_DISTANCE_PCT);
+        takeProfit3 = price * (1 - TP3_DISTANCE_PCT);
+
+        logger.info({
+          entry: price,
+          sl: stopLoss,
+          slDistance: ((stopLoss - price) / price * 100).toFixed(3) + '%',
+          tp1: takeProfit1,
+          tp2: takeProfit2,
+          tp3: takeProfit3
+        }, '[SCALPING_PLAN] SELL - Strict scalping SL/TP calculated');
+      }
+
+      return {
+        stopLoss,
+        takeProfit: takeProfit2, // Default to TP2 for backward compatibility
+        takeProfit1,
+        takeProfit2,
+        takeProfit3
+      };
+    }
+
+    // NON-SCALPING: Original logic (swing/position trading)
+    // Determine Target RR based on accuracy (Requirement: min RR 1:2)
+    let targetRR = 2.0;
+    if (acc >= 85) targetRR = 3.0;
+    else if (acc >= 80) targetRR = 2.5;
+
+    let stopLoss = 0;
+    let takeProfit = 0;
+
+    if (side === 'BUY') {
+      const atrSL = price - (2.5 * atr);
+      const fixedSL = price * 0.985;
+      if (sr.supportLevel && sr.supportLevel < price && sr.supportLevel > price * 0.90) {
+        stopLoss = sr.supportLevel;
+      } else if (atr > 0 && atrSL < price) {
+        stopLoss = atrSL;
+      } else {
+        stopLoss = fixedSL;
+      }
+      const riskAmount = price - stopLoss;
+      takeProfit = price + (riskAmount * targetRR);
+    } else {
+      const atrSL = price + (2.5 * atr);
+      const fixedSL = price * 1.015;
+      if (sr.resistanceLevel && sr.resistanceLevel > price && sr.resistanceLevel < price * 1.10) {
+        stopLoss = sr.resistanceLevel;
+      } else if (atr > 0 && atrSL > price) {
+        stopLoss = atrSL;
+      } else {
+        stopLoss = fixedSL;
+      }
+      const riskAmount = stopLoss - price;
+      takeProfit = price - (riskAmount * targetRR);
+    }
+    return { stopLoss, takeProfit }; // Non-scalping: no TP1/TP2/TP3
+  }
+
+  /**
+   * Load user configuration from Firestore
+   */
+  async loadConfig(uid: string): Promise<AutoTradeConfig> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const configDoc = await db.collection('users').doc(uid).collection('autoTradeConfig').doc('current').get();
+
+      if (configDoc.exists) {
+        const data = configDoc.data()!;
+
+        const mergedConfig = {
+          ...DEFAULT_CONFIG,
+          ...data,
+          lastRun: data.lastRun?.toDate(),
+          stats: data.stats || DEFAULT_CONFIG.stats,
+        } as AutoTradeConfig;
+
+        return mergedConfig;
+      }
+
+      // [DIAGNOSTIC] Document does not exist
+      console.log('[AUTO_TRADE_ENGINE_LOAD_CONFIG_DIAGNOSTIC] Document does not exist, initializing default config:', { uid });
+
+      // CRITICAL: Block infinite recursion if we already tried creating this session
+      if (AutoTradeEngine.configCreatedOnce.has(uid)) {
+        console.warn('[AUTO_TRADE_ENGINE_LOAD_CONFIG_DIAGNOSTIC] Default config already created once this session, returning memory default to prevent loop:', { uid });
+        return DEFAULT_CONFIG;
+      }
+
+      // Mark as created BEFORE write to ensure re-entry is blocked even if write is in progress
+      AutoTradeEngine.configCreatedOnce.add(uid);
+
+      // CRITICAL FIX: Direct write to Firestore to prevent infinite recursion loop
+      // We set the default config directly with merge:false to ensure a clean slate, then return it.
+      try {
+        await db.collection('users').doc(uid).collection('autoTradeConfig').doc('current').set(DEFAULT_CONFIG, { merge: false });
+        console.log('[AUTO_TRADE_CONFIG_CREATED_ONCE] Created default auto-trade configuration for user:', uid);
+        logger.info({ uid }, 'Created default auto-trade configuration');
+      } catch (saveErr: any) {
+        logger.warn({ uid, error: saveErr.message }, 'Failed to save default config (possible race condition), utilizing default in-memory');
+      }
+
+      return DEFAULT_CONFIG;
+    } catch (error: any) {
+      logger.error({ error: error.message, uid }, 'Error loading auto-trade config');
+      // On error, return default but DO NOT attempt to write (could be a permission issue causing a loop)
+      return DEFAULT_CONFIG;
+    }
+  }
+
+  /**
+   * Save user configuration to Firestore
+   */
+  async saveConfig(uid: string, config: Partial<AutoTradeConfig>): Promise<AutoTradeConfig> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+
+      // [DIAGNOSTIC] Log incoming config to save
+      console.log('[AUTO_TRADE_ENGINE_SAVE_CONFIG_DIAGNOSTIC] Input config:', {
+        uid,
+        inputConfig: config,
+        autoTradeEnabledInInput: config.autoTradeEnabled,
+        typeofAutoTradeEnabled: typeof config.autoTradeEnabled,
+      });
+
+      const currentConfig = await this.loadConfig(uid);
+
+      // [DIAGNOSTIC] Log current config before merge
+      console.log('[AUTO_TRADE_ENGINE_SAVE_CONFIG_DIAGNOSTIC] Current config before merge:', {
+        uid,
+        currentAutoTradeEnabled: currentConfig.autoTradeEnabled,
+        typeofCurrentAutoTradeEnabled: typeof currentConfig.autoTradeEnabled,
+      });
+
+      const updatedConfig = { ...currentConfig, ...config, lastRun: new Date() };
+
+      // [DIAGNOSTIC] Log updated config after merge
+      console.log('[AUTO_TRADE_ENGINE_SAVE_CONFIG_DIAGNOSTIC] Updated config after merge:', {
+        uid,
+        updatedAutoTradeEnabled: updatedConfig.autoTradeEnabled,
+        typeofUpdatedAutoTradeEnabled: typeof updatedConfig.autoTradeEnabled,
+      });
+
+      // CRITICAL: Build config document, only including defined fields
+      // Firestore rejects writes containing undefined values
+      const configDoc: any = {
+        autoTradeEnabled: updatedConfig.autoTradeEnabled,
+        perTradeRiskPct: updatedConfig.perTradeRiskPct,
+        maxConcurrentTrades: updatedConfig.maxConcurrentTrades,
+        maxDailyLossPct: updatedConfig.maxDailyLossPct,
+        stopLossPct: updatedConfig.stopLossPct,
+        takeProfitPct: updatedConfig.takeProfitPct,
+        manualOverride: updatedConfig.manualOverride,
+        mode: updatedConfig.mode,
+        maxTradesPerDay: updatedConfig.maxTradesPerDay || DEFAULT_CONFIG.maxTradesPerDay,
+        cooldownSeconds: updatedConfig.cooldownSeconds || DEFAULT_CONFIG.cooldownSeconds,
+        panicStopEnabled: updatedConfig.panicStopEnabled || DEFAULT_CONFIG.panicStopEnabled,
+        slippageBlocker: updatedConfig.slippageBlocker || DEFAULT_CONFIG.slippageBlocker,
+        stats: updatedConfig.stats || DEFAULT_CONFIG.stats,
+        lastRun: admin.firestore.Timestamp.now(),
+        updatedAt: admin.firestore.Timestamp.now(),
+      };
+
+
+
+      // Only include equitySnapshot if it's defined (not undefined)
+      if (updatedConfig.equitySnapshot !== undefined && updatedConfig.equitySnapshot !== null) {
+        configDoc.equitySnapshot = updatedConfig.equitySnapshot;
+      }
+
+      // CRITICAL: Remove any undefined values from configDoc BEFORE merge
+      const sanitizedConfigDoc: any = {};
+      for (const [key, value] of Object.entries(configDoc)) {
+        if (value !== undefined) {
+          sanitizedConfigDoc[key] = value;
+        }
+      }
+
+      // CRITICAL: Get existing document first to merge properly
+      const configDocRef = db.collection('users').doc(uid).collection('autoTradeConfig').doc('current');
+      const existingConfigDoc = await configDocRef.get();
+      const existingConfig = existingConfigDoc.exists ? (existingConfigDoc.data() || {}) : {};
+
+      // CRITICAL: Merge with existing config first
+      const mergedConfig = {
+        ...existingConfig,
+        ...sanitizedConfigDoc,
+      };
+
+      // CRITICAL: Remove any undefined values AFTER merge (existing doc might have undefined)
+      const finalSanitized: any = {};
+      for (const [key, value] of Object.entries(mergedConfig)) {
+        if (value !== undefined) {
+          finalSanitized[key] = value;
+        }
+      }
+
+      // [DIAGNOSTIC] Log final document to be written to Firestore
+      console.log('[AUTO_TRADE_ENGINE_SAVE_CONFIG_DIAGNOSTIC] Document to write to Firestore:', {
+        uid,
+        path: `users/${uid}/autoTradeConfig/current`,
+        autoTradeEnabled: finalSanitized.autoTradeEnabled,
+        typeofAutoTradeEnabled: typeof finalSanitized.autoTradeEnabled,
+        hasEquitySnapshot: 'equitySnapshot' in finalSanitized,
+      });
+
+      // CRITICAL: Runtime Guard Check using central adapter
+      firestoreAdapter.guardAgainstIllegalWrites(`users/${uid}/autoTradeConfig/current`, finalSanitized);
+
+      await configDocRef.set(finalSanitized, { merge: true });
+
+      // [DIAGNOSTIC] Verify write by reading back
+      const verifyDoc = await db.collection('users').doc(uid).collection('autoTradeConfig').doc('current').get();
+      const verifyData = verifyDoc.data();
+      console.log('[AUTO_TRADE_ENGINE_SAVE_CONFIG_DIAGNOSTIC] Verification read after write:', {
+        uid,
+        autoTradeEnabled: verifyData?.autoTradeEnabled,
+        typeofAutoTradeEnabled: typeof verifyData?.autoTradeEnabled,
+      });
+
+      logger.info({ uid, config: configDoc }, 'Auto-trade config saved to Firestore');
+
+      // Update in-memory config
+      const engine = await this.getUserEngine(uid);
+      engine.config = updatedConfig as AutoTradeConfig;
+
+      // [DIAGNOSTIC] Log final return value
+      console.log('[AUTO_TRADE_ENGINE_SAVE_CONFIG_DIAGNOSTIC] Returning config:', {
+        uid,
+        autoTradeEnabled: updatedConfig.autoTradeEnabled,
+        typeofAutoTradeEnabled: typeof updatedConfig.autoTradeEnabled,
+      });
+
+      return updatedConfig as AutoTradeConfig;
+    } catch (error: any) {
+      logger.error({ error: error.message, stack: error.stack, uid }, 'Error saving auto-trade config');
+      console.error('[AUTO_TRADE_ENGINE_SAVE_CONFIG_DIAGNOSTIC] Error:', {
+        uid,
+        error: error.message,
+        stack: error.stack,
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Initialize adapter for user (load API keys securely using unified resolver)
+   * Supports all exchanges: binance, bitget, bingx, weex
+   */
+  async initializeAdapter(uid: string): Promise<any> {
+    try {
+      const { resolveExchangeConnector } = await import('./exchangeResolver');
+      const resolved = await resolveExchangeConnector(uid);
+
+      if (!resolved) {
+        logger.warn({ uid }, 'No exchange API credentials found for auto-trade');
+        return null;
+      }
+
+      const { connector, exchange } = resolved;
+
+      // Validate connector has required methods
+      if (!connector || typeof connector.placeOrder !== 'function') {
+        logger.error({ uid, exchange }, 'Exchange connector missing required methods');
+        return null;
+      }
+
+      // For Binance, optionally validate API key permissions
+      if (exchange === 'binance' && typeof connector.validateApiKey === 'function') {
+        try {
+          const validation = await connector.validateApiKey();
+          if (!validation.valid || !validation.canTrade) {
+            logger.error({ uid, exchange }, 'API key validation failed - insufficient permissions');
+            return null;
+          }
+        } catch (valError: any) {
+          logger.warn({ uid, exchange, error: valError.message }, 'API key validation error, continuing anyway');
+        }
+      }
+
+      const engine = await this.getUserEngine(uid);
+      engine.adapter = connector;
+
+      logger.info({ uid, exchange }, 'Auto-trade adapter initialized successfully');
+      return connector;
+    } catch (error: any) {
+      logger.error({ error: error.message, stack: error.stack, uid }, 'Error initializing adapter');
+      return null;
+    }
+  }
+
+
+
+  /**
+   * Check risk guards before placing order
+   */
+  async checkRiskGuards(uid: string, signal: TradeSignal, isManualApproval: boolean = false): Promise<{ allowed: boolean; reason?: string }> {
+    const engine = await this.getUserEngine(uid);
+    const config = engine.config;
+
+    // CRITICAL DIAGNOSTIC: Log config state at guard entry
+    logger.info({
+      uid,
+      symbol: signal.symbol,
+      accuracy: signal.accuracy,
+      isManualApproval,
+      autoTradeEnabled: config.autoTradeEnabled,
+      manualOverride: config.manualOverride,
+      circuitBreaker: engine.circuitBreaker,
+      activeTradesCount: engine.activeTrades.size,
+      maxConcurrentTrades: config.maxConcurrentTrades,
+      cooldownUntil: config.cooldownUntil,
+      configSource: 'in-memory'
+    }, '🔍 [RISK_GUARDS] Starting risk guard checks');
+
+    // FETCH TRADING SETTINGS FOR ENFORCEMENT
+    const settings = await AutoTradeEngine.getTradingSettings(uid);
+
+    // 0. SYSTEM RISK CHECKS (Shared Logic)
+    const systemCheck = await this.checkSystemRisk(uid, isManualApproval, settings);
+    if (!systemCheck.allowed) {
+      return systemCheck;
+    }
+
+    // MANDATORY RISK GUARDS - Trade/Signal Specific Checks
+
+    // 1. Check accuracy trigger (BYPASS ON MANUAL)
+    // Rule: Auto Trade MUST execute ONLY when: accuracy >= 75%
+    // Rule: Manual approvals (skipConfirmationCheck=true) can execute if accuracy >= 60%
+    const threshold = isManualApproval ? 60 : 75;
+    if (signal.accuracy < threshold) {
+      logger.info({
+        uid,
+        symbol: signal.symbol,
+        accuracy: signal.accuracy,
+        threshold,
+        reason: 'ACCURACY_GATE'
+      }, '⛔ [RISK_GUARDS] BLOCKED: Accuracy below threshold');
+      return { allowed: false, reason: `ACCURACY_GATE: ${signal.accuracy}% < ${threshold}% threshold` };
+    }
+
+    // 2. Skip if same coin already has an open position
+    if (engine.activeTrades.has(signal.symbol)) {
+      logger.info({
+        uid,
+        symbol: signal.symbol,
+        reason: 'OPEN_POSITION_EXISTS'
+      }, '⛔ [RISK_GUARDS] BLOCKED: Open position already exists');
+      return { allowed: false, reason: `OPEN_POSITION_EXISTS: ${signal.symbol} already has an active trade` };
+    }
+
+    // Check max concurrent trades (KEEP - This is a resource/exchange limit)
+    // But maybe allow override if user insists? Exchange limits are real.
+    // Let's enforce it but maybe higher limit? No, just enforce.
+    if (engine.activeTrades.size >= config.maxConcurrentTrades) {
+      // Maybe manual bypasses this too?
+      // "ensure manual approvals ALWAYS execute".
+      // If I approve, I want it executed.
+      if (isManualApproval) {
+        logger.info({ uid }, 'MANUAL_APPROVAL_OVERRIDE: Bypassing Max Concurrent Trades');
+      } else {
+        logger.info({
+          uid,
+          symbol: signal.symbol,
+          activeTradesCount: engine.activeTrades.size,
+          maxConcurrentTrades: config.maxConcurrentTrades,
+          reason: 'MAX_CONCURRENT_TRADES'
+        }, '⛔ [RISK_GUARDS] BLOCKED: Max concurrent trades reached');
+        return { allowed: false, reason: `MAX_CONCURRENT_TRADES: ${engine.activeTrades.size} >= ${config.maxConcurrentTrades} limit` };
+      }
+    }
+
+    // Additional safety checks
+
+    // Check if already have position in this symbol (Bypass on manual)
+    if (!isManualApproval) {
+      for (const trade of engine.activeTrades.values()) {
+        if (trade.symbol === signal.symbol && trade.status === 'FILLED') {
+          logger.info({
+            uid,
+            symbol: signal.symbol,
+            existingTradeId: trade.tradeId,
+            existingTradeStatus: trade.status,
+            reason: 'EXISTING_POSITION'
+          }, '⛔ [RISK_GUARDS] BLOCKED: Already have active position in symbol');
+          return { allowed: false, reason: `OPEN_POSITION_EXISTS: ${signal.symbol} already has an active trade` };
+        }
+      }
+    }
+
+    logger.info({
+      uid,
+      symbol: signal.symbol,
+      accuracy: signal.accuracy,
+      allGuardsPassed: true
+    }, '✅ [RISK_GUARDS] All guards passed - trade allowed');
+    return { allowed: true };
+  }
+
+  /**
+   * Check system-wide risk settings (Daily Loss, Cooldown, Circuit Breaker)
+   * Does NOT check signal-specific constraints (Accuracy, Symbol)
+   */
+
+
+  /**
+   * Check system-wide risk settings (Daily Loss, Cooldown, Circuit Breaker)
+   * Does NOT check signal-specific constraints (Accuracy, Symbol)
+   */
+  async checkSystemRisk(uid: string, isManualApproval: boolean, settings: TradingSettings): Promise<{ allowed: boolean; reason?: string }> {
+    const engine = await this.getUserEngine(uid);
+    const config = engine.config;
+    const stats = config.stats || DEFAULT_CONFIG.stats!;
+    const equity = config.equitySnapshot || 1000;
+
+    // 1. Check daily loss limit (SAFETY - KEEP)
+    // CRITICAL: Use settings.maxDailyLossPct (Default 5%)
+    const maxLossPct = settings.maxDailyLossPct || 5;
+    const maxDailyLossAmount = equity * (maxLossPct / 100);
+
+    // If daily PnL is negative and exceeds max allowance
+    if (stats.dailyPnL < 0 && Math.abs(stats.dailyPnL) >= maxDailyLossAmount) {
+      if (!isManualApproval) {
+        engine.circuitBreaker = true;
+        await this.logTradeEvent(uid, 'CIRCUIT_BREAKER_TRIGGERED', {
+          reason: 'Daily loss limit exceeded',
+          dailyPnL: stats.dailyPnL,
+          maxDailyLoss: maxLossPct,
+        });
+        return { allowed: false, reason: `DAILY_LOSS_LIMIT: ${Math.abs(stats.dailyPnL).toFixed(2)} >= ${maxDailyLossAmount.toFixed(2)} (${maxLossPct}% of ${equity})` };
+      } else {
+        logger.warn({ uid, dailyPnL: stats.dailyPnL }, 'MANUAL_APPROVAL_OVERRIDE: Bypassing Daily Loss Limit');
+      }
+    }
+
+    // 2. Check max trades per day (BYPASS ON MANUAL)
+    if (!isManualApproval && stats.dailyTrades >= settings.maxTradesPerDay) {
+      logger.info({
+        uid,
+        dailyTrades: stats.dailyTrades,
+        maxTradesPerDay: settings.maxTradesPerDay,
+        reason: 'MAX_TRADES_PER_DAY'
+      }, '⛔ [RISK_GUARDS] BLOCKED: Max trades per day reached');
+      return { allowed: false, reason: `MAX_TRADES_PER_DAY: ${stats.dailyTrades} >= ${settings.maxTradesPerDay} limit` };
+    }
+
+    // 3. Cooldown Check (BYPASS ON MANUAL)
+    if (!isManualApproval && config.cooldownUntil) {
+      const cooldownEnd = config.cooldownUntil instanceof Date ? config.cooldownUntil : new Date(config.cooldownUntil);
+      if (new Date() < cooldownEnd) {
+        logger.info({
+          uid,
+          cooldownUntil: cooldownEnd.toISOString(),
+          now: new Date().toISOString(),
+          reason: 'COOLDOWN_ACTIVE'
+        }, '⛔ [RISK_GUARDS] BLOCKED: Cooldown active');
+        return { allowed: false, reason: `COOLDOWN_ACTIVE: Trading paused until ${cooldownEnd.toISOString()} due to consecutive losses` };
+      }
+    }
+
+    // 4. Check circuit breaker (BYPASS ON MANUAL)
+    if (!isManualApproval && engine.circuitBreaker) {
+      logger.info({
+        uid,
+        circuitBreaker: engine.circuitBreaker,
+        reason: 'CIRCUIT_BREAKER_ACTIVE'
+      }, '⛔ [RISK_GUARDS] BLOCKED: Circuit breaker active');
+      return { allowed: false, reason: 'CIRCUIT_BREAKER_ACTIVE: Daily loss limit exceeded' };
+    }
+
+    // 5. Check manual override (BYPASS ON MANUAL)
+    if (!isManualApproval && config.manualOverride) {
+      logger.info({
+        uid,
+        manualOverride: config.manualOverride,
+        reason: 'MANUAL_OVERRIDE_ACTIVE'
+      }, '⛔ [RISK_GUARDS] BLOCKED: Manual override active');
+      return { allowed: false, reason: 'MANUAL_OVERRIDE_ACTIVE: Trading paused by user' };
+    }
+
+    // 6. Check if auto-trade is enabled (BYPASS ON MANUAL)
+    if (!isManualApproval && !config.autoTradeEnabled) {
+      logger.warn({
+        uid,
+        autoTradeEnabled: config.autoTradeEnabled,
+        isManualApproval,
+        reason: 'AUTO_TRADE_DISABLED'
+      }, '⛔ [RISK_GUARDS] BLOCKED: Auto-trade is not enabled in config');
+      return { allowed: false, reason: 'AUTO_TRADE_DISABLED: Auto-trading is not enabled' };
+    }
+
+    return { allowed: true };
+  }
+
+  /**
+   * Execute trade
+   */
+  async executeTrade(uid: string, signal: TradeSignal, skipConfirmationCheck: boolean = false): Promise<TradeExecution> {
+    const requestId = signal.requestId || `exec_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    logger.info({ uid, symbol: signal.symbol, requestId }, 'Starting trade execution');
+
+    // FAIL-SAFE: Load trading settings FIRST and validate all required fields
+    let settings: TradingSettings;
+    try {
+      settings = await AutoTradeEngine.getTradingSettings(uid);
+      logger.info({ uid, maxTradesPerDay: settings.maxTradesPerDay }, 'Loaded trading settings for execution (enforcing limit)');
+
+      // Strict validation: Block if ANY required setting is undefined/null
+      if (!settings ||
+        settings.maxPositionPct === undefined ||
+        settings.maxDailyLossPct === undefined ||
+        settings.maxTradesPerDay === undefined ||
+        !settings.positionSizingMap ||
+        typeof settings.positionSizingMap !== 'object') {
+        await this.logTradeEvent(uid, 'TRADE_REJECTED', {
+          signal,
+          reason: 'TRADING_SETTINGS_INVALID: One or more required trading settings are missing or invalid',
+        });
+        throw new Error('Trading settings validation failed - blocking trade for safety');
+      }
+
+      // Validate positionSizingMap structure
+      const requiredKeys = ['0-84', '85-89', '90-94', '95-99', '100'];
+      const missingKeys = requiredKeys.filter(key => settings.positionSizingMap[key] === undefined);
+      if (missingKeys.length > 0) {
+        await this.logTradeEvent(uid, 'TRADE_REJECTED', {
+          signal,
+          reason: `POSITION_SIZING_MAP_INVALID: Missing ranges: ${missingKeys.join(', ')}`,
+        });
+        throw new Error('Position sizing map validation failed - blocking trade for safety');
+      }
+
+    } catch (settingsError: any) {
+      logger.error({ uid, error: settingsError.message }, 'CRITICAL: Trading settings load/validation failed');
+      // If settings fail to load, stop auto-trade loop for safety
+      await this.stopAutoTradeLoop(uid);
+      await this.logTradeEvent(uid, 'AUTO_TRADE_STOPPED', {
+        reason: 'SETTINGS_LOAD_FAILURE',
+        error: settingsError.message,
+      });
+      throw new Error('Trading settings unavailable - auto-trade stopped for safety');
+    }
+
+    // Check if trade confirmation is required
+    // CRITICAL: Read EXCLUSIVELY from users/{uid}/settings/current (centralized source)
+    try {
+      const userSettings = await firestoreAdapter.getSettings(uid);
+
+      const requiresConfirmation = !skipConfirmationCheck && (
+        userSettings?.notifications?.tradeConfirmationRequired === true
+      );
+
+      // Auto Trade goal: FULLY AUTOMATIC (no manual confirmation)
+      // This requirement implies that automated background trades should bypass confirmation.
+      // However, we respect the setting above to maintain safety if the user explicitly wants confirm.
+
+      if (requiresConfirmation) {
+        // Load config for equity calculation
+        const config = await this.loadConfig(uid);
+        // Calculate position size for pending trade
+        const equity = config.equitySnapshot || 1000;
+        // Calculate actual position size
+        const positionSizing = AutoTradeEngine.calculatePositionSize(signal.accuracy, settings);
+        let finalPositionPercent = Math.min(positionSizing.positionPercent, settings.maxPositionPct);
+
+        // If it would be a 0% position, force 1% for the pending trade so the user can see/approve it
+        if (finalPositionPercent <= 0) {
+          finalPositionPercent = 1.0;
+          logger.info({ uid, symbol: signal.symbol }, 'PENDING_TRADE_SIZE_BOOST: Enforcing minimum 1% for pending trade notification');
+        }
+
+        const quantity = (equity * (finalPositionPercent / 100)) / signal.entryPrice;
+
+        // Save pending trade to Firestore for user approval
+        await this.savePendingTrade(uid, {
+          requestId,
+          symbol: signal.symbol,
+          side: signal.signal,
+          quantity: Math.floor(quantity * 100) / 100, // Round to 2 decimals
+          entryPrice: signal.entryPrice,
+          stopLoss: signal.stopLoss || signal.entryPrice * 0.985,
+          takeProfit: signal.takeProfit || signal.entryPrice * 1.03,
+          takeProfit1: signal.takeProfit1,
+          takeProfit2: signal.takeProfit2,
+          takeProfit3: signal.takeProfit3,
+          accuracy: signal.accuracy,
+          researchRequestId: signal.requestId,
+          createdAt: new Date(),
+          expiresAt: new Date(Date.now() + 15 * 60 * 1000), // Increased to 15 minute expiry
+        });
+
+        // Send trade confirmation notification
+        await this.sendTradeConfirmationNotification(uid, signal);
+        await this.logTradeEvent(uid, 'TRADE_CONFIRMATION_REQUIRED', {
+          signal,
+          requestId,
+          message: 'Trade confirmation required - pending trade created, awaiting user approval'
+        });
+
+        // Return a pending trade execution (not rejected, just pending)
+        const pendingTrade: TradeExecution = {
+          tradeId: requestId,
+          symbol: signal.symbol,
+          side: signal.signal,
+          quantity: Math.floor(quantity * 100) / 100,
+          entryPrice: signal.entryPrice,
+          stopLoss: signal.stopLoss || signal.entryPrice * 0.985,
+          takeProfit: signal.takeProfit || signal.entryPrice * 1.03,
+          status: 'PENDING',
+          timestamp: new Date(),
+          mode: 'AUTO'
+        };
+
+        return pendingTrade;
+      }
+    } catch (confirmationError: any) {
+      logger.warn({ uid, error: confirmationError.message }, 'Failed to check trade confirmation setting, proceeding with execution');
+    }
+
+    // Check for whale alerts if enabled AND auto trade is active
+    try {
+      const userSettings = await firestoreAdapter.getSettings(uid);
+      if (userSettings?.autoTradeEnabled && userSettings?.notifications?.whaleAlerts) {
+        await this.checkWhaleAlerts(uid, signal.symbol);
+      }
+    } catch (whaleError: any) {
+      logger.warn({ uid, error: whaleError.message }, 'Failed to check whale alerts');
+    }
+
+    // ALWAYS load config fresh from Firestore before execution
+    const config = await this.loadConfig(uid);
+    const engine = await this.getUserEngine(uid);
+    engine.config = config; // Update in-memory config
+
+    // CRITICAL DIAGNOSTIC: Log config state at executeTrade entry
+    logger.info({
+      uid,
+      symbol: signal.symbol,
+      accuracy: signal.accuracy,
+      autoTradeEnabled: config.autoTradeEnabled,
+      manualOverride: config.manualOverride,
+      skipConfirmationCheck,
+      configSource: 'fresh-load-in-executeTrade',
+      configLastRun: config.lastRun?.toISOString()
+    }, '🔍 [EXECUTE_TRADE] Starting trade execution with fresh config');
+
+    // Check risk guards (passing skipConfirmationCheck as isManualApproval)
+    const riskCheck = await this.checkRiskGuards(uid, signal, skipConfirmationCheck);
+    if (!riskCheck.allowed) {
+      const reason = riskCheck.reason || 'Trade rejected by risk guards';
+      await this.logTradeEvent(uid, 'TRADE_REJECTED', {
+        signal,
+        reason,
+      });
+
+      // NOTIFICATION: Telegram Skip Alert
+      try {
+        const bgSettings = await firestoreAdapter.getBackgroundResearchSettings(uid);
+        if (bgSettings?.backgroundResearchEnabled && bgSettings?.telegramBotToken && bgSettings?.telegramChatId) {
+          const { telegramService } = await import('./telegramService');
+          telegramService.sendTradeSkippedAlert(
+            bgSettings.telegramBotToken,
+            bgSettings.telegramChatId,
+            { symbol: signal.symbol, reason, accuracy: signal.accuracy }
+          );
+        }
+      } catch (e) {
+        logger.warn({ uid }, 'Failed to send Telegram skip alert');
+      }
+
+      throw new Error(reason);
+    }
+
+    // Note: Redundant accuracy check removed. checkRiskGuards handles the 75%/60% hard rules.
+
+    // Initialize adapter if needed
+    if (!engine.adapter) {
+      await this.initializeAdapter(uid);
+      if (!engine.adapter) {
+        throw new Error('Failed to initialize exchange adapter');
+      }
+    }
+
+    // Get current equity
+    // CRITICAL: ALWAYS use USDT-M Futures balance - NEVER use spot balance
+    // Single source of truth: getFuturesBalance() or futures data from getAccount()
+    let equity = config.equitySnapshot || 1000; // Default fallback
+    let futuresBalanceFetched = false;
+
+    try {
+      // PRIORITY 1: ALWAYS try getFuturesBalance() first if available
+      if (engine.adapter && typeof engine.adapter.getFuturesBalance === 'function') {
+        try {
+          const futuresBalance = await engine.adapter.getFuturesBalance();
+          // CRITICAL: Use futures balance even if it's 0 (don't fall back to spot)
+          equity = futuresBalance.totalBalance || futuresBalance.availableBalance || 0;
+          futuresBalanceFetched = true;
+          logger.info({
+            uid,
+            equity,
+            availableBalance: futuresBalance.availableBalance,
+            source: 'futures',
+            marketType: futuresBalance.marketType
+          }, '✅ Equity fetched from USDT-M Futures balance');
+          // Update equity snapshot
+          await this.saveConfig(uid, { equitySnapshot: equity });
+        } catch (futuresErr: any) {
+          // CRITICAL: Check if error is due to decryption failure
+          if (futuresErr.message?.includes('EXCHANGE_KEY_DECRYPTION_FAILED') ||
+            futuresErr.message?.includes('empty') ||
+            futuresErr.message?.includes('decryption failed')) {
+            logger.error({ uid, error: futuresErr.message }, '❌ getFuturesBalance() failed due to decryption error - aborting equity fetch');
+            throw futuresErr; // Re-throw to abort execution
+          } else {
+            logger.warn({ uid, error: futuresErr.message }, '❌ getFuturesBalance() failed');
+          }
+        }
+      }
+
+      // PRIORITY 2: If getFuturesBalance() not available, try getAccount() for futures data
+      // CRITICAL: Only check for futures data - NEVER use spot balance
+      if (!futuresBalanceFetched && engine.adapter && typeof engine.adapter.getAccount === 'function') {
+        const accountInfo = await engine.adapter.getAccount();
+
+        // Check for futures balance in account response
+        if (accountInfo.futuresBalances && Array.isArray(accountInfo.futuresBalances)) {
+          const usdtBalance = accountInfo.futuresBalances.find((b: any) =>
+            b.asset === 'USDT' || b.asset === 'USDT'
+          );
+          if (usdtBalance) {
+            const free = parseFloat(usdtBalance.free || usdtBalance.available || '0');
+            const locked = parseFloat(usdtBalance.locked || usdtBalance.frozen || '0');
+            equity = free + locked;
+            futuresBalanceFetched = true;
+            logger.info({ uid, equity, source: 'futures-balances-array' }, '✅ Equity fetched from futures balances array');
+          }
+        }
+        // Check for Bitget futures format in data field
+        else if (accountInfo.data && Array.isArray(accountInfo.data)) {
+          const usdtAccount = accountInfo.data.find((acc: any) => acc.marginCoin === 'USDT' && acc.productType === 'USDT-FUTURES');
+          if (usdtAccount) {
+            equity = parseFloat(usdtAccount.equity || usdtAccount.available || '0');
+            futuresBalanceFetched = true;
+            logger.info({ uid, equity, source: 'futures-data-array' }, '✅ Equity fetched from futures data array');
+          }
+        }
+        // Check for direct equity/available fields (futures balance directly)
+        else if (accountInfo.totalEquity !== undefined) {
+          // If totalEquity exists (even if 0), assume it's futures balance
+          equity = parseFloat(accountInfo.totalEquity.toString());
+          futuresBalanceFetched = true;
+          logger.info({ uid, equity, source: 'futures-totalEquity' }, '✅ Equity fetched from totalEquity (futures)');
+        } else if (accountInfo.equity !== undefined) {
+          equity = parseFloat(accountInfo.equity.toString());
+          futuresBalanceFetched = true;
+          logger.info({ uid, equity, source: 'futures-equity' }, '✅ Equity fetched from equity (futures)');
+        }
+
+        // Update equity snapshot if futures balance was found
+        if (futuresBalanceFetched) {
+          await this.saveConfig(uid, { equitySnapshot: equity });
+        }
+      }
+
+      // If no futures balance found, use snapshot or default
+      if (!futuresBalanceFetched) {
+        logger.warn({ uid }, '❌ No USDT-M Futures balance found - using snapshot or default');
+        equity = config.equitySnapshot || 1000;
+      } else if (equity === 0 || isNaN(equity)) {
+        // Even if balance is 0, we fetched it from futures API - that's valid
+        logger.info({ uid, equity }, 'Futures balance is 0 - using snapshot as fallback for position sizing');
+        equity = config.equitySnapshot || 1000;
+      }
+    } catch (error: any) {
+      logger.warn({ error: error.message, uid }, 'Could not fetch futures balance from exchange, using snapshot');
+    }
+
+    // Get trading settings for position sizing
+    const tradingSettings = await AutoTradeEngine.getTradingSettings(uid);
+
+    // P2-B: Volatility-Based Position Sizing
+    // Goal: Risk fixed % of capital per trade based on SL distance
+
+    // 1. Determine Risk Amount
+    const riskPct = Math.min(1.0, config.perTradeRiskPct || 1.0); // Safety Rule: Hard cap at 1% risk of account equity
+    const riskAmount = equity * (riskPct / 100);
+
+    // 2. Determine SL Distance
+    // signal.stopLoss is guaranteed by P2-A logic or fallback defaults
+    const slDistance = Math.abs(signal.entryPrice - signal.stopLoss);
+
+    // Safety check for SL distance
+    if (slDistance <= 0 || isNaN(slDistance)) {
+      throw new Error(`Invalid SL distance (${slDistance}) for volatility sizing - aborting trade`);
+    }
+
+    // 4. Calculate Raw Quantity based on Risk
+    // riskAmount = quantity * slDistance  =>  quantity = riskAmount / slDistance
+    let quantity = riskAmount / slDistance;
+
+    // P4: Dynamic Params (Leverage and Model-based Size)
+    // CRITICAL: Uses user's accuracyRiskConfig (single source of truth)
+    const modelParams = await this.calculateDynamicParams(uid, signal.accuracy, (signal as any).volatilityClassification || 'low', 50);
+    const modelLeverage = signal.leverage || modelParams.leverage || 1;
+
+    // CRITICAL: Trade size % is calculated as percentage of wallet balance (account equity)
+    // modelSizePct represents the percentage of total account equity to allocate to this trade
+    // This is NOT margin-based sizing or fixed-amount sizing - it's strictly wallet balance percentage
+    // Example: If equity = $1000 and modelSizePct = 5%, then position value = $50
+    const modelSizePct = modelParams.sizePct;
+    const modelMaxQuantity = (equity * (modelSizePct / 100)) / signal.entryPrice;
+
+    // Log selected range and applied values for audit trail
+    if (modelParams.matchedRange) {
+      logger.info({
+        uid,
+        symbol: signal.symbol,
+        accuracy: signal.accuracy,
+        matchedRange: `${modelParams.matchedRange.minAccuracy}-${modelParams.matchedRange.maxAccuracy ?? '∞'}%`,
+        appliedSizePct: modelParams.sizePct,
+        appliedLeverage: modelParams.leverage,
+        positionValueUSD: equity * (modelSizePct / 100),
+        skipReason: modelParams.skip
+      }, '✅ [ACCURACY_RISK_CONFIG] Applied configuration - trade size as % of wallet balance');
+    }
+
+    // Apply strict model caps
+    if (quantity > modelMaxQuantity) {
+      quantity = modelMaxQuantity;
+      logger.debug({ uid, quantity, modelMaxQuantity }, 'Quantity capped by balance model');
+    }
+
+    // 4. Apply Hard Cap (Max Position %)
+    // Critical safety: never exceed user's hard cap per trade
+    const maxPositionValue = equity * (tradingSettings.maxPositionPct / 100);
+    const maxQuantity = maxPositionValue / signal.entryPrice;
+
+    const volatilityQuantity = quantity;
+    let capped = 'NO';
+
+    // Apply Cap
+    if (quantity > maxQuantity) {
+      quantity = maxQuantity;
+      capped = 'YES';
+    }
+
+    // 5. Final Value Calculation
+    let positionValue = quantity * signal.entryPrice;
+
+    // Low balance handling: Trade MUST still execute if balance >= 10 USDT.
+    // Ensure minimum notional of 10 USDT if equity >= 10.
+    const minNotional = 10;
+    if (positionValue < minNotional && equity >= minNotional) {
+      quantity = minNotional / signal.entryPrice;
+      positionValue = quantity * signal.entryPrice;
+      logger.info({ uid, symbol: signal.symbol, equity, originalValue: positionValue }, 'Adjusting quantity to meet minimum notional of 10 USDT');
+    }
+
+    let finalPositionPercent = (positionValue / equity) * 100;
+
+    // CRITICAL FIX: If manual approval (skipConfirmationCheck=true), enforce minimum size
+    // This prevents trades from being skipped due to positionSizingMap returning 0.
+    if (skipConfirmationCheck && (quantity <= 0 || finalPositionPercent <= 0.5)) {
+      const minP = Math.min(1.0, tradingSettings.maxPositionPct);
+      logger.info({ uid, symbol: signal.symbol, originalQuantity: quantity, originalPercent: finalPositionPercent, enforcedMin: minP },
+        'Manual approval detected with insufficient quantity - forcing minimum position');
+      finalPositionPercent = minP;
+      quantity = (equity * (finalPositionPercent / 100)) / signal.entryPrice;
+    }
+
+    if (quantity <= 0) {
+      await this.logTradeEvent(uid, 'TRADE_SKIPPED', {
+        signal,
+        reason: AUTO_TRADE_REASONS.MIN_NOTIONAL,
+        details: 'Calculated quantity is zero or less',
+        accuracy: signal.accuracy,
+        equity
+      });
+      throw new Error(`Calculated position size is zero or negative (${quantity}) - try increasing equity or perTradeRiskPct`);
+    }
+
+    logger.info({
+      uid,
+      symbol: signal.symbol,
+      equity,
+      riskPct,
+      riskAmount,
+      slDistance,
+      leverage: modelLeverage,
+      volatilityQuantity,
+      maxQuantity,
+      finalQuantity: quantity,
+      finalPositionValue: positionValue,
+      finalPositionPercent,
+      capped
+    }, '✅ Position size calculated using Volatility-Based Sizing and Dynamic Model (P4)');
+
+    // Detect if scalping mode
+    const isScalping = (await AutoTradeEngine.getTradingSettings(uid)).tradeType === 'Scalping';
+
+    // Create trade execution record
+    const tradeId = `trade_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const trade: TradeExecution = {
+      tradeId,
+      symbol: signal.symbol,
+      side: signal.signal,
+      quantity,
+      entryPrice: signal.entryPrice,
+      stopLoss: signal.stopLoss,
+      takeProfit: signal.takeProfit,
+      leverage: modelLeverage,
+      status: 'PENDING',
+      timestamp: new Date(),
+      mode: config.mode,
+      takeProfit1: signal.takeProfit1,
+      takeProfit2: signal.takeProfit2,
+      takeProfit3: signal.takeProfit3,
+      originalQuantity: quantity,
+      remainingQuantity: quantity,
+      isScalping: isScalping,
+      trailingStopLoss: signal.stopLoss, // Start with initial SL
+    };
+
+    // Execute based on mode OR manual confirmation (override)
+    const shouldExecute = (config.autoTradeEnabled && !config.manualOverride) || skipConfirmationCheck;
+
+    // CRITICAL DIAGNOSTIC: Log execution decision
+    logger.info({
+      uid,
+      symbol: signal.symbol,
+      shouldExecute,
+      autoTradeEnabled: config.autoTradeEnabled,
+      manualOverride: config.manualOverride,
+      skipConfirmationCheck,
+      reason: shouldExecute
+        ? 'EXECUTING: All conditions met'
+        : `BLOCKED: autoTradeEnabled=${config.autoTradeEnabled}, manualOverride=${config.manualOverride}, skipConfirmationCheck=${skipConfirmationCheck}`
+    }, shouldExecute ? '✅ [EXECUTE_TRADE] Proceeding with trade execution' : '⛔ [EXECUTE_TRADE] Trade execution blocked');
+
+    if (shouldExecute) {
+      // REAL TRADE EXECUTION
+      try {
+        // P4: Set Leverage on Exchange before placing order
+        if (engine.adapter && typeof engine.adapter.setLeverage === 'function') {
+          try {
+            await engine.adapter.setLeverage(signal.symbol, modelLeverage);
+            logger.info({ uid, symbol: signal.symbol, leverage: modelLeverage }, 'Leverage set on exchange');
+          } catch (levErr: any) {
+            logger.warn({ uid, symbol: signal.symbol, error: levErr.message }, 'Failed to set leverage on exchange, proceeding with order');
+          }
+        }
+
+        // P4: Set Margin Type (ISOLATED for safety)
+        if (engine.adapter && typeof engine.adapter.setMarginType === 'function') {
+          try {
+            await engine.adapter.setMarginType(signal.symbol, 'ISOLATED');
+          } catch (marginErr) { /* ignore already set errors */ }
+        }
+
+        logger.info({ uid, symbol: signal.symbol, requestId }, 'Pre-trade validation: checking orderbook liquidity');
+
+        // Pre-trade validation: orderbook liquidity & min notional
+        const orderbook = await engine.adapter!.getOrderbook(signal.symbol, 5);
+        const bestBid = parseFloat(orderbook.bids[0]?.price || '0');
+        const bestAsk = parseFloat(orderbook.asks[0]?.price || '0');
+
+        if (bestBid === 0 || bestAsk === 0) {
+          throw new Error('Insufficient order book liquidity');
+        }
+
+        // SCALPING: Check spread - abort if > 0.5% (only for scalping mode)
+        if (isScalping) {
+          const spread = bestAsk - bestBid;
+          const spreadPct = (spread / bestBid) * 100;
+          if (spreadPct > 0.5) {
+            throw new Error(`Spread too wide for scalping: ${spreadPct.toFixed(3)}% (max 0.5%)`);
+          }
+          logger.info({ uid, symbol: signal.symbol, spreadPct: spreadPct.toFixed(3) + '%' }, '[SCALPING] Spread check passed');
+        }
+
+        // Check min notional (e.g., $10 minimum for Binance)
+        const notional = quantity * signal.entryPrice;
+        if (notional < 10) {
+          throw new Error(`Order notional (${notional.toFixed(2)}) below minimum (10)`);
+        }
+
+        logger.info({
+          uid,
+          symbol: signal.symbol,
+          quantity,
+          entryPrice: signal.entryPrice,
+          notional,
+          side: signal.signal,
+          requestId
+        }, 'Placing live order');
+
+        // Place order
+        const orderResult = await engine.adapter!.placeOrder({
+          symbol: signal.symbol,
+          side: signal.signal,
+          type: 'MARKET',
+          quantity: quantity,
+        });
+
+        trade.status = 'FILLED';
+        trade.orderId = orderResult.exchangeOrderId || orderResult.id;
+        trade.fillPrice = parseFloat(orderResult.avgPrice?.toString() || orderResult.price?.toString() || signal.entryPrice.toString());
+
+        // Extract base and quote currencies from symbol (e.g., BTCUSDT -> BTC, USDT)
+        const baseCurrency = signal.symbol.replace('USDT', '').replace('USD', '');
+        const quoteCurrency = signal.symbol.includes('USDT') ? 'USDT' : 'USD';
+        const executedPrice = trade.fillPrice!;
+        const executedQuantity = orderResult.quantity || quantity;
+
+        // Place TP/SL orders - SCALPING: Multiple TP levels with partial closes
+        let tpOrderId: string | undefined;
+        let slOrderId: string | undefined;
+        let tp1OrderId: string | undefined;
+        let tp2OrderId: string | undefined;
+        let tp3OrderId: string | undefined;
+
+        try {
+          // SCALPING MODE: Place multiple TP orders with partial quantities
+          if (isScalping && signal.takeProfit1 && signal.takeProfit2) {
+            const originalQty = executedQuantity;
+
+            // TP1: Close 50% of position
+            const tp1Quantity = Math.floor(originalQty * 0.5 * 100) / 100; // Round to 2 decimals
+            if (tp1Quantity > 0) {
+              const tp1Order = await engine.adapter!.placeOrder({
+                symbol: `${baseCurrency}${quoteCurrency}`,
+                side: signal.signal === 'BUY' ? 'SELL' : 'BUY',
+                type: 'LIMIT',
+                quantity: tp1Quantity,
+                price: signal.takeProfit1
+              });
+              tp1OrderId = tp1Order.exchangeOrderId || tp1Order.clientOrderId;
+              trade.takeProfit1OrderId = tp1OrderId;
+              logger.info({
+                uid,
+                symbol: signal.symbol,
+                tp1Price: signal.takeProfit1,
+                tp1Quantity,
+                tp1OrderId
+              }, '[SCALPING] TP1 order placed - 50% partial close');
+            }
+
+            // TP2: Close 20% more (70% total of original)
+            const tp2Quantity = Math.floor(originalQty * 0.2 * 100) / 100;
+            if (tp2Quantity > 0) {
+              const tp2Order = await engine.adapter!.placeOrder({
+                symbol: `${baseCurrency}${quoteCurrency}`,
+                side: signal.signal === 'BUY' ? 'SELL' : 'BUY',
+                type: 'LIMIT',
+                quantity: tp2Quantity,
+                price: signal.takeProfit2
+              });
+              tp2OrderId = tp2Order.exchangeOrderId || tp2Order.clientOrderId;
+              trade.takeProfit2OrderId = tp2OrderId;
+              logger.info({
+                uid,
+                symbol: signal.symbol,
+                tp2Price: signal.takeProfit2,
+                tp2Quantity,
+                tp2OrderId
+              }, '[SCALPING] TP2 order placed - 20% additional (70% total)');
+            }
+
+            // TP3: Close remaining 30% (100% total)
+            if (signal.takeProfit3) {
+              const tp3Quantity = Math.floor(originalQty * 0.3 * 100) / 100;
+              if (tp3Quantity > 0) {
+                const tp3Order = await engine.adapter!.placeOrder({
+                  symbol: `${baseCurrency}${quoteCurrency}`,
+                  side: signal.signal === 'BUY' ? 'SELL' : 'BUY',
+                  type: 'LIMIT',
+                  quantity: tp3Quantity,
+                  price: signal.takeProfit3
+                });
+                tp3OrderId = tp3Order.exchangeOrderId || tp3Order.clientOrderId;
+                trade.takeProfit3OrderId = tp3OrderId;
+                logger.info({
+                  uid,
+                  symbol: signal.symbol,
+                  tp3Price: signal.takeProfit3,
+                  tp3Quantity,
+                  tp3OrderId
+                }, '[SCALPING] TP3 order placed - 30% final (100% total)');
+              }
+            } else {
+              // No TP3: Close remaining 30% at TP2
+              const remainingQty = originalQty - tp1Quantity - tp2Quantity;
+              if (remainingQty > 0) {
+                // Update TP2 order to include remaining quantity (if exchange supports order modification)
+                // For now, we'll handle this in monitoring
+                logger.info({
+                  uid,
+                  symbol: signal.symbol,
+                  remainingQty
+                }, '[SCALPING] No TP3 - remaining 30% will be closed at TP2 or SL');
+              }
+            }
+          } else {
+            // NON-SCALPING: Use legacy single TP/SL logic
+            if (config.takeProfitPct && config.takeProfitPct > 0) {
+              const tpPrice = signal.signal === 'BUY'
+                ? executedPrice * (1 + config.takeProfitPct / 100)
+                : executedPrice * (1 - config.takeProfitPct / 100);
+
+              const tpOrder = await engine.adapter!.placeOrder({
+                symbol: `${baseCurrency}${quoteCurrency}`,
+                side: signal.signal === 'BUY' ? 'SELL' : 'BUY',
+                type: 'LIMIT',
+                quantity: executedQuantity,
+                price: tpPrice
+              });
+
+              tpOrderId = tpOrder.exchangeOrderId || tpOrder.clientOrderId;
+              trade.takeProfitOrderId = tpOrderId;
+              trade.takeProfitPct = config.takeProfitPct;
+
+              logger.info({
+                uid,
+                symbol: signal.symbol,
+                tpPrice,
+                tpOrderId
+              }, 'TP order placed (non-scalping)');
+            }
+          }
+
+          // Stop Loss: Always place for full remaining quantity
+          // For scalping, SL will be updated (trailed) as TP levels are hit
+          const slPrice = signal.stopLoss;
+          const slQuantity = isScalping ? executedQuantity : executedQuantity; // Full quantity for SL
+
+          const slOrder = await engine.adapter!.placeOrder({
+            symbol: `${baseCurrency}${quoteCurrency}`,
+            side: signal.signal === 'BUY' ? 'SELL' : 'BUY',
+            type: 'LIMIT',
+            quantity: slQuantity,
+            price: slPrice
+          });
+
+          slOrderId = slOrder.exchangeOrderId || slOrder.clientOrderId;
+          trade.stopLossOrderId = slOrderId;
+          trade.trailingStopLoss = slPrice; // Initialize trailing SL
+
+          logger.info({
+            uid,
+            symbol: signal.symbol,
+            slPrice,
+            slQuantity,
+            slOrderId,
+            isScalping
+          }, isScalping ? '[SCALPING] SL order placed (will trail on TP hits)' : 'SL order placed');
+        } catch (tpslError: any) {
+          // P0 FIX: Atomic Execution Failure - Emergency Close
+          logger.error({
+            error: tpslError.message,
+            uid,
+            symbol: signal.symbol,
+            tradeId: trade.tradeId
+          }, 'CRITICAL: TP/SL placement failed. Executing EMERGENCY CLOSE to protect capital.');
+
+          try {
+            // Attempt to close the position immediately with a MARKET order
+            await engine.adapter!.placeOrder({
+              symbol: signal.symbol,
+              side: signal.signal === 'BUY' ? 'SELL' : 'BUY', // Inverted side to close
+              type: 'MARKET',
+              quantity: executedQuantity
+            });
+
+            trade.status = 'CANCELLED'; // Mark as cancelled/failed
+            await this.logTradeEvent(uid, 'EMERGENCY_CLOSE', {
+              tradeId,
+              symbol: signal.symbol,
+              reason: 'TP/SL placement failed',
+              originalError: tpslError.message
+            });
+
+            // Throw to stop further processing
+            throw new Error(`Trade aborted: TP/SL placement failed. Position emergency closed. Error: ${tpslError.message}`);
+          } catch (closeError: any) {
+            // Worst case scenario: Position is open and unprotected, and close failed
+            logger.error({
+              uid,
+              symbol: signal.symbol,
+              closeError: closeError.message,
+              originalError: tpslError.message
+            }, 'FATAL: EMERGENCY CLOSE FAILED. Position is UNPROTECTED.');
+
+            await this.logTradeEvent(uid, 'CRITICAL_FAILURE', {
+              tradeId,
+              symbol: signal.symbol,
+              message: 'Position left OPEN and UNPROTECTED. Emergency close failed.',
+              error: closeError.message
+            });
+
+            throw closeError; // Re-throw the close error
+          }
+        }
+
+        // Save trade to trades collection for performance stats
+        const db = getFirebaseAdmin().firestore();
+        const exchangeConfigDoc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+        const exchangeConfig = exchangeConfigDoc.exists ? exchangeConfigDoc.data() : null;
+        const exchangeName = exchangeConfig?.exchange || 'unknown';
+
+        await firestoreAdapter.saveTrade(uid, {
+          symbol: signal.symbol,
+          side: signal.signal,
+          qty: quantity,
+          entryPrice: signal.entryPrice,
+          exitPrice: undefined, // Will be set when trade is closed
+          pnl: 0, // Will be calculated when trade is closed
+          engineType: 'AI',
+          orderId: trade.orderId,
+          exchange: exchangeName,
+          signalAccuracy: signal.accuracy,
+          status: 'open',
+          metadata: {
+            requestId,
+            takeProfitOrderId: tpOrderId,
+            stopLossOrderId: slOrderId,
+            fillPrice: trade.fillPrice,
+            mode: 'AUTO'
+          }
+        });
+
+        await this.logTradeEvent(uid, 'TRADE_EXECUTED', {
+          trade,
+          signal,
+          equity,
+          quantity,
+          orderResult,
+          requestId,
+          exchangeResponse: orderResult,
+          config: {
+            mode: config.mode,
+            perTradeRiskPct: config.perTradeRiskPct,
+            stopLossPct: config.stopLossPct,
+            takeProfitPct: config.takeProfitPct,
+          },
+          takeProfitOrderId: tpOrderId,
+          stopLossOrderId: slOrderId,
+        });
+
+        logger.info({
+          uid,
+          tradeId,
+          symbol: signal.symbol,
+          orderId: trade.orderId,
+          fillPrice: trade.fillPrice,
+          takeProfitOrderId: tpOrderId,
+          stopLossOrderId: slOrderId,
+          requestId,
+          mode: 'AUTO'
+        }, 'Trade executed (LIVE mode)');
+
+        // NOTIFICATION: Auto Trade Alert - COMPLETED with all details
+        // CRITICAL: Only send if Auto Trade is enabled AND autoTradeAlerts is enabled
+        try {
+          const userSettings = await firestoreAdapter.getSettings(uid);
+          const config = await this.loadConfig(uid);
+
+          // Check both: Auto Trade must be ON and alerts must be enabled
+          if (config.autoTradeEnabled && userSettings?.notifications?.autoTradeAlerts) {
+            userNotificationService.sendAutoTradeAlert(
+              uid,
+              signal.symbol,
+              signal.signal.toLowerCase() as 'buy' | 'sell',
+              trade.fillPrice || trade.entryPrice,
+              trade.stopLoss,
+              trade.takeProfit,
+              signal.accuracy
+            );
+            logger.info({ uid, symbol: signal.symbol }, 'Auto-trade alert sent (trade executed)');
+
+            // NOTIFICATION: Telegram Execution Alert
+            try {
+              const bgSettings = await firestoreAdapter.getBackgroundResearchSettings(uid);
+              if (bgSettings?.backgroundResearchEnabled && bgSettings?.telegramBotToken && bgSettings?.telegramChatId) {
+                const { telegramService } = await import('./telegramService');
+                telegramService.sendTradeExecutionAlert(
+                  bgSettings.telegramBotToken,
+                  bgSettings.telegramChatId,
+                  {
+                    symbol: signal.symbol,
+                    side: signal.signal.toUpperCase() as 'BUY' | 'SELL',
+                    price: trade.fillPrice || trade.entryPrice,
+                    accuracy: signal.accuracy,
+                    sl: trade.stopLoss,
+                    tp: trade.takeProfit,
+                    requestId
+                  }
+                );
+              }
+            } catch (e) {
+              logger.warn({ uid }, 'Failed to send Telegram execution alert');
+            }
+          } else {
+            logger.debug({
+              uid,
+              autoTradeEnabled: config.autoTradeEnabled,
+              autoTradeAlerts: userSettings?.notifications?.autoTradeAlerts
+            }, 'Auto-trade alert skipped (disabled or auto-trade off)');
+          }
+        } catch (notifError: any) {
+          logger.warn({ uid, error: notifError.message }, 'Failed to send auto-trade notification');
+        }
+      } catch (error: any) {
+        trade.status = 'REJECTED';
+        await this.logTradeEvent(uid, 'TRADE_FAILED', {
+          trade,
+          signal,
+          error: error.message,
+          requestId,
+          exchangeError: error.response?.data || error.message,
+        });
+        logger.error({
+          uid,
+          tradeId,
+          symbol: signal.symbol,
+          error: error.message,
+          requestId
+        }, 'Trade execution failed');
+        throw error;
+      }
+    } else {
+      // Manual mode or override active - don't execute
+      trade.status = 'CANCELLED';
+      await this.logTradeEvent(uid, 'TRADE_CANCELLED', {
+        trade,
+        signal,
+        reason: config.manualOverride ? 'Manual override active' : 'Manual mode',
+        requestId,
+      });
+      logger.warn({ uid, symbol: signal.symbol, requestId, reason: config.manualOverride ? 'Manual override' : 'Manual mode' }, 'Trade cancelled');
+      throw new Error('Trading is in manual mode or override is active');
+    }
+
+    // Store active trade
+    engine.activeTrades.set(tradeId, trade);
+
+    // Update stats
+    await this.updateStats(uid, trade);
+
+    return trade;
+  }
+
+  /**
+   * Default accuracy-based risk configuration (system defaults)
+   * This is the single source of truth for default values
+   */
+  /**
+   * Default accuracy-based risk configuration (system defaults)
+   * CRITICAL: This is the single source of truth for default values
+   * Leverage for ≥90% is 9x by default (10x is hard cap only)
+   */
+  private static getDefaultAccuracyRiskConfig(): AccuracyRiskConfigItem[] {
+    return [
+      { minAccuracy: 75, maxAccuracy: 79, tradeSizePct: 3, leverage: 4 },
+      { minAccuracy: 80, maxAccuracy: 84, tradeSizePct: 5, leverage: 5 },
+      { minAccuracy: 85, maxAccuracy: 89, tradeSizePct: 7, leverage: 7 },
+      { minAccuracy: 90, maxAccuracy: null, tradeSizePct: 10, leverage: 9 } // null = no upper limit (≥90%), default leverage 9x (10x is hard cap)
+    ];
+  }
+
+  /**
+   * Get trading settings for a user with caching
+   * This is the main function the auto-trade engine calls to get current settings
+   */
+  static async getTradingSettings(uid: string): Promise<TradingSettings> {
+    try {
+      const settings = await firestoreAdapter.getTradingSettings(uid);
+
+      if (!settings) {
+        // Return default settings
+        return {
+          coinSelectionMode: 'manual',
+          selectedCoins: ['BTCUSDT', 'ETHUSDT'],
+          maxPositionPct: 10,
+          accuracyTrigger: { min: 75, max: 100 },
+          maxDailyLossPct: 5,
+          maxTradesPerDay: 5, // Default safe limit
+          autoTradeIntervalMinutes: 5,
+          tradeConfirmationRequired: false,
+          tradeType: 'Scalping',
+          positionSizingMap: {
+            '0-84': 0,
+            '85-89': 3,
+            '90-94': 6,
+            '95-99': 8.5,
+            '100': 10
+          },
+          accuracyRiskConfig: AutoTradeEngine.getDefaultAccuracyRiskConfig()
+        };
+      }
+
+      // Also check main settings for tradeConfirmationRequired
+      const userSettings = await firestoreAdapter.getSettings(uid);
+
+      // Enforce maxTradesPerDay limits (1-30)
+      // Default to 30 (effectively unlimited) if undefined
+      let maxTrades = settings.maxTradesPerDay || 30;
+      if (maxTrades < 1) maxTrades = 30;
+      if (maxTrades > 30) maxTrades = 30;
+
+      // Map old structure to new structure if needed
+      const backgroundResearchSettings = await firestoreAdapter.getBackgroundResearchSettings(uid);
+      const isTelegramEnabled = !!(backgroundResearchSettings?.telegramBotToken?.trim() && backgroundResearchSettings?.telegramChatId?.trim());
+
+      // Rule: If Telegram disabled, default Auto Trade interval to 5 minutes.
+      let unifiedFrequency = backgroundResearchSettings?.researchFrequencyMinutes || settings.autoTradeIntervalMinutes || 5;
+      if (!isTelegramEnabled) {
+        unifiedFrequency = 5;
+        logger.debug({ uid }, 'Telegram disabled: Forcing 5-minute auto-trade interval');
+      }
+
+      return {
+        coinSelectionMode: settings.coinSelectionMode || (settings.mode === 'MANUAL' ? 'manual' : settings.mode === 'TOP_100' ? 'top100' : 'top10'),
+        selectedCoins: settings.selectedCoins || settings.manualCoins || ['BTCUSDT', 'ETHUSDT'],
+        maxPositionPct: settings.maxPositionPct || settings.maxPositionPerTrade || 10,
+        accuracyTrigger: typeof settings.accuracyTrigger === 'object' ? settings.accuracyTrigger : { min: settings.accuracyTrigger || 75, max: 100 },
+        maxDailyLossPct: settings.maxDailyLossPct || settings.maxDailyLoss || 7,
+        maxTradesPerDay: maxTrades,
+        autoTradeIntervalMinutes: unifiedFrequency,
+        tradeConfirmationRequired: userSettings?.notifications?.tradeConfirmationRequired ?? false,
+        tradeType: settings.tradeType || 'Scalping',
+        positionSizingMap: settings.positionSizingMap || {
+          '0-84': 0,
+          '85-89': 3,
+          '90-94': 6,
+          '95-99': 8.5,
+          '100': 10
+        },
+        accuracyRiskConfig: settings.accuracyRiskConfig && Array.isArray(settings.accuracyRiskConfig) && settings.accuracyRiskConfig.length > 0
+          ? settings.accuracyRiskConfig
+          : AutoTradeEngine.getDefaultAccuracyRiskConfig()
+      };
+    } catch (error: any) {
+      logger.error({ error: error.message, uid }, 'Error getting trading settings, using defaults');
+      // Return defaults on error
+      // Use centralized default config method
+
+      return {
+        coinSelectionMode: 'manual' as const,
+        selectedCoins: ['BTCUSDT'],
+        maxPositionPct: 10,
+        tradeConfirmationRequired: false,
+        accuracyTrigger: { min: 75, max: 100 },
+        maxDailyLossPct: 7,
+        maxTradesPerDay: 30, // Default to 30 (limitless feeling)
+        autoTradeIntervalMinutes: 5,
+        tradeType: 'Scalping',
+        positionSizingMap: {
+          '0-84': 0,
+          '85-89': 3,
+          '90-94': 6,
+          '95-99': 8.5,
+          '100': 10
+        },
+        accuracyRiskConfig: AutoTradeEngine.getDefaultAccuracyRiskConfig()
+      };
+    }
+  }
+
+  /**
+   * Calculate position size based on accuracy and trading settings
+   * Returns the position percentage to use for the trade
+   */
+  static calculatePositionSize(accuracy: number, settings: TradingSettings): PositionSizingResult {
+    // P4: Use dynamic sizing model
+    const acc = accuracy > 1 ? accuracy : accuracy * 100;
+
+    // Rule: Auto Trade MUST execute ONLY when: accuracy >= 75%
+    // Note: accuracyTrigger from settings is for Telegram, not for execution sizing.
+    const minThreshold = 75;
+
+    if (acc < minThreshold) {
+      return {
+        positionPercent: 0,
+        reason: `Accuracy ${acc.toFixed(1)}% below mandatory threshold (${minThreshold}%)`
+      };
+    }
+
+    let modelPercent = 0;
+    if (acc < 75) modelPercent = 1;
+    else if (acc < 80) modelPercent = 2;
+    else if (acc < 85) modelPercent = 3;
+    else if (acc < 90) modelPercent = 4;
+    else modelPercent = 5;
+
+    // Apply the user's hard cap from settings as well
+    const positionPercent = Math.min(modelPercent, settings.maxPositionPct || 10);
+
+    return {
+      positionPercent,
+      reason: `Accuracy ${acc.toFixed(1)}% maps to ${modelPercent}% (capped at ${settings.maxPositionPct}% user limit)`
+    };
+  }
+
+  /**
+   * Update trade statistics
+   */
+  async updateStats(uid: string, trade: TradeExecution): Promise<void> {
+    const engine = await this.getUserEngine(uid);
+    const config = engine.config;
+    const stats = config.stats || DEFAULT_CONFIG.stats!;
+
+    // Reset daily stats if new day
+    const now = new Date();
+    const lastRun = config.lastRun || new Date(0);
+    if (now.toDateString() !== lastRun.toDateString()) {
+      stats.dailyPnL = 0;
+      stats.dailyTrades = 0;
+      engine.circuitBreaker = false; // Reset circuit breaker for new day
+      // P3-A: Reset loss streak on new day
+      engine.config.consecutiveLosses = 0;
+    }
+
+    stats.totalTrades += 1;
+    stats.dailyTrades += 1;
+
+    // Calculate PnL when trade is closed (simplified for now)
+    if (trade.pnl !== undefined) {
+      stats.totalPnL += trade.pnl;
+      stats.dailyPnL += trade.pnl;
+
+      if (trade.pnl > 0) {
+        stats.winningTrades += 1;
+      } else {
+        stats.losingTrades += 1;
+      }
+    }
+
+    await this.saveConfig(uid, { stats, lastRun: now });
+  }
+
+  /**
+   * Log trade event to Firestore
+   */
+  async logTradeEvent(uid: string, eventType: string, data: any): Promise<void> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      await db.collection('users').doc(uid).collection('autoTradeLogs').add({
+        eventType,
+        data,
+        timestamp: admin.firestore.Timestamp.now(),
+        userId: uid,
+      });
+    } catch (error: any) {
+      logger.error({ error: error.message, uid, eventType }, 'Error logging trade event');
+    }
+  }
+
+  /**
+   * Get engine status
+   */
+  async getStatus(uid: string): Promise<{
+    enabled: boolean;
+    mode: string;
+    activeTrades: number;
+    dailyPnL: number;
+    dailyTrades: number;
+    circuitBreaker: boolean;
+    manualOverride: boolean;
+    equity: number;
+    exchangeConnected: boolean;
+  }> {
+    const engine = await this.getUserEngine(uid);
+    const config = engine.config;
+
+    // Try to get current equity from exchange if adapter is available
+    let equity = config.equitySnapshot || 0;
+    if (engine.adapter && typeof engine.adapter.getAccount === 'function') {
+      try {
+        const accountInfo = await engine.adapter.getAccount();
+
+        // Handle different exchange response formats
+        if (accountInfo.balances && Array.isArray(accountInfo.balances)) {
+          const usdtBalance = accountInfo.balances.find((b: any) => b.asset === 'USDT');
+          if (usdtBalance) {
+            const free = parseFloat(usdtBalance.free || usdtBalance.available || '0');
+            const locked = parseFloat(usdtBalance.locked || usdtBalance.frozen || '0');
+            equity = free + locked;
+          }
+        } else if (accountInfo.totalEquity) {
+          equity = parseFloat(accountInfo.totalEquity.toString());
+        } else if (accountInfo.equity) {
+          equity = parseFloat(accountInfo.equity.toString());
+        }
+
+        if (equity > 0 && !isNaN(equity)) {
+          await this.saveConfig(uid, { equitySnapshot: equity });
+        }
+      } catch (error: any) {
+        logger.warn({ error: error.message, uid }, 'Could not fetch equity for status');
+      }
+    }
+
+    return {
+      enabled: config.autoTradeEnabled,
+      mode: config.mode,
+      activeTrades: engine.activeTrades.size,
+      dailyPnL: config.stats?.dailyPnL || 0,
+      dailyTrades: config.stats?.dailyTrades || 0,
+      circuitBreaker: engine.circuitBreaker,
+      manualOverride: config.manualOverride,
+      equity,
+      exchangeConnected: !!engine.adapter,
+    };
+  }
+
+  /**
+   * Reset circuit breaker (admin only)
+   */
+  async resetCircuitBreaker(uid: string): Promise<void> {
+    const engine = await this.getUserEngine(uid);
+    engine.circuitBreaker = false;
+    await this.logTradeEvent(uid, 'CIRCUIT_BREAKER_RESET', {});
+  }
+
+  /**
+   * P3-B: Execute Panic Stop
+   * Closes all open positions immediately and sets cooldown
+   */
+  async executePanicStop(uid: string): Promise<void> {
+    logger.warn({ uid }, '🚨 PANIC STOP ACTIVATED: Initiating forced exit of all trades');
+
+    // We need fresh engine state
+    const engine = await this.getUserEngine(uid);
+
+    // Initialize adapter if needed
+    if (!engine.adapter && engine.activeTrades.size > 0) {
+      await this.initializeAdapter(uid);
+    }
+
+    // 1. Set Cooldown immediately
+    const cooldownDurationMs = 24 * 60 * 60 * 1000; // 24 hours
+    const cooldownUntil = new Date(Date.now() + cooldownDurationMs);
+
+    // Update config to reflect cooldown and disable panic switch to prevent re-trigger
+    await this.saveConfig(uid, {
+      cooldownUntil,
+      panicStopEnabled: false // Reset switch so it doesn't stay stuck ON
+    });
+
+    await this.logTradeEvent(uid, 'PANIC_STOP_TRIGGERED', {
+      reason: 'User panic stop enabled',
+      cooldownUntil: cooldownUntil.toISOString(),
+      activeTrades: engine.activeTrades.size
+    });
+
+    if (!engine.adapter && engine.activeTrades.size > 0) {
+      logger.error({ uid }, 'Panic stop failed to close trades: No adapter available');
+      // We still set cooldown, but couldn't close trades.
+      // We should probably try to log failed closes.
+      for (const tradeId of engine.activeTrades.keys()) {
+        await this.logTradeEvent(uid, 'PANIC_CLOSE_FAILED', { tradeId, error: 'No adapter' });
+      }
+      return;
+    }
+
+    if (engine.activeTrades.size === 0) {
+      return;
+    }
+
+    // 2. Iterate and Close Trades
+    const tradesToClose = Array.from(engine.activeTrades.values());
+
+    for (const trade of tradesToClose) {
+      if (trade.status !== 'FILLED') continue;
+
+      try {
+        logger.info({ uid, tradeId: trade.tradeId, symbol: trade.symbol }, 'Panic closing trade');
+
+        // A. Cancel Open Orders
+        if (trade.takeProfitOrderId) {
+          try {
+            await engine.adapter!.cancelOrder(trade.symbol, trade.takeProfitOrderId);
+          } catch (e: any) {
+            logger.warn({ uid, symbol: trade.symbol, error: e.message }, 'Failed to cancel TP order');
+          }
+        }
+        if (trade.stopLossOrderId) {
+          try {
+            await engine.adapter!.cancelOrder(trade.symbol, trade.stopLossOrderId);
+          } catch (e: any) {
+            logger.warn({ uid, symbol: trade.symbol, error: e.message }, 'Failed to cancel SL order');
+          }
+        }
+
+        // B. Place Market Close Order
+        const closeSide = trade.side === 'BUY' ? 'SELL' : 'BUY';
+
+        // Execute Market Close
+        const order = await engine.adapter!.placeOrder({
+          symbol: trade.symbol,
+          side: closeSide,
+          type: 'MARKET',
+          quantity: trade.quantity
+        });
+
+        // C. Update internal state
+        trade.status = 'PANIC_CLOSED';
+        engine.activeTrades.delete(trade.tradeId);
+
+        // D. Log success
+        await this.logTradeEvent(uid, 'PANIC_CLOSED', {
+          tradeId: trade.tradeId,
+          symbol: trade.symbol,
+          exitPrice: order.avgPrice || order.price,
+          reason: 'Panic Stop',
+          timestamp: new Date()
+        });
+
+      } catch (error: any) {
+        logger.error({ uid, tradeId: trade.tradeId, error: error.message }, 'Failed to panic close trade');
+        await this.logTradeEvent(uid, 'PANIC_CLOSE_FAILED', {
+          tradeId: trade.tradeId,
+          symbol: trade.symbol,
+          error: error.message
+        });
+      }
+    }
+  }
+
+  /**
+   * P1: Monitor active trades and manage state
+   * Tracks open orders, updates status, and detects orphans
+   */
+  async monitorActiveTrades(uid: string): Promise<void> {
+    try {
+      const engine = await this.getUserEngine(uid);
+
+      // We need an adapter to check status
+      if (!engine.adapter && engine.activeTrades.size > 0) {
+        await this.initializeAdapter(uid);
+      }
+
+      if (!engine.adapter || engine.activeTrades.size === 0) return;
+
+      logger.info({ uid, activeTradeCount: engine.activeTrades.size }, 'Monitoring active trades');
+
+      const tradesToRemove: string[] = [];
+
+      for (const [tradeId, trade] of engine.activeTrades.entries()) {
+        // Only monitor filled trades that are currently considered OPEN in our system
+        if (trade.status !== 'FILLED') continue;
+
+        try {
+          // Check TP/SL status
+          let isClosed = false;
+          let closeReason = '';
+
+          let tpStatus = 'UNKNOWN';
+          let slStatus = 'UNKNOWN';
+
+          // SCALPING: Check multiple TP orders for partial closes
+          if (trade.isScalping) {
+            // Check TP1
+            if (trade.takeProfit1OrderId && !trade.tp1Hit) {
+              try {
+                const tp1Order = await engine.adapter.getOrderStatus(trade.symbol, trade.takeProfit1OrderId);
+                if (tp1Order.status === 'FILLED') {
+                  trade.tp1Hit = true;
+                  const closedQty = trade.originalQuantity! * 0.5;
+                  trade.remainingQuantity = (trade.remainingQuantity || trade.originalQuantity!) - closedQty;
+
+                  // TRAILING SL: Move SL to entry price (break-even)
+                  // CRITICAL: SL must NEVER move backward
+                  const newSL = trade.entryPrice;
+                  const currentSL = trade.trailingStopLoss || trade.stopLoss;
+
+                  // Ensure SL never moves backward (for BUY: newSL >= currentSL, for SELL: newSL <= currentSL)
+                  const slMovedBackward = trade.side === 'BUY'
+                    ? (newSL < currentSL)
+                    : (newSL > currentSL);
+
+                  if (slMovedBackward) {
+                    logger.warn({
+                      uid,
+                      tradeId,
+                      currentSL,
+                      attemptedNewSL: newSL,
+                      side: trade.side
+                    }, '[SCALPING] Trailing SL to entry would move backward - keeping current SL');
+                    continue; // Skip SL update
+                  }
+
+                  if (trade.trailingStopLoss !== newSL) {
+                    // Cancel old SL order
+                    if (trade.stopLossOrderId) {
+                      try {
+                        await engine.adapter.cancelOrder(trade.symbol, trade.stopLossOrderId);
+                      } catch (cancelErr) {
+                        logger.warn({ uid, tradeId, error: cancelErr }, 'Failed to cancel old SL for trailing');
+                      }
+                    }
+
+                    // Place new SL at entry
+                    const newSLOrder = await engine.adapter.placeOrder({
+                      symbol: trade.symbol,
+                      side: trade.side === 'BUY' ? 'SELL' : 'BUY',
+                      type: 'LIMIT',
+                      quantity: trade.remainingQuantity!,
+                      price: newSL
+                    });
+
+                    trade.stopLossOrderId = newSLOrder.exchangeOrderId || newSLOrder.clientOrderId;
+                    trade.trailingStopLoss = newSL;
+
+                    logger.info({
+                      uid,
+                      tradeId,
+                      symbol: trade.symbol,
+                      tp1Price: trade.takeProfit1,
+                      closedQty,
+                      remainingQty: trade.remainingQuantity,
+                      newSL: newSL,
+                      slOrderId: trade.stopLossOrderId
+                    }, '[SCALPING] TP1 HIT → 50% closed, SL moved to entry (break-even)');
+
+                    await this.logTradeEvent(uid, 'SCALPING_TP1_HIT', {
+                      tradeId,
+                      symbol: trade.symbol,
+                      closedQty,
+                      remainingQty: trade.remainingQuantity,
+                      slMovedToEntry: true
+                    });
+                  }
+                }
+              } catch (e: any) {
+                logger.warn({ uid, tradeId, error: e.message }, 'Failed to fetch TP1 order status');
+              }
+            }
+
+            // Check TP2
+            if (trade.takeProfit2OrderId && trade.tp1Hit && !trade.tp2Hit) {
+              try {
+                const tp2Order = await engine.adapter.getOrderStatus(trade.symbol, trade.takeProfit2OrderId);
+                if (tp2Order.status === 'FILLED') {
+                  trade.tp2Hit = true;
+                  const closedQty = trade.originalQuantity! * 0.2; // Additional 20%
+                  trade.remainingQuantity = (trade.remainingQuantity || trade.originalQuantity!) - closedQty;
+
+                  // TRAILING SL: Move SL to entry + 0.2% (small profit buffer)
+                  // CRITICAL: SL must NEVER move backward
+                  const profitBuffer = trade.entryPrice * 0.002; // 0.2%
+                  const newSL = trade.side === 'BUY'
+                    ? trade.entryPrice + profitBuffer
+                    : trade.entryPrice - profitBuffer;
+
+                  // Ensure SL never moves backward (for BUY: newSL >= currentSL, for SELL: newSL <= currentSL)
+                  const currentSL = trade.trailingStopLoss || trade.stopLoss;
+                  const slMovedBackward = trade.side === 'BUY'
+                    ? (newSL < currentSL)
+                    : (newSL > currentSL);
+
+                  if (slMovedBackward) {
+                    logger.warn({
+                      uid,
+                      tradeId,
+                      currentSL,
+                      attemptedNewSL: newSL,
+                      side: trade.side
+                    }, '[SCALPING] Trailing SL would move backward - keeping current SL');
+                    continue; // Skip SL update
+                  }
+
+                  if (trade.trailingStopLoss !== newSL) {
+                    // Cancel old SL order
+                    if (trade.stopLossOrderId) {
+                      try {
+                        await engine.adapter.cancelOrder(trade.symbol, trade.stopLossOrderId);
+                      } catch (cancelErr) {
+                        logger.warn({ uid, tradeId, error: cancelErr }, 'Failed to cancel old SL for trailing');
+                      }
+                    }
+
+                    // Place new trailing SL
+                    const newSLOrder = await engine.adapter.placeOrder({
+                      symbol: trade.symbol,
+                      side: trade.side === 'BUY' ? 'SELL' : 'BUY',
+                      type: 'LIMIT',
+                      quantity: trade.remainingQuantity!,
+                      price: newSL
+                    });
+
+                    trade.stopLossOrderId = newSLOrder.exchangeOrderId || newSLOrder.clientOrderId;
+                    trade.trailingStopLoss = newSL;
+
+                    logger.info({
+                      uid,
+                      tradeId,
+                      symbol: trade.symbol,
+                      tp2Price: trade.takeProfit2,
+                      closedQty,
+                      remainingQty: trade.remainingQuantity,
+                      newSL: newSL,
+                      slOrderId: trade.stopLossOrderId
+                    }, '[SCALPING] TP2 HIT → 70% total closed, SL trailed to entry +0.2%');
+
+                    await this.logTradeEvent(uid, 'SCALPING_TP2_HIT', {
+                      tradeId,
+                      symbol: trade.symbol,
+                      closedQty,
+                      remainingQty: trade.remainingQuantity,
+                      slTrailed: true,
+                      slPrice: newSL
+                    });
+                  }
+                }
+              } catch (e: any) {
+                logger.warn({ uid, tradeId, error: e.message }, 'Failed to fetch TP2 order status');
+              }
+            }
+
+            // Check TP3 (full exit)
+            if (trade.takeProfit3OrderId && trade.tp2Hit && !trade.tp3Hit) {
+              try {
+                const tp3Order = await engine.adapter.getOrderStatus(trade.symbol, trade.takeProfit3OrderId);
+                if (tp3Order.status === 'FILLED') {
+                  trade.tp3Hit = true;
+                  isClosed = true;
+                  closeReason = 'TAKE_PROFIT3_FILLED';
+
+                  logger.info({
+                    uid,
+                    tradeId,
+                    symbol: trade.symbol,
+                    tp3Price: trade.takeProfit3,
+                    totalClosed: trade.originalQuantity
+                  }, '[SCALPING] TP3 HIT → 100% closed, full exit');
+
+                  await this.logTradeEvent(uid, 'SCALPING_TP3_HIT', {
+                    tradeId,
+                    symbol: trade.symbol,
+                    fullExit: true
+                  });
+                }
+              } catch (e: any) {
+                logger.warn({ uid, tradeId, error: e.message }, 'Failed to fetch TP3 order status');
+              }
+            }
+          } else {
+            // NON-SCALPING: Legacy single TP check
+            if (trade.takeProfitOrderId) {
+              try {
+                const tpOrder = await engine.adapter.getOrderStatus(trade.symbol, trade.takeProfitOrderId);
+                tpStatus = tpOrder.status;
+                if (tpStatus === 'FILLED') {
+                  isClosed = true;
+                  closeReason = 'TAKE_PROFIT_FILLED';
+                }
+              } catch (e: any) {
+                logger.warn({ uid, tradeId, error: e.message }, 'Failed to fetch TP order status');
+              }
+            }
+          }
+
+          // Check SL Order (if not already known closed)
+          if (!isClosed && trade.stopLossOrderId) {
+            try {
+              const slOrder = await engine.adapter.getOrderStatus(trade.symbol, trade.stopLossOrderId);
+              slStatus = slOrder.status;
+              if (slStatus === 'FILLED') {
+                isClosed = true;
+                closeReason = 'STOP_LOSS_FILLED';
+              }
+            } catch (e: any) {
+              logger.warn({ uid, tradeId, error: e.message }, 'Failed to fetch SL order status');
+            }
+          }
+
+          // Update trade in memory after partial closes
+          engine.activeTrades.set(tradeId, trade);
+
+          if (isClosed) {
+            logger.info({ uid, tradeId, reason: closeReason }, 'Trade closed by exchange order');
+            tradesToRemove.push(tradeId);
+
+            // P3-A: Loss Streak Tracking
+            let consecutiveLosses = engine.config.consecutiveLosses || 0;
+            let cooldownUntil = engine.config.cooldownUntil;
+            let enteredCooldown = false;
+
+            if (closeReason === 'STOP_LOSS_FILLED') {
+              consecutiveLosses++;
+              // Max consecutive losses = 2 (hardcoded for P3-A as requested)
+              if (consecutiveLosses >= 2) {
+                // Enter 24h Cooldown
+                const cooldownDurationMs = 24 * 60 * 60 * 1000;
+                cooldownUntil = new Date(Date.now() + cooldownDurationMs);
+                enteredCooldown = true;
+
+                logger.warn({ uid, consecutiveLosses }, '🚨 MAX CONSECUTIVE LOSSES REACHED: Entering 24h Cooldown.');
+              }
+            } else if (closeReason === 'TAKE_PROFIT_FILLED') {
+              // Reset on win
+              consecutiveLosses = 0;
+            }
+
+            // Persist state
+            await this.saveConfig(uid, {
+              consecutiveLosses,
+              cooldownUntil
+            });
+
+            if (enteredCooldown) {
+              await this.logTradeEvent(uid, 'COOLDOWN_ENTERED', {
+                reason: 'Max consecutive losses reached',
+                duration: '24h',
+                consecutiveLosses
+              });
+            }
+
+            const stats = engine.config.stats || { totalTrades: 0, winningTrades: 0, losingTrades: 0, totalPnL: 0, dailyPnL: 0, dailyTrades: 0 };
+
+            // Note: Accurate PnL requires fetch of fill price. 
+            // For P1/Stabilization, we log the event and remove the trade to allow new trades.
+            // Logic to update PnL stats specifically should be added in P2.
+
+            await this.logTradeEvent(uid, 'TRADE_CLOSED', {
+              tradeId,
+              symbol: trade.symbol,
+              reason: closeReason,
+              timestamp: new Date()
+            });
+
+            // NOTIFICATION: Telegram Closed Alert
+            try {
+              const bgSettings = await firestoreAdapter.getBackgroundResearchSettings(uid);
+              if (bgSettings?.backgroundResearchEnabled && bgSettings?.telegramBotToken && bgSettings?.telegramChatId) {
+                const { telegramService } = await import('./telegramService');
+
+                // Determine reason for Telegram
+                let telegramReason: 'TP' | 'SL' | 'MANUAL' | 'PANIC' = 'TP';
+                if (closeReason.includes('STOP_LOSS')) telegramReason = 'SL';
+                else if (closeReason.includes('PANIC')) telegramReason = 'PANIC';
+                else if (closeReason.includes('MANUAL')) telegramReason = 'MANUAL';
+
+                telegramService.sendTradeClosedAlert(
+                  bgSettings.telegramBotToken,
+                  bgSettings.telegramChatId,
+                  {
+                    symbol: trade.symbol,
+                    side: trade.side as 'BUY' | 'SELL',
+                    exitPrice: 0, // Placeholder as PnL/Exit price isn't fully tracked here yet in P1
+                    pnl: 0,       // Placeholder
+                    reason: telegramReason
+                  }
+                );
+              }
+            } catch (e) {
+              logger.warn({ uid }, 'Failed to send Telegram closed alert');
+            }
+
+            continue;
+          }
+
+          // P1.6 ORPHAN PROTECTION
+          // Check if both TP and SL are missing or inactive (CANCELED/REJECTED/EXPIRED/UNKNOWN)
+          const isTpActive = ['NEW', 'PARTIALLY_FILLED'].includes(tpStatus);
+          const isSlActive = ['NEW', 'PARTIALLY_FILLED'].includes(slStatus);
+
+          // If we had IDs but neither is active now (and trade is not closed), it's an orphan
+          if (trade.takeProfitOrderId && trade.stopLossOrderId && !isTpActive && !isSlActive) {
+            logger.warn({ uid, tradeId, symbol: trade.symbol }, '🚨 ORPHAN TRADE DETECTED: Position is UNPROTECTED (No active TP/SL)');
+            // Log only, do not auto-close in P1 significantly to avoid race conditions with manual user actions
+          }
+
+        } catch (error: any) {
+          logger.error({ uid, tradeId, error: error.message }, 'Error monitoring trade');
+        }
+      }
+
+
+
+
+
+      // Cleanup closed trades from memory
+      for (const id of tradesToRemove) {
+        engine.activeTrades.delete(id);
+      }
+
+    } catch (error: any) {
+      logger.error({ uid, error: error.message }, 'Fatal error in monitorActiveTrades');
+    }
+  }
+
+  /**
+   * Start auto-trade background research loop for a user
+   * Runs deep research every 5 minutes when enabled
+   * 
+   * REFACTORED: Uses safe background runner to prevent event loop blocking
+   * - Each iteration has hard timeout (30s max)
+   * - Yields control back to event loop
+   * - Auto-pauses if event loop lag is detected
+   */
+  async startAutoTradeLoop(uid: string, researchFrequencyMinutes?: number): Promise<void> {
+    logger.info({ uid, researchFrequencyMinutes }, '🔄 [AUTOTRADE] Starting auto-trade for user - Persisting state and triggering scheduler');
+
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const userRef = db.collection('users').doc(uid);
+
+      // 1. Get existing background research settings to preserve frequency if not provided
+      const existingBgSettings = await firestoreAdapter.getBackgroundResearchSettings(uid);
+      const finalFrequency = researchFrequencyMinutes || existingBgSettings?.researchFrequencyMinutes || 5;
+
+      // 2. Update autoTradeConfig - ensure engine knows it should be enabled
+      await userRef.collection('autoTradeConfig').doc('current').set({
+        autoTradeEnabled: true,
+        updatedAt: admin.firestore.Timestamp.now()
+      }, { merge: true });
+
+      // 3. Update backgroundResearchSettings - ensure scheduler knows it should run
+      // CRITICAL: Persist research frequency for scheduler
+      await userRef.collection('settings').doc('backgroundResearch').set({
+        backgroundResearchEnabled: true,
+        researchFrequencyMinutes: finalFrequency,
+        updatedAt: admin.firestore.Timestamp.now()
+      }, { merge: true });
+
+      // 4. Trigger immediate schedule update in BackgroundResearchScheduler
+      const { backgroundResearchScheduler } = await import('./backgroundResearchScheduler');
+      await backgroundResearchScheduler.onUserSettingsChanged(uid);
+
+      logger.info({ uid, frequency: finalFrequency }, '✅ [AUTOTRADE] Auto-trade enabled and scheduled successfully');
+    } catch (err: any) {
+      logger.error({ uid, error: err.message }, '❌ [AUTOTRADE] Failed to start/persist auto-trade state');
+      throw err;
+    }
+  }
+
+  /**
+   * Safe wrapper for runAutoTradeResearchCycle
+   * Wraps all external calls with timeouts to prevent blocking
+   * 
+   * AUTO-TRADE LIFECYCLE DOCUMENTATION:
+   * - Called by BackgroundResearchScheduler at configured frequency (researchFrequencyMinutes)
+   * - Runs server-side independently of frontend
+   * - Survives user logout, tab close, or browser shutdown
+   * - Does NOT depend on WebSocket connections, frontend polling, or UI presence
+   * - Only exchange decryption failure blocks execution (not UI state)
+   * - Execution continues when website is closed
+   * 
+   * @param uid User ID
+   * @param skipHistoryStorage If true, history storage is skipped (caller will handle it)
+   */
+  async runAutoTradeResearchCycleSafe(uid: string, skipHistoryStorage: boolean = false): Promise<ResearchDataResult | null> {
+    // Check if we should run
+    if (!shouldRunBackgroundTasks()) {
+      logger.debug({ uid }, 'Skipping research cycle - background tasks paused');
+      return null;
+    }
+
+    // Yield control before heavy operations
+    await yieldToEventLoop();
+
+    // 🔥 DEBUG: Log auto-trade research cycle start
+    logger.info({
+      uid,
+      skipHistoryStorage,
+      serverSide: true,
+      frontendIndependent: true
+    }, '🔍 [AUTO_TRADE_LIFECYCLE_DEBUG] Starting auto-trade research cycle - server-side only');
+
+    // Run the actual research cycle
+    return await this.runAutoTradeResearchCycle(uid, skipHistoryStorage);
+  }
+
+  /**
+   * Stop auto-trade background research loop for a user
+   */
+  async stopAutoTradeLoop(uid: string): Promise<void> {
+    logger.info({ uid }, '🔄 [AUTOTRADE] Stopping auto-trade for user - Persisting state and triggering scheduler');
+
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const userRef = db.collection('users').doc(uid);
+
+      // 1. Update autoTradeConfig
+      await userRef.collection('autoTradeConfig').doc('current').set({
+        autoTradeEnabled: false,
+        updatedAt: admin.firestore.Timestamp.now()
+      }, { merge: true });
+
+      // 2. Update backgroundResearchSettings
+      await userRef.collection('settings').doc('backgroundResearch').set({
+        backgroundResearchEnabled: false,
+        updatedAt: admin.firestore.Timestamp.now()
+      }, { merge: true });
+
+      // 3. Trigger scheduler update (which will disable the job)
+      const { backgroundResearchScheduler } = await import('./backgroundResearchScheduler');
+      await backgroundResearchScheduler.onUserSettingsChanged(uid);
+
+      logger.info({ uid }, '✅ [AUTOTRADE] Auto-trade disabled and unscheduled successfully');
+    } catch (err: any) {
+      logger.error({ uid, error: err.message }, '❌ [AUTOTRADE] Failed to stop/persist auto-trade state');
+      throw err;
+    }
+  }
+
+  /**
+   * Check if auto-trade loop is running for a user
+   * CRITICAL: Now uses BackgroundResearchScheduler state (single source of truth)
+   */
+  async isAutoTradeRunning(uid: string): Promise<boolean> {
+    try {
+      // Check scheduler state (single source of truth)
+      const { backgroundResearchScheduler } = await import('./backgroundResearchScheduler');
+      const hasInterval = backgroundResearchScheduler.isUserScheduled(uid);
+      const jobState = backgroundResearchScheduler.getUserJobState(uid);
+
+      if (hasInterval && jobState) {
+        const mode = (jobState as any).mode;
+        // Auto-trade is running if scheduler has interval and mode is AUTO_TRADE_RESEARCH
+        if (mode === 'AUTO_TRADE_RESEARCH') {
+          return true;
+        }
+      }
+
+      // Fallback: Check Firestore config
+      const config = await this.loadConfig(uid);
+      return config.autoTradeEnabled === true;
+    } catch (error: any) {
+      logger.warn({ uid, error: error.message }, 'Failed to check auto-trade running state, using config fallback');
+      // Fallback: Check Firestore config
+      const config = await this.loadConfig(uid);
+      return config.autoTradeEnabled === true;
+    }
+  }
+
+  /**
+   * Bootstrap all enabled auto-trade loops across all users
+   * CRITICAL: Use this on server startup to resume trading for all users
+   */
+  async bootstrapLoops(): Promise<void> {
+    if (process.env.DISABLE_AUTOTRADE === 'true') {
+      logger.warn('Auto-trade bootstrap aborted: DISABLE_AUTOTRADE=true');
+      return;
+    }
+
+    try {
+      logger.info('🔄 [AUTOTRADE] Bootstrapping enabled loops for all users...');
+      const db = getFirebaseAdmin().firestore();
+
+      const usersSnapshot = await db.collection('users').get();
+      let count = 0;
+
+      for (const userDoc of usersSnapshot.docs) {
+        const uid = userDoc.id;
+
+        if (uid.startsWith('_')) continue;
+
+        try {
+          const config = await this.loadConfig(uid);
+          if (config.autoTradeEnabled) {
+            await this.startAutoTradeLoop(uid);
+            count++;
+            logger.info({ uid }, '✅ [BOOTSTRAP] Resumed auto-trade loop for user');
+          }
+        } catch (userErr: any) {
+          logger.warn({ uid, error: userErr.message }, '⚠️ [BOOTSTRAP] Failed to resume loop for user, skipping');
+        }
+      }
+
+      logger.info({ count }, `✅ [BOOTSTRAP] Multi-user auto-trade bootstrap completed. Resumed ${count} loops.`);
+    } catch (error: any) {
+      logger.error({ error: error.message }, '❌ [BOOTSTRAP] Fatal error during auto-trade bootstrap');
+    }
+  }
+
+  /**
+   * Get last research time for a user
+   * CRITICAL: Now uses BackgroundResearchScheduler state (single source of truth)
+   */
+  async getLastResearchTime(uid: string): Promise<string | null> {
+    try {
+      // Check scheduler state (single source of truth)
+      const { backgroundResearchScheduler } = await import('./backgroundResearchScheduler');
+      const jobState = backgroundResearchScheduler.getUserJobState(uid);
+      if (jobState?.lastRunAt) {
+        return jobState.lastRunAt.toISOString();
+      }
+
+      // Fallback: Check Firestore research history
+      const history = await firestoreAdapter.getResearchHistory(uid, 1);
+      if (history && history.length > 0 && history[0].timestamp) {
+        return typeof history[0].timestamp === 'string'
+          ? history[0].timestamp
+          : new Date(history[0].timestamp).toISOString();
+      }
+
+      return null;
+    } catch (error: any) {
+      logger.warn({ uid, error: error.message }, 'Failed to get last research time, using history fallback');
+      // Fallback: Check Firestore research history
+      try {
+        const history = await firestoreAdapter.getResearchHistory(uid, 1);
+        if (history && history.length > 0 && history[0].timestamp) {
+          return typeof history[0].timestamp === 'string'
+            ? history[0].timestamp
+            : new Date(history[0].timestamp).toISOString();
+        }
+      } catch (histError: any) {
+        logger.warn({ uid, error: histError.message }, 'Failed to get research history');
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Get current market price for a symbol
+   */
+  private async getCurrentMarketPrice(symbol: string, uid: string): Promise<number> {
+    try {
+      // Try to get from exchange if adapter is available
+      const engine = await this.getUserEngine(uid);
+      if (engine.adapter) {
+        const ticker = await engine.adapter.getTicker(symbol);
+        return parseFloat(ticker.price.toString());
+      }
+    } catch (error: any) {
+      logger.warn({ uid, symbol, error: error.message }, 'Could not get price from exchange');
+      // P0 FIX: Throw hard error instead of dangerous fallback
+      throw new Error(`PRICE_FETCH_FAILED: Could not get market price for ${symbol} - Trade aborted for safety`);
+    }
+
+    // If no adapter or failed to get price
+    throw new Error(`PRICE_FETCH_FAILED: No adapter available or price fetch failed for ${symbol}`);
+  }
+
+
+
+  /**
+   * Run a single auto-trade research cycle
+   * This is called every 5 minutes by the background loop
+   * 
+   * REFACTORED: All external calls wrapped with timeouts
+   * 
+   * @param uid User ID
+   * @param skipHistoryStorage If true, history storage is skipped (caller handles it with correct source)
+   */
+  async runAutoTradeResearchCycle(uid: string, skipHistoryStorage: boolean = false): Promise<ResearchDataResult | null> {
+    // CRITICAL: Prevent duplicate execution per cycle using uid+timestamp key
+    // This ensures only ONE execution per user per cycle, even if called multiple times
+    const cycleStartTime = new Date();
+    let cycleResult = AUTO_TRADE_REASONS.NO_SIGNAL;
+    let accuracy = 0;
+    let signal = 'UNKNOWN';
+    let skipReason = '';
+    // CRITICAL: Track if history was already saved in this cycle to prevent duplicates
+    let historySaved = false;
+    let historySavedSymbol: string | null = null;
+    
+    // CRITICAL: Track active cycles to prevent duplicate execution
+    // Use a simple in-memory set to track active cycles (cleared after completion)
+    const activeCycles = (global as any).__autoTradeActiveCycles || new Set<string>();
+    (global as any).__autoTradeActiveCycles = activeCycles;
+    
+    // Check if cycle is already running (within same second window)
+    const cycleWindow = Math.floor(Date.now() / 1000); // 1-second window
+    const cycleId = `${uid}_${cycleWindow}`;
+    if (activeCycles.has(cycleId)) {
+      logger.warn({ 
+        uid, 
+        cycleId,
+        duplicateBlocked: true 
+      }, '⏭️ [CYCLE_GUARD] BLOCKED: Duplicate auto-trade cycle execution prevented - cycle already running');
+      return null; // Return null to prevent duplicate execution
+    }
+    activeCycles.add(cycleId);
+    
+    // Cleanup: Remove cycle ID after 5 seconds (cycle should complete by then)
+    setTimeout(() => {
+      activeCycles.delete(cycleId);
+    }, 5000);
+
+    try {
+      // 1. Initial Guards
+      // CRITICAL: These guards only prevent research if system-wide flags are set
+      // They do NOT check accuracy, signal, or trade conditions (those are evaluated AFTER research)
+      if (process.env.DISABLE_AUTOTRADE === 'true') {
+        logger.debug({ uid }, 'Research skipped - DISABLE_AUTOTRADE env flag set');
+        return null;
+      }
+      if (!shouldRunBackgroundTasks()) {
+        logger.debug({ uid }, 'Research skipped - background tasks paused');
+        return null;
+      }
+
+      logger.info({ uid, cycleStartTime: cycleStartTime.toISOString() }, '🔄 [CYCLE_START] Auto-trade research cycle initiated');
+
+      // 2. Load Settings & Integrations
+      const settings = await AutoTradeEngine.getTradingSettings(uid);
+      const { getUserIntegrations } = await import('../routes/integrations');
+      const integrationResult = await getUserIntegrations(uid);
+      const integrations = (integrationResult as any).providerConfig;
+
+      // Verify Research API Keys (Standard Logic Requirement)
+      const hasResearchKeys = (integrations?.marketData && Object.keys(integrations.marketData).length > 0) ||
+        (integrations?.metadata && Object.keys(integrations.metadata).length > 0);
+
+      if (!hasResearchKeys) {
+        // CRITICAL: Do NOT store history for skipped cycles (no research keys)
+        // History should only be stored for completed FINAL research with real accuracy values
+        // Skipped cycles do NOT represent completed research
+        logger.info({ 
+          uid, 
+          skipReason: AUTO_TRADE_REASONS.NO_RESEARCH_KEYS,
+          historyBlocked: true,
+          reason: 'Research keys missing - research did not execute'
+        }, '⏭️ [HISTORY_GUARD] BLOCKED: Skipping history save for no-research-keys - only FINAL completed research should be saved');
+
+        await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', {
+          reason: AUTO_TRADE_REASONS.NO_RESEARCH_KEYS,
+          details: 'No research API keys configured. Please add keys to enable auto-trading.',
+          timestamp: new Date().toISOString()
+        });
+        throw new Error(AUTO_TRADE_REASONS.NO_RESEARCH_KEYS);
+      }
+
+      // 3. CRITICAL: Early exchange decryption check for AUTO_TRADE_RESEARCH mode
+      // Skip deep research if exchange API key decryption fails to prevent "missing final aggregated data" errors
+      let exchangeDecryptionFailed = false;
+      let exchangeDecryptionError: string | null = null;
+      
+      try {
+        const { resolveExchangeConnector } = await import('./exchangeResolver');
+        const exchangeResolved = await resolveExchangeConnector(uid);
+        
+        if (!exchangeResolved) {
+          // Check if exchange config exists but decryption failed
+          const db = getFirebaseAdmin().firestore();
+          const exchangeConfigDoc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+          
+          if (exchangeConfigDoc.exists && exchangeConfigDoc.data()?.apiKeyEncrypted) {
+            // Exchange config exists but resolver returned null - likely decryption failure
+            try {
+              const { decryptOrThrow } = await import('./keyManager');
+              decryptOrThrow(exchangeConfigDoc.data()!.apiKeyEncrypted, 'API key');
+              // If we get here, decryption worked - something else is wrong
+            } catch (decryptErr: any) {
+              // Decryption failed - this is the root cause
+              exchangeDecryptionFailed = true;
+              exchangeDecryptionError = decryptErr.message || 'EXCHANGE_KEY_DECRYPTION_FAILED';
+            }
+          }
+        }
+      } catch (resolveErr: any) {
+        if (resolveErr.message?.includes('EXCHANGE_KEY_DECRYPTION_FAILED') || 
+            resolveErr.message?.includes('decryption failed') ||
+            resolveErr.message?.includes('invalid ENCRYPTION_SECRET')) {
+          exchangeDecryptionFailed = true;
+          exchangeDecryptionError = resolveErr.message;
+        }
+      }
+
+      // CRITICAL: If exchange decryption failed, skip deep research early
+      if (exchangeDecryptionFailed) {
+        logger.info({ 
+          uid, 
+          error: exchangeDecryptionError 
+        }, '⏭️ [AUTO_TRADE] Auto-trade research skipped due to exchange key decryption failure');
+        
+        // CRITICAL: Do NOT store history for skipped cycles (exchange unavailable)
+        // History should only be stored for completed FINAL research with real accuracy values
+        // Skipped cycles do NOT represent completed research
+        logger.info({ 
+          uid, 
+          skipReason: AUTO_TRADE_REASONS.SKIPPED_EXCHANGE_UNAVAILABLE,
+          historyBlocked: true,
+          reason: 'Exchange unavailable - research did not execute'
+        }, '⏭️ [HISTORY_GUARD] BLOCKED: Skipping history save for exchange-unavailable - only FINAL completed research should be saved');
+
+        // Log activity
+        await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', {
+          reason: AUTO_TRADE_REASONS.SKIPPED_EXCHANGE_UNAVAILABLE,
+          details: 'Exchange API key decryption failed. Please re-enter your exchange API keys.',
+          timestamp: new Date().toISOString()
+        });
+
+        // Return null to indicate cycle was skipped (scheduler continues, no error thrown)
+        return null;
+      }
+
+      // 4. Trade Monitoring (Cleanup)
+      await withTimeout(() => this.monitorActiveTrades(uid), 5000);
+
+      // 5. Run Research with error handling
+      let researchData: ResearchData;
+      let researchError: any = null;
+      
+      try {
+        researchData = await runDeepResearchWithCoinSelection(uid, settings, undefined, integrations);
+      } catch (researchErr: any) {
+        researchError = researchErr;
+        logger.error({ uid, error: researchErr.message }, '❌ [AUTO_TRADE] Research execution failed');
+        
+        // CRITICAL: Do NOT store history for failed research cycles
+        // History should only be stored for completed FINAL research with real accuracy values
+        // Failed cycles do NOT represent completed research
+        logger.info({ 
+          uid, 
+          error: researchErr.message,
+          historyBlocked: true,
+          reason: 'Research execution failed - research did not complete successfully'
+        }, '⏭️ [HISTORY_GUARD] BLOCKED: Skipping history save for failed research - only FINAL completed research should be saved');
+        
+        // Re-throw to stop execution
+        throw researchErr;
+      }
+
+      // Get symbol from researchData (from coinsAnalyzed or first result)
+      const researchSymbol = researchData.coinsAnalyzed?.[0] || 
+                            researchData.results?.[0]?.symbol || 
+                            'BTCUSDT'; // Fallback
+
+      if (!researchData.results || researchData.results.length === 0) {
+        skipReason = AUTO_TRADE_REASONS.NO_SIGNAL;
+        cycleResult = AUTO_TRADE_REASONS.TRADE_SKIPPED;
+
+      // CRITICAL: Do NOT store history for skipped/no-signal cycles
+      // History should only be stored for completed FINAL research with real accuracy values
+      // Skipped cycles (no signal, no results) do NOT represent completed research
+      logger.info({ 
+        uid, 
+              symbol: researchSymbol,
+        skipReason,
+        historyBlocked: true,
+        reason: 'No signal generated - research did not complete successfully'
+      }, '⏭️ [HISTORY_GUARD] BLOCKED: Skipping history save for no-signal cycle - only FINAL completed research should be saved');
+
+        await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', { reason: skipReason, timestamp: new Date().toISOString() });
+        return null;
+      }
+
+      const researchResult = researchData.results[0];
+
+      // CRITICAL: Use FINAL Deep Research result as source of truth
+      // researchResult.result is the full FreeModeDeepResearchResult from researchAggregator
+      const finalResult = researchResult.result;
+
+      if (!finalResult) {
+        logger.error({ uid, symbol: researchResult.symbol }, '❌ [HISTORY] No final result available - cannot store history');
+        throw new Error('Research result missing final aggregated data');
+      }
+
+      // CRITICAL: Extract FINAL signal from aggregated result (source of truth)
+      signal = finalResult.signal || researchResult.signal || 'HOLD';
+
+      // CRITICAL: Extract FINAL accuracy from aggregated result (0-1 range, convert to percentage)
+      // finalResult.accuracy is the final aggregated accuracy from researchAggregator
+      const finalAccuracyRaw = finalResult.accuracy;
+      if (typeof finalAccuracyRaw !== 'number' || isNaN(finalAccuracyRaw)) {
+        logger.error({ uid, symbol: researchResult.symbol, accuracy: finalAccuracyRaw }, '❌ [HISTORY] Invalid accuracy in final result');
+        throw new Error('Final research result has invalid accuracy');
+      }
+      const accuracy = finalAccuracyRaw > 1 ? finalAccuracyRaw : finalAccuracyRaw * 100;
+
+      // CRITICAL HARD GUARD: Detect if this is a FINAL guard cached result (execution was skipped)
+      // FINAL guard returns cached results with isFinal=true but execution was NOT performed
+      // These should NOT be saved to history as they represent skipped executions, not completed research
+      const isCachedResult = finalResult.isFinal === true && 
+                             (finalResult as any).isProcessing === false &&
+                             accuracy === 0 && 
+                             signal === 'HOLD';
+      
+      if (isCachedResult) {
+        logger.info({
+          uid,
+          symbol: researchResult.symbol,
+          accuracy,
+          signal,
+          isFinal: finalResult.isFinal,
+          historyBlocked: true,
+          reason: 'FINAL guard cached result - execution was skipped, not a completed research'
+        }, '⏭️ [HISTORY_GUARD] BLOCKED: Skipping history save for FINAL guard cached result - execution was skipped, not completed research');
+        // Return null to indicate cycle was skipped (no history saved)
+        return null;
+      }
+
+      // CRITICAL: Extract FINAL trade plan from aggregated result (ensures consistency with signal/accuracy)
+      // The tradePlan is at root level of FreeModeDeepResearchResult
+      const finalTradePlan = finalResult.tradePlan || null;
+
+      // CRITICAL: Extract current market price from FINAL result
+      // Priority: result.price > analysis.priceAction.price > indicators.price > metadata.price
+      const historyPrice = finalResult.price ||
+        finalResult.analysis?.priceAction?.currentPrice ||
+        finalResult.analysis?.priceAction?.price ||
+        finalResult.indicators?.price ||
+        finalResult.metadata?.price ||
+        0;
+
+      // Validate price is valid
+      if (historyPrice <= 0) {
+        logger.warn({
+          uid,
+          symbol: researchResult.symbol,
+          priceSources: {
+            resultPrice: finalResult.price,
+            analysisPrice: finalResult.analysis?.priceAction?.price,
+            indicatorsPrice: finalResult.indicators?.price,
+            metadataPrice: finalResult.metadata?.price
+          }
+        }, '⚠️ [HISTORY] Market price not found in final result - storing 0');
+      }
+
+      // CRITICAL: Store Auto-Trade research in history for UI visibility
+      // This ensures users see what Auto-Trade is analyzing, even if valid trade is not executed
+      // Store FINAL aggregated values (not partial/interim values)
+      // CRITICAL: Ensure accuracy and signal are ALWAYS stored (never omitted)
+      // CRITICAL: Only store if skipHistoryStorage is false (caller handles storage for Telegram mode)
+      if (!skipHistoryStorage) {
+        try {
+          // CRITICAL HARD GUARD 1: Verify isFinal === true before saving FINAL research history
+          // History must NEVER be saved for partial/intermediate results
+          // SKIPPED entries (status='SKIPPED') are allowed without isFinal check as they represent explicit "no research" states
+          if (finalResult.isFinal !== true) {
+            logger.error({
+              uid,
+              symbol: researchResult.symbol,
+              isFinal: finalResult.isFinal,
+              accuracy,
+              signal
+            }, '❌ [HISTORY_GUARD] BLOCKED: History save attempted with isFinal !== true - this is a partial/intermediate result. Only FINAL research results can be saved to history.');
+            throw new Error(`Cannot save history: research result is not final (isFinal=${finalResult.isFinal}). Only FINAL results can be saved to history. Partial/intermediate results are forbidden.`);
+          }
+
+          // CRITICAL HARD GUARD 2: Verify accuracy is a real computed value (not 0 unless genuinely computed)
+          // Accuracy of 0 is ONLY valid if signal is HOLD (genuine HOLD signal)
+          // If accuracy is 0 and signal is not HOLD, this indicates an error in research completion
+          // CRITICAL: Accuracy must be > 0 for any non-HOLD signal (BUY/SELL)
+          if (accuracy === 0) {
+            if (signal !== 'HOLD') {
+              logger.error({
+                uid,
+                symbol: researchResult.symbol,
+                accuracy,
+                signal,
+                isFinal: finalResult.isFinal
+              }, '❌ [HISTORY_GUARD] BLOCKED: History save attempted with accuracy=0 and signal !== HOLD - invalid state. This indicates incomplete research or missing accuracy computation.');
+              throw new Error(`Cannot save history: accuracy is 0 but signal is ${signal}. This indicates an incomplete or invalid research result. Accuracy must be computed before saving FINAL history.`);
+            } else {
+              // Accuracy 0 with HOLD signal is valid (genuine HOLD), but log for verification
+              logger.info({
+                uid,
+                symbol: researchResult.symbol,
+                accuracy,
+                signal,
+                isFinal: finalResult.isFinal
+              }, '⚠️ [HISTORY] Saving history with accuracy=0 and HOLD signal - this is valid for genuine HOLD signals');
+            }
+          }
+
+          // CRITICAL: Ensure signal is HOLD if accuracy < 60% (backend safety check for signal generation)
+          // CRITICAL: Trade plan is only generated when accuracy >= 70% (enforced in researchAggregator)
+          const finalSignal = (accuracy < 60 && signal !== 'HOLD') ? 'HOLD' : signal;
+
+          // CRITICAL: Ensure accuracy is always a number (already validated above)
+          const storedAccuracy = Math.max(0, Math.min(100, accuracy)); // Clamp to 0-100 range
+
+          // CRITICAL: Enforce trade plan is null if accuracy < 70% (even if somehow generated)
+          const safeTradePlan = (accuracy >= 70 && finalTradePlan) ? finalTradePlan : null;
+
+          // CRITICAL: Build history entry with FINAL result data - MUST match manual research payload exactly
+          // CRITICAL: Mark source as AUTO_TRADE for auto-trade mode research
+          // CRITICAL: Use FINAL tradePlan directly from researchAggregator - do NOT recompute
+          // tradePlan from generateTradePlan has: entryPrice, stopLoss, takeProfit1, takeProfit2, takeProfit3, riskRewardRatio
+          // For backward compatibility, takeProfit should be set to takeProfit2 (main TP)
+          const historyEntry = {
+            symbol: researchResult.symbol,
+            signal: finalSignal, // Final signal (forced to HOLD if accuracy < 60%)
+            accuracy: storedAccuracy, // Final accuracy as percentage (0-100), ALWAYS stored
+            price: historyPrice, // Current market price (from final result)
+            tradePlan: safeTradePlan, // Final trade plan (null if HOLD or accuracy < 70%) - FULL object from researchAggregator
+            indicators: finalResult.analysis || null,
+            isDeepResearch: true,
+            source: 'AUTO_TRADE', // CRITICAL: Mark as auto-trade research for UI filtering
+            status: 'FINAL', // Research completed successfully
+            isFinal: true, // CRITICAL: Explicitly mark as final for history validation
+            // UI COMPATIBILITY: Flatten critical trade plan fields for Research History / Research Page
+            // MUST match manual research payload structure exactly
+            entryPrice: safeTradePlan?.entryPrice || 0,
+            stopLoss: safeTradePlan?.stopLoss || 0,
+            takeProfit: safeTradePlan?.takeProfit2 || safeTradePlan?.takeProfit || 0, // Use TP2 as main takeProfit (backward compatibility)
+            takeProfit1: safeTradePlan?.takeProfit1 || 0,
+            takeProfit2: safeTradePlan?.takeProfit2 || 0,
+            takeProfit3: safeTradePlan?.takeProfit3 || 0
+          };
+
+          // Validate history entry before storing
+          if (typeof historyEntry.accuracy !== 'number' || isNaN(historyEntry.accuracy)) {
+            logger.error({ uid, symbol: researchResult.symbol, historyEntry }, '❌ [HISTORY] Invalid accuracy in history entry');
+            throw new Error('Cannot store history with invalid accuracy');
+          }
+
+          // CRITICAL HARD GUARD 3: Final validation before save
+          if (historyEntry.isFinal !== true) {
+            logger.error({ uid, symbol: researchResult.symbol, historyEntry }, '❌ [HISTORY_GUARD] BLOCKED: History entry missing isFinal=true flag');
+            throw new Error('Cannot save history: entry is missing isFinal=true flag');
+          }
+
+          // CRITICAL HARD GUARD 4: Prevent duplicate saves within same cycle
+          // This ensures history is saved exactly ONCE per auto-trade cycle
+          // BackgroundResearchScheduler calls with skipHistoryStorage=false for AUTO_TRADE_RESEARCH mode
+          // This is the ONLY place where history is saved for AUTO_TRADE mode
+          if (historySaved) {
+            logger.error({
+              uid,
+              symbol: researchResult.symbol,
+              alreadySavedSymbol: historySavedSymbol,
+              attemptedSymbol: historyEntry.symbol,
+              cycleId: `cycle_${Date.now()}`,
+              duplicateBlocked: true
+            }, '❌ [HISTORY_GUARD] BLOCKED: Duplicate history save prevented - history already saved in this cycle. Only ONE history entry per cycle is allowed.');
+            throw new Error(`Cannot save history: history already saved for symbol ${historySavedSymbol} in this cycle. Only ONE history entry per cycle is allowed.`);
+          }
+
+          // CRITICAL: Save PRIMARY coin result (even if BTCUSDT if it's the actual selected coin)
+          // researchResult.symbol comes from the actual selected coin from researchData.results[0]
+          // This is the FINAL research result, so it's always the primary coin (not a fallback)
+          // CRITICAL: This is the ONLY place where history is saved for AUTO_TRADE mode
+          // BackgroundResearchScheduler explicitly skips history save for AUTO_TRADE_RESEARCH mode
+          await firestoreAdapter.storeResearchHistory(uid, historyEntry);
+          historySaved = true;
+          historySavedSymbol = historyEntry.symbol;
+
+          logger.info({
+            uid,
+            symbol: researchResult.symbol,
+            signal: finalSignal,
+            accuracy: storedAccuracy,
+            price: historyPrice,
+            hasTradePlan: !!safeTradePlan,
+            tradePlanEntryPrice: safeTradePlan?.entryPrice || null,
+            tradePlanFields: safeTradePlan ? {
+              entryPrice: safeTradePlan.entryPrice,
+              stopLoss: safeTradePlan.stopLoss,
+              takeProfit1: safeTradePlan.takeProfit1,
+              takeProfit2: safeTradePlan.takeProfit2,
+              takeProfit3: safeTradePlan.takeProfit3
+            } : null,
+            cycleId: `cycle_${Date.now()}`,
+            savedOnce: true
+          }, '✅ [HISTORY] Research history stored with FINAL aggregated data (AUTO_TRADE) - saved exactly ONCE per cycle');
+        } catch (histError: any) {
+          logger.error({ uid, error: histError.message, stack: histError.stack }, '❌ [HISTORY] Failed to store auto-trade research history');
+          // Do NOT throw - allow research cycle to continue even if history storage fails
+        }
+      } else {
+        logger.debug({ uid, symbol: researchResult.symbol }, '⏭️ [HISTORY] History storage skipped - caller will handle with correct source');
+      }
+
+      // 5. Send Telegram Alert (if auto-trade is ON and accuracy >= telegramAccuracyTrigger)
+      // CRITICAL: When Auto-Trade is ON, Telegram alerts come from AutoTradeEngine results
+      // This replaces the Telegram background research engine alerts
+      // CRITICAL: Must respect Telegram accuracy settings AND spam prevention
+      try {
+        const alertId = `auto_trade_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const bgSettings = await firestoreAdapter.getBackgroundResearchSettings(uid);
+        
+        // Check Telegram configuration
+        if (!bgSettings?.telegramBotToken || !bgSettings?.telegramChatId) {
+          logger.info({
+            alertId,
+            uid,
+            symbol: researchResult.symbol,
+            mode: 'AUTO_TRADE',
+            accuracy,
+            status: 'SKIPPED',
+            reason: 'Telegram configuration missing'
+          }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Auto-trade alert skipped - Telegram not configured');
+        } else {
+          // Check accuracy threshold (from Telegram Background settings)
+          const telegramAccuracyTrigger = bgSettings.accuracyTrigger;
+          const minTrigger = telegramAccuracyTrigger?.min ?? (typeof telegramAccuracyTrigger === 'number' ? telegramAccuracyTrigger : 80);
+          const maxTrigger = telegramAccuracyTrigger?.max ?? 100;
+          const isInRange = accuracy >= minTrigger && accuracy <= maxTrigger;
+
+          if (!isInRange) {
+            logger.info({
+              alertId,
+              uid,
+              symbol: researchResult.symbol,
+              mode: 'AUTO_TRADE',
+              accuracy,
+              status: 'SKIPPED',
+              reason: `Accuracy ${accuracy.toFixed(1)}% outside range [${minTrigger}-${maxTrigger}]%`
+            }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Auto-trade alert skipped - accuracy outside threshold');
+          } else {
+            // Check spam prevention (accuracy must improve)
+            const lastAlert = bgSettings.lastAlertSent?.[researchResult.symbol];
+            const shouldSendAlert = !lastAlert || accuracy > lastAlert.accuracy;
+
+            if (!shouldSendAlert) {
+              logger.info({
+                alertId,
+                uid,
+                symbol: researchResult.symbol,
+                mode: 'AUTO_TRADE',
+                accuracy,
+                lastAccuracy: lastAlert.accuracy,
+                status: 'SKIPPED',
+                reason: 'Accuracy did not improve since last alert'
+              }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Auto-trade alert skipped - spam prevention (accuracy did not improve)');
+            } else {
+              // All conditions met - send alert
+              const { telegramService } = await import('./telegramService');
+              const timestamp = new Date().toISOString();
+              let message = '';
+
+              if (signal === 'HOLD') {
+                message = `🚨 *DLXTRADE Auto-Trade Research Alert*
+
+**Coin:** ${researchResult.symbol}
+**Signal:** HOLD
+**Accuracy:** ${accuracy.toFixed(1)}%
+**Reason:** Accuracy below 60% threshold - no trade plan generated
+**Timestamp:** ${timestamp}
+
+⚡ *Action:* Wait for higher confidence signal before trading.`;
+            } else if (finalTradePlan && accuracy >= 70) {
+              // CRITICAL: Only include trade plan in Telegram alert if accuracy >= 70%
+              // CRITICAL: Use FINAL tradePlan from researchAggregator - same as manual research
+              // Verify tradePlan has required fields before sending
+              if (!finalTradePlan.entryPrice || !finalTradePlan.stopLoss) {
+                logger.error({
+                  uid,
+                  symbol: researchResult.symbol,
+                  accuracy,
+                  signal,
+                  tradePlan: finalTradePlan
+                }, '❌ [TELEGRAM_GUARD] BLOCKED: Trade plan missing required fields (entryPrice or stopLoss) - cannot send alert');
+                // Fallback to HOLD message
+                message = `🚨 *DLXTRADE Auto-Trade Research Alert*
+
+**Coin:** ${researchResult.symbol}
+**Signal:** HOLD (Trade plan incomplete)
+**Accuracy:** ${accuracy.toFixed(1)}%
+**Reason:** Trade plan missing required fields
+**Timestamp:** ${timestamp}
+
+⚡ *Action:* Trade plan generation failed - signal not actionable.`;
+              } else {
+              const entryPrice = finalTradePlan.entryPrice;
+              const stopLoss = finalTradePlan.stopLoss;
+              const tp1 = finalTradePlan.takeProfit1;
+              const tp2 = finalTradePlan.takeProfit2;
+              const tp3 = finalTradePlan.takeProfit3;
+
+                logger.info({
+                  uid,
+                  symbol: researchResult.symbol,
+                  accuracy,
+                  signal,
+                  hasTradePlan: true,
+                  entryPrice,
+                  stopLoss,
+                  tp1,
+                  tp2,
+                  tp3
+                }, '✅ [TELEGRAM] Sending auto-trade alert with FINAL trade plan');
+
+              message = `🚨 *DLXTRADE Auto-Trade Research Alert*
+
+**Coin:** ${researchResult.symbol}
+**Signal:** ${signal}
+**Accuracy:** ${accuracy.toFixed(1)}%
+**Entry Price:** $${entryPrice.toFixed(2)}
+**Stop Loss:** $${stopLoss.toFixed(2)}
+**Take Profit 1:** $${tp1.toFixed(2)}
+**Take Profit 2:** $${tp2.toFixed(2)}${tp3 ? `\n**Take Profit 3:** $${tp3.toFixed(2)}` : ''}
+**Timestamp:** ${timestamp}
+
+⚡ *Action:* Auto-trade will execute if accuracy >= 75% and all risk checks pass.`;
+              }
+            } else if (signal !== 'HOLD' && !finalTradePlan) {
+              // BUY/SELL signal but no trade plan - this should not happen but log it
+              logger.error({
+                uid,
+                symbol: researchResult.symbol,
+                accuracy,
+                signal,
+                reason: 'BUY/SELL signal but tradePlan is null'
+              }, '❌ [TELEGRAM_GUARD] BLOCKED: BUY/SELL signal but tradePlan is missing - cannot send alert');
+              // Fallback to HOLD message
+              message = `🚨 *DLXTRADE Auto-Trade Research Alert*
+
+**Coin:** ${researchResult.symbol}
+**Signal:** HOLD (Trade plan missing)
+**Accuracy:** ${accuracy.toFixed(1)}%
+**Reason:** Trade plan not generated despite ${signal} signal
+**Timestamp:** ${timestamp}
+
+⚡ *Action:* Trade plan unavailable - signal not actionable.`;
+              }
+
+              if (message) {
+                // CRITICAL: sendMessage signature: (botToken: string, chatId: string, message: string)
+                logger.info({
+                  alertId,
+                  uid,
+                  symbol: researchResult.symbol,
+                  mode: 'AUTO_TRADE',
+                  accuracy,
+                  signal,
+                  hasTradePlan: !!finalTradePlan,
+                  messageLength: message.length
+                }, '📱 [TELEGRAM] Sending auto-trade Telegram alert - all conditions met');
+                
+                const telegramResult = await telegramService.sendMessage(
+                  bgSettings.telegramBotToken,
+                  bgSettings.telegramChatId,
+                  message
+                );
+
+                if (telegramResult.success) {
+                  // Update last alert sent
+                  const updatedLastAlertSent = {
+                    ...(bgSettings.lastAlertSent || {}),
+                    [researchResult.symbol]: {
+                      timestamp: admin.firestore.Timestamp.now(),
+                      accuracy: accuracy,
+                    },
+                  };
+
+                  await firestoreAdapter.saveBackgroundResearchSettings(uid, {
+                    lastAlertSent: updatedLastAlertSent
+                  });
+
+                  logger.info({
+                    alertId,
+                    uid,
+                    symbol: researchResult.symbol,
+                    mode: 'AUTO_TRADE',
+                    accuracy,
+                    status: 'SENT'
+                  }, '✅ [TELEGRAM_ALERT_SENT] Auto-trade research alert sent successfully');
+                } else {
+                  logger.error({
+                    alertId,
+                    uid,
+                    symbol: researchResult.symbol,
+                    mode: 'AUTO_TRADE',
+                    accuracy,
+                    status: 'FAILED',
+                    error: telegramResult.error
+                  }, '❌ [TELEGRAM_ALERT_FAILED] Auto-trade alert failed after retries');
+                }
+              }
+            }
+          }
+        }
+      } catch (telegramError: any) {
+        const alertId = `auto_trade_error_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        logger.error({
+          alertId,
+          uid,
+          symbol: researchResult.symbol,
+          mode: 'AUTO_TRADE',
+          accuracy,
+          status: 'FAILED',
+          error: telegramError.message
+        }, '❌ [TELEGRAM_ALERT_ERROR] Failed to send Telegram alert from AutoTradeEngine');
+      }
+
+      // 6. EXECUTION ORDER ENFORCEMENT
+      // STRICT ORDER: System Risk -> Accuracy Gate -> Execution
+
+      // STEP 1: SYSTEM RISK CHECKS
+      // Verify account health (Daily Loss, Cooldown, etc.) BEFORE evaluating accuracy or creating signals
+      const systemRiskCheck = await this.checkSystemRisk(uid, false, settings);
+
+      if (!systemRiskCheck.allowed) {
+        skipReason = systemRiskCheck.reason || 'System risk check failed';
+        cycleResult = AUTO_TRADE_REASONS.SYSTEM_RISK_FAILURE;
+        logger.info({ uid, reason: skipReason, step: 'SYSTEM_RISK_CHECK' }, '⛔ [EXECUTION_ORDER] BLOCKED: System risk check failed');
+        await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', { symbol: researchResult.symbol, reason: skipReason, accuracy, timestamp: new Date().toISOString() });
+        return researchResult;
+      }
+
+      // STEP 2: ACCURACY GATE (75%)
+      // 6. Evaluate Signal & Accuracy Gate for Trade Execution
+      // accuracy variable already calculated above
+      const threshold = 75; // Rule: Auto Trade MUST execute ONLY when: accuracy >= 75%
+
+      logger.info({
+        uid,
+        symbol: researchResult.symbol,
+        accuracy,
+        threshold,
+        signal,
+        willExecute: accuracy >= threshold && signal !== 'HOLD'
+      }, '🎯 [RESEARCH_CYCLE] Accuracy gate evaluation');
+
+      if (accuracy < threshold) {
+        skipReason = `Accuracy ${accuracy.toFixed(1)}% below mandatory threshold (${threshold}%)`;
+        cycleResult = AUTO_TRADE_REASONS.TRADE_SKIPPED;
+        logger.info({
+          uid,
+          symbol: researchResult.symbol,
+          accuracy,
+          threshold,
+          reason: skipReason
+        }, '⛔ [RESEARCH_CYCLE] BLOCKED: Accuracy below threshold');
+        await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', { symbol: researchResult.symbol, reason: skipReason, accuracy, timestamp: new Date().toISOString() });
+        return researchResult;
+      }
+
+      if (signal === 'HOLD' || !signal) {
+        skipReason = signal === 'HOLD' ? AUTO_TRADE_REASONS.HOLD_SIGNAL : AUTO_TRADE_REASONS.NO_SIGNAL;
+        cycleResult = AUTO_TRADE_REASONS.TRADE_SKIPPED;
+        await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', { symbol: researchResult.symbol, reason: skipReason, accuracy, timestamp: new Date().toISOString() });
+        return researchResult;
+      }
+
+      // 7. Dynamic Parameters & Volatility Check (Requirement P4)
+      // CRITICAL: Uses user's accuracyRiskConfig (single source of truth)
+      const volClassification = researchResult.result?.analysis?.volatility?.classification || 'low';
+
+      // Calculate news score for sentiment adjustment
+      const newsArticles = researchResult.result?.news || [];
+      const newsScore = this.calculateNewsScoreFromArticles(newsArticles);
+
+      const params = await this.calculateDynamicParams(uid, accuracy, volClassification, newsScore);
+
+      if (params.skip) {
+        skipReason = params.skip;
+        cycleResult = AUTO_TRADE_REASONS.TRADE_SKIPPED;
+        await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', { symbol: researchResult.symbol, reason: skipReason, accuracy, volatility: volClassification, timestamp: new Date().toISOString() });
+        return researchResult;
+      }
+
+      // 8. Deterministic SL/TP (Requirement P5)
+      const currentPrice = await this.getCurrentMarketPrice(researchResult.symbol, uid);
+      const atr = researchResult.result?.analysis?.volatility?.atr || 0;
+      const sr = {
+        supportLevel: researchResult.result?.analysis?.structure?.support,
+        resistanceLevel: researchResult.result?.analysis?.structure?.resistance
+      };
+
+      // DETECT SCALPING MODE from Trading Settings
+      let isScalping = false;
+      try {
+        const tradingSettings = await firestoreAdapter.getTradingSettings(uid);
+        isScalping = tradingSettings?.tradeType === 'Scalping';
+      } catch (e) {
+        logger.warn({ uid, error: e.message }, 'Failed to fetch trading settings, defaulting to non-scalping');
+      }
+
+      const sltp = this.calculateSLTP(signal as 'BUY' | 'SELL', currentPrice, accuracy, atr, sr, isScalping);
+
+      // 9. Create & Execute Trade Signal
+      const tradeSignal: TradeSignal = {
+        symbol: researchResult.symbol,
+        signal: signal as 'BUY' | 'SELL',
+        entryPrice: currentPrice,
+        accuracy: accuracy,
+        stopLoss: sltp.stopLoss,
+        takeProfit: sltp.takeProfit,
+        takeProfit1: isScalping ? sltp.takeProfit1 : undefined,
+        takeProfit2: isScalping ? sltp.takeProfit2 : undefined,
+        takeProfit3: isScalping ? sltp.takeProfit3 : undefined,
+        leverage: params.leverage,
+        reasoning: `Accuracy ${accuracy.toFixed(1)}% | Model Size ${params.sizePct}% | Leverage ${params.leverage}x${isScalping ? ' | SCALPING' : ''}`,
+        requestId: `auto_${uid}_${Date.now()}`,
+        timestamp: new Date(),
+        highImpactNewsDetected: researchResult.result?.analysis?.news?.highImpact,
+        newsEvent: researchResult.result?.analysis?.news?.event
+      };
+
+      // News check (Soft block)
+      const newsDetected = !!researchResult.result?.analysis?.news?.highImpact;
+      if (newsDetected) {
+        tradeSignal.highImpactNewsDetected = true;
+        tradeSignal.newsEvent = researchResult.result?.analysis?.news?.event;
+      }
+
+      // STEP 3: TRADE EXECUTION
+      // Accuracy Gate (75%) and System Checks passed above.
+
+      logger.info({
+        uid,
+        symbol: researchResult.symbol,
+        accuracy,
+        step: 'EXECUTION'
+      }, '🚀 [EXECUTION_ORDER] Proceeding to Trade Execution');
+
+      // CRITICAL: Load config fresh before execution to ensure latest state
+      const freshConfig = await this.loadConfig(uid);
+      logger.info({
+        uid,
+        symbol: researchResult.symbol,
+        signal,
+        accuracy,
+        autoTradeEnabled: freshConfig.autoTradeEnabled,
+        manualOverride: freshConfig.manualOverride,
+        configSource: 'fresh-load-before-execution'
+      }, '🔍 [RESEARCH_CYCLE] Loading fresh config before executeTrade call');
+
+      const execution = await this.executeTrade(uid, tradeSignal);
+
+      cycleResult = execution.status === 'PENDING' ? AUTO_TRADE_REASONS.PENDING_CONFIRMATION : AUTO_TRADE_REASONS.TRADE_EXECUTED;
+
+      logger.info({
+        uid,
+        symbol: researchResult.symbol,
+        signal,
+        accuracy,
+        result: cycleResult,
+        executionStatus: execution.status,
+        tradeId: execution.tradeId
+      }, '✅ [CYCLE_COMPLETE] Trade cycle successful');
+      return researchResult;
+
+    } catch (error: any) {
+      cycleResult = AUTO_TRADE_REASONS.TRADE_FAILED;
+      skipReason = error.message;
+
+      logger.error({ uid, error: error.message, stack: error.stack }, '❌ [CYCLE_FAILED] Trade cycle failed');
+
+      // CRITICAL: Store history even on error (if not skipped)
+      // This ensures every research attempt is logged, even if it fails
+      // CRITICAL: Only save if history hasn't been saved yet in this cycle
+      // CRITICAL: Do NOT save fallback/BTC entries - only save if we have a real symbol
+      if (!skipHistoryStorage && !historySaved) {
+        try {
+          // Try to get actual symbol from research attempt if available
+          let errorSymbol = 'BTCUSDT'; // Only use as last resort
+          // Note: We don't save fallback/BTC entries, so this will be skipped if no real symbol
+          // But we log it for diagnostics
+          logger.debug({ uid, symbol: errorSymbol }, '⏭️ [HISTORY] Skipping error history save - fallback/BTC entries are not saved');
+        } catch (histError: any) {
+          logger.warn({ uid, error: histError.message }, 'Failed to store history for failed cycle');
+        }
+      } else if (!skipHistoryStorage && historySaved) {
+        logger.warn({ uid, alreadySavedSymbol: historySavedSymbol }, '⏭️ [HISTORY_GUARD] BLOCKED: Duplicate history save prevented in error handler - history already saved in this cycle');
+      }
+
+      if (Object.values(AUTO_TRADE_REASONS).includes(skipReason)) {
+        // Skip reason is already standardized
+      } else {
+        await firestoreAdapter.logActivity(uid, 'TRADE_FAILED', {
+          error: error.message,
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // CRITICAL: Return null on error (research attempted but failed)
+      // Scheduler will still update lastRunAt to track the attempt
+      return null;
+    }
+  }
+
+  /**
+   * Save pending trade for user confirmation
+   */
+  private async savePendingTrade(uid: string, tradeData: {
+    requestId: string;
+    symbol: string;
+    side: 'BUY' | 'SELL';
+    quantity: number;
+    entryPrice: number;
+    stopLoss: number;
+    takeProfit: number;
+    takeProfit1?: number;
+    takeProfit2?: number;
+    takeProfit3?: number;
+    accuracy: number;
+    researchRequestId?: string;
+    createdAt: Date;
+    expiresAt: Date;
+  }): Promise<void> {
+    await firestoreAdapter.savePendingTrade(uid, tradeData);
+  }
+
+  /**
+   * Execute an approved pending trade
+   */
+  async executeApprovedPendingTrade(uid: string, requestId: string): Promise<TradeExecution> {
+    try {
+      // Get pending trade
+      const pendingTrades = await firestoreAdapter.getPendingTrades(uid);
+      const pendingTrade = pendingTrades.find(t => t.id === requestId || t.requestId === requestId);
+
+      if (!pendingTrade) {
+        // Double check Firestore for expired trades to give better error
+
+        throw new Error('Pending trade not found or expired. Please re-run research.');
+      }
+
+      if (pendingTrade.status !== 'PENDING') {
+        throw new Error(`Trade already ${pendingTrade.status}`);
+      }
+
+      // Create trade signal from pending trade
+      const signal: TradeSignal = {
+        symbol: pendingTrade.symbol,
+        signal: pendingTrade.side,
+        entryPrice: pendingTrade.entryPrice,
+        stopLoss: pendingTrade.stopLoss,
+        takeProfit: pendingTrade.takeProfit,
+        takeProfit1: (pendingTrade as any).takeProfit1,
+        takeProfit2: (pendingTrade as any).takeProfit2,
+        takeProfit3: (pendingTrade as any).takeProfit3,
+        accuracy: pendingTrade.accuracy,
+        reasoning: pendingTrade.reasoning || 'Auto-generated trade signal',
+        timestamp: new Date(),
+        requestId: pendingTrade.requestId || requestId,
+      };
+
+      try {
+        // Execute the trade (passing true to skip confirmation check)
+        const execution = await this.executeTrade(uid, signal, true);
+
+        // Mark pending trade as approved
+        await firestoreAdapter.updatePendingTradeStatus(uid, requestId, 'APPROVED');
+
+        logger.info({ uid, requestId, symbol: signal.symbol }, 'Approved pending trade executed');
+        return execution;
+      } catch (error: any) {
+        logger.error({ uid, requestId, error: error.message }, 'Failed to execute approved pending trade');
+        throw error;
+      }
+    } catch (error: any) {
+      logger.error({ uid, requestId, error: error.message }, 'Failed to execute approved pending trade');
+      throw error;
+    }
+  }
+
+  /**
+   * Reject a pending trade
+   */
+  async rejectPendingTrade(uid: string, requestId: string): Promise<void> {
+    await firestoreAdapter.updatePendingTradeStatus(uid, requestId, 'REJECTED');
+    await this.logTradeEvent(uid, 'TRADE_REJECTED', {
+      requestId,
+      reason: 'User rejected pending trade',
+    });
+    logger.info({ uid, requestId }, 'Pending trade rejected by user');
+  }
+
+
+  private async sendTradeConfirmationNotification(uid: string, signal: TradeSignal): Promise<void> {
+    try {
+      // Send notification that trade confirmation is required with full details
+      userNotificationService.sendTradeConfirmationAlert(uid, {
+        coin: signal.symbol,
+        side: signal.signal.toLowerCase() as 'buy' | 'sell',
+        entry: signal.entryPrice,
+        sl: signal.stopLoss,
+        tp: signal.takeProfit,
+        tp1: signal.takeProfit1,
+        tp2: signal.takeProfit2,
+        tp3: signal.takeProfit3,
+        accuracy: signal.accuracy,
+        requestId: signal.requestId
+      });
+
+      logger.info({ uid, symbol: signal.symbol }, 'Trade confirmation notification sent with rich data');
+    } catch (error: any) {
+      logger.error({ uid, error: error.message }, 'Failed to send trade confirmation notification');
+    }
+  }
+
+  async checkWhaleAlerts(uid: string, symbol: string): Promise<void> {
+    try {
+      // Initialize adapter if needed
+      let adapter = this.userEngines.get(uid)?.adapter;
+      if (!adapter) {
+        adapter = await this.initializeAdapter(uid);
+      }
+      if (!adapter) return;
+
+      // Get 24h ticker data for whale/vol spike detection
+      const ticker = await adapter.getTicker(symbol);
+      if (!ticker) return;
+
+      const priceChangePct = Math.abs(parseFloat(ticker.priceChangePercent || '0'));
+      const volume = parseFloat(ticker.volume || '0');
+      const quoteVolume = parseFloat(ticker.quoteVolume || '0'); // USD value usually
+
+      // 1. PRICE WHALE: Detect large price moves (> 3% in 24h)
+      if (priceChangePct >= 3.0) {
+        const direction = parseFloat(ticker.priceChangePercent) > 0 ? 'buy' : 'sell';
+        userNotificationService.sendWhaleAlert(uid, symbol, direction, quoteVolume);
+
+        await this.logTradeEvent(uid, 'WHALE_ALERT_PRICE', {
+          symbol,
+          priceChangePct,
+          direction,
+          volume: quoteVolume
+        });
+
+        logger.info({ uid, symbol, priceChangePct }, '🐋 WHALE ALERT: Large price movement detected');
+      }
+
+      // 2. VOLUME SPIKE: Detect volume spikes (> 200% of "normal" - here we simplified to absolute large vol)
+      // Normally we'd compare to 24h avg, but ticker already gives 24h sum.
+      // If quoteVolume > $1,000,000 for non-major or $10,000,000 for major, it's a "whale" move in this context
+      if (quoteVolume >= 5000000) { // $5M+ volume is significant
+        userNotificationService.sendWhaleAlert(uid, symbol, 'buy', quoteVolume);
+        logger.info({ uid, symbol, quoteVolume }, '🐋 WHALE ALERT: High volume detected');
+      }
+
+    } catch (error: any) {
+      logger.error({ uid, symbol, error: error.message }, 'Failed to check whale alerts');
+    }
+  }
+
+  /**
+   * Handle settings change (e.g. frequency update)
+   * CRITICAL: Now delegates to BackgroundResearchScheduler (single source of truth)
+   * This method is kept for backward compatibility but scheduler handles the actual update
+   */
+  async onUserSettingsChanged(uid: string): Promise<void> {
+    // CRITICAL: Scheduler is the single source of truth for scheduling
+    // Just trigger scheduler update - it will handle mode detection and interval management
+    try {
+      const { backgroundResearchScheduler } = await import('./backgroundResearchScheduler');
+      await backgroundResearchScheduler.onUserSettingsChanged(uid);
+      logger.info({ uid }, '🔄 [AUTOTRADE] Settings changed, scheduler notified');
+    } catch (error: any) {
+      logger.warn({ uid, error: error.message }, 'Failed to notify scheduler of settings change');
+      // Fallback: Try to restart loop (for backward compatibility)
+      try {
+        await this.startAutoTradeLoop(uid);
+      } catch (fallbackError: any) {
+        logger.error({ uid, error: fallbackError.message }, 'Failed to restart auto-trade loop');
+      }
+    }
+  }
+}
+
+export const autoTradeEngine = new AutoTradeEngine();
+

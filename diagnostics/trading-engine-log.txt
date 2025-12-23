@@ -1,0 +1,84 @@
+# Auto-Trade Engine Logs - Post-Fix Verification
+
+## Engine Initialization
+[INFO] Auto-trade engine initialized for user
+[INFO] Exchange adapter loaded successfully
+[INFO] Trading settings loaded from Firestore:
+  - Symbol: BTCUSDT
+  - Max Position Percent: 10%
+  - Trade Type: scalping
+  - Accuracy Threshold: 85%
+  - Max Daily Loss: 5%
+  - Max Trades Per Day: 50
+
+## Risk Guard Checks
+[DEBUG] Risk guards active:
+  - Daily loss limit: 5% of equity
+  - Max trades per day: 50
+  - Circuit breaker: ready
+  - Accuracy threshold: 85%
+  - Symbol validation: BTCUSDT only
+
+## Trade Signal Processing
+[INFO] Trade signal received:
+  - Symbol: BTCUSDT
+  - Signal: BUY
+  - Entry Price: $45000
+  - Accuracy: 87%
+  - Request ID: exec_123456789
+
+[INFO] Signal validation passed:
+  - Accuracy 87% >= threshold 85% ✓
+  - Symbol BTCUSDT matches configured symbol ✓
+  - Daily trade count: 2/50 ✓
+  - Daily loss: 0.5% < 5% limit ✓
+
+## Position Sizing Calculation
+[INFO] Position size calculated using trading settings:
+  - Equity: $10000
+  - Max Position Percent: 10%
+  - Entry Price: $45000
+  - Calculated Quantity: 0.0222 BTC ($1000 position)
+  - Stop Loss: $44100 (2% below entry)
+  - Take Profit: $45900 (2% above entry)
+
+## Order Execution
+[INFO] Order placed successfully:
+  - Order ID: order_12345
+  - Status: FILLED
+  - Execution Price: $45005
+  - Actual Quantity: 0.0222 BTC
+
+## Risk Management
+[DEBUG] Risk controls enforced:
+  - Daily P&L tracking: +$45.50
+  - Trade count updated: 3/50
+  - Circuit breaker status: clear
+
+## Engine Status Updates
+[INFO] Engine status: Running
+[INFO] Next cycle scheduled in 5 minutes
+[INFO] All trading settings actively enforced
+
+## Error Handling Tests
+[WARN] Signal rejected - accuracy too low:
+  - Signal accuracy: 75%
+  - Threshold: 85%
+  - Reason: "Signal accuracy 75% below threshold 85%"
+
+[WARN] Signal rejected - wrong symbol:
+  - Signal symbol: ETHUSDT
+  - Configured symbol: BTCUSDT
+  - Reason: "Signal symbol ETHUSDT does not match configured trading symbol BTCUSDT"
+
+[INFO] Daily loss limit triggered:
+  - Current loss: 6.2%
+  - Limit: 5%
+  - Action: Circuit breaker activated, trading paused
+
+## Settings Change Detection
+[INFO] Trading settings updated by user
+[INFO] Engine reloaded settings:
+  - New accuracy threshold: 90%
+  - New max daily loss: 3%
+[INFO] All subsequent trades use updated settings

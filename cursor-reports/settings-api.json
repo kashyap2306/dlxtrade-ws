@@ -1,0 +1,100 @@
+{
+  "api_tests": {
+    "get_providers_test": {
+      "endpoint": "GET /api/settings/providers",
+      "status": "SUCCESS",
+      "response": {
+        "success": true,
+        "providers": {
+          "marketData": {
+            "primary": {
+              "providerName": "CoinGecko",
+              "id": "coingecko",
+              "type": "marketData",
+              "enabled": true,
+              "apiKeyPresent": false
+            },
+            "backups": [
+              {
+                "providerName": "BraveNewCoin",
+                "id": "bravenewcoin",
+                "type": "marketData",
+                "enabled": false,
+                "apiKeyPresent": false,
+                "apiKeyRequired": true
+              },
+              {
+                "providerName": "CoinAPI",
+                "id": "coinapi",
+                "type": "marketData",
+                "enabled": false,
+                "apiKeyPresent": false,
+                "apiKeyRequired": true
+              }
+            ]
+          },
+          "news": {
+            "primary": {
+              "providerName": "NewsData.io",
+              "id": "newsdataio",
+              "type": "news",
+              "enabled": true,
+              "apiKeyPresent": false,
+              "apiKeyRequired": true
+            },
+            "backups": [
+              {
+                "providerName": "BingNews",
+                "id": "bingnews",
+                "type": "news",
+                "enabled": false,
+                "apiKeyPresent": false,
+                "apiKeyRequired": true
+              }
+            ]
+          },
+          "metadata": {
+            "primary": {
+              "providerName": "CryptoCompare",
+              "id": "cryptocompare",
+              "type": "metadata",
+              "enabled": true,
+              "apiKeyPresent": false,
+              "apiKeyRequired": true
+            },
+            "backups": [
+              {
+                "providerName": "CoinCap",
+                "id": "coincap",
+                "type": "metadata",
+                "enabled": false,
+                "apiKeyPresent": false,
+                "apiKeyRequired": false
+              }
+            ]
+          }
+        }
+      }
+    },
+    "save_providers_test": {
+      "endpoint": "POST /api/settings/providers/save",
+      "status": "SUCCESS",
+      "request_payload": {
+        "providerId": "coinmarketcap",
+        "providerType": "marketData",
+        "isPrimary": false,
+        "enabled": true,
+        "apiKey": "TEST_API_KEY_123"
+      },
+      "response": {
+        "success": true,
+        "message": "coinmarketcap enabled successfully"
+      }
+    },
+    "test_providers_missing": {
+      "endpoint": "POST /api/settings/providers/test",
+      "status": "MISSING",
+      "note": "This endpoint needs to be implemented for connection testing functionality"
+    }
+  }
+}

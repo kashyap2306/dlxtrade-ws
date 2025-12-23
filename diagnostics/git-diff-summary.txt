@@ -1,0 +1,163 @@
+# Git Diff Summary - Trading Settings Fixes
+
+## Files Modified
+
+### 1. frontend/src/pages/Settings.tsx
+
+#### Changes Made:
+1. **Fixed Accuracy Trigger field binding** (line 983)
+   - Changed: `accuracyTrigger` → `accuracyThreshold`
+
+2. **Added default value to Trade Type select** (line 964)
+   - Changed: `value={settings.tradeType}` → `value={settings.tradeType || 'scalping'}`
+
+3. **Consolidated save operations**
+   - Modified `handleSaveTradingSettings()` to include all trading fields
+   - Removed separate `handleSaveRiskControls()` function
+   - Removed `savingRisk` state variable
+
+4. **Unified UI layout**
+   - Moved risk controls fields into Trading Settings section
+   - Updated section description
+   - Removed separate Risk Controls section
+
+#### Code Changes Summary:
+```diff
+- const [savingTrading, setSavingTrading] = useState(false);
+- const [savingRisk, setSavingRisk] = useState(false);
++ const [savingTrading, setSavingTrading] = useState(false);
+
+- onChange={(e) => setSettings({ ...settings, accuracyTrigger: parseInt(e.target.value, 10) })}
++ onChange={(e) => setSettings({ ...settings, accuracyThreshold: parseInt(e.target.value, 10) })}
+
+- value={settings.tradeType}
++ value={settings.tradeType || 'scalping'}
+
+- const handleSaveRiskControls = async () => { ... }
++ // Removed function
+
+// Modified handleSaveTradingSettings to include risk controls
++ const tradingSettings = {
++   symbol: settings.symbol,
++   maxPositionPercent: settings.maxPositionPercent,
++   tradeType: settings.tradeType,
++   accuracyThreshold: settings.accuracyThreshold,
++   maxDailyLoss: settings.maxDailyLoss,
++   maxTradesPerDay: settings.maxTradesPerDay
++ };
+```
+
+### 2. dist/services/autoTradeEngine.js
+
+#### Changes Made:
+1. **Added `loadTradingSettings()` method**
+   - Loads settings from Firestore `users/{uid}/settings/current`
+   - Includes validation for all setting ranges
+   - Provides safe defaults for invalid values
+
+2. **Modified `executeTrade()` method**
+   - Added trading settings loading
+   - Added accuracy threshold validation
+   - Added symbol matching validation
+   - Updated position sizing to use `maxPositionPercent`
+
+3. **Enhanced `checkRiskGuards()` method**
+   - Updated to use `maxDailyLoss` from trading settings
+   - Added `maxTradesPerDay` validation
+
+4. **Updated logging**
+   - Position sizing logs now include trading settings values
+   - Trade rejection logs include specific reasons
+
+#### Code Changes Summary:
+```diff
++ async loadTradingSettings(uid) {
++   // Load and validate trading settings from Firestore
++   // Return sanitized settings with defaults
++ }
+
++ // In executeTrade()
++ const tradingSettings = await this.loadTradingSettings(uid);
++
++ // Accuracy validation
++ if (signal.accuracy < tradingSettings.accuracyThreshold) {
++   throw new Error(`Signal accuracy below threshold`);
++ }
++
++ // Symbol validation
++ if (signal.symbol !== tradingSettings.symbol) {
++   throw new Error(`Symbol mismatch`);
++ }
++
++ // Position sizing using trading settings
++ const positionSizePercent = tradingSettings.maxPositionPercent / 100;
++ const quantity = (equity * positionSizePercent) / signal.entryPrice;
++
++ // Risk guards using trading settings
++ if (stats.dailyTrades >= tradingSettings.maxTradesPerDay) {
++   return { allowed: false, reason: 'Max trades per day reached' };
++ }
++
++ if (Math.abs(stats.dailyPnL) >= equity * (tradingSettings.maxDailyLoss / 100)) {
++   engine.circuitBreaker = true;
++ }
+```
+
+## Files Created (Diagnostics)
+
+### 3. diagnostics/console-trading.txt
+- Console logs from trading settings operations
+- Error tracking and debugging information
+
+### 4. diagnostics/network-trading.txt
+- Network call logs for settings API
+- Request/response patterns and performance metrics
+
+### 5. diagnostics/page-trading-settings.html
+- HTML snapshot of the trading settings page
+- Form structure and validation states
+
+### 6. diagnostics/trading-engine-log.txt
+- Auto-trade engine execution logs
+- Risk control enforcement verification
+
+### 7. diagnostics/ts-trading-after.txt
+- TypeScript compilation results
+- Build verification status
+
+### 8. diagnostics/dev-trading-after.txt
+- Dev server verification results
+- Manual testing outcomes
+
+### 9. diagnostics/report-trading-settings.md
+- Comprehensive fix report
+- Root cause analysis and solutions
+- Testing and verification results
+
+### 10. diagnostics/git-diff-summary.txt
+- Summary of all code changes made
+- Before/after code snippets
+
+## Branch Information
+
+**Branch Created**: `fix/trading-settings-20241202`
+**Base Branch**: `main` (assumed)
+**Status**: All changes committed locally
+**Push Status**: Not pushed upstream (as requested)
+
+## Summary
+
+**Files Modified**: 2
+**Files Created**: 8 (diagnostics)
+**Lines Changed**: ~150
+**New Features Added**:
+- Trading settings integration in auto-trade engine
+- Enhanced risk management with user-configured limits
+- Runtime validation and safety checks
+- Unified settings UI
+
+**Bugs Fixed**:
+- Accuracy trigger field binding
+- Trade type select blank option
+- Separated settings persistence
+- Missing auto-trade engine integration
