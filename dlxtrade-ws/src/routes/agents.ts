@@ -52,7 +52,8 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       });
 
       const firestoreOperation = async () => {
-        return await firestoreAdapter.getAllAgents();
+        // Use same base data source as /api/agents/unlocked: users/{uid}/agents
+        return await firestoreAdapter.getUserAgents(user.uid);
       };
 
       let agents;

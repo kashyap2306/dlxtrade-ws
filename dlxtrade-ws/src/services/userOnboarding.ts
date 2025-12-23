@@ -3,6 +3,38 @@ import { getFirebaseAdmin } from '../utils/firebase';
 import { firestoreAdapter } from './firestoreAdapter';
 import { logger } from '../utils/logger';
 
+/**
+ * GLOBAL HARD BLOCK: Prevents _init creation in users/{uid}/agents if real agents exist
+ * This is enforced at the WRITE LEVEL - called before ANY Firestore write to agents/_init
+ * 
+ * @param db - Firestore instance
+ * @param uid - User ID
+ * @returns true if _init creation is ALLOWED, false if BLOCKED
+ */
+async function canCreateAgentsInit(db: admin.firestore.Firestore, uid: string): Promise<boolean> {
+  try {
+    // Query users/{uid}/agents and count ONLY real agent documents (excluding _* documents)
+    const userAgentsSnapshot = await db.collection('users').doc(uid).collection('agents').get();
+    const realAgentDocs = userAgentsSnapshot.docs.filter(doc => 
+      doc.id !== '_init' && !doc.id.startsWith('_')
+    );
+    const realAgentCount = realAgentDocs.length;
+
+    // HARD BLOCK: If real agents exist, NEVER allow _init creation
+    if (realAgentCount > 0) {
+      logger.info({ uid, realAgentCount }, '[INIT_BLOCKED] Real agents exist, skipping _init creation (HARD BLOCK)');
+      return false;
+    }
+
+    // Allow creation only if no real agents exist
+    return true;
+  } catch (error: any) {
+    // On error, be safe and block creation
+    logger.error({ uid, error: error.message }, '[INIT_BLOCKED] Error checking real agents, blocking _init creation (safety)');
+    return false;
+  }
+}
+
 // DLXTRADE Provider System - 33 providers total
 const PROVIDERS = {
   // Market Data Providers (11 total)
@@ -669,6 +701,16 @@ export async function ensureUser(
 
     // Initialize empty containers with a placeholder doc to ensure collection exists
     const initCollection = async (path: string) => {
+      // HARD BLOCK: Special handling for agents collection
+      if (path === 'agents') {
+        // Check if _init creation is allowed before proceeding
+        const canCreate = await canCreateAgentsInit(db, uid);
+        if (!canCreate) {
+          logger.info({ uid }, '[INIT_BLOCKED] Blocked _init creation in agents collection via initCollection helper');
+          return; // Exit immediately - do NOT create _init
+        }
+      }
+
       const ref = userDocRef.collection(path).doc('_init');
       const doc = await ref.get();
       if (!doc.exists) {
@@ -681,10 +723,70 @@ export async function ensureUser(
     await initCollection('researchLogs');
 
     // 10. Ensure agents subcollection exists and all agents are created with unlocked=false
+    // CRITICAL GLOBAL INVARIANT: _init may ONLY be created if:
+    //   - createdNew === true (first-time onboarding)
+    //   - AND realAgentCount === 0 (no real agent documents exist)
+    // If realAgentCount > 0: NEVER create _init, even if it's missing
     try {
+      // GLOBAL INVARIANT: Always query users/{uid}/agents and count ONLY real agent documents
+      // Real agents = documents that do NOT start with '_'
+      const userAgentsSnapshot = await userDocRef.collection('agents').get();
+      const realAgentDocs = userAgentsSnapshot.docs.filter(doc => 
+        doc.id !== '_init' && !doc.id.startsWith('_')
+      );
+      const realAgentCount = realAgentDocs.length;
+
+      // GLOBAL INVARIANT ENFORCEMENT: Only create _init if BOTH conditions are met
+      const shouldCreateInit = createdNew === true && realAgentCount === 0;
+
+      if (shouldCreateInit) {
+        // HARD BLOCK: Double-check at write level before creating _init
+        const canCreate = await canCreateAgentsInit(db, uid);
+        if (!canCreate) {
+          logger.info({ uid, realAgentCount }, '[INIT_BLOCKED] Blocked _init creation - real agents detected at write level (HARD BLOCK)');
+          // Exit immediately - do NOT create _init
+        } else {
+          // Check if _init already exists before creating
+          const initRef = userDocRef.collection('agents').doc('_init');
+          const initDoc = await initRef.get();
+          if (!initDoc.exists) {
+            // Final check before write
+            const finalCheck = await canCreateAgentsInit(db, uid);
+            if (!finalCheck) {
+              logger.info({ uid }, '[INIT_BLOCKED] Blocked _init creation - real agents detected in final check before write');
+              return; // Exit immediately - do NOT write
+            }
+
+            await initRef.set({
+              name: '_init',
+              description: '',
+              unlocked: false,
+              createdAt: now,
+              updatedAt: now,
+            });
+            logger.info({ uid, realAgentCount: 0 }, 'Created _init document in agents collection (first-time onboarding, no real agents)');
+          } else {
+            logger.debug({ uid }, '_init already exists, skipping creation');
+          }
+        }
+      } else {
+        // GLOBAL INVARIANT: If realAgentCount > 0, NEVER create _init
+        if (realAgentCount > 0) {
+          logger.debug({ uid, realAgentCount }, 'Skipping _init creation - real agents exist (GLOBAL INVARIANT)');
+        } else if (!createdNew) {
+          logger.debug({ uid, createdNew }, 'Skipping _init creation - not first-time onboarding');
+        }
+      }
+
+      // Create agent documents from global agents collection (if they don't exist)
       const allAgentsSnapshot = await db.collection('agents').get();
       for (const doc of allAgentsSnapshot.docs) {
         const agentId = doc.id;
+        // Skip _init and other system documents
+        if (agentId === '_init' || agentId.startsWith('_')) {
+          continue;
+        }
+        
         const agentData = doc.data() || {};
         const userAgentRef = userDocRef.collection('agents').doc(agentId);
         const userAgentDoc = await userAgentRef.get();

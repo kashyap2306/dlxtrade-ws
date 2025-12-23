@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from '
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { useNotificationContext } from '../contexts/NotificationContext';
-import { useChatbot } from '../contexts/ChatbotContext';
 import { BellIcon, Bars3Icon, SparklesIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
 
 // Memoized Profile Menu Component
@@ -234,7 +233,6 @@ OptimizedNotificationBell.displayName = 'OptimizedNotificationBell';
 // Main TopNavigation Component
 const TopNavigation = memo(() => {
   const { user } = useAuth();
-  const { isOpen: chatbotOpen } = useChatbot();
   const handleHamburgerClick = useCallback(() => {
     const globalToggle = (window as any)?.__sidebarToggle;
     if (typeof globalToggle === 'function') {
@@ -242,8 +240,7 @@ const TopNavigation = memo(() => {
     }
   }, []);
 
-  // Hide navigation when chatbot is open
-  if (chatbotOpen || !user) {
+  if (!user) {
     return null;
   }
 

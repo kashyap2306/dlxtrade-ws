@@ -475,10 +475,6 @@ export const marketApi = {
   getSymbols: () => api.get('/market/symbols'),
 };
 
-// Chatbot API
-export const chatbotApi = {
-  sendMessage: (data: { message: string }) => api.post('/chatbot', data),
-};
 
 // Wallet - removed, endpoints don't exist
 // export const walletApi = {

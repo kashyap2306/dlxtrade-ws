@@ -1257,6 +1257,23 @@ export class AutoTradeEngine {
   /**
    * Check risk guards before placing order
    */
+  /**
+   * CRITICAL: Validate symbol is in top 10 coins by market cap
+   * System is restricted to ONLY top 10 coins
+   */
+  private async isSymbolInTop10(uid: string, symbol: string): Promise<boolean> {
+    try {
+      const { getTop100Coins } = await import('./researchModes');
+      const top10 = await getTop100Coins(uid, 10);
+      const normalizedSymbol = symbol.toUpperCase();
+      return top10.some(coin => coin.symbol === normalizedSymbol);
+    } catch (error: any) {
+      logger.error({ uid, symbol, error: error.message }, 'Error checking if symbol is in top 10');
+      // On error, be safe and block (don't allow non-top-10 coins)
+      return false;
+    }
+  }
+
   async checkRiskGuards(uid: string, signal: TradeSignal, isManualApproval: boolean = false): Promise<{ allowed: boolean; reason?: string }> {
     const engine = await this.getUserEngine(uid);
     const config = engine.config;
@@ -1275,6 +1292,16 @@ export class AutoTradeEngine {
       cooldownUntil: config.cooldownUntil,
       configSource: 'in-memory'
     }, '🔍 [RISK_GUARDS] Starting risk guard checks');
+
+    // CRITICAL: TOP 10 COIN RESTRICTION - Block non-top-10 coins immediately
+    const isTop10 = await this.isSymbolInTop10(uid, signal.symbol);
+    if (!isTop10) {
+      logger.warn({ uid, symbol: signal.symbol }, '🚫 [TOP_10_BLOCK] Trade blocked - symbol not in top 10 coins by market cap');
+      return {
+        allowed: false,
+        reason: `NOT_TOP_10: ${signal.symbol} is not in top 10 coins by market cap - system restricted to top 10 only`
+      };
+    }
 
     // FETCH TRADING SETTINGS FOR ENFORCEMENT
     const settings = await AutoTradeEngine.getTradingSettings(uid);

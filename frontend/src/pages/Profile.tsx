@@ -820,7 +820,6 @@ export default function Profile() {
                       </div>
                     )}
                     <h2 className="text-xl font-bold text-white flex items-center gap-3">
-                      API Usage Dashboard
                     </h2>
                     <div className="flex gap-2">
                       <span className="text-xs text-purple-400 bg-purple-500/10 px-2 py-1 rounded border border-purple-500/20">

@@ -439,6 +439,45 @@ export async function researchRoutes(fastify: FastifyInstance) {
           });
         }
         console.log("🔥 [API_KEY_CHECK] PASSED - continuing research");
+
+        // CRITICAL: For MANUAL research, allow Top 100 non-stablecoins
+        // For AUTO/SCHEDULER, enforce Top 10 only
+        const requestSource = body.source || (isManualResearch ? 'MANUAL' : 'AUTO');
+        const manualSymbol = (body.symbols?.[0] || body.symbol || '').toUpperCase();
+        
+        if (manualSymbol && requestSource === 'MANUAL') {
+          // Manual research: Allow Top 100 non-stablecoins
+          const { getTop100NonStablecoins } = await import('../services/researchModes');
+          const top100 = await getTop100NonStablecoins(uid);
+          const top100Symbols = new Set(top100.map(c => c.symbol.toUpperCase()));
+          
+          if (!top100Symbols.has(manualSymbol)) {
+            logger.warn({ uid, symbol: manualSymbol }, 'Manual research rejected - coin not in top 100 non-stablecoins');
+            return reply.code(400).send({
+              success: false,
+              error: 'Invalid coin selection',
+              message: `The selected coin (${manualSymbol}) is not in the top 100 non-stablecoins by market cap. Please select a coin from the available list.`,
+              blocked: true,
+              reason: 'NOT_IN_TOP_100_NON_STABLECOINS'
+            });
+          }
+        } else if (manualSymbol && (requestSource === 'AUTO' || requestSource === 'SCHEDULER')) {
+          // Auto/Scheduler: Enforce Top 10 only
+          const { getTop10NonStablecoins } = await import('../services/researchModes');
+          const top10 = await getTop10NonStablecoins(uid);
+          const top10Symbols = new Set(top10.map(c => c.symbol.toUpperCase()));
+          
+          if (!top10Symbols.has(manualSymbol)) {
+            logger.warn({ uid, symbol: manualSymbol, source: requestSource }, 'Auto research rejected - coin not in top 10 non-stablecoins');
+            return reply.code(400).send({
+              success: false,
+              error: 'Invalid coin selection',
+              message: `The selected coin (${manualSymbol}) is not in the top 10 non-stablecoins by market cap. Auto-trade only supports top 10 coins.`,
+              blocked: true,
+              reason: 'NOT_IN_TOP_10_NON_STABLECOINS'
+            });
+          }
+        }
       }
 
       if (isGlobal) {
@@ -491,10 +530,17 @@ export async function researchRoutes(fastify: FastifyInstance) {
       return reply;
     }
 
-    // 2. IDEMPOTENCY CHECK (SYNC)
+    // 2. IDEMPOTENCY CHECK (SYNC) - Prevent duplicate research
     if (globalRunningTasks.has(lockKey)) {
       console.log(`[IDEMPOTENCY_BLOCK] Already running for ${lockKey}`);
-      reply.send({ success: true, status: "already_running", signal: "ANALYZING", symbol: targetSymbol });
+      logger.info({ uid, symbol: targetSymbol, lockKey }, 'Research already in progress - returning IN_PROGRESS status');
+      reply.send({ 
+        success: true, 
+        status: "IN_PROGRESS", 
+        signal: "ANALYZING", 
+        symbol: targetSymbol,
+        message: 'Research is already running for this coin. Please wait for it to complete.'
+      });
       return reply;
     }
 
@@ -1141,23 +1187,20 @@ export async function researchRoutes(fastify: FastifyInstance) {
       });
     }
 
-    const cacheKey = `top50_coins_${uid}`;
-
-    const fetchCoins = async () => {
-      const deepResearchEngine = new DeepResearchEngine();
-      const coins = await deepResearchEngine.getTop50Coins(uid);
-      return coins || [];
-    };
+    const cacheKey = `top100_coins_${uid}`;
 
     try {
+      // CRITICAL: Use getTop100NonStablecoins for manual research UI
+      const { getTop100NonStablecoins } = await import('../services/researchModes');
+      
       // Serve cache if available
       const cached = cacheService.get('price', cacheKey);
       if (cached && cached.length > 0) {
-        logger.info({ uid, count: cached.length }, 'GET /deep-research/top50 served from cache');
+        logger.info({ uid, count: cached.length }, 'GET /deep-research/top50 served from cache (top 100 non-stablecoins)');
         console.log("[RESEARCH_IMMEDIATE_RESPONSE_SENT]");
         reply.send({
           success: true,
-          coins: cached,
+          coins: cached.slice(0, 100), // Return up to 100 for manual research
           source: 'cache',
           timestamp: new Date().toISOString(),
           cached: true
@@ -1165,18 +1208,23 @@ export async function researchRoutes(fastify: FastifyInstance) {
         return;
       }
 
-      // NO LOCAL TIMEOUT - Rely on global exemption
-      const coins = await fetchCoins();
+      // Fetch top 100 non-stablecoins with timeout guard
+      const fetchPromise = getTop100NonStablecoins(uid);
+      const timeoutPromise = new Promise<any[]>((_, reject) => 
+        setTimeout(() => reject(new Error('Request timeout')), 5000)
+      );
+      
+      const coins = await Promise.race([fetchPromise, timeoutPromise]);
 
       console.log("[RESEARCH_IMMEDIATE_RESPONSE_SENT]");
       reply.send({
         success: true,
-        coins: coins || [],
+        coins: coins.slice(0, 100),
         source: 'providers',
         timestamp: new Date().toISOString(),
         cached: false
       });
-      if (coins && coins.length > 0) cacheService.set('price', cacheKey, coins);
+      if (coins.length > 0) cacheService.set('price', cacheKey, coins);
       return;
 
     } catch (err: any) {
@@ -1194,7 +1242,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // GET /api/deep-research/top10 - Returns top 10 coins by market cap (backward compatibility)
+  // GET /api/deep-research/top10 - Returns top 10 non-stablecoins (for auto-trade UI)
   fastify.get('/deep-research/top10', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
@@ -1215,26 +1263,33 @@ export async function researchRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      logger.info({ uid }, 'Fetching top 10 coins for deep research (backward compatibility)');
+      logger.info({ uid }, 'Fetching top 10 non-stablecoins for auto-trade UI');
 
-      // Check cache first (market data cached for 30 seconds)
-      const cacheKey = `top50_coins_${uid}`;
-      let top50Coins = cacheService.get('price', cacheKey);
+      // CRITICAL: Use getTop10NonStablecoins for auto-trade UI
+      const { getTop10NonStablecoins } = await import('../services/researchModes');
+      
+      // Check cache first
+      const cacheKey = `top10_coins_${uid}`;
+      let top10Coins = cacheService.get('price', cacheKey);
 
-      if (!top50Coins) {
-        const deepResearchEngine = new DeepResearchEngine();
-        top50Coins = await deepResearchEngine.getTop50Coins(uid);
-        cacheService.set('price', cacheKey, top50Coins);
-        logger.info({ uid }, 'Top 50 coins fetched from providers and cached');
+      if (!top10Coins || top10Coins.length === 0) {
+        // Fetch with timeout guard
+        const fetchPromise = getTop10NonStablecoins(uid);
+        const timeoutPromise = new Promise<any[]>((_, reject) => 
+          setTimeout(() => reject(new Error('Request timeout')), 5000)
+        );
+        
+        top10Coins = await Promise.race([fetchPromise, timeoutPromise]);
+        cacheService.set('price', cacheKey, top10Coins);
+        logger.info({ uid }, 'Top 10 non-stablecoins fetched from providers and cached');
       } else {
-        logger.info({ uid }, 'Top 50 coins served from cache');
+        logger.info({ uid }, 'Top 10 non-stablecoins served from cache');
       }
-
-      // Return first 10 coins for backward compatibility
+      
       console.log("[RESEARCH_IMMEDIATE_RESPONSE_SENT]");
       reply.send({
         success: true,
-        coins: top50Coins.slice(0, 10),
+        coins: top10Coins.slice(0, 10),
         timestamp: new Date().toISOString(),
         cached: !!cacheService.get('price', cacheKey),
       });

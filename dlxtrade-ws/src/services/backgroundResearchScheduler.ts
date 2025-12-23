@@ -145,6 +145,9 @@ export class BackgroundResearchScheduler {
 
       // Check each user's background research settings
       for (const userDoc of usersSnapshot.docs) {
+        // Yield to event loop periodically to prevent blocking API endpoints
+        await yieldToEventLoop();
+        
         const uid = userDoc.id;
 
         try {
@@ -1249,24 +1252,43 @@ export class BackgroundResearchScheduler {
           existingCache.disabled = true;
           this.decryptionFailureCache.set(uid, existingCache);
           
-          // CRITICAL: For AUTO_TRADE_RESEARCH mode, disable scheduler once to prevent retry loops
+          // CRITICAL: Exchange decryption failure should block execution ONLY, not scheduler
+          // Scheduler must continue running to allow auto-recovery when user fixes API keys
           if (mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
-            logger.error({
+            logger.warn({
               uid,
               mode,
               failureCount: existingCache.failureCount,
               error: researchErr.message
-            }, '❌ [DECRYPTION_FAILURE] Exchange key decryption failed - disabling scheduler for AUTO_TRADE_RESEARCH mode to prevent retry loop');
+            }, '⚠️ [DECRYPTION_FAILURE] Exchange key decryption failed - skipping execution for this cycle, scheduler continues');
             
-            // Disable scheduler for this user
-            await this.disableUserScheduler(uid);
-            
-            // Log activity for user visibility
-            await firestoreAdapter.logActivity(uid, 'AUTO_TRADE_DISABLED', {
+            // Log activity for user visibility (but do NOT disable scheduler)
+            await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', {
               reason: 'EXCHANGE_KEY_DECRYPTION_FAILED',
-              message: 'Auto-trade disabled due to exchange API key decryption failure. Please re-enter your exchange API keys with the correct ENCRYPTION_SECRET.',
+              message: 'Auto-trade execution skipped due to exchange API key decryption failure. Please re-enter your exchange API keys with the correct ENCRYPTION_SECRET. Scheduler will continue and retry after cooldown.',
               timestamp: new Date().toISOString()
             });
+            
+            // Store history with status=SKIPPED to track the skipped cycle
+            try {
+              await firestoreAdapter.storeResearchHistory(uid, {
+                symbol: 'BTCUSDT',
+                signal: 'HOLD',
+                accuracy: 0,
+                price: 0,
+                tradePlan: null,
+                isDeepResearch: true,
+                source: 'AUTO_TRADE',
+                status: 'SKIPPED',
+                skipReason: 'EXCHANGE_KEY_DECRYPTION_FAILED',
+                error: researchErr.message
+              });
+            } catch (histError: any) {
+              logger.warn({ uid, error: histError.message }, 'Failed to store history for decryption failure cycle');
+            }
+            
+            // Return early - do NOT throw, allow scheduler to continue
+            return;
           } else {
             // For TELEGRAM_BACKGROUND_RESEARCH mode, just log and continue (research doesn't need exchange)
             logger.warn({
@@ -1274,10 +1296,10 @@ export class BackgroundResearchScheduler {
               mode,
               error: researchErr.message
             }, '⚠️ [DECRYPTION_FAILURE] Exchange key decryption failed - continuing TELEGRAM_BACKGROUND_RESEARCH (exchange not required)');
+            
+            // Return early - do NOT throw, allow scheduler to continue
+            return;
           }
-          
-          // Re-throw to prevent further processing
-          throw researchErr;
         } else {
           // Other error - re-throw normally
           throw researchErr;
@@ -1355,6 +1377,34 @@ export class BackgroundResearchScheduler {
 
         const finalAccuracyPercent = Math.round(finalAccuracy > 1 ? finalAccuracy : finalAccuracy * 100);
         const signal = deepResearchResult.signal || 'HOLD';
+
+        // CRITICAL: TOP 10 COIN RESTRICTION - Block non-top-10 coins
+        try {
+          const { getTop100Coins } = await import('./researchModes');
+          const top10 = await getTop100Coins(uid, 10);
+          const normalizedCoin = coin.toUpperCase();
+          const isTop10 = top10.some(c => c.symbol === normalizedCoin);
+          
+          if (!isTop10) {
+            logger.warn({ uid, coin: normalizedCoin }, '🚫 [TOP_10_BLOCK] Telegram alert blocked - symbol not in top 10 coins by market cap');
+            // Skip Telegram alert for non-top-10 coins
+            maxAccuracy = finalAccuracyPercent;
+            if (jobState) {
+              jobState.isRunning = false;
+              jobState.lastRunAt = new Date();
+            }
+            return; // Exit early - do not process non-top-10 coins
+          }
+        } catch (top10CheckError: any) {
+          logger.error({ uid, coin, error: top10CheckError.message }, 'Error checking top 10 - blocking alert for safety');
+          // On error, be safe and block
+          maxAccuracy = finalAccuracyPercent;
+          if (jobState) {
+            jobState.isRunning = false;
+            jobState.lastRunAt = new Date();
+          }
+          return; // Exit early on error
+        }
 
         // CRITICAL: Use tradePlan directly from research result (single source of truth)
         // Do NOT recompute or mutate - trust the finalized research result
@@ -2165,18 +2215,24 @@ export class BackgroundResearchScheduler {
 
   /**
    * Check if user has required primary APIs for Telegram Background Research
-   * REQUIRES: CryptoCompare AND NewsData (both must be enabled)
+   * REQUIRES: CryptoCompare AND at least ONE enabled news provider with valid apiKey
+   * (CryptoPanic, GNews, Reddit, MarketAux, NewsData, etc.)
    */
   private async hasRequiredPrimaryAPIs(uid: string): Promise<boolean> {
     try {
       const providerConfig = await getUserIntegrationsByUid(uid, 'background_job');
       const cryptocompare = providerConfig?.marketData?.cryptocompare;
-      const newsdata = providerConfig?.news?.newsdata;
 
       const hasCryptoCompare = cryptocompare?.enabled === true && !!cryptocompare?.apiKey;
-      const hasNewsData = newsdata?.enabled === true && !!newsdata?.apiKey;
+      
+      // Check for ANY valid news provider (not just NewsData)
+      // A provider is VALID only if: enabled === true AND apiKey exists AND apiKey is non-empty string
+      const hasValidNewsProvider = providerConfig?.news && 
+        Object.values(providerConfig.news).some((p: any) => 
+          p?.enabled === true && p?.apiKey && typeof p.apiKey === 'string' && p.apiKey.trim().length > 0
+        );
 
-      return hasCryptoCompare && hasNewsData;
+      return hasCryptoCompare && hasValidNewsProvider;
     } catch (error: any) {
       logger.error({
         uid,

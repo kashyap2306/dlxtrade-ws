@@ -158,12 +158,13 @@ export default function ResearchPanel() {
     return symbols;
   }, [topCoins, normalizeSymbol]);
 
-  // Fetch top 100 coins from CoinGecko for global research
+  // Fetch top 10 non-stablecoins (DEPRECATED: Use API endpoint instead)
+  // This function is kept for backward compatibility but should use /deep-research/top50 endpoint
   const fetchTop100Coins = useCallback(async (): Promise<string[]> => {
     try {
-      console.log('[RESEARCH] Fetching top 100 coins from CoinGecko...');
+      console.log('[RESEARCH] Fetching top 10 non-stablecoins from CoinGecko (fallback)...');
       const response = await fetch(
-        'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false',
+        'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=50&page=1&sparkline=false',
         {
           method: 'GET',
           headers: {
@@ -182,11 +183,18 @@ export default function ResearchPanel() {
         throw new Error('Invalid response format from CoinGecko');
       }
 
-      // Normalize symbols
+      // CRITICAL: Filter out stablecoins
+      const stablecoinSymbols = ['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'FDUSD', 'USDE'];
+      const nonStablecoins = data.filter((coin: any) => {
+        const symbol = (coin.symbol || '').toUpperCase();
+        return !stablecoinSymbols.includes(symbol);
+      });
+
+      // Normalize symbols and limit to top 10
       const symbols: string[] = [];
       const seen = new Set<string>();
 
-      for (const coin of data) {
+      for (const coin of nonStablecoins.slice(0, 10)) {
         const rawSymbol = coin.symbol?.toUpperCase();
         if (!rawSymbol) continue;
 
@@ -197,11 +205,11 @@ export default function ResearchPanel() {
         }
       }
 
-      console.log(`[RESEARCH] Fetched and normalized ${symbols.length} symbols from CoinGecko`);
+      console.log(`[RESEARCH] Fetched and normalized ${symbols.length} non-stablecoin symbols from CoinGecko (top 10)`);
       return symbols;
     } catch (err: any) {
-      console.error('[RESEARCH] Failed to fetch top 100 coins from CoinGecko:', err);
-      throw new Error(`Failed to fetch top 100 coins: ${err.message || 'Unknown error'}`);
+      console.error('[RESEARCH] Failed to fetch top 10 non-stablecoins from CoinGecko:', err);
+      throw new Error(`Failed to fetch top 10 non-stablecoins: ${err.message || 'Unknown error'}`);
     }
   }, [normalizeSymbol]);
 
@@ -225,18 +233,28 @@ export default function ResearchPanel() {
     console.log('[RESEARCH] Logs refresh requested (disabled - logs are optional)');
   }, []);
 
-  // Load top 50 coins for deep research - REAL API CALL
+  // Load top 100 non-stablecoins for manual research - REAL API CALL
+  // CRITICAL: Manual research allows Top 100, auto-trade uses Top 10
   const loadTopCoins = useCallback(async () => {
     if (!user?.uid) {
       console.log('[RESEARCH] Skipping loadTopCoins - no user');
       return;
     }
 
-    console.log('[RESEARCH] Loading top 50 coins from API...');
+    console.log('[RESEARCH] Loading top 100 non-stablecoins from API for manual research...');
     setTopCoinsLoading(true);
+    
+    // Use AbortController for request cancellation
+    const abortController = new AbortController();
+    let isCancelled = false;
+    
     try {
       const response = await researchApi.deepResearch.getTop50();
-      console.log('[RESEARCH] Top50 API response:', response);
+      
+      // Check if component unmounted
+      if (isCancelled) return;
+      
+      console.log('[RESEARCH] Top100 non-stablecoins API response:', response);
 
       // Handle different response structures
       let coins: any[] = [];
@@ -253,21 +271,49 @@ export default function ResearchPanel() {
         else if (data.data) coins = Array.isArray(data.data) ? data.data : [];
       }
 
-      if (coins.length === 0) {
-        console.warn('[RESEARCH] Top 50 coins API returned empty array - treating as valid fallback state');
+      // CRITICAL: Filter out stablecoins on frontend as well (safety check)
+      const stablecoinSymbols = ['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'FDUSD', 'USDE'];
+      const nonStablecoins = coins.filter((coin: any) => {
+        const symbol = (coin.symbol || '').toUpperCase();
+        // Exclude if symbol is a stablecoin or ends with stablecoin (but not trading pairs like BTCUSDT)
+        if (stablecoinSymbols.includes(symbol)) return false;
+        // Check if base symbol (before USDT/USDC) is a stablecoin
+        for (const stable of stablecoinSymbols) {
+          if (symbol.endsWith(stable) && symbol.length > stable.length) {
+            const baseSymbol = symbol.slice(0, -stable.length);
+            if (stablecoinSymbols.includes(baseSymbol)) return false;
+          }
+        }
+        return true;
+      });
+
+      if (isCancelled) return;
+
+      if (nonStablecoins.length === 0) {
+        console.warn('[RESEARCH] Top 100 non-stablecoins API returned empty array - treating as valid fallback state');
         setTopCoins([]); // Empty is valid fallback state
       } else {
-        console.log(`[RESEARCH] Loaded ${coins.length} coins:`, coins.slice(0, 5));
-        setTopCoins(coins);
+        // CRITICAL: Store all top 100 for manual research (UI will show top 10 initially)
+        console.log(`[RESEARCH] Loaded ${nonStablecoins.length} non-stablecoins (top 100):`, nonStablecoins.slice(0, 10).map((c: any) => c.symbol));
+        setTopCoins(nonStablecoins.slice(0, 100)); // Store up to 100 for manual research
       }
     } catch (err: any) {
-      console.error('[RESEARCH] Error loading top 50 coins:', err);
+      if (isCancelled) return;
+      console.error('[RESEARCH] Error loading top 100 non-stablecoins:', err);
       // Do NOT show error toast - treat as valid fallback state
-      console.warn('[RESEARCH] Top 50 coins loading failed - continuing with empty fallback');
+      console.warn('[RESEARCH] Top 100 non-stablecoins loading failed - continuing with empty fallback');
       setTopCoins([]); // Empty is valid fallback state
     } finally {
-      setTopCoinsLoading(false);
+      if (!isCancelled) {
+        setTopCoinsLoading(false);
+      }
     }
+    
+    // Return cleanup function
+    return () => {
+      isCancelled = true;
+      abortController.abort();
+    };
   }, [user?.uid, showError]);
 
   // Load detailed research for a specific coin
@@ -302,9 +348,20 @@ export default function ResearchPanel() {
     return () => clearInterval(interval);
   }, [autoRefreshEnabled, selectedCoinSymbol, loadCoinResearch]);
 
-  // Load top 10 coins on component mount
+  // Load top 100 coins on component mount with cleanup
   useEffect(() => {
-    loadTopCoins();
+    let cleanup: (() => void) | undefined;
+    
+    const load = async () => {
+      cleanup = await loadTopCoins();
+    };
+    
+    load();
+    
+    // Cleanup on unmount
+    return () => {
+      if (cleanup) cleanup();
+    };
   }, [loadTopCoins]);
 
   const loadSettings = useCallback(async () => {
@@ -1106,10 +1163,10 @@ export default function ResearchPanel() {
 
     try {
       // Fire-and-forget trigger
-      // CRITICAL: Ensure source is set to 'manual' for proper Telegram alert behavior
+      // CRITICAL: Ensure source is set to 'MANUAL' for proper validation (allows Top 100)
       researchApi.run({
         mode: 'manual',
-        source: 'manual',
+        source: 'MANUAL', // CRITICAL: Backend uses this to allow Top 100 non-stablecoins
         symbols: [normalizedSymbol],
         uid: user.uid,
         timeframe: timeframe === 'Default' ? ['5M', '15M'] : [timeframe] // Default uses both, specific uses one
@@ -1347,15 +1404,16 @@ export default function ResearchPanel() {
                 Manual Coin Research
               </h2>
               <p className="text-slate-300 text-sm sm:text-base leading-relaxed">
-                Select a specific coin from the top 50 to run deep research analysis.
+                Select a specific coin from the top 10 non-stablecoins to run deep research analysis.
               </p>
             </div>
 
-            {/* Top 50 Coins Grid - Manual Selection - REAL API DATA */}
+            {/* Top 100 Non-Stablecoins Grid - Manual Selection - REAL API DATA */}
+            {/* Shows top 10 initially, "View More" reveals remaining coins */}
             {topCoinsLoading ? (
               <div className="flex flex-col items-center justify-center py-12">
                 <div className="w-10 h-10 border-3 border-purple-500/30 border-t-purple-500 rounded-full animate-spin mb-4"></div>
-                <p className="text-sm font-medium text-slate-300">Loading coins from API...</p>
+                <p className="text-sm font-medium text-slate-300">Loading top 100 non-stablecoins from API...</p>
               </div>
             ) : topCoins.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12">
@@ -1364,16 +1422,17 @@ export default function ResearchPanel() {
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l.707.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                   </svg>
                 </div>
-                <p className="text-slate-300 text-sm font-medium mb-1">Manual coin list unavailable</p>
+                <p className="text-slate-300 text-sm font-medium mb-1">Top 100 non-stablecoins unavailable</p>
                 <p className="text-slate-500 text-xs">Deep research will use auto-selection mode</p>
               </div>
             ) : (
               <TopCoinsGrid
                 topCoins={topCoins}
                 onSelectCoin={handleSelectCoin}
-                maxVisible={5}
+                maxVisible={10}
                 showSelection={true}
                 selectedSymbol={manualSelectedCoin}
+                showViewMore={true}
               />
             )}
 

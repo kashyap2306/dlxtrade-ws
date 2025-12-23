@@ -9,11 +9,9 @@ import Sidebar from './components/Sidebar';
 import UserRoute from './components/UserRoute';
 import { ErrorProvider } from './contexts/ErrorContext';
 import { NotificationProvider } from './contexts/NotificationContext';
-import { ChatbotProvider } from './contexts/ChatbotContext';
 import NotificationToast from './components/NotificationToast';
 import NotificationManager from './components/NotificationManager';
 import BroadcastPopup from './components/BroadcastPopup';
-import Chatbot from './components/Chatbot';
 import { wsService } from './services/ws';
 import { useAuth } from './hooks/useAuth';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -172,7 +170,6 @@ function App() {
     <BrowserRouter>
       <ErrorProvider>
         <NotificationProvider>
-          <ChatbotProvider>
             <ErrorBoundary fallback={null}>
               <NotificationToast />
             </ErrorBoundary>
@@ -181,9 +178,6 @@ function App() {
             </ErrorBoundary>
             <ErrorBoundary fallback={null}>
               <BroadcastPopup />
-            </ErrorBoundary>
-            <ErrorBoundary fallback={null}>
-              <Chatbot />
             </ErrorBoundary>
             <Suspense fallback={<LoadingScreen />}>
               <Routes>
@@ -269,7 +263,6 @@ function App() {
                 />
               </Routes>
             </Suspense>
-          </ChatbotProvider>
         </NotificationProvider>
       </ErrorProvider>
     </BrowserRouter>

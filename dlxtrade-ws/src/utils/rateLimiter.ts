@@ -99,8 +99,13 @@ export async function retryWithBackoff<T>(
     } catch (error: any) {
       lastError = error;
 
-      // Don't retry on auth errors
-      if (error.response?.status === 401 || error.response?.status === 403) {
+      // Don't retry on auth errors or 404 (not found)
+      if (error.response?.status === 401 || error.response?.status === 403 || error.response?.status === 404) {
+        throw error;
+      }
+
+      // Don't retry on client errors (4xx) - only retry on network/5xx errors
+      if (error.response?.status >= 400 && error.response?.status < 500) {
         throw error;
       }
 

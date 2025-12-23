@@ -46,67 +46,72 @@ export default function AgentsMarketplace() {
     setError(null);
 
     try {
-      // Fetch user's agents from Firestore (users/{uid}/agents) - returns array
-      const userAgentsResponse = await agentsApi.getUserAgents(user.uid);
-      const userAgentsArray = userAgentsResponse.data.agents || [];
+      // PRIMARY: Fetch agents directly from Firestore (users/{uid}/agents)
+      // Each document in users/{uid}/agents is a separate agent
+      // agentId = document ID, agent data = document data
+      const { db } = await import('../config/firebase');
+      const { collection, getDocs } = await import('firebase/firestore');
+      const agentsSnapshot = await getDocs(collection(db, 'users', user.uid, 'agents'));
       
-      // Fetch all agents metadata from global agents collection
-      const allAgentsResponse = await agentsApi.getAll();
-      const allAgentsMetadata = allAgentsResponse.data.agents || [];
+      // TEMPORARY DEBUG: Log fetched agent documents
+      const agentDocs: Array<{ id: string; data: any }> = [];
+      agentsSnapshot.forEach((doc) => {
+        agentDocs.push({ id: doc.id, data: doc.data() });
+      });
+      console.log('[AgentsMarketplace] Fetched agent documents:', {
+        count: agentDocs.length,
+        agentIds: agentDocs.map(d => d.id),
+        agents: agentDocs
+      });
 
       if (isMountedRef.current) {
-        // Convert user agents array to map for easier lookup
-        const userAgentsMap: Record<string, any> = {};
-        userAgentsArray.forEach((agent: any) => {
-          const agentId = agent.id || agent.name?.toLowerCase().replace(/\s+/g, '_') || '';
-          userAgentsMap[agentId] = agent;
-        });
-
-        // Also fetch unlock status directly from Firestore (users/{uid}/agents collection)
-        let unlockStatusMap: Record<string, boolean> = {};
+        // Fetch all agents metadata from global agents collection (for enrichment)
+        let allAgentsMetadata: any[] = [];
         try {
-          const { db } = await import('../config/firebase');
-          const { collection, getDocs } = await import('firebase/firestore');
-          const agentsSnapshot = await getDocs(collection(db, 'users', user.uid, 'agents'));
-          agentsSnapshot.forEach((doc) => {
-            const data = doc.data();
-            unlockStatusMap[doc.id] = data?.unlocked === true;
-          });
+          const allAgentsResponse = await agentsApi.getAll();
+          allAgentsMetadata = allAgentsResponse.data.agents || [];
         } catch (err) {
-          console.warn('Failed to load unlock status from Firestore:', err);
+          console.warn('Failed to load global agents metadata:', err);
         }
 
-        // Combine user agents with global metadata
+        // Process each document from users/{uid}/agents as a separate agent
         const combinedAgents: Agent[] = [];
         const unlockedMap: Record<string, boolean> = {};
 
-        // Process all agents from user's collection (users/{uid}/agents)
-        userAgentsArray.forEach((userAgent: any) => {
-          const agentId = userAgent.id || userAgent.name?.toLowerCase().replace(/\s+/g, '_') || '';
-          const isUnlocked = unlockStatusMap[agentId] || userAgent.unlocked === true;
+        // Process all agents from user's Firestore collection
+        agentsSnapshot.forEach((doc) => {
+          const agentId = doc.id; // Document ID is the agent ID
+          const agentData = doc.data(); // Document data contains agent properties
+          
+          // Skip system documents
+          if (agentId === '_init' || agentId.startsWith('_')) {
+            return;
+          }
+
+          const isUnlocked = agentData?.unlocked === true;
           unlockedMap[agentId] = isUnlocked;
 
-          // Find matching metadata from global agents collection
+          // Find matching metadata from global agents collection (optional enrichment)
           const metadata = allAgentsMetadata.find((a: any) => 
             a.id === agentId || 
             a.name === agentId ||
             a.name?.toLowerCase().replace(/\s+/g, '_') === agentId
           );
 
-          // Use metadata if available, otherwise use user agent data
-          const finalAgent = metadata || userAgent;
+          // Use metadata if available, otherwise use document data
+          const finalAgent = metadata || agentData;
           combinedAgents.push({
-            id: finalAgent.id || agentId,
-            name: finalAgent.name || userAgent.name || agentId.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase()),
-            description: finalAgent.description || userAgent.description || '',
-            features: finalAgent.features || userAgent.features || [],
-            price: finalAgent.price || userAgent.price || 0,
-            whatsappNumber: finalAgent.whatsappNumber || userAgent.whatsappNumber || '9155604591',
-            category: finalAgent.category || userAgent.category || 'Trading',
-            badge: finalAgent.badge || userAgent.badge,
-            imageUrl: finalAgent.imageUrl || userAgent.imageUrl,
-            enabled: finalAgent.enabled !== false,
-            displayOrder: finalAgent.displayOrder || userAgent.displayOrder || 999,
+            id: agentId,
+            name: finalAgent?.name || agentData?.name || agentId.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase()),
+            description: finalAgent?.description || agentData?.description || '',
+            features: finalAgent?.features || agentData?.features || [],
+            price: finalAgent?.price || agentData?.price || 0,
+            whatsappNumber: finalAgent?.whatsappNumber || agentData?.whatsappNumber || '9155604591',
+            category: finalAgent?.category || agentData?.category || 'Trading',
+            badge: finalAgent?.badge || agentData?.badge,
+            imageUrl: finalAgent?.imageUrl || agentData?.imageUrl,
+            enabled: agentData?.enabled !== undefined ? agentData.enabled : (finalAgent?.enabled !== false),
+            displayOrder: finalAgent?.displayOrder || agentData?.displayOrder || 999,
             unlocked: isUnlocked,
           });
         });
@@ -114,7 +119,7 @@ export default function AgentsMarketplace() {
         // Also include any agents from global collection that aren't in user's collection yet
         allAgentsMetadata.forEach((metadata: any) => {
           const agentId = metadata.id || metadata.name?.toLowerCase().replace(/\s+/g, '_') || '';
-          if (!userAgentsMap[agentId] && !combinedAgents.find(a => a.id === agentId)) {
+          if (!combinedAgents.find(a => a.id === agentId)) {
             combinedAgents.push({
               id: agentId,
               name: metadata.name || '',
@@ -135,8 +140,17 @@ export default function AgentsMarketplace() {
         // Sort by displayOrder
         combinedAgents.sort((a, b) => (a.displayOrder || 999) - (b.displayOrder || 999));
 
+        console.log('[AgentsMarketplace] Final combined agents:', {
+          count: combinedAgents.length,
+          agentIds: combinedAgents.map(a => a.id),
+          enabledCount: combinedAgents.filter(a => a.enabled !== false).length
+        });
+
         setAgents(combinedAgents);
         setUnlockedAgents(unlockedMap);
+        
+        // TEMPORARY DEBUG: Log count after state update
+        console.log('[AgentsMarketplace] Rendered agents count:', combinedAgents.length, 'Agent IDs:', combinedAgents.map(a => a.id));
 
         // Load agent requests to show pending status
         try {
@@ -341,7 +355,6 @@ export default function AgentsMarketplace() {
             {/* Agents Grid - Responsive and Performance Optimized */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
               {agents
-                .filter((agent) => agent.enabled !== false)
                 .map((agent, index) => {
                   const isUnlocked = agent.unlocked === true;
                   const requestStatus = agentRequests[agent.id || agent.name]?.status;

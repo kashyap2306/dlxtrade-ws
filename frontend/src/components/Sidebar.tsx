@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
-import { useChatbot } from '../contexts/ChatbotContext';
 import { agentsApi } from '../services/api';
 
 interface SidebarProps {
@@ -97,7 +96,6 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
   // REQ 4: Sidebar MUST depend on authReady, not just user
   const { user, authReady, authLoading, logout: authLogout } = useAuth();
   const { unlockedAgents } = useUnlockedAgents();
-  const { isOpen: chatbotOpen } = useChatbot();
 
   // Notify parent component of menu state changes
   useEffect(() => {
@@ -212,9 +210,7 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
   }, [mobileMenuOpen]);
 
   // Premium Sidebar Rendering Guard
-  console.log('[Sidebar] Render state:', { authReady, authLoading, hasUser: !!user, chatbotOpen });
-
-  if (chatbotOpen) return null;
+  console.log('[Sidebar] Render state:', { authReady, authLoading, hasUser: !!user });
   if (!authReady || authLoading) return null;
   if (!user) return null;
 

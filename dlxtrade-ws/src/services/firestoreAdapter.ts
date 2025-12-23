@@ -1225,29 +1225,32 @@ export class FirestoreAdapter {
     }
   }
 
-  // Optimized method to get user's unlocked agents in single operation
+  // Optimized method to get user's unlocked agents from users/{uid}/agents
+  // Treats all agents in users/{uid}/agents as unlocked by default unless explicitly locked
   async getUserUnlockedAgents(uid: string): Promise<string[]> {
     try {
-      // Get user data and unlocks in parallel for better performance
-      const [userDoc, unlocksSnapshot] = await Promise.all([
-        db().collection('users').doc(uid).get(),
-        db().collection('agentUnlocks').where('uid', '==', uid).get()
-      ]);
+      // PRIMARY: Fetch from users/{uid}/agents - same source as getUserAgents
+      const snapshot = await db().collection('users').doc(uid).collection('agents').get();
+      
+      const unlockedAgentIds: string[] = [];
+      snapshot.docs.forEach((doc) => {
+        // Skip system documents
+        if (doc.id === '_init' || doc.id.startsWith('_')) {
+          return;
+        }
+        
+        const data = doc.data();
+        // Treat as unlocked by default unless explicitly locked
+        // unlocked field can be: true (explicitly unlocked), false (explicitly locked), or undefined (default unlocked)
+        if (data?.unlocked !== false) {
+          unlockedAgentIds.push(doc.id);
+        }
+      });
 
-      const userData = userDoc.exists ? userDoc.data() : {};
-      const unlockedAgents = userData?.unlockedAgents || [];
-      const unlockNames = unlocksSnapshot.docs.map(doc => doc.data().agentName);
-
-      // Combine and deduplicate
-      return [...new Set([...unlockedAgents, ...unlockNames])];
+      return unlockedAgentIds;
     } catch (err: any) {
-      logger.warn({ err: err.message }, 'getUserUnlockedAgents failed, falling back to individual calls');
-      // Fallback to original method
-      const userData = await this.getUser(uid);
-      const unlockedAgents = userData?.unlockedAgents || [];
-      const unlocks = await this.getUserAgentUnlocks(uid);
-      const unlockNames = unlocks.map(u => u.agentName);
-      return [...new Set([...unlockedAgents, ...unlockNames])];
+      logger.warn({ err: err.message, uid }, 'getUserUnlockedAgents failed, returning empty array');
+      return [];
     }
   }
 

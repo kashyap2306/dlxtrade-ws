@@ -7,6 +7,49 @@ import { FreeModeDeepResearchResult } from './researchTypes';
 // Cache for top coins (module-level fallback)
 export let cachedTop50Coins: any[] = [];
 
+// CRITICAL: Stablecoin exclusion list - MUST be excluded from all trading/research
+const STABLECOIN_SYMBOLS = new Set([
+  'USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'FDUSD', 'USDE',
+  'USDTUSDT', 'USDCUSDT', 'DAIUSDT', 'BUSDUSDT', 'TUSDUSDT', 'FDUSDUSDT', 'USDEUSDT'
+]);
+
+/**
+ * Check if a coin is a stablecoin
+ * CRITICAL: Excludes USDT, USDC, DAI, BUSD, TUSD, FDUSD, USDE and any coin with stablecoin in name
+ */
+function isStablecoin(coin: any): boolean {
+  if (!coin) return false;
+  const symbol = (coin.symbol || '').toUpperCase();
+  const name = (coin.name || '').toUpperCase();
+  
+  // Direct symbol match (e.g., "USDT", "USDC")
+  if (STABLECOIN_SYMBOLS.has(symbol)) return true;
+  
+  // Check if base symbol (before USDT/USDC/etc) is a stablecoin
+  // Example: "USDTUSDT" -> base is "USDT" -> stablecoin
+  // Example: "BTCUSDT" -> base is "BTC" -> NOT stablecoin
+  for (const stable of ['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'FDUSD', 'USDE']) {
+    if (symbol.endsWith(stable) && symbol.length > stable.length) {
+      const baseSymbol = symbol.slice(0, -stable.length);
+      if (STABLECOIN_SYMBOLS.has(baseSymbol)) return true;
+    }
+  }
+  
+  // Check name for stablecoin keywords
+  const stablecoinKeywords = ['STABLECOIN', 'STABLE COIN', 'USD PEGGED', 'FIAT PEGGED'];
+  if (stablecoinKeywords.some(keyword => name.includes(keyword))) return true;
+  
+  return false;
+}
+
+/**
+ * Filter out stablecoins from coin list
+ * EXPORTED for use in routes
+ */
+export function filterStablecoins(coins: any[]): any[] {
+  return coins.filter(coin => !isStablecoin(coin));
+}
+
 // P1 FIX: Coin rotation cooldown (15 minutes)
 const coinRotationCooldown = new Map<string, number>();
 const ROTATION_COOLDOWN_MS = 15 * 60 * 1000;
@@ -21,65 +64,90 @@ const coinCooldowns = new Map<string, number>();
 const COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes cooldown
 
 /**
- * Get top 100 coins by market cap for deep research
+ * Get top 10 coins by market cap for deep research (RESTRICTED TO TOP 10)
  * REFACTORED: Implementation of stale-while-revalidate pattern to guarantee < 2s response
+ * CRITICAL: System is restricted to ONLY top 10 coins by market cap
  */
 let lastFetchTime = 0;
 const CACHE_TTL = 10 * 60 * 1000; // 10 minutes list cache
 let isFetchingTopCoins = false;
+const TOP_COINS_LIMIT = 10; // HARD LIMIT: Only top 10 coins allowed
 
-export async function getTop100Coins(uid: string, limit: number = 100): Promise<any[]> {
+export async function getTop100Coins(uid: string, limit: number = TOP_COINS_LIMIT): Promise<any[]> {
+  // CRITICAL: Enforce top 10 limit - never exceed
+  const enforcedLimit = Math.min(limit, TOP_COINS_LIMIT);
   const now = Date.now();
 
   try {
     // 1. FAST PATH: Return cached data immediately if fresh enough (within 10 mins)
-    if (cachedTop50Coins.length >= limit && (now - lastFetchTime < CACHE_TTL)) {
-      logger.info({ uid, limit, cacheAge: now - lastFetchTime }, 'Serving Top 100 coins from global cache (FRESH)');
-      return cachedTop50Coins.slice(0, limit);
+    // CRITICAL: Ensure cached coins are non-stablecoins (re-filter if needed)
+    if (cachedTop50Coins.length >= enforcedLimit && (now - lastFetchTime < CACHE_TTL)) {
+      const filtered = filterStablecoins(cachedTop50Coins);
+      if (filtered.length >= enforcedLimit) {
+        logger.info({ uid, limit: enforcedLimit, cacheAge: now - lastFetchTime }, 'Serving Top 10 non-stablecoins from global cache (FRESH)');
+        return filtered.slice(0, enforcedLimit);
+      }
     }
 
     // 2. BACKGROUND REFRESH: If cache exists but stale, return it and trigger background refresh
-    if (cachedTop50Coins.length >= limit && !isFetchingTopCoins) {
-      logger.info({ uid, limit, cacheAge: now - lastFetchTime }, 'Serving Top 100 coins from global cache (STALE), triggering background refresh');
+    if (cachedTop50Coins.length >= enforcedLimit && !isFetchingTopCoins) {
+      const filtered = filterStablecoins(cachedTop50Coins);
+      if (filtered.length >= enforcedLimit) {
+        logger.info({ uid, limit: enforcedLimit, cacheAge: now - lastFetchTime }, 'Serving Top 10 non-stablecoins from global cache (STALE), triggering background refresh');
 
-      // Trigger background refresh (don't await)
-      isFetchingTopCoins = true;
-      (async () => {
-        try {
-          await refreshTop100Coins(uid);
-        } catch (err) {
-          logger.error({ error: (err as any).message }, 'Background Top 100 refresh failed');
-        } finally {
-          isFetchingTopCoins = false;
-        }
-      })();
+        // Trigger background refresh (don't await)
+        isFetchingTopCoins = true;
+        (async () => {
+          try {
+            await refreshTop100Coins(uid);
+          } catch (err) {
+            logger.error({ error: (err as any).message }, 'Background Top 10 refresh failed');
+          } finally {
+            isFetchingTopCoins = false;
+          }
+        })();
 
-      return cachedTop50Coins.slice(0, limit);
+        return filtered.slice(0, enforcedLimit);
+      }
     }
 
     // 3. COLD START / NO CACHE: Perform synchronous fetch with strict timeout
     if (isFetchingTopCoins) {
       // If already fetching, wait a bit then return whatever we have
       await new Promise(resolve => setTimeout(resolve, 500));
-      if (cachedTop50Coins.length > 0) return cachedTop50Coins.slice(0, limit);
+      const filtered = filterStablecoins(cachedTop50Coins);
+      if (filtered.length > 0) return filtered.slice(0, enforcedLimit);
     }
 
     isFetchingTopCoins = true;
     try {
       const coins = await refreshTop100Coins(uid);
-      return coins.slice(0, limit);
+      // CRITICAL: Ensure returned coins are non-stablecoins
+      const filtered = filterStablecoins(coins);
+      if (filtered.length < enforcedLimit) {
+        logger.warn({ uid, filteredCount: filtered.length, required: enforcedLimit }, 'Insufficient non-stablecoins after filtering - returning empty array');
+        return [];
+      }
+      return filtered.slice(0, enforcedLimit);
     } finally {
       isFetchingTopCoins = false;
     }
 
   } catch (error) {
     logger.error({ uid, error: (error as any).message }, 'Error in getTop100Coins');
-    return cachedTop50Coins.slice(0, limit);
+    // SAFETY: If market-cap data unavailable, return empty array (skip cycle)
+    const filtered = filterStablecoins(cachedTop50Coins);
+    if (filtered.length === 0) {
+      logger.warn({ uid }, 'No cached non-stablecoins available - skipping cycle safely');
+      return [];
+    }
+    return filtered.slice(0, enforcedLimit);
   }
 }
 
 /**
  * Internal helper to actually fetch from providers with strict timeouts
+ * CRITICAL: Only fetches top 10 coins by market cap
  */
 async function refreshTop100Coins(uid: string): Promise<any[]> {
   try {
@@ -96,7 +164,7 @@ async function refreshTop100Coins(uid: string): Promise<any[]> {
       return [];
     }
 
-    // Try CoinMarketCap with STRICT 3s timeout
+    // Try CoinMarketCap with STRICT 3s timeout - ONLY fetch top 10
     try {
       const cmcApiKey =
         integrations?.metadata?.coinmarketcap?.apiKey ||
@@ -105,9 +173,9 @@ async function refreshTop100Coins(uid: string): Promise<any[]> {
 
       if (cmcApiKey) {
         const { fetchCoinMarketCapListings } = await import('./coinMarketCapAdapter');
-        // Add a promise-based timeout wrapper
+        // CRITICAL: Only fetch top 10 coins
         const cmcData = await Promise.race([
-          fetchCoinMarketCapListings(cmcApiKey, 100),
+          fetchCoinMarketCapListings(cmcApiKey, TOP_COINS_LIMIT),
           new Promise<any[]>((_, reject) => setTimeout(() => reject(new Error('CMC Timeout')), 3000))
         ]);
 
@@ -123,27 +191,33 @@ async function refreshTop100Coins(uid: string): Promise<any[]> {
             thumbnail: coin.logo || `https://assets.coingecko.com/coins/images/${coin.id}/small/${coin.symbol.toLowerCase()}.png`
           }));
 
-          cachedTop50Coins = normalized;
+          // CRITICAL: Filter out stablecoins FIRST, then take top 10
+          const nonStablecoins = filterStablecoins(normalized);
+          // Sort by market cap (descending) and take top 10
+          const sortedByMarketCap = nonStablecoins.sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
+          cachedTop50Coins = sortedByMarketCap.slice(0, TOP_COINS_LIMIT);
           lastFetchTime = Date.now();
-          return normalized;
+          
+          logger.info({ uid, totalFetched: normalized.length, stablecoinsFiltered: normalized.length - nonStablecoins.length, top10Count: cachedTop50Coins.length }, 'Top 10 non-stablecoins cached');
+          return cachedTop50Coins;
         }
       }
     } catch (error) {
       logger.warn({ error: (error as any).message }, 'CMC list fetch failed or timed out');
     }
 
-    // Try CoinGecko with STRICT 5s timeout
+    // Try CoinGecko with STRICT 5s timeout - ONLY fetch top 10
     try {
       const response = await axios.get('https://api.coingecko.com/api/v3/coins/markets', {
         params: {
           vs_currency: 'usd',
           order: 'market_cap_desc',
-          per_page: 100,
+          per_page: TOP_COINS_LIMIT, // CRITICAL: Only fetch top 10
           page: 1,
           sparkline: false,
           price_change_percentage: '24h'
         },
-        timeout: 5000 // Reduced from 10s to 5s
+        timeout: 5000
       });
 
       if (response.data && response.data.length > 0) {
@@ -158,27 +232,178 @@ async function refreshTop100Coins(uid: string): Promise<any[]> {
           thumbnail: coin.image
         }));
 
-        cachedTop50Coins = normalized;
+        // CRITICAL: Filter out stablecoins FIRST, then take top 10
+        const nonStablecoins = filterStablecoins(normalized);
+        // Sort by market cap (descending) and take top 10
+        const sortedByMarketCap = nonStablecoins.sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
+        cachedTop50Coins = sortedByMarketCap.slice(0, TOP_COINS_LIMIT);
         lastFetchTime = Date.now();
-        return normalized;
+        
+        logger.info({ uid, totalFetched: normalized.length, stablecoinsFiltered: normalized.length - nonStablecoins.length, top10Count: cachedTop50Coins.length }, 'Top 10 non-stablecoins cached (CoinGecko)');
+        return cachedTop50Coins;
       }
     } catch (error) {
       logger.warn({ error: (error as any).message }, 'CoinGecko list fetch failed');
     }
 
-    return cachedTop50Coins; // Return existing cache if all providers fail
+    // SAFETY: If market-cap data unavailable, return empty array (skip cycle)
+    const filtered = filterStablecoins(cachedTop50Coins);
+    if (filtered.length === 0) {
+      logger.warn({ uid }, 'No market-cap data available for non-stablecoins - skipping cycle safely');
+      return [];
+    }
+
+    // Return existing cache if all providers fail, but limit to top 10 non-stablecoins
+    return filtered.slice(0, TOP_COINS_LIMIT);
   } catch (err) {
     logger.error({ error: (err as any).message }, 'Fatal error in refreshTop100Coins');
-    return cachedTop50Coins;
+    // SAFETY: If error, return empty array to skip cycle
+    const filtered = filterStablecoins(cachedTop50Coins);
+    return filtered.length > 0 ? filtered.slice(0, TOP_COINS_LIMIT) : [];
   }
 }
 
 
 /**
  * Get top 50 coins (backward compatibility)
+ * CRITICAL: Now restricted to top 10 coins only
  */
 export async function getTop50Coins(uid: string): Promise<any[]> {
-  return getTop100Coins(uid, 50);
+  return getTop100Coins(uid, TOP_COINS_LIMIT);
+}
+
+/**
+ * Get top 10 non-stablecoins (for auto-trade + auto UI)
+ * CRITICAL: Used by auto-trade, Telegram alerts, and auto-selection
+ */
+export async function getTop10NonStablecoins(uid: string): Promise<any[]> {
+  return getTop100Coins(uid, TOP_COINS_LIMIT);
+}
+
+/**
+ * Get top 100 non-stablecoins (for manual research UI)
+ * CRITICAL: Used by manual research UI - allows broader coin selection
+ */
+export async function getTop100NonStablecoins(uid: string): Promise<any[]> {
+  const now = Date.now();
+  
+  try {
+    // Use existing cache but fetch more coins if needed
+    if (cachedTop50Coins.length >= 100 && (now - lastFetchTime < CACHE_TTL)) {
+      const filtered = filterStablecoins(cachedTop50Coins);
+      logger.info({ uid, count: filtered.length, cacheAge: now - lastFetchTime }, 'Serving Top 100 non-stablecoins from cache (FRESH)');
+      return filtered.slice(0, 100);
+    }
+
+    // If cache has less than 100, fetch more
+    if (cachedTop50Coins.length < 100 || (now - lastFetchTime >= CACHE_TTL)) {
+      if (!isFetchingTopCoins) {
+        isFetchingTopCoins = true;
+        try {
+          // Fetch top 100 from providers
+          const integrationsResult: any = await getUserIntegrations(uid);
+          const integrations = integrationsResult?.providerConfig || {};
+
+          const hasAnyApiKey =
+            (integrations.marketData && Object.values(integrations.marketData).some((p: any) => p?.apiKeyEncrypted && p.apiKeyEncrypted.trim().length > 0)) ||
+            (integrations.news && Object.values(integrations.news).some((p: any) => p?.apiKeyEncrypted && p.apiKeyEncrypted.trim().length > 0)) ||
+            (integrations.metadata && Object.values(integrations.metadata).some((p: any) => p?.apiKeyEncrypted && p.apiKeyEncrypted.trim().length > 0));
+
+          if (!hasAnyApiKey) {
+            logger.warn({ uid }, 'getTop100NonStablecoins blocked - no API keys');
+            return filterStablecoins(cachedTop50Coins).slice(0, 100);
+          }
+
+          // Try CoinMarketCap first
+          try {
+            const cmcApiKey =
+              integrations?.metadata?.coinmarketcap?.apiKey ||
+              integrations?.marketData?.coinmarketcap?.apiKey ||
+              integrations?.coinmarketcap?.apiKey;
+
+            if (cmcApiKey) {
+              const { fetchCoinMarketCapListings } = await import('./coinMarketCapAdapter');
+              const cmcData = await Promise.race([
+                fetchCoinMarketCapListings(cmcApiKey, 100),
+                new Promise<any[]>((_, reject) => setTimeout(() => reject(new Error('CMC Timeout')), 3000))
+              ]);
+
+              if (cmcData && cmcData.length > 0) {
+                const normalized = cmcData.map((coin: any, index: number) => ({
+                  symbol: `${coin.symbol}USDT`,
+                  name: coin.name,
+                  logo: coin.logo || `https://assets.coingecko.com/coins/images/${coin.id}/small/${coin.symbol.toLowerCase()}.png`,
+                  marketCap: coin.quote?.USD?.market_cap || 0,
+                  rank: coin.cmc_rank || (index + 1),
+                  current_price: coin.quote?.USD?.price || 0,
+                  price_change_percentage_24h: coin.quote?.USD?.percent_change_24h || 0,
+                  thumbnail: coin.logo || `https://assets.coingecko.com/coins/images/${coin.id}/small/${coin.symbol.toLowerCase()}.png`
+                }));
+
+                const nonStablecoins = filterStablecoins(normalized);
+                const sortedByMarketCap = nonStablecoins.sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
+                cachedTop50Coins = sortedByMarketCap; // Update cache with full list
+                lastFetchTime = Date.now();
+                
+                logger.info({ uid, totalFetched: normalized.length, stablecoinsFiltered: normalized.length - nonStablecoins.length, top100Count: sortedByMarketCap.length }, 'Top 100 non-stablecoins cached (CMC)');
+                return sortedByMarketCap.slice(0, 100);
+              }
+            }
+          } catch (error) {
+            logger.warn({ error: (error as any).message }, 'CMC list fetch failed for top 100');
+          }
+
+          // Try CoinGecko fallback
+          try {
+            const response = await axios.get('https://api.coingecko.com/api/v3/coins/markets', {
+              params: {
+                vs_currency: 'usd',
+                order: 'market_cap_desc',
+                per_page: 100,
+                page: 1,
+                sparkline: false,
+                price_change_percentage: '24h'
+              },
+              timeout: 5000
+            });
+
+            if (response.data && response.data.length > 0) {
+              const normalized = response.data.map((coin: any, index: number) => ({
+                symbol: `${coin.symbol.toUpperCase()}USDT`,
+                name: coin.name,
+                logo: coin.image,
+                marketCap: coin.market_cap,
+                rank: index + 1,
+                current_price: coin.current_price,
+                price_change_percentage_24h: coin.price_change_percentage_24h,
+                thumbnail: coin.image
+              }));
+
+              const nonStablecoins = filterStablecoins(normalized);
+              const sortedByMarketCap = nonStablecoins.sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
+              cachedTop50Coins = sortedByMarketCap; // Update cache
+              lastFetchTime = Date.now();
+              
+              logger.info({ uid, totalFetched: normalized.length, stablecoinsFiltered: normalized.length - nonStablecoins.length, top100Count: sortedByMarketCap.length }, 'Top 100 non-stablecoins cached (CoinGecko)');
+              return sortedByMarketCap.slice(0, 100);
+            }
+          } catch (error) {
+            logger.warn({ error: (error as any).message }, 'CoinGecko list fetch failed for top 100');
+          }
+        } finally {
+          isFetchingTopCoins = false;
+        }
+      }
+    }
+
+    // Return filtered cache
+    const filtered = filterStablecoins(cachedTop50Coins);
+    return filtered.slice(0, 100);
+  } catch (error) {
+    logger.error({ uid, error: (error as any).message }, 'Error in getTop100NonStablecoins');
+    const filtered = filterStablecoins(cachedTop50Coins);
+    return filtered.slice(0, 100);
+  }
 }
 
 /**
@@ -261,8 +486,15 @@ export async function getCoinResearch(
   try {
     logger.info({ uid, symbol, source }, 'Starting comprehensive coin research via DeepResearchEngine');
 
+    // CRITICAL: Determine backgroundMode from source parameter
+    // Manual research (no source or 'manual') = user_request context (backgroundMode: false)
+    // Background/scheduled research = background_job context (backgroundMode: true)
+    const isManualResearch = !source || source === 'manual' || source === 'user_request';
+    const backgroundMode = !isManualResearch; // Manual = false, Background = true
+
     // Use the robust Free Mode engine to get all data + indicators
-    const result = await runFreeMode(uid, symbol, undefined, undefined, true, 35000, onUpdate);
+    // CRITICAL: Don't pass integrations - let engine call getUserIntegrationsByUid with correct context
+    const result = await runFreeMode(uid, symbol, undefined, undefined, backgroundMode, 35000, onUpdate);
 
     const totalLatency = Date.now() - startTime;
     logger.info({ uid, symbol, totalLatency }, 'Coin research completed (powered by DeepResearchEngine)');
@@ -344,37 +576,57 @@ export async function selectCoinsForResearch(uid: string): Promise<string[]> {
     const selectedCoins = tradingSettings.selectedCoins || tradingSettings.manualCoins || [];
 
     if (coinSelectionMode === 'manual') {
-      return selectedCoins.length > 0 ? selectedCoins : ['ETHUSDT', 'SOLUSDT'];
+      // CRITICAL: Manual coins must be from top 10 non-stablecoins only
+      const top10 = await getTop100Coins(uid, TOP_COINS_LIMIT);
+      const top10Symbols = new Set(top10.map(c => c.symbol.toUpperCase()));
+      
+      // Filter manual coins to only include those in top 10 non-stablecoins
+      const validManualCoins = selectedCoins.filter(symbol => 
+        top10Symbols.has(symbol.toUpperCase())
+      );
+      
+      if (validManualCoins.length > 0) {
+        logger.info({ uid, validCoins: validManualCoins, invalidCoins: selectedCoins.filter(s => !top10Symbols.has(s.toUpperCase())) }, 'Manual coins filtered to top 10 non-stablecoins');
+        return validManualCoins;
+      }
+      
+      // If no valid manual coins, return top coins from top 10
+      if (top10.length > 0) {
+        const fallback = top10.slice(0, 2).map(c => c.symbol);
+        logger.info({ uid, fallback }, 'No valid manual coins in top 10, using top coins from top 10 non-stablecoins');
+        return fallback;
+      }
+      
+      return [];
     }
 
-    // P1: VOLATILITY-BASED SELECTION FROM TOP 100
-    // Fetch top 100 coins from live sources (CMC/CG)
-    const top100 = await getTop100Coins(uid, 100);
+    // CRITICAL: RESTRICTED TO TOP 10 COINS ONLY
+    // Fetch top 10 coins from live sources (CMC/CG) - system is restricted to top 10
+    const top10 = await getTop100Coins(uid, TOP_COINS_LIMIT);
     const now = Date.now();
 
+    // SAFETY: If no top 10 coins available, skip cycle
+    if (!top10 || top10.length === 0) {
+      logger.warn({ uid }, 'No top 10 coins available - skipping coin selection');
+      return [];
+    }
+
     // Filter out coins currently in cooldown
-    const availableCoins = top100.filter(coin => {
-      // Validate symbol format (alphanumeric + USDT only) - reject e.g. "UNKNOWN" or "1000PEPE" if undesired
+    const availableCoins = top10.filter(coin => {
+      // Validate symbol format (alphanumeric + USDT only)
       if (!/^[A-Z0-9]+USDT$/.test(coin.symbol)) return false;
 
       const lastSelected = coinRotationCooldown.get(coin.symbol);
       return !lastSelected || (now - lastSelected > ROTATION_COOLDOWN_MS);
     });
 
-    // If too many coins are in cooldown, reset half of them to ensure variety but still allow selection
+    // If all coins are in cooldown, reset cooldowns to allow selection from top 10
     let filteredCoins = availableCoins;
-    if (availableCoins.length < 20 && top100.length > 50) {
-      logger.info({ uid, availableCount: availableCoins.length }, 'Coin cooldown filter too restrictive, partial reset');
-      // Reset coins that have been in cooldown the longest
-      const sortedByTime = Array.from(coinRotationCooldown.entries()).sort((a, b) => a[1] - b[1]);
-      const toReset = sortedByTime.slice(0, Math.floor(sortedByTime.length / 2));
-      toReset.forEach(([sym]) => coinRotationCooldown.delete(sym));
-
-      // Re-filter
-      filteredCoins = top100.filter(coin => {
-        const lastSelected = coinRotationCooldown.get(coin.symbol);
-        return !lastSelected || (now - lastSelected > ROTATION_COOLDOWN_MS);
-      });
+    if (availableCoins.length === 0 && top10.length > 0) {
+      logger.info({ uid, top10Count: top10.length }, 'All top 10 coins in cooldown, resetting cooldowns');
+      // Reset all cooldowns for top 10 coins
+      top10.forEach(coin => coinRotationCooldown.delete(coin.symbol));
+      filteredCoins = top10.filter(coin => /^[A-Z0-9]+USDT$/.test(coin.symbol));
     }
 
     // Sort by absolute 24h price change percentage (proxy for volatility)
@@ -383,16 +635,25 @@ export async function selectCoinsForResearch(uid: string): Promise<string[]> {
 
     let finalCoins: string[] = [];
 
-    // If coinSelectionMode is top10, pick top 10 most volatile
-    if (coinSelectionMode === 'top10') {
-      finalCoins = sortedByVolatility.slice(0, 10).map(c => c.symbol);
-      logger.info({ uid, coins: finalCoins }, 'Selected Top 10 coins by volatility (rotated)');
-    } else if (coinSelectionMode === 'top100') {
-      // If coinSelectionMode is top100, pick top 25 most volatile (cap at 25 for engine performance)
-      finalCoins = sortedByVolatility.slice(0, 25).map(c => c.symbol);
-      logger.info({ uid, count: finalCoins.length }, 'Selected Top 25 coins by volatility (rotated)');
+    // CRITICAL: All modes now restricted to top 10 coins only
+    if (coinSelectionMode === 'top10' || coinSelectionMode === 'top100') {
+      // Both top10 and top100 modes now use top 10 coins (system restriction)
+      finalCoins = sortedByVolatility.slice(0, Math.min(10, filteredCoins.length)).map(c => c.symbol);
+      logger.info({ uid, coins: finalCoins, mode: coinSelectionMode }, 'Selected coins from top 10 by market cap (volatility sorted)');
     } else {
-      finalCoins = ['ETHUSDT', 'SOLUSDT'];
+      // Manual mode: only allow coins from top 10 non-stablecoins
+      const top10Symbols = new Set(top10.map(c => c.symbol.toUpperCase()));
+      const manualCoinsInTop10 = selectedCoins.filter(symbol => 
+        top10Symbols.has(symbol.toUpperCase())
+      );
+      if (manualCoinsInTop10.length > 0) {
+        finalCoins = manualCoinsInTop10;
+        logger.info({ uid, coins: finalCoins }, 'Manual coins filtered to top 10 non-stablecoins only');
+      } else {
+        // Fallback: use top coins from top 10 non-stablecoins
+        finalCoins = sortedByVolatility.slice(0, Math.min(2, filteredCoins.length)).map(c => c.symbol);
+        logger.info({ uid, coins: finalCoins }, 'No manual coins in top 10 non-stablecoins, using top coins from top 10');
+      }
     }
 
     // Mark selected coins as recently researched
@@ -406,16 +667,18 @@ export async function selectCoinsForResearch(uid: string): Promise<string[]> {
 }
 
 /**
- * CRITICAL: Top 100 Accuracy Scan with FINAL Exclusion and Cooldown
+ * CRITICAL: Top 10 Accuracy Scan with FINAL Exclusion and Cooldown
  * This is the SINGLE SOURCE OF TRUTH for auto-select coin selection
+ * RESTRICTED TO TOP 10 COINS ONLY
  * 
  * Rules:
- * 1. Fetch Top 100 coins
+ * 1. Fetch Top 10 coins (system restriction)
  * 2. Exclude coins with FINAL research (already researched)
  * 3. Exclude coins in cooldown (recently selected)
  * 4. Compute/check accuracy for each coin
  * 5. Select ONLY the coin with highest accuracy
  * 6. Never short-circuit on cached results
+ * 7. If none of top 10 qualify → return null (system must WAIT)
  * 
  * @param uid User ID
  * @param excludeSymbols Additional symbols to exclude (e.g., currently running research)
@@ -427,10 +690,12 @@ export async function selectBestCoinByAccuracy(
 ): Promise<{ symbol: string; accuracy: number; excludedCount: number } | null> {
   try {
     const { cacheService } = await import('./cacheService');
-    const candidates = await getTop100Coins(uid, 100);
+    // CRITICAL: Only fetch top 10 coins
+    const candidates = await getTop100Coins(uid, TOP_COINS_LIMIT);
 
+    // SAFETY: If no top 10 coins available, skip cycle
     if (!candidates || candidates.length === 0) {
-      logger.warn({ uid }, 'No candidates available for accuracy scan');
+      logger.warn({ uid }, 'No top 10 coins available for accuracy scan - skipping cycle');
       return null;
     }
 
@@ -444,7 +709,7 @@ export async function selectBestCoinByAccuracy(
     let bestCoin = '';
     const coinScores: Array<{ symbol: string; accuracy: number }> = [];
 
-    // SCAN ALL TOP 100 COINS - no short-circuiting
+    // SCAN ALL TOP 10 COINS - no short-circuiting
     for (const c of candidates) {
       const symbol = c.symbol?.toUpperCase() || '';
       if (!symbol.endsWith('USDT')) continue;
@@ -558,7 +823,7 @@ export async function selectBestCoinByAccuracy(
       finalExcluded: finalExcludedCount,
       cooldownExcluded: cooldownExcludedCount,
       totalCandidates: candidates.length
-    }, '[AUTO_SELECT] Best coin selected by accuracy (Top 100 Scan)');
+    }, '[AUTO_SELECT] Best coin selected by accuracy (Top 10 Scan - RESTRICTED)');
 
     return {
       symbol: bestCoin,
