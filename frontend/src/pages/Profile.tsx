@@ -216,12 +216,12 @@ export default function Profile() {
 
         // Exchange Config (with increased timeout)
         fetchWithRetry(
-          () => api.get(`/users/${currentUid}/exchangeConfig/current`, { timeout: 20000 }).then(res => res.data),
+          () => api.get(`/users/${currentUid}/exchangeConfig/current`, { timeout: 25000 }).then(res => res.data),
           exchangeConfigRetryCountRef,
           setExchangeConfigRetryCount,
           setExchangeConfigError,
           'Exchange Config',
-          20000
+          25000
         ).then(data => {
           if (data !== null && isMountedRef.current && userUidRef.current === currentUid) {
             setExchangeConfig(data);

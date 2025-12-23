@@ -437,20 +437,10 @@ export async function buildApp(): Promise<FastifyInstance> {
     return { status: 'ok', message: 'Backend is running', timestamp: new Date().toISOString() };
   });
 
-  // Health check route (no auth required) - checks database connectivity
+  // Health check route (no auth required) - lightweight, no DB/Firestore/encryption
   app.get('/api/health', async (request, reply) => {
-    console.log("[HEALTH_CHECK] /api/health hit from", request.headers.origin || 'unknown');
-    try {
-      // Simple Firestore check
-      await getFirebaseAdmin().firestore().listCollections();
-      reply.status(200).send({ status: 'ok' });
-    } catch (err: any) {
-      reply.status(500).send({
-        status: 'unhealthy',
-        error: 'Database connection failed',
-        details: err.message,
-      });
-    }
+    // Return immediately without any DB, Firestore, or encryption logic
+    reply.status(200).send({ status: 'ok', timestamp: Date.now() });
   });
 
   // Add diagnostic log for build verification

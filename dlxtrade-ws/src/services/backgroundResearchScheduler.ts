@@ -1494,8 +1494,9 @@ export class BackgroundResearchScheduler {
             isInRange
           }, '🔍 [TELEGRAM_DEBUG] Telegram alert enablement check');
 
-          // 🔥 PROOF: Log skip reasons explicitly
+          // 🔥 PROOF: Log skip reasons explicitly (both console and logger for visibility)
           if (!shouldSendAlert) {
+            const skipReason = 'SPAM_PREVENTION: Accuracy did not improve since last alert';
             console.log("[TELEGRAM_BG_SKIPPED_REASON=spam_prevention]", {
               alertId,
               uid,
@@ -1504,7 +1505,18 @@ export class BackgroundResearchScheduler {
               lastAlert: lastAlert ? { timestamp: lastAlert.timestamp, accuracy: lastAlert.accuracy } : null,
               timestamp: new Date().toISOString()
             });
+            logger.info({
+              alertId,
+              uid,
+              symbol: coin,
+              mode: 'TELEGRAM_BACKGROUND',
+              accuracy: finalAccuracyPercent,
+              lastAccuracy: lastAlert?.accuracy,
+              status: 'SKIPPED',
+              reason: skipReason
+            }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Telegram background alert skipped - spam prevention');
           } else if (!telegramEnabled) {
+            const skipReason = 'TELEGRAM_DISABLED: Telegram Background Research not enabled';
             console.log("[TELEGRAM_BG_SKIPPED_REASON=telegram_disabled]", {
               alertId,
               uid,
@@ -1512,7 +1524,19 @@ export class BackgroundResearchScheduler {
               telegramEnabled,
               timestamp: new Date().toISOString()
             });
+            logger.info({
+              alertId,
+              uid,
+              symbol: coin,
+              mode: 'TELEGRAM_BACKGROUND',
+              accuracy: finalAccuracyPercent,
+              telegramBackgroundResearchEnabled: settings.telegramBackgroundResearchEnabled,
+              backgroundResearchEnabled: settings.backgroundResearchEnabled,
+              status: 'SKIPPED',
+              reason: skipReason
+            }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Telegram background alert skipped - Telegram not enabled');
           } else if (!hasBotToken) {
+            const skipReason = 'MISSING_BOT_TOKEN: Telegram bot token not configured';
             console.log("[TELEGRAM_BG_SKIPPED_REASON=missing_bot_token]", {
               alertId,
               uid,
@@ -1520,7 +1544,18 @@ export class BackgroundResearchScheduler {
               hasBotToken,
               timestamp: new Date().toISOString()
             });
+            logger.info({
+              alertId,
+              uid,
+              symbol: coin,
+              mode: 'TELEGRAM_BACKGROUND',
+              accuracy: finalAccuracyPercent,
+              hasBotToken,
+              status: 'SKIPPED',
+              reason: skipReason
+            }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Telegram background alert skipped - bot token missing');
           } else if (!hasChatId) {
+            const skipReason = 'MISSING_CHAT_ID: Telegram chat ID not configured';
             console.log("[TELEGRAM_BG_SKIPPED_REASON=missing_chat_id]", {
               alertId,
               uid,
@@ -1528,6 +1563,16 @@ export class BackgroundResearchScheduler {
               hasChatId,
               timestamp: new Date().toISOString()
             });
+            logger.info({
+              alertId,
+              uid,
+              symbol: coin,
+              mode: 'TELEGRAM_BACKGROUND',
+              accuracy: finalAccuracyPercent,
+              hasChatId,
+              status: 'SKIPPED',
+              reason: skipReason
+            }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Telegram background alert skipped - chat ID missing');
           }
 
           if (shouldSendAlert && telegramEnabled && hasBotToken && hasChatId) {

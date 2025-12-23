@@ -1,4 +1,8 @@
 import React, { Suspense, useState, useEffect } from 'react';
+
+// 🔥 DIAGNOSTIC: PROVE WHICH FRONTEND BUNDLE IS LOADED
+const FRONTEND_BUILD_MARKER = "FRONTEND BUILD: FIX-API-GATE-REMOVED";
+console.log("🔥", FRONTEND_BUILD_MARKER, "@", new Date().toISOString());
 import { Routes, Route, Navigate, BrowserRouter, Outlet } from 'react-router-dom';
 import TopNavigation from './components/TopNavigation';
 import Sidebar from './components/Sidebar';
@@ -14,6 +18,8 @@ import { wsService } from './services/ws';
 import { useAuth } from './hooks/useAuth';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { LoadingState } from './components/LoadingState';
+import { API_BASE_URL } from './config/env';
+import axios from 'axios';
 
 function ErrorCatcher({ children }: { children: React.ReactNode }) {
   try {
@@ -147,6 +153,20 @@ function App() {
 
   // WebSocket is now initialized automatically by ws.ts via auth state listener
   // No manual connect/disconnect needed here
+
+  // Backend warm-up: silently call health endpoint on app load (once)
+  useEffect(() => {
+    // Silent warm-up call - does not block UI, no loading state
+    const warmUpBackend = async () => {
+      try {
+        await axios.get(`${API_BASE_URL}/api/health`, { timeout: 5000 });
+        // Silently succeed - no logging to avoid noise
+      } catch (error) {
+        // Silently fail - this is just a warm-up, not critical
+      }
+    };
+    warmUpBackend();
+  }, []); // Run once on mount
 
   return (
     <BrowserRouter>

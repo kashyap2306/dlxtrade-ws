@@ -208,7 +208,7 @@ export const AUTO_TRADE_REASONS = {
  * @param isFinal - Whether research result is FINAL
  * @param tradePlan - Trade plan with entryPrice, stopLoss, takeProfit, riskRewardRatio
  * @param indicators - Technical indicators (for entry zone and ATR validation)
- * @param threshold - Accuracy threshold (default 75 for auto-trade, 60 for manual)
+ * @param threshold - Accuracy threshold (uses user-defined accuracyTrigger.min for auto-trade, 60 for manual)
  * @returns Unified decision result
  */
 export interface UnifiedTradeDecision {
@@ -588,7 +588,7 @@ export class AutoTradeEngine {
         (item.maxAccuracy !== null && typeof item.maxAccuracy !== 'number') ||
         typeof item.tradeSizePct !== 'number' ||
         typeof item.leverage !== 'number' ||
-        item.minAccuracy < 75 ||
+        item.minAccuracy < 0 || item.minAccuracy > 100 ||
         item.tradeSizePct < 0 || item.tradeSizePct > 10 ||
         item.leverage < 1 || item.leverage > 10
       );
@@ -628,6 +628,18 @@ export class AutoTradeEngine {
       }
     }
 
+    // Determine minimum accuracy threshold from user's config (lowest minAccuracy in config)
+    const minConfigAccuracy = config.length > 0 ? Math.min(...config.map(r => r.minAccuracy)) : 75;
+    
+    // Log user-selected accuracy slabs and minimum threshold
+    logger.info({
+      uid,
+      accuracy: acc,
+      userAccuracySlabs: config.map(r => `${r.minAccuracy}-${r.maxAccuracy ?? '∞'}%: ${r.tradeSizePct}% size, ${r.leverage}x leverage`),
+      minimumConfigAccuracy: minConfigAccuracy,
+      usingFallback
+    }, `[ACCURACY_RISK_CONFIG] User config: ${config.length} slabs, minimum threshold: ${minConfigAccuracy}%`);
+
     // Default: no trade if accuracy < minimum configured threshold
     let params = { sizePct: 0, leverage: 1 };
     let matchedRange: AccuracyRiskConfigItem | undefined = undefined;
@@ -649,8 +661,10 @@ export class AutoTradeEngine {
           uid,
           accuracy: acc,
           matchedRange: `${range.minAccuracy}-${range.maxAccuracy ?? '∞'}%`,
-          sizePct: params.sizePct,
-          leverage: params.leverage,
+          userSelectedSizePct: range.tradeSizePct,
+          userSelectedLeverage: range.leverage,
+          finalSizePct: params.sizePct,
+          finalLeverage: params.leverage,
           usingFallback,
           fallbackReason: usingFallback ? fallbackReason : undefined
         }, usingFallback 
@@ -660,14 +674,18 @@ export class AutoTradeEngine {
       }
     }
 
-    // If no match found and accuracy < 75%, skip trade
-    if (!matchedRange && acc < 75) {
-      logger.info({ uid, accuracy: acc }, '⏭️ [ACCURACY_RISK_CONFIG] Accuracy below minimum threshold (75%) - skipping trade');
+    // If no match found and accuracy < minimum configured threshold, skip trade
+    if (!matchedRange && acc < minConfigAccuracy) {
+      logger.info({ 
+        uid, 
+        accuracy: acc, 
+        minimumConfigAccuracy: minConfigAccuracy 
+      }, `⏭️ [ACCURACY_RISK_CONFIG] Accuracy ${acc.toFixed(1)}% below minimum configured threshold (${minConfigAccuracy}%) - skipping trade`);
       return { sizePct: 0, leverage: 1, skip: 'ACCURACY_BELOW_MINIMUM' };
     }
 
-    // If no match found but accuracy >= 75%, use lowest configured range as fallback
-    if (!matchedRange && acc >= 75 && config.length > 0) {
+    // If no match found but accuracy >= minimum, use lowest configured range as fallback
+    if (!matchedRange && acc >= minConfigAccuracy && config.length > 0) {
       const lowestRange = config[0];
       params = {
         sizePct: Math.min(10, Math.max(0, lowestRange.tradeSizePct)),
@@ -1142,7 +1160,20 @@ export class AutoTradeEngine {
       tradePlan = finalResult.tradePlan;
     }
 
-    const threshold = isManualApproval ? 60 : 75;
+    // CRITICAL: Use user-defined accuracy trigger, NOT hardcoded 75%
+    // For manual approval, use 60% (safety for manual trades)
+    // For auto-trade, use user's accuracyTrigger.min from settings
+    const threshold = isManualApproval ? 60 : (settings.accuracyTrigger?.min ?? 75);
+    
+    // Log user-selected vs execution-time threshold
+    logger.info({
+      uid,
+      symbol: signal.symbol,
+      userAccuracyTrigger: settings.accuracyTrigger,
+      executionThreshold: threshold,
+      isManualApproval,
+      usingUserSetting: !isManualApproval && settings.accuracyTrigger?.min !== undefined
+    }, `[ACCURACY_TRIGGER] Using threshold: ${threshold}% (user-defined: ${settings.accuracyTrigger?.min ?? 'not set, using default 75%'})`);
     const isFinal = finalResult?.isFinal !== false; // Default to true if not specified (assume final for execution)
     const unifiedDecision = makeUnifiedTradeDecision(
       signal.signal,
@@ -1167,7 +1198,21 @@ export class AutoTradeEngine {
     }, `[TRADE_DECISION] FINAL=${unifiedDecision.isFinal} acc=${unifiedDecision.accuracyUsed.toFixed(1)} rr=${unifiedDecision.rr.toFixed(2)} atr=${unifiedDecision.volatilityState} → ${unifiedDecision.allowed ? 'ALLOWED' : 'BLOCKED'}${unifiedDecision.reason ? ` (${unifiedDecision.reason})` : ''}`);
 
     if (!unifiedDecision.allowed) {
-      return { allowed: false, reason: unifiedDecision.reason || 'Trade blocked by unified decision logic' };
+      const reason = unifiedDecision.reason || 'Trade blocked by unified decision logic';
+      // Log skip with full context
+      await this.logAutoTradeSkip(uid, reason, {
+        symbol: signal.symbol,
+        accuracy: unifiedDecision.accuracyUsed,
+        threshold,
+        signal: signal.signal,
+        additionalDetails: {
+          rr: unifiedDecision.rr,
+          volatilityState: unifiedDecision.volatilityState,
+          entryZoneValid: unifiedDecision.entryZoneValid,
+          isFinal: unifiedDecision.isFinal,
+        }
+      });
+      return { allowed: false, reason };
     }
 
     // 🔍 [DEBUG] Unified decision PASSED - tracing execution path
@@ -1184,12 +1229,22 @@ export class AutoTradeEngine {
 
     // 2. Skip if same coin already has an open position
     if (engine.activeTrades.has(signal.symbol)) {
+      const reason = `OPEN_POSITION_EXISTS: ${signal.symbol} already has an active trade`;
       logger.info({
         uid,
         symbol: signal.symbol,
         reason: 'OPEN_POSITION_EXISTS'
       }, '⛔ [RISK_GUARDS] BLOCKED: Open position already exists');
-      return { allowed: false, reason: `OPEN_POSITION_EXISTS: ${signal.symbol} already has an active trade` };
+      await this.logAutoTradeSkip(uid, reason, {
+        symbol: signal.symbol,
+        accuracy: signal.accuracy,
+        threshold,
+        signal: signal.signal,
+        additionalDetails: {
+          activeTradesCount: engine.activeTrades.size,
+        }
+      });
+      return { allowed: false, reason };
     }
 
     // Check max concurrent trades (KEEP - This is a resource/exchange limit)
@@ -1202,6 +1257,7 @@ export class AutoTradeEngine {
       if (isManualApproval) {
         logger.info({ uid }, 'MANUAL_APPROVAL_OVERRIDE: Bypassing Max Concurrent Trades');
       } else {
+        const reason = `MAX_CONCURRENT_TRADES: ${engine.activeTrades.size} >= ${config.maxConcurrentTrades} limit`;
         logger.info({
           uid,
           symbol: signal.symbol,
@@ -1209,7 +1265,17 @@ export class AutoTradeEngine {
           maxConcurrentTrades: config.maxConcurrentTrades,
           reason: 'MAX_CONCURRENT_TRADES'
         }, '⛔ [RISK_GUARDS] BLOCKED: Max concurrent trades reached');
-        return { allowed: false, reason: `MAX_CONCURRENT_TRADES: ${engine.activeTrades.size} >= ${config.maxConcurrentTrades} limit` };
+        await this.logAutoTradeSkip(uid, reason, {
+          symbol: signal.symbol,
+          accuracy: signal.accuracy,
+          threshold,
+          signal: signal.signal,
+          additionalDetails: {
+            activeTradesCount: engine.activeTrades.size,
+            maxConcurrentTrades: config.maxConcurrentTrades,
+          }
+        });
+        return { allowed: false, reason };
       }
     }
 
@@ -1219,6 +1285,7 @@ export class AutoTradeEngine {
     if (!isManualApproval) {
       for (const trade of engine.activeTrades.values()) {
         if (trade.symbol === signal.symbol && trade.status === 'FILLED') {
+          const reason = `OPEN_POSITION_EXISTS: ${signal.symbol} already has an active trade`;
           logger.info({
             uid,
             symbol: signal.symbol,
@@ -1226,7 +1293,17 @@ export class AutoTradeEngine {
             existingTradeStatus: trade.status,
             reason: 'EXISTING_POSITION'
           }, '⛔ [RISK_GUARDS] BLOCKED: Already have active position in symbol');
-          return { allowed: false, reason: `OPEN_POSITION_EXISTS: ${signal.symbol} already has an active trade` };
+          await this.logAutoTradeSkip(uid, reason, {
+            symbol: signal.symbol,
+            accuracy: signal.accuracy,
+            threshold,
+            signal: signal.signal,
+            additionalDetails: {
+              existingTradeId: trade.tradeId,
+              existingTradeStatus: trade.status,
+            }
+          });
+          return { allowed: false, reason };
         }
       }
     }
@@ -1284,12 +1361,23 @@ export class AutoTradeEngine {
     if (stats.dailyPnL < 0 && Math.abs(stats.dailyPnL) >= maxDailyLossAmount) {
       if (!isManualApproval) {
         engine.circuitBreaker = true;
+        const reason = `DAILY_LOSS_LIMIT: ${Math.abs(stats.dailyPnL).toFixed(2)} >= ${maxDailyLossAmount.toFixed(2)} (${maxLossPct}% of ${equity})`;
         await this.logTradeEvent(uid, 'CIRCUIT_BREAKER_TRIGGERED', {
           reason: 'Daily loss limit exceeded',
           dailyPnL: stats.dailyPnL,
           maxDailyLoss: maxLossPct,
         });
-        return { allowed: false, reason: `DAILY_LOSS_LIMIT: ${Math.abs(stats.dailyPnL).toFixed(2)} >= ${maxDailyLossAmount.toFixed(2)} (${maxLossPct}% of ${equity})` };
+        await this.logAutoTradeSkip(uid, reason, {
+          exchangeStatus: 'available',
+          additionalDetails: {
+            dailyPnL: stats.dailyPnL,
+            maxDailyLossAmount,
+            maxDailyLossPct: maxLossPct,
+            equity,
+            circuitBreaker: true,
+          }
+        });
+        return { allowed: false, reason };
       } else {
         logger.warn({ uid, dailyPnL: stats.dailyPnL }, 'MANUAL_APPROVAL_OVERRIDE: Bypassing Daily Loss Limit');
       }
@@ -1297,58 +1385,97 @@ export class AutoTradeEngine {
 
     // 2. Check max trades per day (BYPASS ON MANUAL)
     if (!isManualApproval && stats.dailyTrades >= settings.maxTradesPerDay) {
+      const reason = `MAX_TRADES_PER_DAY: ${stats.dailyTrades} >= ${settings.maxTradesPerDay} limit`;
       logger.info({
         uid,
         dailyTrades: stats.dailyTrades,
         maxTradesPerDay: settings.maxTradesPerDay,
         reason: 'MAX_TRADES_PER_DAY'
       }, '⛔ [RISK_GUARDS] BLOCKED: Max trades per day reached');
-      return { allowed: false, reason: `MAX_TRADES_PER_DAY: ${stats.dailyTrades} >= ${settings.maxTradesPerDay} limit` };
+      await this.logAutoTradeSkip(uid, reason, {
+        exchangeStatus: 'available',
+        additionalDetails: {
+          dailyTrades: stats.dailyTrades,
+          maxTradesPerDay: settings.maxTradesPerDay,
+        }
+      });
+      return { allowed: false, reason };
     }
 
     // 3. Cooldown Check (BYPASS ON MANUAL)
     if (!isManualApproval && config.cooldownUntil) {
       const cooldownEnd = config.cooldownUntil instanceof Date ? config.cooldownUntil : new Date(config.cooldownUntil);
       if (new Date() < cooldownEnd) {
+        const reason = `COOLDOWN_ACTIVE: Trading paused until ${cooldownEnd.toISOString()} due to consecutive losses`;
         logger.info({
           uid,
           cooldownUntil: cooldownEnd.toISOString(),
           now: new Date().toISOString(),
           reason: 'COOLDOWN_ACTIVE'
         }, '⛔ [RISK_GUARDS] BLOCKED: Cooldown active');
-        return { allowed: false, reason: `COOLDOWN_ACTIVE: Trading paused until ${cooldownEnd.toISOString()} due to consecutive losses` };
+        await this.logAutoTradeSkip(uid, reason, {
+          exchangeStatus: 'available',
+          additionalDetails: {
+            cooldownUntil: cooldownEnd.toISOString(),
+            now: new Date().toISOString(),
+            consecutiveLosses: config.consecutiveLosses,
+          }
+        });
+        return { allowed: false, reason };
       }
     }
 
     // 4. Check circuit breaker (BYPASS ON MANUAL)
     if (!isManualApproval && engine.circuitBreaker) {
+      const reason = 'CIRCUIT_BREAKER_ACTIVE: Daily loss limit exceeded';
       logger.info({
         uid,
         circuitBreaker: engine.circuitBreaker,
         reason: 'CIRCUIT_BREAKER_ACTIVE'
       }, '⛔ [RISK_GUARDS] BLOCKED: Circuit breaker active');
-      return { allowed: false, reason: 'CIRCUIT_BREAKER_ACTIVE: Daily loss limit exceeded' };
+      await this.logAutoTradeSkip(uid, reason, {
+        exchangeStatus: 'available',
+        additionalDetails: {
+          circuitBreaker: engine.circuitBreaker,
+          dailyPnL: config.stats?.dailyPnL,
+        }
+      });
+      return { allowed: false, reason };
     }
 
     // 5. Check manual override (BYPASS ON MANUAL)
     if (!isManualApproval && config.manualOverride) {
+      const reason = 'MANUAL_OVERRIDE_ACTIVE: Trading paused by user';
       logger.info({
         uid,
         manualOverride: config.manualOverride,
         reason: 'MANUAL_OVERRIDE_ACTIVE'
       }, '⛔ [RISK_GUARDS] BLOCKED: Manual override active');
-      return { allowed: false, reason: 'MANUAL_OVERRIDE_ACTIVE: Trading paused by user' };
+      await this.logAutoTradeSkip(uid, reason, {
+        exchangeStatus: 'available',
+        additionalDetails: {
+          manualOverride: config.manualOverride,
+        }
+      });
+      return { allowed: false, reason };
     }
 
     // 6. Check if auto-trade is enabled (BYPASS ON MANUAL)
     if (!isManualApproval && !config.autoTradeEnabled) {
+      const reason = 'AUTO_TRADE_DISABLED: Auto-trading is not enabled';
       logger.warn({
         uid,
         autoTradeEnabled: config.autoTradeEnabled,
         isManualApproval,
         reason: 'AUTO_TRADE_DISABLED'
       }, '⛔ [RISK_GUARDS] BLOCKED: Auto-trade is not enabled in config');
-      return { allowed: false, reason: 'AUTO_TRADE_DISABLED: Auto-trading is not enabled' };
+      await this.logAutoTradeSkip(uid, reason, {
+        exchangeStatus: 'available',
+        additionalDetails: {
+          autoTradeEnabled: config.autoTradeEnabled,
+        }
+      });
+      return { allowed: false, reason };
     }
 
     return { allowed: true };
@@ -1402,6 +1529,20 @@ export class AutoTradeEngine {
       });
       throw new Error('Trading settings unavailable - auto-trade stopped for safety');
     }
+
+    // CRITICAL: Determine accuracy threshold from user settings
+    // For manual approval (skipConfirmationCheck=true), use 60% (safety)
+    // For auto-trade, use user's accuracyTrigger.min from settings
+    const accuracyThreshold = skipConfirmationCheck ? 60 : (settings.accuracyTrigger?.min ?? 75);
+    
+    logger.info({
+      uid,
+      symbol: signal.symbol,
+      userAccuracyTrigger: settings.accuracyTrigger,
+      executionThreshold: accuracyThreshold,
+      skipConfirmationCheck,
+      usingUserSetting: !skipConfirmationCheck && settings.accuracyTrigger?.min !== undefined
+    }, `[EXECUTE_TRADE] Using accuracy threshold: ${accuracyThreshold}% (user-defined: ${settings.accuracyTrigger?.min ?? 'not set, using default 75%'})`);
 
     // Check if trade confirmation is required
     // CRITICAL: Read EXCLUSIVELY from users/{uid}/settings/current (centralized source)
@@ -1520,6 +1661,25 @@ export class AutoTradeEngine {
         manualOverride: config.manualOverride
       }, '🔍 [DEBUG_TRACE] BLOCKED at risk guards check');
       
+      // Get user settings for threshold
+      const tradingSettings = await AutoTradeEngine.getTradingSettings(uid);
+      const userThreshold = skipConfirmationCheck ? 60 : (tradingSettings.accuracyTrigger?.min ?? 75);
+      
+      // Note: Skip logging already done in checkRiskGuards, but log here too for executeTrade context
+      await this.logAutoTradeSkip(uid, reason, {
+        symbol: signal.symbol,
+        accuracy: signal.accuracy,
+        threshold: userThreshold,
+        signal: signal.signal,
+        exchangeStatus: engine.adapter ? 'available' : 'unavailable',
+        additionalDetails: {
+          autoTradeEnabled: config.autoTradeEnabled,
+          manualOverride: config.manualOverride,
+          skipConfirmationCheck,
+          userAccuracyTrigger: tradingSettings.accuracyTrigger,
+        }
+      });
+      
       await this.logTradeEvent(uid, 'TRADE_REJECTED', {
         signal,
         reason,
@@ -1552,7 +1712,7 @@ export class AutoTradeEngine {
       nextStep: 'ADAPTER_INIT_OR_POSITION_SIZING'
     }, '🔍 [DEBUG_TRACE] Risk guards PASSED in executeTrade - proceeding to adapter/position sizing');
 
-    // Note: Redundant accuracy check removed. checkRiskGuards handles the 75%/60% hard rules.
+    // Note: Redundant accuracy check removed. checkRiskGuards handles the user-defined accuracy trigger (or 60% for manual).
 
     // Initialize adapter if needed
     if (!engine.adapter) {
@@ -1759,6 +1919,20 @@ export class AutoTradeEngine {
         slDistancePct: (slDistance / signal.entryPrice * 100).toFixed(4) + '%'
       }, `❌ [AUTO_TRADE_EXECUTION] BLOCKED: ${reason} - SL distance (${slDistance.toFixed(8)}) < minimum tick size (${minimumTickSize.toFixed(8)})`);
       
+      await this.logAutoTradeSkip(uid, reason, {
+        symbol: signal.symbol,
+        accuracy: signal.accuracy,
+        threshold: accuracyThreshold,
+        signal: signal.signal,
+        exchangeStatus: engine.adapter ? 'available' : 'unavailable',
+        additionalDetails: {
+          slDistance,
+          minimumTickSize,
+          entryPrice: signal.entryPrice,
+          stopLoss: signal.stopLoss,
+        }
+      });
+      
       await this.logTradeEvent(uid, 'TRADE_SKIPPED', {
         signal,
         reason,
@@ -1890,6 +2064,21 @@ export class AutoTradeEngine {
           minNotional
         }, `❌ [AUTO_TRADE_EXECUTION] BLOCKED: ${reason} - Adjusting to min notional (${minNotional} USDT) would exceed max risk (${adjustedRiskPct.toFixed(2)}% > ${maxAllowedRiskPct.toFixed(2)}%)`);
         
+        await this.logAutoTradeSkip(uid, reason, {
+          symbol: signal.symbol,
+          accuracy: signal.accuracy,
+          threshold: accuracyThreshold,
+          signal: signal.signal,
+          exchangeStatus: engine.adapter ? 'available' : 'unavailable',
+          additionalDetails: {
+            adjustedRiskPct,
+            maxAllowedRiskPct,
+            minNotional,
+            quantity,
+            equity,
+          }
+        });
+        
         await this.logTradeEvent(uid, 'TRADE_SKIPPED', {
           signal,
           reason,
@@ -1957,6 +2146,20 @@ export class AutoTradeEngine {
         positionValue,
         minNotional: 10
       }, `❌ [AUTO_TRADE_EXECUTION] BLOCKED: ${reason} - Calculated quantity is zero or negative`);
+      
+      await this.logAutoTradeSkip(uid, reason, {
+        symbol: signal.symbol,
+        accuracy: signal.accuracy,
+        threshold: accuracyThreshold,
+        signal: signal.signal,
+        exchangeStatus: engine.adapter ? 'available' : 'unavailable',
+        additionalDetails: {
+          quantity,
+          equity,
+          riskPct,
+          slDistance,
+        }
+      });
       
       await this.logTradeEvent(uid, 'TRADE_SKIPPED', {
         signal,
@@ -2034,6 +2237,20 @@ export class AutoTradeEngine {
         minNotional,
         quantity
       }, `❌ [AUTO_TRADE_EXECUTION] BLOCKED: ${reason} - Equity (${equity}) < min notional (${minNotional})`);
+      
+      await this.logAutoTradeSkip(uid, reason, {
+        symbol: signal.symbol,
+        accuracy: signal.accuracy,
+        threshold: accuracyThreshold,
+        signal: signal.signal,
+        exchangeStatus: engine.adapter ? 'available' : 'unavailable',
+        additionalDetails: {
+          equity,
+          minNotional,
+          positionValue,
+          quantity,
+        }
+      });
       
       await this.logTradeEvent(uid, 'TRADE_SKIPPED', {
         signal,
@@ -2172,6 +2389,19 @@ export class AutoTradeEngine {
         reason
       }, `[AUTO_TRADE_EXECUTION] acc=${signal.accuracy.toFixed(1)} rr=${rr.toFixed(2)} qty=${quantity.toFixed(6)} minNotional=10 → BLOCKED (${reason})`);
       
+      await this.logAutoTradeSkip(uid, reason, {
+        symbol: signal.symbol,
+        accuracy: signal.accuracy,
+        threshold: accuracyThreshold,
+        signal: signal.signal,
+        exchangeStatus: engine.adapter ? 'available' : 'unavailable',
+        additionalDetails: {
+          autoTradeEnabled: config.autoTradeEnabled,
+          manualOverride: config.manualOverride,
+          skipConfirmationCheck,
+        }
+      });
+      
       await this.logTradeEvent(uid, 'TRADE_SKIPPED', {
         signal,
         reason,
@@ -2272,6 +2502,19 @@ export class AutoTradeEngine {
             stepSize: exchangeConstraints.stepSize
           }, `❌ [AUTO_TRADE_EXECUTION] BLOCKED: ${reason} - Calculated quantity (${quantity}) < exchange minQty (${exchangeConstraints.minQty})`);
           
+          await this.logAutoTradeSkip(uid, reason, {
+            symbol: signal.symbol,
+            accuracy: signal.accuracy,
+            threshold: accuracyThreshold,
+            signal: signal.signal,
+            exchangeStatus: 'available',
+            additionalDetails: {
+              calculatedQty: quantity,
+              minQty: exchangeConstraints.minQty,
+              stepSize: exchangeConstraints.stepSize,
+            }
+          });
+          
           await this.logTradeEvent(uid, 'TRADE_SKIPPED', {
             signal,
             reason,
@@ -2313,6 +2556,19 @@ export class AutoTradeEngine {
                 roundedQty: quantity,
                 minQty: exchangeConstraints.minQty
               }, `❌ [AUTO_TRADE_EXECUTION] BLOCKED: ${reason} - Rounded quantity (${quantity}) < minQty (${exchangeConstraints.minQty})`);
+              
+              await this.logAutoTradeSkip(uid, reason, {
+                symbol: signal.symbol,
+                accuracy: signal.accuracy,
+                threshold: accuracyThreshold,
+                signal: signal.signal,
+                exchangeStatus: 'available',
+                additionalDetails: {
+                  roundedQty: quantity,
+                  minQty: exchangeConstraints.minQty,
+                  stepSize: exchangeConstraints.stepSize,
+                }
+              });
               
               await this.logTradeEvent(uid, 'TRADE_SKIPPED', {
                 signal,
@@ -2859,19 +3115,21 @@ export class AutoTradeEngine {
     // P4: Use dynamic sizing model
     const acc = accuracy > 1 ? accuracy : accuracy * 100;
 
-    // Rule: Auto Trade MUST execute ONLY when: accuracy >= 75%
-    // Note: accuracyTrigger from settings is for Telegram, not for execution sizing.
-    const minThreshold = 75;
+    // CRITICAL: Use user-defined accuracyTrigger.min for execution sizing
+    // This ensures auto-trade respects user's selected accuracy threshold
+    const minThreshold = settings.accuracyTrigger?.min ?? 75;
 
     if (acc < minThreshold) {
       return {
         positionPercent: 0,
-        reason: `Accuracy ${acc.toFixed(1)}% below mandatory threshold (${minThreshold}%)`
+        reason: `Accuracy ${acc.toFixed(1)}% below user-defined threshold (${minThreshold}%)`
       };
     }
 
+    // Note: The modelPercent calculation below is legacy and may be replaced by accuracyRiskConfig
+    // For now, it's kept for backward compatibility but accuracyRiskConfig in calculateDynamicParams takes precedence
     let modelPercent = 0;
-    if (acc < 75) modelPercent = 1;
+    if (acc < minThreshold) modelPercent = 1;
     else if (acc < 80) modelPercent = 2;
     else if (acc < 85) modelPercent = 3;
     else if (acc < 90) modelPercent = 4;
@@ -2937,6 +3195,91 @@ export class AutoTradeEngine {
       });
     } catch (error: any) {
       logger.error({ error: error.message, uid, eventType }, 'Error logging trade event');
+    }
+  }
+
+  /**
+   * Log auto-trade skip reason with full context for audit
+   * This method ensures ALL skip reasons are logged with:
+   * - accuracy value
+   * - required threshold
+   * - exchange status
+   * - signal availability
+   */
+  private async logAutoTradeSkip(
+    uid: string,
+    reason: string,
+    context: {
+      symbol?: string;
+      accuracy?: number;
+      threshold?: number;
+      signal?: 'BUY' | 'SELL' | 'HOLD' | string;
+      exchangeStatus?: 'available' | 'unavailable' | 'decryption_failed' | 'unknown';
+      additionalDetails?: Record<string, any>;
+    }
+  ): Promise<void> {
+    try {
+      const engine = await this.getUserEngine(uid);
+      const config = engine.config;
+      
+      // Determine exchange status
+      let exchangeStatus: 'available' | 'unavailable' | 'decryption_failed' | 'unknown' = context.exchangeStatus || 'unknown';
+      if (exchangeStatus === 'unknown') {
+        if (engine.adapter) {
+          exchangeStatus = 'available';
+        } else {
+          // Try to check if exchange config exists but decryption failed
+          try {
+            const db = getFirebaseAdmin().firestore();
+            const exchangeConfigDoc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+            if (exchangeConfigDoc.exists && exchangeConfigDoc.data()?.apiKeyEncrypted) {
+              try {
+                const { decryptOrThrow } = await import('./keyManager');
+                decryptOrThrow(exchangeConfigDoc.data()!.apiKeyEncrypted, 'API key');
+                exchangeStatus = 'available';
+              } catch {
+                exchangeStatus = 'decryption_failed';
+              }
+            } else {
+              exchangeStatus = 'unavailable';
+            }
+          } catch {
+            exchangeStatus = 'unavailable';
+          }
+        }
+      }
+
+      const skipLog = {
+        uid,
+        symbol: context.symbol || 'UNKNOWN',
+        reason,
+        accuracy: context.accuracy,
+        accuracyUsed: context.accuracy,
+        threshold: context.threshold,
+        signal: context.signal,
+        exchangeStatus,
+        autoTradeEnabled: config.autoTradeEnabled,
+        manualOverride: config.manualOverride,
+        ...context.additionalDetails,
+        timestamp: admin.firestore.Timestamp.now(),
+      };
+
+      // Log to execution logs
+      await firestoreAdapter.saveExecutionLog(uid, {
+        symbol: context.symbol || 'UNKNOWN',
+        timestamp: admin.firestore.Timestamp.now(),
+        action: 'SKIPPED',
+        reason,
+        accuracy: context.accuracy,
+        accuracyUsed: context.accuracy,
+        signal: context.signal as 'BUY' | 'SELL' | 'HOLD' | undefined,
+        status: `SKIPPED: ${reason}`,
+      });
+
+      // Log to console with full context
+      logger.info(skipLog, `⛔ [AUTO_TRADE_SKIP] ${reason} - acc=${context.accuracy?.toFixed(1) || 'N/A'}% threshold=${context.threshold || 'N/A'}% signal=${context.signal || 'N/A'} exchange=${exchangeStatus}`);
+    } catch (error: any) {
+      logger.error({ error: error.message, uid, reason }, 'Failed to log auto-trade skip');
     }
   }
 
@@ -3753,11 +4096,19 @@ export class AutoTradeEngine {
     const cycleWindow = Math.floor(Date.now() / 1000); // 1-second window
     const cycleId = `${uid}_${cycleWindow}`;
     if (activeCycles.has(cycleId)) {
+      const reason = 'DUPLICATE_CYCLE: Auto-trade cycle already running for this user';
       logger.warn({ 
         uid, 
         cycleId,
         duplicateBlocked: true 
       }, '⏭️ [CYCLE_GUARD] BLOCKED: Duplicate auto-trade cycle execution prevented - cycle already running');
+      await this.logAutoTradeSkip(uid, reason, {
+        exchangeStatus: 'unknown',
+        additionalDetails: {
+          cycleId,
+          duplicateBlocked: true
+        }
+      });
       return null; // Return null to prevent duplicate execution
     }
     activeCycles.add(cycleId);
@@ -3772,11 +4123,19 @@ export class AutoTradeEngine {
       // CRITICAL: These guards only prevent research if system-wide flags are set
       // They do NOT check accuracy, signal, or trade conditions (those are evaluated AFTER research)
       if (process.env.DISABLE_AUTOTRADE === 'true') {
-        logger.debug({ uid }, 'Research skipped - DISABLE_AUTOTRADE env flag set');
+        const reason = 'DISABLE_AUTOTRADE_ENV_FLAG: Auto-trade disabled by environment variable';
+        logger.info({ uid, reason }, '⏭️ [AUTO_TRADE_SKIP] Research skipped - DISABLE_AUTOTRADE env flag set');
+        await this.logAutoTradeSkip(uid, reason, {
+          exchangeStatus: 'unknown',
+        });
         return null;
       }
       if (!shouldRunBackgroundTasks()) {
-        logger.debug({ uid }, 'Research skipped - background tasks paused');
+        const reason = 'BACKGROUND_TASKS_PAUSED: Background tasks are paused';
+        logger.info({ uid, reason }, '⏭️ [AUTO_TRADE_SKIP] Research skipped - background tasks paused');
+        await this.logAutoTradeSkip(uid, reason, {
+          exchangeStatus: 'unknown',
+        });
         return null;
       }
 
@@ -3796,19 +4155,26 @@ export class AutoTradeEngine {
         // CRITICAL: Do NOT store history for skipped cycles (no research keys)
         // History should only be stored for completed FINAL research with real accuracy values
         // Skipped cycles do NOT represent completed research
+        const reason = AUTO_TRADE_REASONS.NO_RESEARCH_KEYS;
         logger.info({ 
           uid, 
-          skipReason: AUTO_TRADE_REASONS.NO_RESEARCH_KEYS,
+          skipReason: reason,
           historyBlocked: true,
           reason: 'Research keys missing - research did not execute'
         }, '⏭️ [HISTORY_GUARD] BLOCKED: Skipping history save for no-research-keys - only FINAL completed research should be saved');
 
+        await this.logAutoTradeSkip(uid, reason, {
+          exchangeStatus: 'unknown',
+          additionalDetails: {
+            details: 'No research API keys configured. Please add keys to enable auto-trading.',
+          }
+        });
         await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', {
-          reason: AUTO_TRADE_REASONS.NO_RESEARCH_KEYS,
+          reason,
           details: 'No research API keys configured. Please add keys to enable auto-trading.',
           timestamp: new Date().toISOString()
         });
-        throw new Error(AUTO_TRADE_REASONS.NO_RESEARCH_KEYS);
+        throw new Error(reason);
       }
 
       // 3. CRITICAL: Early exchange decryption check for AUTO_TRADE_RESEARCH mode
@@ -3849,6 +4215,7 @@ export class AutoTradeEngine {
 
       // CRITICAL: If exchange decryption failed, skip deep research early
       if (exchangeDecryptionFailed) {
+        const reason = AUTO_TRADE_REASONS.SKIPPED_EXCHANGE_UNAVAILABLE;
         logger.info({ 
           uid, 
           error: exchangeDecryptionError 
@@ -3859,14 +4226,21 @@ export class AutoTradeEngine {
         // Skipped cycles do NOT represent completed research
         logger.info({ 
           uid, 
-          skipReason: AUTO_TRADE_REASONS.SKIPPED_EXCHANGE_UNAVAILABLE,
+          skipReason: reason,
           historyBlocked: true,
           reason: 'Exchange unavailable - research did not execute'
         }, '⏭️ [HISTORY_GUARD] BLOCKED: Skipping history save for exchange-unavailable - only FINAL completed research should be saved');
 
+        await this.logAutoTradeSkip(uid, reason, {
+          exchangeStatus: 'decryption_failed',
+          additionalDetails: {
+            details: 'Exchange API key decryption failed. Please re-enter your exchange API keys.',
+            error: exchangeDecryptionError,
+          }
+        });
         // Log activity
         await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', {
-          reason: AUTO_TRADE_REASONS.SKIPPED_EXCHANGE_UNAVAILABLE,
+          reason,
           details: 'Exchange API key decryption failed. Please re-enter your exchange API keys.',
           timestamp: new Date().toISOString()
         });
@@ -3922,6 +4296,13 @@ export class AutoTradeEngine {
         reason: 'No signal generated - research did not complete successfully'
       }, '⏭️ [HISTORY_GUARD] BLOCKED: Skipping history save for no-signal cycle - only FINAL completed research should be saved');
 
+        await this.logAutoTradeSkip(uid, skipReason, {
+          symbol: researchSymbol,
+          exchangeStatus: 'available',
+          additionalDetails: {
+            resultsCount: researchData.results?.length || 0,
+          }
+        });
         await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', { reason: skipReason, timestamp: new Date().toISOString() });
         return null;
       }
@@ -4410,23 +4791,33 @@ export class AutoTradeEngine {
         skipReason = systemRiskCheck.reason || 'System risk check failed';
         cycleResult = AUTO_TRADE_REASONS.SYSTEM_RISK_FAILURE;
         logger.info({ uid, reason: skipReason, step: 'SYSTEM_RISK_CHECK' }, '⛔ [EXECUTION_ORDER] BLOCKED: System risk check failed');
+        await this.logAutoTradeSkip(uid, skipReason, {
+          symbol: researchResult.symbol,
+          accuracy,
+          threshold: settings.accuracyTrigger?.min ?? 75,
+          signal,
+          exchangeStatus: 'available',
+        });
         await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', { symbol: researchResult.symbol, reason: skipReason, accuracy, timestamp: new Date().toISOString() });
         return researchResult;
       }
 
-      // STEP 2: ACCURACY GATE (75%)
+      // STEP 2: ACCURACY GATE (User-Defined)
       // 6. Evaluate Signal & Accuracy Gate for Trade Execution
       // accuracy variable already calculated above
-      const threshold = 75; // Rule: Auto Trade MUST execute ONLY when: accuracy >= 75%
+      // CRITICAL: Use user-defined accuracyTrigger.min, NOT hardcoded 75%
+      const threshold = settings.accuracyTrigger?.min ?? 75;
 
       logger.info({
         uid,
         symbol: researchResult.symbol,
         accuracy,
-        threshold,
+        userAccuracyTrigger: settings.accuracyTrigger,
+        executionThreshold: threshold,
         signal,
-        willExecute: accuracy >= threshold && signal !== 'HOLD'
-      }, '🎯 [RESEARCH_CYCLE] Accuracy gate evaluation');
+        willExecute: accuracy >= threshold && signal !== 'HOLD',
+        usingUserSetting: settings.accuracyTrigger?.min !== undefined
+      }, `🎯 [RESEARCH_CYCLE] Accuracy gate evaluation - threshold: ${threshold}% (user-defined: ${settings.accuracyTrigger?.min ?? 'not set, using default 75%'})`);
 
       if (accuracy < threshold) {
         skipReason = `Accuracy ${accuracy.toFixed(1)}% below mandatory threshold (${threshold}%)`;
@@ -4438,6 +4829,13 @@ export class AutoTradeEngine {
           threshold,
           reason: skipReason
         }, '⛔ [RESEARCH_CYCLE] BLOCKED: Accuracy below threshold');
+        await this.logAutoTradeSkip(uid, skipReason, {
+          symbol: researchResult.symbol,
+          accuracy,
+          threshold,
+          signal,
+          exchangeStatus: 'available',
+        });
         await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', { symbol: researchResult.symbol, reason: skipReason, accuracy, timestamp: new Date().toISOString() });
         return researchResult;
       }
@@ -4445,6 +4843,13 @@ export class AutoTradeEngine {
       if (signal === 'HOLD' || !signal) {
         skipReason = signal === 'HOLD' ? AUTO_TRADE_REASONS.HOLD_SIGNAL : AUTO_TRADE_REASONS.NO_SIGNAL;
         cycleResult = AUTO_TRADE_REASONS.TRADE_SKIPPED;
+        await this.logAutoTradeSkip(uid, skipReason, {
+          symbol: researchResult.symbol,
+          accuracy,
+          threshold: settings.accuracyTrigger?.min ?? 75,
+          signal,
+          exchangeStatus: 'available',
+        });
         await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', { symbol: researchResult.symbol, reason: skipReason, accuracy, timestamp: new Date().toISOString() });
         return researchResult;
       }
@@ -4462,6 +4867,17 @@ export class AutoTradeEngine {
       if (params.skip) {
         skipReason = params.skip;
         cycleResult = AUTO_TRADE_REASONS.TRADE_SKIPPED;
+        await this.logAutoTradeSkip(uid, skipReason, {
+          symbol: researchResult.symbol,
+          accuracy,
+          threshold: settings.accuracyTrigger?.min ?? 75,
+          signal,
+          exchangeStatus: 'available',
+          additionalDetails: {
+            volatility: volClassification,
+            newsScore,
+          }
+        });
         await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', { symbol: researchResult.symbol, reason: skipReason, accuracy, volatility: volClassification, timestamp: new Date().toISOString() });
         return researchResult;
       }

@@ -148,12 +148,14 @@ export async function backgroundResearchRoutes(fastify: FastifyInstance) {
 
         // Persist engine state: STOPPED if disabling, preserve existing if enabling
         const engineState = body.backgroundResearchEnabled ? undefined : 'STOPPED';
-        // CRITICAL: Clear telegramBackgroundResearchEnabled flag when disabling
-        const telegramBackgroundResearchEnabled = body.backgroundResearchEnabled ? undefined : false;
+        // CRITICAL: Set telegramBackgroundResearchEnabled flag correctly
+        // When enabling: set to true
+        // When disabling: set to false
+        const telegramBackgroundResearchEnabled = body.backgroundResearchEnabled ? true : false;
         
         await firestoreAdapter.saveBackgroundResearchSettings(uid, {
           backgroundResearchEnabled: body.backgroundResearchEnabled,
-          telegramBackgroundResearchEnabled: telegramBackgroundResearchEnabled, // Clear flag when disabling
+          telegramBackgroundResearchEnabled: telegramBackgroundResearchEnabled, // Set flag correctly
           telegramBotToken: body.telegramBotToken,
           telegramChatId: body.telegramChatId,
           researchFrequencyMinutes: body.researchFrequencyMinutes,
@@ -171,32 +173,39 @@ export async function backgroundResearchRoutes(fastify: FastifyInstance) {
         });
       }
 
-      // STEP 5: Notify scheduler (FIRE-AND-FORGET, must NEVER affect response)
-      // CRITICAL: Scheduler notification is completely isolated
-      // Even if scheduler fails, settings are saved and request succeeds
+      // STEP 5: Explicitly register user with scheduler and trigger initial research cycle
+      // CRITICAL: Use ensureUserResearchScheduled to guarantee registration (same logic as auto-trade)
+      // This ensures user is registered with mode = TELEGRAM_BACKGROUND_RESEARCH and triggers initial cycle
       if (body.backgroundResearchEnabled) {
-        // Fire-and-forget: Use setTimeout to ensure it's truly non-blocking
+        // Fire-and-forget: Use setImmediate to ensure it's truly non-blocking
         setImmediate(() => {
           (async () => {
             try {
               const { backgroundResearchScheduler } = await import('../services/backgroundResearchScheduler');
-              await backgroundResearchScheduler.onUserSettingsChanged(uid);
-              logger.debug({ uid }, 'Scheduler notified of settings change');
+              // CRITICAL: Use ensureUserResearchScheduled instead of onUserSettingsChanged
+              // This guarantees registration and triggers initial research cycle
+              const result = await backgroundResearchScheduler.ensureUserResearchScheduled(uid);
+              if (result.scheduled) {
+                logger.info({ uid, reason: result.reason }, '✅ [SCHEDULER] User registered with TELEGRAM_BACKGROUND_RESEARCH mode - initial cycle will trigger');
+              } else {
+                logger.warn({ uid, reason: result.reason }, '⚠️ [SCHEDULER] User registration failed - scheduler may not start');
+              }
             } catch (schedulerErr: any) {
               // CRITICAL: Scheduler failures are logged but NEVER affect API response
-              logger.warn({ uid, error: schedulerErr.message }, 'Scheduler notification failed (non-critical - settings saved)');
+              logger.warn({ uid, error: schedulerErr.message }, 'Scheduler registration failed (non-critical - settings saved)');
             }
           })().catch(() => {
-            // Swallow all errors - scheduler notification must never affect response
+            // Swallow all errors - scheduler registration must never affect response
           });
         });
       } else {
-        // Also notify when disabling (to remove scheduler job)
+        // When disabling: notify scheduler to remove job
         setImmediate(() => {
           (async () => {
             try {
               const { backgroundResearchScheduler } = await import('../services/backgroundResearchScheduler');
               await backgroundResearchScheduler.onUserSettingsChanged(uid);
+              logger.debug({ uid }, 'Scheduler notified of disable');
             } catch (schedulerErr: any) {
               logger.warn({ uid, error: schedulerErr.message }, 'Scheduler notification failed (non-critical)');
             }

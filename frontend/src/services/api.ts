@@ -276,7 +276,7 @@ export const settingsApi = {
     return normalized;
   },
   saveExchangeConfig: (uid: string, exchangeBody: any) => api.post(`/users/${uid}/exchange-config`, exchangeBody),
-  loadExchangeConfig: (uid: string) => api.get(`/users/${uid}/exchangeConfig/current`),
+  loadExchangeConfig: (uid: string) => api.get(`/users/${uid}/exchangeConfig/current`, { timeout: 25000 }),
 };
 
 // Execution API
@@ -364,7 +364,7 @@ export const usersApi = {
     return { data: normalized };
   },
   // Exchange config
-  getExchangeConfig: (uid: string) => api.get(`/users/${uid}/exchangeConfig/current`),
+  getExchangeConfig: (uid: string) => api.get(`/users/${uid}/exchangeConfig/current`, { timeout: 25000 }),
   // Temp test
   tempTest: () => api.get('/users/temp-test'),
   // Usage stats
