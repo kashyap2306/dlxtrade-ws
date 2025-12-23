@@ -121,6 +121,21 @@ export class AccuracyEngine {
     const newsScore = this.calculateNewsScore(report);
     const riskPenalty = this.calculateRiskPenalty(report);
 
+    // [ACCURACY_AUDIT] Log all source accuracies before aggregation
+    logger.info({
+      requestId,
+      symbol: report.symbol,
+      sourceAccuracies: {
+        indicatorScore,
+        marketStructureScore,
+        momentumScore,
+        volumeScore,
+        newsScore,
+        riskPenalty
+      },
+      weights: profile
+    }, '[ACCURACY_AUDIT] Source accuracies calculated');
+
     // D) Combine with weights (No intermediate clamping)
     let finalAccuracy =
       (indicatorScore * profile.indicators) +
@@ -128,6 +143,21 @@ export class AccuracyEngine {
       (momentumScore * profile.momentum) +
       (volumeScore * profile.volume) +
       (newsScore * profile.news) - riskPenalty;
+
+    // [ACCURACY_AUDIT] Log aggregated accuracy before special rules
+    logger.info({
+      requestId,
+      symbol: report.symbol,
+      aggregatedAccuracy: finalAccuracy,
+      weightedComponents: {
+        indicators: indicatorScore * profile.indicators,
+        marketStructure: marketStructureScore * profile.marketStructure,
+        momentum: momentumScore * profile.momentum,
+        volume: volumeScore * profile.volume,
+        news: newsScore * profile.news,
+        riskPenalty: -riskPenalty
+      }
+    }, '[ACCURACY_AUDIT] Aggregated accuracy (before special rules)');
 
     // AUTO-TRADE SAFETY: Count valid strategies and apply accuracy floor/boost
     const validStrategiesCount = this.countValidStrategies(report);
@@ -138,8 +168,25 @@ export class AccuracyEngine {
     // E) Special rules and adjustments
     finalAccuracy = this.applySpecialRules(finalAccuracy, report);
 
+    // [ACCURACY_AUDIT] Log after special rules
+    logger.info({
+      requestId,
+      symbol: report.symbol,
+      accuracyAfterSpecialRules: finalAccuracy
+    }, '[ACCURACY_AUDIT] Accuracy after special rules');
+
     // Round and clamp to 0-100 ONLY at the final stage
     finalAccuracy = Math.max(0, Math.min(100, Math.round(finalAccuracy * 10) / 10));
+
+    // [ACCURACY_AUDIT] Log FINAL accuracy
+    logger.info({
+      requestId,
+      symbol: report.symbol,
+      finalAccuracy,
+      signal: report.signal,
+      isNaN: isNaN(finalAccuracy),
+      isFinite: isFinite(finalAccuracy)
+    }, '[ACCURACY_AUDIT] FINAL accuracy assigned');
 
     const result: AccuracyResult = {
       accuracy: finalAccuracy,

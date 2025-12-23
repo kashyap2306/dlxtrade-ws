@@ -729,16 +729,75 @@ const DeepResearchCore: React.FC<DeepResearchCoreProps> = ({
               // CRITICAL: Normalize accuracy - if accuracy > 1, divide by 100
               const normalizedAccuracy = typeof accuracy === 'number' ? (accuracy > 1 ? accuracy / 100 : accuracy) : 0;
               
-              // STRICT RULE: Show Trade Plan ONLY when normalizedAccuracy >= 0.75
-              // Remove all other conditions - do NOT show based on tradePlan existence
-              const shouldShowTradePlan = normalizedAccuracy >= 0.75 && tradePlan && tradePlan.entryPrice;
+              // Unified trade decision (frontend validation matching backend)
+              const accuracyPercent = normalizedAccuracy * 100;
+              const planSignal = result.result?.signal || (result as any)?.signal || 'HOLD';
+              const planIndicators = analysis?.technicalIndicators || {};
+              const planVwapDeviation = planIndicators?.vwap?.deviation || 0;
+              const planAtrPercentile = analysis?.volatility?.atrPercentile || planIndicators?.atrPercentile || (result as any)?.result?.atrPercentile || 0;
+              const planAtrPercent = planAtrPercentile > 1 ? planAtrPercentile : planAtrPercentile * 100;
+              
+              // Entry zone validation: BUY near resistance → BLOCK, SELL near support → BLOCK
+              let planEntryZoneValid = true;
+              if (planSignal === 'BUY' && planVwapDeviation > 2) {
+                planEntryZoneValid = false;
+              } else if (planSignal === 'SELL' && planVwapDeviation < -2) {
+                planEntryZoneValid = false;
+              }
+              
+              // Risk-Reward gate: RR < 1.2 → BLOCK
+              const planRr = tradePlan?.riskRewardRatio || 0;
+              const planRrValid = planRr === 0 || planRr >= 1.2;
+              
+              // Volatility guard: ATR >= 95% → BLOCK
+              const planVolatilityState = planAtrPercent >= 95 ? 'EXTREME' : planAtrPercent >= 85 ? 'HIGH' : 'OK';
+              const planVolatilityValid = planVolatilityState !== 'EXTREME';
+              
+              // FINAL enforcement: Only show actionable if isFinal === true
+              const planIsActionable = isFinal && 
+                                   planSignal !== 'HOLD' && 
+                                   accuracyPercent >= 75 && 
+                                   planEntryZoneValid && 
+                                   planRrValid && 
+                                   planVolatilityValid;
+              
+              // STRICT RULE: Show Trade Plan ONLY when normalizedAccuracy >= 0.75 AND all unified checks pass
+              const shouldShowTradePlan = normalizedAccuracy >= 0.75 && tradePlan && tradePlan.entryPrice && planIsActionable;
 
-              // Risk-Reward Context when Trade Plan is hidden (accuracy < 75%)
-              if (!shouldShowTradePlan && tradePlan?.riskRewardRatio) {
+              // Show reason when trade plan is blocked
+              if (!shouldShowTradePlan && tradePlan?.entryPrice) {
+                let blockReason = '';
+                if (!isFinal) {
+                  blockReason = 'Research not final';
+                } else if (planSignal === 'HOLD') {
+                  blockReason = 'Signal is HOLD';
+                } else if (accuracyPercent < 75) {
+                  blockReason = `Accuracy ${accuracyPercent.toFixed(1)}% < 75% threshold`;
+                } else if (!planEntryZoneValid) {
+                  blockReason = planSignal === 'BUY' ? 'BUY near resistance' : 'SELL near support';
+                } else if (!planRrValid) {
+                  blockReason = `Risk-Reward ${planRr.toFixed(2)} < 1.2 minimum`;
+                } else if (!planVolatilityValid) {
+                  blockReason = 'Extreme volatility (ATR ≥ 95%)';
+                }
+                
                 return (
                   <div className="pt-8 border-t border-slate-700/50">
-                    <div className="text-sm text-slate-400 italic">
-                      Potential R:R ≈ {tradePlan.riskRewardRatio.toFixed(2)} (Trade plan unlocked at ≥75%)
+                    <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <svg className="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <h3 className="text-lg font-bold text-amber-400">Trade Blocked</h3>
+                      </div>
+                      <div className="text-sm text-slate-300">
+                        <div className="mb-2">Reason: {blockReason}</div>
+                        {tradePlan?.riskRewardRatio && (
+                          <div className="text-slate-400 italic">
+                            Potential R:R ≈ {tradePlan.riskRewardRatio.toFixed(2)}:1
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 );
@@ -1029,27 +1088,57 @@ const DeepResearchCore: React.FC<DeepResearchCoreProps> = ({
             {(() => {
               const accuracy = result.result?.accuracy ?? (result as any)?.accuracy ?? (result as any)?.resultData?.accuracy ?? 0;
               const normalizedAccuracy = typeof accuracy === 'number' ? (accuracy > 1 ? accuracy / 100 : accuracy) : 0;
+              const accuracyPercent = normalizedAccuracy * 100;
               const signal = result.result?.signal || (result as any)?.signal || 'HOLD';
               const tradePlan = (result as any)?.tradePlan || (result as any)?.result?.tradePlan || (result as any)?.resultData?.tradePlan;
               
-              // Get analysis data for decision reasoning
-              const analysis = result.analysis || {};
-              const indicators = analysis?.technicalIndicators || {};
-              const priceAction = analysis?.priceAction || {};
-              const supportResistance = analysis?.supportResistance || {};
-              const volatility = analysis?.volatility || {};
+              // Get analysis data first for unified decision
+              const decisionAnalysis = result.analysis || {};
+              const decisionIndicators = decisionAnalysis?.technicalIndicators || {};
+              const decisionPriceAction = decisionAnalysis?.priceAction || {};
+              const decisionSupportResistance = decisionAnalysis?.supportResistance || {};
+              const decisionVolatility = decisionAnalysis?.volatility || {};
+              
+              // Unified trade decision (matching backend logic)
+              const vwapDeviation = decisionIndicators?.vwap?.deviation || 0;
+              const decisionAtrPercentile = decisionVolatility?.atrPercentile || decisionIndicators?.atrPercentile || (result as any)?.result?.atrPercentile || 0;
+              const atrPercent = decisionAtrPercentile > 1 ? decisionAtrPercentile : decisionAtrPercentile * 100;
+              
+              // Entry zone validation
+              let entryZoneValid = true;
+              if (signal === 'BUY' && vwapDeviation > 2) {
+                entryZoneValid = false;
+              } else if (signal === 'SELL' && vwapDeviation < -2) {
+                entryZoneValid = false;
+              }
+              
+              // Risk-Reward gate
+              const rr = tradePlan?.riskRewardRatio || 0;
+              const rrValid = rr === 0 || rr >= 1.2;
+              
+              // Volatility guard
+              const volatilityState = atrPercent >= 95 ? 'EXTREME' : atrPercent >= 85 ? 'HIGH' : 'OK';
+              const volatilityValid = volatilityState !== 'EXTREME';
+              
+              // Unified decision
+              const isActionable = isFinal && 
+                                   signal !== 'HOLD' && 
+                                   accuracyPercent >= 75 && 
+                                   entryZoneValid && 
+                                   rrValid && 
+                                   volatilityValid;
               
               // Compute key factors for decision
-              const trendBias = priceAction.trendDirection?.toLowerCase() === 'bullish' ? 'Bullish' : 
-                               priceAction.trendDirection?.toLowerCase() === 'bearish' ? 'Bearish' : 'Neutral';
-              const macdValue = indicators.macd?.value || 0;
+              const trendBias = decisionPriceAction.trendDirection?.toLowerCase() === 'bullish' ? 'Bullish' : 
+                               decisionPriceAction.trendDirection?.toLowerCase() === 'bearish' ? 'Bearish' : 'Neutral';
+              const macdValue = decisionIndicators.macd?.value || 0;
               const momentumAligned = (macdValue > 0 && signal === 'BUY') || (macdValue < 0 && signal === 'SELL');
-              const atrPercentile = volatility?.atrPercentile || indicators?.atrPercentile || (result as any)?.result?.atrPercentile || 50;
-              const adxValue = indicators.adx?.value || indicators.trendStrength?.adx || 0;
+              const decisionAtrPercentileForReasoning = decisionVolatility?.atrPercentile || decisionIndicators?.atrPercentile || (result as any)?.result?.atrPercentile || 50;
+              const adxValue = decisionIndicators.adx?.value || decisionIndicators.trendStrength?.adx || 0;
               const trendStrength = adxValue > 25 ? 'Strong' : adxValue > 20 ? 'Moderate' : 'Weak';
-              const currentPrice = priceAction.currentPrice || 0;
-              const majorSupport = supportResistance.majorSupport || 0;
-              const majorResistance = supportResistance.majorResistance || 0;
+              const currentPrice = decisionPriceAction.currentPrice || 0;
+              const majorSupport = decisionSupportResistance.majorSupport || 0;
+              const majorResistance = decisionSupportResistance.majorResistance || 0;
               const nearKeyLevel = (majorSupport > 0 && currentPrice > 0 && ((currentPrice - majorSupport) / majorSupport) * 100 < 2) ||
                                   (majorResistance > 0 && currentPrice > 0 && ((majorResistance - currentPrice) / currentPrice) * 100 < 2);
               
@@ -1066,11 +1155,11 @@ const DeepResearchCore: React.FC<DeepResearchCoreProps> = ({
               const strategiesAligned = bullishCount > bearishCount && signal === 'BUY' || 
                                        bearishCount > bullishCount && signal === 'SELL';
               
-              // Build decision summary
+              // Build decision summary using unified logic
               let decision = '';
               let reason = '';
               
-              if (normalizedAccuracy >= 0.75) {
+              if (isActionable) {
                 decision = '✅ Trade Allowed';
                 const reasons = [];
                 if (trendBias !== 'Neutral' && (trendBias === 'Bullish' && signal === 'BUY' || trendBias === 'Bearish' && signal === 'SELL')) {
@@ -1079,7 +1168,7 @@ const DeepResearchCore: React.FC<DeepResearchCoreProps> = ({
                 if (momentumAligned) reasons.push('momentum alignment');
                 if (trendStrength === 'Strong') reasons.push('strong trend strength');
                 if (strategiesAligned) reasons.push('strategy consensus');
-                if (atrPercentile < 70) reasons.push('favorable volatility');
+                if (decisionAtrPercentileForReasoning < 70) reasons.push('favorable volatility');
                 if (tradePlan?.riskRewardRatio && tradePlan.riskRewardRatio >= 2) reasons.push('favorable risk-reward');
                 
                 reason = reasons.length > 0 
@@ -1088,15 +1177,20 @@ const DeepResearchCore: React.FC<DeepResearchCoreProps> = ({
               } else {
                 decision = '❌ Avoid Trade';
                 const reasons = [];
-                if (normalizedAccuracy < 0.75) reasons.push('accuracy is below 75%');
+                if (!isFinal) reasons.push('research not final');
+                if (signal === 'HOLD') reasons.push('signal is HOLD');
+                if (accuracyPercent < 75) reasons.push(`accuracy ${accuracyPercent.toFixed(1)}% is below 75%`);
+                if (!entryZoneValid) reasons.push(signal === 'BUY' ? 'BUY near resistance' : 'SELL near support');
+                if (!rrValid && rr > 0) reasons.push(`risk-reward ${rr.toFixed(2)} < 1.2 minimum`);
+                if (!volatilityValid) reasons.push('extreme volatility (ATR ≥ 95%)');
                 if (nearKeyLevel) reasons.push('price is near key support/resistance');
                 if (trendStrength === 'Weak') reasons.push('weak trend strength');
                 if (!momentumAligned) reasons.push('momentum misalignment');
-                if (atrPercentile > 70) reasons.push('high volatility risk');
+                if (decisionAtrPercentileForReasoning > 70 && volatilityValid) reasons.push('high volatility risk');
                 
                 reason = reasons.length > 0
-                  ? `Although ${trendBias.toLowerCase()} trend and ${momentumAligned ? 'momentum show partial alignment' : 'momentum shows misalignment'}, ${reasons.slice(0, 2).join(' and ')}, increasing reversal risk. Waiting for stronger confirmation is safer.`
-                  : 'Although trend and momentum show partial alignment, accuracy is below 75% and price is near key support, increasing reversal risk. Waiting for stronger confirmation is safer.';
+                  ? `Trade blocked: ${reasons.slice(0, 3).join(', ')}. Waiting for stronger confirmation is safer.`
+                  : 'Trade blocked by unified validation rules. Waiting for stronger confirmation is safer.';
               }
               
               return (

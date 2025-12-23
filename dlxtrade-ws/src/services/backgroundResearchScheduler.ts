@@ -1531,6 +1531,47 @@ export class BackgroundResearchScheduler {
           }
 
           if (shouldSendAlert && telegramEnabled && hasBotToken && hasChatId) {
+            // Unified trade decision for Telegram background research
+            const { makeUnifiedTradeDecision } = await import('./autoTradeEngine');
+            const indicators = fullResult?.indicators || fullResult?.analysis?.technicalIndicators || {};
+            const isFinal = fullResult?.isFinal === true;
+            const minTrigger = accuracyTrigger?.min ?? (typeof accuracyTrigger === 'number' ? accuracyTrigger : 80);
+            
+            const unifiedDecision = makeUnifiedTradeDecision(
+              signal,
+              finalAccuracyPercent,
+              isFinal,
+              tradePlan,
+              indicators,
+              minTrigger
+            );
+
+            // [TRADE_DECISION] Unified log for Telegram Background
+            logger.info({
+              uid,
+              symbol: coin,
+              FINAL: unifiedDecision.isFinal,
+              acc: unifiedDecision.accuracyUsed.toFixed(1),
+              rr: unifiedDecision.rr.toFixed(2),
+              atr: unifiedDecision.volatilityState,
+              entryZone: unifiedDecision.entryZoneValid ? 'OK' : 'INVALID',
+              decision: unifiedDecision.allowed ? 'ALLOWED' : 'BLOCKED',
+              reason: unifiedDecision.reason
+            }, `[TRADE_DECISION] Telegram BG: FINAL=${unifiedDecision.isFinal} acc=${unifiedDecision.accuracyUsed.toFixed(1)} rr=${unifiedDecision.rr.toFixed(2)} atr=${unifiedDecision.volatilityState} → ${unifiedDecision.allowed ? 'ALLOWED' : 'BLOCKED'}${unifiedDecision.reason ? ` (${unifiedDecision.reason})` : ''}`);
+
+            if (!unifiedDecision.allowed) {
+              logger.info({
+                alertId,
+                uid,
+                symbol: coin,
+                mode: 'TELEGRAM_BACKGROUND',
+                accuracy: finalAccuracyPercent,
+                status: 'SKIPPED',
+                reason: unifiedDecision.reason
+              }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Telegram background alert skipped - unified decision blocked');
+              return; // Skip alert
+            }
+
           // CRITICAL: Write history BEFORE sending Telegram alert (guaranteed order)
           // This ensures history is always written before alert is sent
           try {

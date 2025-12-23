@@ -199,6 +199,181 @@ export const AUTO_TRADE_REASONS = {
   SKIPPED_EXCHANGE_UNAVAILABLE: 'SKIPPED_EXCHANGE_UNAVAILABLE',
 };
 
+/**
+ * Unified Trade Decision Function
+ * Applies the SAME validation rules across ALL flows: Research UI, Telegram alerts, Auto-Trade execution
+ * 
+ * @param signal - Trade signal (BUY/SELL/HOLD)
+ * @param accuracy - Accuracy value (may be decimal 0-1 or percentage 0-100)
+ * @param isFinal - Whether research result is FINAL
+ * @param tradePlan - Trade plan with entryPrice, stopLoss, takeProfit, riskRewardRatio
+ * @param indicators - Technical indicators (for entry zone and ATR validation)
+ * @param threshold - Accuracy threshold (default 75 for auto-trade, 60 for manual)
+ * @returns Unified decision result
+ */
+export interface UnifiedTradeDecision {
+  allowed: boolean;
+  reason?: string;
+  accuracyUsed: number; // Percentage (0-100)
+  rr: number; // Risk-Reward ratio
+  volatilityState: 'OK' | 'HIGH' | 'EXTREME';
+  entryZoneValid: boolean;
+  isFinal: boolean;
+}
+
+export function makeUnifiedTradeDecision(
+  signal: 'BUY' | 'SELL' | 'HOLD',
+  accuracy: number,
+  isFinal: boolean,
+  tradePlan: { entryPrice?: number; stopLoss?: number; takeProfit?: number; riskRewardRatio?: number } | null,
+  indicators: { vwap?: { deviation?: number }; atr?: { classification?: string; atrPercentile?: number }; supportResistance?: { majorSupport?: number; majorResistance?: number } } | null,
+  threshold: number = 75
+): UnifiedTradeDecision {
+  // 1. Accuracy execution fix: Convert to percentage if needed
+  let accuracyPercent: number;
+  if (accuracy <= 1) {
+    accuracyPercent = accuracy * 100; // Convert decimal to percentage
+  } else {
+    accuracyPercent = accuracy; // Already percentage
+  }
+
+  // 2. FINAL research enforcement
+  if (!isFinal) {
+    return {
+      allowed: false,
+      reason: 'NOT_FINAL: Research result is not final',
+      accuracyUsed: accuracyPercent,
+      rr: 0,
+      volatilityState: 'OK',
+      entryZoneValid: false,
+      isFinal: false
+    };
+  }
+
+  // 3. HOLD signal check
+  if (signal === 'HOLD') {
+    return {
+      allowed: false,
+      reason: 'HOLD_SIGNAL: Signal is HOLD',
+      accuracyUsed: accuracyPercent,
+      rr: 0,
+      volatilityState: 'OK',
+      entryZoneValid: false,
+      isFinal: true
+    };
+  }
+
+  // 4. Accuracy threshold check
+  if (accuracyPercent < threshold) {
+    return {
+      allowed: false,
+      reason: `ACCURACY_TOO_LOW: ${accuracyPercent.toFixed(1)}% < ${threshold}% threshold`,
+      accuracyUsed: accuracyPercent,
+      rr: 0,
+      volatilityState: 'OK',
+      entryZoneValid: false,
+      isFinal: true
+    };
+  }
+
+  // 5. Entry zone validation: BUY near resistance → BLOCK, SELL near support → BLOCK
+  let entryZoneValid = true;
+  const vwapDeviation = indicators?.vwap?.deviation || 0;
+  if (signal === 'BUY' && vwapDeviation > 2) {
+    entryZoneValid = false;
+  } else if (signal === 'SELL' && vwapDeviation < -2) {
+    entryZoneValid = false;
+  }
+
+  // Also check support/resistance levels if available
+  if (tradePlan?.entryPrice) {
+    const entryPrice = tradePlan.entryPrice;
+    const majorResistance = indicators?.supportResistance?.majorResistance;
+    const majorSupport = indicators?.supportResistance?.majorSupport;
+    
+    if (signal === 'BUY' && majorResistance && entryPrice > 0) {
+      const distanceToResistance = ((majorResistance - entryPrice) / entryPrice) * 100;
+      if (distanceToResistance < 2) { // Within 2% of resistance
+        entryZoneValid = false;
+      }
+    } else if (signal === 'SELL' && majorSupport && entryPrice > 0) {
+      const distanceToSupport = ((entryPrice - majorSupport) / entryPrice) * 100;
+      if (distanceToSupport < 2) { // Within 2% of support
+        entryZoneValid = false;
+      }
+    }
+  }
+
+  if (!entryZoneValid) {
+    return {
+      allowed: false,
+      reason: signal === 'BUY' ? 'ENTRY_ZONE_INVALID: BUY near resistance' : 'ENTRY_ZONE_INVALID: SELL near support',
+      accuracyUsed: accuracyPercent,
+      rr: tradePlan?.riskRewardRatio || 0,
+      volatilityState: 'OK',
+      entryZoneValid: false,
+      isFinal: true
+    };
+  }
+
+  // 6. Risk-Reward gate: RR < 1.2 → BLOCK
+  const rr = tradePlan?.riskRewardRatio || 0;
+  if (rr > 0 && rr < 1.2) {
+    return {
+      allowed: false,
+      reason: `LOW_RR: Risk-Reward ratio ${rr.toFixed(2)} < 1.2 minimum`,
+      accuracyUsed: accuracyPercent,
+      rr,
+      volatilityState: 'OK',
+      entryZoneValid: true,
+      isFinal: true
+    };
+  }
+
+  // 7. Volatility (ATR) guard
+  const atrClassification = indicators?.atr?.classification;
+  const atrPercentile = indicators?.atr?.atrPercentile;
+  let volatilityState: 'OK' | 'HIGH' | 'EXTREME' = 'OK';
+  
+  // Check ATR classification
+  if (atrClassification === 'high') {
+    volatilityState = 'HIGH';
+  }
+  
+  // Check ATR percentile if available (0-1 range, convert to percentage)
+  if (typeof atrPercentile === 'number') {
+    const atrPercent = atrPercentile > 1 ? atrPercentile : atrPercentile * 100;
+    if (atrPercent >= 95) {
+      volatilityState = 'EXTREME';
+    } else if (atrPercent >= 85) {
+      volatilityState = 'HIGH';
+    }
+  }
+
+  // Block if extreme volatility
+  if (volatilityState === 'EXTREME') {
+    return {
+      allowed: false,
+      reason: 'EXTREME_VOLATILITY: ATR percentile >= 95%',
+      accuracyUsed: accuracyPercent,
+      rr,
+      volatilityState: 'EXTREME',
+      entryZoneValid: true,
+      isFinal: true
+    };
+  }
+
+  // All checks passed
+  return {
+    allowed: true,
+    accuracyUsed: accuracyPercent,
+    rr,
+    volatilityState,
+    entryZoneValid: true,
+    isFinal: true
+  };
+}
+
 // Research result interface for auto trade
 interface ResearchDataResult {
   symbol: string;
@@ -944,20 +1119,68 @@ export class AutoTradeEngine {
 
     // MANDATORY RISK GUARDS - Trade/Signal Specific Checks
 
-    // 1. Check accuracy trigger (BYPASS ON MANUAL)
-    // Rule: Auto Trade MUST execute ONLY when: accuracy >= 75%
-    // Rule: Manual approvals (skipConfirmationCheck=true) can execute if accuracy >= 60%
-    const threshold = isManualApproval ? 60 : 75;
-    if (signal.accuracy < threshold) {
-      logger.info({
-        uid,
-        symbol: signal.symbol,
-        accuracy: signal.accuracy,
-        threshold,
-        reason: 'ACCURACY_GATE'
-      }, '⛔ [RISK_GUARDS] BLOCKED: Accuracy below threshold');
-      return { allowed: false, reason: `ACCURACY_GATE: ${signal.accuracy}% < ${threshold}% threshold` };
+    // 1. Unified trade decision (GLOBAL validation)
+    // Extract indicators and trade plan from signal or research result
+    const researchResult = (signal as any).researchResult;
+    const finalResult = researchResult?.result;
+    const indicators = finalResult?.indicators || finalResult?.analysis?.technicalIndicators || {};
+    
+    // Build trade plan from signal or final result
+    let tradePlan: { entryPrice?: number; stopLoss?: number; takeProfit?: number; riskRewardRatio?: number } | null = null;
+    if (signal.entryPrice && signal.stopLoss && signal.takeProfit) {
+      // Calculate RR from signal
+      const risk = Math.abs(signal.entryPrice - signal.stopLoss);
+      const reward = Math.abs(signal.takeProfit - signal.entryPrice);
+      const rr = risk > 0 ? reward / risk : 0;
+      tradePlan = {
+        entryPrice: signal.entryPrice,
+        stopLoss: signal.stopLoss,
+        takeProfit: signal.takeProfit,
+        riskRewardRatio: rr
+      };
+    } else if (finalResult?.tradePlan) {
+      tradePlan = finalResult.tradePlan;
     }
+
+    const threshold = isManualApproval ? 60 : 75;
+    const isFinal = finalResult?.isFinal !== false; // Default to true if not specified (assume final for execution)
+    const unifiedDecision = makeUnifiedTradeDecision(
+      signal.signal,
+      signal.accuracy,
+      isFinal,
+      tradePlan,
+      indicators,
+      threshold
+    );
+
+    // [TRADE_DECISION] Unified log
+    logger.info({
+      uid,
+      symbol: signal.symbol,
+      FINAL: unifiedDecision.isFinal,
+      acc: unifiedDecision.accuracyUsed.toFixed(1),
+      rr: unifiedDecision.rr.toFixed(2),
+      atr: unifiedDecision.volatilityState,
+      entryZone: unifiedDecision.entryZoneValid ? 'OK' : 'INVALID',
+      decision: unifiedDecision.allowed ? 'ALLOWED' : 'BLOCKED',
+      reason: unifiedDecision.reason
+    }, `[TRADE_DECISION] FINAL=${unifiedDecision.isFinal} acc=${unifiedDecision.accuracyUsed.toFixed(1)} rr=${unifiedDecision.rr.toFixed(2)} atr=${unifiedDecision.volatilityState} → ${unifiedDecision.allowed ? 'ALLOWED' : 'BLOCKED'}${unifiedDecision.reason ? ` (${unifiedDecision.reason})` : ''}`);
+
+    if (!unifiedDecision.allowed) {
+      return { allowed: false, reason: unifiedDecision.reason || 'Trade blocked by unified decision logic' };
+    }
+
+    // 🔍 [DEBUG] Unified decision PASSED - tracing execution path
+    logger.info({
+      uid,
+      symbol: signal.symbol,
+      step: 'UNIFIED_DECISION_PASSED',
+      tradePlanExists: !!tradePlan,
+      tradePlanSL: tradePlan?.stopLoss,
+      tradePlanTP: tradePlan?.takeProfit,
+      tradePlanRR: tradePlan?.riskRewardRatio,
+      entryPrice: tradePlan?.entryPrice || signal.entryPrice
+    }, '🔍 [DEBUG_TRACE] Unified decision ALLOWED - proceeding to position checks');
 
     // 2. Skip if same coin already has an open position
     if (engine.activeTrades.has(signal.symbol)) {
@@ -1008,12 +1231,31 @@ export class AutoTradeEngine {
       }
     }
 
+    // [ACCURACY_AUDIT] Log successful guard pass
+    logger.info({
+      uid,
+      symbol: signal.symbol,
+      accuracy: signal.accuracy,
+      threshold,
+      allGuardsPassed: true,
+      executionDecision: 'ALLOWED'
+    }, '[ACCURACY_AUDIT] Execution gate PASSED - trade will proceed');
+    
     logger.info({
       uid,
       symbol: signal.symbol,
       accuracy: signal.accuracy,
       allGuardsPassed: true
     }, '✅ [RISK_GUARDS] All guards passed - trade allowed');
+    
+    // 🔍 [DEBUG] All risk guards PASSED - returning to executeTrade
+    logger.info({
+      uid,
+      symbol: signal.symbol,
+      step: 'RISK_GUARDS_PASSED',
+      nextStep: 'EXECUTE_TRADE_CONTINUES'
+    }, '🔍 [DEBUG_TRACE] Risk guards PASSED - executeTrade will continue');
+    
     return { allowed: true };
   }
 
@@ -1268,6 +1510,16 @@ export class AutoTradeEngine {
     const riskCheck = await this.checkRiskGuards(uid, signal, skipConfirmationCheck);
     if (!riskCheck.allowed) {
       const reason = riskCheck.reason || 'Trade rejected by risk guards';
+      logger.error({
+        uid,
+        symbol: signal.symbol,
+        step: 'RISK_GUARDS_BLOCKED',
+        reason,
+        accuracy: signal.accuracy,
+        autoTradeEnabled: config.autoTradeEnabled,
+        manualOverride: config.manualOverride
+      }, '🔍 [DEBUG_TRACE] BLOCKED at risk guards check');
+      
       await this.logTradeEvent(uid, 'TRADE_REJECTED', {
         signal,
         reason,
@@ -1291,14 +1543,48 @@ export class AutoTradeEngine {
       throw new Error(reason);
     }
 
+    // 🔍 [DEBUG] Risk guards PASSED - proceeding to adapter initialization
+    logger.info({
+      uid,
+      symbol: signal.symbol,
+      step: 'RISK_GUARDS_PASSED_IN_EXECUTE',
+      hasAdapter: !!engine.adapter,
+      nextStep: 'ADAPTER_INIT_OR_POSITION_SIZING'
+    }, '🔍 [DEBUG_TRACE] Risk guards PASSED in executeTrade - proceeding to adapter/position sizing');
+
     // Note: Redundant accuracy check removed. checkRiskGuards handles the 75%/60% hard rules.
 
     // Initialize adapter if needed
     if (!engine.adapter) {
+      logger.info({
+        uid,
+        symbol: signal.symbol,
+        step: 'ADAPTER_INIT_START'
+      }, '🔍 [DEBUG_TRACE] Adapter missing - initializing');
+      
       await this.initializeAdapter(uid);
       if (!engine.adapter) {
+        logger.error({
+          uid,
+          symbol: signal.symbol,
+          step: 'ADAPTER_INIT_FAILED'
+        }, '🔍 [DEBUG_TRACE] BLOCKED: Adapter initialization failed');
         throw new Error('Failed to initialize exchange adapter');
       }
+      
+      logger.info({
+        uid,
+        symbol: signal.symbol,
+        step: 'ADAPTER_INIT_SUCCESS',
+        adapterType: engine.adapter?.constructor?.name
+      }, '🔍 [DEBUG_TRACE] Adapter initialized successfully');
+    } else {
+      logger.info({
+        uid,
+        symbol: signal.symbol,
+        step: 'ADAPTER_EXISTS',
+        adapterType: engine.adapter?.constructor?.name
+      }, '🔍 [DEBUG_TRACE] Adapter already exists');
     }
 
     // Get current equity
@@ -1398,6 +1684,18 @@ export class AutoTradeEngine {
     // Get trading settings for position sizing
     const tradingSettings = await AutoTradeEngine.getTradingSettings(uid);
 
+    // 🔍 [DEBUG] Starting position sizing calculation
+    logger.info({
+      uid,
+      symbol: signal.symbol,
+      step: 'POSITION_SIZING_START',
+      equity,
+      entryPrice: signal.entryPrice,
+      stopLoss: signal.stopLoss,
+      takeProfit: signal.takeProfit,
+      hasTradePlan: !!(signal as any).researchResult?.result?.tradePlan
+    }, '🔍 [DEBUG_TRACE] Starting position sizing calculation');
+
     // P2-B: Volatility-Based Position Sizing
     // Goal: Risk fixed % of capital per trade based on SL distance
 
@@ -1408,15 +1706,93 @@ export class AutoTradeEngine {
     // 2. Determine SL Distance
     // signal.stopLoss is guaranteed by P2-A logic or fallback defaults
     const slDistance = Math.abs(signal.entryPrice - signal.stopLoss);
+    
+    // 🔍 [DEBUG] Validate SL/TP before position sizing
+    if (!signal.stopLoss || signal.stopLoss <= 0 || isNaN(signal.stopLoss)) {
+      logger.error({
+        uid,
+        symbol: signal.symbol,
+        step: 'POSITION_SIZING_BLOCKED',
+        stopLoss: signal.stopLoss,
+        entryPrice: signal.entryPrice
+      }, '🔍 [DEBUG_TRACE] BLOCKED: Stop loss missing or invalid');
+      throw new Error(`Invalid stop loss: ${signal.stopLoss}`);
+    }
+    
+    if (!signal.entryPrice || signal.entryPrice <= 0 || isNaN(signal.entryPrice)) {
+      logger.error({
+        uid,
+        symbol: signal.symbol,
+        step: 'POSITION_SIZING_BLOCKED',
+        entryPrice: signal.entryPrice
+      }, '🔍 [DEBUG_TRACE] BLOCKED: Entry price missing or invalid');
+      throw new Error(`Invalid entry price: ${signal.entryPrice}`);
+    }
 
     // Safety check for SL distance
     if (slDistance <= 0 || isNaN(slDistance)) {
+      logger.error({
+        uid,
+        symbol: signal.symbol,
+        step: 'POSITION_SIZING_BLOCKED',
+        slDistance,
+        entryPrice: signal.entryPrice,
+        stopLoss: signal.stopLoss
+      }, '🔍 [DEBUG_TRACE] BLOCKED: Invalid SL distance');
       throw new Error(`Invalid SL distance (${slDistance}) for volatility sizing - aborting trade`);
+    }
+
+    // SL distance guard: Check if SL too close to entry (minimum tick size check)
+    // For most exchanges, minimum tick size is ~0.1% for major pairs
+    const minimumTickSize = signal.entryPrice * 0.001; // 0.1% of entry price
+    if (slDistance < minimumTickSize) {
+      const reason = 'SL_TOO_CLOSE_TO_ENTRY';
+      logger.error({
+        uid,
+        symbol: signal.symbol,
+        step: 'POSITION_SIZING_BLOCKED',
+        reason,
+        entryPrice: signal.entryPrice,
+        stopLoss: signal.stopLoss,
+        slDistance,
+        minimumTickSize,
+        slDistancePct: (slDistance / signal.entryPrice * 100).toFixed(4) + '%'
+      }, `❌ [AUTO_TRADE_EXECUTION] BLOCKED: ${reason} - SL distance (${slDistance.toFixed(8)}) < minimum tick size (${minimumTickSize.toFixed(8)})`);
+      
+      await this.logTradeEvent(uid, 'TRADE_SKIPPED', {
+        signal,
+        reason,
+        details: `Stop loss too close to entry price. SL distance: ${slDistance.toFixed(8)}, minimum required: ${minimumTickSize.toFixed(8)}`,
+        accuracy: signal.accuracy
+      });
+      
+      // Final mandatory log
+      logger.info({
+        uid,
+        symbol: signal.symbol,
+        acc: signal.accuracy.toFixed(1),
+        rr: 0,
+        qty: 0,
+        minNotional: 10,
+        reason
+      }, `[AUTO_TRADE_EXECUTION] acc=${signal.accuracy.toFixed(1)} rr=0.00 qty=0.000000 minNotional=10 → BLOCKED (${reason})`);
+      
+      throw new Error(`${reason}: Stop loss is too close to entry price (${slDistance.toFixed(8)} < ${minimumTickSize.toFixed(8)})`);
     }
 
     // 4. Calculate Raw Quantity based on Risk
     // riskAmount = quantity * slDistance  =>  quantity = riskAmount / slDistance
     let quantity = riskAmount / slDistance;
+    
+    logger.info({
+      uid,
+      symbol: signal.symbol,
+      step: 'POSITION_SIZING_CALC',
+      riskPct,
+      riskAmount,
+      slDistance,
+      rawQuantity: quantity
+    }, '🔍 [DEBUG_TRACE] Raw quantity calculated from risk');
 
     // P4: Dynamic Params (Leverage and Model-based Size)
     // CRITICAL: Uses user's accuracyRiskConfig (single source of truth)
@@ -1466,14 +1842,89 @@ export class AutoTradeEngine {
 
     // 5. Final Value Calculation
     let positionValue = quantity * signal.entryPrice;
+    
+    // 🔍 [DEBUG] Position value calculated
+    logger.info({
+      uid,
+      symbol: signal.symbol,
+      step: 'POSITION_VALUE_CALC',
+      positionValue,
+      quantity,
+      entryPrice: signal.entryPrice
+    }, '🔍 [DEBUG_TRACE] Position value calculated');
 
     // Low balance handling: Trade MUST still execute if balance >= 10 USDT.
     // Ensure minimum notional of 10 USDT if equity >= 10.
     const minNotional = 10;
     if (positionValue < minNotional && equity >= minNotional) {
+      const originalQuantity = quantity;
+      const originalPositionValue = positionValue;
+      const originalRiskAmount = riskAmount;
+      
       quantity = minNotional / signal.entryPrice;
       positionValue = quantity * signal.entryPrice;
-      logger.info({ uid, symbol: signal.symbol, equity, originalValue: positionValue }, 'Adjusting quantity to meet minimum notional of 10 USDT');
+      
+      // Recalculate risk impact after min-notional adjustment
+      const adjustedRiskAmount = quantity * slDistance;
+      const adjustedRiskPct = (adjustedRiskAmount / equity) * 100;
+      const maxAllowedRiskPct = Math.min(1.0, config.perTradeRiskPct || 1.0);
+      
+      // If adjusted risk exceeds allowed max, BLOCK with clear reason
+      if (adjustedRiskPct > maxAllowedRiskPct) {
+        const reason = 'MIN_NOTIONAL_RISK_EXCEEDED';
+        logger.error({
+          uid,
+          symbol: signal.symbol,
+          step: 'POSITION_SIZING_BLOCKED',
+          reason,
+          equity,
+          originalQuantity,
+          originalPositionValue,
+          originalRiskAmount,
+          originalRiskPct: (originalRiskAmount / equity) * 100,
+          adjustedQuantity: quantity,
+          adjustedPositionValue: positionValue,
+          adjustedRiskAmount,
+          adjustedRiskPct,
+          maxAllowedRiskPct,
+          minNotional
+        }, `❌ [AUTO_TRADE_EXECUTION] BLOCKED: ${reason} - Adjusting to min notional (${minNotional} USDT) would exceed max risk (${adjustedRiskPct.toFixed(2)}% > ${maxAllowedRiskPct.toFixed(2)}%)`);
+        
+        await this.logTradeEvent(uid, 'TRADE_SKIPPED', {
+          signal,
+          reason,
+          details: `Minimum notional adjustment would exceed max risk. Adjusted risk: ${adjustedRiskPct.toFixed(2)}%, max allowed: ${maxAllowedRiskPct.toFixed(2)}%`,
+          accuracy: signal.accuracy,
+          equity
+        });
+        
+        // Final mandatory log
+        const rr = signal.takeProfit && signal.stopLoss && signal.entryPrice
+          ? Math.abs((signal.takeProfit - signal.entryPrice) / Math.abs(signal.entryPrice - signal.stopLoss))
+          : 0;
+        logger.info({
+          uid,
+          symbol: signal.symbol,
+          acc: signal.accuracy.toFixed(1),
+          rr: rr.toFixed(2),
+          qty: quantity.toFixed(6),
+          minNotional,
+          reason
+        }, `[AUTO_TRADE_EXECUTION] acc=${signal.accuracy.toFixed(1)} rr=${rr.toFixed(2)} qty=${quantity.toFixed(6)} minNotional=${minNotional} → BLOCKED (${reason})`);
+        
+        throw new Error(`${reason}: Adjusting to min notional would exceed max risk (${adjustedRiskPct.toFixed(2)}% > ${maxAllowedRiskPct.toFixed(2)}%)`);
+      }
+      
+      logger.info({ 
+        uid, 
+        symbol: signal.symbol, 
+        equity, 
+        originalValue: originalPositionValue,
+        adjustedValue: positionValue,
+        originalQuantity,
+        adjustedQuantity: quantity,
+        adjustedRiskPct: adjustedRiskPct.toFixed(2) + '%'
+      }, `✅ Adjusting quantity to meet minimum notional of ${minNotional} USDT (risk: ${adjustedRiskPct.toFixed(2)}%)`);
     }
 
     let finalPositionPercent = (positionValue / equity) * 100;
@@ -1488,16 +1939,151 @@ export class AutoTradeEngine {
       quantity = (equity * (finalPositionPercent / 100)) / signal.entryPrice;
     }
 
-    if (quantity <= 0) {
+    // Position sizing validation (CRITICAL)
+    if (quantity <= 0 || isNaN(quantity)) {
+      const reason = 'POSITION_SIZE_INVALID';
+      logger.error({
+        uid,
+        symbol: signal.symbol,
+        step: 'POSITION_SIZING_BLOCKED',
+        reason,
+        quantity,
+        equity,
+        riskPct,
+        riskAmount,
+        slDistance,
+        entryPrice: signal.entryPrice,
+        stopLoss: signal.stopLoss,
+        positionValue,
+        minNotional: 10
+      }, `❌ [AUTO_TRADE_EXECUTION] BLOCKED: ${reason} - Calculated quantity is zero or negative`);
+      
       await this.logTradeEvent(uid, 'TRADE_SKIPPED', {
         signal,
-        reason: AUTO_TRADE_REASONS.MIN_NOTIONAL,
-        details: 'Calculated quantity is zero or less',
+        reason,
+        details: `Calculated quantity is zero or negative. Quantity: ${quantity}, Equity: ${equity}, Risk%: ${riskPct}%, SL Distance: ${slDistance}`,
         accuracy: signal.accuracy,
         equity
       });
-      throw new Error(`Calculated position size is zero or negative (${quantity}) - try increasing equity or perTradeRiskPct`);
+      
+      // Final mandatory log
+      const rr = signal.takeProfit && signal.stopLoss && signal.entryPrice
+        ? Math.abs((signal.takeProfit - signal.entryPrice) / Math.abs(signal.entryPrice - signal.stopLoss))
+        : 0;
+      logger.info({
+        uid,
+        symbol: signal.symbol,
+        acc: signal.accuracy.toFixed(1),
+        rr: rr.toFixed(2),
+        qty: quantity.toFixed(6),
+        minNotional: 10,
+        reason
+      }, `[AUTO_TRADE_EXECUTION] acc=${signal.accuracy.toFixed(1)} rr=${rr.toFixed(2)} qty=${quantity.toFixed(6)} minNotional=10 → BLOCKED (${reason})`);
+      
+      throw new Error(`${reason}: Calculated position size is zero or negative (${quantity}) - try increasing equity or perTradeRiskPct`);
     }
+
+    if (positionValue <= 0 || isNaN(positionValue)) {
+      const reason = 'POSITION_VALUE_INVALID';
+      logger.error({
+        uid,
+        symbol: signal.symbol,
+        step: 'POSITION_SIZING_BLOCKED',
+        reason,
+        positionValue,
+        quantity,
+        entryPrice: signal.entryPrice,
+        equity,
+        minNotional: 10
+      }, `❌ [AUTO_TRADE_EXECUTION] BLOCKED: ${reason} - Position value is zero or negative`);
+      
+      await this.logTradeEvent(uid, 'TRADE_SKIPPED', {
+        signal,
+        reason,
+        details: `Position value is zero or negative. Position Value: ${positionValue}, Quantity: ${quantity}, Entry Price: ${signal.entryPrice}`,
+        accuracy: signal.accuracy,
+        equity
+      });
+      
+      // Final mandatory log
+      const rr = signal.takeProfit && signal.stopLoss && signal.entryPrice
+        ? Math.abs((signal.takeProfit - signal.entryPrice) / Math.abs(signal.entryPrice - signal.stopLoss))
+        : 0;
+      logger.info({
+        uid,
+        symbol: signal.symbol,
+        acc: signal.accuracy.toFixed(1),
+        rr: rr.toFixed(2),
+        qty: quantity.toFixed(6),
+        minNotional: 10,
+        reason
+      }, `[AUTO_TRADE_EXECUTION] acc=${signal.accuracy.toFixed(1)} rr=${rr.toFixed(2)} qty=${quantity.toFixed(6)} minNotional=10 → BLOCKED (${reason})`);
+      
+      throw new Error(`${reason}: Position value is zero or negative (${positionValue})`);
+    }
+
+    if (positionValue < minNotional && equity < minNotional) {
+      const reason = 'INSUFFICIENT_BALANCE';
+      logger.error({
+        uid,
+        symbol: signal.symbol,
+        step: 'POSITION_SIZING_BLOCKED',
+        reason,
+        positionValue,
+        equity,
+        minNotional,
+        quantity
+      }, `❌ [AUTO_TRADE_EXECUTION] BLOCKED: ${reason} - Equity (${equity}) < min notional (${minNotional})`);
+      
+      await this.logTradeEvent(uid, 'TRADE_SKIPPED', {
+        signal,
+        reason,
+        details: `Insufficient balance. Equity: ${equity}, Min Notional: ${minNotional}`,
+        accuracy: signal.accuracy,
+        equity
+      });
+      
+      // Final mandatory log
+      const rr = signal.takeProfit && signal.stopLoss && signal.entryPrice
+        ? Math.abs((signal.takeProfit - signal.entryPrice) / Math.abs(signal.entryPrice - signal.stopLoss))
+        : 0;
+      logger.info({
+        uid,
+        symbol: signal.symbol,
+        acc: signal.accuracy.toFixed(1),
+        rr: rr.toFixed(2),
+        qty: quantity.toFixed(6),
+        minNotional,
+        reason
+      }, `[AUTO_TRADE_EXECUTION] acc=${signal.accuracy.toFixed(1)} rr=${rr.toFixed(2)} qty=${quantity.toFixed(6)} minNotional=${minNotional} → BLOCKED (${reason})`);
+      
+      throw new Error(`${reason}: Equity (${equity}) is below minimum notional (${minNotional} USDT)`);
+    }
+    
+    // Final mandatory log (single line summary) - Position sizing passed all validations
+    const rr = signal.takeProfit && signal.stopLoss && signal.entryPrice
+      ? Math.abs((signal.takeProfit - signal.entryPrice) / Math.abs(signal.entryPrice - signal.stopLoss))
+      : 0;
+    
+    logger.info({
+      uid,
+      symbol: signal.symbol,
+      acc: signal.accuracy.toFixed(1),
+      rr: rr.toFixed(2),
+      qty: quantity.toFixed(6),
+      minNotional,
+      positionValue: positionValue.toFixed(2)
+    }, `[AUTO_TRADE_EXECUTION] acc=${signal.accuracy.toFixed(1)} rr=${rr.toFixed(2)} qty=${quantity.toFixed(6)} minNotional=${minNotional} → ALLOWED`);
+
+    logger.info({
+      uid,
+      symbol: signal.symbol,
+      step: 'POSITION_SIZING_COMPLETE',
+      finalQuantity: quantity,
+      finalPositionValue: positionValue,
+      finalPositionPercent,
+      leverage: modelLeverage
+    }, '🔍 [DEBUG_TRACE] Position sizing complete - proceeding to order placement');
 
     logger.info({
       uid,
@@ -1557,7 +2143,59 @@ export class AutoTradeEngine {
         : `BLOCKED: autoTradeEnabled=${config.autoTradeEnabled}, manualOverride=${config.manualOverride}, skipConfirmationCheck=${skipConfirmationCheck}`
     }, shouldExecute ? '✅ [EXECUTE_TRADE] Proceeding with trade execution' : '⛔ [EXECUTE_TRADE] Trade execution blocked');
 
+    if (!shouldExecute) {
+      const rr = signal.takeProfit && signal.stopLoss && signal.entryPrice
+        ? Math.abs((signal.takeProfit - signal.entryPrice) / Math.abs(signal.entryPrice - signal.stopLoss))
+        : 0;
+      const reason = config.autoTradeEnabled === false ? 'AUTO_TRADE_DISABLED' : 
+                     config.manualOverride === true ? 'MANUAL_OVERRIDE' : 
+                     'EXECUTION_BLOCKED';
+      
+      logger.error({
+        uid,
+        symbol: signal.symbol,
+        step: 'EXECUTION_BLOCKED',
+        autoTradeEnabled: config.autoTradeEnabled,
+        manualOverride: config.manualOverride,
+        skipConfirmationCheck,
+        reason
+      }, '🔍 [DEBUG_TRACE] BLOCKED: shouldExecute is false - trade will not execute');
+      
+      // Final mandatory log for blocked execution
+      logger.info({
+        uid,
+        symbol: signal.symbol,
+        acc: signal.accuracy.toFixed(1),
+        rr: rr.toFixed(2),
+        qty: quantity.toFixed(6),
+        minNotional: 10,
+        reason
+      }, `[AUTO_TRADE_EXECUTION] acc=${signal.accuracy.toFixed(1)} rr=${rr.toFixed(2)} qty=${quantity.toFixed(6)} minNotional=10 → BLOCKED (${reason})`);
+      
+      await this.logTradeEvent(uid, 'TRADE_SKIPPED', {
+        signal,
+        reason,
+        details: `Execution blocked: autoTradeEnabled=${config.autoTradeEnabled}, manualOverride=${config.manualOverride}`,
+        accuracy: signal.accuracy
+      });
+      
+      throw new Error(`${reason}: Trade execution blocked - autoTradeEnabled=${config.autoTradeEnabled}, manualOverride=${config.manualOverride}`);
+    }
+
     if (shouldExecute) {
+      // 🔍 [DEBUG] Final pre-execution check
+      logger.info({
+        uid,
+        symbol: signal.symbol,
+        step: 'PRE_ORDER_PLACEMENT',
+        quantity,
+        entryPrice: signal.entryPrice,
+        stopLoss: signal.stopLoss,
+        takeProfit: signal.takeProfit,
+        leverage: modelLeverage,
+        hasAdapter: !!engine.adapter,
+        adapterType: engine.adapter?.constructor?.name
+      }, '🔍 [DEBUG_TRACE] All checks passed - proceeding to order placement');
       // REAL TRADE EXECUTION
       try {
         // P4: Set Leverage on Exchange before placing order
@@ -1604,15 +2242,132 @@ export class AutoTradeEngine {
           throw new Error(`Order notional (${notional.toFixed(2)}) below minimum (10)`);
         }
 
+        // Exchange constraint visibility: Check minQty and stepSize if available
+        let exchangeConstraints: any = {};
+        try {
+          if (engine.adapter && typeof (engine.adapter as any).getSymbolInfo === 'function') {
+            const symbolInfo = await (engine.adapter as any).getSymbolInfo(signal.symbol);
+            if (symbolInfo) {
+              exchangeConstraints = {
+                minQty: symbolInfo.minQty,
+                stepSize: symbolInfo.stepSize,
+                minNotional: symbolInfo.minNotional
+              };
+            }
+          }
+        } catch (constraintError: any) {
+          logger.warn({ uid, symbol: signal.symbol, error: constraintError.message }, 'Failed to fetch exchange constraints (non-critical)');
+        }
+
+        // Validate quantity against exchange constraints if available
+        if (exchangeConstraints.minQty && quantity < exchangeConstraints.minQty) {
+          const reason = 'QUANTITY_BELOW_EXCHANGE_MIN';
+          logger.error({
+            uid,
+            symbol: signal.symbol,
+            step: 'ORDER_PLACEMENT_BLOCKED',
+            reason,
+            calculatedQty: quantity,
+            minQty: exchangeConstraints.minQty,
+            stepSize: exchangeConstraints.stepSize
+          }, `❌ [AUTO_TRADE_EXECUTION] BLOCKED: ${reason} - Calculated quantity (${quantity}) < exchange minQty (${exchangeConstraints.minQty})`);
+          
+          await this.logTradeEvent(uid, 'TRADE_SKIPPED', {
+            signal,
+            reason,
+            details: `Calculated quantity below exchange minimum. Quantity: ${quantity}, MinQty: ${exchangeConstraints.minQty}`,
+            accuracy: signal.accuracy
+          });
+          
+          // Final mandatory log
+          const rr = signal.takeProfit && signal.stopLoss && signal.entryPrice
+            ? Math.abs((signal.takeProfit - signal.entryPrice) / Math.abs(signal.entryPrice - signal.stopLoss))
+            : 0;
+          logger.info({
+            uid,
+            symbol: signal.symbol,
+            acc: signal.accuracy.toFixed(1),
+            rr: rr.toFixed(2),
+            qty: quantity.toFixed(6),
+            minNotional: 10,
+            reason
+          }, `[AUTO_TRADE_EXECUTION] acc=${signal.accuracy.toFixed(1)} rr=${rr.toFixed(2)} qty=${quantity.toFixed(6)} minNotional=10 → BLOCKED (${reason})`);
+          
+          throw new Error(`${reason}: Calculated quantity (${quantity}) is below exchange minimum (${exchangeConstraints.minQty})`);
+        }
+
+        // Round quantity to stepSize if available
+        if (exchangeConstraints.stepSize) {
+          const stepSize = parseFloat(exchangeConstraints.stepSize);
+          if (stepSize > 0) {
+            quantity = Math.floor(quantity / stepSize) * stepSize;
+            if (quantity < exchangeConstraints.minQty) {
+              const reason = 'QUANTITY_ROUNDED_BELOW_MIN';
+              logger.error({
+                uid,
+                symbol: signal.symbol,
+                step: 'ORDER_PLACEMENT_BLOCKED',
+                reason,
+                originalQty: quantity,
+                stepSize,
+                roundedQty: quantity,
+                minQty: exchangeConstraints.minQty
+              }, `❌ [AUTO_TRADE_EXECUTION] BLOCKED: ${reason} - Rounded quantity (${quantity}) < minQty (${exchangeConstraints.minQty})`);
+              
+              await this.logTradeEvent(uid, 'TRADE_SKIPPED', {
+                signal,
+                reason,
+                details: `Quantity rounded below minimum. Rounded: ${quantity}, MinQty: ${exchangeConstraints.minQty}`,
+                accuracy: signal.accuracy
+              });
+              
+              // Final mandatory log
+              const rr = signal.takeProfit && signal.stopLoss && signal.entryPrice
+                ? Math.abs((signal.takeProfit - signal.entryPrice) / Math.abs(signal.entryPrice - signal.stopLoss))
+                : 0;
+              logger.info({
+                uid,
+                symbol: signal.symbol,
+                acc: signal.accuracy.toFixed(1),
+                rr: rr.toFixed(2),
+                qty: quantity.toFixed(6),
+                minNotional: 10,
+                reason
+              }, `[AUTO_TRADE_EXECUTION] acc=${signal.accuracy.toFixed(1)} rr=${rr.toFixed(2)} qty=${quantity.toFixed(6)} minNotional=10 → BLOCKED (${reason})`);
+              
+              throw new Error(`${reason}: Quantity rounded to stepSize is below minimum`);
+            }
+            positionValue = quantity * signal.entryPrice; // Recalculate after rounding
+          }
+        }
+
         logger.info({
           uid,
           symbol: signal.symbol,
           quantity,
           entryPrice: signal.entryPrice,
-          notional,
+          notional: positionValue,
           side: signal.signal,
-          requestId
+          requestId,
+          exchangeConstraints
         }, 'Placing live order');
+        
+        // 🔍 [DEBUG] Final order payload before placement
+        logger.info({
+          uid,
+          symbol: signal.symbol,
+          step: 'ORDER_PLACEMENT_START',
+          orderPayload: {
+            symbol: signal.symbol,
+            side: signal.signal,
+            type: 'MARKET',
+            quantity
+          },
+          leverage: modelLeverage,
+          stopLoss: signal.stopLoss,
+          takeProfit: signal.takeProfit,
+          exchangeConstraints
+        }, '🔍 [DEBUG_TRACE] Final order payload - placing order now');
 
         // Place order
         const orderResult = await engine.adapter!.placeOrder({
@@ -1621,6 +2376,16 @@ export class AutoTradeEngine {
           type: 'MARKET',
           quantity: quantity,
         });
+
+        // 🔍 [DEBUG] Order placed successfully
+        logger.info({
+          uid,
+          symbol: signal.symbol,
+          step: 'ORDER_PLACED_SUCCESS',
+          orderId: orderResult.exchangeOrderId || orderResult.id,
+          fillPrice: orderResult.avgPrice || orderResult.price,
+          quantity: orderResult.quantity || quantity
+        }, '🔍 [DEBUG_TRACE] Order placed successfully - proceeding to TP/SL');
 
         trade.status = 'FILLED';
         trade.orderId = orderResult.exchangeOrderId || orderResult.id;
@@ -3431,13 +4196,55 @@ export class AutoTradeEngine {
                 status: 'SKIPPED',
                 reason: 'Accuracy did not improve since last alert'
               }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Auto-trade alert skipped - spam prevention (accuracy did not improve)');
-            } else {
-              // All conditions met - send alert
-              const { telegramService } = await import('./telegramService');
-              const timestamp = new Date().toISOString();
-              let message = '';
+          } else {
+            // Unified trade decision for Telegram alert
+            const finalResult = researchResult.result;
+            const indicators = finalResult?.indicators || finalResult?.analysis?.technicalIndicators || {};
+            const finalTradePlan = finalResult?.tradePlan || null;
+            const isFinal = finalResult?.isFinal === true;
+            const minTrigger = telegramAccuracyTrigger?.min ?? (typeof telegramAccuracyTrigger === 'number' ? telegramAccuracyTrigger : 80);
+            
+            const unifiedDecision = makeUnifiedTradeDecision(
+              signal as 'BUY' | 'SELL' | 'HOLD',
+              accuracy,
+              isFinal,
+              finalTradePlan,
+              indicators,
+              minTrigger
+            );
 
-              if (signal === 'HOLD') {
+            // [TRADE_DECISION] Unified log for Telegram
+            logger.info({
+              uid,
+              symbol: researchResult.symbol,
+              FINAL: unifiedDecision.isFinal,
+              acc: unifiedDecision.accuracyUsed.toFixed(1),
+              rr: unifiedDecision.rr.toFixed(2),
+              atr: unifiedDecision.volatilityState,
+              entryZone: unifiedDecision.entryZoneValid ? 'OK' : 'INVALID',
+              decision: unifiedDecision.allowed ? 'ALLOWED' : 'BLOCKED',
+              reason: unifiedDecision.reason
+            }, `[TRADE_DECISION] Telegram: FINAL=${unifiedDecision.isFinal} acc=${unifiedDecision.accuracyUsed.toFixed(1)} rr=${unifiedDecision.rr.toFixed(2)} atr=${unifiedDecision.volatilityState} → ${unifiedDecision.allowed ? 'ALLOWED' : 'BLOCKED'}${unifiedDecision.reason ? ` (${unifiedDecision.reason})` : ''}`);
+
+            if (!unifiedDecision.allowed) {
+              logger.info({
+                alertId,
+                uid,
+                symbol: researchResult.symbol,
+                mode: 'AUTO_TRADE',
+                accuracy,
+                status: 'SKIPPED',
+                reason: unifiedDecision.reason
+              }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Auto-trade alert skipped - unified decision blocked');
+              return; // Skip alert
+            }
+
+            // All conditions met - send alert
+            const { telegramService } = await import('./telegramService');
+            const timestamp = new Date().toISOString();
+            let message = '';
+
+            if (signal === 'HOLD') {
                 message = `🚨 *DLXTRADE Auto-Trade Research Alert*
 
 **Coin:** ${researchResult.symbol}
@@ -3696,6 +4503,9 @@ export class AutoTradeEngine {
         highImpactNewsDetected: researchResult.result?.analysis?.news?.highImpact,
         newsEvent: researchResult.result?.analysis?.news?.event
       };
+      
+      // Attach researchResult for unified decision logic
+      (tradeSignal as any).researchResult = researchResult;
 
       // News check (Soft block)
       const newsDetected = !!researchResult.result?.analysis?.news?.highImpact;
@@ -3726,7 +4536,30 @@ export class AutoTradeEngine {
         configSource: 'fresh-load-before-execution'
       }, '🔍 [RESEARCH_CYCLE] Loading fresh config before executeTrade call');
 
+      // 🔍 [DEBUG] About to call executeTrade
+      logger.info({
+        uid,
+        symbol: researchResult.symbol,
+        step: 'CALLING_EXECUTE_TRADE',
+        signal: tradeSignal.signal,
+        entryPrice: tradeSignal.entryPrice,
+        stopLoss: tradeSignal.stopLoss,
+        takeProfit: tradeSignal.takeProfit,
+        accuracy: tradeSignal.accuracy,
+        leverage: tradeSignal.leverage,
+        hasResearchResult: !!(tradeSignal as any).researchResult
+      }, '🔍 [DEBUG_TRACE] About to call executeTrade - all pre-checks passed');
+
       const execution = await this.executeTrade(uid, tradeSignal);
+      
+      // 🔍 [DEBUG] executeTrade returned
+      logger.info({
+        uid,
+        symbol: researchResult.symbol,
+        step: 'EXECUTE_TRADE_RETURNED',
+        executionStatus: execution.status,
+        tradeId: execution.tradeId
+      }, '🔍 [DEBUG_TRACE] executeTrade returned successfully');
 
       cycleResult = execution.status === 'PENDING' ? AUTO_TRADE_REASONS.PENDING_CONFIRMATION : AUTO_TRADE_REASONS.TRADE_EXECUTED;
 
