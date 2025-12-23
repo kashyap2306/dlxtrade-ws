@@ -1,10 +1,3 @@
-{
-  "hosting": {
-    "site": "dlx-trading",
-    "public": "dist",
-    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
-    "rewrites": [
-      { "source": "**", "destination": "/index.html" }
-    ]
-  }
-}
+version https://git-lfs.github.com/spec/v1
+oid sha256:5060e3278599a1301acbbe0a54fb6a21d3c9f2d2fe514ac474a8e8c5974cf203
+size 215

@@ -1,35 +1,3 @@
-{
-  "functions": {
-    "source": "backend",
-    "runtime": "nodejs20"
-  },
-  "hosting": {
-    "public": "frontend/dist",
-    "ignore": [
-      "firebase.json",
-      "**/.*",
-      "**/node_modules/**"
-    ],
-    "rewrites": [
-      {
-        "source": "**",
-        "destination": "/index.html"
-      }
-    ]
-  },
-  "emulators": {
-    "functions": {
-      "port": 5001
-    },
-    "hosting": {
-      "port": 5000
-    },
-    "firestore": {
-      "port": 8080
-    },
-    "ui": {
-      "enabled": true
-    }
-  }
-}
-
+version https://git-lfs.github.com/spec/v1
+oid sha256:3440fea9d175e3b939054d8f3180054e155673d51dc7f240c97be3d797126f2b
+size 512

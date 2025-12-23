@@ -1,16 +1,3 @@
-{
-  "parser": "@typescript-eslint/parser",
-  "extends": [
-    "eslint:recommended",
-    "plugin:@typescript-eslint/recommended"
-  ],
-  "parserOptions": {
-    "ecmaVersion": 2022,
-    "sourceType": "module"
-  },
-  "rules": {
-    "@typescript-eslint/no-explicit-any": "warn",
-    "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }]
-  }
-}
-
+version https://git-lfs.github.com/spec/v1
+oid sha256:8db292946c393128dad3e1b9d7da0c9d9fc20a2075eabd73f397265bc0532674
+size 362
