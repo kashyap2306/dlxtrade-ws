@@ -22,11 +22,20 @@ export default function Profile() {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [userData, setUserData] = useState<any>(null);
   const [sessions, setSessions] = useState<any[]>([]);
+  const [sessionsError, setSessionsError] = useState<string | null>(null);
+  const [sessionsRetryCount, setSessionsRetryCount] = useState(0);
+  const sessionsRetryCountRef = useRef(0);
   const [apiProvidersStatus, setApiProvidersStatus] = useState<any>(null);
   const [providersLoading, setProvidersLoading] = useState(false);
   const [providersError, setProvidersError] = useState<string | null>(null);
   const [usageStats, setUsageStats] = useState<any>(null);
+  const [usageStatsError, setUsageStatsError] = useState<string | null>(null);
+  const [usageStatsRetryCount, setUsageStatsRetryCount] = useState(0);
+  const usageStatsRetryCountRef = useRef(0);
   const [exchangeConfig, setExchangeConfig] = useState<any>(null);
+  const [exchangeConfigError, setExchangeConfigError] = useState<string | null>(null);
+  const [exchangeConfigRetryCount, setExchangeConfigRetryCount] = useState(0);
+  const exchangeConfigRetryCountRef = useRef(0);
   const [allAgents, setAllAgents] = useState<any[]>([]);
   const [unlockedAgents, setUnlockedAgents] = useState<any[]>([]);
   const [profileData, setProfileData] = useState({
@@ -54,6 +63,13 @@ export default function Profile() {
     if (userUidRef.current !== currentUid) {
       userUidRef.current = currentUid;
       dataLoadedRef.current = false; // Reset when UID changes
+      // Reset retry counts when UID changes
+      sessionsRetryCountRef.current = 0;
+      usageStatsRetryCountRef.current = 0;
+      exchangeConfigRetryCountRef.current = 0;
+      setSessionsRetryCount(0);
+      setUsageStatsRetryCount(0);
+      setExchangeConfigRetryCount(0);
     }
     userRef.current = user; // Always keep user ref updated
   }, [user]);
@@ -104,13 +120,78 @@ export default function Profile() {
         console.warn('[Profile] Firestore data load failed:', firestoreErr);
       }
 
-      // 2. Parallel Loading of Non-Critical Data
+      // 2. Parallel Loading of Non-Critical Data with individual error handling
       console.log('[Profile] Starting parallel API calls...');
+      
+      // Helper function for retry logic (max 1 retry with 1s delay)
+      // Uses refs to track retry state to prevent re-fetch loops
+      const fetchWithRetry = async <T,>(
+        fetchFn: () => Promise<T>,
+        retryCountRef: React.MutableRefObject<number>,
+        setRetryCount: (count: number) => void,
+        setError: (error: string | null) => void,
+        apiName: string,
+        timeout: number = 20000
+      ): Promise<T | null> => {
+        try {
+          const result = await fetchFn();
+          if (isMountedRef.current && userUidRef.current === currentUid) {
+            setError(null);
+            setRetryCount(0);
+            retryCountRef.current = 0;
+          }
+          return result;
+        } catch (err: any) {
+          const isTimeout = err.code === 'ECONNABORTED' || err.message?.includes('timeout');
+          console.warn(`[Profile] ${apiName} fail:`, err.message, isTimeout ? '(timeout)' : '');
+          
+          if (isMountedRef.current && userUidRef.current === currentUid) {
+            if (retryCountRef.current < 1) {
+              // Retry once after 1s delay
+              retryCountRef.current = 1;
+              setRetryCount(1);
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              try {
+                const retryResult = await fetchFn();
+                if (isMountedRef.current && userUidRef.current === currentUid) {
+                  setError(null);
+                  setRetryCount(0);
+                  retryCountRef.current = 0;
+                }
+                return retryResult;
+              } catch (retryErr: any) {
+                console.warn(`[Profile] ${apiName} retry failed:`, retryErr.message);
+                if (isMountedRef.current && userUidRef.current === currentUid) {
+                  setError(`Failed to load — Retry`);
+                  retryCountRef.current = 1; // Mark as retried
+                }
+                return null;
+              }
+            } else {
+              if (isMountedRef.current && userUidRef.current === currentUid) {
+                setError(`Failed to load — Retry`);
+              }
+              return null;
+            }
+          }
+          return null;
+        }
+      };
+
       const apiPromises = [
-        // Sessions
-        api.get(`/users/${currentUid}/sessions`).then(res => {
-          if (isMountedRef.current && userUidRef.current === currentUid) setSessions(Array.isArray(res.data?.sessions) ? res.data.sessions : []);
-        }).catch(err => console.warn('[Profile] Sessions fail:', err.message)),
+        // Sessions (with increased timeout)
+        fetchWithRetry(
+          () => api.get(`/users/${currentUid}/sessions`, { timeout: 25000 }),
+          sessionsRetryCountRef,
+          setSessionsRetryCount,
+          setSessionsError,
+          'Sessions',
+          25000
+        ).then(res => {
+          if (res && isMountedRef.current && userUidRef.current === currentUid) {
+            setSessions(Array.isArray(res.data?.sessions) ? res.data.sessions : []);
+          }
+        }),
 
         // All Agents
         agentsApi.getAll().then(res => {
@@ -133,15 +214,33 @@ export default function Profile() {
           if (isMountedRef.current && userUidRef.current === currentUid) setProvidersError('Failed to load providers');
         }),
 
-        // Exchange Config
-        usersApi.getExchangeConfig(currentUid).then(res => {
-          if (isMountedRef.current && userUidRef.current === currentUid) setExchangeConfig(res.data);
-        }).catch(err => console.warn('[Profile] Exchange fail:', err.message)),
+        // Exchange Config (with increased timeout)
+        fetchWithRetry(
+          () => api.get(`/users/${currentUid}/exchangeConfig/current`, { timeout: 20000 }).then(res => res.data),
+          exchangeConfigRetryCountRef,
+          setExchangeConfigRetryCount,
+          setExchangeConfigError,
+          'Exchange Config',
+          20000
+        ).then(data => {
+          if (data !== null && isMountedRef.current && userUidRef.current === currentUid) {
+            setExchangeConfig(data);
+          }
+        }),
 
-        // Usage Stats
-        usersApi.getUsageStats(currentUid).then(res => {
-          if (isMountedRef.current && userUidRef.current === currentUid) setUsageStats(res.data);
-        }).catch(err => console.warn('[Profile] Usage stats fail:', err.message))
+        // Usage Stats (with increased timeout)
+        fetchWithRetry(
+          () => api.get(`/users/${currentUid}/usage-stats`, { timeout: 20000 }).then(res => res.data),
+          usageStatsRetryCountRef,
+          setUsageStatsRetryCount,
+          setUsageStatsError,
+          'Usage Stats',
+          20000
+        ).then(data => {
+          if (data !== null && isMountedRef.current && userUidRef.current === currentUid) {
+            setUsageStats(data);
+          }
+        })
       ];
 
       await Promise.allSettled(apiPromises);
@@ -167,6 +266,7 @@ export default function Profile() {
   }, []); // Empty deps - use refs for user.uid to prevent re-creation
 
   // Main data loading effect - only runs when auth is ready and user exists
+  // CRITICAL: Do NOT include error states or retry counts in dependencies to prevent re-fetch loops
   useEffect(() => {
     console.log('[Profile] Auth state check:', { 
       uid: user?.uid, 
@@ -196,7 +296,8 @@ export default function Profile() {
     }
     // Note: Don't redirect here - let PrivateRoute handle authentication
     // If user is null, PrivateRoute will redirect to login
-  }, [user?.uid, authLoading, authReady, loadAllData]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.uid, authLoading, authReady]); // Removed loadAllData from deps to prevent loops
 
   // Auto-refresh API Dashboard every 30 seconds
   useEffect(() => {
@@ -235,18 +336,7 @@ export default function Profile() {
     setShowDeleteConfirm(true);
   };
 
-  // Emergency timeout: force loading=false after 3 seconds
-  useEffect(() => {
-    if (loading) {
-      const timeout = setTimeout(() => {
-        console.log('[Profile] EMERGENCY: Forcing loading=false after 3 seconds');
-        if (isMountedRef.current) {
-          setLoading(false);
-        }
-      }, 3000);
-      return () => clearTimeout(timeout);
-    }
-  }, [loading]);
+  // No emergency timeout needed - page renders immediately, sections handle their own states
 
   // Cleanup on unmount
   useEffect(() => {
@@ -572,12 +662,14 @@ export default function Profile() {
               Profile
             </h1>
 
-            {loading ? (
-              <div className="flex justify-center items-center py-12">
-                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500"></div>
-              </div>
-            ) : (
-              <div className="space-y-4">
+            {/* Always render content - sections handle their own loading/error states */}
+            <div className="space-y-4">
+              {loading && (
+                <div className="flex justify-center items-center py-4 mb-4">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500"></div>
+                  <span className="ml-3 text-gray-400 text-sm">Loading profile data...</span>
+                </div>
+              )}
                 {/* 1. USER INFORMATION */}
                 <SettingsCard className="mb-8">
                   <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-3">
@@ -891,10 +983,36 @@ export default function Profile() {
                       <div className="text-sm text-gray-400">Last Research Activity</div>
                     </div>
                     <div className="text-white font-medium">
-                      {usageStats?.lastResearchTimestamp
-                        ? new Date(usageStats.lastResearchTimestamp).toLocaleString()
-                        : 'No research runs yet'
-                      }
+                      {usageStatsError ? (
+                        <div className="flex items-center gap-2">
+                          <span className="text-red-400 text-sm">{usageStatsError}</span>
+                          <button
+                            onClick={() => {
+                              usageStatsRetryCountRef.current = 0;
+                              setUsageStatsRetryCount(0);
+                              setUsageStatsError(null);
+                              api.get(`/users/${user?.uid}/usage-stats`, { timeout: 20000 })
+                                .then(res => {
+                                  if (isMountedRef.current) {
+                                    setUsageStats(res.data);
+                                    setUsageStatsError(null);
+                                  }
+                                })
+                                .catch(err => {
+                                  console.warn('[Profile] Usage stats retry failed:', err.message);
+                                  if (isMountedRef.current) setUsageStatsError('Failed to load — Retry');
+                                });
+                            }}
+                            className="px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white text-xs rounded transition-colors"
+                          >
+                            Retry
+                          </button>
+                        </div>
+                      ) : usageStats?.lastResearchTimestamp ? (
+                        new Date(usageStats.lastResearchTimestamp).toLocaleString()
+                      ) : (
+                        'No research runs yet'
+                      )}
                     </div>
                   </div>
                 </div>
@@ -939,6 +1057,32 @@ export default function Profile() {
                   <div className="space-y-4">
                     <div>
                       <h3 className="text-lg font-medium text-white mb-3">Recent Login Sessions</h3>
+                      {sessionsError ? (
+                        <div className="text-center py-8">
+                          <div className="text-red-400 text-sm mb-2">{sessionsError}</div>
+                          <button
+                            onClick={() => {
+                              sessionsRetryCountRef.current = 0;
+                              setSessionsRetryCount(0);
+                              setSessionsError(null);
+                              api.get(`/users/${user?.uid}/sessions`, { timeout: 25000 })
+                                .then(res => {
+                                  if (isMountedRef.current) {
+                                    setSessions(Array.isArray(res.data?.sessions) ? res.data.sessions : []);
+                                    setSessionsError(null);
+                                  }
+                                })
+                                .catch(err => {
+                                  console.warn('[Profile] Sessions retry failed:', err.message);
+                                  if (isMountedRef.current) setSessionsError('Failed to load — Retry');
+                                });
+                            }}
+                            className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm rounded transition-colors"
+                          >
+                            Retry
+                          </button>
+                        </div>
+                      ) : (
                       <div className="space-y-2 max-h-48 overflow-y-auto">
                         {Array.isArray(sessions) ? sessions.slice(0, 5).map((session: any, index: number) => {
                           const sessionDate = session.lastActive || session.timestamp || session.createdAt;
@@ -963,10 +1107,11 @@ export default function Profile() {
                             </div>
                           );
                         }) : null}
-                        {(!Array.isArray(sessions) || sessions.length === 0) && (
+                          {(!Array.isArray(sessions) || sessions.length === 0) && !sessionsError && (
                           <div className="text-sm text-gray-400 text-center py-8">No login sessions found</div>
                         )}
                       </div>
+                      )}
                     </div>
 
                     <div className="border-t border-purple-500/20 pt-4">
@@ -1144,8 +1289,7 @@ export default function Profile() {
                   </div>
                 )}
 
-              </div>
-            )}
+            </div>
           </div>
         </main>
 
