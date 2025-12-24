@@ -4626,7 +4626,9 @@ export class AutoTradeEngine {
 
         logger.warn({
           uid,
-          error: exchangeDecryptionError
+          error: exchangeDecryptionError,
+          executionBlocked: true,
+          reason: 'Exchange API key decryption failed - execution will be skipped'
         }, '⚠️ [AUTO_TRADE] Exchange key decryption failed - processing restricted to RESEARCH ONLY (Execution blocked)');
 
         // Log activity but CONTINUE to research
@@ -4913,283 +4915,9 @@ export class AutoTradeEngine {
         }, '⚠️ [HISTORY] Market price not found in final result - storing 0');
       }
 
-      // CRITICAL: Store Auto-Trade research in history for UI visibility
-      // This ensures users see what Auto-Trade is analyzing, even if valid trade is not executed
-      // Store FINAL aggregated values (not partial/interim values)
-      // CRITICAL: Ensure accuracy and signal are ALWAYS stored (never omitted)
-      // CRITICAL: History is saved for EVERY cycle, regardless of execution (decision status tracked)
-      // CRITICAL: Only store if skipHistoryStorage is false (caller handles storage for Telegram mode)
-      if (!skipHistoryStorage && !historySaved) {
-        try {
-          // CRITICAL: History is saved for EVERY cycle, regardless of execution
-          // Decision status (EXECUTED/SKIPPED) is tracked and included in history entry
-          // CRITICAL HARD GUARD 1: Verify isFinal === true before saving FINAL research history
-          // History must NEVER be saved for partial/intermediate results
-          // However, we allow saving for SKIPPED cycles with valid research data
-          if (finalResult.isFinal !== true && decisionStatus !== 'SKIPPED') {
-            logger.error({
-              uid,
-              symbol: researchResult.symbol,
-              isFinal: finalResult.isFinal,
-              accuracy,
-              signal,
-              decisionStatus
-            }, '❌ [HISTORY_GUARD] BLOCKED: History save attempted with isFinal !== true - this is a partial/intermediate result. Only FINAL research results can be saved to history.');
-            throw new Error(`Cannot save history: research result is not final (isFinal=${finalResult.isFinal}). Only FINAL results can be saved to history. Partial/intermediate results are forbidden.`);
-          }
-
-          // CRITICAL: Do NOT save history with accuracy=0
-          // History must only reflect real research runs with valid accuracy calculations (> 0)
-          // If accuracy is 0, research either didn't run, failed, or didn't produce valid results - do not save history
-          // This ensures UI never shows 0% accuracy unless it was genuinely calculated (which should never be exactly 0%)
-          if (accuracy === 0) {
-            logger.warn({
-              uid,
-              symbol: researchResult.symbol,
-              accuracy,
-              signal,
-              decisionStatus,
-              skipReason
-            }, '⚠️ [HISTORY_GUARD] BLOCKED: Accuracy is 0 - research did not produce valid accuracy. History not saved.');
-            throw new Error('Cannot save history: accuracy is 0. History must only reflect real research runs with valid accuracy calculations (> 0).');
-          }
-
-          // CRITICAL: Ensure signal is HOLD if accuracy < 60% (backend safety check for signal generation)
-          // CRITICAL: Trade plan is only generated when accuracy >= 70% (enforced in researchAggregator)
-          const finalSignal = (accuracy < 60 && signal !== 'HOLD') ? 'HOLD' : signal;
-
-          // CRITICAL: Ensure accuracy is always a number (already validated above)
-          // CRITICAL FIX: Use Number() || 0 for proper coercion to handle undefined/null properly
-          const storedAccuracy = Math.max(0, Math.min(100, Number(accuracy) || 0)); // Clamp to 0-100 range, default to 0 if undefined
-
-          // CRITICAL: Use tradePlan directly from researchAggregator (already validated there)
-          // researchAggregator enforces: tradePlan is generated when accuracy >= 70% AND signal is BUY/SELL
-          // Do NOT null tradePlan after accuracy validation - use it as-is from researchAggregator
-          const safeTradePlan = finalTradePlan ?? null; // Use finalTradePlan directly, only ensure null (not undefined)
-
-          // CRITICAL: Build history entry with FINAL result data - MUST match manual research payload exactly
-          // CRITICAL: Mark source as AUTO_TRADE for auto-trade mode research
-          // CRITICAL: Include decision status (EXECUTED/SKIPPED) and skipReason/tradeId
-          // CRITICAL: Use FINAL tradePlan directly from researchAggregator - do NOT recompute
-          // tradePlan from generateTradePlan has: entryPrice, stopLoss, takeProfit1, takeProfit2, takeProfit3, riskRewardRatio
-          // For backward compatibility, takeProfit should be set to takeProfit2 (main TP)
-          // CRITICAL FIX: Ensure NO undefined values in history entry
-          // All fields must be explicitly set (null, 0, or valid value) - never undefined
-          // CRITICAL: Use researchSymbol (extracted earlier) to ensure consistency with NO_SIGNAL handling
-          // CRITICAL FIX: Ensure NO undefined values - enforce defaults BEFORE history save
-          // CRITICAL: Enforce defaults - ensure NO undefined values
-          // Use proper coercion: Number() || 0 for accuracy, ?? null for symbol/tradePlan
-          const historySymbol = (researchSymbol ?? researchResult.symbol) ?? null; // Explicit null, never undefined
-          const historyAccuracy = Number(storedAccuracy) || 0; // Use Number() || 0, explicit 0, never undefined
-          const historySignal = finalSignal ?? 'HOLD'; // Explicit default, never undefined
-          const historyPriceValue = Number(historyPrice) || 0; // Use Number() || 0, explicit 0, never undefined
-          const historyTradePlan = safeTradePlan ?? null; // Explicit null, never undefined
-          const historyDecisionStatus = decisionStatus ?? 'SKIPPED'; // Explicit default, never undefined
-          
-          const historyEntry: any = {
-            symbol: historySymbol,
-            signal: historySignal,
-            accuracy: historyAccuracy,
-            price: historyPriceValue,
-            tradePlan: historyTradePlan,
-            indicators: finalResult.analysis || null,
-            isDeepResearch: true,
-            source: 'AUTO_TRADE', // CRITICAL: Mark as auto-trade research for UI filtering
-            status: 'FINAL', // Research completed successfully
-            isFinal: true, // CRITICAL: Explicitly mark as final for history validation
-            // CRITICAL: Decision tracking for every cycle - explicitly set or omit (never undefined)
-            decision: historyDecisionStatus,
-            // UI COMPATIBILITY: Flatten critical trade plan fields for Research History / Research Page
-            // MUST match manual research payload structure exactly - explicitly 0 if missing
-            entryPrice: safeTradePlan?.entryPrice ?? 0,
-            stopLoss: safeTradePlan?.stopLoss ?? 0,
-            takeProfit: safeTradePlan?.takeProfit2 ?? 0, // Use TP2 as main takeProfit (TradePlan doesn't have takeProfit, only takeProfit1/2/3)
-            takeProfit1: safeTradePlan?.takeProfit1 ?? 0,
-            takeProfit2: safeTradePlan?.takeProfit2 ?? 0,
-            takeProfit3: safeTradePlan?.takeProfit3 ?? 0
-          };
-          
-          // CRITICAL FIX: Only include optional fields if they have valid values (never undefined)
-          if ((decisionStatus as string) === 'SKIPPED') {
-            historyEntry.skipReason = skipReason ?? 'NO_SIGNAL'; // Explicitly set, never undefined
-            if (skipReason) {
-              historyEntry.skipReasons = [skipReason]; // Explicitly set array, never undefined
-            }
-          }
-          if ((decisionStatus as string) === 'EXECUTED' && tradeId) {
-            historyEntry.tradeId = tradeId ?? null; // Only include if exists, use ?? null for safety
-          }
-
-          // CRITICAL: Validate history entry schema before saving to Firestore
-          // Ensure all required fields are present and valid
-          // CRITICAL FIX: Allow null symbol for SKIPPED entries (NO_SIGNAL case)
-          if (historyEntry.symbol !== null && (!historyEntry.symbol || typeof historyEntry.symbol !== 'string')) {
-            logger.error({ uid, historyEntry }, '❌ [FIRESTORE_VALIDATION] Invalid symbol in history entry');
-            throw new Error('Cannot save history: invalid symbol');
-          }
-          if (typeof historyEntry.accuracy !== 'number' || isNaN(historyEntry.accuracy) || historyEntry.accuracy < 0 || historyEntry.accuracy > 100) {
-            logger.error({ uid, historyEntry }, '❌ [FIRESTORE_VALIDATION] Invalid accuracy in history entry');
-            throw new Error('Cannot save history: invalid accuracy (must be 0-100)');
-          }
-          if (!['BUY', 'SELL', 'HOLD'].includes(historyEntry.signal)) {
-            logger.error({ uid, historyEntry }, '❌ [FIRESTORE_VALIDATION] Invalid signal in history entry');
-            throw new Error('Cannot save history: invalid signal');
-          }
-          if (typeof historyEntry.price !== 'number' || isNaN(historyEntry.price) || historyEntry.price < 0) {
-            logger.error({ uid, historyEntry }, '❌ [FIRESTORE_VALIDATION] Invalid price in history entry');
-            throw new Error('Cannot save history: invalid price');
-          }
-          if (historyEntry.isFinal !== true) {
-            logger.error({ uid, historyEntry }, '❌ [FIRESTORE_VALIDATION] Missing isFinal flag in history entry');
-            throw new Error('Cannot save history: missing isFinal flag');
-          }
-          // Validate numeric fields are numbers
-          if (typeof historyEntry.entryPrice !== 'number' || typeof historyEntry.stopLoss !== 'number' ||
-            typeof historyEntry.takeProfit !== 'number' || typeof historyEntry.takeProfit1 !== 'number' ||
-            typeof historyEntry.takeProfit2 !== 'number' || typeof historyEntry.takeProfit3 !== 'number') {
-            logger.error({ uid, historyEntry }, '❌ [FIRESTORE_VALIDATION] Invalid numeric fields in history entry');
-            throw new Error('Cannot save history: invalid numeric fields');
-          }
-
-          // CRITICAL HARD GUARD 4: Prevent duplicate saves within same cycle
-          // This ensures history is saved exactly ONCE per auto-trade cycle
-          // BackgroundResearchScheduler calls with skipHistoryStorage=false for AUTO_TRADE_RESEARCH mode
-          // This is the ONLY place where history is saved for AUTO_TRADE mode
-          if (historySaved) {
-            logger.error({
-              uid,
-              symbol: researchResult.symbol,
-              alreadySavedSymbol: historySavedSymbol,
-              attemptedSymbol: historyEntry.symbol,
-              cycleId: `cycle_${Date.now()}`,
-              duplicateBlocked: true
-            }, '❌ [HISTORY_GUARD] BLOCKED: Duplicate history save prevented - history already saved in this cycle. Only ONE history entry per cycle is allowed.');
-            throw new Error(`Cannot save history: history already saved for symbol ${historySavedSymbol} in this cycle. Only ONE history entry per cycle is allowed.`);
-          }
-
-          // CRITICAL: Save PRIMARY coin result from REAL research
-          // researchResult.symbol comes from the actual selected coin from researchData.results[0]
-          // This is the FINAL research result, so it's always the primary coin (not a fallback)
-          // CRITICAL: This is the ONLY place where history is saved for successful AUTO_TRADE cycles
-          // BackgroundResearchScheduler explicitly skips history save for AUTO_TRADE_RESEARCH mode
-          
-          // CRITICAL HARD GUARD 1: Verify symbol is from REAL research (not fallback)
-          // Ensure symbol matches coinsAnalyzed (the actual selected coin)
-          // CRITICAL: Allow null symbol for SKIPPED entries (NO_SIGNAL case)
-          // CRITICAL: Check ALL possible symbol sources (researchResult.symbol, coinsAnalyzed, selectedSymbolForHistory)
-          const actualSelectedCoin = researchData.coinsAnalyzed?.[0];
-          const symbolForHistory = researchResult.symbol || actualSelectedCoin || researchSymbol || null;
-          if (!symbolForHistory && decisionStatus !== 'SKIPPED') {
-            logger.error({
-              uid,
-              coinsAnalyzed: researchData.coinsAnalyzed,
-              researchResultSymbol: researchResult.symbol,
-              historyBlocked: true,
-              reason: 'No symbol in research result'
-            }, '❌ [HISTORY_GUARD] BLOCKED: No symbol in research result - cannot save history');
-            throw new Error('Cannot save history: no symbol in research result');
-          }
-          
-          // CRITICAL HARD GUARD 2: Prevent BTCUSDT fallback unless it's actually the selected coin
-          // If BTCUSDT appears but it's not in coinsAnalyzed, it's a fallback (BLOCK)
-          if (researchResult.symbol === 'BTCUSDT') {
-            if (!actualSelectedCoin) {
-              logger.error({
-                uid,
-                symbol: researchResult.symbol,
-                coinsAnalyzed: researchData.coinsAnalyzed,
-                historyBlocked: true,
-                reason: 'BTCUSDT detected but no coin was selected - fallback prevented'
-              }, '❌ [HISTORY_GUARD] BLOCKED: BTCUSDT fallback detected - no coin was selected');
-              throw new Error('Cannot save history: BTCUSDT fallback detected - no coin was selected');
-            } else if (actualSelectedCoin !== 'BTCUSDT') {
-              logger.error({
-                uid,
-                symbol: researchResult.symbol,
-                actualSelectedCoin,
-                coinsAnalyzed: researchData.coinsAnalyzed,
-                historyBlocked: true,
-                reason: 'BTCUSDT fallback detected but actual selected coin is different'
-              }, '❌ [HISTORY_GUARD] BLOCKED: BTCUSDT fallback detected - actual selected coin is different');
-              throw new Error(`Cannot save history: BTCUSDT fallback detected. Actual selected coin: ${actualSelectedCoin}`);
-            }
-            // If we get here, BTCUSDT is legitimately the selected coin - allow it
-          }
-          
-          // CRITICAL HARD GUARD 3: Verify accuracy is from REAL research (not default 0)
-          // If research ran successfully and isFinal=true, accuracy should be > 0 (unless truly HOLD signal)
-          if (storedAccuracy === 0 && signal !== 'HOLD' && finalResult.isFinal === true) {
-            logger.warn({
-              uid,
-              symbol: researchResult.symbol,
-              accuracy: storedAccuracy,
-              signal,
-              isFinal: finalResult.isFinal,
-              warning: 'Accuracy is 0 but signal is not HOLD - this may indicate a research issue'
-            }, '⚠️ [HISTORY_WARNING] Accuracy is 0 but signal is not HOLD - proceeding with save but logging warning');
-          }
-          
-          // CRITICAL HARD GUARD 4: Ensure popup and history use SAME research object
-          // This ensures consistency between what user sees in popup and what's saved in history
-          // Both should use researchResult.symbol and storedAccuracy from finalResult
-          const popupSymbol = researchResult.symbol;
-          const popupAccuracy = storedAccuracy;
-          if (historyEntry.symbol !== popupSymbol || historyEntry.accuracy !== popupAccuracy) {
-            logger.error({
-              uid,
-              historySymbol: historyEntry.symbol,
-              popupSymbol,
-              historyAccuracy: historyEntry.accuracy,
-              popupAccuracy,
-              historyBlocked: true,
-              reason: 'Popup and history data mismatch'
-            }, '❌ [HISTORY_GUARD] BLOCKED: Popup and history data mismatch - ensuring consistency');
-            throw new Error('Cannot save history: popup and history data mismatch');
-          }
-          
-          logger.info({
-            uid,
-            symbol: researchResult.symbol,
-            accuracy: storedAccuracy,
-            signal: finalSignal,
-            actualSelectedCoin,
-            historyType: 'REAL_RESEARCH',
-            reason: 'Saving REAL research history - using actual symbol and accuracy from research'
-          }, '🔍 [HISTORY_DEBUG] Saving REAL_RESEARCH history - using actual research output');
-          
-          await firestoreAdapter.storeResearchHistory(uid, historyEntry);
-          historySaved = true;
-          historySavedSymbol = historyEntry.symbol;
-
-          logger.info({
-            uid,
-            symbol: researchResult.symbol,
-            signal: finalSignal,
-            accuracy: storedAccuracy,
-            price: historyPrice,
-            hasTradePlan: !!safeTradePlan,
-            tradePlanEntryPrice: safeTradePlan?.entryPrice || null,
-            tradePlanFields: safeTradePlan ? {
-              entryPrice: safeTradePlan.entryPrice,
-              stopLoss: safeTradePlan.stopLoss,
-              takeProfit1: safeTradePlan.takeProfit1,
-              takeProfit2: safeTradePlan.takeProfit2,
-              takeProfit3: safeTradePlan.takeProfit3
-            } : null,
-            cycleId: `cycle_${Date.now()}`,
-            savedOnce: true,
-            historyType: 'REAL_RESEARCH',
-            source: 'ACTUAL_RESEARCH_OUTPUT',
-            popupConsistency: true,
-            actualSelectedCoin
-          }, '✅ [HISTORY_DEBUG] REAL_RESEARCH history saved successfully - using actual symbol and accuracy from research, popup consistency verified');
-        } catch (histError: any) {
-          logger.error({ uid, error: histError.message, stack: histError.stack }, '❌ [HISTORY] Failed to store auto-trade research history');
-          // Do NOT throw - allow research cycle to continue even if history storage fails
-        }
-      } else {
-        logger.debug({ uid, symbol: researchResult.symbol }, '⏭️ [HISTORY] History storage skipped - caller will handle with correct source');
-      }
+      // CRITICAL: History is saved AFTER execution attempt only
+      // Do NOT save history for early returns (execution never started)
+      // History will be saved after execution attempt with executionStatus
 
       // 5. Send Telegram Alert (if auto-trade is ON and accuracy >= telegramAccuracyTrigger)
       // CRITICAL: When Auto-Trade is ON, Telegram alerts come from AutoTradeEngine results
@@ -5510,6 +5238,8 @@ export class AutoTradeEngine {
           exchangeStatus: 'available',
         });
         await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', { symbol: researchResult.symbol, reason: skipReason, accuracy, timestamp: new Date().toISOString() });
+        // CRITICAL: Do NOT save history when execution never started
+        // History is only saved AFTER execution attempt
         return researchResult;
       }
 
@@ -5602,7 +5332,8 @@ export class AutoTradeEngine {
           }
         });
         await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', { symbol: researchResult.symbol, reason: skipReason, accuracy, volatility: volClassification, timestamp: new Date().toISOString() });
-        // History will be saved at end of function (decisionStatus already set to SKIPPED above)
+        // CRITICAL: Do NOT save history when execution never started
+        // History is only saved AFTER execution attempt
         return researchResult;
       }
 
@@ -5685,8 +5416,10 @@ export class AutoTradeEngine {
           uid,
           symbol: researchResult.symbol,
           reason: executionBlockReason,
-          step: 'PRE_EXECUTION_GUARD'
-        }, '⛔ [EXECUTION_BLOCKED] Trade execution blocked by earlier failure (e.g. Exchange Decryption) - research and history saved, but trade aborted');
+          step: 'PRE_EXECUTION_GUARD',
+          exchangeStatus: 'unavailable',
+          executionBlocked: true
+        }, '⛔ [EXECUTION_BLOCKED] Trade execution blocked - Exchange API key decryption failed or exchange not connected. Research completed, but trade execution skipped.');
 
         await this.logAutoTradeSkip(uid, 'EXECUTION_BLOCKED', {
           symbol: researchResult.symbol,
@@ -5706,6 +5439,8 @@ export class AutoTradeEngine {
           timestamp: new Date().toISOString()
         });
 
+        // CRITICAL: Do NOT save history when execution is blocked (exchange APIs invalid)
+        // History is only saved AFTER execution attempt
         return researchResult;
       }
 
@@ -5741,6 +5476,8 @@ export class AutoTradeEngine {
           timestamp: new Date().toISOString()
         });
 
+        // CRITICAL: Do NOT save history when execution never started
+        // History is only saved AFTER execution attempt
         return researchResult;
       }
 
@@ -5902,7 +5639,35 @@ export class AutoTradeEngine {
         executionStatus: execution.status,
         tradeId: execution.tradeId
       }, '✅ [CYCLE_COMPLETE] Trade cycle successful');
-      // History will be saved at end of function
+
+      // CRITICAL: Save history AFTER execution attempt with executionStatus
+      // History must include executionStatus from actual execution attempt
+      if (!skipHistoryStorage && !historySaved) {
+        try {
+          // Extract execution status from execution result
+          const executionStatus = execution.status; // 'PENDING' | 'FILLED' | 'CANCELLED' | 'REJECTED' | 'PANIC_CLOSED'
+          
+          // Build history entry with execution status
+          await this.saveAutoTradeHistoryWithExecutionStatus(
+            uid,
+            researchResult,
+            researchData,
+            researchSymbol,
+            finalResult,
+            finalTradePlan,
+            accuracy,
+            signal,
+            historyPrice,
+            'EXECUTED',
+            executionStatus,
+            execution.tradeId || null
+          );
+          historySaved = true;
+        } catch (histError: any) {
+          logger.error({ uid, error: histError.message }, '❌ [HISTORY] Failed to store auto-trade history after execution');
+        }
+      }
+      
       return researchResult;
 
     } catch (error: any) {
@@ -5911,23 +5676,9 @@ export class AutoTradeEngine {
 
       logger.error({ uid, error: error.message, stack: error.stack }, '❌ [CYCLE_FAILED] Trade cycle failed');
 
-      // CRITICAL: Store history even on error (if not skipped)
-      // This ensures every research attempt is logged, even if it fails
-      // CRITICAL: Only save if history hasn't been saved yet in this cycle
-      // CRITICAL: Do NOT save fallback/BTC entries - only save if we have a real symbol
-      if (!skipHistoryStorage && !historySaved) {
-        try {
-          // Try to get actual symbol from research attempt if available
-          let errorSymbol = 'BTCUSDT'; // Only use as last resort
-          // Note: We don't save fallback/BTC entries, so this will be skipped if no real symbol
-          // But we log it for diagnostics
-          logger.debug({ uid, symbol: errorSymbol }, '⏭️ [HISTORY] Skipping error history save - fallback/BTC entries are not saved');
-        } catch (histError: any) {
-          logger.warn({ uid, error: histError.message }, 'Failed to store history for failed cycle');
-        }
-      } else if (!skipHistoryStorage && historySaved) {
-        logger.warn({ uid, alreadySavedSymbol: historySavedSymbol }, '⏭️ [HISTORY_GUARD] BLOCKED: Duplicate history save prevented in error handler - history already saved in this cycle');
-      }
+      // CRITICAL: Do NOT save history in catch block - execution failed
+      // History is only saved after successful execution attempt (in the success path above)
+      // If execution fails, variables may not be in scope, so skip history save
 
       if (Object.values(AUTO_TRADE_REASONS).includes(skipReason as AutoTradeReason)) {
         // Skip reason is already standardized
@@ -6032,6 +5783,67 @@ export class AutoTradeEngine {
     logger.info({ uid, requestId }, 'Pending trade rejected by user');
   }
 
+
+  /**
+   * Save auto-trade history AFTER execution attempt with executionStatus
+   * CRITICAL: This is called ONLY after execution attempt (success or failure)
+   * History includes executionStatus from actual execution attempt
+   */
+  private async saveAutoTradeHistoryWithExecutionStatus(
+    uid: string,
+    researchResult: ResearchDataResult,
+    researchData: ResearchData,
+    researchSymbol: string | null,
+    finalResult: any,
+    finalTradePlan: any,
+    accuracy: number,
+    signal: TradeSignalType,
+    historyPrice: number,
+    decisionStatus: 'EXECUTED' | 'SKIPPED',
+    executionStatus: TradeExecutionStatus | null,
+    tradeId: string | null
+  ): Promise<void> {
+    // CRITICAL: Do NOT save history with accuracy=0
+    if (accuracy === 0) {
+      logger.warn({ uid, symbol: researchResult.symbol, accuracy }, '⚠️ [HISTORY_GUARD] BLOCKED: Accuracy is 0 - history not saved');
+      return;
+    }
+
+    // CRITICAL: Ensure signal is HOLD if accuracy < 60% (backend safety check)
+    const finalSignal = (accuracy < 60 && signal !== 'HOLD') ? 'HOLD' : signal;
+    const storedAccuracy = Math.max(0, Math.min(100, Number(accuracy) || 0));
+    const safeTradePlan = finalTradePlan ?? null;
+
+    // Build history entry
+    const historySymbol = (researchSymbol ?? researchResult.symbol) ?? null;
+    const historyEntry: any = {
+      symbol: historySymbol,
+      signal: finalSignal,
+      accuracy: storedAccuracy,
+      price: Number(historyPrice) || 0,
+      tradePlan: safeTradePlan,
+      indicators: finalResult.analysis || null,
+      isDeepResearch: true,
+      source: 'AUTO_TRADE',
+      status: 'FINAL',
+      isFinal: true,
+      decision: decisionStatus,
+      executionStatus: executionStatus || null, // CRITICAL: Include executionStatus
+      entryPrice: safeTradePlan?.entryPrice ?? 0,
+      stopLoss: safeTradePlan?.stopLoss ?? 0,
+      takeProfit: safeTradePlan?.takeProfit2 ?? 0,
+      takeProfit1: safeTradePlan?.takeProfit1 ?? 0,
+      takeProfit2: safeTradePlan?.takeProfit2 ?? 0,
+      takeProfit3: safeTradePlan?.takeProfit3 ?? 0
+    };
+
+    if (decisionStatus === 'EXECUTED' && tradeId) {
+      historyEntry.tradeId = tradeId;
+    }
+
+    await firestoreAdapter.storeResearchHistory(uid, historyEntry);
+    logger.info({ uid, symbol: researchResult.symbol, executionStatus, decisionStatus }, '✅ [HISTORY] Auto-trade history saved after execution');
+  }
 
   private async sendTradeConfirmationNotification(uid: string, signal: TradeSignal): Promise<void> {
     try {
