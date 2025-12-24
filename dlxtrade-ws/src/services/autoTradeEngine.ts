@@ -5261,7 +5261,6 @@ export class AutoTradeEngine {
               }
             }
           }
-        }
       } catch (telegramError: any) {
         const alertId = `auto_trade_error_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         logger.error({
