@@ -724,6 +724,7 @@ export async function selectBestCoinByAccuracy(
     const coinScores: Array<{ symbol: string; accuracy: number }> = [];
 
     // SCAN ALL TOP 25 COINS - no short-circuiting
+    const scanStartTime = Date.now();
     logger.info({ uid, top25Count: candidates.length, startTime: new Date().toISOString() }, '🔍 [TOP_25_SCAN] Starting accuracy scan for all Top 25 coins');
     for (const c of candidates) {
       const symbol = c.symbol?.toUpperCase() || '';
@@ -823,14 +824,14 @@ export async function selectBestCoinByAccuracy(
     coinRotationCooldown.set(bestCoin, now);
     
     // INSTRUMENTATION: Log scan completion
-    const scanDuration = Date.now() - scanStartTime;
+    const scanDurationMs = Date.now() - scanStartTime;
     logger.info({
       uid,
       top25Count: candidates.length,
       symbolsScanned: candidates.map(c => c.symbol),
       bestSymbol: bestCoin,
       bestAccuracy: bestAccuracy,
-      scanDurationMs: scanDuration,
+      scanDurationMs: scanDurationMs,
       excludedCount,
       finalExcludedCount,
       cooldownExcludedCount,
@@ -854,18 +855,6 @@ export async function selectBestCoinByAccuracy(
       cooldownExcluded: cooldownExcludedCount,
       totalCandidates: candidates.length
     }, '[AUTO_SELECT] Best coin selected by accuracy (Top 25 Scan - RESTRICTED)');
-  
-  // INSTRUMENTATION: Log scan completion
-  const scanDuration = Date.now() - scanStartTime;
-  logger.info({
-    uid,
-    top25Count: candidates.length,
-    symbolsScanned: candidates.map(c => c.symbol),
-    bestSymbol: bestCoin?.symbol,
-    bestAccuracy: bestCoin?.accuracy,
-    scanDurationMs: scanDuration,
-    endTime: new Date().toISOString()
-  }, '✅ [TOP_25_SCAN] Accuracy scan completed - Top 25 coins scanned');
 
     return {
       symbol: bestCoin,

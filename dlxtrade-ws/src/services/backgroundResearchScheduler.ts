@@ -513,15 +513,16 @@ export class BackgroundResearchScheduler {
             }, '✅ [SCHEDULER_IMMORTAL] Interval verified - all conditions match, scheduler continues');
             return;
           }
+          
+          // Frequency or mode changed - need to reschedule
+          logger.info({ 
+            uid, 
+            oldFrequency: lastFrequency, 
+            newFrequency: finalFrequency,
+            oldMode: lastMode,
+            newMode: mode
+          }, '🔄 [SCHEDULER_IMMORTAL] Frequency or mode changed, rescheduling interval');
         }
-        // Frequency or mode changed - need to reschedule
-        logger.info({ 
-          uid, 
-          oldFrequency: lastFrequency, 
-          newFrequency: finalFrequency,
-          oldMode: lastMode,
-          newMode: mode
-        }, '🔄 [SCHEDULER_IMMORTAL] Frequency or mode changed, rescheduling interval');
         clearInterval(existingInterval);
         this.userIntervals.delete(uid);
       } else {

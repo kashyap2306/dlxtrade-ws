@@ -1333,7 +1333,7 @@ export class AutoTradeEngine {
     const settings = await AutoTradeEngine.getTradingSettings(uid);
 
     // 0. SYSTEM RISK CHECKS (Shared Logic)
-    const systemCheck = await this.checkSystemRisk(uid, isManualApproval, settings);
+    const systemCheck = await this.checkSystemRisk(uid, isManualApproval, settings, signal.symbol);
     if (!systemCheck.allowed) {
       return systemCheck;
     }
@@ -1551,7 +1551,7 @@ export class AutoTradeEngine {
    * Check system-wide risk settings (Daily Loss, Cooldown, Circuit Breaker)
    * Does NOT check signal-specific constraints (Accuracy, Symbol)
    */
-  async checkSystemRisk(uid: string, isManualApproval: boolean, settings: TradingSettings): Promise<{ allowed: boolean; reason?: string }> {
+  async checkSystemRisk(uid: string, isManualApproval: boolean, settings: TradingSettings, symbol?: string): Promise<{ allowed: boolean; reason?: string }> {
     const engine = await this.getUserEngine(uid);
     const config = engine.config;
     const stats = config.stats || DEFAULT_CONFIG.stats!;
@@ -1609,25 +1609,25 @@ export class AutoTradeEngine {
 
     // 3. Per-Symbol Cooldown Check (BYPASS ON MANUAL)
     // CRITICAL: Cooldown is now per-symbol, not global - allows trading other symbols
-    if (!isManualApproval) {
+    if (!isManualApproval && symbol) {
       const cooldownSeconds = config.cooldownSeconds || 15; // Default 15 seconds for 2-5 trades/day
       const symbolCooldowns = config.symbolCooldowns || {};
-      const symbolCooldownEndStr = symbolCooldowns[signal.symbol];
+      const symbolCooldownEndStr = symbolCooldowns[symbol];
       
       if (symbolCooldownEndStr) {
         const cooldownEnd = new Date(symbolCooldownEndStr);
         if (new Date() < cooldownEnd) {
-          const reason = `SYMBOL_COOLDOWN_ACTIVE: ${signal.symbol} in cooldown until ${cooldownEnd.toISOString()} (${cooldownSeconds}s per-symbol cooldown)`;
+          const reason = `SYMBOL_COOLDOWN_ACTIVE: ${symbol} in cooldown until ${cooldownEnd.toISOString()} (${cooldownSeconds}s per-symbol cooldown)`;
           logger.info({
             uid,
-            symbol: signal.symbol,
+            symbol: symbol,
             cooldownUntil: cooldownEnd.toISOString(),
             now: new Date().toISOString(),
             cooldownSeconds,
             reason: 'SYMBOL_COOLDOWN_ACTIVE'
           }, '⛔ [RISK_GUARDS] BLOCKED: Per-symbol cooldown active (other symbols can still trade)');
           await this.logAutoTradeSkip(uid, reason, {
-            symbol: signal.symbol,
+            symbol: symbol,
             exchangeStatus: 'available',
             additionalDetails: {
               cooldownUntil: cooldownEnd.toISOString(),
@@ -4597,6 +4597,13 @@ export class AutoTradeEngine {
       // 4. Trade Monitoring (Cleanup)
       await withTimeout(() => this.monitorActiveTrades(uid), 5000);
 
+      // HEARTBEAT: Log cycle start (fires even if no trade happens)
+      logger.info({
+        uid,
+        cycleRunning: true,
+        timestamp: new Date().toISOString()
+      }, '[AUTO_TRADE_HEARTBEAT] cycleRunning=true');
+
       // 5. Run Research with error handling
       let researchData: ResearchData;
       let researchError: any = null;
@@ -4761,7 +4768,7 @@ export class AutoTradeEngine {
         hasTradePlan: !!finalTradePlan,
         entryPrice: finalTradePlan?.entryPrice,
         stopLoss: finalTradePlan?.stopLoss,
-        takeProfit: finalTradePlan?.takeProfit,
+        takeProfit: finalTradePlan?.takeProfit1 ?? finalTradePlan?.takeProfit2,
         riskRewardRatio: finalTradePlan?.riskRewardRatio,
         top25Verified: true,
         timestamp: new Date().toISOString()
@@ -5268,7 +5275,7 @@ export class AutoTradeEngine {
 
       // STEP 1: SYSTEM RISK CHECKS
       // Verify account health (Daily Loss, Cooldown, etc.) BEFORE evaluating accuracy or creating signals
-      const systemRiskCheck = await this.checkSystemRisk(uid, false, settings);
+      const systemRiskCheck = await this.checkSystemRisk(uid, false, settings, researchResult.symbol);
 
       if (!systemRiskCheck.allowed) {
         skipReason = systemRiskCheck.reason || 'System risk check failed';
