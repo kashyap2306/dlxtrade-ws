@@ -4833,9 +4833,22 @@ export class AutoTradeEngine {
       // CRITICAL: When Auto-Trade is ON, Telegram alerts come from AutoTradeEngine results
       // This replaces the Telegram background research engine alerts
       // CRITICAL: Must respect Telegram accuracy settings AND spam prevention
+      // CRITICAL: Alerts are sent on EVERY qualifying research cycle (no silent skips)
       try {
         const alertId = `auto_trade_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         const bgSettings = await firestoreAdapter.getBackgroundResearchSettings(uid);
+        
+        // HARD LOG: Telegram alert evaluation start
+        logger.info({
+          alertId,
+          uid,
+          symbol: researchResult.symbol,
+          mode: 'AUTO_TRADE',
+          accuracy,
+          telegramConfigured: !!(bgSettings?.telegramBotToken && bgSettings?.telegramChatId),
+          alertSource: 'AUTO_TRADE_ENGINE',
+          telegramEngineBypassed: true
+        }, '📱 [TELEGRAM_ALERT_EVAL] Evaluating Telegram alert from Auto-Trade engine (Telegram Background Research engine BYPASSED)');
         
         // Check Telegram configuration
         if (!bgSettings?.telegramBotToken || !bgSettings?.telegramChatId) {
@@ -4846,14 +4859,29 @@ export class AutoTradeEngine {
             mode: 'AUTO_TRADE',
             accuracy,
             status: 'SKIPPED',
-            reason: 'Telegram configuration missing'
+            reason: 'Telegram configuration missing',
+            alertSource: 'AUTO_TRADE_ENGINE'
           }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Auto-trade alert skipped - Telegram not configured');
         } else {
           // Check accuracy threshold (from Telegram Background settings)
+          // CRITICAL: Threshold comes from Telegram settings, but alert is sent from Auto-Trade engine
           const telegramAccuracyTrigger = bgSettings.accuracyTrigger;
           const minTrigger = telegramAccuracyTrigger?.min ?? (typeof telegramAccuracyTrigger === 'number' ? telegramAccuracyTrigger : 80);
           const maxTrigger = telegramAccuracyTrigger?.max ?? 100;
           const isInRange = accuracy >= minTrigger && accuracy <= maxTrigger;
+          
+          // HARD LOG: Accuracy threshold check
+          logger.info({
+            alertId,
+            uid,
+            symbol: researchResult.symbol,
+            accuracy,
+            minTrigger,
+            maxTrigger,
+            isInRange,
+            thresholdSource: 'TELEGRAM_SETTINGS',
+            alertSource: 'AUTO_TRADE_ENGINE'
+          }, '📱 [TELEGRAM_ALERT_THRESHOLD] Accuracy threshold check - threshold from Telegram settings, alert from Auto-Trade engine');
 
           if (!isInRange) {
             logger.info({
@@ -5035,6 +5063,7 @@ export class AutoTradeEngine {
                 }
 
                 // CRITICAL: sendMessage signature: (botToken: string, chatId: string, message: string)
+                // HARD LOG: Sending Telegram alert from Auto-Trade engine
                 logger.info({
                   alertId,
                   uid,
@@ -5043,8 +5072,12 @@ export class AutoTradeEngine {
                   accuracy,
                   signal,
                   hasTradePlan: !!finalTradePlan,
-                  messageLength: message.length
-                }, '📱 [TELEGRAM] Sending auto-trade Telegram alert - all conditions met and payload validated');
+                  messageLength: message.length,
+                  alertSource: 'AUTO_TRADE_ENGINE',
+                  telegramEngineBypassed: true,
+                  thresholdSource: 'TELEGRAM_SETTINGS',
+                  sendingNow: true
+                }, '📱 [TELEGRAM_ALERT_SEND] Sending Telegram alert from Auto-Trade engine - EVERY qualifying cycle triggers alert (Telegram Background Research engine BYPASSED)');
                 
                 const telegramResult = await telegramService.sendMessage(
                   bgSettings.telegramBotToken.trim(),
@@ -5072,8 +5105,11 @@ export class AutoTradeEngine {
                     symbol: researchResult.symbol,
                     mode: 'AUTO_TRADE',
                     accuracy,
-                    status: 'SENT'
-                  }, '✅ [TELEGRAM_ALERT_SENT] Auto-trade research alert sent successfully');
+                    status: 'SENT',
+                    alertSource: 'AUTO_TRADE_ENGINE',
+                    telegramEngineBypassed: true,
+                    sentFromAutoTrade: true
+                  }, '✅ [TELEGRAM_ALERT_SENT] Auto-trade research alert sent successfully - sent from Auto-Trade engine, Telegram Background Research engine BYPASSED');
                 } else {
                   logger.error({
                     alertId,

@@ -73,11 +73,17 @@ export class BackgroundResearchScheduler {
       return;
     }
     this.isRunning = true;
-    logger.info('✅ [SCHEDULER] Background research scheduler started - SERVER-SIDE ONLY (independent of frontend)');
-    console.log('[AUTO-TRADE LOOP] ✅ Background research scheduler started - execution loop is ACTIVE');
+    logger.info({
+      schedulerRunning: this.isRunning,
+      schedulerImmortal: true,
+      checkIntervalSeconds: 60,
+      willRunContinuously: true
+    }, '✅ [SCHEDULER_IMMORTAL] Background research scheduler started - SERVER-SIDE ONLY (independent of frontend) - IMMORTAL MODE');
+    console.log('[AUTO-TRADE LOOP] ✅ Background research scheduler started - execution loop is ACTIVE - IMMORTAL MODE');
     console.log('[AUTO-TRADE LOOP]    - Runs server-side independently of frontend');
     console.log('[AUTO-TRADE LOOP]    - Survives user logout, tab close, browser shutdown');
     console.log('[AUTO-TRADE LOOP]    - NO frontend dependencies (WebSocket, polling, or UI presence)');
+    console.log('[AUTO-TRADE LOOP]    - IMMORTAL: Will run continuously until manually disabled');
 
     // Bootstrap: Load all enabled users immediately on startup (non-blocking)
     runBackgroundTask(
@@ -91,13 +97,25 @@ export class BackgroundResearchScheduler {
     // Check for users with enabled background research every minute
     // REFACTORED: Use safeSetInterval for event loop protection
     // CRITICAL: This runs server-side, independent of frontend
+    // CRITICAL: This interval is IMMORTAL - it will continuously check and reschedule users
     this.intervalId = safeSetInterval(
       async () => {
+        logger.debug({
+          schedulerRunning: this.isRunning,
+          activeUserIntervals: this.userIntervals.size,
+          activeJobStates: this.userJobStates.size
+        }, '🔄 [SCHEDULER_IMMORTAL] Periodic check cycle starting - verifying all enabled users are scheduled');
         await this.checkAndScheduleUserResearchSafe();
       },
       60 * 1000,
       'scheduler-check-users'
     );
+    
+    logger.info({
+      intervalId: this.intervalId ? 'created' : 'null',
+      checkIntervalMs: 60000,
+      schedulerImmortal: true
+    }, '✅ [SCHEDULER_IMMORTAL] Main scheduler interval created - will run continuously every 60 seconds');
     
     // 🔥 DEBUG: Log scheduler startup confirmation
     logger.info({
@@ -223,13 +241,23 @@ export class BackgroundResearchScheduler {
    */
   private async checkAndScheduleUserResearch() {
     try {
-      logger.debug('🔍 [SCHEDULER] Checking users for background research scheduling');
+      logger.debug({
+        schedulerRunning: this.isRunning,
+        activeIntervals: this.userIntervals.size,
+        activeJobStates: this.userJobStates.size
+      }, '🔍 [SCHEDULER_IMMORTAL] Checking users for background research scheduling - ensuring all enabled users are scheduled');
 
       const db = getFirebaseAdmin().firestore();
       const usersSnapshot = await db.collection('users').get();
 
-      logger.info({ userCount: usersSnapshot.docs.length }, '📊 [SCHEDULER] Checking users for background research');
+      logger.info({ 
+        userCount: usersSnapshot.docs.length,
+        activeIntervalsBefore: this.userIntervals.size
+      }, '📊 [SCHEDULER_IMMORTAL] Checking users for background research - verifying scheduler continuity');
 
+      let scheduledCount = 0;
+      let skippedCount = 0;
+      
       for (const userDoc of usersSnapshot.docs) {
         const uid = userDoc.id;
 
@@ -238,10 +266,37 @@ export class BackgroundResearchScheduler {
           continue;
         }
 
+        const wasScheduled = this.userIntervals.has(uid);
         await this.updateUserResearchSchedule(uid);
+        const isScheduled = this.userIntervals.has(uid);
+        
+        if (isScheduled && !wasScheduled) {
+          scheduledCount++;
+          logger.info({ uid }, '✅ [SCHEDULER_IMMORTAL] User scheduled/re-scheduled - interval created');
+        } else if (isScheduled && wasScheduled) {
+          // Already scheduled - verified
+        } else if (!isScheduled) {
+          skippedCount++;
+        }
       }
+      
+      logger.info({
+        totalUsers: usersSnapshot.docs.length,
+        scheduledCount,
+        skippedCount,
+        activeIntervalsAfter: this.userIntervals.size,
+        schedulerContinues: true
+      }, '✅ [SCHEDULER_IMMORTAL] Check cycle complete - scheduler verified, will continue running');
     } catch (error: any) {
-      logger.error({ error: error.message, stack: error.stack }, '❌ [SCHEDULER] Error checking user research schedules');
+      // CRITICAL: Errors in checkAndScheduleUserResearch should NOT stop the scheduler
+      // The interval will continue and retry on next cycle
+      logger.error({ 
+        error: error.message, 
+        stack: error.stack,
+        schedulerContinues: true,
+        willRetry: true
+      }, '❌ [SCHEDULER_IMMORTAL] Error checking user research schedules - scheduler continues, will retry on next cycle');
+      // DO NOT throw - allow scheduler to continue
     }
   }
 
@@ -274,16 +329,32 @@ export class BackgroundResearchScheduler {
         (settings?.backgroundResearchEnabled === true && settings?.telegramBackgroundResearchEnabled !== false);
 
       // CONFLICT RESOLUTION: Auto-Trade always wins for execution mode
-      // But Telegram Background Research can run independently if enabled
+      // CRITICAL: When Auto-Trade is enabled, Telegram Background Research is COMPLETELY BYPASSED
+      // Telegram alerts are sent FROM Auto-Trade engine, not from separate Telegram engine
       let mode: 'TELEGRAM_BACKGROUND_RESEARCH' | 'AUTO_TRADE_RESEARCH' | null = null;
       let shouldSchedule = false;
       let finalFrequency: number | null = null;
 
       if (autoTradeEnabled) {
-        // AUTO_TRADE_RESEARCH mode
+        // AUTO_TRADE_RESEARCH mode - HIGHEST PRIORITY
+        // CRITICAL: Telegram Background Research engine is COMPLETELY BYPASSED when Auto-Trade is enabled
         mode = RESEARCH_MODE.AUTO_TRADE_RESEARCH;
+        // CRITICAL: Frequency MUST come from Auto-Trade settings, NOT Telegram settings
+        // When Auto-Trade is enabled, Telegram frequency is IGNORED
         finalFrequency = settings?.researchFrequencyMinutes || 5;
         shouldSchedule = true;
+        
+        // HARD LOG: Mode priority enforcement
+        logger.info({
+          uid,
+          autoTradeEnabled: true,
+          telegramBgResearchEnabled,
+          selectedMode: 'AUTO_TRADE_RESEARCH',
+          telegramModeBypassed: true,
+          frequencySource: 'AUTO_TRADE',
+          frequencyMinutes: finalFrequency,
+          telegramFrequencyIgnored: true
+        }, '🎯 [MODE_PRIORITY] Auto-Trade ENABLED → AUTO_TRADE_RESEARCH mode selected, Telegram Background Research BYPASSED');
 
         // CRITICAL: Exchange API decryption failure must NOT block scheduler
         // Scheduler should ALWAYS run when autoTradeEnabled === true
@@ -312,13 +383,28 @@ export class BackgroundResearchScheduler {
           mode: 'AUTO_TRADE_RESEARCH',
           frequency: finalFrequency,
           hasExchangeAPIs,
-          hasPrimaryAPIs
-        }, '🔍 [SCHEDULER_DEBUG] AUTO_TRADE_RESEARCH mode enabled - scheduler will run regardless of API availability');
+          hasPrimaryAPIs,
+          telegramEngineBypassed: true,
+          telegramAlertsFromAutoTrade: true
+        }, '🔍 [SCHEDULER_DEBUG] AUTO_TRADE_RESEARCH mode enabled - scheduler will run regardless of API availability, Telegram engine BYPASSED, alerts from Auto-Trade engine');
       } else if (telegramBgResearchEnabled) {
         // TELEGRAM_BACKGROUND_RESEARCH mode (TELEGRAM_ONLY)
+        // CRITICAL: This mode ONLY runs when Auto-Trade is DISABLED
         mode = RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH;
+        // CRITICAL: Frequency comes from Telegram settings (same field, but only used when Auto-Trade is off)
         finalFrequency = settings?.researchFrequencyMinutes || 5;
         shouldSchedule = true;
+        
+        // HARD LOG: Telegram-only mode
+        logger.info({
+          uid,
+          autoTradeEnabled: false,
+          telegramBgResearchEnabled: true,
+          selectedMode: 'TELEGRAM_BACKGROUND_RESEARCH',
+          autoTradeBypassed: true,
+          frequencySource: 'TELEGRAM',
+          frequencyMinutes: finalFrequency
+        }, '📱 [MODE_PRIORITY] Auto-Trade DISABLED + Telegram ENABLED → TELEGRAM_BACKGROUND_RESEARCH mode selected, Auto-Trade BYPASSED');
 
         // CRITICAL: TELEGRAM_BACKGROUND_RESEARCH requires primary APIs (CryptoCompare AND NewsData)
         // But don't disable if missing - just log warning (runtime will handle errors)
@@ -367,19 +453,88 @@ export class BackgroundResearchScheduler {
       const existingInterval = this.userIntervals.get(uid);
       const existingState = this.userJobStates.get(uid);
 
-      // Only restart if frequency changed or interval doesn't exist
+      // CRITICAL FIX: Only skip interval creation if ALL conditions are met:
+      // 1. Interval exists in map
+      // 2. Frequency unchanged
+      // 3. Mode matches
+      // 4. autoTradeEnabled/telegramBgResearchEnabled is still true (re-verified here for safety)
+      // This prevents scheduler from stopping when interval was cleared but frequency didn't change
       if (existingInterval) {
-        // Check if frequency changed by comparing with stored state
-        const lastFrequency = existingState ? (existingState as any).frequencyMinutes : null;
-        if (lastFrequency === finalFrequency) {
-          // Frequency unchanged, keep existing interval
-          logger.debug({ uid, frequency: finalFrequency, mode }, '⏭️ [SCHEDULER] Frequency unchanged, keeping existing interval');
-          return;
+        // CRITICAL: Re-verify autoTradeEnabled/telegramBgResearchEnabled is still true before early return
+        // This prevents race conditions where config changes between initial check and interval verification
+        const currentAutoTradeConfigDoc = await db.collection('users').doc(uid).collection('autoTradeConfig').doc('current').get();
+        const currentAutoTradeConfig = currentAutoTradeConfigDoc.exists ? currentAutoTradeConfigDoc.data() : null;
+        const currentAutoTradeEnabled = currentAutoTradeConfig?.autoTradeEnabled === true;
+        const currentSettings = await firestoreAdapter.getBackgroundResearchSettings(uid);
+        const currentTelegramBgResearchEnabled = currentSettings?.telegramBackgroundResearchEnabled === true ||
+          (currentSettings?.backgroundResearchEnabled === true && currentSettings?.telegramBackgroundResearchEnabled !== false);
+        
+        // If autoTradeEnabled or telegramBgResearchEnabled changed to false, we must recreate interval
+        if (mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH && !currentAutoTradeEnabled) {
+          logger.warn({
+            uid,
+            mode,
+            autoTradeEnabledWas: autoTradeEnabled,
+            autoTradeEnabledNow: currentAutoTradeEnabled,
+            intervalWillBeRecreated: true
+          }, '⚠️ [SCHEDULER_IMMORTAL] autoTradeEnabled changed to false - clearing interval, will be recreated if re-enabled');
+          clearInterval(existingInterval);
+          this.userIntervals.delete(uid);
+          // Continue to recreate logic below
+        } else if (mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH && !currentTelegramBgResearchEnabled) {
+          logger.warn({
+            uid,
+            mode,
+            telegramBgResearchEnabledWas: telegramBgResearchEnabled,
+            telegramBgResearchEnabledNow: currentTelegramBgResearchEnabled,
+            intervalWillBeRecreated: true
+          }, '⚠️ [SCHEDULER_IMMORTAL] telegramBgResearchEnabled changed to false - clearing interval, will be recreated if re-enabled');
+          clearInterval(existingInterval);
+          this.userIntervals.delete(uid);
+          // Continue to recreate logic below
+        } else {
+          // Check if frequency changed by comparing with stored state
+          const lastFrequency = existingState ? (existingState as any).frequencyMinutes : null;
+          const lastMode = existingState ? (existingState as any).mode : null;
+          
+          // CRITICAL: Verify interval is still valid and mode matches
+          // If mode changed (e.g., AUTO_TRADE was disabled then re-enabled), we must recreate interval
+          if (lastFrequency === finalFrequency && lastMode === mode) {
+            // All conditions match - interval is valid and should continue
+            logger.info({ 
+              uid, 
+              frequency: finalFrequency, 
+              mode,
+              intervalExists: true,
+              modeMatches: true,
+              frequencyMatches: true,
+              autoTradeEnabledVerified: currentAutoTradeEnabled,
+              telegramBgResearchEnabledVerified: currentTelegramBgResearchEnabled
+            }, '✅ [SCHEDULER_IMMORTAL] Interval verified - all conditions match, scheduler continues');
+            return;
+          }
         }
-        // Frequency changed or need to reschedule, clear existing
-        logger.info({ uid, oldFrequency: lastFrequency, newFrequency: finalFrequency, mode }, '🔄 [SCHEDULER] Frequency changed, rescheduling');
+        // Frequency or mode changed - need to reschedule
+        logger.info({ 
+          uid, 
+          oldFrequency: lastFrequency, 
+          newFrequency: finalFrequency,
+          oldMode: lastMode,
+          newMode: mode
+        }, '🔄 [SCHEDULER_IMMORTAL] Frequency or mode changed, rescheduling interval');
         clearInterval(existingInterval);
         this.userIntervals.delete(uid);
+      } else {
+        // CRITICAL: Interval doesn't exist but should - this means it was cleared
+        // We MUST recreate it to ensure scheduler continues running
+        logger.warn({ 
+          uid, 
+          frequency: finalFrequency, 
+          mode,
+          autoTradeEnabled,
+          telegramBgResearchEnabled,
+          intervalMissing: true
+        }, '⚠️ [SCHEDULER_IMMORTAL] Interval missing but should exist - recreating to ensure continuous operation');
       }
 
       // Initialize job state if not exists
@@ -421,8 +576,12 @@ export class BackgroundResearchScheduler {
         frequencyMinutes: finalFrequency,
         intervalMs,
         nextRunAt: nextRun.toISOString(),
-        mode
-      }, '⏰ [SCHEDULER] User background research scheduled');
+        mode,
+        autoTradeEnabled,
+        telegramBgResearchEnabled,
+        intervalCreated: true,
+        schedulerImmortal: true
+      }, '⏰ [SCHEDULER_IMMORTAL] User background research scheduled - interval created/updated, scheduler will run continuously');
 
       // Run immediately if nextRunAt is in the past or doesn't exist
       const shouldRunNow = !state.lastRunAt ||
@@ -445,7 +604,16 @@ export class BackgroundResearchScheduler {
       }
 
     } catch (error: any) {
-      logger.error({ error: error.message, uid, stack: error.stack }, '❌ [SCHEDULER] Error updating user research schedule');
+      // CRITICAL: Errors in updateUserResearchSchedule should NOT stop the scheduler
+      // The 60-second checkAndScheduleUserResearch loop will retry on next cycle
+      logger.error({ 
+        error: error.message, 
+        uid, 
+        stack: error.stack,
+        schedulerContinues: true,
+        willRetry: true
+      }, '❌ [SCHEDULER_IMMORTAL] Error updating user research schedule - scheduler continues, will retry on next check cycle');
+      // DO NOT throw - allow scheduler to continue and retry
     }
   }
 
@@ -466,6 +634,13 @@ export class BackgroundResearchScheduler {
 
       // Remove in-memory job state
       this.userJobStates.delete(uid);
+      
+      logger.info({
+        uid,
+        intervalCleared: true,
+        stateRemoved: true,
+        reason: 'User explicitly disabled auto-trade or telegram background research'
+      }, '🛑 [SCHEDULER_IMMORTAL] User scheduler disabled - interval cleared, state removed (user action only)');
 
       // CRITICAL: Do NOT mutate user enable flags in Firestore
       // Scheduler should only manage in-memory state
@@ -1032,12 +1207,30 @@ export class BackgroundResearchScheduler {
         `process-user-research-${uid}`
       );
     } catch (err: any) {
-      logger.warn({ uid, error: err.message }, 'User research timed out or failed');
-      // Reset job state on timeout
+      // CRITICAL: Errors in processUserResearch should NEVER stop the scheduler
+      // The interval will continue running and retry on next cycle
+      logger.warn({ 
+        uid, 
+        error: err?.message,
+        schedulerContinues: true,
+        willRetry: true,
+        intervalStillActive: this.userIntervals.has(uid)
+      }, '⚠️ [SCHEDULER_IMMORTAL] User research timed out or failed - scheduler continues, will retry on next interval');
+      // Reset job state on timeout/error to allow retry
       const jobState = this.userJobStates.get(uid);
       if (jobState) {
         jobState.isRunning = false;
       }
+      // CRITICAL: Verify interval still exists - if missing, log warning (will be recreated on next check)
+      if (!this.userIntervals.has(uid)) {
+        logger.warn({
+          uid,
+          intervalMissing: true,
+          schedulerWillRecover: true,
+          willBeRecreated: true
+        }, '⚠️ [SCHEDULER_IMMORTAL] Interval missing after error - will be recreated on next checkAndScheduleUserResearch cycle');
+      }
+      // DO NOT throw - allow scheduler interval to continue
     }
   }
 
@@ -1188,12 +1381,18 @@ export class BackgroundResearchScheduler {
       // frequencyMinutes already calculated above (line 485)
       const accuracyTrigger = settings?.accuracyTrigger || 80;
 
+      // HARD LOG: Research execution mode and frequency
       logger.info({
         uid,
         mode,
         accuracyTrigger,
-        frequencyMinutes
-      }, '🚀 [RESEARCH] Starting background research for user');
+        frequencyMinutes,
+        autoTradeEnabled,
+        telegramBgResearchEnabled,
+        frequencySource: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH ? 'AUTO_TRADE' : 'TELEGRAM',
+        telegramEngineActive: mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH,
+        autoTradeEngineActive: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH
+      }, '🚀 [RESEARCH] Starting background research for user - mode determines engine and frequency source');
 
       // CRITICAL: Use Top 100 Accuracy Scan for background research
       // DELEGATION: We now delegate the actual research and trading execution to AutoTradeEngine
@@ -1361,11 +1560,20 @@ export class BackgroundResearchScheduler {
           }, '⏭️ [HISTORY_GUARD] Skipping duplicate history save - AutoTradeEngine already saved for AUTO_TRADE mode (exactly ONCE per cycle)');
         }
 
-        // Update state - research cycle ran successfully
-        if (jobState) {
-          jobState.isRunning = false;
-          jobState.lastRunAt = new Date();
+      // Update state - research cycle ran successfully
+      if (jobState) {
+        jobState.isRunning = false;
+        jobState.lastRunAt = new Date();
+        // CRITICAL: Verify interval still exists - if missing, log warning (will be recreated on next check)
+        if (!this.userIntervals.has(uid)) {
+          logger.warn({
+            uid,
+            mode,
+            intervalMissing: true,
+            schedulerWillRecover: true
+          }, '⚠️ [SCHEDULER_IMMORTAL] Interval missing after research cycle - will be recreated on next checkAndScheduleUserResearch cycle');
         }
+      }
       } else {
         const coin = deepResearchResult.symbol;
 
@@ -1392,6 +1600,10 @@ export class BackgroundResearchScheduler {
             if (jobState) {
               jobState.isRunning = false;
               jobState.lastRunAt = new Date();
+              // CRITICAL: Verify interval still exists
+              if (!this.userIntervals.has(uid)) {
+                logger.warn({ uid, mode, intervalMissing: true, schedulerWillRecover: true }, '⚠️ [SCHEDULER_IMMORTAL] Interval missing - will be recreated on next check');
+              }
             }
             return; // Exit early - do not process non-top-10 coins
           }
@@ -1402,6 +1614,10 @@ export class BackgroundResearchScheduler {
           if (jobState) {
             jobState.isRunning = false;
             jobState.lastRunAt = new Date();
+            // CRITICAL: Verify interval still exists
+            if (!this.userIntervals.has(uid)) {
+              logger.warn({ uid, mode, intervalMissing: true, schedulerWillRecover: true }, '⚠️ [SCHEDULER_IMMORTAL] Interval missing - will be recreated on next check');
+            }
           }
           return; // Exit early on error
         }
@@ -1470,11 +1686,38 @@ export class BackgroundResearchScheduler {
         //   - Called by BackgroundResearchScheduler at configured frequency
         //   - Continues running when website is closed (server-side execution)
         //   - Only exchange decryption failure blocks execution (not UI state)
+        //   - CRITICAL: Telegram alerts are sent FROM AutoTradeEngine, NOT from processUserResearch
+        //   - This Telegram alert logic below is BYPASSED when mode is AUTO_TRADE_RESEARCH
         // TELEGRAM_BACKGROUND_RESEARCH: Send Telegram alert if accuracy >= trigger
         //   - Telegram alerts sent server-side, independent of frontend
         //   - Alerts trigger when FINAL accuracy crosses threshold
         //   - Uses ONLY background research settings (telegramBotToken, telegramChatId, accuracyTrigger)
         //   - Does NOT depend on UI being open, WebSocket connections, or frontend polling
+
+        // HARD LOG: Mode-specific alert handling
+        if (mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
+          // CRITICAL: When Auto-Trade is enabled, Telegram alerts are sent from AutoTradeEngine
+          // This Telegram alert logic in processUserResearch is COMPLETELY BYPASSED
+          logger.info({
+            uid,
+            coin,
+            mode: 'AUTO_TRADE_RESEARCH',
+            finalAccuracy: finalAccuracyPercent,
+            telegramAlertSource: 'AUTO_TRADE_ENGINE',
+            telegramAlertLogicBypassed: true,
+            processUserResearchTelegramLogicSkipped: true
+          }, '🎯 [MODE_PRIORITY] AUTO_TRADE_RESEARCH mode → Telegram alerts sent from AutoTradeEngine, processUserResearch Telegram alert logic BYPASSED');
+          // CRITICAL: Do NOT execute Telegram alert logic here - AutoTradeEngine handles it
+          // Update state and return
+          if (jobState) {
+            jobState.isRunning = false;
+            jobState.lastRunAt = new Date();
+            if (!this.userIntervals.has(uid)) {
+              logger.warn({ uid, mode, intervalMissing: true, schedulerWillRecover: true }, '⚠️ [SCHEDULER_IMMORTAL] Interval missing - will be recreated on next check');
+            }
+          }
+          return; // Exit early - Telegram alerts handled by AutoTradeEngine
+        }
 
         // 🔥 PROOF: Log mode and accuracy range check
         if (mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH) {
