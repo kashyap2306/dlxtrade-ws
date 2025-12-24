@@ -291,81 +291,108 @@ export function generateTradePlan(signal: string, accuracy: number, indicators: 
   let entryReason = '';
 
   if (signal === 'BUY') {
-    // Check for support bounce
+    // RELAXED ENTRY LOGIC: Allow momentum continuation, EMA pullback, and range breakout
+    // 1. Support bounce (original)
     if (majorSupport && currentPrice > majorSupport * 0.995 && currentPrice < majorSupport * 1.01) {
       entryValid = true;
       entryReason = 'Support bounce';
     }
-    // Check for trendline support (using MA50 as proxy)
-    else if (minorSupport && currentPrice > minorSupport * 0.998 && currentPrice < minorSupport * 1.005) {
+    // 2. Trendline support / EMA pullback (original, relaxed threshold)
+    else if (minorSupport && currentPrice > minorSupport * 0.997 && currentPrice < minorSupport * 1.008) {
       entryValid = true;
-      entryReason = 'Trendline support bounce';
+      entryReason = 'EMA pullback / Trendline support bounce';
     }
-    // Check for higher low confirmation
+    // 3. Higher low confirmation (original)
     else if (recentLows.length >= 2) {
       const lastLow = recentLows[recentLows.length - 1];
       const prevLow = recentLows[recentLows.length - 2];
-      if (lastLow > prevLow && currentPrice > lastLow * 1.002) {
+      if (lastLow > prevLow && currentPrice > lastLow * 1.001) {
         entryValid = true;
         entryReason = 'Higher low confirmation';
       }
     }
-    // Check for resistance breakout with strong close
-    else if (majorResistance && currentPrice > majorResistance * 1.002) {
-      // Check if there was a retest (price came back to resistance and bounced)
-      const resistanceZone = majorResistance * 0.998;
-      if (ohlc.length >= 2) {
-        const prevCandle = ohlc[ohlc.length - 2];
-        const prevClose = prevCandle?.close || prevCandle?.price || currentPrice;
-        if (prevClose <= resistanceZone && currentPrice > majorResistance) {
-          entryValid = true;
-          entryReason = 'Resistance breakout with retest';
-        }
-      } else {
-        // If no OHLC data, accept breakout if price is clearly above resistance
+    // 4. Resistance breakout (original, relaxed - no retest required)
+    else if (majorResistance && currentPrice > majorResistance * 1.001) {
+      entryValid = true;
+      entryReason = 'Resistance breakout';
+    }
+    // 5. NEW: Momentum continuation (price above EMA20/50, bullish momentum)
+    else if (indicators.ema20?.value && currentPrice > indicators.ema20.value * 0.998 && 
+             indicators.macd?.signal === 'bullish') {
+      entryValid = true;
+      entryReason = 'Momentum continuation (above EMA, bullish MACD)';
+    }
+    // 6. NEW: Clean range breakout (price breaks range with volume confirmation)
+    else if (majorResistance && currentPrice > majorResistance * 1.0005) {
+      const volume = indicators.volume?.value || 0;
+      const avgVolume = indicators.volume?.average || volume;
+      if (volume > avgVolume * 0.8) {
         entryValid = true;
-        entryReason = 'Resistance breakout';
+        entryReason = 'Clean range breakout with volume';
       }
+    }
+    // 7. NEW: EMA pullback entry (price pulls back to EMA but holds)
+    else if (indicators.ema20?.value && 
+             currentPrice > indicators.ema20.value * 0.997 && 
+             currentPrice < indicators.ema20.value * 1.003) {
+      entryValid = true;
+      entryReason = 'EMA pullback entry';
     }
 
-    // REJECT entry if price is below resistance (not a valid BUY setup)
-    if (majorResistance && currentPrice < majorResistance * 0.98) {
+    // REJECT entry if price is significantly below resistance (relaxed from 0.98 to 0.95)
+    if (majorResistance && currentPrice < majorResistance * 0.95) {
       entryValid = false;
-      entryReason = 'Price below resistance - invalid BUY setup';
+      entryReason = 'Price too far below resistance - invalid BUY setup';
     }
-    // REJECT if price is in range middle (no clear structure)
-    if (majorSupport && majorResistance) {
-      const rangeMiddle = (majorSupport + majorResistance) / 2;
-      if (Math.abs(currentPrice - rangeMiddle) < (majorResistance - majorSupport) * 0.1) {
-        entryValid = false;
-        entryReason = 'Price in range middle - no clear structure';
-      }
-    }
+    // REMOVED: Range middle rejection (too strict for intraday trading)
   } else if (signal === 'SELL') {
-    // For SELL, check for resistance rejection or breakdown
+    // RELAXED ENTRY LOGIC: Allow momentum continuation, EMA pullback, and range breakdown
+    // 1. Resistance rejection (original)
     if (majorResistance && currentPrice < majorResistance * 1.005 && currentPrice > majorResistance * 0.995) {
       entryValid = true;
       entryReason = 'Resistance rejection';
     }
-    // Check for lower high confirmation
+    // 2. Lower high confirmation (original, relaxed threshold)
     else if (recentHighs.length >= 2) {
       const lastHigh = recentHighs[recentHighs.length - 1];
       const prevHigh = recentHighs[recentHighs.length - 2];
-      if (lastHigh < prevHigh && currentPrice < lastHigh * 0.998) {
+      if (lastHigh < prevHigh && currentPrice < lastHigh * 0.999) {
         entryValid = true;
         entryReason = 'Lower high confirmation';
       }
     }
-    // Check for support breakdown
-    else if (majorSupport && currentPrice < majorSupport * 0.998) {
+    // 3. Support breakdown (original, relaxed threshold)
+    else if (majorSupport && currentPrice < majorSupport * 0.999) {
       entryValid = true;
       entryReason = 'Support breakdown';
     }
+    // 4. NEW: Momentum continuation (price below EMA20/50, bearish momentum)
+    else if (indicators.ema20?.value && currentPrice < indicators.ema20.value * 1.002 && 
+             indicators.macd?.signal === 'bearish') {
+      entryValid = true;
+      entryReason = 'Momentum continuation (below EMA, bearish MACD)';
+    }
+    // 5. NEW: Clean range breakdown (price breaks range with volume confirmation)
+    else if (majorSupport && currentPrice < majorSupport * 0.9995) {
+      const volume = indicators.volume?.value || 0;
+      const avgVolume = indicators.volume?.average || volume;
+      if (volume > avgVolume * 0.8) {
+        entryValid = true;
+        entryReason = 'Clean range breakdown with volume';
+      }
+    }
+    // 6. NEW: EMA pullback entry (price pulls back to EMA but fails)
+    else if (indicators.ema20?.value && 
+             currentPrice > indicators.ema20.value * 0.997 && 
+             currentPrice < indicators.ema20.value * 1.003) {
+      entryValid = true;
+      entryReason = 'EMA pullback entry (bearish)';
+    }
 
-    // REJECT if price is above support (not a valid SELL setup)
-    if (majorSupport && currentPrice > majorSupport * 1.02) {
+    // REJECT if price is significantly above support (relaxed from 1.02 to 1.05)
+    if (majorSupport && currentPrice > majorSupport * 1.05) {
       entryValid = false;
-      entryReason = 'Price above support - invalid SELL setup';
+      entryReason = 'Price too far above support - invalid SELL setup';
     }
   }
 
@@ -380,7 +407,7 @@ export function generateTradePlan(signal: string, accuracy: number, indicators: 
   // ============================================
   
   // Reject if ATR below threshold (low volatility = sideways/choppy)
-  const MIN_ATR_PCT = 0.003; // 0.3% minimum ATR
+  const MIN_ATR_PCT = 0.0015; // 0.15% minimum ATR (reduced for 2-5 trades/day)
   if (atrPct < MIN_ATR_PCT) {
     console.log(`[TRADE_PLAN_REJECTED] ${signal} ${indicators.symbol} - ATR too low (${(atrPct * 100).toFixed(3)}%), sideways/choppy market`);
     return null;
@@ -480,8 +507,8 @@ export function generateTradePlan(signal: string, accuracy: number, indicators: 
   // 4. TAKE PROFIT (TP) — RISK-REWARD FIRST
   // ============================================
   const risk = Math.abs(currentPrice - stopLoss);
-  const MIN_RR = 2.5; // Minimum Risk-Reward 1:2.5
-  const PREFERRED_RR = 3.0; // Preferred Risk-Reward 1:3
+  const MIN_RR = 1.2; // Minimum Risk-Reward 1:1.2 (reduced for 2-5 trades/day)
+  const PREFERRED_RR = 1.6; // Preferred Risk-Reward 1:1.6 (reduced for 2-5 trades/day)
 
   let takeProfit: number;
   let riskRewardRatio: number;

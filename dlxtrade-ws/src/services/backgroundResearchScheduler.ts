@@ -1381,7 +1381,7 @@ export class BackgroundResearchScheduler {
       // frequencyMinutes already calculated above (line 485)
       const accuracyTrigger = settings?.accuracyTrigger || 80;
 
-      // HARD LOG: Research execution mode and frequency
+      // HARD LOG: Research execution mode and frequency with Top 25 verification
       logger.info({
         uid,
         mode,
@@ -1391,8 +1391,10 @@ export class BackgroundResearchScheduler {
         telegramBgResearchEnabled,
         frequencySource: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH ? 'AUTO_TRADE' : 'TELEGRAM',
         telegramEngineActive: mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH,
-        autoTradeEngineActive: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH
-      }, '🚀 [RESEARCH] Starting background research for user - mode determines engine and frequency source');
+        autoTradeEngineActive: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH,
+        top25Restriction: true,
+        timestamp: new Date().toISOString()
+      }, '🚀 [RESEARCH] Starting background research for user - mode determines engine and frequency source, Top 25 restriction active');
 
       // CRITICAL: Use Top 100 Accuracy Scan for background research
       // DELEGATION: We now delegate the actual research and trading execution to AutoTradeEngine
@@ -1586,16 +1588,21 @@ export class BackgroundResearchScheduler {
         const finalAccuracyPercent = Math.round(finalAccuracy > 1 ? finalAccuracy : finalAccuracy * 100);
         const signal = deepResearchResult.signal || 'HOLD';
 
-        // CRITICAL: TOP 10 COIN RESTRICTION - Block non-top-10 coins
+        // CRITICAL: TOP 25 COIN RESTRICTION - Block non-top-25 coins (single source of truth)
         try {
           const { getTop100Coins } = await import('./researchModes');
-          const top10 = await getTop100Coins(uid, 10);
+          const top25 = await getTop100Coins(uid, 25);
           const normalizedCoin = coin.toUpperCase();
-          const isTop10 = top10.some(c => c.symbol === normalizedCoin);
+          const isTop25 = top25.some(c => c.symbol === normalizedCoin);
           
-          if (!isTop10) {
-            logger.warn({ uid, coin: normalizedCoin }, '🚫 [TOP_10_BLOCK] Telegram alert blocked - symbol not in top 10 coins by market cap');
-            // Skip Telegram alert for non-top-10 coins
+          if (!isTop25) {
+            logger.error({ 
+              uid, 
+              coin: normalizedCoin, 
+              top25Symbols: top25.map(c => c.symbol),
+              stack: new Error().stack 
+            }, '❌ [TOP_25_BLOCK] Telegram alert blocked - symbol not in top 25 high-liquidity non-stablecoins by market cap');
+            // Skip Telegram alert for non-top-25 coins
             maxAccuracy = finalAccuracyPercent;
             if (jobState) {
               jobState.isRunning = false;
@@ -1605,10 +1612,10 @@ export class BackgroundResearchScheduler {
                 logger.warn({ uid, mode, intervalMissing: true, schedulerWillRecover: true }, '⚠️ [SCHEDULER_IMMORTAL] Interval missing - will be recreated on next check');
               }
             }
-            return; // Exit early - do not process non-top-10 coins
+            return; // Exit early - do not process non-top-25 coins
           }
-        } catch (top10CheckError: any) {
-          logger.error({ uid, coin, error: top10CheckError.message }, 'Error checking top 10 - blocking alert for safety');
+        } catch (top25CheckError: any) {
+          logger.error({ uid, coin, error: top25CheckError.message, stack: top25CheckError.stack }, '❌ [TOP_25_ERROR] Error checking top 25 - blocking alert for safety');
           // On error, be safe and block
           maxAccuracy = finalAccuracyPercent;
           if (jobState) {
