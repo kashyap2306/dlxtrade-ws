@@ -79,20 +79,23 @@ export async function getTop100Coins(uid: string, limit: number = TOP_COINS_LIMI
   const now = Date.now();
 
   try {
+    // CRITICAL FIX: Use MIN_THRESHOLD instead of requiring exactly enforcedLimit
+    const MIN_THRESHOLD = 5;
+    
     // 1. FAST PATH: Return cached data immediately if fresh enough (within 10 mins)
     // CRITICAL: Ensure cached coins are non-stablecoins (re-filter if needed)
-    if (cachedTop50Coins.length >= enforcedLimit && (now - lastFetchTime < CACHE_TTL)) {
+    if (cachedTop50Coins.length >= MIN_THRESHOLD && (now - lastFetchTime < CACHE_TTL)) {
       const filtered = filterStablecoins(cachedTop50Coins);
-      if (filtered.length >= enforcedLimit) {
+      if (filtered.length >= MIN_THRESHOLD) {
         logger.info({ uid, limit: enforcedLimit, cacheAge: now - lastFetchTime, top25Count: filtered.length }, '✅ [TOP_25_LOADED] Serving Top 25 non-stablecoins from global cache (FRESH)');
-        return filtered.slice(0, enforcedLimit);
+        return filtered.slice(0, Math.min(enforcedLimit, filtered.length));
       }
     }
 
     // 2. BACKGROUND REFRESH: If cache exists but stale, return it and trigger background refresh
-    if (cachedTop50Coins.length >= enforcedLimit && !isFetchingTopCoins) {
+    if (cachedTop50Coins.length >= MIN_THRESHOLD && !isFetchingTopCoins) {
       const filtered = filterStablecoins(cachedTop50Coins);
-      if (filtered.length >= enforcedLimit) {
+      if (filtered.length >= MIN_THRESHOLD) {
         logger.info({ uid, limit: enforcedLimit, cacheAge: now - lastFetchTime, top25Count: filtered.length }, '✅ [TOP_25_LOADED] Serving Top 25 non-stablecoins from global cache (STALE), triggering background refresh');
 
         // Trigger background refresh (don't await)
@@ -107,7 +110,7 @@ export async function getTop100Coins(uid: string, limit: number = TOP_COINS_LIMI
           }
         })();
 
-        return filtered.slice(0, enforcedLimit);
+        return filtered.slice(0, Math.min(enforcedLimit, filtered.length));
       }
     }
 
@@ -124,24 +127,31 @@ export async function getTop100Coins(uid: string, limit: number = TOP_COINS_LIMI
       const coins = await refreshTop100Coins(uid);
       // CRITICAL: Ensure returned coins are non-stablecoins
       const filtered = filterStablecoins(coins);
-      if (filtered.length < enforcedLimit) {
-        logger.warn({ uid, filteredCount: filtered.length, required: enforcedLimit }, 'Insufficient non-stablecoins after filtering - returning empty array');
+      // CRITICAL FIX: Do NOT require exactly 25 coins - use MIN_THRESHOLD (5 coins minimum)
+      // If filtered non-stablecoins >= MIN_THRESHOLD, return available coins
+      // NEVER return empty array if usable coins exist
+      const MIN_THRESHOLD = 5;
+      if (filtered.length < MIN_THRESHOLD) {
+        logger.warn({ uid, filteredCount: filtered.length, minThreshold: MIN_THRESHOLD }, 'Insufficient non-stablecoins after filtering - below minimum threshold');
         return [];
       }
-      return filtered.slice(0, enforcedLimit);
+      // Return available coins (up to enforcedLimit, but allow fewer if >= MIN_THRESHOLD)
+      return filtered.slice(0, Math.min(enforcedLimit, filtered.length));
     } finally {
       isFetchingTopCoins = false;
     }
 
   } catch (error) {
     logger.error({ uid, error: (error as any).message }, 'Error in getTop100Coins');
-    // SAFETY: If market-cap data unavailable, return empty array (skip cycle)
+    // CRITICAL FIX: Use MIN_THRESHOLD instead of requiring exactly enforcedLimit
+    const MIN_THRESHOLD = 5;
     const filtered = filterStablecoins(cachedTop50Coins);
-    if (filtered.length === 0) {
-      logger.warn({ uid }, 'No cached non-stablecoins available - skipping cycle safely');
+    if (filtered.length < MIN_THRESHOLD) {
+      logger.warn({ uid, filteredCount: filtered.length, minThreshold: MIN_THRESHOLD }, 'No cached non-stablecoins available - below minimum threshold');
       return [];
     }
-    return filtered.slice(0, enforcedLimit);
+    // Return available coins (up to enforcedLimit, but allow fewer if >= MIN_THRESHOLD)
+    return filtered.slice(0, Math.min(enforcedLimit, filtered.length));
   }
 }
 
@@ -614,9 +624,12 @@ export async function selectCoinsForResearch(uid: string): Promise<string[]> {
     const now = Date.now();
     logger.info({ uid, top25Count: top25.length, symbols: top25.map(c => c.symbol) }, '✅ [TOP_25_LOADED] Top 25 coins loaded for coin selection');
 
-    // SAFETY: If no top 25 coins available, skip cycle
-    if (!top25 || top25.length === 0) {
-      logger.error({ uid, stack: new Error().stack }, '❌ [TOP_25_ERROR] No top 25 coins available - skipping coin selection');
+    // CRITICAL FIX: Do NOT require exactly 25 coins - use MIN_THRESHOLD (5 coins minimum)
+    // If filtered non-stablecoins >= MIN_THRESHOLD, run coin selection
+    // NEVER return empty array if usable coins exist
+    const MIN_THRESHOLD = 5;
+    if (!top25 || top25.length < MIN_THRESHOLD) {
+      logger.error({ uid, top25Count: top25?.length || 0, minThreshold: MIN_THRESHOLD, stack: new Error().stack }, '❌ [TOP_25_ERROR] Insufficient coins available - below minimum threshold');
       return [];
     }
 
@@ -707,9 +720,12 @@ export async function selectBestCoinByAccuracy(
     const candidates = await getTop100Coins(uid, TOP_COINS_LIMIT);
     logger.info({ uid, top25Count: candidates.length, symbols: candidates.map(c => c.symbol) }, '✅ [TOP_25_LOADED] Top 25 coins loaded for accuracy scan');
 
-    // SAFETY: If no top 25 coins available, skip cycle
-    if (!candidates || candidates.length === 0) {
-      logger.error({ uid, stack: new Error().stack }, '❌ [TOP_25_ERROR] No top 25 coins available for accuracy scan - skipping cycle');
+    // CRITICAL FIX: Do NOT require exactly 25 coins - use MIN_THRESHOLD (5 coins minimum)
+    // If filtered non-stablecoins >= MIN_THRESHOLD, run accuracy scan
+    // NEVER return null if usable coins exist
+    const MIN_THRESHOLD = 5;
+    if (!candidates || candidates.length < MIN_THRESHOLD) {
+      logger.error({ uid, candidateCount: candidates?.length || 0, minThreshold: MIN_THRESHOLD, stack: new Error().stack }, '❌ [TOP_25_ERROR] Insufficient coins available for accuracy scan - below minimum threshold');
       return null;
     }
 

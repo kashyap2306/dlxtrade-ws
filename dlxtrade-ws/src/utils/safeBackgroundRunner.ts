@@ -149,8 +149,13 @@ export function safeSetInterval(
       return;
     }
 
-    // Skip if background tasks are paused
-    if (!shouldRunBackgroundTasks()) {
+    // CRITICAL FIX: User research intervals must execute even when background tasks are paused
+    // The pause logic should only affect the main scheduler heartbeat, not user research execution
+    // User research intervals are identified by taskName starting with "user-research-"
+    const isUserResearchInterval = taskName.startsWith('user-research-');
+    
+    // Skip if background tasks are paused (but allow user research intervals to bypass)
+    if (!isUserResearchInterval && !shouldRunBackgroundTasks()) {
       logger.debug({ taskName, paused: isPaused, disabled: process.env.DISABLE_AUTOTRADE === 'true' },
         `⏭️ [BACKGROUND] Skipping ${taskName} - background tasks paused/disabled`);
       return;

@@ -120,6 +120,37 @@ export class DeepResearchEngine {
         }
       }
 
+      // CRITICAL FIX: Filter out providers with empty decrypted API keys before validation
+      // This ensures only valid providers are passed to research execution
+      // If encrypted key exists but decrypts to empty, exclude provider cleanly
+      if (userIntegrations.marketData) {
+        for (const [key, provider] of Object.entries(userIntegrations.marketData)) {
+          const p = provider as any;
+          if (p.apiKeyRequired && (!p.apiKey || typeof p.apiKey !== 'string' || p.apiKey.trim().length === 0)) {
+            // Provider requires API key but decrypted key is empty - exclude from config
+            delete userIntegrations.marketData[key];
+          }
+        }
+      }
+      if (userIntegrations.news) {
+        for (const [key, provider] of Object.entries(userIntegrations.news)) {
+          const p = provider as any;
+          if (p.apiKeyRequired && (!p.apiKey || typeof p.apiKey !== 'string' || p.apiKey.trim().length === 0)) {
+            // Provider requires API key but decrypted key is empty - exclude from config
+            delete userIntegrations.news[key];
+          }
+        }
+      }
+      if (userIntegrations.metadata) {
+        for (const [key, provider] of Object.entries(userIntegrations.metadata)) {
+          const p = provider as any;
+          if (p.apiKeyRequired && (!p.apiKey || typeof p.apiKey !== 'string' || p.apiKey.trim().length === 0)) {
+            // Provider requires API key but decrypted key is empty - exclude from config
+            delete userIntegrations.metadata[key];
+          }
+        }
+      }
+
       // CRITICAL: Validate that at least ONE VALID provider exists for each required category
       // A provider is VALID only if: decryptedApiKey exists AND decryptedApiKey.length > 0
       // Support both encrypted (apiKeyEncrypted) and decrypted (apiKey) formats

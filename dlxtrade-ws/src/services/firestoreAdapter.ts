@@ -2253,6 +2253,18 @@ export class FirestoreAdapter {
    * Store research history entry for a user
    */
   async storeResearchHistory(uid: string, historyEntry: any): Promise<void> {
+    // CRITICAL: Validate required fields before attempting Firestore write
+    // Skip save cleanly if accuracy or result is missing - do NOT attempt partial writes
+    if (typeof historyEntry.accuracy !== 'number' || isNaN(historyEntry.accuracy)) {
+      logger.warn({ uid, symbol: historyEntry.symbol }, 'Skipping history save - accuracy is missing or invalid');
+      return; // Skip save cleanly, do NOT throw
+    }
+    
+    if (!historyEntry.symbol && historyEntry.status !== 'SKIPPED') {
+      logger.warn({ uid }, 'Skipping history save - symbol is missing and status is not SKIPPED');
+      return; // Skip save cleanly for non-SKIPPED entries without symbol
+    }
+    
     // 🔥 DIAGNOSTIC: PROVE HISTORY WRITE ATTEMPT
     console.log("🔥 [FIRESTORE_HISTORY] BEFORE write", {
       uid,
@@ -2263,11 +2275,14 @@ export class FirestoreAdapter {
     });
     
     try {
+      // CRITICAL: Sanitize entry to remove any undefined values before Firestore write
+      const sanitizedEntry = this.sanitizeForFirestore(historyEntry);
+      
       const result = await db().collection('users')
         .doc(uid)
         .collection('research_history')
         .add({
-          ...historyEntry,
+          ...sanitizedEntry,
           timestamp: admin.firestore.FieldValue.serverTimestamp()
         });
       

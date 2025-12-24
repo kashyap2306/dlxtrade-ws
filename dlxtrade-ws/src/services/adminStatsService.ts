@@ -100,7 +100,7 @@ export class AdminStatsService {
     hftRunning: boolean;
     currentPnL: number;
     openOrders: number;
-    apiStatus: Record<string, { connected: boolean; hasKey: boolean }>;
+    apiStatus: Record<string, { connected: boolean; hasKey: boolean; decryptionFailed?: boolean }>;
     autoTradeEnabled: boolean;
     hftEnabled: boolean;
     unlockedAgents: string[];
@@ -123,7 +123,7 @@ export class AdminStatsService {
       logger.warn({ error, uid }, 'User stats: DB unavailable, defaulting PnL/open orders');
     }
 
-    const apiStatus: Record<string, { connected: boolean; hasKey: boolean }> = {};
+    const apiStatus: Record<string, { connected: boolean; hasKey: boolean; decryptionFailed?: boolean }> = {};
     try {
       // Check trading exchanges from exchangeConfig/current
       const { getFirebaseAdmin } = await import('../utils/firebase');
@@ -139,15 +139,24 @@ export class AdminStatsService {
         }
       }
       
-      // Check research APIs from integrations collection
-      const integrations = await firestoreAdapter.getAllIntegrations(uid);
+      // Check research APIs using getUserIntegrationsByUid to get proper apiStatus field
+      // This distinguishes between API missing vs API present but decryption failed
+      const { getUserIntegrationsByUid } = await import('../routes/users/providerConfig');
+      const providerConfig = await getUserIntegrationsByUid(uid, 'background_job');
       const researchApis = ['cryptocompare', 'newsdata', 'coinmarketcap'];
       for (const apiName of researchApis) {
-        const integration = integrations[apiName];
-        if (integration) {
+        // Check all buckets for the provider
+        const provider = providerConfig.marketData?.[apiName] || 
+                        providerConfig.news?.[apiName] || 
+                        providerConfig.metadata?.[apiName];
+        if (provider) {
+          // CRITICAL: Use apiStatus to distinguish missing vs decryption failed
+          // apiStatus: 'valid' | 'missing' | 'invalid' (where 'invalid' = decryption failed)
+          const status = provider.apiStatus || (provider.apiKey ? 'valid' : 'missing');
           apiStatus[apiName] = {
-            connected: integration.enabled || false,
-            hasKey: !!integration.apiKey,
+            connected: provider.enabled || false,
+            hasKey: status === 'valid', // Only true if API key is valid (not missing or invalid)
+            decryptionFailed: status === 'invalid', // Explicitly flag decryption failures
           };
         }
       }

@@ -12,6 +12,7 @@ import { ErrorBoundary } from '../components/ErrorBoundary';
 import api, { usersApi, autoTradeApi, researchApi } from '../services/api';
 import PendingTradeConfirmationModal from '../components/PendingTradeConfirmationModal';
 import { NotificationDiagnosticsSection } from '../components/NotificationDiagnostics';
+import TradeSkipPopup from '../components/TradeSkipPopup';
 
 const PageLoader = () => (
   <div className="min-h-screen bg-gradient-to-b from-[#0d1421] to-[#05070c] flex items-center justify-center">
@@ -91,6 +92,17 @@ export default function AutoTrade() {
   const [showBalanceModal, setShowBalanceModal] = useState(false);
   const [balanceData, setBalanceData] = useState<any>(null);
   const [loadingBalance, setLoadingBalance] = useState(false);
+
+  // Trade Skip Popup State
+  const [skipPopupData, setSkipPopupData] = useState<{
+    isOpen: boolean;
+    symbol: string;
+    accuracy: number;
+    accuracyTrigger: number;
+    skipReasons: string[];
+    timestamp: string;
+  } | null>(null);
+  const shownSkipHistoryIdsRef = useRef<Set<string>>(new Set());
 
   const fetchBalance = useCallback(async () => {
     setLoadingBalance(true);
@@ -312,13 +324,50 @@ export default function AutoTrade() {
       const autoTradeOnly = allHistory.filter((entry: any) => entry.source === 'AUTO_TRADE');
       
       setAutoTradeHistory(autoTradeOnly);
+
+      // Check for new skipped trades that should show popup
+      if (config.autoTradeEnabled) {
+        // Get accuracy trigger from config or default to 75
+        const accuracyTrigger = config.accuracyTrigger?.min ?? 75;
+        
+        for (const entry of autoTradeOnly) {
+          // Only show popup for SKIPPED entries with accuracy >= trigger
+          // Normalize accuracy to 0-100 range
+          const normalizedAccuracy = typeof entry.accuracy === 'number' 
+            ? (entry.accuracy > 1 ? entry.accuracy : entry.accuracy * 100)
+            : 0;
+          
+          if (entry.decision === 'SKIPPED' && 
+              normalizedAccuracy >= accuracyTrigger && 
+              entry.skipReason &&
+              entry.id &&
+              !shownSkipHistoryIdsRef.current.has(entry.id)) {
+            
+            // Parse skip reasons (can be string or array)
+            const skipReasons = entry.skipReasons || (entry.skipReason ? [entry.skipReason] : []);
+            
+            setSkipPopupData({
+              isOpen: true,
+              symbol: entry.symbol || 'UNKNOWN',
+              accuracy: normalizedAccuracy,
+              accuracyTrigger,
+              skipReasons: Array.isArray(skipReasons) ? skipReasons : [skipReasons],
+              timestamp: entry.timestamp || entry.createdAt || new Date().toISOString()
+            });
+            
+            // Mark as shown to prevent duplicate popups
+            shownSkipHistoryIdsRef.current.add(entry.id);
+            break; // Only show one popup at a time
+          }
+        }
+      }
     } catch (err: any) {
       console.warn('[AUTO_TRADE_HISTORY] Failed to load history:', err?.message);
       setAutoTradeHistory([]);
     } finally {
       setLoadingAutoTradeHistory(false);
     }
-  }, [user]);
+  }, [user, config.autoTradeEnabled, config.accuracyTrigger]);
 
   // Load history when modal opens
   useEffect(() => {
@@ -326,6 +375,21 @@ export default function AutoTrade() {
       loadAutoTradeHistory();
     }
   }, [showAutoTradeHistoryModal, loadAutoTradeHistory]);
+
+  // Poll for new skipped trades when Auto-Trade is enabled
+  useEffect(() => {
+    if (!user || !config.autoTradeEnabled) return;
+
+    // Poll every 30 seconds for new skipped trades
+    const interval = setInterval(() => {
+      loadAutoTradeHistory();
+    }, 30000);
+
+    // Initial load
+    loadAutoTradeHistory();
+
+    return () => clearInterval(interval);
+  }, [user, config.autoTradeEnabled, config.accuracyTrigger]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -629,6 +693,21 @@ export default function AutoTrade() {
           results={diagnosticResults}
           isRunning={isRunningDiagnostics}
         />
+
+        {/* Trade Skip Popup */}
+        {skipPopupData && (
+          <TradeSkipPopup
+            isOpen={skipPopupData.isOpen}
+            onClose={() => setSkipPopupData(prev => prev ? { ...prev, isOpen: false } : null)}
+            data={{
+              symbol: skipPopupData.symbol,
+              accuracy: skipPopupData.accuracy,
+              accuracyTrigger: skipPopupData.accuracyTrigger,
+              skipReasons: skipPopupData.skipReasons,
+              timestamp: skipPopupData.timestamp
+            }}
+          />
+        )}
 
         <PendingTradeConfirmationModal
           isOpen={!!currentPendingTrade && config.autoTradeEnabled}

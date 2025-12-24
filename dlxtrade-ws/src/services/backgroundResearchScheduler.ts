@@ -59,20 +59,27 @@ export class BackgroundResearchScheduler {
    * REFACTORED: Uses safe background runner to prevent event loop blocking
    */
   start() {
+    // 🔥 HARD LOG: Scheduler startup
+    console.log('🔥 [HARD_LOG] [SCHEDULER_START] Background research scheduler start() called');
+    logger.info({ timestamp: new Date().toISOString() }, '🔥 [HARD_LOG] [SCHEDULER_START] Background research scheduler start() called');
+    
     // Check env flag first
     if (process.env.DISABLE_AUTOTRADE === 'true') {
       logger.warn('Background research scheduler DISABLED by env flag');
       console.log('🛑 [AUTO-TRADE LOOP] Background research scheduler DISABLED by DISABLE_AUTOTRADE=true');
       console.log('🛑 [AUTO-TRADE LOOP] Auto-trade execution loop will NOT run');
+      console.log('🔥 [HARD_LOG] [SCHEDULER_BLOCKED] Scheduler blocked by DISABLE_AUTOTRADE=true');
       return;
     }
 
     if (this.isRunning) {
       logger.warn('Background research scheduler is already running');
       console.log('[AUTO-TRADE LOOP] Scheduler already running, skipping start');
+      console.log('🔥 [HARD_LOG] [SCHEDULER_ALREADY_RUNNING] Scheduler already running, skipping start');
       return;
     }
     this.isRunning = true;
+    console.log('🔥 [HARD_LOG] [SCHEDULER_RUNNING] Scheduler isRunning set to true');
     logger.info({
       schedulerRunning: this.isRunning,
       schedulerImmortal: true,
@@ -86,20 +93,24 @@ export class BackgroundResearchScheduler {
     console.log('[AUTO-TRADE LOOP]    - IMMORTAL: Will run continuously until manually disabled');
 
     // Bootstrap: Load all enabled users immediately on startup (non-blocking)
+    console.log('🔥 [HARD_LOG] [BOOTSTRAP_START] Starting bootstrapEnabledUsers()');
     runBackgroundTask(
       () => this.bootstrapEnabledUsers(),
       'scheduler-bootstrap',
       30000 // 30s timeout for bootstrap
     ).catch((err: any) => {
       logger.error({ error: err?.message }, '❌ [SCHEDULER] Bootstrap failed, continuing with periodic checks');
+      console.log('🔥 [HARD_LOG] [BOOTSTRAP_ERROR] Bootstrap failed:', err?.message);
     });
 
     // Check for users with enabled background research every minute
     // REFACTORED: Use safeSetInterval for event loop protection
     // CRITICAL: This runs server-side, independent of frontend
     // CRITICAL: This interval is IMMORTAL - it will continuously check and reschedule users
+    console.log('🔥 [HARD_LOG] [INTERVAL_CREATE] Creating main scheduler interval (60s)');
     this.intervalId = safeSetInterval(
       async () => {
+        console.log('🔥 [HARD_LOG] [INTERVAL_TICK] Main scheduler interval tick - checking users');
         logger.debug({
           schedulerRunning: this.isRunning,
           activeUserIntervals: this.userIntervals.size,
@@ -110,6 +121,7 @@ export class BackgroundResearchScheduler {
       60 * 1000,
       'scheduler-check-users'
     );
+    console.log('🔥 [HARD_LOG] [INTERVAL_CREATED] Main scheduler interval created, intervalId:', !!this.intervalId);
 
     logger.info({
       intervalId: this.intervalId ? 'created' : 'null',
@@ -130,20 +142,25 @@ export class BackgroundResearchScheduler {
    * Safe wrapper for checkAndScheduleUserResearch
    */
   private async checkAndScheduleUserResearchSafe(): Promise<void> {
+    console.log('🔥 [HARD_LOG] [CHECK_START] checkAndScheduleUserResearchSafe() called');
     if (!shouldRunBackgroundTasks()) {
       logger.debug('Skipping user research check - background tasks paused');
+      console.log('🔥 [HARD_LOG] [CHECK_BLOCKED] Background tasks paused, skipping check');
       return;
     }
 
     try {
       console.log('⏰ [SCHEDULER_HEARTBEAT] Research Scheduler Active - Checking users...');
+      console.log('🔥 [HARD_LOG] [CHECK_EXECUTING] Calling checkAndScheduleUserResearch()');
       await withTimeout(
         () => this.checkAndScheduleUserResearch(),
         10000, // 10s timeout
         'check-schedule-users'
       );
+      console.log('🔥 [HARD_LOG] [CHECK_COMPLETE] checkAndScheduleUserResearch() completed');
     } catch (err: any) {
       logger.warn({ error: err.message }, 'User research check timed out');
+      console.log('🔥 [HARD_LOG] [CHECK_ERROR] checkAndScheduleUserResearch() error:', err?.message);
     }
   }
 
@@ -241,6 +258,7 @@ export class BackgroundResearchScheduler {
    */
   private async checkAndScheduleUserResearch() {
     try {
+      console.log('🔥 [HARD_LOG] [CHECK_USERS_START] checkAndScheduleUserResearch() - fetching users from Firestore');
       logger.debug({
         schedulerRunning: this.isRunning,
         activeIntervals: this.userIntervals.size,
@@ -249,6 +267,7 @@ export class BackgroundResearchScheduler {
 
       const db = getFirebaseAdmin().firestore();
       const usersSnapshot = await db.collection('users').get();
+      console.log('🔥 [HARD_LOG] [CHECK_USERS_FETCHED] Fetched', usersSnapshot.docs.length, 'users from Firestore');
 
       logger.info({
         userCount: usersSnapshot.docs.length,
@@ -260,15 +279,23 @@ export class BackgroundResearchScheduler {
 
       for (const userDoc of usersSnapshot.docs) {
         const uid = userDoc.id;
+        console.log('🔥 [HARD_LOG] [USER_CHECK] Processing user:', uid);
 
         // CRITICAL: Skip system/internal UIDs
         if (this.isSystemUid(uid)) {
+          console.log('🔥 [HARD_LOG] [USER_SKIP] Skipping system UID:', uid);
           continue;
         }
 
+        // CRITICAL FIX: Yield to event loop to prevent blocking
+        // Process users with await boundaries to allow event loop to process other tasks
+        await yieldToEventLoop();
+
         const wasScheduled = this.userIntervals.has(uid);
+        console.log('🔥 [HARD_LOG] [USER_SCHEDULE_START] Calling updateUserResearchSchedule() for:', uid, 'wasScheduled:', wasScheduled);
         await this.updateUserResearchSchedule(uid);
         const isScheduled = this.userIntervals.has(uid);
+        console.log('🔥 [HARD_LOG] [USER_SCHEDULE_COMPLETE] updateUserResearchSchedule() completed for:', uid, 'isScheduled:', isScheduled);
 
         if (isScheduled && !wasScheduled) {
           scheduledCount++;
@@ -335,6 +362,8 @@ export class BackgroundResearchScheduler {
       let shouldSchedule = false;
       let finalFrequency: number | null = null;
 
+      console.log('🔥 [HARD_LOG] [MODE_CHECK] Checking mode for user:', uid, 'autoTradeEnabled:', autoTradeEnabled, 'telegramBgResearchEnabled:', telegramBgResearchEnabled);
+      
       if (autoTradeEnabled) {
         // AUTO_TRADE_RESEARCH mode - HIGHEST PRIORITY
         // CRITICAL: Telegram Background Research engine is COMPLETELY BYPASSED when Auto-Trade is enabled
@@ -343,6 +372,7 @@ export class BackgroundResearchScheduler {
         // When Auto-Trade is enabled, Telegram frequency is IGNORED
         finalFrequency = settings?.researchFrequencyMinutes || 5;
         shouldSchedule = true;
+        console.log('🔥 [HARD_LOG] [MODE_SELECTED] AUTO_TRADE_RESEARCH mode selected, frequency:', finalFrequency, 'shouldSchedule:', shouldSchedule);
 
         // HARD LOG: Mode priority enforcement
         logger.info({
@@ -427,6 +457,7 @@ export class BackgroundResearchScheduler {
       } else {
         // BOTH are OFF → do not schedule
         // CRITICAL: Scheduler is disabled ONLY when BOTH autoTradeEnabled AND telegramBgResearchEnabled are false
+        console.log('🔥 [HARD_LOG] [MODE_BOTH_OFF] Both modes OFF for user:', uid, '- disabling scheduler');
         logger.info({
           uid,
           autoTradeEnabled,
@@ -438,10 +469,12 @@ export class BackgroundResearchScheduler {
 
       // Validate frequency
       if (!finalFrequency || finalFrequency <= 0) {
+        console.log('🔥 [HARD_LOG] [FREQUENCY_INVALID] Invalid frequency for user:', uid, 'frequency:', finalFrequency);
         logger.warn({ uid, finalFrequency }, '⏭️ [SCHEDULER] Background research DISABLED - Invalid or missing frequency');
         await this.disableUserScheduler(uid);
         return;
       }
+      console.log('🔥 [HARD_LOG] [FREQUENCY_VALID] Frequency validated for user:', uid, 'frequency:', finalFrequency);
 
       // CRITICAL: Accuracy trigger is NOT validated here - it's an output, not a prerequisite
       // Research will ALWAYS run at the configured interval
@@ -558,8 +591,10 @@ export class BackgroundResearchScheduler {
 
       // Schedule user-specific research with EXACT interval
       // REFACTORED: Use safeSetInterval for event loop protection
+      console.log('🔥 [HARD_LOG] [INTERVAL_CREATE_USER] Creating user interval for:', uid, 'intervalMs:', intervalMs);
       const userInterval = safeSetInterval(
         async () => {
+          console.log('🔥 [HARD_LOG] [INTERVAL_TICK_USER] User interval tick for:', uid, '- calling processUserResearchSafe()');
           await this.processUserResearchSafe(uid);
         },
         intervalMs,
@@ -567,6 +602,7 @@ export class BackgroundResearchScheduler {
       );
 
       this.userIntervals.set(uid, userInterval);
+      console.log('🔥 [HARD_LOG] [INTERVAL_CREATED_USER] User interval created for:', uid, 'intervalId exists:', !!userInterval);
 
       // Update state
       const state = this.userJobStates.get(uid)!;
@@ -1192,21 +1228,23 @@ export class BackgroundResearchScheduler {
    * Wraps with timeout and event loop protection
    */
   private async processUserResearchSafe(uid: string): Promise<void> {
-    // Check if background tasks should run
-    if (!shouldRunBackgroundTasks()) {
-      logger.debug({ uid }, 'Skipping user research - background tasks paused');
-      return;
-    }
+    console.log('🔥 [HARD_LOG] [PROCESS_SAFE_START] processUserResearchSafe() called for user:', uid);
+    // CRITICAL FIX: Remove background task pause check - user research intervals must execute
+    // The pause logic in safeSetInterval is sufficient for throttling, but user research
+    // should always execute when the interval fires to ensure research cycles complete
+    // Background task pausing should only affect the main scheduler heartbeat, not user research execution
 
     // Yield control before heavy operations
     await yieldToEventLoop();
 
     try {
+      console.log('🔥 [HARD_LOG] [PROCESS_SAFE_EXECUTING] Calling processUserResearch() for user:', uid);
       await withTimeout(
         () => this.processUserResearch(uid),
         90000, // 90s timeout for user research (increased for Deep Research latency)
         `process-user-research-${uid}`
       );
+      console.log('🔥 [HARD_LOG] [PROCESS_SAFE_COMPLETE] processUserResearch() completed for user:', uid);
     } catch (err: any) {
       // CRITICAL: Errors in processUserResearch should NEVER stop the scheduler
       // The interval will continue running and retry on next cycle
@@ -1240,11 +1278,14 @@ export class BackgroundResearchScheduler {
    * CRITICAL: Uses Deep Research Engine, prevents duplicate jobs, tracks state
    */
   private async processUserResearch(uid: string) {
+    console.log('🔥 [HARD_LOG] [PROCESS_START] processUserResearch() called for user:', uid);
     const jobState = this.userJobStates.get(uid);
+    console.log('🔥 [HARD_LOG] [PROCESS_JOB_STATE] Job state for user:', uid, 'exists:', !!jobState, 'isRunning:', jobState?.isRunning);
 
     // Prevent duplicate jobs - check if already running
     if (jobState?.isRunning) {
       logger.warn({ uid }, '⏭️ [BACKGROUND_RESEARCH_SKIPPED] Background research already running for user');
+      console.log('🔥 [HARD_LOG] [PROCESS_BLOCKED_DUPLICATE] Research already running, skipping for user:', uid);
       return;
     }
 
@@ -1269,6 +1310,7 @@ export class BackgroundResearchScheduler {
 
       // Get mode from job state
       const mode = (jobState as any)?.mode || null;
+      console.log('🔥 [HARD_LOG] [PROCESS_MODE] Mode from job state for user:', uid, 'mode:', mode);
 
       // 🔥 DEBUG: Log scheduler mode at start of processUserResearch
       logger.info({
@@ -1299,85 +1341,32 @@ export class BackgroundResearchScheduler {
         Date.now() + (frequencyMinutes * 60 * 1000)
       );
 
-      // CRITICAL: Mode validation - if mode doesn't match current enable state, reschedule instead of disabling
-      // This handles cases where user toggles auto-trade or telegram settings
-      // Scheduler should reschedule with correct mode, not disable itself
+      // CRITICAL FIX: Do NOT block research execution based on mode validation
+      // Once scheduled, research MUST execute regardless of temporary state changes
+      // Mode validation should only reschedule for next cycle, not block current execution
+      // This ensures research runs based on background-research-specific eligibility only
+      // Eligibility is determined at scheduling time, not at execution time
       if (mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH && !autoTradeEnabled) {
-        logger.info({ uid, mode, autoTradeEnabled }, '🔄 [SCHEDULER] Mode mismatch detected - rescheduling with updated settings');
-        // Reschedule user with current settings (will determine correct mode)
-        await this.updateUserResearchSchedule(uid);
-        return;
+        logger.info({ uid, mode, autoTradeEnabled }, '🔄 [SCHEDULER] Mode mismatch detected - will reschedule after this cycle completes');
+        // Do NOT return early - allow research to execute this cycle
+        // Reschedule will happen on next checkAndScheduleUserResearch cycle
       }
 
       if (mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH && !telegramBgResearchEnabled) {
-        logger.info({ uid, mode, telegramBgResearchEnabled }, '🔄 [SCHEDULER] Mode mismatch detected - rescheduling with updated settings');
-        // Reschedule user with current settings (will determine correct mode)
-        await this.updateUserResearchSchedule(uid);
-        return;
+        logger.info({ uid, mode, telegramBgResearchEnabled }, '🔄 [SCHEDULER] Mode mismatch detected - will reschedule after this cycle completes');
+        // Do NOT return early - allow research to execute this cycle
+        // Reschedule will happen on next checkAndScheduleUserResearch cycle
       }
 
       // CRITICAL: Provider gating logic - Background Research should NOT require exchange APIs
       // Exchange APIs should only gate AUTO_TRADE execution, not research execution
-      // Missing APIs should mark research as SKIPPED, not stop the scheduler
+      // CRITICAL FIX: Do NOT block research execution here - let research engine handle API validation
+      // Research engine (runAutoTradeResearchCycle) has comprehensive API checks that handle missing APIs gracefully
+      // Removing blocking API checks here allows research to run and produce real results with actual accuracy
+      // History will only be saved when research actually executes (not when blocked here)
 
-      let skipReason: string | null = null;
-
-      if (mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
-        // For AUTO_TRADE mode: Exchange APIs are required for execution, but NOT for research
-        // Research can run without exchange APIs - execution will be skipped later
-        const hasPrimaryAPIs = await this.hasUsableMarketDataProviders(uid);
-        if (!hasPrimaryAPIs) {
-          skipReason = 'Missing primary research APIs (CryptoCompare/NewsData)';
-          logger.info({ uid }, `⏭️ [BACKGROUND_RESEARCH_SKIPPED] ${skipReason}`);
-        }
-        // Note: Exchange APIs are NOT checked here - they only gate execution in AutoTradeEngine
-      } else if (mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH) {
-        // For TELEGRAM mode: Only research APIs are needed, exchange APIs are NOT required
-        const hasRequiredAPIs = await this.hasRequiredPrimaryAPIs(uid);
-        if (!hasRequiredAPIs) {
-          skipReason = 'Missing CryptoCompare or NewsData APIs';
-          logger.info({ uid }, `⏭️ [BACKGROUND_RESEARCH_SKIPPED] ${skipReason}`);
-        }
-      }
-
-      // If research should be skipped, store history and continue (don't disable scheduler)
-      if (skipReason) {
-        if (jobState) {
-          jobState.isRunning = false;
-          jobState.lastRunAt = now.toDate();
-          jobState.nextRunAt = nextRunAt.toDate();
-        }
-
-        // Store history with SKIPPED status
-        try {
-          await firestoreAdapter.storeResearchHistory(uid, {
-            symbol: 'BTCUSDT',
-            signal: 'HOLD',
-            accuracy: 0,
-            price: 0,
-            tradePlan: null,
-            isDeepResearch: true,
-            source: mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH ? 'TELEGRAM_BACKGROUND' : 'AUTO_TRADE',
-            status: 'SKIPPED',
-            skipReason: skipReason
-          });
-          logger.info({ uid, symbol: 'BTCUSDT', skipReason }, '✅ [HISTORY] Research skipped - history stored');
-        } catch (histError: any) {
-          logger.warn({ uid, error: histError.message }, 'Failed to store history for skipped research');
-        }
-
-        // CRITICAL: Do NOT disable scheduler - just skip this cycle
-        // Scheduler should continue running, research will be retried on next interval
-        // Exchange API decryption failure blocks auto-trade execution ONLY, not Background Research
-        // Background Research continues to run and can send Telegram alerts even if exchange APIs fail
-        logger.info({
-          uid,
-          mode,
-          skipReason,
-          schedulerContinues: true
-        }, '🔍 [SCHEDULER_ISOLATION_DEBUG] Research skipped but scheduler continues - exchange decryption failure does NOT stop Background Research');
-        return;
-      }
+      // Note: API validation is now handled inside runAutoTradeResearchCycle
+      // This ensures research runs and produces real results, not just SKIPPED history entries
 
       // frequencyMinutes already calculated above (line 485)
       const accuracyTrigger = settings?.accuracyTrigger || 80;
@@ -1407,10 +1396,12 @@ export class BackgroundResearchScheduler {
       const { autoTradeEngine } = await import('./autoTradeEngine');
 
       logger.info({ uid, mode }, '🔄 [DELEGATION] Calling AutoTradeEngine for research cycle');
+      console.log('🔥 [HARD_LOG] [RESEARCH_DELEGATE] Delegating to AutoTradeEngine for user:', uid, 'mode:', mode);
 
       // CRITICAL: Check for decryption failure cache to prevent retry loops
       // If decryption failed recently, skip this cycle to prevent event loop lag
       const failureCache = this.decryptionFailureCache.get(uid);
+      console.log('🔥 [HARD_LOG] [DECRYPTION_CHECK] Checking decryption failure cache for user:', uid, 'hasCache:', !!failureCache, 'disabled:', failureCache?.disabled);
       if (failureCache?.disabled) {
         const timeSinceFailure = Date.now() - failureCache.lastFailureTime.getTime();
         const cooldownMinutes = 30; // Wait 30 minutes before retrying decryption
@@ -1422,10 +1413,12 @@ export class BackgroundResearchScheduler {
             cooldownMinutes,
             failureCount: failureCache.failureCount
           }, '⏭️ [DECRYPTION_FAILURE_GUARD] Skipping research cycle - decryption failure detected, waiting for cooldown to prevent retry loop');
+          console.log('🔥 [HARD_LOG] [DECRYPTION_BLOCKED] Research blocked by decryption failure cooldown for user:', uid);
           return;
         } else {
           // Cooldown expired, clear cache and retry
           logger.info({ uid, cooldownMinutes }, '✅ [DECRYPTION_FAILURE_GUARD] Cooldown expired, clearing cache and retrying');
+          console.log('🔥 [HARD_LOG] [DECRYPTION_COOLDOWN_EXPIRED] Cooldown expired, clearing cache for user:', uid);
           this.decryptionFailureCache.delete(uid);
         }
       }
@@ -1435,12 +1428,15 @@ export class BackgroundResearchScheduler {
       // CRITICAL: For Telegram mode, skip AutoTradeEngine history storage (we'll store with correct source)
       // For Auto-Trade mode, AutoTradeEngine stores with source='AUTO_TRADE'
       const skipHistoryStorage = mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH;
+      console.log('🔥 [HARD_LOG] [RESEARCH_EXEC_START] Starting research execution for user:', uid, 'skipHistoryStorage:', skipHistoryStorage);
 
       let deepResearchResult: any = null;
       let decryptionFailureDetected = false;
 
       try {
+        console.log('🔥 [HARD_LOG] [RESEARCH_CALL] Calling runAutoTradeResearchCycleSafe() for user:', uid);
         deepResearchResult = await autoTradeEngine.runAutoTradeResearchCycleSafe(uid, skipHistoryStorage);
+        console.log('🔥 [HARD_LOG] [RESEARCH_CALL_COMPLETE] runAutoTradeResearchCycleSafe() completed for user:', uid, 'result exists:', !!deepResearchResult);
       } catch (researchErr: any) {
         // CRITICAL: Check if error is due to decryption failure
         if (researchErr.message?.includes('EXCHANGE_KEY_DECRYPTION_FAILED') ||
@@ -1513,41 +1509,35 @@ export class BackgroundResearchScheduler {
       let maxAccuracy = 0;
       let alertsSent = 0;
 
+      console.log('🔥 [HARD_LOG] [RESEARCH_RESULT_CHECK] Checking research result for user:', uid, 'result exists:', !!deepResearchResult);
+
       // CRITICAL: Research cycle completed - update state regardless of result
       // Even if research returned null (no signal), the cycle ran successfully
       if (!deepResearchResult) {
         logger.info({ uid, mode }, '📊 [RESEARCH] Research cycle completed - no signal generated');
+        console.log('🔥 [HARD_LOG] [RESEARCH_NO_RESULT] Research returned null for user:', uid);
 
         // CRITICAL: Store history even when no signal
         // BUT: For AUTO_TRADE_RESEARCH mode, AutoTradeEngine already saved history (skipHistoryStorage=false)
         // Only save here for TELEGRAM_BACKGROUND_RESEARCH mode (where skipHistoryStorage=true)
         if (mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH) {
           try {
-            // Try to get symbol from coin selection if research result is null
-            let fallbackSymbol = 'BTCUSDT'; // Default fallback
-            try {
-              const { selectBestCoinByAccuracy } = await import('./researchModes');
-              const selectionResult = await selectBestCoinByAccuracy(uid, []);
-              if (selectionResult?.symbol) {
-                fallbackSymbol = selectionResult.symbol;
-              }
-            } catch (selErr) {
-              // Use default if selection fails
-            }
-
+            // CRITICAL FIX: When no coin is selected, use null symbol (NO BTC fallback)
+            // Ensure NO Firestore payload contains undefined values
+            // symbol = null, accuracy = 0, tradePlan = null (all explicitly set, no undefined)
             await firestoreAdapter.storeResearchHistory(uid, {
-              symbol: fallbackSymbol,
+              symbol: null, // Explicitly null when no coin selected (NO BTC fallback)
               signal: 'HOLD',
-              accuracy: 0,
+              accuracy: 0, // Explicitly 0 (not undefined)
               price: 0,
-              tradePlan: null,
+              tradePlan: null, // Explicitly null (not undefined)
               isDeepResearch: true,
               source: 'TELEGRAM_BACKGROUND',
               status: 'SKIPPED',
               skipReason: 'No signal generated'
             });
 
-            logger.info({ uid, mode, source: 'TELEGRAM_BACKGROUND', symbol: fallbackSymbol }, '✅ [HISTORY] No-signal research history stored');
+            logger.info({ uid, mode, source: 'TELEGRAM_BACKGROUND', symbol: null }, '✅ [HISTORY] No-signal research history stored (no BTC fallback)');
           } catch (histError: any) {
             logger.warn({ uid, error: histError.message }, 'Failed to store history for no-signal cycle');
           }
@@ -1568,6 +1558,10 @@ export class BackgroundResearchScheduler {
         if (jobState) {
           jobState.isRunning = false;
           jobState.lastRunAt = new Date();
+          // CRITICAL: Update nextRunAt to ensure scheduler continues
+          const frequencyMinutes = settings?.researchFrequencyMinutes || 5;
+          jobState.nextRunAt = new Date(Date.now() + (frequencyMinutes * 60 * 1000));
+          console.log('🔥 [HARD_LOG] [PROCESS_COMPLETE_NO_RESULT] processUserResearch() completed (no result) for user:', uid, 'jobState updated');
           // CRITICAL: Verify interval still exists - if missing, log warning (will be recreated on next check)
           if (!this.userIntervals.has(uid)) {
             logger.warn({
@@ -1576,9 +1570,11 @@ export class BackgroundResearchScheduler {
               intervalMissing: true,
               schedulerWillRecover: true
             }, '⚠️ [SCHEDULER_IMMORTAL] Interval missing after research cycle - will be recreated on next checkAndScheduleUserResearch cycle');
+            console.log('🔥 [HARD_LOG] [INTERVAL_MISSING] Interval missing after research cycle for user:', uid);
           }
         }
       } else {
+        console.log('🔥 [HARD_LOG] [RESEARCH_HAS_RESULT] Research returned valid result for user:', uid, 'symbol:', deepResearchResult.symbol);
         const coin = deepResearchResult.symbol;
 
         // CRITICAL: Extract FINAL accuracy from Deep Research verdict ONLY
@@ -1734,6 +1730,9 @@ export class BackgroundResearchScheduler {
           if (jobState) {
             jobState.isRunning = false;
             jobState.lastRunAt = new Date();
+            // CRITICAL: Update nextRunAt to ensure scheduler continues
+            const frequencyMinutes = settings?.researchFrequencyMinutes || 5;
+            jobState.nextRunAt = new Date(Date.now() + (frequencyMinutes * 60 * 1000));
             if (!this.userIntervals.has(uid)) {
               logger.warn({ uid, mode, intervalMissing: true, schedulerWillRecover: true }, '⚠️ [SCHEDULER_IMMORTAL] Interval missing - will be recreated on next check');
             }
@@ -2258,8 +2257,10 @@ export class BackgroundResearchScheduler {
         alertsSent,
         nextRunAt: researchNextRunAt.toDate().toISOString()
       }, '✅ [RESEARCH] Background research cycle completed (Delegate Mode)');
+      console.log('🔥 [HARD_LOG] [PROCESS_COMPLETE_FINAL] processUserResearch() completed successfully for user:', uid, 'maxAccuracy:', maxAccuracy, 'alertsSent:', alertsSent);
 
     } catch (error: any) {
+      console.log('🔥 [HARD_LOG] [PROCESS_ERROR_FINAL] processUserResearch() error for user:', uid, 'error:', error?.message);
       logger.error({
         error: error.message,
         uid,

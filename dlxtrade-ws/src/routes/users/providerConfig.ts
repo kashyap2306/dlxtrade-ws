@@ -472,6 +472,28 @@ export async function getUserIntegrationsByUid(uid: string, context: 'user_reque
           apiKeyRequired = true;
         }
 
+        // CRITICAL FIX: Explicitly mark API as INVALID if decryption returns empty string
+        // If encrypted key exists but decrypts to empty, mark as INVALID (not just missing)
+        // This distinguishes between "API key not configured" vs "API key exists but decryption failed"
+        const hasEncryptedKey = !!(apiKeyEncrypted && apiKeyEncrypted.trim().length > 0);
+        const decryptionFailed = hasEncryptedKey && (!apiKey || apiKey.trim().length === 0);
+        
+        if (apiKeyRequired && (!apiKey || apiKey.trim().length === 0)) {
+          // Provider requires API key but decryption returned empty
+          // If encrypted key exists, this is INVALID (decryption failed), not missing
+          if (decryptionFailed) {
+            logger.warn({ 
+              uid, 
+              providerId, 
+              context,
+              status: 'INVALID',
+              reason: 'Decryption failed - encrypted key exists but decryption returned empty'
+            }, `API key marked as INVALID for ${providerId} - decryption failed`);
+          }
+          // Exclude provider from config (prevents invalid providers from being passed to research engine)
+          continue;
+        }
+
         // STRICT Provider Enable Rules (per provider type)
         // primary + key-required: enabled = !!apiKeyEncrypted
         // CoinGecko marketData: enabled = true
@@ -488,6 +510,13 @@ export async function getUserIntegrationsByUid(uid: string, context: 'user_reque
           isEnabled = data.enabled === true;
         }
 
+        // CRITICAL: Determine API status (missing vs decryption failed)
+        const apiStatus: 'valid' | 'missing' | 'invalid' = apiKeyRequired 
+          ? (apiKey && apiKey.trim().length > 0 
+              ? 'valid' 
+              : (hasEncryptedKey ? 'invalid' : 'missing'))
+          : 'valid'; // Non-key-required providers are always 'valid'
+        
         providerConfig[type][providerId] = {
           providerName: data.providerName || providerId,
           type, // Always 'metadata' for metadata providers
@@ -495,6 +524,7 @@ export async function getUserIntegrationsByUid(uid: string, context: 'user_reque
           apiKeyRequired: apiKeyRequired, // Boolean indicating if API key is required
           apiKey,
           secretKey,
+          apiStatus, // CRITICAL: Explicit status - 'valid', 'missing', or 'invalid' (decryption failed)
           updatedAt: data.updatedAt,
           usageStats: data.usageStats || {}
         };
