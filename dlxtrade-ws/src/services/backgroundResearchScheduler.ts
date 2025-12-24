@@ -1960,14 +1960,14 @@ export class BackgroundResearchScheduler {
 
               logger.info({ uid, coin, accuracy: finalAccuracyPercent },
                 '[TELEGRAM] Sending HOLD signal (no trade plan)');
-            } else {
-              // BUY/SELL signal: Full trade plan with TP1/TP2/TP3
-              // Validate trade plan exists and has required fields
-              if (!tradePlan || !tradePlan.entryPrice || !tradePlan.stopLoss) {
-                logger.error({ uid, coin, signal, accuracy: finalAccuracyPercent, tradePlan },
-                  '[TELEGRAM_ERROR] BUY/SELL signal but trade plan is missing or incomplete!');
-                // Fallback: Send HOLD message instead
-                message = `🚨 *DLXTRADE Background Research Alert*
+              } else {
+                // BUY/SELL signal: Full trade plan with TP1/TP2/TP3
+                // Validate trade plan exists and has required fields
+                if (!tradePlan || !tradePlan.entryPrice || !tradePlan.stopLoss) {
+                  logger.error({ uid, coin, signal, accuracy: finalAccuracyPercent, tradePlan },
+                    '[TELEGRAM_ERROR] BUY/SELL signal but trade plan is missing or incomplete!');
+                  // Fallback: Send HOLD message instead
+                  message = `🚨 *DLXTRADE Background Research Alert*
 
 **Coin:** ${coin}
 **Signal:** HOLD (Trade plan generation failed)
@@ -1975,16 +1975,17 @@ export class BackgroundResearchScheduler {
 **Timestamp:** ${timestamp}
 
 ⚡ *Action:* Trade plan unavailable - signal not actionable.`;
-              } else {
-                // BUY/SELL signal: Check if accuracy >= 70% before showing trade plan
-                // CRITICAL: Trade plan should only be shown when accuracy >= 70%
-                let entryPrice: number | undefined;
-                let stopLoss: number | undefined;
-                let tp1: number | undefined;
-                let tp2: number | undefined;
-                let tp3: number | undefined;
+                } else {
+                  // BUY/SELL signal: Show trade plan if accuracy meets user's Telegram trigger (not hardcoded 70%)
+                  // CRITICAL: Trade plan should be shown when accuracy >= user's Telegram accuracy trigger
+                  let entryPrice: number | undefined;
+                  let stopLoss: number | undefined;
+                  let tp1: number | undefined;
+                  let tp2: number | undefined;
+                  let tp3: number | undefined;
 
-                if (finalAccuracyPercent >= 70) {
+                  // Use user's Telegram accuracy trigger (already calculated as minTrigger)
+                  if (finalAccuracyPercent >= minTrigger) {
                   // BUY/SELL with valid trade plan and accuracy >= 70% - show full TP1/TP2/TP3
                   entryPrice = tradePlan.entryPrice;
                   stopLoss = tradePlan.stopLoss;

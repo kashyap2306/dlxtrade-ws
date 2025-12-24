@@ -721,7 +721,8 @@ const DeepResearchCore: React.FC<DeepResearchCoreProps> = ({
 
             {/* TRADE PLAN SECTION */}
             {/* STRICT RULE: Show Trade Plan section ONLY when normalizedAccuracy >= 0.75 */}
-            {/* Do NOT show based on tradePlan existence, BUY/SELL signal, or isFinal flag */}
+            {/* For Manual Research (read-only): Show when accuracy >= 75% regardless of execution guards */}
+            {/* Execution guards (entry zone, RR, volatility) are for Auto-Trade execution, not Manual Research display */}
             {(() => {
               const tradePlan = (result as any)?.tradePlan || (result as any)?.result?.tradePlan || (result as any)?.resultData?.tradePlan;
               const accuracy = result.result?.accuracy ?? (result as any)?.accuracy ?? (result as any)?.resultData?.accuracy ?? 0;
@@ -738,6 +739,7 @@ const DeepResearchCore: React.FC<DeepResearchCoreProps> = ({
               const planAtrPercent = planAtrPercentile > 1 ? planAtrPercentile : planAtrPercentile * 100;
               
               // Entry zone validation: BUY near resistance → BLOCK, SELL near support → BLOCK
+              // NOTE: These are execution guards for Auto-Trade, but for Manual Research display we still show Trade Details
               let planEntryZoneValid = true;
               if (planSignal === 'BUY' && planVwapDeviation > 2) {
                 planEntryZoneValid = false;
@@ -745,15 +747,18 @@ const DeepResearchCore: React.FC<DeepResearchCoreProps> = ({
                 planEntryZoneValid = false;
               }
               
-              // Risk-Reward gate: RR < 1.2 → BLOCK
+              // Risk-Reward gate: RR < 1.2 → BLOCK (for execution)
+              // NOTE: For Manual Research display, we show Trade Details even if RR < 1.2
               const planRr = tradePlan?.riskRewardRatio || 0;
               const planRrValid = planRr === 0 || planRr >= 1.2;
               
-              // Volatility guard: ATR >= 95% → BLOCK
+              // Volatility guard: ATR >= 95% → BLOCK (for execution)
+              // NOTE: For Manual Research display, we show Trade Details even if volatility is extreme
               const planVolatilityState = planAtrPercent >= 95 ? 'EXTREME' : planAtrPercent >= 85 ? 'HIGH' : 'OK';
               const planVolatilityValid = planVolatilityState !== 'EXTREME';
               
               // FINAL enforcement: Only show actionable if isFinal === true
+              // NOTE: planIsActionable is used for Auto-Trade execution blocking, not for Manual Research display
               const planIsActionable = isFinal && 
                                    planSignal !== 'HOLD' && 
                                    accuracyPercent >= 75 && 
@@ -761,8 +766,14 @@ const DeepResearchCore: React.FC<DeepResearchCoreProps> = ({
                                    planRrValid && 
                                    planVolatilityValid;
               
-              // STRICT RULE: Show Trade Plan ONLY when normalizedAccuracy >= 0.75 AND all unified checks pass
-              const shouldShowTradePlan = normalizedAccuracy >= 0.75 && tradePlan && tradePlan.entryPrice && planIsActionable;
+              // CRITICAL FIX: For Manual Research display, show Trade Details when accuracy >= 75% and tradePlan exists
+              // Do NOT require planIsActionable - that's for Auto-Trade execution, not Manual Research display
+              // Manual Research is read-only, so we show Trade Details even if execution would be blocked
+              const shouldShowTradePlan = isFinal && 
+                                         normalizedAccuracy >= 0.75 && 
+                                         tradePlan && 
+                                         tradePlan.entryPrice &&
+                                         planSignal !== 'HOLD';
 
               // Show reason when trade plan is blocked
               if (!shouldShowTradePlan && tradePlan?.entryPrice) {
@@ -805,6 +816,20 @@ const DeepResearchCore: React.FC<DeepResearchCoreProps> = ({
 
               if (!shouldShowTradePlan) return null;
 
+              // Show warning banner if execution would be blocked (for user awareness)
+              // But still display Trade Details since this is Manual Research (read-only)
+              const showExecutionWarning = !planIsActionable && planSignal !== 'HOLD' && accuracyPercent >= 75;
+              let executionWarningReason = '';
+              if (showExecutionWarning) {
+                if (!planEntryZoneValid) {
+                  executionWarningReason = planSignal === 'BUY' ? 'BUY near resistance' : 'SELL near support';
+                } else if (!planRrValid) {
+                  executionWarningReason = `Risk-Reward ${planRr.toFixed(2)} < 1.2 minimum`;
+                } else if (!planVolatilityValid) {
+                  executionWarningReason = 'Extreme volatility (ATR ≥ 95%)';
+                }
+              }
+
               return (
                 <div className="pt-8 border-t border-slate-700/50">
                   <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
@@ -813,6 +838,19 @@ const DeepResearchCore: React.FC<DeepResearchCoreProps> = ({
                     </svg>
                     Trade Plan
                   </h3>
+
+                  {/* Execution Warning Banner (if applicable) - Manual Research shows trade plan even if execution would be blocked */}
+                  {showExecutionWarning && executionWarningReason && (
+                    <div className="mb-4 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
+                      <div className="flex items-center gap-2 mb-1">
+                        <svg className="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <span className="text-sm font-semibold text-amber-400">Note: Trade would be blocked for Auto-Trade execution</span>
+                      </div>
+                      <div className="text-xs text-slate-400">Reason: {executionWarningReason}</div>
+                    </div>
+                  )}
 
                   {/* Row 1: Entry Price | Stop Loss | Risk/Reward - Compact layout */}
                   <div className="grid grid-cols-3 gap-3 mb-4">

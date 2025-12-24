@@ -1167,36 +1167,24 @@ export async function researchRoutes(fastify: FastifyInstance) {
 
   // Deep Research Endpoints
 
-  // GET /api/deep-research/top50 - Returns top 50 coins by market cap (HARDENED: 200ms timeout)
+  // GET /api/deep-research/top50 - Returns top 50 coins by market cap (CACHE-ONLY, < 300ms target)
+  // CRITICAL: This endpoint MUST be cache-only - NO external API calls, NO deep research
+  // Purpose: Return cached Top N non-stablecoins for ResearchPanel UI
   fastify.get('/deep-research/top50', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const startTime = Date.now();
     const user = (request as any).user;
     const uid = user?.uid;
-
-    // CRITICAL: Enforce API key requirement - NO fallback market data when blocked
-    const hasApiKey = await hasValidApiKey(uid);
-    if (!hasApiKey) {
-      logger.warn({ uid }, 'GET /deep-research/top50 blocked - no API keys configured');
-      return reply.code(200).send({
-        success: false,
-        error: 'Deep Research requires at least one API key to be connected.',
-        message: 'Deep Research requires at least one API key to be connected. Please configure your provider API keys in Settings before running research.',
-        blocked: true,
-        reason: 'NO_API_KEYS'
-      });
-    }
 
     const cacheKey = `top100_coins_${uid}`;
 
     try {
-      // CRITICAL: Use getTop100NonStablecoins for manual research UI
-      const { getTop100NonStablecoins } = await import('../services/researchModes');
-      
-      // Serve cache if available
+      // CACHE-ONLY PATH 1: Try cache service first
       const cached = cacheService.get('price', cacheKey);
-      if (cached && cached.length > 0) {
-        logger.info({ uid, count: cached.length }, 'GET /deep-research/top50 served from cache (top 100 non-stablecoins)');
+      if (cached && Array.isArray(cached) && cached.length > 0) {
+        const responseTime = Date.now() - startTime;
+        logger.info({ uid, count: cached.length, responseTimeMs: responseTime }, 'GET /deep-research/top50 served from cache service (CACHE-ONLY endpoint)');
         console.log("[RESEARCH_IMMEDIATE_RESPONSE_SENT]");
         reply.send({
           success: true,
@@ -1208,33 +1196,74 @@ export async function researchRoutes(fastify: FastifyInstance) {
         return;
       }
 
-      // Fetch top 100 non-stablecoins with timeout guard
-      const fetchPromise = getTop100NonStablecoins(uid);
-      const timeoutPromise = new Promise<any[]>((_, reject) => 
-        setTimeout(() => reject(new Error('Request timeout')), 5000)
-      );
-      
-      const coins = await Promise.race([fetchPromise, timeoutPromise]);
+      // CACHE-ONLY PATH 2: Try module-level cache from researchModes (if available)
+      // This is populated by background processes, never by this endpoint
+      const { cachedTop50Coins, filterStablecoins } = await import('../services/researchModes');
+      if (cachedTop50Coins && Array.isArray(cachedTop50Coins) && cachedTop50Coins.length > 0) {
+        const filtered = filterStablecoins(cachedTop50Coins);
+        if (filtered.length > 0) {
+          const responseTime = Date.now() - startTime;
+          logger.info({ uid, count: filtered.length, responseTimeMs: responseTime }, 'GET /deep-research/top50 served from module cache (CACHE-ONLY endpoint)');
+          console.log("[RESEARCH_IMMEDIATE_RESPONSE_SENT]");
+          reply.send({
+            success: true,
+            coins: filtered.slice(0, 100),
+            source: 'module_cache',
+            timestamp: new Date().toISOString(),
+            cached: true
+          });
+          return;
+        }
+      }
 
+      // FALLBACK: If all caches are empty, return static fallback list (top 20 most common coins)
+      // This ensures UI never breaks even if cache is cold
+      const fallbackCoins = [
+        { symbol: 'BTCUSDT', name: 'Bitcoin', rank: 1 },
+        { symbol: 'ETHUSDT', name: 'Ethereum', rank: 2 },
+        { symbol: 'BNBUSDT', name: 'BNB', rank: 3 },
+        { symbol: 'SOLUSDT', name: 'Solana', rank: 4 },
+        { symbol: 'XRPUSDT', name: 'XRP', rank: 5 },
+        { symbol: 'ADAUSDT', name: 'Cardano', rank: 6 },
+        { symbol: 'DOGEUSDT', name: 'Dogecoin', rank: 7 },
+        { symbol: 'DOTUSDT', name: 'Polkadot', rank: 8 },
+        { symbol: 'AVAXUSDT', name: 'Avalanche', rank: 9 },
+        { symbol: 'SHIBUSDT', name: 'Shiba Inu', rank: 10 },
+        { symbol: 'MATICUSDT', name: 'Polygon', rank: 11 },
+        { symbol: 'LTCUSDT', name: 'Litecoin', rank: 12 },
+        { symbol: 'LINKUSDT', name: 'Chainlink', rank: 13 },
+        { symbol: 'UNIUSDT', name: 'Uniswap', rank: 14 },
+        { symbol: 'ATOMUSDT', name: 'Cosmos', rank: 15 },
+        { symbol: 'ETCUSDT', name: 'Ethereum Classic', rank: 16 },
+        { symbol: 'XLMUSDT', name: 'Stellar', rank: 17 },
+        { symbol: 'FILUSDT', name: 'Filecoin', rank: 18 },
+        { symbol: 'TRXUSDT', name: 'TRON', rank: 19 },
+        { symbol: 'ICPUSDT', name: 'Internet Computer', rank: 20 }
+      ];
+
+      const responseTime = Date.now() - startTime;
+      logger.info({ uid, count: fallbackCoins.length, responseTimeMs: responseTime }, 'GET /deep-research/top50 served fallback list (all caches empty, CACHE-ONLY endpoint)');
       console.log("[RESEARCH_IMMEDIATE_RESPONSE_SENT]");
       reply.send({
         success: true,
-        coins: coins.slice(0, 100),
-        source: 'providers',
+        coins: fallbackCoins,
+        source: 'fallback',
         timestamp: new Date().toISOString(),
-        cached: false
+        cached: false,
+        note: 'All caches empty - returned static fallback list'
       });
-      if (coins.length > 0) cacheService.set('price', cacheKey, coins);
       return;
 
     } catch (err: any) {
-      logger.warn({ uid, error: err?.message }, 'GET /deep-research/top50 error');
+      const responseTime = Date.now() - startTime;
+      logger.warn({ uid, error: err?.message, responseTimeMs: responseTime }, 'GET /deep-research/top50 error (CACHE-ONLY endpoint)');
       console.log("[RESEARCH_IMMEDIATE_RESPONSE_SENT]");
+      // Return empty array instead of error - UI should handle gracefully
       reply.send({
         success: true,
         coins: [],
         source: 'empty',
-        reason: 'provider_error',
+        reason: 'cache_error',
         timestamp: new Date().toISOString(),
         cached: false
       });

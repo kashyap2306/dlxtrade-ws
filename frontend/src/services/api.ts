@@ -153,7 +153,8 @@ export const researchApi = {
   // Deep Research endpoints
   deepResearch: {
     getTop10: () => api.get('/research/deep-research/top10'),
-    getTop50: () => api.get('/research/deep-research/top50'),
+    // CRITICAL: Increased timeout to 20s for cache-only endpoint (backend target < 300ms, but safety margin for network)
+    getTop50: () => api.get('/research/deep-research/top50', { timeout: 20000 }),
     getCoin: (symbol: string) => api.get(`/research/deep-research/coin/${symbol}`),
     getHistory: (limit?: number) => api.get('/research/history', { params: { limit } }),
   },

@@ -21,10 +21,10 @@ function isStablecoin(coin: any): boolean {
   if (!coin) return false;
   const symbol = (coin.symbol || '').toUpperCase();
   const name = (coin.name || '').toUpperCase();
-  
+
   // Direct symbol match (e.g., "USDT", "USDC")
   if (STABLECOIN_SYMBOLS.has(symbol)) return true;
-  
+
   // Check if base symbol (before USDT/USDC/etc) is a stablecoin
   // Example: "USDTUSDT" -> base is "USDT" -> stablecoin
   // Example: "BTCUSDT" -> base is "BTC" -> NOT stablecoin
@@ -34,11 +34,11 @@ function isStablecoin(coin: any): boolean {
       if (STABLECOIN_SYMBOLS.has(baseSymbol)) return true;
     }
   }
-  
+
   // Check name for stablecoin keywords
   const stablecoinKeywords = ['STABLECOIN', 'STABLE COIN', 'USD PEGGED', 'FIAT PEGGED'];
   if (stablecoinKeywords.some(keyword => name.includes(keyword))) return true;
-  
+
   return false;
 }
 
@@ -95,17 +95,17 @@ export async function getTop100Coins(uid: string, limit: number = TOP_COINS_LIMI
       if (filtered.length >= enforcedLimit) {
         logger.info({ uid, limit: enforcedLimit, cacheAge: now - lastFetchTime, top25Count: filtered.length }, '✅ [TOP_25_LOADED] Serving Top 25 non-stablecoins from global cache (STALE), triggering background refresh');
 
-      // Trigger background refresh (don't await)
-      isFetchingTopCoins = true;
-      (async () => {
-        try {
-          await refreshTop100Coins(uid);
-        } catch (err) {
+        // Trigger background refresh (don't await)
+        isFetchingTopCoins = true;
+        (async () => {
+          try {
+            await refreshTop100Coins(uid);
+          } catch (err) {
             logger.error({ error: (err as any).message }, 'Background Top 25 refresh failed');
-        } finally {
-          isFetchingTopCoins = false;
-        }
-      })();
+          } finally {
+            isFetchingTopCoins = false;
+          }
+        })();
 
         return filtered.slice(0, enforcedLimit);
       }
@@ -197,7 +197,7 @@ async function refreshTop100Coins(uid: string): Promise<any[]> {
           const sortedByMarketCap = nonStablecoins.sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
           cachedTop50Coins = sortedByMarketCap.slice(0, TOP_COINS_LIMIT);
           lastFetchTime = Date.now();
-          
+
           logger.info({ uid, totalFetched: normalized.length, stablecoinsFiltered: normalized.length - nonStablecoins.length, top25Count: cachedTop50Coins.length }, '✅ [TOP_25_CACHED] Top 25 non-stablecoins cached (CMC)');
           return cachedTop50Coins;
         }
@@ -238,7 +238,7 @@ async function refreshTop100Coins(uid: string): Promise<any[]> {
         const sortedByMarketCap = nonStablecoins.sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
         cachedTop50Coins = sortedByMarketCap.slice(0, TOP_COINS_LIMIT);
         lastFetchTime = Date.now();
-        
+
         logger.info({ uid, totalFetched: normalized.length, stablecoinsFiltered: normalized.length - nonStablecoins.length, top25Count: cachedTop50Coins.length }, '✅ [TOP_25_CACHED] Top 25 non-stablecoins cached (CoinGecko)');
         return cachedTop50Coins;
       }
@@ -289,7 +289,7 @@ export async function getTop10NonStablecoins(uid: string): Promise<any[]> {
  */
 export async function getTop100NonStablecoins(uid: string): Promise<any[]> {
   const now = Date.now();
-  
+
   try {
     // Use existing cache but fetch more coins if needed
     if (cachedTop50Coins.length >= 100 && (now - lastFetchTime < CACHE_TTL)) {
@@ -347,7 +347,7 @@ export async function getTop100NonStablecoins(uid: string): Promise<any[]> {
                 const sortedByMarketCap = nonStablecoins.sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
                 cachedTop50Coins = sortedByMarketCap; // Update cache with full list
                 lastFetchTime = Date.now();
-                
+
                 logger.info({ uid, totalFetched: normalized.length, stablecoinsFiltered: normalized.length - nonStablecoins.length, top100Count: sortedByMarketCap.length }, 'Top 100 non-stablecoins cached (CMC)');
                 return sortedByMarketCap.slice(0, 100);
               }
@@ -386,7 +386,7 @@ export async function getTop100NonStablecoins(uid: string): Promise<any[]> {
               const sortedByMarketCap = nonStablecoins.sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
               cachedTop50Coins = sortedByMarketCap; // Update cache
               lastFetchTime = Date.now();
-              
+
               logger.info({ uid, totalFetched: normalized.length, stablecoinsFiltered: normalized.length - nonStablecoins.length, top100Count: sortedByMarketCap.length }, 'Top 100 non-stablecoins cached (CoinGecko)');
               return sortedByMarketCap.slice(0, 100);
             }
@@ -583,12 +583,12 @@ export async function selectCoinsForResearch(uid: string): Promise<string[]> {
       const top25 = await getTop100Coins(uid, TOP_COINS_LIMIT);
       const top25Symbols = new Set(top25.map(c => c.symbol.toUpperCase()));
       logger.info({ uid, top25Count: top25.length }, '✅ [TOP_25_LOADED] Top 25 non-stablecoins loaded for manual coin validation');
-      
+
       // Filter manual coins to only include those in top 25 non-stablecoins
-      const validManualCoins = selectedCoins.filter(symbol => 
+      const validManualCoins = selectedCoins.filter(symbol =>
         top25Symbols.has(symbol.toUpperCase())
       );
-      
+
       if (validManualCoins.length > 0) {
         const invalidCoins = selectedCoins.filter(s => !top25Symbols.has(s.toUpperCase()));
         if (invalidCoins.length > 0) {
@@ -597,14 +597,14 @@ export async function selectCoinsForResearch(uid: string): Promise<string[]> {
         logger.info({ uid, validCoins: validManualCoins, invalidCoins }, '✅ [TOP_25_FILTER] Manual coins filtered to top 25 non-stablecoins');
         return validManualCoins;
       }
-      
+
       // If no valid manual coins, return top coins from top 25
       if (top25.length > 0) {
         const fallback = top25.slice(0, 2).map(c => c.symbol);
         logger.info({ uid, fallback }, 'No valid manual coins in top 25, using top coins from top 25 non-stablecoins');
         return fallback;
       }
-      
+
       return [];
     }
 
@@ -652,7 +652,7 @@ export async function selectCoinsForResearch(uid: string): Promise<string[]> {
     } else {
       // Manual mode: only allow coins from top 25 non-stablecoins
       const top25Symbols = new Set(top25.map(c => c.symbol.toUpperCase()));
-      const manualCoinsInTop25 = selectedCoins.filter(symbol => 
+      const manualCoinsInTop25 = selectedCoins.filter(symbol =>
         top25Symbols.has(symbol.toUpperCase())
       );
       if (manualCoinsInTop25.length > 0) {
@@ -775,13 +775,14 @@ export async function selectBestCoinByAccuracy(
 
         // Base score from volatility (0-70 range) - Stronger weight
         // We want highly volatile alts to beat stable BTC
-        const volatilityScore = Math.min(70, priceChange24h * 5); // Increased multiplier to 5x
+        // Market cap bonus (0-5 range) - Reduced influence to prevent BTC dominance
+        // BTC (large cap) gets 5. Alts get 1-3.
+        // If Volatility is 0, BTC wins (5 vs 1).
+        // Any coin with > 1% volatility (score 7) will beat flat BTC.
+        const marketCapScore = marketCap > 10000000000 ? 5 : marketCap > 1000000000 ? 3 : marketCap > 100000000 ? 2 : 1;
 
-        // Market cap bonus (0-20 range) - Reduced influence
-        // BTC (large cap) gets 20. Alts might get 5-10.
-        // If Volatility is 0, BTC wins (20 vs 5).
-        // If Volatility > 4% (4*5=20), Alts catch up.
-        const marketCapScore = marketCap > 10000000000 ? 20 : marketCap > 1000000000 ? 15 : marketCap > 100000000 ? 10 : 5;
+        // Boost volatility impact (multiplier 7x)
+        const volatilityScore = Math.min(70, priceChange24h * 7);
 
         accuracy = volatilityScore + marketCapScore;
 
@@ -822,7 +823,7 @@ export async function selectBestCoinByAccuracy(
 
     // Mark in rotation cooldown too (global)
     coinRotationCooldown.set(bestCoin, now);
-    
+
     // INSTRUMENTATION: Log scan completion
     const scanDurationMs = Date.now() - scanStartTime;
     logger.info({

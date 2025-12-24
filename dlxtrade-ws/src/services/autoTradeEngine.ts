@@ -4623,19 +4623,39 @@ export class AutoTradeEngine {
       let researchData: ResearchData;
       let researchError: any = null;
 
+      // CRITICAL: Store selected symbol BEFORE research to avoid BTC fallback on error
+      let selectedSymbolForHistory: string | null = null;
+      
       try {
         researchData = await runDeepResearchWithCoinSelection(uid, settings, undefined, integrations);
+        // Extract selected symbol from research data (coinsAnalyzed is populated even on partial failure)
+        selectedSymbolForHistory = researchData.coinsAnalyzed?.[0] || researchData.results?.[0]?.symbol || null;
       } catch (researchErr: any) {
         researchError = researchErr;
         logger.error({ uid, error: researchErr.message }, '❌ [AUTO_TRADE] Research execution failed');
 
-        // CRITICAL: Save SKIPPED history for Auto-Trade mode
+        // CRITICAL: Try to get selected symbol from error context if available
+        // runDeepResearchWithCoinSelection may have selected a coin before failing
+        // If no symbol available, skip history save (do NOT use BTC fallback)
+        if (!selectedSymbolForHistory) {
+          logger.warn({ uid, error: researchErr.message }, '⏭️ [HISTORY] Skipping history save - no symbol selected before research failure (BTC fallback removed)');
+          await this.logAutoTradeSkip(uid, AUTO_TRADE_REASONS.NO_SIGNAL, {
+            exchangeStatus: 'available',
+            additionalDetails: {
+              error: researchErr.message,
+              details: 'Research execution failed'
+            }
+          });
+          return null;
+        }
+
+        // CRITICAL: Save SKIPPED history for Auto-Trade mode with ACTUAL selected symbol (not BTC fallback)
         if (!skipHistoryStorage && !historySaved) {
           try {
             await firestoreAdapter.storeResearchHistory(uid, {
-              symbol: 'BTCUSDT',
+              symbol: selectedSymbolForHistory, // Use actual selected coin, not BTC
               signal: 'HOLD',
-              accuracy: 0,
+              accuracy: 0, // Research failed - no accuracy available
               price: 0,
               tradePlan: null,
               isDeepResearch: true,
@@ -4663,21 +4683,33 @@ export class AutoTradeEngine {
       }
 
       // Get symbol from researchData (from coinsAnalyzed or first result)
+      // CRITICAL: Remove BTC fallback - if no symbol available, this is an error condition
       const researchSymbol = researchData.coinsAnalyzed?.[0] ||
         researchData.results?.[0]?.symbol ||
-        'BTCUSDT'; // Fallback
+        null; // NO BTC fallback - use null and handle error case
+
+      if (!researchSymbol) {
+        logger.error({ uid, coinsAnalyzed: researchData.coinsAnalyzed, resultsCount: researchData.results?.length }, '❌ [AUTO_TRADE] No symbol available in research data - skipping history save (BTC fallback removed)');
+        await this.logAutoTradeSkip(uid, AUTO_TRADE_REASONS.NO_SIGNAL, {
+          exchangeStatus: 'available',
+          additionalDetails: {
+            reason: 'No symbol in research data'
+          }
+        });
+        return null;
+      }
 
       if (!researchData.results || researchData.results.length === 0) {
         skipReason = AUTO_TRADE_REASONS.NO_SIGNAL;
         cycleResult = AUTO_TRADE_REASONS.TRADE_SKIPPED;
 
-        // CRITICAL: Save SKIPPED history for Auto-Trade mode
+        // CRITICAL: Save SKIPPED history for Auto-Trade mode with ACTUAL symbol
         if (!skipHistoryStorage && !historySaved) {
           try {
             await firestoreAdapter.storeResearchHistory(uid, {
-              symbol: researchSymbol,
+              symbol: researchSymbol, // Use actual selected coin
               signal: 'HOLD',
-              accuracy: 0,
+              accuracy: 0, // No results - no accuracy available
               price: 0,
               tradePlan: null,
               isDeepResearch: true,
@@ -4714,13 +4746,15 @@ export class AutoTradeEngine {
           stack: new Error().stack
         }, '❌ [TOP_25_VIOLATION] Research result symbol outside Top 25 - blocking execution');
 
-        // CRITICAL: Save SKIPPED history for Auto-Trade mode
+        // CRITICAL: Save SKIPPED history for Auto-Trade mode with ACTUAL accuracy if available
         if (!skipHistoryStorage && !historySaved) {
           try {
+            // Extract actual accuracy from research result if available (don't default to 0)
+            const actualAccuracy = researchResult.result?.accuracy || researchResult.accuracy || 0;
             await firestoreAdapter.storeResearchHistory(uid, {
-              symbol: researchResult.symbol,
+              symbol: researchResult.symbol, // Use actual selected coin
               signal: 'HOLD',
-              accuracy: 0,
+              accuracy: actualAccuracy, // Use actual accuracy from research if available
               price: 0,
               tradePlan: null,
               isDeepResearch: true,
@@ -4752,13 +4786,15 @@ export class AutoTradeEngine {
       if (!finalResult) {
         logger.error({ uid, symbol: researchResult.symbol }, '❌ [AUTO_TRADE] No final result available - cannot proceed');
 
-        // CRITICAL: Save SKIPPED history for Auto-Trade mode
+        // CRITICAL: Save SKIPPED history for Auto-Trade mode with ACTUAL accuracy if available
         if (!skipHistoryStorage && !historySaved) {
           try {
+            // Extract actual accuracy from research result if available (don't default to 0)
+            const actualAccuracy = researchResult.result?.accuracy || researchResult.accuracy || 0;
             await firestoreAdapter.storeResearchHistory(uid, {
-              symbol: researchResult.symbol,
+              symbol: researchResult.symbol, // Use actual selected coin
               signal: 'HOLD',
-              accuracy: 0,
+              accuracy: actualAccuracy, // Use actual accuracy from research if available
               price: 0,
               tradePlan: null,
               isDeepResearch: true,
@@ -4855,13 +4891,15 @@ export class AutoTradeEngine {
           reason: 'FINAL guard cached result - execution was skipped, not a completed research'
         }, '⏭️ [HISTORY_GUARD] BLOCKED: Skipping history save for FINAL guard cached result - execution was skipped, not completed research');
 
-        // CRITICAL: Save SKIPPED history for Auto-Trade mode
+        // CRITICAL: Save SKIPPED history for Auto-Trade mode with ACTUAL accuracy if available
         if (!skipHistoryStorage && !historySaved) {
           try {
+            // Extract actual accuracy from research result if available (don't default to 0)
+            const actualAccuracy = researchResult.result?.accuracy || researchResult.accuracy || 0;
             await firestoreAdapter.storeResearchHistory(uid, {
-              symbol: researchResult.symbol,
+              symbol: researchResult.symbol, // Use actual selected coin
               signal: 'HOLD',
-              accuracy: 0,
+              accuracy: actualAccuracy, // Use actual accuracy from research if available
               price: 0,
               tradePlan: null,
               isDeepResearch: true,
@@ -5221,8 +5259,8 @@ export class AutoTradeEngine {
 **Timestamp:** ${timestamp}
 
 ⚡ *Action:* Wait for higher confidence signal before trading.`;
-            } else if (finalTradePlan && accuracy >= 70) {
-              // CRITICAL: Only include trade plan in Telegram alert if accuracy >= 70%
+            } else if (finalTradePlan && accuracy >= minTrigger) {
+              // CRITICAL: Include trade plan in Telegram alert if accuracy >= user's Telegram trigger (not hardcoded 70%)
               // CRITICAL: Use FINAL tradePlan from researchAggregator - same as manual research
               // Verify tradePlan has required fields before sending
               if (!finalTradePlan.entryPrice || !finalTradePlan.stopLoss) {

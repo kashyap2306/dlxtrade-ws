@@ -233,7 +233,7 @@ export default function ResearchPanel() {
     console.log('[RESEARCH] Logs refresh requested (disabled - logs are optional)');
   }, []);
 
-  // Load top 100 non-stablecoins for manual research - REAL API CALL
+  // Load top 100 non-stablecoins for manual research - CACHE-ONLY endpoint with fallback
   // CRITICAL: Manual research allows Top 100, auto-trade uses Top 10
   const loadTopCoins = useCallback(async () => {
     if (!user?.uid) {
@@ -241,12 +241,29 @@ export default function ResearchPanel() {
       return;
     }
 
-    console.log('[RESEARCH] Loading top 100 non-stablecoins from API for manual research...');
+    console.log('[RESEARCH] Loading top 100 non-stablecoins from API (cache-only endpoint)...');
     setTopCoinsLoading(true);
     
     // Use AbortController for request cancellation
     const abortController = new AbortController();
     let isCancelled = false;
+    
+    // FALLBACK: Try to load from localStorage if available (last cached list)
+    const getCachedCoins = (): any[] => {
+      try {
+        const cached = localStorage.getItem('research_top_coins_cache');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          // Check if cache is not too old (24 hours)
+          if (parsed.timestamp && (Date.now() - parsed.timestamp < 24 * 60 * 60 * 1000)) {
+            return parsed.coins || [];
+          }
+        }
+      } catch (e) {
+        console.warn('[RESEARCH] Failed to parse cached coins from localStorage');
+      }
+      return [];
+    };
     
     try {
       const response = await researchApi.deepResearch.getTop50();
@@ -290,19 +307,67 @@ export default function ResearchPanel() {
       if (isCancelled) return;
 
       if (nonStablecoins.length === 0) {
-        console.warn('[RESEARCH] Top 100 non-stablecoins API returned empty array - treating as valid fallback state');
-        setTopCoins([]); // Empty is valid fallback state
+        // FALLBACK: Use cached coins from localStorage
+        const cachedCoins = getCachedCoins();
+        if (cachedCoins.length > 0) {
+          console.warn('[RESEARCH] API returned empty array, using cached coins from localStorage');
+          setTopCoins(cachedCoins);
+          addNotification({
+            type: 'warning',
+            title: 'Using Cached Data',
+            message: 'Coin list loaded from cache. Latest data may not be available.'
+          });
+        } else {
+          console.warn('[RESEARCH] Top 100 non-stablecoins API returned empty array - no cache available');
+          setTopCoins([]); // Empty is valid fallback state
+        }
       } else {
         // CRITICAL: Store all top 100 for manual research (UI will show top 10 initially)
         console.log(`[RESEARCH] Loaded ${nonStablecoins.length} non-stablecoins (top 100):`, nonStablecoins.slice(0, 10).map((c: any) => c.symbol));
         setTopCoins(nonStablecoins.slice(0, 100)); // Store up to 100 for manual research
+        
+        // Cache to localStorage for fallback
+        try {
+          localStorage.setItem('research_top_coins_cache', JSON.stringify({
+            coins: nonStablecoins.slice(0, 100),
+            timestamp: Date.now()
+          }));
+        } catch (e) {
+          console.warn('[RESEARCH] Failed to cache coins to localStorage');
+        }
       }
     } catch (err: any) {
       if (isCancelled) return;
+      
+      const isTimeout = err?.code === 'ECONNABORTED' || err?.message?.includes('timeout') || err?.message?.includes('TIMEOUT');
+      
       console.error('[RESEARCH] Error loading top 100 non-stablecoins:', err);
-      // Do NOT show error toast - treat as valid fallback state
-      console.warn('[RESEARCH] Top 100 non-stablecoins loading failed - continuing with empty fallback');
-      setTopCoins([]); // Empty is valid fallback state
+      
+      // FALLBACK: Use cached coins from localStorage
+      const cachedCoins = getCachedCoins();
+      if (cachedCoins.length > 0) {
+        console.warn('[RESEARCH] API call failed, using cached coins from localStorage');
+        setTopCoins(cachedCoins);
+        
+        // Show non-blocking warning toast
+        addNotification({
+          type: 'warning',
+          title: isTimeout ? 'Request Timeout' : 'Connection Error',
+          message: `Using cached coin list. ${isTimeout ? 'Request timed out.' : 'Unable to fetch latest data.'}`
+        });
+      } else {
+        console.warn('[RESEARCH] Top 100 non-stablecoins loading failed - no cache available, continuing with empty fallback');
+        setTopCoins([]); // Empty is valid fallback state
+        
+        // Only show error if no cache available
+        if (!isTimeout) {
+          addNotification({
+            type: 'warning',
+            title: 'Unable to Load Coins',
+            message: 'Coin list could not be loaded. Please try again later.'
+          });
+        }
+      }
     } finally {
       if (!isCancelled) {
         setTopCoinsLoading(false);
@@ -314,7 +379,7 @@ export default function ResearchPanel() {
       isCancelled = true;
       abortController.abort();
     };
-  }, [user?.uid, showError]);
+  }, [user?.uid, addNotification]);
 
   // Load detailed research for a specific coin
   const loadCoinResearch = useCallback(async (symbol: string) => {
