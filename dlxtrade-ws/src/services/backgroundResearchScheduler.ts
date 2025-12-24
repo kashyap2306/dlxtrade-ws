@@ -1385,17 +1385,18 @@ export class BackgroundResearchScheduler {
       // HARD LOG: Research execution mode and frequency with Top 25 verification
       logger.info({
         uid,
+        activeMode: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH ? 'AUTO_TRADE' : 'TELEGRAM_BACKGROUND',
         mode,
         accuracyTrigger,
         frequencyMinutes,
+        frequencySource: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH ? 'AUTO_TRADE' : 'TELEGRAM',
         autoTradeEnabled,
         telegramBgResearchEnabled,
-        frequencySource: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH ? 'AUTO_TRADE' : 'TELEGRAM',
         telegramEngineActive: mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH,
         autoTradeEngineActive: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH,
         top25Restriction: true,
         timestamp: new Date().toISOString()
-      }, '🚀 [RESEARCH] Starting background research for user - mode determines engine and frequency source, Top 25 restriction active');
+      }, '🚀 [RESEARCH_START] Starting background research - active mode, frequency source, and accuracy trigger logged');
 
       // CRITICAL: Use Top 100 Accuracy Scan for background research
       // DELEGATION: We now delegate the actual research and trading execution to AutoTradeEngine
@@ -1668,13 +1669,26 @@ export class BackgroundResearchScheduler {
         const maxTrigger = accuracyTrigger?.max ?? 100;
         const isInRange = finalAccuracyPercent >= minTrigger && finalAccuracyPercent <= maxTrigger;
 
+        // HARD LOG: Active mode and frequency source
+        logger.info({
+          uid,
+          coin,
+          activeMode: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH ? 'AUTO_TRADE' : 'TELEGRAM_BACKGROUND',
+          frequencySource: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH ? 'AUTO_TRADE' : 'TELEGRAM',
+          telegramEngineActive: mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH,
+          autoTradeEngineActive: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH,
+          timestamp: new Date().toISOString()
+        }, '📱 [TELEGRAM_MODE] Active mode determined - frequency source and engine selection logged');
+        
         logger.info({
           coin,
           mode,
           finalAccuracy: finalAccuracyPercent,
           range: { min: minTrigger, max: maxTrigger },
-          decision: isInRange ? 'QUALIFIED' : 'NOT_QUALIFIED'
-        }, '🎯 [ACCURACY] Accuracy range evaluation (post-research)');
+          decision: isInRange ? 'QUALIFIED' : 'NOT_QUALIFIED',
+          alertDecision: isInRange ? 'SEND_ALERT' : 'SKIP_ALERT',
+          reason: isInRange ? 'Accuracy >= trigger' : `Accuracy ${finalAccuracyPercent}% outside range [${minTrigger}-${maxTrigger}]%`
+        }, '🎯 [ACCURACY] Accuracy range evaluation (post-research) - alert decision based on accuracy >= trigger only');
         
         // 🔥 DEBUG: Log scheduler mode and accuracy trigger evaluation
         logger.info({
@@ -1765,14 +1779,10 @@ export class BackgroundResearchScheduler {
             threshold: accuracyTrigger
           }, '🎯 [ACCURACY] Accuracy condition met for Telegram alert');
 
-          // Check spam prevention - cooldown is absolute (time-based)
-          const lastAlert = settings.lastAlertSent?.[coin];
-          const shouldSendAlert = this.shouldSendTelegramAlert(
-            lastAlert,
-            finalAccuracyPercent,
-            now
-          );
-
+          // CRITICAL: Alerts fire on EVERY research cycle when accuracy >= trigger
+          // Removed spam prevention check - alerts must fire based on accuracy threshold ONLY
+          // Trade execution is NOT required for alerts
+          
           // CRITICAL: Hard guards for Telegram alert
           // Use ONLY background research settings - do NOT depend on notification settings
           // telegramBackgroundResearchEnabled is the source of truth for Telegram alerts in Background Research
@@ -1796,27 +1806,7 @@ export class BackgroundResearchScheduler {
           }, '🔍 [TELEGRAM_DEBUG] Telegram alert enablement check');
 
           // 🔥 PROOF: Log skip reasons explicitly (both console and logger for visibility)
-          if (!shouldSendAlert) {
-            const skipReason = 'SPAM_PREVENTION: Accuracy did not improve since last alert';
-            console.log("[TELEGRAM_BG_SKIPPED_REASON=spam_prevention]", {
-              alertId,
-              uid,
-              symbol: coin,
-              accuracy: finalAccuracyPercent,
-              lastAlert: lastAlert ? { timestamp: lastAlert.timestamp, accuracy: lastAlert.accuracy } : null,
-              timestamp: new Date().toISOString()
-            });
-            logger.info({
-              alertId,
-              uid,
-              symbol: coin,
-              mode: 'TELEGRAM_BACKGROUND',
-              accuracy: finalAccuracyPercent,
-              lastAccuracy: lastAlert?.accuracy,
-              status: 'SKIPPED',
-              reason: skipReason
-            }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Telegram background alert skipped - spam prevention');
-          } else if (!telegramEnabled) {
+          if (!telegramEnabled) {
             const skipReason = 'TELEGRAM_DISABLED: Telegram Background Research not enabled';
             console.log("[TELEGRAM_BG_SKIPPED_REASON=telegram_disabled]", {
               alertId,
@@ -1876,47 +1866,11 @@ export class BackgroundResearchScheduler {
             }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Telegram background alert skipped - chat ID missing');
           }
 
-          if (shouldSendAlert && telegramEnabled && hasBotToken && hasChatId) {
-            // Unified trade decision for Telegram background research
-            const { makeUnifiedTradeDecision } = await import('./autoTradeEngine');
-            const indicators = fullResult?.indicators || fullResult?.analysis?.technicalIndicators || {};
-            const isFinal = fullResult?.isFinal === true;
-            const minTrigger = accuracyTrigger?.min ?? (typeof accuracyTrigger === 'number' ? accuracyTrigger : 80);
-            
-            const unifiedDecision = makeUnifiedTradeDecision(
-              signal,
-              finalAccuracyPercent,
-              isFinal,
-              tradePlan,
-              indicators,
-              minTrigger
-            );
-
-            // [TRADE_DECISION] Unified log for Telegram Background
-            logger.info({
-              uid,
-              symbol: coin,
-              FINAL: unifiedDecision.isFinal,
-              acc: unifiedDecision.accuracyUsed.toFixed(1),
-              rr: unifiedDecision.rr.toFixed(2),
-              atr: unifiedDecision.volatilityState,
-              entryZone: unifiedDecision.entryZoneValid ? 'OK' : 'INVALID',
-              decision: unifiedDecision.allowed ? 'ALLOWED' : 'BLOCKED',
-              reason: unifiedDecision.reason
-            }, `[TRADE_DECISION] Telegram BG: FINAL=${unifiedDecision.isFinal} acc=${unifiedDecision.accuracyUsed.toFixed(1)} rr=${unifiedDecision.rr.toFixed(2)} atr=${unifiedDecision.volatilityState} → ${unifiedDecision.allowed ? 'ALLOWED' : 'BLOCKED'}${unifiedDecision.reason ? ` (${unifiedDecision.reason})` : ''}`);
-
-            if (!unifiedDecision.allowed) {
-              logger.info({
-                alertId,
-                uid,
-                symbol: coin,
-                mode: 'TELEGRAM_BACKGROUND',
-                accuracy: finalAccuracyPercent,
-                status: 'SKIPPED',
-                reason: unifiedDecision.reason
-              }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Telegram background alert skipped - unified decision blocked');
-              return; // Skip alert
-            }
+          if (telegramEnabled && hasBotToken && hasChatId) {
+            // CRITICAL: Alerts must fire based on accuracy >= trigger ONLY
+            // DO NOT check unifiedDecision.allowed - that's for trade execution, not alerts
+            // DO NOT block alerts based on spam prevention - alerts should fire on EVERY qualifying cycle
+            // Alert logic: IF accuracy >= trigger THEN send alert (simple rule)
 
           // CRITICAL: Write history BEFORE sending Telegram alert (guaranteed order)
           // This ensures history is always written before alert is sent
@@ -1979,8 +1933,12 @@ export class BackgroundResearchScheduler {
               symbol: coin,
               mode: 'TELEGRAM_BACKGROUND',
               accuracy: finalAccuracyPercent,
-              status: 'ATTEMPT'
-            }, '📱 [TELEGRAM] Sending Telegram alert - all guards passed (history written)');
+              accuracyTrigger: accuracyTrigger,
+              thresholdMet: isInRange,
+              frequencySource: 'TELEGRAM',
+              status: 'ATTEMPT',
+              reason: 'Accuracy >= trigger, alert sent on research completion'
+            }, '📱 [TELEGRAM_ALERT_SEND] Sending Telegram alert - accuracy >= trigger, all guards passed (history written)');
 
             // CRITICAL: Telegram message must match UI exactly
             // If signal is HOLD, show HOLD clearly with no prices
@@ -2124,8 +2082,12 @@ export class BackgroundResearchScheduler {
                 symbol: coin,
                 mode: 'TELEGRAM_BACKGROUND',
                 accuracy: finalAccuracyPercent,
-                status: 'SENT'
-              }, '✅ [TELEGRAM_ALERT_SENT] Telegram background research alert sent successfully');
+                accuracyTrigger: accuracyTrigger,
+                thresholdMet: isInRange,
+                frequencySource: 'TELEGRAM',
+                status: 'SENT',
+                reason: 'Alert sent successfully - accuracy >= trigger on research completion'
+              }, '✅ [TELEGRAM_ALERT_SENT] Telegram background research alert sent successfully - accuracy >= trigger');
             } else {
               logger.error({
                 alertId,
@@ -2137,13 +2099,13 @@ export class BackgroundResearchScheduler {
                 error: telegramResult.error
               }, '❌ [TELEGRAM_ALERT_FAILED] Telegram alert failed after retries');
             }
-          } else {
+            } else {
             // Log exact reason for skipping with structured logging
             let reason = '';
-            if (!shouldSendAlert) reason = 'Accuracy did not improve since last alert';
-            else if (!telegramEnabled) reason = 'Telegram disabled in settings';
+            if (!telegramEnabled) reason = 'Telegram disabled in settings';
             else if (!hasBotToken) reason = 'Telegram bot token missing';
             else if (!hasChatId) reason = 'Telegram chat ID missing';
+            else if (!isInRange) reason = `Accuracy ${finalAccuracyPercent}% outside trigger range`;
             else reason = 'Unknown reason';
 
             logger.info({
@@ -2152,9 +2114,11 @@ export class BackgroundResearchScheduler {
               symbol: coin,
               mode: 'TELEGRAM_BACKGROUND',
               accuracy: finalAccuracyPercent,
+              accuracyTrigger: accuracyTrigger,
+              thresholdMet: isInRange,
+              frequencySource: 'TELEGRAM',
               status: 'SKIPPED',
-              reason,
-              lastAccuracy: lastAlert?.accuracy
+              reason
             }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Telegram background alert skipped');
           }
         } else if (mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH) {

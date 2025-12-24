@@ -4421,6 +4421,9 @@ export class AutoTradeEngine {
     let accuracy = 0;
     let signal: TradeSignalType | 'UNKNOWN' | 'ANALYZING' | 'PENDING' = 'UNKNOWN';
     let skipReason = '';
+    // CRITICAL: Track decision status and execution details for history
+    let decisionStatus: 'EXECUTED' | 'SKIPPED' = 'SKIPPED';
+    let tradeId: string | null = null;
     // CRITICAL: Track if history was already saved in this cycle to prevent duplicates
     let historySaved = false;
     let historySavedSymbol: string | null = null;
@@ -4801,47 +4804,52 @@ export class AutoTradeEngine {
       // This ensures users see what Auto-Trade is analyzing, even if valid trade is not executed
       // Store FINAL aggregated values (not partial/interim values)
       // CRITICAL: Ensure accuracy and signal are ALWAYS stored (never omitted)
+      // CRITICAL: History is saved for EVERY cycle, regardless of execution (decision status tracked)
       // CRITICAL: Only store if skipHistoryStorage is false (caller handles storage for Telegram mode)
-      if (!skipHistoryStorage) {
+      if (!skipHistoryStorage && !historySaved) {
         try {
+          // CRITICAL: History is saved for EVERY cycle, regardless of execution
+          // Decision status (EXECUTED/SKIPPED) is tracked and included in history entry
           // CRITICAL HARD GUARD 1: Verify isFinal === true before saving FINAL research history
           // History must NEVER be saved for partial/intermediate results
-          // SKIPPED entries (status='SKIPPED') are allowed without isFinal check as they represent explicit "no research" states
-          if (finalResult.isFinal !== true) {
+          // However, we allow saving for SKIPPED cycles with valid research data
+          if (finalResult.isFinal !== true && decisionStatus !== 'SKIPPED') {
             logger.error({
               uid,
               symbol: researchResult.symbol,
               isFinal: finalResult.isFinal,
               accuracy,
-              signal
+              signal,
+              decisionStatus
             }, '❌ [HISTORY_GUARD] BLOCKED: History save attempted with isFinal !== true - this is a partial/intermediate result. Only FINAL research results can be saved to history.');
             throw new Error(`Cannot save history: research result is not final (isFinal=${finalResult.isFinal}). Only FINAL results can be saved to history. Partial/intermediate results are forbidden.`);
           }
 
-          // CRITICAL HARD GUARD 2: Verify accuracy is a real computed value (not 0 unless genuinely computed)
-          // Accuracy of 0 is ONLY valid if signal is HOLD (genuine HOLD signal)
-          // If accuracy is 0 and signal is not HOLD, this indicates an error in research completion
-          // CRITICAL: Accuracy must be > 0 for any non-HOLD signal (BUY/SELL)
-          if (accuracy === 0) {
-            if (signal !== 'HOLD') {
-              logger.error({
-                uid,
-                symbol: researchResult.symbol,
-                accuracy,
-                signal,
-                isFinal: finalResult.isFinal
-              }, '❌ [HISTORY_GUARD] BLOCKED: History save attempted with accuracy=0 and signal !== HOLD - invalid state. This indicates incomplete research or missing accuracy computation.');
-              throw new Error(`Cannot save history: accuracy is 0 but signal is ${signal}. This indicates an incomplete or invalid research result. Accuracy must be computed before saving FINAL history.`);
-            } else {
-              // Accuracy 0 with HOLD signal is valid (genuine HOLD), but log for verification
-              logger.info({
-                uid,
-                symbol: researchResult.symbol,
-                accuracy,
-                signal,
-                isFinal: finalResult.isFinal
-              }, '⚠️ [HISTORY] Saving history with accuracy=0 and HOLD signal - this is valid for genuine HOLD signals');
-            }
+          // CRITICAL: For SKIPPED cycles, we still save history with decision status
+          // Accuracy can be 0 for SKIPPED cycles (e.g., NO_SIGNAL, HOLD_SIGNAL)
+          // For EXECUTED cycles, accuracy must be valid
+          if (accuracy === 0 && (decisionStatus as string) === 'EXECUTED' && signal !== 'HOLD') {
+            logger.error({
+              uid,
+              symbol: researchResult.symbol,
+              accuracy,
+              signal,
+              isFinal: finalResult.isFinal,
+              decisionStatus
+            }, '❌ [HISTORY_GUARD] BLOCKED: History save attempted with accuracy=0 and signal !== HOLD for EXECUTED cycle - invalid state.');
+            throw new Error(`Cannot save history: accuracy is 0 but signal is ${signal} for EXECUTED cycle. This indicates an incomplete or invalid research result.`);
+          }
+          
+          // Log if accuracy is 0 for SKIPPED cycles (this is valid)
+          if (accuracy === 0 && decisionStatus === 'SKIPPED') {
+            logger.info({
+              uid,
+              symbol: researchResult.symbol,
+              accuracy,
+              signal,
+              decisionStatus,
+              skipReason
+            }, '⚠️ [HISTORY] Saving history with accuracy=0 for SKIPPED cycle - this is valid');
           }
 
           // CRITICAL: Ensure signal is HOLD if accuracy < 60% (backend safety check for signal generation)
@@ -4856,6 +4864,7 @@ export class AutoTradeEngine {
 
           // CRITICAL: Build history entry with FINAL result data - MUST match manual research payload exactly
           // CRITICAL: Mark source as AUTO_TRADE for auto-trade mode research
+          // CRITICAL: Include decision status (EXECUTED/SKIPPED) and skipReason/tradeId
           // CRITICAL: Use FINAL tradePlan directly from researchAggregator - do NOT recompute
           // tradePlan from generateTradePlan has: entryPrice, stopLoss, takeProfit1, takeProfit2, takeProfit3, riskRewardRatio
           // For backward compatibility, takeProfit should be set to takeProfit2 (main TP)
@@ -4870,6 +4879,10 @@ export class AutoTradeEngine {
             source: 'AUTO_TRADE', // CRITICAL: Mark as auto-trade research for UI filtering
             status: 'FINAL', // Research completed successfully
             isFinal: true, // CRITICAL: Explicitly mark as final for history validation
+            // CRITICAL: Decision tracking for every cycle
+            decision: decisionStatus, // 'EXECUTED' or 'SKIPPED'
+            skipReason: (decisionStatus as string) === 'SKIPPED' ? (skipReason || 'NO_SIGNAL') : undefined, // Only include if SKIPPED
+            tradeId: (decisionStatus as string) === 'EXECUTED' ? (tradeId || null) : undefined, // Only include if EXECUTED
             // UI COMPATIBILITY: Flatten critical trade plan fields for Research History / Research Page
             // MUST match manual research payload structure exactly
             entryPrice: safeTradePlan?.entryPrice || 0,
@@ -4982,6 +4995,18 @@ export class AutoTradeEngine {
           telegramEngineBypassed: true
         }, '📱 [TELEGRAM_ALERT_EVAL] Evaluating Telegram alert from Auto-Trade engine (Telegram Background Research engine BYPASSED)');
         
+        // HARD LOG: Active mode and frequency source
+        logger.info({
+          alertId,
+          uid,
+          symbol: researchResult.symbol,
+          activeMode: 'AUTO_TRADE',
+          frequencySource: 'AUTO_TRADE',
+          telegramEngineBypassed: true,
+          alertSource: 'AUTO_TRADE_ENGINE',
+          timestamp: new Date().toISOString()
+        }, '📱 [TELEGRAM_MODE] Active mode: AUTO_TRADE - frequency from Auto-Trade settings, Telegram Background Research engine BYPASSED');
+        
         // Check Telegram configuration
         if (!bgSettings?.telegramBotToken || !bgSettings?.telegramChatId) {
           logger.info({
@@ -4997,92 +5022,67 @@ export class AutoTradeEngine {
         } else {
           // Check accuracy threshold (from Telegram Background settings)
           // CRITICAL: Threshold comes from Telegram settings, but alert is sent from Auto-Trade engine
+          // CRITICAL: Alert must trigger on research completion when accuracy >= trigger
+          // CRITICAL: Trade execution is NOT required for alert
           const telegramAccuracyTrigger = bgSettings.accuracyTrigger;
           const minTrigger = telegramAccuracyTrigger?.min ?? (typeof telegramAccuracyTrigger === 'number' ? telegramAccuracyTrigger : 80);
           const maxTrigger = telegramAccuracyTrigger?.max ?? 100;
           const isInRange = accuracy >= minTrigger && accuracy <= maxTrigger;
           
-          // HARD LOG: Accuracy threshold check
+          // HARD LOG: Active mode, frequency source, accuracy threshold check
           logger.info({
             alertId,
             uid,
             symbol: researchResult.symbol,
+            activeMode: 'AUTO_TRADE',
+            frequencySource: 'AUTO_TRADE',
+            telegramEngineBypassed: true,
+            alertSource: 'AUTO_TRADE_ENGINE',
             accuracy,
             minTrigger,
             maxTrigger,
             isInRange,
             thresholdSource: 'TELEGRAM_SETTINGS',
-            alertSource: 'AUTO_TRADE_ENGINE'
-          }, '📱 [TELEGRAM_ALERT_THRESHOLD] Accuracy threshold check - threshold from Telegram settings, alert from Auto-Trade engine');
+            decision: isInRange ? 'SEND_ALERT' : 'SKIP_ALERT',
+            reason: isInRange ? 'Accuracy >= trigger' : `Accuracy ${accuracy.toFixed(1)}% outside range [${minTrigger}-${maxTrigger}]%`
+          }, '📱 [TELEGRAM_ALERT_THRESHOLD] Active mode: AUTO_TRADE, frequency source: AUTO_TRADE, accuracy threshold check - threshold from Telegram settings, alert from Auto-Trade engine');
 
           if (!isInRange) {
             logger.info({
               alertId,
               uid,
               symbol: researchResult.symbol,
-              mode: 'AUTO_TRADE',
+              activeMode: 'AUTO_TRADE',
+              frequencySource: 'AUTO_TRADE',
               accuracy,
+              minTrigger,
+              maxTrigger,
               status: 'SKIPPED',
               reason: `Accuracy ${accuracy.toFixed(1)}% outside range [${minTrigger}-${maxTrigger}]%`
             }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Auto-trade alert skipped - accuracy outside threshold');
           } else {
-            // Check spam prevention (accuracy must improve)
-            const lastAlert = bgSettings.lastAlertSent?.[researchResult.symbol];
-            const shouldSendAlert = !lastAlert || accuracy > lastAlert.accuracy;
-
-            if (!shouldSendAlert) {
-              logger.info({
-                alertId,
-                uid,
-                symbol: researchResult.symbol,
-                mode: 'AUTO_TRADE',
-                accuracy,
-                lastAccuracy: lastAlert.accuracy,
-                status: 'SKIPPED',
-                reason: 'Accuracy did not improve since last alert'
-              }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Auto-trade alert skipped - spam prevention (accuracy did not improve)');
-          } else {
-            // Unified trade decision for Telegram alert
-            const finalResult = researchResult.result;
-            const indicators = finalResult?.indicators || finalResult?.analysis?.technicalIndicators || {};
-            const finalTradePlan = finalResult?.tradePlan || null;
-            const isFinal = finalResult?.isFinal === true;
-            const minTrigger = telegramAccuracyTrigger?.min ?? (typeof telegramAccuracyTrigger === 'number' ? telegramAccuracyTrigger : 80);
-            
-            const unifiedDecision = makeUnifiedTradeDecision(
-              signal as 'BUY' | 'SELL' | 'HOLD',
-              accuracy,
-              isFinal,
-              finalTradePlan,
-              indicators,
-              minTrigger
-            );
-
-            // [TRADE_DECISION] Unified log for Telegram
+            // CRITICAL: Alert must be sent EVERY TIME research completes AND accuracy >= trigger
+            // CRITICAL: Trade execution is NOT required for alert
+            // CRITICAL: Alerts fire based on accuracy threshold ONLY, not trade execution status
             logger.info({
+              alertId,
               uid,
               symbol: researchResult.symbol,
-              FINAL: unifiedDecision.isFinal,
-              acc: unifiedDecision.accuracyUsed.toFixed(1),
-              rr: unifiedDecision.rr.toFixed(2),
-              atr: unifiedDecision.volatilityState,
-              entryZone: unifiedDecision.entryZoneValid ? 'OK' : 'INVALID',
-              decision: unifiedDecision.allowed ? 'ALLOWED' : 'BLOCKED',
-              reason: unifiedDecision.reason
-            }, `[TRADE_DECISION] Telegram: FINAL=${unifiedDecision.isFinal} acc=${unifiedDecision.accuracyUsed.toFixed(1)} rr=${unifiedDecision.rr.toFixed(2)} atr=${unifiedDecision.volatilityState} → ${unifiedDecision.allowed ? 'ALLOWED' : 'BLOCKED'}${unifiedDecision.reason ? ` (${unifiedDecision.reason})` : ''}`);
-
-            if (!unifiedDecision.allowed) {
-              logger.info({
-                alertId,
-                uid,
-                symbol: researchResult.symbol,
-                mode: 'AUTO_TRADE',
-                accuracy,
-                status: 'SKIPPED',
-                reason: unifiedDecision.reason
-              }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Auto-trade alert skipped - unified decision blocked');
-              return; // Skip alert
-            }
+              activeMode: 'AUTO_TRADE',
+              frequencySource: 'AUTO_TRADE',
+              accuracy,
+              minTrigger,
+              maxTrigger,
+              thresholdMet: true,
+              status: 'SENDING',
+              reason: 'Accuracy >= trigger, alert sent on research completion (trade execution not required)'
+            }, '📱 [TELEGRAM_ALERT_SEND] Sending Telegram alert from Auto-Trade engine - accuracy >= trigger on research completion');
+            // CRITICAL: Alert must be sent EVERY TIME research completes AND accuracy >= trigger
+            // CRITICAL: Trade execution is NOT required for alert
+            // CRITICAL: Do NOT check unifiedDecision.allowed - that's for trade execution, not alerts
+            // CRITICAL: Remove spam prevention that blocks valid alerts - alerts should fire on every qualifying cycle
+            const finalResult = researchResult.result;
+            const finalTradePlan = finalResult?.tradePlan || null;
 
             // All conditions met - send alert
             const { telegramService } = await import('./telegramService');
@@ -5235,13 +5235,18 @@ export class AutoTradeEngine {
                     alertId,
                     uid,
                     symbol: researchResult.symbol,
-                    mode: 'AUTO_TRADE',
+                    activeMode: 'AUTO_TRADE',
+                    frequencySource: 'AUTO_TRADE',
                     accuracy,
+                    minTrigger,
+                    maxTrigger,
+                    thresholdMet: true,
                     status: 'SENT',
                     alertSource: 'AUTO_TRADE_ENGINE',
                     telegramEngineBypassed: true,
-                    sentFromAutoTrade: true
-                  }, '✅ [TELEGRAM_ALERT_SENT] Auto-trade research alert sent successfully - sent from Auto-Trade engine, Telegram Background Research engine BYPASSED');
+                    sentFromAutoTrade: true,
+                    reason: 'Alert sent successfully - accuracy >= trigger on research completion'
+                  }, '✅ [TELEGRAM_ALERT_SENT] Auto-trade research alert sent successfully - sent from Auto-Trade engine, Telegram Background Research engine BYPASSED, accuracy >= trigger');
                 } else {
                   logger.error({
                     alertId,
@@ -5319,6 +5324,7 @@ export class AutoTradeEngine {
       if (!AccuracyGuard.meetsThreshold(accuracy, threshold, false)) {
         skipReason = `Accuracy ${accuracy.toFixed(1)}% below mandatory threshold (${threshold}%)`;
         cycleResult = AUTO_TRADE_REASONS.TRADE_SKIPPED;
+        decisionStatus = 'SKIPPED';
         logger.info({
           uid,
           symbol: researchResult.symbol,
@@ -5334,12 +5340,14 @@ export class AutoTradeEngine {
           exchangeStatus: 'available',
         });
         await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', { symbol: researchResult.symbol, reason: skipReason, accuracy, timestamp: new Date().toISOString() });
+        // History will be saved at end of function
         return researchResult;
       }
 
       if (signal === 'HOLD' || !signal || signal === 'ANALYZING' || signal === 'PENDING' || (signal !== 'BUY' && signal !== 'SELL' && signal !== 'HOLD')) {
         skipReason = signal === 'HOLD' ? AUTO_TRADE_REASONS.HOLD_SIGNAL : AUTO_TRADE_REASONS.NO_SIGNAL;
         cycleResult = AUTO_TRADE_REASONS.TRADE_SKIPPED;
+        decisionStatus = 'SKIPPED';
         await this.logAutoTradeSkip(uid, skipReason, {
           symbol: researchResult.symbol,
           accuracy,
@@ -5348,6 +5356,7 @@ export class AutoTradeEngine {
           exchangeStatus: 'available',
         });
         await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', { symbol: researchResult.symbol, reason: skipReason, accuracy, timestamp: new Date().toISOString() });
+        // History will be saved at end of function
         return researchResult;
       }
 
@@ -5364,6 +5373,7 @@ export class AutoTradeEngine {
       if (params.skip) {
         skipReason = params.skip;
         cycleResult = AUTO_TRADE_REASONS.TRADE_SKIPPED;
+        decisionStatus = 'SKIPPED';
         await this.logAutoTradeSkip(uid, skipReason, {
           symbol: researchResult.symbol,
           accuracy,
@@ -5376,6 +5386,7 @@ export class AutoTradeEngine {
           }
         });
         await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', { symbol: researchResult.symbol, reason: skipReason, accuracy, volatility: volClassification, timestamp: new Date().toISOString() });
+        // History will be saved at end of function (decisionStatus already set to SKIPPED above)
         return researchResult;
       }
 
@@ -5593,6 +5604,8 @@ export class AutoTradeEngine {
       }, '🔍 [DEBUG_TRACE] executeTrade returned successfully');
 
       cycleResult = execution.status === 'PENDING' ? AUTO_TRADE_REASONS.PENDING_CONFIRMATION : AUTO_TRADE_REASONS.TRADE_EXECUTED;
+      decisionStatus = 'EXECUTED';
+      tradeId = execution.tradeId || null;
 
       logger.info({
         uid,
@@ -5603,6 +5616,7 @@ export class AutoTradeEngine {
         executionStatus: execution.status,
         tradeId: execution.tradeId
       }, '✅ [CYCLE_COMPLETE] Trade cycle successful');
+      // History will be saved at end of function
       return researchResult;
 
     } catch (error: any) {
