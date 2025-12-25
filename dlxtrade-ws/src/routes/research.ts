@@ -416,6 +416,14 @@ export async function researchRoutes(fastify: FastifyInstance) {
       const isManualResearch = body.mode === 'manual' || body.type === 'manual';
 
       if (isManualResearch) {
+        // 🔥 DEBUG: MANUAL RESEARCH ENTRY POINT
+        console.log("🔥 [MANUAL_RESEARCH_ENTRY] API route hit", {
+          uid,
+          symbol: body.symbol,
+          mode: body.mode,
+          timestamp: new Date().toISOString()
+        });
+
         // 🔥 DIAGNOSTIC: PROVE API KEY CHECK
         console.log("🔥 [API_KEY_CHECK] Starting hasValidApiKey check", { uid, isManualResearch });
         const hasApiKey = await hasValidApiKey(uid);
@@ -647,6 +655,15 @@ export async function researchRoutes(fastify: FastifyInstance) {
 
               // CRITICAL: Write failure history even when research fails
               if (isDeepResearch) {
+                // 🔥 DEBUG: HISTORY WRITE BEFORE (FAILURE)
+                console.log("🔥 [HISTORY_WRITE_BEFORE] Research execution failed", {
+                  uid,
+                  symbol: targetSymbol,
+                  source: 'MANUAL_RESEARCH',
+                  error: err.message,
+                  timestamp: new Date().toISOString()
+                });
+
                 try {
                   await firestoreAdapter.storeResearchHistory(uid, {
                     symbol: targetSymbol,
@@ -744,7 +761,26 @@ export async function researchRoutes(fastify: FastifyInstance) {
                   status: 'FINAL' // Research completed successfully
                 };
 
+                // 🔥 DEBUG: HISTORY WRITE BEFORE (SUCCESS)
+                console.log("🔥 [HISTORY_WRITE_BEFORE] Research execution success", {
+                  uid,
+                  symbol: targetSymbol,
+                  source: historySource,
+                  status: 'FINAL',
+                  accuracy: finalResult?.accuracy,
+                  signal: finalResult?.signal,
+                  timestamp: new Date().toISOString()
+                });
+
                 await firestoreAdapter.storeResearchHistory(uid, historyEntry);
+
+                // 🔥 DEBUG: HISTORY WRITE AFTER (SUCCESS)
+                console.log("🔥 [HISTORY_WRITE_AFTER] Research execution success completed", {
+                  uid,
+                  symbol: targetSymbol,
+                  source: historySource,
+                  timestamp: new Date().toISOString()
+                });
                 console.log("🔥 [HISTORY_WRITE] AFTER write - SUCCESS", { uid, symbol: targetSymbol, accuracy: finalAcc, source: historySource });
                 logger.info({ uid, symbol: targetSymbol, accuracy: finalAcc, source: historySource }, '✅ [HISTORY] Research history stored with flattened fields');
 

@@ -4260,6 +4260,12 @@ export class AutoTradeEngine {
     // Check if we should run
     if (!shouldRunBackgroundTasks()) {
       logger.debug({ uid }, 'Skipping research cycle - background tasks paused');
+
+      if (!skipHistoryStorage) {
+        const { firestoreAdapter } = await import('./firestoreAdapter');
+        await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: null, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
+      }
+
       return null;
     }
 
@@ -4455,7 +4461,9 @@ export class AutoTradeEngine {
   async runAutoTradeResearchCycle(uid: string, skipHistoryStorage: boolean = false): Promise<ResearchDataResult | null> {
     const exchangeConfig = await firestoreAdapter.getExchangeConfig(uid);
     if (exchangeConfig?.exchangeStatus === 'INVALID_KEYS') {
-      await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: null, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, '', {}, {}, 0, 'BLOCKED', 0, 'HOLD', 'EXCHANGE_KEYS_INVALID', null);
+      await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: null, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
+      return null;
+      return null;
       return null;
     }
     console.log('🔥 [HARD_LOG] [AUTO_TRADE_CYCLE_START] runAutoTradeResearchCycle() called for user:', uid, 'skipHistoryStorage:', skipHistoryStorage);
@@ -4504,6 +4512,11 @@ export class AutoTradeEngine {
           duplicateBlocked: true
         }
       });
+
+      if (!skipHistoryStorage) {
+        await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: null, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
+      }
+
       return null; // Return null to prevent duplicate execution
     }
     activeCycles.add(cycleId);
@@ -4523,6 +4536,11 @@ export class AutoTradeEngine {
         await this.logAutoTradeSkip(uid, reason, {
           exchangeStatus: 'unknown',
         });
+
+      if (!skipHistoryStorage) {
+        await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: null, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
+      }
+
         return null;
       }
       if (!shouldRunBackgroundTasks()) {
@@ -4531,6 +4549,11 @@ export class AutoTradeEngine {
         await this.logAutoTradeSkip(uid, reason, {
           exchangeStatus: 'unknown',
         });
+
+        if (!skipHistoryStorage) {
+          await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: null, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
+        }
+
         return null;
       }
 
@@ -4581,6 +4604,10 @@ export class AutoTradeEngine {
           historyBlocked: true,
           reason: 'Research did not run - no history saved (BTC fallback removed)'
         }, '⏭️ [HISTORY_GUARD] BLOCKED: Skipping history save - research did not run (no research keys). History only saved when research executes.');
+
+        if (!skipHistoryStorage) {
+          await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: null, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
+        }
 
         return null;
       }
@@ -4702,6 +4729,11 @@ export class AutoTradeEngine {
               details: 'Research execution failed before producing results'
             }
           });
+
+          if (!skipHistoryStorage) {
+            await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: null, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
+          }
+
           return null;
         }
         // CRITICAL: If research failed, do NOT save history with accuracy=0
@@ -4716,6 +4748,11 @@ export class AutoTradeEngine {
             details: 'Research execution failed'
           }
         });
+
+        if (!skipHistoryStorage) {
+          await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: symbolForHistory || null, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
+        }
+
         return null;
       }
 
@@ -4741,6 +4778,11 @@ export class AutoTradeEngine {
           }
         });
         await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', { reason: skipReason, timestamp: new Date().toISOString() });
+
+        if (!skipHistoryStorage) {
+          await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: researchSymbol, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
+        }
+
         return null;
       }
 
@@ -4787,6 +4829,11 @@ export class AutoTradeEngine {
             reason: 'Symbol outside Top 25 detected in research result'
           }
         });
+
+        if (!skipHistoryStorage) {
+          await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: researchResult.symbol, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
+        }
+
         return null;
       }
 
@@ -4807,6 +4854,11 @@ export class AutoTradeEngine {
             details: 'Research result missing final aggregated data'
           }
         });
+
+        if (!skipHistoryStorage) {
+          await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: researchResult.symbol, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
+        }
+
         return null;
       }
 
@@ -4827,6 +4879,10 @@ export class AutoTradeEngine {
 
         // CRITICAL: Do NOT save history when accuracy is invalid
         // Research produced invalid accuracy - do not generate history entries
+
+        if (!skipHistoryStorage) {
+          await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: researchResult.symbol, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
+        }
 
         // Return null instead of throwing - this is a data validation failure, not a system error
         return null;
@@ -4874,6 +4930,11 @@ export class AutoTradeEngine {
             details: 'FINAL guard cached result - execution was skipped'
           }
         });
+
+        if (!skipHistoryStorage) {
+          await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: researchResult.symbol, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
+        }
+
         return null;
       }
 

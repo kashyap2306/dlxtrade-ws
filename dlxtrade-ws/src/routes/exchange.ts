@@ -121,7 +121,6 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
           });
         }
       }
-      }
 
       // Validate required fields
       const requiredFields = ExchangeConnectorFactory.getRequiredFields(exchange);

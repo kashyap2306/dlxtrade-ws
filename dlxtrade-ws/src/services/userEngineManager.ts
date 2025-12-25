@@ -198,6 +198,9 @@ class UserEngineManager {
     const settings = await firestoreAdapter.getSettings(uid);
     const settingsData = settings || {} as any;
 
+    // Get exchange integrations for API keys
+    const integrations = await firestoreAdapter.getIntegration(uid, 'binance');
+
     // Check if live mode is enabled and global flag
     const liveMode = settingsData.liveMode || false;
     const enableLiveTrades = process.env.ENABLE_LIVE_TRADES === 'true';
@@ -213,7 +216,7 @@ class UserEngineManager {
     let engine = this.userEngines.get(uid);
     if (!engine) {
       // Create engine with API keys
-      await this.createUserEngine(uid, integrations.binance.apiKey, integrations.binance.secretKey!, testnet);
+      await this.createUserEngine(uid, integrations.apiKey!, integrations.secretKey!, testnet);
       engine = this.userEngines.get(uid)!;
     }
 

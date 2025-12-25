@@ -27,7 +27,6 @@ export async function walletRoutes(fastify: FastifyInstance) {
       return reply.code(200).send({ blocked: true, reason: "INVALID_KEYS" });
     }
     try {
-    try {
       const user = (request as any).user;
       const db = getFirebaseAdmin().firestore();
 

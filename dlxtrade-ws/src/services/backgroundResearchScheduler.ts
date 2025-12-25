@@ -1458,7 +1458,6 @@ export class BackgroundResearchScheduler {
       try {
         console.log('🔥 [HARD_LOG] [RESEARCH_CALL] Calling runAutoTradeResearchCycleSafe() for user:', uid);
         deepResearchResult = await autoTradeEngine.runAutoTradeResearchCycleSafe(uid, skipHistoryStorage);
-        console.log('🔥 [HARD_LOG] [RESEARCH_CALL_COMPLETE] runAutoTradeResearchCycleSafe() completed for user:', uid, 'result exists:', !!deepResearchResult);
       } catch (researchErr: any) {
         // CRITICAL: Check if error is due to decryption failure
         if (researchErr.message?.includes('EXCHANGE_KEY_DECRYPTION_FAILED') ||
@@ -1540,9 +1539,9 @@ export class BackgroundResearchScheduler {
         console.log('🔥 [HARD_LOG] [RESEARCH_NO_RESULT] Research returned null for user:', uid);
 
         // CRITICAL: Store history even when no signal
-        // BUT: For AUTO_TRADE_RESEARCH mode, AutoTradeEngine already saved history (skipHistoryStorage=false)
-        // Only save here for TELEGRAM_BACKGROUND_RESEARCH mode (where skipHistoryStorage=true)
-        if (mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH) {
+        // Write history for both modes - AutoTradeEngine may return null without writing history
+        if (mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH || mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
+
           try {
             // CRITICAL FIX: When no coin is selected, use null symbol (NO BTC fallback)
             // Ensure NO Firestore payload contains undefined values

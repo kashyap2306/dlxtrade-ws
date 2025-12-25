@@ -1,4 +1,5 @@
 import { logger } from '../utils/logger';
+import { firestoreAdapter } from './firestoreAdapter';
 import { FreeModeDeepResearchResult, ProviderBackupConfig, FreeModeProviderResult } from './researchTypes';
 import { executeMarketDataProvider, executeCryptoCompareProvider, executeCMCProvider, executeNewsProvider, setGlobalRetryBudgetContext } from './fallbackManager';
 import { combineFreeModeResults } from './researchAggregator';
@@ -32,17 +33,15 @@ export class DeepResearchEngine {
     onUpdate?: (partialResult: FreeModeDeepResearchResult) => Promise<void>,
     source?: string
   ): Promise<FreeModeDeepResearchResult> {
-    const exchangeConfig = await firestoreAdapter.getExchangeConfig(uid);
-    if (exchangeConfig?.exchangeStatus === 'INVALID_KEYS') {
-      await firestoreAdapter.storeResearchHistory(uid, {
-        signal: 'HOLD',
-        accuracy: 0,
-        status: 'BLOCKED',
-        symbol: symbol,
-        reason: 'EXCHANGE_KEYS_INVALID'
-      });
-      return null;
-    }
+    // 🔥 DEBUG: DEEP RESEARCH ENGINE ENTRY
+    console.log("🔥 [DEEP_RESEARCH_ENGINE_ENTRY] Function called", {
+      uid,
+      symbol,
+      backgroundMode,
+      source,
+      timestamp: new Date().toISOString()
+    });
+
     const startTime = Date.now();
     const requestId = `${uid}:${symbol}`;
 
@@ -168,23 +167,78 @@ export class DeepResearchEngine {
       // Support both encrypted (apiKeyEncrypted) and decrypted (apiKey) formats
       // getUserIntegrationsByUid returns decrypted apiKey fields
       // getUserIntegrations returns encrypted apiKeyEncrypted fields
+      // 🔥 DEBUG: PROVIDER VALIDATION START
+      console.log("🔥 [PROVIDER_VALIDATION_START]", {
+        uid,
+        symbol,
+        source,
+        marketDataProviders: userIntegrations.marketData ? Object.keys(userIntegrations.marketData) : [],
+        newsProviders: userIntegrations.news ? Object.keys(userIntegrations.news) : [],
+        timestamp: new Date().toISOString()
+      });
+
       // Research eligibility requires: at least ONE valid market data provider AND at least ONE valid news provider
-      const hasValidMarketDataProvider = userIntegrations.marketData && 
+      const hasValidMarketDataProvider = userIntegrations.marketData &&
         Object.values(userIntegrations.marketData).some((p: any) => {
           const hasDecrypted = p?.apiKey && typeof p.apiKey === 'string' && p.apiKey.trim().length > 0;
           const hasEncrypted = p?.apiKeyEncrypted && typeof p.apiKeyEncrypted === 'string' && p.apiKeyEncrypted.trim().length > 0;
           return hasDecrypted || hasEncrypted;
         });
-      
-      const hasValidNewsProvider = userIntegrations.news && 
+
+      const hasValidNewsProvider = userIntegrations.news &&
         Object.values(userIntegrations.news).some((p: any) => {
           const hasDecrypted = p?.apiKey && typeof p.apiKey === 'string' && p.apiKey.trim().length > 0;
           const hasEncrypted = p?.apiKeyEncrypted && typeof p.apiKeyEncrypted === 'string' && p.apiKeyEncrypted.trim().length > 0;
           return hasDecrypted || hasEncrypted;
         });
 
-      if (!hasValidMarketDataProvider || !hasValidNewsProvider) {
-        logger.warn({ uid, symbol, hasValidMarketDataProvider, hasValidNewsProvider }, 'Deep Research running without necessary provider API keys - will mark as SKIPPED/BLOCKED in results');
+      // 🔥 DEBUG: PROVIDER VALIDATION RESULT
+      console.log("🔥 [PROVIDER_VALIDATION_RESULT]", {
+        uid,
+        symbol,
+        hasValidMarketDataProvider,
+        hasValidNewsProvider,
+        isManualResearch: source === 'MANUAL_RESEARCH',
+        requiresBothProviders: source !== 'MANUAL_RESEARCH',
+        timestamp: new Date().toISOString()
+      });
+
+      // For manual research, allow with just market data OR news providers
+      // For automated/background research, require both
+      const isManualResearch = source === 'MANUAL_RESEARCH';
+      const requiresBothProviders = !isManualResearch;
+
+      if (requiresBothProviders && (!hasValidMarketDataProvider || !hasValidNewsProvider)) {
+        // 🔥 DEBUG: HISTORY WRITE BEFORE
+        console.log("🔥 [HISTORY_WRITE_BEFORE] PROVIDERS_MISSING block", {
+          uid,
+          symbol,
+          source,
+          reason: 'PROVIDERS_MISSING',
+          timestamp: new Date().toISOString()
+        });
+
+        await firestoreAdapter.storeResearchHistory(uid, {
+          signal: 'HOLD',
+          accuracy: 0,
+          status: 'BLOCKED',
+          symbol: symbol,
+          reason: 'PROVIDERS_MISSING'
+        });
+
+        // 🔥 DEBUG: HISTORY WRITE AFTER
+        console.log("🔥 [HISTORY_WRITE_AFTER] PROVIDERS_MISSING block completed", {
+          uid,
+          symbol,
+          source,
+          timestamp: new Date().toISOString()
+        });
+
+        return null;
+      }
+
+      if (!hasValidMarketDataProvider && !hasValidNewsProvider) {
+        logger.warn({ uid, symbol, hasValidMarketDataProvider, hasValidNewsProvider }, 'Deep Research running without any provider API keys - will mark as SKIPPED/BLOCKED in results');
         // Do not throw; continue research and return result as SKIPPED/BLOCKED downstream instead of aborting.
       }
 
@@ -362,8 +416,28 @@ export class DeepResearchEngine {
           return; // Exit immediately - do NOT execute provider
         }
 
+        // 🔥 DEBUG: PROVIDER EXECUTION START
+        console.log("🔥 [PROVIDER_EXECUTION_START]", {
+          uid,
+          symbol,
+          stageName,
+          providerName: name,
+          timestamp: new Date().toISOString()
+        });
+
         try {
           const res = await executeFn();
+
+          // 🔥 DEBUG: PROVIDER EXECUTION RESULT
+          console.log("🔥 [PROVIDER_EXECUTION_RESULT]", {
+            uid,
+            symbol,
+            stageName,
+            providerName: name,
+            success: res?.success,
+            resultLength: res?.data ? JSON.stringify(res.data).length : 0,
+            timestamp: new Date().toISOString()
+          });
           
           // CRITICAL: Check again after provider execution - FINAL might have been computed
           if (finalVerdictComputed) {
@@ -765,6 +839,17 @@ export class DeepResearchEngine {
       // 1. Object.freeze() makes the object non-extensible (cannot add properties)
       // 2. Object.freeze() prevents property modifications (cannot change values)
       // 3. Attempting mutation throws "Cannot add property X, object is not extensible"
+
+      // 🔥 DEBUG: FINAL RESULT COMPUTED
+      console.log("🔥 [FINAL_RESULT_COMPUTED]", {
+        uid,
+        symbol,
+        accuracy: result.accuracy,
+        accuracyPercent: (result.accuracy * 100).toFixed(1) + '%',
+        signal: result.signal,
+        hasTradePlan: !!result.tradePlan,
+        timestamp: new Date().toISOString()
+      });
 
       logger.info({ uid, symbol, accuracy: (result.accuracy * 100).toFixed(1) + '%' }, "[FINAL_VERDICT_COMPUTED] Deep Research researchTask complete.");
 
