@@ -189,9 +189,9 @@ export default function AutoTrade() {
     if (user) {
       // Load immediately once to get initial status
       loadAutoTradeStatus();
-      
-      // Only set up polling if auto-trade is enabled
-      if (config.autoTradeEnabled) {
+
+      // Only set up polling if auto-trade is enabled and not blocked
+      if (config.autoTradeEnabled && !backendDiagnostics?.blocked) {
         console.log("[AT_STATUS_EFFECT] Auto-trade enabled, starting status polling...");
         const interval = setInterval(() => {
           console.log("[AT_STATUS_EFFECT] Interval tick, calling loadAutoTradeStatus...");
@@ -199,12 +199,12 @@ export default function AutoTrade() {
         }, 60000); // 1 minute
         return () => clearInterval(interval);
       } else {
-        console.log("[AT_STATUS_EFFECT] Auto-trade disabled, skipping status polling");
+        console.log("[AT_STATUS_EFFECT] Auto-trade disabled or blocked, skipping status polling");
       }
     } else {
       console.log("[AT_STATUS_EFFECT] No user, skipping loadAutoTradeStatus");
     }
-  }, [user, config.autoTradeEnabled, loadAutoTradeStatus]);
+  }, [user, config.autoTradeEnabled, loadAutoTradeStatus, backendDiagnostics?.blocked]);
 
   // Load pending trades when Auto-Trade is enabled
   const loadPendingTrades = useCallback(async () => {
@@ -230,7 +230,7 @@ export default function AutoTrade() {
 
   // Poll pending trades when Auto-Trade is enabled
   useEffect(() => {
-    if (!user || !config.autoTradeEnabled) {
+    if (!user || !config.autoTradeEnabled || backendDiagnostics?.blocked) {
       setPendingTrades([]);
       setCurrentPendingTrade(null);
       return;
@@ -242,7 +242,7 @@ export default function AutoTrade() {
     // Poll every 10 seconds for pending trades
     const interval = setInterval(loadPendingTrades, 10000);
     return () => clearInterval(interval);
-  }, [user, config.autoTradeEnabled, loadPendingTrades]);
+  }, [user, config.autoTradeEnabled, backendDiagnostics?.blocked, loadPendingTrades]);
 
   // Handle trade approval
   const handleApproveTrade = useCallback(async (requestId: string) => {
@@ -378,7 +378,7 @@ export default function AutoTrade() {
 
   // Poll for new skipped trades when Auto-Trade is enabled
   useEffect(() => {
-    if (!user || !config.autoTradeEnabled) return;
+    if (!user || !config.autoTradeEnabled || backendDiagnostics?.blocked) return;
 
     // Poll every 30 seconds for new skipped trades
     const interval = setInterval(() => {
@@ -389,7 +389,7 @@ export default function AutoTrade() {
     loadAutoTradeHistory();
 
     return () => clearInterval(interval);
-  }, [user, config.autoTradeEnabled, config.accuracyTrigger]);
+  }, [user, config.autoTradeEnabled, backendDiagnostics?.blocked, config.accuracyTrigger]);
 
   // Cleanup on unmount
   useEffect(() => {

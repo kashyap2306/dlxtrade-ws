@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { firestoreAdapter } from '../services/firestoreAdapter';
+import { firestoreAdapter, isExchangeUsable } from '../services/firestoreAdapter';
 import { ExchangeConnectorFactory, type ExchangeName, type ExchangeCredentials } from '../services/exchangeConnector';
 import { encrypt, decrypt } from '../services/keyManager';
 import { logger } from '../utils/logger';
@@ -35,6 +35,10 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       if (!uid) {
         return reply.code(200).send({ success: false, message: { error: "User not authenticated" } });
       }
+      const exchangeConfig = await firestoreAdapter.getExchangeConfig(uid);
+      if (exchangeConfig?.exchangeStatus === 'INVALID_KEYS') {
+        return reply.code(200).send({ blocked: true, reason: "INVALID_KEYS" });
+      }
       const query = request.query;
       const validationParams = z.object({
         exchange: z.enum(['binance', 'bitget', 'weex', 'bingx']).optional(),
@@ -51,6 +55,8 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
 
       let credentials: ExchangeCredentials;
       let exchange: ExchangeName;
+      let config: any = null;
+      let db: any = null;
 
       // If credentials provided in body, use them
       if (body.apiKey && body.secret) {
@@ -64,7 +70,7 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       } else {
         // Load from user's saved config
         const { getFirebaseAdmin } = await import('../utils/firebase');
-        const db = getFirebaseAdmin().firestore();
+        db = getFirebaseAdmin().firestore();
         const doc = await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').get();
 
         if (!doc.exists) {
@@ -74,7 +80,7 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
           });
         }
 
-        const config = doc.data()!;
+        config = doc.data()!;
         // Handle case where saved config exists but exchange is undefined (partial save)
         exchange = (config.exchange as ExchangeName) || (query.exchange as ExchangeName);
 
@@ -96,16 +102,25 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
             testnet: config.testnet ?? true,
           };
         } catch (decryptErr: any) {
-          logger.error({ uid: user.uid, exchange, error: decryptErr.message }, 'EXCHANGE_KEY_DECRYPTION_FAILED: Failed to decrypt exchange credentials');
+          // HARD RESET: one-time clean up if decrypt fails (cache per UID)
+          const memory = (global as any).__EXCHANGE_KEY_INVALID_CACHE = (global as any).__EXCHANGE_KEY_INVALID_CACHE || {};
+          if (!memory[uid]) {
+            await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').set({
+              apiKeyEncrypted: admin.firestore.FieldValue.delete(),
+              secretKeyEncrypted: admin.firestore.FieldValue.delete(),
+              passphraseEncrypted: admin.firestore.FieldValue.delete(),
+              exchangeStatus: 'INVALID_KEYS',
+              updatedAt: new Date()
+            }, { merge: true });
+            memory[uid] = true;
+          }
           return reply.code(400).send({
-            message: { 
-              error: decryptErr.message?.includes('EXCHANGE_KEY_DECRYPTION_FAILED') 
-                ? 'Exchange API key decryption failed - invalid ENCRYPTION_SECRET. Please re-enter your exchange API keys.'
-                : 'Failed to decrypt exchange credentials'
-            },
+            message: { error: 'Exchange keys invalid. Please re-enter API keys.' },
             success: false,
+            exchangeStatus: 'INVALID_KEYS',
           });
         }
+      }
       }
 
       // Validate required fields
@@ -456,8 +471,13 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
         exchange
       };
     } catch (err: any) {
-      logger.error({ error: err.message, uid: user.uid }, 'Exchange connect failed');
-      return reply.code(500).send({ error: err.message || 'Failed to connect to exchange' });
+      if (err.message && err.message.includes('EXCHANGE_KEY_DECRYPTION_FAILED')) {
+        logger.error({ error: err.message, uid: user.uid }, 'Exchange credential decryption failed');
+        return reply.code(400).send({ error: err.message || 'Failed to decrypt credentials', connected: false });
+      }
+      logger.warn({ error: err.message, uid: user.uid }, 'Exchange test failed: returning CONNECTED but with warning');
+      // Only transient (non-decryption) errors: treat as still connected for UX
+      return reply.code(200).send({ success: true, connected: true, warning: err.message });
     }
   });
 

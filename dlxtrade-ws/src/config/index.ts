@@ -39,9 +39,14 @@ export const config = {
   
   encryption: {
     algorithm: 'aes-256-cbc',
-    // CRITICAL: Use ENCRYPTION_KEY first, then ENCRYPTION_SECRET, then JWT_SECRET as fallback
-    // This ensures consistency across encrypt/decrypt operations
-    key: process.env.ENCRYPTION_KEY || process.env.ENCRYPTION_SECRET || process.env.JWT_SECRET || 'change_me_encryption_key_32_chars!!',
+    // CRITICAL: Use ONLY ENCRYPTION_SECRET. No fallback. Fail fast if missing.
+    key: (() => {
+      const val = process.env.ENCRYPTION_SECRET;
+      if (!val || val.length < 32) {
+        throw new Error('ENCRYPTION_SECRET (32+ chars) is REQUIRED for all API key encryption/decryption.');
+      }
+      return val;
+    })(),
   },
   
   rateLimit: {

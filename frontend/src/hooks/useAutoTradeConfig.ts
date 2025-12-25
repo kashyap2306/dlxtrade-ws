@@ -260,9 +260,22 @@ export const useAutoTradeConfig = (user: any) => {
       console.log("[ATC BLOCKED] No valid uid yet, waiting...");
       return;
     }
+
+    // Check if exchange keys are invalid - stop all polling if so
+    if (backendDiagnostics?.diagnostics?.exchangeStatus === 'INVALID_KEYS') {
+      console.log("[ATC BLOCKED] Exchange keys invalid - stopping all polling");
+      return;
+    }
     try {
       console.log("[AT_STATUS_POLL] Starting status fetch...");
       const response = await settingsApi.trading.autotrade.status();
+
+      // Check for blocked response and stop polling
+      if (response?.data?.blocked === true) {
+        console.log("[ATC BLOCKED] Auto-trade status blocked - stopping polling");
+        return;
+      }
+
       console.log("[AT_STATUS_POLL] Status API response received:", {
         hasData: !!response?.data,
         providersReady: response?.data?.providersReady,

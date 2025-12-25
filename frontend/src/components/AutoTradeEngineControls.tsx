@@ -160,7 +160,7 @@ export const AutoTradeEngineControls: React.FC<AutoTradeEngineControlsProps> = (
     } else {
       togglingRef.current = false;
       showToast('Exchange must be connected to enable Auto-Trade. Check diagnostics.', 'error');
-      throw new Error('Exchange not connected');
+      return;
     }
   };
 

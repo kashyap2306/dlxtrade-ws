@@ -1,7 +1,7 @@
 import { getFirebaseAdmin } from '../utils/firebase';
 import { ExchangeConnectorFactory, type ExchangeName } from './exchangeConnector';
 import { decrypt, decryptOrThrow } from './keyManager';
-import { firestoreAdapter } from './firestoreAdapter';
+import { firestoreAdapter, isExchangeUsable } from './firestoreAdapter';
 import { logger } from '../utils/logger';
 
 export interface ResolvedExchangeConnector {
@@ -25,6 +25,8 @@ export interface ResolvedExchangeConnector {
 export async function resolveExchangeConnector(
   uid: string
 ): Promise<ResolvedExchangeConnector | null> {
+  const exchangeConfig = await firestoreAdapter.getExchangeConfig(uid);
+  if (exchangeConfig?.exchangeStatus === 'INVALID_KEYS') return null;
   try {
     const db = getFirebaseAdmin().firestore();
 
@@ -64,21 +66,31 @@ export async function resolveExchangeConnector(
         let decryptionFailed = false;
         let decryptionError: string | null = null;
 
-        try {
-          apiKey = decryptOrThrow(config.apiKeyEncrypted, 'API key');
-          secret = decryptOrThrow(config.secretKeyEncrypted || config.secretEncrypted, 'secret key');
-          passphrase = config.passphraseEncrypted ? decryptOrThrow(config.passphraseEncrypted, 'passphrase') : undefined;
-        } catch (decryptErr: any) {
-          decryptionFailed = true;
-          decryptionError = decryptErr.message || 'Unknown decryption error';
-          logger.error({ 
-            uid, 
-            exchange, 
-            error: decryptErr.message,
-            errorCode: decryptErr.message?.includes('EXCHANGE_KEY_DECRYPTION_FAILED') ? 'DECRYPTION_FAILED' : 'UNKNOWN'
-          }, 'EXCHANGE_KEY_DECRYPTION_FAILED: Failed to decrypt exchange credentials');
-          // Store error in a way that diagnostic can access
-          (config as any).__decryptionError = decryptionError;
+        // HARD RESET: one-time clean up if decrypt fails (cache per UID)
+        const memory = (global as any).__EXCHANGE_KEY_INVALID_CACHE = (global as any).__EXCHANGE_KEY_INVALID_CACHE || {};
+        if (!memory[uid]) {
+          try {
+            apiKey = decryptOrThrow(config.apiKeyEncrypted, 'API key');
+            secret = decryptOrThrow(config.secretKeyEncrypted || config.secretEncrypted, 'secret key');
+            passphrase = config.passphraseEncrypted ? decryptOrThrow(config.passphraseEncrypted, 'passphrase') : undefined;
+            memory[uid] = false;
+          } catch (decryptErr: any) {
+            decryptionFailed = true;
+            decryptionError = decryptErr.message || 'Unknown decryption error';
+            logger.error({ uid, exchange, error: decryptErr.message, errorCode: decryptErr.message?.includes('EXCHANGE_KEY_DECRYPTION_FAILED') ? 'DECRYPTION_FAILED' : 'UNKNOWN' }, 'EXCHANGE_KEY_DECRYPTION_FAILED: Cleaning up undecryptable exchange credentials');
+            // HARD DELETE keys + mark status
+            await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').set({
+              apiKeyEncrypted: require('firebase-admin').firestore.FieldValue.delete(),
+              secretKeyEncrypted: require('firebase-admin').firestore.FieldValue.delete(),
+              passphraseEncrypted: require('firebase-admin').firestore.FieldValue.delete(),
+              exchangeStatus: 'INVALID_KEYS',
+              updatedAt: new Date()
+            }, { merge: true });
+            memory[uid] = true;
+            return null;
+          }
+        } else if (memory[uid] === true) {
+          // Already zapped for this session
           return null;
         }
 

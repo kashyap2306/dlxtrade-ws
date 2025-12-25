@@ -57,65 +57,13 @@ export async function authRoutes(fastify: FastifyInstance) {
         // Fast fail/retry mechanism handled by ensureUser internal checks mostly, but we skip the rigorous wait here
       }
 
-      // OPTIMIZATION: Check if user exists FIRST.
-      // If user exists, return immediately and run ensureUser in background.
-      // If user DOES NOT exist, we must wait for ensureUser.
-
-      const userDocSnapshot = await firestoreAdapter.getUser(uid);
-
-      if (userDocSnapshot) {
-        // FAST PATH: User exists. Return immediately.
-        logger.info({ uid, email }, '⚡ FAST LOGIN: User exists, returning immediately. Running maintenance in background.');
-
-        // Run ensureUser in background (Fire-and-forget) to sync settings/integrations
-        ensureUser(uid, { name, email, phone: null }).catch(err => {
-          logger.error({ uid, err }, 'Background ensureUser failed');
-        });
-
-        // Parse dates for response
-        const response: any = { ...userDocSnapshot };
-        if (response.createdAt?.toDate) response.createdAt = response.createdAt.toDate().toISOString();
-        if (response.updatedAt?.toDate) response.updatedAt = response.updatedAt.toDate().toISOString();
-        if (response.lastLogin?.toDate) response.lastLogin = response.lastLogin.toDate().toISOString();
-
-        return {
-          success: true,
-          createdNew: false,
-          user: response
-        };
-      }
-
-      // SLOW PATH: New User (First time login) - Must wait for onboarding
-      logger.info({ uid, email }, '🆕 NEW USER: Running full blocking onboarding.');
-
-      const result = await ensureUser(uid, {
-        name,
-        email,
-        phone: null,
-      });
-
-      if (!result.success) {
-        logger.error({ uid, error: result.error }, '❌ User onboarding failed in /afterSignIn');
-        return reply.code(500).send({
-          error: 'User onboarding failed',
-          details: result.error
-        });
-      }
-
-      // Fetch newly created doc
-      const newUserDoc = await firestoreAdapter.getUser(uid);
-
-      // Convert timestamps
-      const response: any = { ...newUserDoc };
-      if (response.createdAt?.toDate) response.createdAt = response.createdAt.toDate().toISOString();
-      if (response.updatedAt?.toDate) response.updatedAt = response.updatedAt.toDate().toISOString();
-      if (response.lastLogin?.toDate) response.lastLogin = response.lastLogin.toDate().toISOString();
-
+      // Only check Firebase token, upsert user, return minimal session
+      await ensureUser(uid, { name, email, phone: null });
       return {
         success: true,
-        createdNew: true,
-        user: response,
+        user: { uid, email },
       };
+
     } catch (err: any) {
       if (err instanceof z.ZodError) {
         return reply.code(400).send({

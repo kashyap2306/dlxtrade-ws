@@ -1,5 +1,5 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { firestoreAdapter } from '../services/firestoreAdapter';
+import { firestoreAdapter, isExchangeUsable } from '../services/firestoreAdapter';
 import { ExchangeConnectorFactory, type ExchangeName } from '../services/exchangeConnector';
 import { decrypt } from '../services/keyManager';
 import { logger } from '../utils/logger';
@@ -21,6 +21,12 @@ export async function walletRoutes(fastify: FastifyInstance) {
   fastify.get('/balances', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = (request as any).user;
+    const exchangeConfig = await firestoreAdapter.getExchangeConfig(user?.uid);
+    if (exchangeConfig?.exchangeStatus === 'INVALID_KEYS') {
+      return reply.code(200).send({ blocked: true, reason: "INVALID_KEYS" });
+    }
+    try {
     try {
       const user = (request as any).user;
       const db = getFirebaseAdmin().firestore();
@@ -72,21 +78,25 @@ export async function walletRoutes(fastify: FastifyInstance) {
           ? decryptOrThrow(exchangeConfig.passphraseEncrypted, 'passphrase')
           : undefined;
       } catch (decryptErr: any) {
-        const isDecryptionFailure = decryptErr.message?.includes('EXCHANGE_KEY_DECRYPTION_FAILED');
-        logger.error({ 
-          uid: user.uid, 
-          exchange, 
-          error: decryptErr.message,
-          errorCode: isDecryptionFailure ? 'DECRYPTION_FAILED' : 'UNKNOWN'
-        }, 'EXCHANGE_KEY_DECRYPTION_FAILED: Failed to decrypt wallet credentials - skipping balance fetch');
-        // CRITICAL: Return clear diagnostic - do NOT block unrelated features
+        // HARD RESET: one-time clean up if decrypt fails (cache per UID)
+        const memory = (global as any).__EXCHANGE_KEY_INVALID_CACHE = (global as any).__EXCHANGE_KEY_INVALID_CACHE || {};
+        if (!memory[user.uid]) {
+          const admin = await import('firebase-admin');
+          await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').set({
+            apiKeyEncrypted: admin.firestore.FieldValue.delete(),
+            secretKeyEncrypted: admin.firestore.FieldValue.delete(),
+            passphraseEncrypted: admin.firestore.FieldValue.delete(),
+            exchangeStatus: 'INVALID_KEYS',
+            updatedAt: new Date()
+          }, { merge: true });
+          memory[user.uid] = true;
+        }
         return reply.code(400).send({
-          error: isDecryptionFailure 
-            ? 'Exchange API key decryption failed - invalid ENCRYPTION_SECRET. Please re-enter your exchange API keys.'
-            : 'Failed to decrypt credentials',
+          error: 'Exchange keys invalid. Please re-enter API keys.',
           connected: false,
+          exchangeStatus: 'INVALID_KEYS',
           decryptionFailed: true,
-          diagnostic: 'Balance fetch skipped due to decryption failure. Exchange credentials need to be re-entered.',
+          diagnostic: 'Balance fetch failed - Exchange API keys invalidated. User must re-enter keys.',
         });
       }
       const testnet = exchangeConfig.testnet ?? true;

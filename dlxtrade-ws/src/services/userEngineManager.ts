@@ -183,18 +183,15 @@ class UserEngineManager {
   }
 
   async startAutoTrade(uid: string): Promise<void> {
-    // Validate Binance integration exists and is enabled
-    const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
-    if (!integrations.binance || !integrations.binance.apiKey || !integrations.binance.secretKey) {
-      throw new Error('Binance integration not configured or not enabled');
-    }
-
-    // CRITICAL: Check autoTradeConfig, NOT settings.autoTradeEnabled (legacy)
+    // CRITICAL: Only depend on autoTradeEnabled flag and valid exchange config. Must NOT depend on research success/history/providers.
     const db = getFirebaseAdmin().firestore();
     const configDoc = await db.collection('users').doc(uid).collection('autoTradeConfig').doc('current').get();
     const configData = configDoc.exists ? configDoc.data() : null;
-    if (!configData || !configData.autoTradeEnabled) {
-      throw new Error('Auto-trade not enabled in autoTradeConfig');
+    if (!configData || typeof configData.autoTradeEnabled !== 'boolean') {
+      throw new Error('Auto-trade enable status not set—must be explicitly toggled by user');
+    }
+    if (configData.autoTradeEnabled === false) {
+      throw new Error('Auto-trade is disabled by user.');
     }
 
     // Get settings for other fields (liveMode, symbol) - but NOT autoTradeEnabled

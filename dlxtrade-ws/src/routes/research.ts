@@ -310,24 +310,17 @@ export async function researchRoutes(fastify: FastifyInstance) {
           const integrations = integrationsResponse.providerConfig || { marketData: {}, news: {}, metadata: {} };
           console.log("[DR] Integrations for", uid, integrations);
 
-          // CRITICAL: Validate that at least ONE provider has an API key configured
-          // Deep Research requires API keys - it cannot run in "free mode" without any keys
-          // Check for apiKeyEncrypted (encrypted keys) since getUserIntegrations returns encrypted keys
+          // CRITICAL: Allow research to always start, regardless of API key presence
+          // Deep Research should continue even if no API keys configured (will operate in limited mode)
           const hasAnyApiKey =
             (integrations.marketData && Object.values(integrations.marketData).some((p: any) => p?.apiKeyEncrypted && p.apiKeyEncrypted.trim().length > 0)) ||
             (integrations.news && Object.values(integrations.news).some((p: any) => p?.apiKeyEncrypted && p.apiKeyEncrypted.trim().length > 0)) ||
             (integrations.metadata && Object.values(integrations.metadata).some((p: any) => p?.apiKeyEncrypted && p.apiKeyEncrypted.trim().length > 0));
 
+          // REMOVED: Guard blocking research if no API keys; log and continue instead
           if (!hasAnyApiKey) {
-            logger.warn({ uid, symbol }, 'Deep Research blocked - no API keys configured');
-            results.push({
-              symbol,
-              requestId,
-              error: 'Deep Research requires at least one API key to be connected. Please configure your provider API keys in Settings before running research.',
-              processingTimeMs: Date.now() - symbolStartTime,
-              mode: 'free'
-            });
-            continue; // Skip this symbol and continue with next
+            logger.warn({ uid, symbol }, 'Deep Research running without API keys - limited functionality');
+            // Continue researching, result may be limited/skipped
           }
 
           // Run FREE MODE Deep Research v1.5 with user integrations

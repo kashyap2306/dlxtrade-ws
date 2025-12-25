@@ -336,6 +336,19 @@ export class BackgroundResearchScheduler {
    */
   private async updateUserResearchSchedule(uid: string) {
     try {
+      // CRITICAL: Check INVALID_KEYS first - do not schedule any research
+      const exchangeConfig = await firestoreAdapter.getExchangeConfig(uid);
+      if (exchangeConfig?.exchangeStatus === 'INVALID_KEYS') {
+        // Cancel any existing interval for this user
+        const existingInterval = this.userIntervals.get(uid);
+        if (existingInterval) {
+          clearInterval(existingInterval);
+          this.userIntervals.delete(uid);
+          this.userJobStates.delete(uid);
+        }
+        return;
+      }
+
       // CRITICAL: Skip system/internal UIDs
       if (this.isSystemUid(uid)) {
         return;
@@ -1278,6 +1291,17 @@ export class BackgroundResearchScheduler {
    * CRITICAL: Uses Deep Research Engine, prevents duplicate jobs, tracks state
    */
   private async processUserResearch(uid: string) {
+    const exchangeConfig = await firestoreAdapter.getExchangeConfig(uid);
+    if (exchangeConfig?.exchangeStatus === 'INVALID_KEYS') {
+      await firestoreAdapter.storeResearchHistory(uid, {
+        signal: 'HOLD',
+        accuracy: 0,
+        status: 'BLOCKED',
+        symbol: null,
+        reason: 'EXCHANGE_KEYS_INVALID'
+      });
+      return;
+    }
     console.log('🔥 [HARD_LOG] [PROCESS_START] processUserResearch() called for user:', uid);
     const jobState = this.userJobStates.get(uid);
     console.log('🔥 [HARD_LOG] [PROCESS_JOB_STATE] Job state for user:', uid, 'exists:', !!jobState, 'isRunning:', jobState?.isRunning);
@@ -1360,10 +1384,8 @@ export class BackgroundResearchScheduler {
 
       // CRITICAL: Provider gating logic - Background Research should NOT require exchange APIs
       // Exchange APIs should only gate AUTO_TRADE execution, not research execution
-      // CRITICAL FIX: Do NOT block research execution here - let research engine handle API validation
-      // Research engine (runAutoTradeResearchCycle) has comprehensive API checks that handle missing APIs gracefully
-      // Removing blocking API checks here allows research to run and produce real results with actual accuracy
-      // History will only be saved when research actually executes (not when blocked here)
+      // CRITICAL FIX: Research execution MUST always run, even if no providers are configured or decrypt fails.
+      // Removed ALL guards blocking "processUserResearch" due to missing/invalid provider configs. Only trade execution is gated downstream.
 
       // Note: API validation is now handled inside runAutoTradeResearchCycle
       // This ensures research runs and produces real results, not just SKIPPED history entries

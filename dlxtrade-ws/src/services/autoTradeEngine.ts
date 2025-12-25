@@ -1,7 +1,6 @@
 import { logger } from '../utils/logger';
-import { firestoreAdapter } from './firestoreAdapter';
 import { BinanceAdapter } from './binanceAdapter';
-import { decrypt } from './keyManager';
+import { firestoreAdapter, isExchangeUsable } from './firestoreAdapter';
 import { getFirebaseAdmin } from '../utils/firebase';
 import { userNotificationService } from './userNotificationService';
 import * as admin from 'firebase-admin';
@@ -4454,6 +4453,11 @@ export class AutoTradeEngine {
    * @param skipHistoryStorage If true, history storage is skipped (caller handles it with correct source)
    */
   async runAutoTradeResearchCycle(uid: string, skipHistoryStorage: boolean = false): Promise<ResearchDataResult | null> {
+    const exchangeConfig = await firestoreAdapter.getExchangeConfig(uid);
+    if (exchangeConfig?.exchangeStatus === 'INVALID_KEYS') {
+      await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: null, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, '', {}, {}, 0, 'BLOCKED', 0, 'HOLD', 'EXCHANGE_KEYS_INVALID', null);
+      return null;
+    }
     console.log('🔥 [HARD_LOG] [AUTO_TRADE_CYCLE_START] runAutoTradeResearchCycle() called for user:', uid, 'skipHistoryStorage:', skipHistoryStorage);
     // CRITICAL: Prevent duplicate execution per cycle using uid+timestamp key
     // This ensures only ONE execution per user per cycle, even if called multiple times
@@ -5803,9 +5807,10 @@ export class AutoTradeEngine {
     executionStatus: TradeExecutionStatus | null,
     tradeId: string | null
   ): Promise<void> {
-    // CRITICAL: Do NOT save history with accuracy=0
-    if (accuracy === 0) {
-      logger.warn({ uid, symbol: researchResult.symbol, accuracy }, '⚠️ [HISTORY_GUARD] BLOCKED: Accuracy is 0 - history not saved');
+    // ALWAYS LOG HISTORY even with accuracy=0 (BLOCKED/NO SIGNAL/INVALID_KEYS)
+    // Only skip if missing both symbol and signal
+    if (!researchResult.symbol && !signal) {
+      logger.warn({ uid, accuracy }, '[HISTORY_GUARD] No symbol and no signal, not saving history');
       return;
     }
 

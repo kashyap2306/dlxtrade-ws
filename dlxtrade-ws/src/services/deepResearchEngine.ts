@@ -32,6 +32,17 @@ export class DeepResearchEngine {
     onUpdate?: (partialResult: FreeModeDeepResearchResult) => Promise<void>,
     source?: string
   ): Promise<FreeModeDeepResearchResult> {
+    const exchangeConfig = await firestoreAdapter.getExchangeConfig(uid);
+    if (exchangeConfig?.exchangeStatus === 'INVALID_KEYS') {
+      await firestoreAdapter.storeResearchHistory(uid, {
+        signal: 'HOLD',
+        accuracy: 0,
+        status: 'BLOCKED',
+        symbol: symbol,
+        reason: 'EXCHANGE_KEYS_INVALID'
+      });
+      return null;
+    }
     const startTime = Date.now();
     const requestId = `${uid}:${symbol}`;
 
@@ -122,12 +133,13 @@ export class DeepResearchEngine {
 
       // CRITICAL FIX: Filter out providers with empty decrypted API keys before validation
       // This ensures only valid providers are passed to research execution
-      // If encrypted key exists but decrypts to empty, exclude provider cleanly
+      // If encrypted key exists but decrypts to empty, exclude provider gracefully, but never fatal.
       if (userIntegrations.marketData) {
         for (const [key, provider] of Object.entries(userIntegrations.marketData)) {
           const p = provider as any;
           if (p.apiKeyRequired && (!p.apiKey || typeof p.apiKey !== 'string' || p.apiKey.trim().length === 0)) {
-            // Provider requires API key but decrypted key is empty - exclude from config
+            // Provider requires API key but decrypted key is empty - exclude from config for that provider only
+            logger.warn({ uid, symbol, key }, 'Provider excluded from research due to missing/empty API key.');
             delete userIntegrations.marketData[key];
           }
         }
@@ -136,7 +148,7 @@ export class DeepResearchEngine {
         for (const [key, provider] of Object.entries(userIntegrations.news)) {
           const p = provider as any;
           if (p.apiKeyRequired && (!p.apiKey || typeof p.apiKey !== 'string' || p.apiKey.trim().length === 0)) {
-            // Provider requires API key but decrypted key is empty - exclude from config
+            logger.warn({ uid, symbol, key }, 'Provider excluded from research due to missing/empty API key.');
             delete userIntegrations.news[key];
           }
         }
@@ -145,7 +157,7 @@ export class DeepResearchEngine {
         for (const [key, provider] of Object.entries(userIntegrations.metadata)) {
           const p = provider as any;
           if (p.apiKeyRequired && (!p.apiKey || typeof p.apiKey !== 'string' || p.apiKey.trim().length === 0)) {
-            // Provider requires API key but decrypted key is empty - exclude from config
+            logger.warn({ uid, symbol, key }, 'Provider excluded from research due to missing/empty API key.');
             delete userIntegrations.metadata[key];
           }
         }
@@ -172,8 +184,8 @@ export class DeepResearchEngine {
         });
 
       if (!hasValidMarketDataProvider || !hasValidNewsProvider) {
-        logger.warn({ uid, symbol, hasValidMarketDataProvider, hasValidNewsProvider }, 'Deep Research blocked - missing required provider API keys');
-        throw new Error('Deep Research requires at least one market data provider API key and at least one news provider API key. Please configure your provider API keys in Settings before running research.');
+        logger.warn({ uid, symbol, hasValidMarketDataProvider, hasValidNewsProvider }, 'Deep Research running without necessary provider API keys - will mark as SKIPPED/BLOCKED in results');
+        // Do not throw; continue research and return result as SKIPPED/BLOCKED downstream instead of aborting.
       }
 
       // If no integrations object structure exists, create empty structure (should not happen after validation)

@@ -5,6 +5,16 @@ import { encrypt, decrypt, maskKey } from './keyManager';
 
 const db = () => getFirebaseAdmin().firestore();
 
+// SHARED exchange usability guard for all major code paths
+export async function isExchangeUsable(uid: string): Promise<boolean> {
+  const doc = await db().collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+  if (!doc.exists) return false;
+  const config = doc.data();
+  if (config && config.exchangeStatus === 'INVALID_KEYS') return false;
+  return true;
+}
+
+
 export interface ApiKeyDocument {
   id?: string;
   exchange: string;
@@ -2196,6 +2206,22 @@ export class FirestoreAdapter {
     } catch (error: any) {
       logger.error({ error: error.message, uid, settings }, 'Error saving user provider settings');
       throw error;
+    }
+  }
+
+  /**
+   * Get exchange config for a user
+   */
+  async getExchangeConfig(uid: string): Promise<any> {
+    try {
+      const doc = await db().collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+      if (!doc.exists) {
+        return null;
+      }
+      return doc.data();
+    } catch (error: any) {
+      logger.error({ error: error.message, uid }, 'Error getting exchange config');
+      return null;
     }
   }
 
