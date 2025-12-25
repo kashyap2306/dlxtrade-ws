@@ -1521,6 +1521,7 @@ export class FirestoreAdapter {
   }
 
   async getTrades(uid?: string, limit: number = 100): Promise<any[]> {
+    const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 1000);
     try {
       let query: admin.firestore.Query = db().collection('trades');
       if (uid) {
@@ -1528,7 +1529,7 @@ export class FirestoreAdapter {
       }
       const snapshot = await query
         .orderBy('timestamp', 'desc')
-        .limit(limit)
+        .limit(safeLimit)
         .get();
 
       return snapshot.docs.map((doc) => ({
@@ -1586,6 +1587,7 @@ export class FirestoreAdapter {
 
   // Optimized method for notifications subcollection structure used in routes
   async getUserNotificationsFromSubcollection(uid: string, limit: number = 50): Promise<any[]> {
+    const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
     try {
       // Try new subcollection path first (notifications/{uid}/items)
       const snapshot = await db()
@@ -1593,7 +1595,7 @@ export class FirestoreAdapter {
         .doc(uid)
         .collection('items')
         .orderBy('timestamp', 'desc')
-        .limit(limit)
+        .limit(safeLimit)
         .get();
 
       return snapshot.docs.map((doc) => ({
@@ -2336,23 +2338,41 @@ export class FirestoreAdapter {
 
   /**
    * Retrieve research history for a user
+   * OPTIMIZED: Returns lightweight version for list view performance
+   * Uses select() to only fetch required fields from Firestore
    */
   async getResearchHistory(uid: string, limit: number = 50): Promise<any[]> {
     try {
+      const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
       const snapshot = await db().collection('users')
         .doc(uid)
         .collection('research_history')
+        .select('symbol', 'signal', 'accuracy', 'price', 'timestamp', 'source', 'status', 'decision', 'executionStatus', 'tradePlan')
         .orderBy('timestamp', 'desc')
-        .limit(limit)
+        .limit(safeLimit)
         .get();
 
       return snapshot.docs.map(doc => {
         const data = doc.data();
+
+        // CRITICAL OPTIMIZATION: Exclude heavy nested objects for list view performance
+        // Keep only essential fields needed for history list display
+        const { indicators, analysis, tradePlan, ...lightweightData } = data;
+
         return {
           id: doc.id,
-          ...data,
+          ...lightweightData,
           // Convert Firestore Timestamp to ISO string
-          timestamp: data.timestamp?.toDate ? data.timestamp.toDate().toISOString() : new Date().toISOString()
+          timestamp: data.timestamp?.toDate ? data.timestamp.toDate().toISOString() : new Date().toISOString(),
+          // Include minimal tradePlan info for display (exclude nested objects)
+          tradePlan: tradePlan ? {
+            entryPrice: tradePlan.entryPrice,
+            stopLoss: tradePlan.stopLoss,
+            takeProfit: tradePlan.takeProfit || tradePlan.takeProfit2,
+            takeProfit1: tradePlan.takeProfit1,
+            takeProfit2: tradePlan.takeProfit2,
+            takeProfit3: tradePlan.takeProfit3
+          } : null
         };
       });
     } catch (error: any) {

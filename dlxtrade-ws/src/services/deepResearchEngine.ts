@@ -130,15 +130,24 @@ export class DeepResearchEngine {
         }
       }
 
-      // CRITICAL FIX: Filter out providers with empty decrypted API keys before validation
-      // This ensures only valid providers are passed to research execution
-      // If encrypted key exists but decrypts to empty, exclude provider gracefully, but never fatal.
+      // CRITICAL FIX: Filter out providers that are NOT USABLE before validation
+      // A provider is USABLE only if: enabled === true AND (apiKeyRequired === false OR apiKey.trim().length > 0)
+      // This ensures only valid, enabled providers are passed to research execution
       if (userIntegrations.marketData) {
         for (const [key, provider] of Object.entries(userIntegrations.marketData)) {
           const p = provider as any;
-          if (p.apiKeyRequired && (!p.apiKey || typeof p.apiKey !== 'string' || p.apiKey.trim().length === 0)) {
-            // Provider requires API key but decrypted key is empty - exclude from config for that provider only
-            logger.warn({ uid, symbol, key }, 'Provider excluded from research due to missing/empty API key.');
+          const isEnabled = p.enabled === true;
+          const hasValidApiKey = !p.apiKeyRequired || (p.apiKey && typeof p.apiKey === 'string' && p.apiKey.trim().length > 0);
+
+          if (!isEnabled || !hasValidApiKey) {
+            logger.warn({
+              uid,
+              symbol,
+              key,
+              isEnabled,
+              apiKeyRequired: p.apiKeyRequired,
+              hasApiKey: !!(p.apiKey && p.apiKey.trim().length > 0)
+            }, 'Provider excluded from research - not enabled or missing valid API key.');
             delete userIntegrations.marketData[key];
           }
         }
@@ -146,8 +155,18 @@ export class DeepResearchEngine {
       if (userIntegrations.news) {
         for (const [key, provider] of Object.entries(userIntegrations.news)) {
           const p = provider as any;
-          if (p.apiKeyRequired && (!p.apiKey || typeof p.apiKey !== 'string' || p.apiKey.trim().length === 0)) {
-            logger.warn({ uid, symbol, key }, 'Provider excluded from research due to missing/empty API key.');
+          const isEnabled = p.enabled === true;
+          const hasValidApiKey = !p.apiKeyRequired || (p.apiKey && typeof p.apiKey === 'string' && p.apiKey.trim().length > 0);
+
+          if (!isEnabled || !hasValidApiKey) {
+            logger.warn({
+              uid,
+              symbol,
+              key,
+              isEnabled,
+              apiKeyRequired: p.apiKeyRequired,
+              hasApiKey: !!(p.apiKey && p.apiKey.trim().length > 0)
+            }, 'Provider excluded from research - not enabled or missing valid API key.');
             delete userIntegrations.news[key];
           }
         }
@@ -155,8 +174,18 @@ export class DeepResearchEngine {
       if (userIntegrations.metadata) {
         for (const [key, provider] of Object.entries(userIntegrations.metadata)) {
           const p = provider as any;
-          if (p.apiKeyRequired && (!p.apiKey || typeof p.apiKey !== 'string' || p.apiKey.trim().length === 0)) {
-            logger.warn({ uid, symbol, key }, 'Provider excluded from research due to missing/empty API key.');
+          const isEnabled = p.enabled === true;
+          const hasValidApiKey = !p.apiKeyRequired || (p.apiKey && typeof p.apiKey === 'string' && p.apiKey.trim().length > 0);
+
+          if (!isEnabled || !hasValidApiKey) {
+            logger.warn({
+              uid,
+              symbol,
+              key,
+              isEnabled,
+              apiKeyRequired: p.apiKeyRequired,
+              hasApiKey: !!(p.apiKey && p.apiKey.trim().length > 0)
+            }, 'Provider excluded from research - not enabled or missing valid API key.');
             delete userIntegrations.metadata[key];
           }
         }
@@ -177,19 +206,20 @@ export class DeepResearchEngine {
         timestamp: new Date().toISOString()
       });
 
-      // Research eligibility requires: at least ONE valid market data provider AND at least ONE valid news provider
+      // Research eligibility requires: at least ONE USABLE market data provider AND at least ONE USABLE news provider
+      // A provider is USABLE only if: enabled === true AND (apiKeyRequired === false OR has valid API key)
       const hasValidMarketDataProvider = userIntegrations.marketData &&
         Object.values(userIntegrations.marketData).some((p: any) => {
-          const hasDecrypted = p?.apiKey && typeof p.apiKey === 'string' && p.apiKey.trim().length > 0;
-          const hasEncrypted = p?.apiKeyEncrypted && typeof p.apiKeyEncrypted === 'string' && p.apiKeyEncrypted.trim().length > 0;
-          return hasDecrypted || hasEncrypted;
+          const isEnabled = p?.enabled === true;
+          const hasValidApiKey = !p?.apiKeyRequired || (p?.apiKey && typeof p.apiKey === 'string' && p.apiKey.trim().length > 0);
+          return isEnabled && hasValidApiKey;
         });
 
       const hasValidNewsProvider = userIntegrations.news &&
         Object.values(userIntegrations.news).some((p: any) => {
-          const hasDecrypted = p?.apiKey && typeof p.apiKey === 'string' && p.apiKey.trim().length > 0;
-          const hasEncrypted = p?.apiKeyEncrypted && typeof p.apiKeyEncrypted === 'string' && p.apiKeyEncrypted.trim().length > 0;
-          return hasDecrypted || hasEncrypted;
+          const isEnabled = p?.enabled === true;
+          const hasValidApiKey = !p?.apiKeyRequired || (p?.apiKey && typeof p.apiKey === 'string' && p.apiKey.trim().length > 0);
+          return isEnabled && hasValidApiKey;
         });
 
       // 🔥 DEBUG: PROVIDER VALIDATION RESULT
@@ -207,6 +237,30 @@ export class DeepResearchEngine {
       // For automated/background research, require both
       const isManualResearch = source === 'MANUAL_RESEARCH';
       const requiresBothProviders = !isManualResearch;
+
+      // CRITICAL: If NO USABLE providers remain after filtering, return null immediately
+      // This prevents silent research failures and ensures research only runs with valid data sources
+      if (!hasValidMarketDataProvider) {
+        logger.warn({
+          uid,
+          symbol,
+          source,
+          reason: 'NO_USABLE_MARKET_DATA_PROVIDERS',
+          remainingMarketData: userIntegrations.marketData ? Object.keys(userIntegrations.marketData) : []
+        }, 'Research blocked: No usable market data providers configured. Please enable and configure market data providers in Settings.');
+        return null; // Return null to indicate research did not execute
+      }
+
+      if (requiresBothProviders && !hasValidNewsProvider) {
+        logger.warn({
+          uid,
+          symbol,
+          source,
+          reason: 'NO_USABLE_NEWS_PROVIDERS',
+          remainingNews: userIntegrations.news ? Object.keys(userIntegrations.news) : []
+        }, 'Research blocked: No usable news providers configured. Please enable and configure news providers in Settings.');
+        return null; // Return null to indicate research did not execute
+      }
 
       if (requiresBothProviders && (!hasValidMarketDataProvider || !hasValidNewsProvider)) {
         // 🔥 DEBUG: HISTORY WRITE BEFORE

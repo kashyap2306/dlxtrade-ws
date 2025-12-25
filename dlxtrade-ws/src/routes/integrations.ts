@@ -257,21 +257,31 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
 
         // Save to exchangeConfig/current with all required fields
         const db = admin.firestore(getFirebaseAdmin());
+        const docRef = db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current');
+        const existingDoc = await docRef.get();
+        const existingData = existingDoc.exists ? existingDoc.data() || {} : {};
+
+        // HARD REQUIRE: All critical fields must be present for complete save
+        const resolvedExchange = body.apiName || existingData.exchange;
+        if (!resolvedExchange || !body.apiKey || !body.secretKey) {
+          return reply.code(400).send({ error: 'Exchange, API key, and secret are required for exchange configuration' });
+        }
+
+        // ATOMIC WRITE: Always include all required fields, never partial
         const exchangeConfig: any = {
-          exchange: body.apiName,
+          exchange: resolvedExchange,
           apiKeyEncrypted: encrypt(body.apiKey!),
           secretEncrypted: encrypt(body.secretKey!),
           testnet: true,
           updatedAt: admin.firestore.Timestamp.now(),
         };
 
-        // Add createdAt only if document doesn't exist
-        const existingDoc = await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').get();
         if (!existingDoc.exists) {
           exchangeConfig.createdAt = admin.firestore.Timestamp.now();
         }
 
-        await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').set(exchangeConfig, { merge: true });
+        // FORCE COMPLETE: Use merge:false to ensure no partial overwrites
+        await docRef.set(exchangeConfig, { merge: false });
 
         logger.info({
           uid: user.uid,
@@ -982,8 +992,16 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         .collection('exchangeConfig')
         .doc('current');
 
+      const existingDoc = await docRef.get();
+      const existingData = existingDoc.exists ? existingDoc.data() || {} : {};
+      const resolvedExchange = (exchange || existingData.exchange || existingData.type) as string | undefined;
+
+      if (!resolvedExchange) {
+        return reply.code(400).send({ error: 'Exchange is required when saving API keys' });
+      }
+
       const configData: any = {
-        exchange,
+        exchange: resolvedExchange,
         apiKeyEncrypted: encrypt(apiKey),
         secretEncrypted: encrypt(secret),
         testnet,

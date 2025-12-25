@@ -36,15 +36,23 @@ export async function resolveExchangeConnector(
     if (configDoc.exists) {
       const config = configDoc.data()!;
 
-      // Validate required fields EARLY - return null immediately if invalid
-      if (!config.exchange) {
-        logger.warn({ uid }, 'Exchange config exists but missing exchange field');
-        return null;
-      }
+      // ONE-TIME CLEANUP: Delete corrupted exchangeConfig documents
+      const hasExchange = !!config.exchange;
+      const hasApiKey = !!config.apiKeyEncrypted;
+      const hasSecret = !!(config.secretKeyEncrypted || config.secretEncrypted);
 
-      if (!config.apiKeyEncrypted || !(config.secretKeyEncrypted || config.secretEncrypted)) {
-        logger.warn({ uid, exchange: config.exchange }, 'Exchange config exists but missing encrypted credentials');
-        return null;
+      if (!hasExchange || !hasApiKey || !hasSecret) {
+        // CRITICAL: Document exists but is corrupted - delete it once
+        logger.warn({
+          uid,
+          hasExchange,
+          hasApiKey,
+          hasSecret,
+          existingFields: Object.keys(config)
+        }, '[EXCHANGE_CONFIG_CLEANUP] Corrupted exchangeConfig found - deleting once');
+
+        await configDoc.ref.delete();
+        return null; // Treat as not connected
       }
 
       try {

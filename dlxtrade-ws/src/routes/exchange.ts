@@ -426,7 +426,7 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
     const user = (request as any).user;
     try {
       const body = request.body as any;
-      const { apiKey, secret, exchange, passphrase } = body;
+      const { apiKey, secret, exchange, passphrase, type } = body || {};
 
       logger.info({
         uid: user.uid,
@@ -436,13 +436,23 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
         hasPassphrase: !!passphrase
       }, 'Exchange connect request');
 
-      // Save exchange configuration
       const { getFirebaseAdmin } = await import('../utils/firebase');
       const db = admin.firestore(getFirebaseAdmin());
+      const docRef = db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current');
+      const existingDoc = await docRef.get();
+      const existingData = existingDoc.exists ? existingDoc.data() || {} : {};
+
+      // HARD REQUIRE: All critical fields must be present for complete save
+      const resolvedExchange = (exchange || type || existingData.exchange || existingData.type) as ExchangeName | undefined;
+      if (!resolvedExchange || !apiKey || !secret) {
+        return reply.code(400).send({ error: 'Exchange, API key, and secret are required for exchange configuration' });
+      }
+
+      // ATOMIC WRITE: Always include all required fields, never partial
       const exchangeConfig: any = {
-        exchange,
+        exchange: resolvedExchange,
         apiKeyEncrypted: encrypt(apiKey),
-        secretKeyEncrypted: encrypt(secret),
+        secretEncrypted: encrypt(secret),
         testnet: false,
         updatedAt: admin.firestore.Timestamp.now(),
       };
@@ -451,13 +461,12 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
         exchangeConfig.passphraseEncrypted = encrypt(passphrase);
       }
 
-      // Add createdAt only if document doesn't exist
-      const existingDoc = await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').get();
       if (!existingDoc.exists) {
         exchangeConfig.createdAt = admin.firestore.Timestamp.now();
       }
 
-      await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').set(exchangeConfig, { merge: true });
+      // FORCE COMPLETE: Use merge:false to ensure no partial overwrites
+      await docRef.set(exchangeConfig, { merge: false });
 
       logger.info({
         uid: user.uid,

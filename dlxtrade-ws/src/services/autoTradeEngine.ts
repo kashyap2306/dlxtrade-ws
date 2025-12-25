@@ -4256,17 +4256,22 @@ export class AutoTradeEngine {
    * @param skipHistoryStorage If true, history storage is skipped (caller will handle it)
    */
   async runAutoTradeResearchCycleSafe(uid: string, skipHistoryStorage: boolean = false): Promise<ResearchDataResult | null> {
+    const cycleStartTimestamp: number = Date.now();
     console.log('🔥 [HARD_LOG] [AUTO_TRADE_SAFE_START] runAutoTradeResearchCycleSafe() called for user:', uid, 'skipHistoryStorage:', skipHistoryStorage);
+    logger.info({ uid, cycleId: `cycle_${cycleStartTimestamp}` }, '🚀 [AUTO_TRADE_CYCLE] Cycle STARTED');
+
     // Check if we should run
     if (!shouldRunBackgroundTasks()) {
-      logger.debug({ uid }, 'Skipping research cycle - background tasks paused');
+      logger.info({ uid, cycleId: `cycle_${cycleStartTimestamp}`, reason: 'BACKGROUND_TASKS_PAUSED' }, '⏸️ [AUTO_TRADE_CYCLE] Cycle SKIPPED - background tasks paused');
 
-      if (!skipHistoryStorage) {
-        const { firestoreAdapter } = await import('./firestoreAdapter');
-        await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: null, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
-      }
+      // Save SKIPPED history for background tasks paused
+      await this.saveAutoTradeHistorySkipped(
+        uid,
+        'BACKGROUND_TASKS_PAUSED',
+        'Background tasks are currently paused by system administrator'
+      );
 
-      return null;
+      return null; // Cycle completed with SKIPPED history
     }
 
     // Yield control before heavy operations
@@ -4459,17 +4464,23 @@ export class AutoTradeEngine {
    * @param skipHistoryStorage If true, history storage is skipped (caller handles it with correct source)
    */
   async runAutoTradeResearchCycle(uid: string, skipHistoryStorage: boolean = false): Promise<ResearchDataResult | null> {
+    const cycleStartTimestamp: number = Date.now();
     const exchangeConfig = await firestoreAdapter.getExchangeConfig(uid);
     if (exchangeConfig?.exchangeStatus === 'INVALID_KEYS') {
-      await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: null, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
-      return null;
-      return null;
-      return null;
+      logger.warn({ uid }, '[AUTO_TRADE_GUARD] Exchange keys invalid - research cycle aborted, saving SKIPPED history');
+
+      // Save SKIPPED history for invalid exchange keys
+      await this.saveAutoTradeHistorySkipped(
+        uid,
+        'EXCHANGE_KEYS_INVALID',
+        'Exchange API keys are invalid or decryption failed'
+      );
+
+      return null; // Cycle completed with SKIPPED history
     }
     console.log('🔥 [HARD_LOG] [AUTO_TRADE_CYCLE_START] runAutoTradeResearchCycle() called for user:', uid, 'skipHistoryStorage:', skipHistoryStorage);
     // CRITICAL: Prevent duplicate execution per cycle using uid+timestamp key
     // This ensures only ONE execution per user per cycle, even if called multiple times
-    const cycleStartTime = new Date();
     let cycleResult: AutoTradeReason = AUTO_TRADE_REASONS.NO_SIGNAL;
     let accuracy = 0;
     let signal: TradeSignalType | 'UNKNOWN' | 'ANALYZING' | 'PENDING' = 'UNKNOWN';
@@ -4477,12 +4488,11 @@ export class AutoTradeEngine {
     // CRITICAL: Track decision status and execution details for history
     let decisionStatus: 'EXECUTED' | 'SKIPPED' = 'SKIPPED';
     let tradeId: string | null = null;
-    // CRITICAL: Track if history was already saved in this cycle to prevent duplicates
-    let historySaved = false;
-    let historySavedSymbol: string | null = null;
     // CRITICAL: Track if execution is blocked (e.g. exchange decryption failed) but research should continue
     let executionBlocked = false;
     let executionBlockReason = '';
+    // CRITICAL: Track if research actually executed (not just called)
+    let researchExecuted = false;
 
     // CRITICAL: Track active cycles to prevent duplicate execution
     // Use a properly typed in-memory set to track active cycles (cleared after completion)
@@ -4513,11 +4523,14 @@ export class AutoTradeEngine {
         }
       });
 
-      if (!skipHistoryStorage) {
-        await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: null, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
-      }
+      // Save SKIPPED history for duplicate cycle prevention
+      await this.saveAutoTradeHistorySkipped(
+        uid,
+        'DUPLICATE_CYCLE',
+        'Auto-trade cycle prevented due to duplicate execution in progress'
+      );
 
-      return null; // Return null to prevent duplicate execution
+      return null; // Cycle completed with SKIPPED history
     }
     activeCycles.add(cycleId);
 
@@ -4537,11 +4550,14 @@ export class AutoTradeEngine {
           exchangeStatus: 'unknown',
         });
 
-      if (!skipHistoryStorage) {
-        await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: null, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
-      }
+      // Save SKIPPED history when auto-trade is disabled
+      await this.saveAutoTradeHistorySkipped(
+        uid,
+        'AUTO_TRADE_DISABLED',
+        'Auto-trade is currently disabled in user settings'
+      );
 
-        return null;
+      return null; // Cycle completed with SKIPPED history
       }
       if (!shouldRunBackgroundTasks()) {
         const reason = 'BACKGROUND_TASKS_PAUSED: Background tasks are paused';
@@ -4550,14 +4566,17 @@ export class AutoTradeEngine {
           exchangeStatus: 'unknown',
         });
 
-        if (!skipHistoryStorage) {
-          await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: null, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
-        }
+        // Save SKIPPED history when background tasks are paused
+        await this.saveAutoTradeHistorySkipped(
+          uid,
+          'BACKGROUND_TASKS_PAUSED',
+          'Background tasks are paused by system administrator'
+        );
 
-        return null;
+        return null; // Cycle completed with SKIPPED history
       }
 
-      logger.info({ uid, cycleStartTime: cycleStartTime.toISOString() }, '🔄 [CYCLE_START] Auto-trade research cycle initiated');
+      logger.info({ uid, cycleStartTime: new Date(cycleStartTimestamp).toISOString() }, '🔄 [CYCLE_START] Auto-trade research cycle initiated');
       console.log('🔥 [HARD_LOG] [AUTO_TRADE_CYCLE_INIT] Auto-trade research cycle initiated for user:', uid);
 
       // 2. Load Settings & Integrations
@@ -4603,13 +4622,16 @@ export class AutoTradeEngine {
           skipReason: reason,
           historyBlocked: true,
           reason: 'Research did not run - no history saved (BTC fallback removed)'
-        }, '⏭️ [HISTORY_GUARD] BLOCKED: Skipping history save - research did not run (no research keys). History only saved when research executes.');
+        }, '⏭️ [HISTORY_GUARD] BLOCKED: Research did not run (no research keys) - saving SKIPPED history');
 
-        if (!skipHistoryStorage) {
-          await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: null, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
-        }
+        // Save SKIPPED history when no research keys are configured
+        await this.saveAutoTradeHistorySkipped(
+          uid,
+          'NO_RESEARCH_KEYS',
+          'No research API keys configured (CryptoCompare, NewsData, etc.)'
+        );
 
-        return null;
+        return null; // Cycle completed with SKIPPED history
       }
 
       // 3. CRITICAL: Early exchange decryption check for AUTO_TRADE_RESEARCH mode
@@ -4692,6 +4714,37 @@ export class AutoTradeEngine {
       
       try {
         researchData = await runDeepResearchWithCoinSelection(uid, settings, undefined, integrations);
+
+        // CRITICAL: If no research data returned (no usable providers), save SKIPPED history
+        if (!researchData) {
+          logger.warn({
+            uid,
+            reason: 'NO_USABLE_PROVIDERS'
+          }, 'Auto-trade cycle: No usable providers - saving SKIPPED history');
+
+          // Save SKIPPED history entry for this cycle
+          await this.saveAutoTradeHistorySkipped(
+            uid,
+            'NO_USABLE_PROVIDERS',
+            'No usable market data providers configured. Please enable and configure market data and news providers in Settings.'
+          );
+
+          logger.info({
+            uid,
+            cycleId: `cycle_${cycleStartTimestamp}`,
+            duration: Date.now() - cycleStartTimestamp,
+            result: 'SKIPPED',
+            reason: 'NO_USABLE_PROVIDERS',
+            historySaved: true
+          }, '⏭️ [AUTO_TRADE_CYCLE] Cycle COMPLETED (SKIPPED)');
+
+          return null; // Cycle completed with SKIPPED history
+        }
+
+        // CRITICAL: Mark research as executed ONLY if it actually returned results
+        if (researchData.results && researchData.results.length > 0) {
+          researchExecuted = true;
+        }
         // Extract selected symbol from research data (coinsAnalyzed is populated even on partial failure)
         selectedSymbolForHistory = researchData.coinsAnalyzed?.[0] || researchData.results?.[0]?.symbol || null;
       } catch (researchErr: any) {
@@ -4711,17 +4764,20 @@ export class AutoTradeEngine {
           symbolForHistory = researchData.results[0].symbol;
         }
         
-        // Only skip history if NO symbol was ever selected (research failed before coin selection)
-        // History MUST be saved if ANY symbol exists (selectedSymbolForHistory, researchResult.symbol, or from researchData)
+        // CRITICAL: If research failed completely and no symbol was selected, save SKIPPED history
         if (!symbolForHistory) {
-          // Only skip if coin selection truly never happened (research failed before selection)
-          // This is acceptable - research never started, so no history needed
-          logger.warn({ 
-            uid, 
+          logger.warn({
+            uid,
             error: researchErr.message,
-            historyBlocked: true,
-            reason: 'Research failed before coin selection - no history saved'
-          }, '⏭️ [HISTORY_GUARD] BLOCKED: Skipping history save - research failed before coin selection (no symbol available). History only saved when research executes successfully.');
+            reason: 'RESEARCH_FAILED_BEFORE_COIN_SELECTION'
+          }, 'Auto-trade cycle: Research failed before coin selection - saving SKIPPED history');
+
+          await this.saveAutoTradeHistorySkipped(
+            uid,
+            'RESEARCH_FAILED',
+            `Research execution failed before coin selection: ${researchErr.message}`
+          );
+
           await this.logAutoTradeSkip(uid, AUTO_TRADE_REASONS.NO_SIGNAL, {
             exchangeStatus: 'available',
             additionalDetails: {
@@ -4730,11 +4786,16 @@ export class AutoTradeEngine {
             }
           });
 
-          if (!skipHistoryStorage) {
-            await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: null, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
-          }
+          logger.info({
+            uid,
+            cycleId: `cycle_${cycleStartTimestamp}`,
+            duration: Date.now() - cycleStartTimestamp,
+            result: 'SKIPPED',
+            reason: 'RESEARCH_FAILED_BEFORE_COIN_SELECTION',
+            historySaved: true
+          }, '⏭️ [AUTO_TRADE_CYCLE] Cycle COMPLETED (SKIPPED)');
 
-          return null;
+          return null; // Cycle completed with SKIPPED history
         }
         // CRITICAL: If research failed, do NOT save history with accuracy=0
         // History must only reflect real research runs with valid accuracy calculations
@@ -4749,10 +4810,7 @@ export class AutoTradeEngine {
           }
         });
 
-        if (!skipHistoryStorage) {
-          await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: symbolForHistory || null, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
-        }
-
+        // DO NOT save fake history when research execution failed
         return null;
       }
 
@@ -4766,9 +4824,17 @@ export class AutoTradeEngine {
         skipReason = AUTO_TRADE_REASONS.NO_SIGNAL;
         cycleResult = AUTO_TRADE_REASONS.TRADE_SKIPPED;
 
-        // CRITICAL: Do NOT save history when research produces no results
-        // History must only reflect real research runs with valid accuracy calculations
-        // Research that produces no results should not generate history entries with accuracy=0
+        logger.warn({
+          uid,
+          symbol: researchSymbol,
+          reason: 'NO_RESEARCH_RESULTS'
+        }, 'Auto-trade cycle: Research produced no results - saving SKIPPED history');
+
+        await this.saveAutoTradeHistorySkipped(
+          uid,
+          'NO_RESEARCH_RESULTS',
+          'Research completed but produced no actionable signals or results'
+        );
 
         await this.logAutoTradeSkip(uid, skipReason, {
           symbol: researchSymbol,
@@ -4779,11 +4845,7 @@ export class AutoTradeEngine {
         });
         await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', { reason: skipReason, timestamp: new Date().toISOString() });
 
-        if (!skipHistoryStorage) {
-          await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: researchSymbol, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
-        }
-
-        return null;
+        return null; // Cycle completed with SKIPPED history
       }
 
       const researchResult = researchData.results[0];
@@ -4813,14 +4875,17 @@ export class AutoTradeEngine {
         symbolTop25Check = true;
       }
       if (!symbolTop25Check) {
-        logger.error({
+        logger.warn({
           uid,
           symbol: researchResult.symbol,
-          stack: new Error().stack
-        }, '❌ [TOP_25_VIOLATION] Research result symbol outside Top 25 - blocking execution');
+          reason: 'SYMBOL_OUTSIDE_TOP_25'
+        }, 'Auto-trade cycle: Symbol outside Top 25 - saving SKIPPED history');
 
-        // CRITICAL: Do NOT save history when symbol violates Top 25 constraint
-        // Research may have run, but results are invalid - do not pollute history with invalid data
+        await this.saveAutoTradeHistorySkipped(
+          uid,
+          'SYMBOL_OUTSIDE_TOP_25',
+          `Research completed but symbol ${researchResult.symbol} is outside Top 25`
+        );
 
         await this.logAutoTradeSkip(uid, 'NOT_TOP_25', {
           symbol: researchResult.symbol,
@@ -4830,11 +4895,7 @@ export class AutoTradeEngine {
           }
         });
 
-        if (!skipHistoryStorage) {
-          await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: researchResult.symbol, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
-        }
-
-        return null;
+        return null; // Cycle completed with SKIPPED history
       }
 
       // CRITICAL: Use FINAL Deep Research result as source of truth
@@ -4842,10 +4903,17 @@ export class AutoTradeEngine {
       const finalResult = researchResult.result;
 
       if (!finalResult) {
-        logger.error({ uid, symbol: researchResult.symbol }, '❌ [AUTO_TRADE] No final result available - cannot proceed');
+        logger.warn({
+          uid,
+          symbol: researchResult.symbol,
+          reason: 'MISSING_FINAL_RESULT'
+        }, 'Auto-trade cycle: Research missing final aggregated result - saving SKIPPED history');
 
-        // CRITICAL: Do NOT save history when final result is missing
-        // Research incomplete - do not generate history entries without valid final result
+        await this.saveAutoTradeHistorySkipped(
+          uid,
+          'MISSING_FINAL_RESULT',
+          `Research completed for ${researchResult.symbol} but final aggregated result is missing`
+        );
 
         await this.logAutoTradeSkip(uid, AUTO_TRADE_REASONS.NO_SIGNAL, {
           symbol: researchResult.symbol,
@@ -4855,11 +4923,7 @@ export class AutoTradeEngine {
           }
         });
 
-        if (!skipHistoryStorage) {
-          await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: researchResult.symbol, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
-        }
-
-        return null;
+        return null; // Cycle completed with SKIPPED history
       }
 
       // CRITICAL: Extract FINAL signal from aggregated result (source of truth)
@@ -4870,22 +4934,22 @@ export class AutoTradeEngine {
       const finalAccuracyRaw = finalResult.accuracy;
       const accuracyValidation = AccuracyGuard.validateAndNormalize(finalAccuracyRaw);
       if (!accuracyValidation.isValid) {
-        logger.error({
+        logger.warn({
           uid,
           symbol: researchResult.symbol,
           accuracy: finalAccuracyRaw,
-          reason: accuracyValidation.reason
-        }, '❌ [AUTO_TRADE] Invalid accuracy in final result - cannot proceed');
+          reason: 'INVALID_ACCURACY',
+          validationReason: accuracyValidation.reason
+        }, 'Auto-trade cycle: Research produced invalid accuracy - saving SKIPPED history');
 
-        // CRITICAL: Do NOT save history when accuracy is invalid
-        // Research produced invalid accuracy - do not generate history entries
-
-        if (!skipHistoryStorage) {
-          await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: researchResult.symbol, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
-        }
+        await this.saveAutoTradeHistorySkipped(
+          uid,
+          'INVALID_ACCURACY',
+          `Research completed for ${researchResult.symbol} but accuracy ${finalAccuracyRaw} is invalid: ${accuracyValidation.reason}`
+        );
 
         // Return null instead of throwing - this is a data validation failure, not a system error
-        return null;
+        return null; // Cycle completed with SKIPPED history
       }
       const accuracy = accuracyValidation.normalizedAccuracy;
 
@@ -4910,18 +4974,17 @@ export class AutoTradeEngine {
         signal === 'HOLD';
 
       if (isCachedResult) {
-        logger.info({
+        logger.warn({
           uid,
           symbol: researchResult.symbol,
-          accuracy,
-          signal,
-          isFinal: finalResult.isFinal,
-          historyBlocked: true,
-          reason: 'FINAL guard cached result - execution was skipped, not a completed research'
-        }, '⏭️ [HISTORY_GUARD] BLOCKED: Skipping history save for FINAL guard cached result - execution was skipped, not completed research');
+          reason: 'FINAL_GUARD_CACHED_RESULT'
+        }, 'Auto-trade cycle: FINAL guard returned cached result - saving SKIPPED history');
 
-        // CRITICAL: Do NOT save history for cached results with accuracy=0
-        // History must only reflect real research runs with valid accuracy calculations
+        await this.saveAutoTradeHistorySkipped(
+          uid,
+          'FINAL_GUARD_CACHED',
+          `Symbol ${researchResult.symbol} has existing FINAL result - research was skipped`
+        );
 
         await this.logAutoTradeSkip(uid, AUTO_TRADE_REASONS.NO_SIGNAL, {
           symbol: researchResult.symbol,
@@ -4931,11 +4994,7 @@ export class AutoTradeEngine {
           }
         });
 
-        if (!skipHistoryStorage) {
-          await this.saveAutoTradeHistoryWithExecutionStatus(uid, { symbol: researchResult.symbol, signal: 'HOLD', accuracy: 0, result: null, processingTimeMs: 0 }, { results: [], coinsAnalyzed: [] }, null, {}, {}, 0, 'HOLD', 0, 'SKIPPED', null, null);
-        }
-
-        return null;
+        return null; // Cycle completed with SKIPPED history
       }
 
       // CRITICAL: Extract FINAL trade plan from aggregated result (ensures consistency with signal/accuracy)
@@ -4980,9 +5039,6 @@ export class AutoTradeEngine {
         }, '⚠️ [HISTORY] Market price not found in final result - storing 0');
       }
 
-      // CRITICAL: History is saved AFTER execution attempt only
-      // Do NOT save history for early returns (execution never started)
-      // History will be saved after execution attempt with executionStatus
 
       // 5. Send Telegram Alert (if auto-trade is ON and accuracy >= telegramAccuracyTrigger)
       // CRITICAL: When Auto-Trade is ON, Telegram alerts come from AutoTradeEngine results
@@ -5705,14 +5761,14 @@ export class AutoTradeEngine {
         tradeId: execution.tradeId
       }, '✅ [CYCLE_COMPLETE] Trade cycle successful');
 
-      // CRITICAL: Save history AFTER execution attempt with executionStatus
-      // History must include executionStatus from actual execution attempt
-      if (!skipHistoryStorage && !historySaved) {
+      // CRITICAL: Save history ONLY if research actually executed
+      // Do NOT save fake history when research never ran
+      if (!skipHistoryStorage && researchExecuted) {
         try {
           // Extract execution status from execution result
           const executionStatus = execution.status; // 'PENDING' | 'FILLED' | 'CANCELLED' | 'REJECTED' | 'PANIC_CLOSED'
-          
-          // Build history entry with execution status
+
+          // Save complete history entry with execution status
           await this.saveAutoTradeHistoryWithExecutionStatus(
             uid,
             researchResult,
@@ -5723,13 +5779,13 @@ export class AutoTradeEngine {
             accuracy,
             signal,
             historyPrice,
-            'EXECUTED',
+            decisionStatus, // 'EXECUTED' - determined by execution outcome
             executionStatus,
             execution.tradeId || null
           );
-          historySaved = true;
+          logger.info({ uid, symbol: researchResult.symbol, executionStatus, decisionStatus }, '✅ [HISTORY] Auto-trade history saved with final execution status');
         } catch (histError: any) {
-          logger.error({ uid, error: histError.message }, '❌ [HISTORY] Failed to store auto-trade history after execution');
+          logger.error({ uid, error: histError.message }, '❌ [HISTORY] Failed to save auto-trade history after execution');
         }
       }
       
@@ -5756,8 +5812,26 @@ export class AutoTradeEngine {
 
       // CRITICAL: Return null on error (research attempted but failed)
       // Scheduler will still update lastRunAt to track the attempt
+      const cycleEndTime = Date.now();
+      logger.info({
+        uid,
+        cycleId: `cycle_${cycleStartTimestamp}`,
+        duration: cycleEndTime - cycleStartTimestamp,
+        result: 'ERROR',
+        error: error.message
+      }, '❌ [AUTO_TRADE_CYCLE] Cycle FAILED');
       return null;
     }
+
+    // Log successful cycle completion
+    const cycleEndTime = Date.now();
+    logger.info({
+      uid,
+      cycleId: `cycle_${cycleStartTimestamp}`,
+      duration: cycleEndTime - cycleStartTimestamp,
+      result: researchExecuted ? 'EXECUTED' : 'SKIPPED',
+      historySaved: !skipHistoryStorage && researchExecuted
+    }, '✅ [AUTO_TRADE_CYCLE] Cycle COMPLETED');
   }
 
   /**
@@ -5850,6 +5924,42 @@ export class AutoTradeEngine {
 
 
   /**
+   * Save SKIPPED auto-trade history when research never executes
+   * Called when auto-trade cycle runs but cannot proceed due to provider/config issues
+   */
+  private async saveAutoTradeHistorySkipped(
+    uid: string,
+    skipReason: string,
+    skipDetails: string
+  ): Promise<void> {
+    const historyEntry: any = {
+      symbol: 'AUTO_TRADE_CYCLE', // Placeholder symbol for cycle tracking
+      signal: 'HOLD', // No signal generated
+      accuracy: 0, // No accuracy computed
+      price: 0, // No price data
+      tradePlan: null, // No trade plan
+      indicators: null, // No indicators
+      isDeepResearch: false, // Research never ran
+      source: 'AUTO_TRADE',
+      status: 'SKIPPED',
+      isFinal: true,
+      decision: 'SKIPPED',
+      executionStatus: null,
+      skipReason: skipReason,
+      skipDetails: skipDetails,
+      entryPrice: 0,
+      stopLoss: 0,
+      takeProfit: 0,
+      takeProfit1: 0,
+      takeProfit2: 0,
+      takeProfit3: 0
+    };
+
+    await firestoreAdapter.storeResearchHistory(uid, historyEntry);
+    logger.info({ uid, skipReason }, '✅ [HISTORY] Auto-trade SKIPPED history saved for cycle');
+  }
+
+  /**
    * Save auto-trade history AFTER execution attempt with executionStatus
    * CRITICAL: This is called ONLY after execution attempt (success or failure)
    * History includes executionStatus from actual execution attempt
@@ -5862,26 +5972,35 @@ export class AutoTradeEngine {
     finalResult: any,
     finalTradePlan: any,
     accuracy: number,
-    signal: TradeSignalType,
+    signal: TradeSignalType | string,
     historyPrice: number,
     decisionStatus: 'EXECUTED' | 'SKIPPED',
     executionStatus: TradeExecutionStatus | null,
     tradeId: string | null
   ): Promise<void> {
-    // ALWAYS LOG HISTORY even with accuracy=0 (BLOCKED/NO SIGNAL/INVALID_KEYS)
-    // Only skip if missing both symbol and signal
-    if (!researchResult.symbol && !signal) {
-      logger.warn({ uid, accuracy }, '[HISTORY_GUARD] No symbol and no signal, not saving history');
+    // CRITICAL GUARD: Only save history if research actually produced results
+    // Do NOT save fake/placeholder history when research never executed
+    const historySymbol = (researchSymbol ?? researchResult.symbol) ?? null;
+    if (!historySymbol || historySymbol.trim().length === 0) {
+      logger.warn({ uid, accuracy, signal }, '[HISTORY_GUARD] No valid symbol from research - not saving history');
+      return;
+    }
+    if (typeof accuracy !== 'number' || accuracy <= 0) {
+      logger.warn({ uid, symbol: historySymbol, accuracy }, '[HISTORY_GUARD] Invalid or zero accuracy - not saving history');
+      return;
+    }
+    if (!signal || signal === 'UNKNOWN' || signal === 'ANALYZING' || signal === 'PENDING') {
+      logger.warn({ uid, symbol: historySymbol, signal }, '[HISTORY_GUARD] Invalid signal - not saving history');
       return;
     }
 
-    // CRITICAL: Ensure signal is HOLD if accuracy < 60% (backend safety check)
-    const finalSignal = (accuracy < 60 && signal !== 'HOLD') ? 'HOLD' : signal;
+    // CRITICAL: Preserve actual research signal in history, even if tradePlan is null
+    // Do NOT force BUY/SELL to HOLD - history should reflect the research result accurately
+    const finalSignal = signal;
     const storedAccuracy = Math.max(0, Math.min(100, Number(accuracy) || 0));
     const safeTradePlan = finalTradePlan ?? null;
 
     // Build history entry
-    const historySymbol = (researchSymbol ?? researchResult.symbol) ?? null;
     const historyEntry: any = {
       symbol: historySymbol,
       signal: finalSignal,
@@ -5907,6 +6026,9 @@ export class AutoTradeEngine {
       historyEntry.tradeId = tradeId;
     }
 
+    // CRITICAL: For AUTO_TRADE_RESEARCH, ensure exactly ONE history entry per cycle
+    // If executionStatus is provided, this is an update to existing research history
+    // If executionStatus is null, this is the initial research completion history save
     await firestoreAdapter.storeResearchHistory(uid, historyEntry);
     logger.info({ uid, symbol: researchResult.symbol, executionStatus, decisionStatus }, '✅ [HISTORY] Auto-trade history saved after execution');
   }

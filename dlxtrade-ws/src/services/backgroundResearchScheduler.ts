@@ -336,18 +336,9 @@ export class BackgroundResearchScheduler {
    */
   private async updateUserResearchSchedule(uid: string) {
     try {
-      // CRITICAL: Check INVALID_KEYS first - do not schedule any research
-      const exchangeConfig = await firestoreAdapter.getExchangeConfig(uid);
-      if (exchangeConfig?.exchangeStatus === 'INVALID_KEYS') {
-        // Cancel any existing interval for this user
-        const existingInterval = this.userIntervals.get(uid);
-        if (existingInterval) {
-          clearInterval(existingInterval);
-          this.userIntervals.delete(uid);
-          this.userJobStates.delete(uid);
-        }
-        return;
-      }
+      // REMOVED: INVALID_KEYS check no longer blocks scheduling
+      // Scheduler should run even with invalid keys - auto-trade engine will save SKIPPED history
+      // This ensures history is always updated and user sees feedback
 
       // CRITICAL: Skip system/internal UIDs
       if (this.isSystemUid(uid)) {

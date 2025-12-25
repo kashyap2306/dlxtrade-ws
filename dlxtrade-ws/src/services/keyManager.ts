@@ -10,12 +10,13 @@ const IV_LENGTH = 16;
 const KEY_LENGTH = 32;
 
 function getEncryptionKey(): Buffer {
-  const keyString = config.encryption.key;
+  // ENFORCE: Always use ONLY process.env.ENCRYPTION_SECRET (no fallback!)
+  const keyString = process.env.ENCRYPTION_SECRET;
   if (!keyString) {
-    throw new Error('ENCRYPTION_KEY environment variable is not set');
+    throw new Error('ENCRYPTION_SECRET environment variable is not set');
   }
   if (keyString.length < KEY_LENGTH) {
-    throw new Error(`ENCRYPTION_KEY must be at least ${KEY_LENGTH} characters long`);
+    throw new Error(`ENCRYPTION_SECRET must be at least ${KEY_LENGTH} characters long`);
   }
   return Buffer.from(keyString.slice(0, KEY_LENGTH), 'utf8');
 }
@@ -50,72 +51,34 @@ export function decrypt(cipherText: string): string {
   }
 
   try {
-    // FIX: Detect plain API keys (not encrypted with AES)
-    if (!cipherText.includes(':')) {
-      if (/^[A-Za-z0-9_\-]{16,}/.test(cipherText)) {
-        console.log('DECRYPT_DEBUG: Plain API key detected, returning as-is');
-        return cipherText;
-      }
-    }
-
     const key = getEncryptionKey();
     const parts = cipherText.split(':');
 
+    // STANDARD FORMAT: iv:encrypted
     if (parts.length === 2) {
-      try {
-        const [ivBase64, encryptedBase64] = parts;
-        const iv = Buffer.from(ivBase64, 'base64');
+      const [ivBase64, encryptedBase64] = parts;
+      const iv = Buffer.from(ivBase64, 'base64');
 
-        if (iv.length === IV_LENGTH) {
-          const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
-          let decrypted = decipher.update(encryptedBase64, 'base64', 'utf8');
-          decrypted += decipher.final('utf8');
-          return decrypted;
-        }
-      } catch {}
-    }
-
-    try {
-      const buf = Buffer.from(cipherText, 'base64');
-      if (buf.length >= IV_LENGTH + 1) {
-        const iv = buf.subarray(0, IV_LENGTH);
-        const payload = buf.subarray(IV_LENGTH);
-
+      if (iv.length === IV_LENGTH) {
         const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
-        let decrypted = decipher.update(payload, undefined, 'utf8');
+        let decrypted = decipher.update(encryptedBase64, 'base64', 'utf8');
         decrypted += decipher.final('utf8');
-
-        logger.info('Legacy key decrypted successfully, re-encrypting with new format');
         return decrypted;
       }
-    } catch {}
-
-    try {
-      const decipher = crypto.createDecipher(ALGORITHM, key);
-      let decrypted = decipher.update(cipherText, 'base64', 'utf8');
-      decrypted += decipher.final('utf8');
-      return decrypted;
-    } catch {}
-
-    // CRITICAL: Decryption failed - only log if encrypted value exists (not empty)
-    // Do NOT log warnings for empty values (expected for unconfigured providers)
-    // Do NOT throw - caller should treat as invalid credentials, not abort operation
-    if (cipherText && cipherText.trim().length > 0) {
-      logger.debug({ 
-        cipherTextLength: cipherText.length,
-        cipherTextPrefix: cipherText.substring(0, 20) + '...'
-      }, 'Decryption failed - returning empty string (treating as invalid credentials)');
     }
+
+    // If decryption fails, return empty string (treat as corrupted)
+    logger.warn({ 
+      cipherTextLength: cipherText.length,
+      cipherTextFormat: parts.length === 2 ? 'iv:encrypted' : 'unknown'
+    }, 'Decryption failed - invalid format or wrong encryption secret');
     return '';
   } catch (error) {
-    // CRITICAL: Only log if encrypted value exists (not empty)
-    // Decryption failure should NOT abort background research or stop scheduler
-    if (cipherText && cipherText.trim().length > 0) {
-      logger.debug({ 
-        error: (error as Error).message,
-        cipherTextLength: cipherText?.length || 0
-      }, 'Decryption failed - returning empty string (treating as invalid credentials)');
-    }
+    // Decryption failed - wrong secret or corrupted data
+    logger.error({ 
+      error: (error as Error).message,
+      cipherTextLength: cipherText?.length || 0
+    }, 'Decryption failed - returning empty string (invalid ENCRYPTION_SECRET or corrupted data)');
     return '';
   }
 }
