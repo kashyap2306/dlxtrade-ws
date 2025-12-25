@@ -62,7 +62,7 @@ export class BackgroundResearchScheduler {
     // 🔥 HARD LOG: Scheduler startup
     console.log('🔥 [HARD_LOG] [SCHEDULER_START] Background research scheduler start() called');
     logger.info({ timestamp: new Date().toISOString() }, '🔥 [HARD_LOG] [SCHEDULER_START] Background research scheduler start() called');
-    
+
     // Check env flag first
     if (process.env.DISABLE_AUTOTRADE === 'true') {
       logger.warn('Background research scheduler DISABLED by env flag');
@@ -367,7 +367,7 @@ export class BackgroundResearchScheduler {
       let finalFrequency: number | null = null;
 
       console.log('🔥 [HARD_LOG] [MODE_CHECK] Checking mode for user:', uid, 'autoTradeEnabled:', autoTradeEnabled, 'telegramBgResearchEnabled:', telegramBgResearchEnabled);
-      
+
       if (autoTradeEnabled) {
         // AUTO_TRADE_RESEARCH mode - HIGHEST PRIORITY
         // CRITICAL: Telegram Background Research engine is COMPLETELY BYPASSED when Auto-Trade is enabled
@@ -1289,7 +1289,7 @@ export class BackgroundResearchScheduler {
         accuracy: 0,
         status: 'BLOCKED',
         symbol: null,
-        reason: 'EXCHANGE_KEYS_INVALID'
+        reason: 'INVALID_KEYS / DECRYPT_FAILED'
       });
       return;
     }
@@ -1491,7 +1491,7 @@ export class BackgroundResearchScheduler {
                 isDeepResearch: true,
                 source: 'AUTO_TRADE',
                 status: 'SKIPPED',
-                skipReason: 'EXCHANGE_KEY_DECRYPTION_FAILED',
+                skipReason: 'INVALID_KEYS / DECRYPT_FAILED',
                 error: researchErr.message
               });
             } catch (histError: any) {
@@ -1971,14 +1971,14 @@ export class BackgroundResearchScheduler {
 
               logger.info({ uid, coin, accuracy: finalAccuracyPercent },
                 '[TELEGRAM] Sending HOLD signal (no trade plan)');
-              } else {
-                // BUY/SELL signal: Full trade plan with TP1/TP2/TP3
-                // Validate trade plan exists and has required fields
-                if (!tradePlan || !tradePlan.entryPrice || !tradePlan.stopLoss) {
-                  logger.error({ uid, coin, signal, accuracy: finalAccuracyPercent, tradePlan },
-                    '[TELEGRAM_ERROR] BUY/SELL signal but trade plan is missing or incomplete!');
-                  // Fallback: Send HOLD message instead
-                  message = `🚨 *DLXTRADE Background Research Alert*
+            } else {
+              // BUY/SELL signal: Full trade plan with TP1/TP2/TP3
+              // Validate trade plan exists and has required fields
+              if (!tradePlan || !tradePlan.entryPrice || !tradePlan.stopLoss) {
+                logger.error({ uid, coin, signal, accuracy: finalAccuracyPercent, tradePlan },
+                  '[TELEGRAM_ERROR] BUY/SELL signal but trade plan is missing or incomplete!');
+                // Fallback: Send HOLD message instead
+                message = `🚨 *DLXTRADE Background Research Alert*
 
 **Coin:** ${coin}
 **Signal:** HOLD (Trade plan generation failed)
@@ -1986,17 +1986,17 @@ export class BackgroundResearchScheduler {
 **Timestamp:** ${timestamp}
 
 ⚡ *Action:* Trade plan unavailable - signal not actionable.`;
-                } else {
-                  // BUY/SELL signal: Show trade plan if accuracy meets user's Telegram trigger (not hardcoded 70%)
-                  // CRITICAL: Trade plan should be shown when accuracy >= user's Telegram accuracy trigger
-                  let entryPrice: number | undefined;
-                  let stopLoss: number | undefined;
-                  let tp1: number | undefined;
-                  let tp2: number | undefined;
-                  let tp3: number | undefined;
+              } else {
+                // BUY/SELL signal: Show trade plan if accuracy meets user's Telegram trigger (not hardcoded 70%)
+                // CRITICAL: Trade plan should be shown when accuracy >= user's Telegram accuracy trigger
+                let entryPrice: number | undefined;
+                let stopLoss: number | undefined;
+                let tp1: number | undefined;
+                let tp2: number | undefined;
+                let tp3: number | undefined;
 
-                  // Use user's Telegram accuracy trigger (already calculated as minTrigger)
-                  if (finalAccuracyPercent >= minTrigger) {
+                // Use user's Telegram accuracy trigger (already calculated as minTrigger)
+                if (finalAccuracyPercent >= minTrigger) {
                   // BUY/SELL with valid trade plan and accuracy >= 70% - show full TP1/TP2/TP3
                   entryPrice = tradePlan.entryPrice;
                   stopLoss = tradePlan.stopLoss;

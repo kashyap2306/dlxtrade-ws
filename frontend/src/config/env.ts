@@ -9,12 +9,14 @@ const DEPLOYED_BACKEND_URL = 'https://dlxtrade-ws-1.onrender.com';
 // In production, ALWAYS use Render backend URL (ignore any env vars)
 export const API_BASE_URL = import.meta.env.PROD
   ? DEPLOYED_BACKEND_URL
-  : (isLocalhost ? "http://localhost:4000" : DEPLOYED_BACKEND_URL);
+  : ((import.meta.env.VITE_API_URL as string | undefined) || (isLocalhost ? "http://localhost:4000" : DEPLOYED_BACKEND_URL));
 
 // WebSocket URL construction
 // Converts https:// to wss:// and http:// to ws://
 export const WS_URL = (() => {
   if (isLocalhost) {
+    const viteWsUrl = import.meta.env.VITE_WS_URL as string | undefined;
+    if (viteWsUrl && viteWsUrl.trim().length > 0) return viteWsUrl;
     return "ws://localhost:4000/ws";
   }
   // Convert https:// to wss:// for WebSocket (or http:// to ws://)

@@ -14,6 +14,32 @@ export async function isExchangeUsable(uid: string): Promise<boolean> {
   return true;
 }
 
+/**
+ * ONE-TIME RECOVERY UTILITY: Clear encrypted exchange keys when decryption fails
+ * Forces user to reconnect exchange, preventing silent failures
+ * Should be called when decryptOrThrow fails for exchange keys
+ */
+export async function clearInvalidExchangeKeys(uid: string): Promise<void> {
+  const exchangeRef = db().collection('users').doc(uid).collection('exchangeConfig').doc('current');
+
+  try {
+    await exchangeRef.update({
+      apiKeyEncrypted: admin.firestore.FieldValue.delete(),
+      secretKeyEncrypted: admin.firestore.FieldValue.delete(),
+      secretEncrypted: admin.firestore.FieldValue.delete(),
+      passphraseEncrypted: admin.firestore.FieldValue.delete(),
+      exchangeStatus: 'INVALID_KEYS',
+      keysClearedAt: admin.firestore.FieldValue.serverTimestamp(),
+      keysClearedReason: 'Decryption failure - ENCRYPTION_SECRET mismatch'
+    });
+
+    logger.warn({ uid }, 'Cleared encrypted exchange keys due to decryption failure - user must reconnect exchange');
+  } catch (error: any) {
+    logger.error({ uid, error: error.message }, 'Failed to clear invalid exchange keys');
+    throw error;
+  }
+}
+
 
 export interface ApiKeyDocument {
   id?: string;

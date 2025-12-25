@@ -55,7 +55,7 @@ export default function Login() {
 
       // Call backend POST /api/auth/afterSignIn with idToken
       console.log("afterSignIn sent");
-      const authResponse = await api.post('/auth/afterSignIn', { idToken });
+      const authResponse = await api.post('/auth/afterSignIn', { idToken }, { timeout: 30000 });
 
       if (authResponse.status !== 200) {
         throw new Error(`Backend auth failed: ${authResponse.status}`);

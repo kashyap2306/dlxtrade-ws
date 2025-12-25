@@ -74,7 +74,7 @@ export default function Signup() {
       // CRITICAL: Signup succeeds if auth succeeded - afterSignIn is non-blocking
       // If afterSignIn fails, user can still log in (auth succeeded)
       try {
-        const afterSignInResponse = await api.post('/auth/afterSignIn', { idToken });
+        const afterSignInResponse = await api.post('/auth/afterSignIn', { idToken }, { timeout: 30000 });
         
         // Verify user document was created successfully
         if (!afterSignInResponse.data?.success) {

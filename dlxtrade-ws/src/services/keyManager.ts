@@ -5,6 +5,14 @@ import { logger } from '../utils/logger';
 import type { ApiKey } from '../types';
 import { createHash } from 'crypto';
 
+/**
+ * CRITICAL ENCRYPTION POLICY:
+ * - ENCRYPTION_SECRET must NEVER be rotated once deployed
+ * - Old encrypted data is unrecoverable by design (security feature)
+ * - If ENCRYPTION_SECRET changes, ALL users must reconnect their exchanges
+ * - No fallback secrets, no recovery mechanisms, no migrations
+ */
+
 const ALGORITHM = 'aes-256-cbc';
 const IV_LENGTH = 16;
 const KEY_LENGTH = 32;
@@ -45,7 +53,7 @@ export function encrypt(text: string): string {
 
 export function decrypt(cipherText: string): string {
   // CRITICAL: If encrypted value is missing or empty, do NOT attempt decryption
-  // Do NOT log error - treat as unconfigured provider
+  // Treat as unconfigured provider / invalidated keys
   if (!cipherText || cipherText.trim().length === 0) {
     return '';
   }
@@ -67,18 +75,18 @@ export function decrypt(cipherText: string): string {
       }
     }
 
-    // If decryption fails, return empty string (treat as corrupted)
-    logger.warn({ 
+    // Invalid format or corrupted value
+    logger.warn({
       cipherTextLength: cipherText.length,
       cipherTextFormat: parts.length === 2 ? 'iv:encrypted' : 'unknown'
     }, 'Decryption failed - invalid format or wrong encryption secret');
     return '';
   } catch (error) {
-    // Decryption failed - wrong secret or corrupted data
-    logger.error({ 
+    // Expected failure when ENCRYPTION_SECRET mismatches old data
+    logger.warn({
       error: (error as Error).message,
       cipherTextLength: cipherText?.length || 0
-    }, 'Decryption failed - returning empty string (invalid ENCRYPTION_SECRET or corrupted data)');
+    }, 'Decryption failed - invalid ENCRYPTION_SECRET or corrupted data');
     return '';
   }
 }
@@ -93,23 +101,27 @@ export function decryptOrThrow(cipherText: string, fieldName: string = 'field'):
   }
 
   const decrypted = decrypt(cipherText);
-  
+
   if (!decrypted || decrypted.trim() === '') {
     const encryptionKeyHash = getEncryptionKeyHash(8);
-    logger.error({ 
-      fieldName, 
+    logger.error({
+      fieldName,
       encryptionKeyHash,
       cipherTextLength: cipherText.length,
       cipherTextPrefix: cipherText.substring(0, 20) + '...'
     }, 'EXCHANGE_KEY_DECRYPTION_FAILED: Decryption returned empty string');
-    throw new Error(`EXCHANGE_KEY_DECRYPTION_FAILED: Failed to decrypt ${fieldName} - invalid ENCRYPTION_SECRET or corrupted data. Please re-enter your exchange API keys.`);
+    throw new Error(
+      `EXCHANGE_KEY_DECRYPTION_FAILED: Failed to decrypt ${fieldName} - invalid ENCRYPTION_SECRET or corrupted data. ` +
+      'Please re-enter your exchange API keys.'
+    );
   }
 
   return decrypted;
 }
 
+// FIXED: Hash MUST be derived from the SAME key used for encryption/decryption
 export function getEncryptionKeyHash(prefixLength: number = 8): string {
-  const key = config.encryption.key || '';
+  const key = process.env.ENCRYPTION_SECRET || '';
   const digest = createHash('sha256').update(key).digest('hex');
   return digest.slice(0, prefixLength);
 }

@@ -147,12 +147,20 @@ api.interceptors.request.use(
           if (!config.headers) config.headers = {} as any;
           (config.headers as any)['Authorization'] = `Bearer ${token}`;
           console.log(`[AXIOS] 🔐 AUTH_HEADER_PRESENT for ${config.url}`);
-        } else if (config.url?.startsWith('/api')) {
-          // Block protected API calls
-          console.error(`[AXIOS] 🛑 ABORTING protected call (${config.url}) - No token available`);
-          return Promise.reject(new Error('Unauthenticated: No Firebase token available'));
         } else {
-          console.log(`[AXIOS] ℹ️ Public request: ${config.url}`);
+          // BaseURL is API_URL (e.g. http://localhost:4000/api), so most calls are protected even if url doesn't start with "/api".
+          // Only allow unauthenticated requests for explicitly public endpoints.
+          const url = config.url || '';
+          const isPublic =
+            url.startsWith('/auth/afterSignIn') ||
+            url.startsWith('/health') ||
+            url.startsWith('/test');
+
+          if (!isPublic) {
+            console.error(`[AXIOS] 🛑 ABORTING protected call (${url}) - No token available`);
+            return Promise.reject(new Error('Unauthenticated: No Firebase token available'));
+          }
+          console.log(`[AXIOS] ℹ️ Public request: ${url}`);
         }
       }
     } catch (err) {
@@ -255,7 +263,9 @@ api.interceptors.response.use(
     }
 
     // Handle 401 errors with token refresh retry
-    if (error.response?.status === 401 && config.url?.startsWith('/api') && !config._retry) {
+    // NOTE: config.url is typically like "/auto-trade/status" because baseURL already contains "/api".
+    // So we MUST NOT gate this retry on url.startsWith('/api').
+    if (error.response?.status === 401 && !config._retry) {
       console.log('[AXIOS] 401 received — forcing token refresh and retry');
       config._retry = true;
 

@@ -412,13 +412,13 @@ export async function buildApp(): Promise<FastifyInstance> {
   console.log("=== FASTIFY ROUTE TREE START ===");
   const routeTree = app.printRoutes();
   console.log(routeTree);
-  
+
   // Verify critical routes are registered
   const routesList = routeTree.split('\n').map(line => line.trim()).filter(line => line.length > 0);
   const diagnosticCheckRoute = routesList.find(line => line.includes('diagnostic-check'));
   const profileRoute = routesList.find(line => line.includes('user/profile'));
   const autoTradeRoutes = routesList.filter(line => line.includes('/api/auto-trade'));
-  
+
   console.log("=== ROUTE VERIFICATION ===");
   console.log("diagnostic-check route found:", diagnosticCheckRoute ? "YES" : "NO");
   if (diagnosticCheckRoute) console.log("  ->", diagnosticCheckRoute);
