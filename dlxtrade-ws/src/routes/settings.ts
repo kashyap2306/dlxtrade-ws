@@ -1251,6 +1251,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
           autoTradeAlertsPrereqMet: false,
           autoTradeAlertsPrereqMissing: ['Timeout loading settings']
         });
+        return;
       }
     }, 2000);
 
@@ -1353,6 +1354,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
           success: false,
           error: 'Operation timeout'
         });
+        return;
       }
     }, 2000);
 

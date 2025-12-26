@@ -277,33 +277,45 @@ export class BackgroundResearchScheduler {
       let scheduledCount = 0;
       let skippedCount = 0;
 
-      for (const userDoc of usersSnapshot.docs) {
-        const uid = userDoc.id;
-        console.log('🔥 [HARD_LOG] [USER_CHECK] Processing user:', uid);
+      // Process users in small batches to prevent event loop blocking
+      const BATCH_SIZE = 3;
+      const userDocs = usersSnapshot.docs;
 
-        // CRITICAL: Skip system/internal UIDs
-        if (this.isSystemUid(uid)) {
-          console.log('🔥 [HARD_LOG] [USER_SKIP] Skipping system UID:', uid);
-          continue;
+      for (let i = 0; i < userDocs.length; i += BATCH_SIZE) {
+        const batch = userDocs.slice(i, i + BATCH_SIZE);
+        console.log(`🔥 [HARD_LOG] [BATCH_PROCESS] Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(userDocs.length / BATCH_SIZE)} (${batch.length} users)`);
+
+        // Process each user in the batch
+        for (const userDoc of batch) {
+          const uid = userDoc.id;
+          console.log('🔥 [HARD_LOG] [USER_CHECK] Processing user:', uid);
+
+          // CRITICAL: Skip system/internal UIDs
+          if (this.isSystemUid(uid)) {
+            console.log('🔥 [HARD_LOG] [USER_SKIP] Skipping system UID:', uid);
+            continue;
+          }
+
+          const wasScheduled = this.userIntervals.has(uid);
+          console.log('🔥 [HARD_LOG] [USER_SCHEDULE_START] Calling updateUserResearchSchedule() for:', uid, 'wasScheduled:', wasScheduled);
+          await this.updateUserResearchSchedule(uid);
+          const isScheduled = this.userIntervals.has(uid);
+          console.log('🔥 [HARD_LOG] [USER_SCHEDULE_COMPLETE] updateUserResearchSchedule() completed for:', uid, 'isScheduled:', isScheduled);
+
+          if (isScheduled && !wasScheduled) {
+            scheduledCount++;
+            logger.info({ uid }, '✅ [SCHEDULER_IMMORTAL] User scheduled/re-scheduled - interval created');
+          } else if (isScheduled && wasScheduled) {
+            // Already scheduled - verified
+          } else if (!isScheduled) {
+            skippedCount++;
+          }
         }
 
-        // CRITICAL FIX: Yield to event loop to prevent blocking
-        // Process users with await boundaries to allow event loop to process other tasks
-        await yieldToEventLoop();
-
-        const wasScheduled = this.userIntervals.has(uid);
-        console.log('🔥 [HARD_LOG] [USER_SCHEDULE_START] Calling updateUserResearchSchedule() for:', uid, 'wasScheduled:', wasScheduled);
-        await this.updateUserResearchSchedule(uid);
-        const isScheduled = this.userIntervals.has(uid);
-        console.log('🔥 [HARD_LOG] [USER_SCHEDULE_COMPLETE] updateUserResearchSchedule() completed for:', uid, 'isScheduled:', isScheduled);
-
-        if (isScheduled && !wasScheduled) {
-          scheduledCount++;
-          logger.info({ uid }, '✅ [SCHEDULER_IMMORTAL] User scheduled/re-scheduled - interval created');
-        } else if (isScheduled && wasScheduled) {
-          // Already scheduled - verified
-        } else if (!isScheduled) {
-          skippedCount++;
+        // Yield to event loop between batches to prevent blocking
+        if (i + BATCH_SIZE < userDocs.length) {
+          console.log('🔥 [HARD_LOG] [BATCH_YIELD] Yielding to event loop between batches');
+          await yieldToEventLoop();
         }
       }
 
@@ -358,6 +370,20 @@ export class BackgroundResearchScheduler {
       // This flag is set when user completes Telegram setup and starts Deep Research
       const telegramBgResearchEnabled = settings?.telegramBackgroundResearchEnabled === true ||
         (settings?.backgroundResearchEnabled === true && settings?.telegramBackgroundResearchEnabled !== false);
+
+      // EARLY RETURN: Skip users with both modes disabled
+      // Do not read integrations, validate frequency, or touch scheduler interval
+      if (!autoTradeEnabled && !telegramBgResearchEnabled) {
+        console.log('🔥 [HARD_LOG] [EARLY_RETURN] Both modes disabled for user:', uid, '- skipping all processing');
+        // Remove any existing interval for this user
+        if (this.userIntervals.has(uid)) {
+          clearInterval(this.userIntervals.get(uid)!);
+          this.userIntervals.delete(uid);
+          this.userJobStates.delete(uid);
+          console.log('🔥 [HARD_LOG] [INTERVAL_CLEANUP] Removed interval for disabled user:', uid);
+        }
+        return;
+      }
 
       // CONFLICT RESOLUTION: Auto-Trade always wins for execution mode
       // CRITICAL: When Auto-Trade is enabled, Telegram Background Research is COMPLETELY BYPASSED
@@ -2477,23 +2503,16 @@ export class BackgroundResearchScheduler {
    */
   private async hasUsableExchangeAPIs(uid: string): Promise<boolean> {
     try {
-      // CRITICAL: Exchange API decryption failure should ONLY block auto-trade execution
-      // It should NOT block or pause Background Research (TELEGRAM_BACKGROUND_RESEARCH mode)
-      // This check is ONLY used to determine if auto-trade can execute
-      const { resolveExchangeConnector } = await import('./exchangeResolver');
-      const exchangeResolved = await resolveExchangeConnector(uid);
-
-      // If exchange connector resolves successfully, exchange APIs are usable
-      // If decryption fails, resolveExchangeConnector returns null (but doesn't throw)
-      // This allows Background Research to continue even if exchange APIs fail
-      return !!exchangeResolved;
+      // CRITICAL: Exchange is usable if encrypted keys exist - NEVER use decryption to determine usability
+      // This check determines if auto-trade can execute, based on Firestore presence only
+      const { isExchangeUsable } = await import('./firestoreAdapter');
+      return await isExchangeUsable(uid);
     } catch (error: any) {
-      // CRITICAL: Decryption failure in exchange APIs should NOT stop Background Research
-      // Log as debug (not error) to reduce noise - this is expected when exchange APIs are not configured
-      logger.debug({
+      // Log error but return false - this should not happen with pure Firestore checks
+      logger.warn({
         uid,
         error: error.message
-      }, 'Exchange APIs not available (expected for Telegram Background Research mode)');
+      }, 'Error checking exchange usability');
       return false;
     }
   }

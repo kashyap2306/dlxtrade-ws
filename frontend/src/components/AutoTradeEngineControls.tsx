@@ -72,100 +72,36 @@ export const AutoTradeEngineControls: React.FC<AutoTradeEngineControlsProps> = (
 
   const handleAutoTradeToggle = async (enabled: boolean, frequencyMinutes?: number) => {
     console.log("handleAutoTradeToggle called with:", { enabled, frequencyMinutes });
-    console.log("exchangeConfig at toggle:", exchangeConfig);
-    console.log("providerConfig at toggle:", providerConfig);
 
     if (togglingRef.current) return;
     togglingRef.current = true;
 
-    // CRITICAL: Backend is source of truth - use isReady prop (computed from backend exchangeConnected)
-    // Allow disabling always, allow enabling if backend says exchange is connected
-    if (!enabled || isReady) {
-      setSaving(true);
-      try {
-        // [DIAGNOSTIC] Log toggle request
-        console.log('[FRONTEND_TOGGLE_DIAGNOSTIC] Sending toggle request:', {
-          enabled,
-          typeofEnabled: typeof enabled,
-          frequencyMinutes
-        });
+    // PURE STATE UPDATE: Allow toggling regardless of exchange status
+    setSaving(true);
+    try {
+      // Send ONLY { enabled } to backend (frequencyMinutes ignored)
+      const response = await autoTradeApi.toggle(enabled);
 
-        const response = await autoTradeApi.toggle(enabled, frequencyMinutes);
+      // IMMEDIATELY update UI state on successful response
+      setAutoTradeStatus(prev => ({ ...prev, enabled }));
+      setConfig(prev => ({ ...prev, autoTradeEnabled: enabled }));
 
-        // [DIAGNOSTIC] Log API response
-        console.log('[FRONTEND_TOGGLE_DIAGNOSTIC] Toggle API response:', {
-          response: response?.data,
-          enabled: response?.data?.enabled,
-          typeofEnabled: typeof response?.data?.enabled,
-        });
-
-        // Set correct state after enable
-        const isEnabled = response?.data?.enabled ?? enabled;
-
-        // [DIAGNOSTIC] Log final state being set
-        console.log('[FRONTEND_TOGGLE_DIAGNOSTIC] Setting state:', {
-          isEnabled,
-          typeofIsEnabled: typeof isEnabled,
-        });
-
-        setAutoTradeStatus(prev => ({ ...prev, enabled: isEnabled }));
-        setConfig(prev => ({ ...prev, autoTradeEnabled: isEnabled }));
-
-        if (isEnabled) {
-          updateEngineStatus();
-          // Note: Research status would be set by backend updates
-        }
-
-        showToast(`Auto-Trade ${enabled ? 'started' : 'stopped'}`, 'success');
-        setShowStartModal(false); // Close modal on success
-        return response; // Return the promise result
-      } catch (err: any) {
-        console.error("AUTO-TRADE ENABLE API ERROR:", err);
-
-        const backendStatus =
-          err?.response?.status ||
-          err?.status ||
-          "NO_STATUS";
-
-        const backendMessage =
-          err?.response?.data?.message ||
-          err?.message ||
-          "Unknown backend error.";
-
-        const backendDetails =
-          err?.response?.data ||
-          null;
-
-        const errors = [
-          {
-            title: "Auto-Trade Enable Failed",
-            reason: `Backend returned status: ${backendStatus}`,
-            fix: backendMessage
-          }
-        ];
-
-        if (backendDetails) {
-          errors.push({
-            title: "Backend Details",
-            reason: JSON.stringify(backendDetails, null, 2),
-            fix: "Review API keys, futures mode, permissions, and required settings."
-          });
-        }
-
-        showToast(errors[0].title, 'error');
-      } finally {
-        setSaving(false);
-        togglingRef.current = false;
+      if (enabled) {
+        updateEngineStatus();
       }
-    } else {
+
+      showToast(`Auto-Trade ${enabled ? 'started' : 'stopped'}`, 'success');
+      setShowStartModal(false); // Close modal on success
+    } catch (err: any) {
+      console.error("AUTO-TRADE TOGGLE API ERROR:", err);
+      showToast('Failed to toggle Auto-Trade', 'error');
+    } finally {
+      setSaving(false);
       togglingRef.current = false;
-      showToast('Exchange must be connected to enable Auto-Trade. Check diagnostics.', 'error');
-      return;
     }
   };
 
-  // Removed validateAutoTradeRequirements and checkAndEnableAutoTrade
-  // Backend is single source of truth - use isReady prop (computed from backend exchangeConnected)
+  // Toggle is pure state update - no exchange validation required
 
   return (
     <>
@@ -221,14 +157,8 @@ export const AutoTradeEngineControls: React.FC<AutoTradeEngineControlsProps> = (
                 </button>
                 <div className="relative group">
                   <button
-                    onClick={() => {
-                      if (isReady) {
-                        setShowStartModal(true);
-                      } else {
-                        showToast("Connect your exchange first.", "error");
-                      }
-                    }}
-                    disabled={saving || !isReady}
+                    onClick={() => setShowStartModal(true)}
+                    disabled={saving}
                     className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
                     {saving ? 'Enabling...' : 'Start Auto-Trade'}

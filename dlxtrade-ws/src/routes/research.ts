@@ -257,6 +257,7 @@ export async function researchRoutes(fastify: FastifyInstance) {
       }));
       console.log("[RESEARCH_IMMEDIATE_RESPONSE_SENT]");
       reply.send(logs || []);
+      return;
     } catch (err: any) {
       logger.warn({ uid: user.uid, error: err.message, duration: Date.now() - startTime }, 'GET /research/logs error - returning safe default');
       console.log("[RESEARCH_IMMEDIATE_RESPONSE_SENT]");

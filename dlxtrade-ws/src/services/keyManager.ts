@@ -51,11 +51,11 @@ export function encrypt(text: string): string {
   }
 }
 
-export function decrypt(cipherText: string): string {
+export function decrypt(cipherText: string): string | null {
   // CRITICAL: If encrypted value is missing or empty, do NOT attempt decryption
   // Treat as unconfigured provider / invalidated keys
   if (!cipherText || cipherText.trim().length === 0) {
-    return '';
+    return null;
   }
 
   try {
@@ -71,6 +71,16 @@ export function decrypt(cipherText: string): string {
         const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
         let decrypted = decipher.update(encryptedBase64, 'base64', 'utf8');
         decrypted += decipher.final('utf8');
+
+        // CRITICAL: If decryption succeeded but result is empty, treat as corrupted
+        if (!decrypted || decrypted.trim() === '') {
+          logger.warn({
+            cipherTextLength: cipherText.length,
+            cipherTextPrefix: cipherText.substring(0, 20) + '...'
+          }, 'Decryption succeeded but returned empty string - treating as CORRUPTED');
+          return null;
+        }
+
         return decrypted;
       }
     }
@@ -79,15 +89,15 @@ export function decrypt(cipherText: string): string {
     logger.warn({
       cipherTextLength: cipherText.length,
       cipherTextFormat: parts.length === 2 ? 'iv:encrypted' : 'unknown'
-    }, 'Decryption failed - invalid format or wrong encryption secret');
-    return '';
+    }, 'Decryption failed - invalid format or wrong encryption secret - treating as CORRUPTED');
+    return null;
   } catch (error) {
     // Expected failure when ENCRYPTION_SECRET mismatches old data
     logger.warn({
       error: (error as Error).message,
       cipherTextLength: cipherText?.length || 0
-    }, 'Decryption failed - invalid ENCRYPTION_SECRET or corrupted data');
-    return '';
+    }, 'Decryption failed - invalid ENCRYPTION_SECRET or corrupted data - treating as CORRUPTED');
+    return null;
   }
 }
 
@@ -102,14 +112,14 @@ export function decryptOrThrow(cipherText: string, fieldName: string = 'field'):
 
   const decrypted = decrypt(cipherText);
 
-  if (!decrypted || decrypted.trim() === '') {
+  if (decrypted === null) {
     const encryptionKeyHash = getEncryptionKeyHash(8);
     logger.error({
       fieldName,
       encryptionKeyHash,
       cipherTextLength: cipherText.length,
       cipherTextPrefix: cipherText.substring(0, 20) + '...'
-    }, 'EXCHANGE_KEY_DECRYPTION_FAILED: Decryption returned empty string');
+    }, 'EXCHANGE_KEY_DECRYPTION_FAILED: Decryption returned null - CORRUPTED key');
     throw new Error(
       `EXCHANGE_KEY_DECRYPTION_FAILED: Failed to decrypt ${fieldName} - invalid ENCRYPTION_SECRET or corrupted data. ` +
       'Please re-enter your exchange API keys.'
@@ -152,12 +162,21 @@ export async function getKey(id: number): Promise<ApiKey | null> {
   if (rows.length === 0) return null;
 
   const row = rows[0];
+  const apiKey = decrypt(row.api_key_encrypted);
+  const apiSecret = decrypt(row.api_secret_encrypted);
+
+  // If decryption failed, return null to indicate corrupted keys
+  if (apiKey === null || apiSecret === null) {
+    logger.warn({ id: row.id, exchange: row.exchange }, 'API key decryption returned null - CORRUPTED data');
+    return null;
+  }
+
   return {
     id: row.id.toString(),
     exchange: row.exchange,
     name: row.name,
-    apiKey: decrypt(row.api_key_encrypted),
-    apiSecret: decrypt(row.api_secret_encrypted),
+    apiKey,
+    apiSecret,
     testnet: row.testnet,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

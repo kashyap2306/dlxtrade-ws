@@ -10,7 +10,10 @@ export async function isExchangeUsable(uid: string): Promise<boolean> {
   const doc = await db().collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
   if (!doc.exists) return false;
   const config = doc.data();
-  if (config && config.exchangeStatus === 'INVALID_KEYS') return false;
+  if (!config) return false;
+  // Exchange is usable if encrypted keys exist - decrypt failure is informational only
+  if (!config.apiKeyEncrypted) return false;
+  if (!config.secretEncrypted && !config.secretKeyEncrypted) return false;
   return true;
 }
 
@@ -2254,7 +2257,9 @@ export class FirestoreAdapter {
   }
 
   /**
-   * Save exchange credentials for a user
+   * DEPRECATED: Legacy exchange credentials method - DO NOT USE
+   * Exchange credentials are now stored in users/{uid}/exchangeConfig/current
+   * This method is disabled to prevent data corruption and inconsistencies
    */
   async saveExchangeCredentials(uid: string, exchange: string, credentials: {
     apiKey: string;
@@ -2262,45 +2267,44 @@ export class FirestoreAdapter {
     passphrase?: string;
     testnet: boolean;
   }): Promise<void> {
-    try {
-      await db().collection('users').doc(uid).collection('exchanges').doc(exchange).set({
-        ...credentials,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
-      logger.info({ uid, exchange }, 'Exchange credentials saved');
-    } catch (error: any) {
-      logger.error({ error: error.message, uid, exchange }, 'Error saving exchange credentials');
-      throw error;
-    }
+    throw new Error(`DEPRECATED: saveExchangeCredentials() is no longer supported. Exchange credentials must be saved to users/${uid}/exchangeConfig/current only.`);
   }
 
   /**
-   * Get exchange credentials for a user
+   * Get exchange credentials for a user - UPDATED for new system
+   * Reads from users/{uid}/exchangeConfig/current and returns credentials
+   * only if the stored exchange matches the requested exchange
    */
   async getExchangeCredentials(uid: string, exchange: string): Promise<any> {
     try {
-      const doc = await db().collection('users').doc(uid).collection('exchanges').doc(exchange).get();
+      const doc = await db().collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
       if (!doc.exists) {
         return null;
       }
-      return doc.data();
+      const config = doc.data();
+      if (!config || config.exchange !== exchange) {
+        return null;
+      }
+      // Return credentials in the expected format
+      return {
+        apiKey: config.apiKeyEncrypted,
+        secretKeyEncrypted: config.secretKeyEncrypted || config.secretEncrypted,
+        passphrase: config.passphraseEncrypted,
+        testnet: config.testnet
+      };
     } catch (error: any) {
-      logger.error({ error: error.message, uid, exchange }, 'Error getting exchange credentials');
+      logger.error({ error: error.message, uid, exchange }, 'Error getting exchange credentials from new system');
       throw error;
     }
   }
 
   /**
-   * Delete exchange credentials for a user
+   * DEPRECATED: Legacy exchange credentials method - DO NOT USE
+   * Exchange credentials are now stored in users/{uid}/exchangeConfig/current
+   * This method is disabled to prevent data corruption and inconsistencies
    */
   async deleteExchangeCredentials(uid: string, exchange: string): Promise<void> {
-    try {
-      await db().collection('users').doc(uid).collection('exchanges').doc(exchange).delete();
-      logger.info({ uid, exchange }, 'Exchange credentials deleted');
-    } catch (error: any) {
-      logger.error({ error: error.message, uid, exchange }, 'Error deleting exchange credentials');
-      throw error;
-    }
+    throw new Error(`DEPRECATED: deleteExchangeCredentials() is no longer supported. Exchange credentials must be managed in users/${uid}/exchangeConfig/current only.`);
   }
 
   /**

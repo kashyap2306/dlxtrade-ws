@@ -131,7 +131,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
     // SAFETY NET
     if (!reply.sent) {
       console.warn("[GET_FEATURES_SAFETY_NET] replying with fallback");
-      reply.send({});
+      return reply.send({});
     }
   });
 

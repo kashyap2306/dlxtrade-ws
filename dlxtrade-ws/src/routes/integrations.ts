@@ -71,11 +71,23 @@ export async function getUserIntegrations(uid: string) {
       type = "marketData";
     }
 
+    // Check if this provider requires API keys
+    const freeProviders = ['cryptocompare-freemode-1', 'cryptocompare-freemode-2'];
+    const autoEnabledAPIs = ['binancepublic', 'cryptocompare-freemode-1', 'cryptocompare-freemode-2'];
+    const isFreeProvider = freeProviders.includes(providerName);
+    const isAutoEnabled = autoEnabledAPIs.includes(providerName);
+
+    const requiresApiKey = !isFreeProvider && !isAutoEnabled && (
+      (type === "marketData" && MARKET_DATA_PROVIDERS.has(providerName)) ||
+      (type === "news" && NEWS_PROVIDERS.has(providerName)) ||
+      (type === "metadata" && METADATA_PROVIDERS.has(providerName))
+    );
+
     const normalized = {
       providerName: providerName || providerId,
       enabled: typeof data.enabled === 'boolean' ? data.enabled : false,
-      apiKeyEncrypted: data.apiKeyEncrypted ?? null,
-      decryptable: !!data.apiKeyEncrypted,
+      apiKeyEncrypted: requiresApiKey ? (data.apiKeyEncrypted ?? null) : null,
+      decryptable: requiresApiKey && !!data.apiKeyEncrypted,
       needsReencrypt: false,
       usageStats: (data.usageStats && typeof data.usageStats === 'object') ? data.usageStats : { calls: 0 },
       updatedAt: data.updatedAt || null
@@ -1069,16 +1081,10 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
 
       for (const [providerId, integration] of Object.entries(integrations)) {
         const encryptedKey = integration.apiKey || '';
-        let decryptedKey = '';
-        try {
-          decryptedKey = encryptedKey ? decrypt(encryptedKey) || '' : '';
-        } catch {
-          decryptedKey = '';
-        }
 
         providers[providerId] = {
           encryptedLen: encryptedKey.length,
-          decryptedLen: decryptedKey.length,
+          decryptedLen: 0, // Skip decryption for performance - only show length
           needsReencrypt: (integration as any).needsReencrypt || false,
           type: (integration as any).type || integration.apiType,
           enabled: integration.enabled

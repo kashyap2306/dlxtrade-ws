@@ -35,10 +35,7 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       if (!uid) {
         return reply.code(200).send({ success: false, message: { error: "User not authenticated" } });
       }
-      const exchangeConfig = await firestoreAdapter.getExchangeConfig(uid);
-      if (exchangeConfig?.exchangeStatus === 'INVALID_KEYS') {
-        return reply.code(200).send({ blocked: true, reason: "INVALID_KEYS" });
-      }
+      // Exchange status is informational only - proceed regardless
       const query = request.query;
       const validationParams = z.object({
         exchange: z.enum(['binance', 'bitget', 'weex', 'bingx']).optional(),
@@ -92,34 +89,14 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
           });
         }
 
-        // Decrypt credentials - CRITICAL: Use decryptOrThrow for exchange credentials
-        try {
-          const { decryptOrThrow } = await import('../services/keyManager');
-          credentials = {
-            apiKey: decryptOrThrow(config.apiKeyEncrypted, 'API key'),
-            secret: decryptOrThrow(config.secretKeyEncrypted || config.secretEncrypted, 'secret key'),
-            passphrase: config.passphraseEncrypted ? decryptOrThrow(config.passphraseEncrypted, 'passphrase') : undefined,
-            testnet: config.testnet ?? true,
-          };
-        } catch (decryptErr: any) {
-          // HARD RESET: one-time clean up if decrypt fails (cache per UID)
-          const memory = (global as any).__EXCHANGE_KEY_INVALID_CACHE = (global as any).__EXCHANGE_KEY_INVALID_CACHE || {};
-          if (!memory[uid]) {
-            await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').set({
-              apiKeyEncrypted: admin.firestore.FieldValue.delete(),
-              secretKeyEncrypted: admin.firestore.FieldValue.delete(),
-              passphraseEncrypted: admin.firestore.FieldValue.delete(),
-              exchangeStatus: 'INVALID_KEYS',
-              updatedAt: new Date()
-            }, { merge: true });
-            memory[uid] = true;
-          }
-          return reply.code(400).send({
-            message: { error: 'Exchange keys invalid. Please re-enter API keys.' },
-            success: false,
-            exchangeStatus: 'INVALID_KEYS',
-          });
-        }
+        // Decrypt credentials - CRITICAL: Use decryptOrThrow for explicit user actions only
+        const { decryptOrThrow } = await import('../services/keyManager');
+        credentials = {
+          apiKey: decryptOrThrow(config.apiKeyEncrypted, 'API key'),
+          secret: decryptOrThrow(config.secretKeyEncrypted || config.secretEncrypted, 'secret key'),
+          passphrase: config.passphraseEncrypted ? decryptOrThrow(config.passphraseEncrypted, 'passphrase') : undefined,
+          testnet: config.testnet ?? true,
+        };
       }
 
       // Validate required fields
@@ -305,64 +282,93 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
 
       if (query.exchange) {
         // Get status for specific exchange
-        const credentials = await firestoreAdapter.getExchangeCredentials(user.uid, query.exchange);
-        const isConnected = !!credentials;
+        const exchangeConfig = await firestoreAdapter.getExchangeConfig(user.uid);
 
-        let testResult = null;
-        if (isConnected && credentials) {
-          try {
-            // CRITICAL: Use decryptOrThrow for exchange credentials
-            const { decryptOrThrow } = await import('../services/keyManager');
-            const decrypted = {
-              apiKey: decryptOrThrow(credentials.apiKey, 'API key'),
-              secret: decryptOrThrow(credentials.secretKeyEncrypted || credentials.secretEncrypted || credentials.secret, 'secret key'),
-              passphrase: credentials.passphrase ? decryptOrThrow(credentials.passphrase, 'passphrase') : undefined,
-              testnet: credentials.testnet
-            };
-            const exchangeConnector = ExchangeConnectorFactory.create(query.exchange as ExchangeName, decrypted);
-            testResult = await exchangeConnector.testConnection();
-          } catch (testErr: any) {
-            // If decryption failed, log it but don't fail the status check
-            if (testErr.message?.includes('EXCHANGE_KEY_DECRYPTION_FAILED')) {
-              logger.error({ error: testErr.message, exchange: query.exchange }, 'Exchange status test failed - decryption error');
-            } else {
-              logger.warn({ error: testErr.message, exchange: query.exchange }, 'Exchange status test failed');
-            }
+        // Check if exchange is configured and matches requested exchange
+        if (!exchangeConfig || exchangeConfig.exchange !== query.exchange) {
+          return {
+            exchange: query.exchange,
+            connected: false,
+            exchangeStatus: 'NOT_CONFIGURED'
+          };
+        }
+
+        // Determine status purely from encrypted key presence and safe decrypt check
+        const hasEncryptedKeys = !!(exchangeConfig.apiKeyEncrypted &&
+                                   (exchangeConfig.secretEncrypted || exchangeConfig.secretKeyEncrypted));
+
+        if (!hasEncryptedKeys) {
+          return {
+            exchange: query.exchange,
+            connected: false,
+            exchangeStatus: 'NOT_CONFIGURED'
+          };
+        }
+
+        // Check if decrypt would fail (informational only)
+        const { decrypt } = await import('../services/keyManager');
+        let decryptFailed = false;
+
+        try {
+          decrypt(exchangeConfig.apiKeyEncrypted);
+          decrypt(exchangeConfig.secretKeyEncrypted || exchangeConfig.secretEncrypted);
+          if (exchangeConfig.passphraseEncrypted) {
+            decrypt(exchangeConfig.passphraseEncrypted);
           }
+        } catch (decryptErr: any) {
+          decryptFailed = true;
         }
 
         return {
           exchange: query.exchange,
-          connected: isConnected,
-          testResult
+          connected: !decryptFailed, // Connected if decrypt succeeds
+          exchangeStatus: decryptFailed ? 'CONFIGURED_BUT_DECRYPT_FAILED' : 'CONFIGURED'
         };
       } else {
         // Get status for all exchanges
         const exchanges: ExchangeName[] = ['binance', 'bitget', 'weex', 'bingx'];
-        const statusPromises = exchanges.map(async (exchange) => {
-          const credentials = await firestoreAdapter.getExchangeCredentials(user.uid, exchange);
-          const isConnected = !!credentials;
+        const exchangeConfig = await firestoreAdapter.getExchangeConfig(user.uid);
 
-          let testResult = null;
-          if (isConnected && credentials) {
-            try {
-              const decrypted = {
-                apiKey: decrypt(credentials.apiKey),
-                secret: decrypt(credentials.secretKeyEncrypted || credentials.secretEncrypted || credentials.secret),
-                passphrase: credentials.passphrase ? decrypt(credentials.passphrase) : undefined,
-                testnet: credentials.testnet
-              };
-              const exchangeConnector = ExchangeConnectorFactory.create(exchange, decrypted);
-              testResult = await exchangeConnector.testConnection();
-            } catch (testErr: any) {
-              logger.warn({ error: testErr.message, exchange }, 'Exchange status test failed');
+        const statusPromises = exchanges.map(async (exchange) => {
+          // Check if this exchange is configured
+          if (!exchangeConfig || exchangeConfig.exchange !== exchange) {
+            return {
+              exchange,
+              connected: false,
+              exchangeStatus: 'NOT_CONFIGURED'
+            };
+          }
+
+          // Determine status purely from encrypted key presence and safe decrypt check
+          const hasEncryptedKeys = !!(exchangeConfig.apiKeyEncrypted &&
+                                     (exchangeConfig.secretEncrypted || exchangeConfig.secretKeyEncrypted));
+
+          if (!hasEncryptedKeys) {
+            return {
+              exchange,
+              connected: false,
+              exchangeStatus: 'NOT_CONFIGURED'
+            };
+          }
+
+          // Check if decrypt would fail (informational only)
+          const { decrypt } = await import('../services/keyManager');
+          let decryptFailed = false;
+
+          try {
+            decrypt(exchangeConfig.apiKeyEncrypted);
+            decrypt(exchangeConfig.secretKeyEncrypted || exchangeConfig.secretEncrypted);
+            if (exchangeConfig.passphraseEncrypted) {
+              decrypt(exchangeConfig.passphraseEncrypted);
             }
+          } catch (decryptErr: any) {
+            decryptFailed = true;
           }
 
           return {
             exchange,
-            connected: isConnected,
-            testResult
+            connected: !decryptFailed, // Connected if decrypt succeeds
+            exchangeStatus: decryptFailed ? 'CONFIGURED_BUT_DECRYPT_FAILED' : 'CONFIGURED'
           };
         });
 
@@ -391,13 +397,17 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       const connectedExchanges = [];
 
       const t1 = Date.now();
-      for (const exchange of exchanges) {
-        const credentials = await firestoreAdapter.getExchangeCredentials(user.uid, exchange);
-        if (credentials) {
+
+      // Check if user has a usable exchange configuration
+      const exchangeUsable = await isExchangeUsable(user.uid);
+      if (exchangeUsable) {
+        // Get the configured exchange
+        const exchangeConfig = await firestoreAdapter.getExchangeConfig(user.uid);
+        if (exchangeConfig?.exchange) {
           connectedExchanges.push({
-            exchange,
+            exchange: exchangeConfig.exchange,
             connected: true,
-            testnet: credentials.testnet || true
+            testnet: exchangeConfig.testnet ?? true
           });
         }
       }
@@ -513,14 +523,18 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       const config = doc.data()!;
       const exchangeName = (config.exchange || 'unknown') as string;
 
-      // 2. Decrypt & Validate Credentials - CRITICAL: Use decryptOrThrow for exchange credentials
+      // 2. Decrypt & Validate Credentials - Graceful handling for balance checks
       let credentials: ExchangeCredentials;
       try {
-        const { decryptOrThrow } = await import('../services/keyManager');
+        const { decrypt } = await import('../services/keyManager');
+        const decryptedApiKey = decrypt(config.apiKeyEncrypted);
+        const decryptedSecret = decrypt(config.secretKeyEncrypted || config.secretEncrypted);
+        const decryptedPassphrase = config.passphraseEncrypted ? decrypt(config.passphraseEncrypted) : undefined;
+
         credentials = {
-          apiKey: decryptOrThrow(config.apiKeyEncrypted, 'API key'),
-          secret: decryptOrThrow(config.secretKeyEncrypted || config.secretEncrypted, 'secret key'),
-          passphrase: config.passphraseEncrypted ? decryptOrThrow(config.passphraseEncrypted, 'passphrase') : undefined,
+          apiKey: decryptedApiKey,
+          secret: decryptedSecret,
+          passphrase: decryptedPassphrase,
           testnet: config.testnet ?? true,
         };
 
@@ -528,11 +542,13 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
           throw new Error('Incomplete credentials');
         }
       } catch (decryptErr) {
+        // Decrypt failure is informational only - skip balance gracefully
+        logger.info({ uid: user.uid, exchange: exchangeName }, 'Exchange balance: decrypt failed, skipping balance fetch');
         return reply.code(200).send({
           success: false,
-          reason: 'CREDENTIALS_MISSING',
+          reason: 'CREDENTIALS_DECRYPT_FAILED',
           exchange: exchangeName,
-          message: { error: 'Failed to decrypt or missing credentials' }
+          message: { error: 'Exchange configured but credentials decryption failed. Balance unavailable but exchange remains usable for auto-trade.' }
         });
       }
 

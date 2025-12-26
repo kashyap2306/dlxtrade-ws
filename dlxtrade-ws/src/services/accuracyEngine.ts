@@ -535,6 +535,5 @@ export class AccuracyEngine {
       // No throw - hardened logic
     }
   }
-}
+}export const accuracyEngine = new AccuracyEngine();
 
-export const accuracyEngine = new AccuracyEngine();
