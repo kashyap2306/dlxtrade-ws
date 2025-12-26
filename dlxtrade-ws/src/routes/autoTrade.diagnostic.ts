@@ -37,8 +37,10 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
       // ============================================
       // 1. SYSTEM & USER LEVEL CHECKS
       // ============================================
-      const config = await autoTradeEngine.loadConfig(uid);
-      const userSettings = await firestoreAdapter.getSettings(uid);
+      const [config, userSettings] = await Promise.all([
+        autoTradeEngine.loadConfig(uid),
+        firestoreAdapter.getSettings(uid)
+      ]);
 
       // PURELY INFORMATIONAL: Check exchange status using ONLY encrypted key presence
       let exchangeStatus: string = 'NOT_CONFIGURED';

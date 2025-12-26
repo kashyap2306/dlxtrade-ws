@@ -476,6 +476,16 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       }
 
       // FORCE COMPLETE: Use merge:false to ensure no partial overwrites
+      console.log(`[DEBUG_EXCHANGE_CONNECT] UID:${user.uid} - Saving exchange config with merge:false:`, {
+        exchange: exchangeConfig.exchange,
+        hasApiKeyEncrypted: !!exchangeConfig.apiKeyEncrypted,
+        hasSecretEncrypted: !!exchangeConfig.secretEncrypted,
+        hasPassphraseEncrypted: !!exchangeConfig.passphraseEncrypted,
+        testnet: exchangeConfig.testnet,
+        hasExchangeStatus: !!exchangeConfig.exchangeStatus,
+        exchangeStatus: exchangeConfig.exchangeStatus
+      });
+
       await docRef.set(exchangeConfig, { merge: false });
 
       logger.info({

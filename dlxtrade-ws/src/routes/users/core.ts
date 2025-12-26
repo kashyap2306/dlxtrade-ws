@@ -726,8 +726,9 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
       }
 
       // Get trades with timeout protection (return empty on timeout)
+      // Limit to 100 trades for performance - sufficient for recent stats
       const trades = await firestoreReadWithTimeout(
-        () => firestoreAdapter.getTrades(targetUid, 10000),
+        () => firestoreAdapter.getTrades(targetUid, 100),
         [],
         'getTrades'
       );
