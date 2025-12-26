@@ -134,6 +134,20 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       // UNLESS explicitly marked false by connector
       const isSuccess = result.success !== false; // defaulted to true if undefined
 
+      // CRITICAL: Clear stale exchangeStatus when decryption + connection test passes
+      // This ensures diagnostic treats successful decrypt as source of truth
+      if (isSuccess && config) {
+        try {
+          await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').update({
+            exchangeStatus: admin.firestore.FieldValue.delete()
+          }).catch(err => {
+            logger.debug({ uid: user.uid, error: err.message }, 'Failed to clear exchangeStatus after successful test (non-critical)');
+          });
+        } catch (clearErr: any) {
+          logger.debug({ uid: user.uid, error: clearErr.message }, 'Error clearing exchangeStatus after successful test (non-critical)');
+        }
+      }
+
       return {
         success: isSuccess,
         message: { text: result.message || (isSuccess ? 'Connection successful' : 'Connection failed') },
@@ -438,6 +452,17 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       const body = request.body as any;
       const { apiKey, secret, exchange, passphrase, type } = body || {};
 
+      // LOG: Raw values before any processing
+      console.log(`[EXCHANGE_CONNECT_RAW] UID:${user.uid} - Raw request values:`, {
+        exchange,
+        apiKey: apiKey ? `${apiKey.substring(0, 8)}...` : 'UNDEFINED',
+        secret: secret ? `${secret.substring(0, 8)}...` : 'UNDEFINED',
+        passphrase: passphrase ? `${passphrase.substring(0, 8)}...` : 'UNDEFINED',
+        apiKeyLength: apiKey?.length || 0,
+        secretLength: secret?.length || 0,
+        passphraseLength: passphrase?.length || 0
+      });
+
       logger.info({
         uid: user.uid,
         exchange,
@@ -454,16 +479,34 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
 
       // HARD REQUIRE: All critical fields must be present for complete save
       const resolvedExchange = (exchange || type || existingData.exchange || existingData.type) as ExchangeName | undefined;
-      if (!resolvedExchange || !apiKey || !secret) {
-        return reply.code(400).send({ error: 'Exchange, API key, and secret are required for exchange configuration' });
+
+      // VALIDATE: Check for missing/empty API keys BEFORE encryption
+      if (!resolvedExchange) {
+        console.log(`[EXCHANGE_CONNECT_VALIDATION] UID:${user.uid} - FAIL: Missing exchange`);
+        return reply.code(400).send({ error: 'Exchange is required for exchange configuration' });
       }
 
+      if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length === 0) {
+        console.log(`[EXCHANGE_CONNECT_VALIDATION] UID:${user.uid} - FAIL: apiKey missing/empty`);
+        return reply.code(400).send({ error: 'Exchange API key is missing from request' });
+      }
+
+      if (!secret || typeof secret !== 'string' || secret.trim().length === 0) {
+        console.log(`[EXCHANGE_CONNECT_VALIDATION] UID:${user.uid} - FAIL: secret missing/empty`);
+        return reply.code(400).send({ error: 'Exchange API secret is missing from request' });
+      }
+
+      // ASSERT: Raw keys are valid before encryption
+      console.log(`[EXCHANGE_CONNECT_VALIDATION] UID:${user.uid} - SUCCESS: All validations passed, proceeding to encrypt`);
+
       // ATOMIC WRITE: Always include all required fields, never partial
+      // CRITICAL: Clear any INVALID_KEYS status since keys are successfully encrypted
       const exchangeConfig: any = {
         exchange: resolvedExchange,
         apiKeyEncrypted: encrypt(apiKey),
         secretEncrypted: encrypt(secret),
         testnet: false,
+        exchangeStatus: admin.firestore.FieldValue.delete(), // Clear INVALID_KEYS status
         updatedAt: admin.firestore.Timestamp.now(),
       };
 
@@ -476,17 +519,19 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       }
 
       // FORCE COMPLETE: Use merge:false to ensure no partial overwrites
-      console.log(`[DEBUG_EXCHANGE_CONNECT] UID:${user.uid} - Saving exchange config with merge:false:`, {
+      await docRef.set(exchangeConfig, { merge: false });
+
+      // LOG: Confirm encrypted keys saved to Firestore
+      console.log(`[EXCHANGE_CONNECT_SAVED] UID:${user.uid} - Firestore save verification:`, {
         exchange: exchangeConfig.exchange,
         hasApiKeyEncrypted: !!exchangeConfig.apiKeyEncrypted,
+        apiKeyEncryptedLength: exchangeConfig.apiKeyEncrypted?.length || 0,
         hasSecretEncrypted: !!exchangeConfig.secretEncrypted,
+        secretEncryptedLength: exchangeConfig.secretEncrypted?.length || 0,
         hasPassphraseEncrypted: !!exchangeConfig.passphraseEncrypted,
-        testnet: exchangeConfig.testnet,
-        hasExchangeStatus: !!exchangeConfig.exchangeStatus,
-        exchangeStatus: exchangeConfig.exchangeStatus
+        passphraseEncryptedLength: exchangeConfig.passphraseEncrypted?.length || 0,
+        exchangeStatusCleared: exchangeConfig.exchangeStatus === admin.firestore.FieldValue.delete()
       });
-
-      await docRef.set(exchangeConfig, { merge: false });
 
       logger.info({
         uid: user.uid,

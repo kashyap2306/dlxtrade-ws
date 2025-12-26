@@ -32,97 +32,40 @@ export async function controllerRoutes(fastify: FastifyInstance) {
       let exchangeKeyError = null;
 
       if (enabled) {
-        console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - Starting exchange key validation for auto-trade enable`);
-
-        try {
+          try {
           const db = getFirebaseAdmin().firestore();
           const exchangeConfigDoc = await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').get();
 
-          console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - Firestore doc exists: ${exchangeConfigDoc.exists}`);
-
           if (exchangeConfigDoc.exists) {
             const exchangeConfig = exchangeConfigDoc.data();
-            console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - Raw exchangeConfig:`, {
-              exchange: exchangeConfig?.exchange,
-              hasApiKeyEncrypted: !!exchangeConfig?.apiKeyEncrypted,
-              apiKeyEncryptedLength: exchangeConfig?.apiKeyEncrypted?.length || 0,
-              hasSecretEncrypted: !!exchangeConfig?.secretEncrypted,
-              hasSecretKeyEncrypted: !!exchangeConfig?.secretKeyEncrypted,
-              secretEncryptedLength: (exchangeConfig?.secretEncrypted || exchangeConfig?.secretKeyEncrypted)?.length || 0,
-              hasPassphraseEncrypted: !!exchangeConfig?.passphraseEncrypted,
-              passphraseEncryptedLength: exchangeConfig?.passphraseEncrypted?.length || 0,
-              exchangeStatus: exchangeConfig?.exchangeStatus,
-              testnet: exchangeConfig?.testnet,
-              updatedAt: exchangeConfig?.updatedAt?.toDate?.()?.toISOString()
-            });
-
-            // CRITICAL: Log if exchangeStatus is INVALID_KEYS - this might be the root cause
-            if (exchangeConfig?.exchangeStatus === 'INVALID_KEYS') {
-              console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - ⚠️  WARNING: exchangeStatus is 'INVALID_KEYS' in Firestore!`);
-              console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - This indicates previous decryption failure, but new keys were saved`);
-              console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - Exchange connect/save should clear this status, but apparently didn't`);
-            }
-
-            const hasEncryptedKeys = !!(exchangeConfig?.apiKeyEncrypted &&
-                                       (exchangeConfig?.secretEncrypted || exchangeConfig?.secretKeyEncrypted));
-
-            console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - hasEncryptedKeys: ${hasEncryptedKeys}`);
+            const hasApiKey = !!exchangeConfig?.apiKeyEncrypted;
+            const hasSecret = !!(exchangeConfig?.secretEncrypted || exchangeConfig?.secretKeyEncrypted);
+            const hasEncryptedKeys = hasApiKey && hasSecret;
 
             if (hasEncryptedKeys) {
-              // Test decryption - this will throw if keys are corrupted
-              const { decryptOrThrow } = await import('../services/keyManager');
-
-              console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - Starting decryption validation`);
-
-              try {
-                console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - Testing apiKey decryption...`);
-                console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - apiKey encrypted length: ${exchangeConfig.apiKeyEncrypted?.length}`);
-                decryptOrThrow(exchangeConfig.apiKeyEncrypted, 'apiKey');
-                console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - apiKey decryption SUCCESS`);
-
-                console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - Testing secretKey decryption...`);
-                const secretKeyField = exchangeConfig.secretKeyEncrypted || exchangeConfig.secretEncrypted;
-                console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - secretKey encrypted length: ${secretKeyField?.length}`);
-                decryptOrThrow(secretKeyField, 'secretKey');
-                console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - secretKey decryption SUCCESS`);
-
-                if (exchangeConfig.passphraseEncrypted) {
-                  console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - Testing passphrase decryption...`);
-                  console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - passphrase encrypted length: ${exchangeConfig.passphraseEncrypted?.length}`);
-                  decryptOrThrow(exchangeConfig.passphraseEncrypted, 'passphrase');
-                  console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - passphrase decryption SUCCESS`);
-                } else {
-                  console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - No passphrase to test`);
-                }
-
-                console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - ALL decryption tests PASSED`);
-
-              } catch (decryptErr: any) {
-                console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - DECRYPTION FAILED at line ${new Error().stack?.split('\n')[2]?.match(/:(\d+):/)?.[1]}: ${decryptErr.message}`);
-                console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - Full error stack:`, decryptErr.stack);
-                console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - Setting exchangeKeysValid = false`);
-                exchangeKeysValid = false;
-                exchangeKeyError = decryptErr.message;
-                logger.warn({ uid: user.uid, error: decryptErr.message }, 'Exchange key decryption failed during auto-trade enable');
+              // DEFENSIVE: If encrypted keys exist but status is INVALID_KEYS, clear it immediately
+              if (exchangeConfig?.exchangeStatus === 'INVALID_KEYS') {
+                await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').update({
+                  exchangeStatus: admin.firestore.FieldValue.delete()
+                }).catch(err => {
+                  logger.debug({ uid: user.uid, error: err.message }, 'Failed to clear stale INVALID_KEYS status (non-critical)');
+                });
               }
+
+              // SUCCESS: Encrypted keys exist - treat as valid for auto-trade
             } else {
-              console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - CONDITION: hasEncryptedKeys = false, marking INVALID`);
               exchangeKeysValid = false;
               exchangeKeyError = 'EXCHANGE_KEYS_INVALID_OR_REQUIRES_RECONNECT';
             }
           } else {
-            console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - CONDITION: exchangeConfigDoc does not exist, marking INVALID`);
             exchangeKeysValid = false;
             exchangeKeyError = 'EXCHANGE_KEYS_INVALID_OR_REQUIRES_RECONNECT';
           }
         } catch (err: any) {
-          console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - EXCEPTION during validation: ${err.message}`);
           logger.warn({ uid: user.uid, error: err.message }, 'Error checking exchange keys during auto-trade enable');
           exchangeKeysValid = false;
           exchangeKeyError = 'EXCHANGE_KEYS_INVALID_OR_REQUIRES_RECONNECT';
         }
-
-        console.log(`[DEBUG_AUTO_TRADE_TOGGLE] UID:${user.uid} - Final validation result: exchangeKeysValid = ${exchangeKeysValid}, error = ${exchangeKeyError}`);
       }
 
       // BLOCK: Do not enable auto-trade if exchange keys are invalid

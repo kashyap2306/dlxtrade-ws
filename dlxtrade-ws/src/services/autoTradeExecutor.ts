@@ -143,9 +143,10 @@ export class AutoTradeExecutor {
         return { success: false, error: 'User auto-trade disabled' };
       }
 
-      // 5. Get user's exchange credentials
-      const userIntegrations = await firestoreAdapter.getEnabledIntegrations(request.userId);
-      if (!userIntegrations.binance?.apiKey || !userIntegrations.binance?.secretKey) {
+      // 5. Check user's exchange credentials (from exchangeConfig, NOT integrations)
+      const { isExchangeUsable } = await import('./firestoreAdapter');
+      const hasExchangeCredentials = await isExchangeUsable(request.userId);
+      if (!hasExchangeCredentials) {
         logger.info({ userId: this.maskUserId(request.userId) }, '[AUTO-TRADE] SKIPPED - No exchange credentials');
         return { success: false, error: 'No exchange credentials' };
       }
@@ -181,7 +182,6 @@ export class AutoTradeExecutor {
         signal: request.signal,
         quantity: tradeSize.quantity,
         price: request.currentPrice,
-        userIntegrations,
         researchRequestId: request.researchRequestId,
         dryRun: userSettings.dryRun || this.globalConfig.dryRun,
         orderType: userSettings.orderType,
@@ -328,20 +328,36 @@ export class AutoTradeExecutor {
    */
   private async getUserBalanceUSD(userId: string): Promise<number> {
     try {
-      // Get user's exchange integrations
-      const userIntegrations = await firestoreAdapter.getEnabledIntegrations(userId);
-
-      if (!userIntegrations.binance?.apiKey || !userIntegrations.binance?.secretKey) {
+      // Check if exchange is configured (from exchangeConfig, NOT integrations)
+      const { isExchangeUsable } = await import('./firestoreAdapter');
+      const hasExchangeCredentials = await isExchangeUsable(userId);
+      if (!hasExchangeCredentials) {
         logger.warn({ userId: this.maskUserId(userId) }, 'No exchange credentials for balance check');
+        return 0;
+      }
+
+      // Get decrypted credentials from exchangeConfig
+      const exchangeConfig = await firestoreAdapter.getExchangeConfig(userId);
+      if (!exchangeConfig?.apiKeyEncrypted || (!exchangeConfig.secretEncrypted && !exchangeConfig.secretKeyEncrypted)) {
+        logger.warn({ userId: this.maskUserId(userId) }, 'Exchange config missing encrypted keys');
+        return 0;
+      }
+
+      // Decrypt credentials
+      const { decrypt } = await import('./keyManager');
+      const apiKey = decrypt(exchangeConfig.apiKeyEncrypted);
+      const secretKey = decrypt(exchangeConfig.secretEncrypted || exchangeConfig.secretKeyEncrypted);
+      if (!apiKey || !secretKey) {
+        logger.warn({ userId: this.maskUserId(userId) }, 'Exchange credential decryption failed');
         return 0;
       }
 
       // Use Binance adapter to get account balance
       const { BinanceAdapter } = await import('./binanceAdapter');
       const binanceAdapter = new BinanceAdapter(
-        userIntegrations.binance.apiKey,
-        userIntegrations.binance.secretKey,
-        false // Use live trading by default for safety
+        apiKey,
+        secretKey,
+        exchangeConfig.testnet ?? false // Use testnet setting from config
       );
 
       const accountInfo = await binanceAdapter.getAccount();
@@ -378,7 +394,6 @@ export class AutoTradeExecutor {
     signal: 'BUY' | 'SELL';
     quantity: number;
     price: number;
-    userIntegrations: any;
     researchRequestId: string;
     dryRun: boolean;
     orderType: 'market' | 'limit';
@@ -392,7 +407,6 @@ export class AutoTradeExecutor {
       signal,
       quantity,
       price,
-      userIntegrations,
       researchRequestId,
       dryRun,
       orderType,
@@ -401,6 +415,20 @@ export class AutoTradeExecutor {
     } = params;
 
     try {
+      // Get exchange credentials from exchangeConfig
+      const exchangeConfig = await firestoreAdapter.getExchangeConfig(userId);
+      if (!exchangeConfig?.apiKeyEncrypted || (!exchangeConfig.secretEncrypted && !exchangeConfig.secretKeyEncrypted)) {
+        throw new Error('Exchange credentials not configured');
+      }
+
+      // Decrypt credentials
+      const { decrypt } = await import('./keyManager');
+      const apiKey = decrypt(exchangeConfig.apiKeyEncrypted);
+      const secretKey = decrypt(exchangeConfig.secretEncrypted || exchangeConfig.secretKeyEncrypted);
+      if (!apiKey || !secretKey) {
+        throw new Error('Exchange credential decryption failed');
+      }
+
       if (dryRun) {
         // Dry run mode - simulate the trade
         const simulatedOrderId = `dry_run_${Date.now()}`;
@@ -451,9 +479,9 @@ export class AutoTradeExecutor {
       // Real trade execution using Binance adapter
       const { BinanceAdapter } = await import('./binanceAdapter');
       const binanceAdapter = new BinanceAdapter(
-        userIntegrations.binance.apiKey,
-        userIntegrations.binance.secretKey,
-        false // Use live trading by default for safety
+        apiKey,
+        secretKey,
+        exchangeConfig.testnet ?? false // Use testnet setting from config
       );
 
       // Extract base and quote currencies from symbol (e.g., BTCUSDT -> BTC, USDT)

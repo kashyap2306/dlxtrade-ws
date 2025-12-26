@@ -17,16 +17,49 @@ const ALGORITHM = 'aes-256-cbc';
 const IV_LENGTH = 16;
 const KEY_LENGTH = 32;
 
-function getEncryptionKey(): Buffer {
-  // ENFORCE: Always use ONLY process.env.ENCRYPTION_SECRET (no fallback!)
+// CRITICAL: SINGLE SOURCE OF TRUTH - Cached encryption key resolved ONCE at process startup
+let CACHED_ENCRYPTION_KEY: Buffer | null = null;
+let CACHED_ENCRYPTION_SECRET: string | null = null;
+let CACHED_KEY_HASH: string | null = null;
+
+/**
+ * CRITICAL: Initialize encryption key cache at server startup
+ * This MUST be called once before any encrypt/decrypt operations
+ * Throws immediately if ENCRYPTION_SECRET is invalid/missing
+ */
+export function initializeEncryptionKey(): void {
+  if (CACHED_ENCRYPTION_KEY !== null) {
+    // Already initialized - this should never happen in normal operation
+    logger.warn('initializeEncryptionKey() called multiple times - this should not happen');
+    return;
+  }
+
   const keyString = process.env.ENCRYPTION_SECRET;
   if (!keyString) {
-    throw new Error('ENCRYPTION_SECRET environment variable is not set');
+    throw new Error('ENCRYPTION_SECRET environment variable is not set - server cannot start without valid encryption key');
   }
   if (keyString.length < KEY_LENGTH) {
-    throw new Error(`ENCRYPTION_SECRET must be at least ${KEY_LENGTH} characters long`);
+    throw new Error(`ENCRYPTION_SECRET must be at least ${KEY_LENGTH} characters long, got ${keyString.length}`);
   }
-  return Buffer.from(keyString.slice(0, KEY_LENGTH), 'utf8');
+
+  // Cache the key and secret for lifetime of process
+  CACHED_ENCRYPTION_SECRET = keyString;
+  CACHED_ENCRYPTION_KEY = Buffer.from(keyString.slice(0, KEY_LENGTH), 'utf8');
+  CACHED_KEY_HASH = createHash('sha256').update(keyString).digest('hex');
+
+  logger.info({
+    keyLength: keyString.length,
+    keyHash: CACHED_KEY_HASH.slice(0, 8), // Log only first 8 chars of hash
+    source: 'ENCRYPTION_SECRET'
+  }, '🔐 ENCRYPTION KEY CACHED - Single source of truth established for process lifetime');
+}
+
+function getEncryptionKey(): Buffer {
+  // CRITICAL: Must use cached key only - never re-read from process.env
+  if (CACHED_ENCRYPTION_KEY === null) {
+    throw new Error('ENCRYPTION KEY NOT INITIALIZED - initializeEncryptionKey() must be called at server startup');
+  }
+  return CACHED_ENCRYPTION_KEY;
 }
 
 function getIV(): Buffer {
@@ -129,11 +162,12 @@ export function decryptOrThrow(cipherText: string, fieldName: string = 'field'):
   return decrypted;
 }
 
-// FIXED: Hash MUST be derived from the SAME key used for encryption/decryption
+// CRITICAL: Hash MUST be derived from the SAME cached key used for encryption/decryption
 export function getEncryptionKeyHash(prefixLength: number = 8): string {
-  const key = process.env.ENCRYPTION_SECRET || '';
-  const digest = createHash('sha256').update(key).digest('hex');
-  return digest.slice(0, prefixLength);
+  if (CACHED_KEY_HASH === null) {
+    throw new Error('ENCRYPTION KEY NOT INITIALIZED - initializeEncryptionKey() must be called at server startup');
+  }
+  return CACHED_KEY_HASH.slice(0, prefixLength);
 }
 
 export async function listKeys(): Promise<Omit<ApiKey, 'apiKey' | 'apiSecret'>[]> {

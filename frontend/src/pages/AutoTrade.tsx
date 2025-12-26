@@ -239,8 +239,8 @@ export default function AutoTrade() {
     // Load immediately
     loadPendingTrades();
 
-    // Poll every 10 seconds for pending trades
-    const interval = setInterval(loadPendingTrades, 10000);
+    // Poll every 60 seconds for pending trades (reduced from 10s to prevent over-polling)
+    const interval = setInterval(loadPendingTrades, 60000);
     return () => clearInterval(interval);
   }, [user, config.autoTradeEnabled, backendDiagnostics?.blocked, loadPendingTrades]);
 
@@ -376,20 +376,8 @@ export default function AutoTrade() {
     }
   }, [showAutoTradeHistoryModal, loadAutoTradeHistory]);
 
-  // Poll for new skipped trades when Auto-Trade is enabled
-  useEffect(() => {
-    if (!user || !config.autoTradeEnabled || backendDiagnostics?.blocked) return;
-
-    // Poll every 30 seconds for new skipped trades
-    const interval = setInterval(() => {
-      loadAutoTradeHistory();
-    }, 30000);
-
-    // Initial load
-    loadAutoTradeHistory();
-
-    return () => clearInterval(interval);
-  }, [user, config.autoTradeEnabled, backendDiagnostics?.blocked, config.accuracyTrigger]);
+  // Load research history ONLY when tab/section is opened (not on interval polling)
+  // Removed continuous polling to prevent over-polling
 
   // Cleanup on unmount
   useEffect(() => {

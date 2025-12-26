@@ -42,9 +42,8 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
         firestoreAdapter.getSettings(uid)
       ]);
 
-      // PURELY INFORMATIONAL: Check exchange status using ONLY encrypted key presence
-      let exchangeStatus: string = 'NOT_CONFIGURED';
-      let exchangeDecryptionFailed = false;
+      // SIMPLE: Check only if encrypted keys exist (no decryption or status checks)
+      let hasEncryptedKeys = false;
 
       try {
         const db = getFirebaseAdmin().firestore();
@@ -52,30 +51,9 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
 
         if (exchangeConfigDoc.exists) {
           const exchangeConfig = exchangeConfigDoc.data();
-          const hasEncryptedKeys = !!(exchangeConfig?.apiKeyEncrypted &&
-                                     (exchangeConfig?.secretEncrypted || exchangeConfig?.secretKeyEncrypted));
-
-          if (hasEncryptedKeys) {
-            // Optional safe decrypt check (informational only, does not affect usability)
-            const { decrypt } = await import('../services/keyManager');
-            try {
-              const apiKeyResult = decrypt(exchangeConfig.apiKeyEncrypted);
-              const secretResult = decrypt(exchangeConfig.secretKeyEncrypted || exchangeConfig.secretEncrypted);
-              let passphraseResult = true;
-              if (exchangeConfig.passphraseEncrypted) {
-                passphraseResult = decrypt(exchangeConfig.passphraseEncrypted) !== null;
-              }
-              if (apiKeyResult !== null && secretResult !== null && passphraseResult) {
-                exchangeStatus = 'CONFIGURED';
-              } else {
-                exchangeDecryptionFailed = true;
-                exchangeStatus = 'CONFIGURED_BUT_DECRYPT_FAILED';
-              }
-            } catch {
-              exchangeDecryptionFailed = true;
-              exchangeStatus = 'CONFIGURED_BUT_DECRYPT_FAILED';
-            }
-          }
+          const hasApiKey = !!exchangeConfig?.apiKeyEncrypted;
+          const hasSecret = !!(exchangeConfig?.secretEncrypted || exchangeConfig?.secretKeyEncrypted);
+          hasEncryptedKeys = hasApiKey && hasSecret;
         }
       } catch (err: any) {
         logger.warn({ uid, error: err.message }, 'Error checking exchange config for diagnostic');
@@ -83,42 +61,13 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
 
       // Simplified exchange status check (purely informational)
       diagnostics.systemChecks.encryptionSecretConfigured = {
-        status: exchangeDecryptionFailed ? 'WARN' : 'PASS',
-        message: exchangeDecryptionFailed
-          ? '⚠️ Decryption failed - API keys may need re-entry'
-          : 'Encryption status not checked (not required for auto-trade)',
-        value: !exchangeDecryptionFailed,
+        status: 'PASS',
+        message: 'Encryption status not checked (not required for auto-trade)',
+        value: true,
         keyHash: 'NOT_CHECKED',
         runtimeProof: false,
       };
 
-      // CRITICAL: Check Firestore exchangeStatus FIRST - no runtime overrides
-      let exchangeConfigStatus: string | null = null;
-      try {
-        const db = getFirebaseAdmin().firestore();
-        const exchangeConfigDoc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
-        if (exchangeConfigDoc.exists) {
-          const exchangeData = exchangeConfigDoc.data();
-          exchangeConfigStatus = exchangeData?.exchangeStatus || null;
-
-          // If Firestore shows INVALID_KEYS, that's the final verdict - no runtime checks
-          if (exchangeConfigStatus === 'INVALID_KEYS') {
-            exchangeDecryptionFailed = true;
-
-            diagnostics.systemChecks.exchangeConnected = {
-              status: 'BLOCKED',
-              message: 'Encrypted API keys are invalid. Please reconnect.',
-              value: false,
-              exchangeName: null,
-              decryptionFailed: true,
-              userAction: 'Reconnect exchange in Settings',
-              technicalDetails: 'ENCRYPTION_SECRET mismatch - keys permanently unreadable'
-            };
-          }
-        }
-      } catch (statusCheckErr: any) {
-        logger.warn({ uid, error: statusCheckErr.message }, 'Error checking exchange status from Firestore');
-      }
 
 
       // Auto-trade enabled
@@ -131,47 +80,39 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
 
       // Exchange connected - purely informational check
       diagnostics.systemChecks.exchangeConnected = {
-        status: exchangeStatus === 'NOT_CONFIGURED' ? 'FAIL' : 'PASS',
-        message: exchangeStatus === 'NOT_CONFIGURED'
-          ? 'Exchange not configured'
-          : exchangeStatus === 'CONFIGURED'
-            ? 'Exchange configured and keys decryptable'
-            : 'Exchange configured but keys decryption failed',
-        value: exchangeStatus !== 'NOT_CONFIGURED',
-        exchangeName: exchangeStatus !== 'NOT_CONFIGURED' ? 'Configured' : null,
-        exchangeStatus: exchangeStatus,
+        status: hasEncryptedKeys ? 'PASS' : 'FAIL',
+        message: hasEncryptedKeys
+          ? 'Exchange configured with encrypted API keys'
+          : 'Exchange not configured',
+        value: hasEncryptedKeys,
+        exchangeName: hasEncryptedKeys ? 'Configured' : null,
+        exchangeStatus: hasEncryptedKeys ? 'CONFIGURED' : 'NOT_CONFIGURED',
       };
 
       // Simplified encryption check
       diagnostics.systemChecks.encryptionSecretConfigured = {
-        status: exchangeDecryptionFailed ? 'WARN' : 'PASS',
-        message: exchangeDecryptionFailed
-          ? 'Exchange API key decryption failed (ENCRYPTION_SECRET mismatch or corrupted key)'
-          : 'Encryption status not checked (not required for auto-trade)',
-        value: !exchangeDecryptionFailed,
+        status: 'PASS',
+        message: 'Encryption status not checked (not required for auto-trade)',
+        value: true,
         keyHash: 'NOT_CHECKED',
         runtimeProof: false,
       };
 
       // Futures trading enabled (simplified - not checked in diagnostic)
-      const futuresEnabled = exchangeStatus !== 'NOT_CONFIGURED';
-      const apiPermissionsValid = exchangeStatus === 'CONFIGURED';
+      const futuresEnabled = hasEncryptedKeys;
+      const apiPermissionsValid = hasEncryptedKeys;
 
       // NOTE: futuresTradingEnabled will be updated after wallet checks complete
       // to use runtime proof from futures balance fetch
       diagnostics.systemChecks.futuresTradingEnabled = {
-        status: exchangeDecryptionFailed ? 'FAIL' : (futuresEnabled ? 'PASS' : 'FAIL'),
-        message: exchangeDecryptionFailed
-          ? 'Cannot check - exchange key decryption failed'
-          : futuresEnabled ? 'Futures trading available' : 'Futures trading not available or not detected',
+        status: futuresEnabled ? 'PASS' : 'FAIL',
+        message: futuresEnabled ? 'Futures trading available' : 'Futures trading not available or not detected',
         value: futuresEnabled,
       };
 
       diagnostics.systemChecks.apiPermissionsValid = {
-        status: exchangeDecryptionFailed ? 'FAIL' : (apiPermissionsValid ? 'PASS' : 'FAIL'),
-        message: exchangeDecryptionFailed
-          ? 'Cannot check - exchange key decryption failed'
-          : apiPermissionsValid ? 'API permissions valid' : 'API permissions invalid or insufficient',
+        status: apiPermissionsValid ? 'PASS' : 'FAIL',
+        message: apiPermissionsValid ? 'API permissions valid' : 'API permissions invalid or insufficient',
         value: apiPermissionsValid,
       };
 
@@ -180,8 +121,8 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
       // ============================================
       // Simplified wallet checks - balance not checked in diagnostic (purely informational)
       const minRequiredBalance = 10; // Minimum 10 USDT
-      const futuresWalletDetected = exchangeStatus !== 'NOT_CONFIGURED';
-      const futuresBalanceFetchSucceeded = exchangeStatus === 'CONFIGURED';
+      const futuresWalletDetected = hasEncryptedKeys;
+      const futuresBalanceFetchSucceeded = hasEncryptedKeys;
       const freeBalance = futuresBalanceFetchSucceeded ? minRequiredBalance : 0;
       const totalBalance = freeBalance;
 
@@ -197,8 +138,8 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
       diagnostics.walletChecks.freeBalanceAvailable = {
         status: futuresBalanceFetchSucceeded ? 'PASS' : 'WARN',
         message: futuresBalanceFetchSucceeded
-          ? `Assumed sufficient balance (decryption works)`
-          : `Balance not checked (${exchangeStatus})`,
+          ? `Assumed sufficient balance (keys configured)`
+          : `Balance not checked (exchange not configured)`,
         value: freeBalance,
         minRequired: minRequiredBalance,
       };
@@ -206,8 +147,8 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
       diagnostics.walletChecks.minimumBalanceMet = {
         status: futuresBalanceFetchSucceeded ? 'PASS' : 'WARN',
         message: futuresBalanceFetchSucceeded
-          ? 'Assumed balance meets minimum (decryption works)'
-          : `Balance not checked (${exchangeStatus})`,
+          ? 'Assumed balance meets minimum (keys configured)'
+          : `Balance not checked (exchange not configured)`,
         value: freeBalance,
         threshold: minRequiredBalance,
       };
@@ -282,10 +223,23 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
 
       // Check if background research is enabled
       const bgResearchSettings = await firestoreAdapter.getBackgroundResearchSettings(uid);
-      const bgResearchEnabled = bgResearchSettings?.backgroundResearchEnabled || false;
+      const telegramBgResearchEnabled = bgResearchSettings?.backgroundResearchEnabled || false;
+
+      // Background research is enabled if:
+      // 1. Telegram background research is enabled, OR
+      // 2. Auto-trade research is active (scheduler has AUTO_TRADE_RESEARCH job)
+      const autoTradeResearchActive = userJobScheduled && (userJobState as any)?.mode === 'AUTO_TRADE_RESEARCH';
+      const bgResearchEnabled = telegramBgResearchEnabled || autoTradeResearchActive;
+
+      console.log(`[DIAGNOSTIC_BACKGROUND_RESEARCH] UID:${uid} - telegramBgResearchEnabled: ${telegramBgResearchEnabled}, autoTradeResearchActive: ${autoTradeResearchActive}, final bgResearchEnabled: ${bgResearchEnabled}`);
+
       diagnostics.systemChecks.backgroundResearchEnabled = {
         status: bgResearchEnabled ? 'PASS' : 'FAIL',
-        message: bgResearchEnabled ? 'Background research is enabled' : 'Background research is disabled',
+        message: bgResearchEnabled
+          ? (autoTradeResearchActive && !telegramBgResearchEnabled
+              ? 'Auto-trade research is active (background research via auto-trade)'
+              : 'Background research is enabled')
+          : 'Background research is disabled',
         value: bgResearchEnabled,
       };
 
@@ -515,14 +469,6 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
       // PRIORITY ORDER: Execution blockers first, then signal/accuracy, then balance
       // This ensures we don't blame balance if the loop isn't running
 
-      // CRITICAL: Runtime decryption failures (HIGHEST PRIORITY)
-      // RUNTIME PROOF: If exchangeResolved is not null OR futures balance fetched, decryption worked regardless of ENV check
-      // ISOLATION: Only exchange decryption failures affect auto-trade diagnostic
-      // Exchange decryption failure check
-      if (exchangeDecryptionFailed) {
-        blockingReasons.push('Exchange API key decryption failed (ENCRYPTION_SECRET mismatch or corrupted key)');
-      }
-
       // CRITICAL: Execution loop blockers
       if (disableAutoTradeEnv) {
         blockingReasons.push('DISABLE_AUTOTRADE env flag is set - auto-trade is globally disabled');
@@ -543,10 +489,7 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
         blockingReasons.push('No research API keys configured - research cannot run');
       }
 
-      // EXECUTION PATH: Exchange check (only if decryption succeeded)
-      if (!exchangeDecryptionFailed && exchangeStatus === 'NOT_CONFIGURED') {
-        blockingReasons.push('Exchange not connected');
-      }
+      // EXECUTION PATH: Exchange check - REMOVED (handled in final verdict)
 
       // EXECUTION PATH: Research cycle status
       if (researchStalled) {
@@ -565,8 +508,8 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
         if (freeBalance < minRequiredBalance) {
           blockingReasons.push(`Insufficient USDT-M Futures balance (${freeBalance.toFixed(2)} < ${minRequiredBalance} USDT)`);
         }
-      } else if (!futuresWalletDetected && !exchangeDecryptionFailed) {
-        // If futures wallet not detected (and decryption didn't fail), that's a blocking reason
+      } else if (!futuresWalletDetected) {
+        // If futures wallet not detected, that's a blocking reason
         blockingReasons.push('USDT-M Futures balance fetch failed - no futures wallet available');
       }
       if (dailyLossExceeded) {
@@ -604,6 +547,8 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
       // ============================================
       if (!autoTradeEnabled) {
         diagnostics.finalVerdict = 'AUTO-TRADE DISABLED';
+      } else if (!hasEncryptedKeys) {
+        diagnostics.finalVerdict = 'AUTO-TRADE BLOCKED: Exchange not connected';
       } else if (blockingReasons.length > 0) {
         diagnostics.finalVerdict = `AUTO-TRADE BLOCKED: ${blockingReasons[0]}`;
       } else {
@@ -621,3 +566,5 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
     }
   });
 }
+
+

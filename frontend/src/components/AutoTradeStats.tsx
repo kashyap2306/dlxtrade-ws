@@ -26,10 +26,10 @@ export const AutoTradeStats: React.FC<AutoTradeStatsProps> = ({
     calculateTodayTrades();
   }, [calculateTradeAccuracy, calculateTodayTrades]);
 
-  // Load performance stats with polling (30 second intervals when visible)
+  // Load performance stats with polling (60 second intervals when visible)
   // CRITICAL: Only poll when auto-trade is enabled (loadPerformanceStats has internal guard)
   // Note: loadPerformanceStats already checks config.autoTradeEnabled internally
-  usePolling(loadPerformanceStats, 30000, true); // 30 seconds
+  usePolling(loadPerformanceStats, 60000, true); // 60 seconds (reduced from 30s to prevent over-polling)
 
   return (
     <div className="bg-[#0a0f1a] backdrop-blur-sm border border-blue-500/20 rounded-xl p-6 mb-8 shadow-lg">
