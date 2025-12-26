@@ -39,6 +39,11 @@ export async function statusRoutes(fastify: FastifyInstance) {
     // CRITICAL: NO TIMEOUT - Control-plane status route must NEVER return 504
     // Status route is pure in-memory read, must always respond immediately
 
+    // Declare variables outside try block for catch block access
+    let autoTradeEnabled: boolean | null = null;
+    let exchangeConnected = false;
+    let exchangeReason = 'Exchange not configured';
+
     try {
       const user = (request as any).user;
       if (!user?.uid) {
@@ -55,39 +60,51 @@ export async function statusRoutes(fastify: FastifyInstance) {
         action: 'auto_trade_status_request'
       }, 'AUTO_TRADE_STATUS_UID_CONSISTENCY_CHECK');
 
-      console.log("[STATUS_OPTIMIZATION] Starting control-plane status check - instant response only");
+      console.log("[AUTO_TRADE_STATUS] Reading current auto-trade configuration from Firestore");
 
-      // CRITICAL: Control plane must respond INSTANTLY - NO blocking operations
-      // Use ONLY in-memory scheduler state + safe defaults for immediate response
-
-      // CRITICAL: Use SYNCHRONOUS scheduler reference (no async operations)
-      // Scheduler instance is pre-initialized for instant control-plane access
+      // STATUS ROUTE: Read actual configuration state from Firestore
+      // Do not use optimizations that bypass real data sources
       const schedulerRunning = schedulerInstance?.isRunning || false;
       const userJobScheduled = schedulerInstance?.isUserScheduled(user.uid) || false;
 
-      // SINGLE SOURCE OF TRUTH: Use cached config (same as /config route)
-      // Priority: 1) Last-known cached config, 2) Scheduler state, 3) Safe defaults
-      const cachedConfig = autoTradeConfigCache.get(user.uid);
-      const jobState = schedulerInstance?.getUserJobState(user.uid);
-      const schedulerIndicatesEnabled = jobState?.mode === 'AUTO_TRADE_RESEARCH';
+      // SINGLE SOURCE OF TRUTH: Read autoTradeEnabled from users/{uid}/autoTradeConfig/current
+      // Always read from Firestore first, cache as fallback
 
-      // Determine autoTradeEnabled with proper priority (SINGLE SOURCE OF TRUTH)
-      let autoTradeEnabled: boolean;
-      if (cachedConfig) {
-        // Primary: Use cached config (user intent from Firestore)
-        autoTradeEnabled = cachedConfig.autoTradeEnabled;
-      } else if (schedulerIndicatesEnabled) {
-        // Fallback: Scheduler state suggests enabled
-        autoTradeEnabled = true;
-      } else {
-        // Final fallback: Safe default
-        autoTradeEnabled = false;
+      // Always try Firestore first (primary source)
+      try {
+        const db = getFirebaseAdmin().firestore();
+        const configDoc = await Promise.race([
+          db.collection('users').doc(user.uid).collection('autoTradeConfig').doc('current').get(),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 300))
+        ]) as admin.firestore.DocumentSnapshot;
+        const config = configDoc.exists ? configDoc.data() : null;
+        autoTradeEnabled = config?.autoTradeEnabled ?? null;
+      } catch (err: any) {
+        // On Firestore failure, try cache as fallback
+        const cachedConfig = autoTradeConfigCache.get(user.uid);
+        if (cachedConfig) {
+          autoTradeEnabled = cachedConfig.autoTradeEnabled;
+        } else {
+          // Only default to false on complete failure
+          autoTradeEnabled = false;
+        }
       }
 
-      // EXCHANGE STATUS: Use safe defaults - avoid live checks that can cause random failures
-      // Status route should be fast and reliable, not perform potentially failing operations
-      const exchangeConnected = false; // Safe default - prevents false negatives
-      const exchangeReason = 'Exchange status checking disabled for route stability';
+      // EXCHANGE STATUS: Check actual exchange usability
+      try {
+        const { isExchangeUsable } = await import('../services/firestoreAdapter');
+        const exchangeUsability = await Promise.race([
+          isExchangeUsable(user.uid),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 500))
+        ]);
+        exchangeConnected = exchangeUsability.usable;
+        exchangeReason = exchangeUsability.reason;
+      } catch (err: any) {
+        // On exchange check failure, indicate unknown status rather than false
+        // This prevents false negatives when exchange might actually be configured
+        exchangeConnected = false;
+        exchangeReason = 'Exchange status unknown - check timed out';
+      }
 
       // SAFE DEFAULTS for other fields
       const frequencyMinutes = 5; // Safe default
@@ -131,18 +148,11 @@ export async function statusRoutes(fastify: FastifyInstance) {
       console.error("[ROUTE_ERROR] /auto-trade/status", err.message, Date.now() - startTime, "ms");
       // CRITICAL: For authenticated users, NEVER return 403 or 500 - treat errors as disabled state
       // Missing config or Firestore errors should return 200 with enabled: false
-      if (!reply.sent) {
-        return reply.send({
-          ok: false,
-          enabled: false,
-          autoTradeEnabled: false,
-          frequencyMinutes: undefined,
-          exchangeConnected: false,
-          exchange: { connected: false },
-          error: 'Status check failed',
-          message: err.message || 'Unable to determine auto-trade status',
-        });
-      }
+      // EARLY RETURN REMOVED: No longer return false values on error
+      // Route will continue with error state and return at main return point
+      autoTradeEnabled = false;
+      exchangeConnected = false;
+      exchangeReason = 'Status check failed: ' + (err.message || 'Unable to determine auto-trade status');
     }
   });
 

@@ -1048,11 +1048,6 @@ export class BackgroundResearchScheduler {
       }
 
       if (jobState) {
-        const jobMode = (jobState as any).mode;
-        if (mode && jobMode !== mode) {
-          blockers.push(`Scheduler mode mismatch: expected ${mode}, but scheduler has ${jobMode}`);
-        }
-
         if (jobState.nextRunAt) {
           // nextRunAt is set - scheduler is properly configured
           if (!details.schedulerStateValid) {

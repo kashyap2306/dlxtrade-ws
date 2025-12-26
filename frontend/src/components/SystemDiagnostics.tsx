@@ -87,7 +87,11 @@ export const SystemDiagnostics: React.FC = () => {
                             <div className="p-3 rounded-lg bg-slate-800/40 border border-white/5 space-y-2">
                                 <div className="flex justify-between items-center">
                                     <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Research</span>
-                                    {renderStatus(data.backgroundResearch?.status)}
+                                    {renderStatus(
+                                        data.autoTrade?.status === 'ON'
+                                            ? 'IDLE' // Show IDLE when auto-trade is enabled, regardless of telegram settings
+                                            : (data.backgroundResearch?.status || 'DISABLED')
+                                    )}
                                 </div>
                                 <div className="space-y-1">
                                     <p className="text-[11px] text-gray-300 flex justify-between">

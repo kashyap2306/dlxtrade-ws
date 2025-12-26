@@ -724,23 +724,24 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
           exchange
         }, 'Exchange credentials permanently deleted');
       } else {
-        // Default behavior: Mark as disconnected but preserve credentials
+        // Default behavior: Clear all exchange credentials to prevent usage
         const docRef = db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current');
         const existingDoc = await docRef.get();
 
         if (existingDoc.exists) {
-          const existingData = existingDoc.data() || {};
           await docRef.set({
-            ...existingData,
+            exchange: null,
+            apiKeyEncrypted: admin.firestore.FieldValue.delete(),
+            secretEncrypted: admin.firestore.FieldValue.delete(),
+            passphraseEncrypted: admin.firestore.FieldValue.delete(),
             disconnected: true,
             disconnectedAt: admin.firestore.FieldValue.serverTimestamp(),
-            // Preserve all credentials for potential reconnection
           }, { merge: true });
 
           logger.info({
             uid: user.uid,
             exchange
-          }, 'Exchange marked as disconnected - credentials preserved for reconnection');
+          }, 'Exchange disconnected - all credentials cleared');
         }
       }
 

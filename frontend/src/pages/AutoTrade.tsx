@@ -786,9 +786,10 @@ export default function AutoTrade() {
                   <table className="w-full text-left">
                     <thead>
                       <tr className="border-b border-blue-500/20">
-                        <th className="pb-3 text-blue-200 font-semibold">SR</th>
-                        <th className="pb-3 text-blue-200 font-semibold">Coin</th>
-                        <th className="pb-3 text-blue-200 font-semibold">Accuracy</th>
+                        <th className="pb-3 text-blue-200 font-semibold">Sr. No</th>
+                        <th className="pb-3 text-blue-200 font-semibold">Coin Name</th>
+                        <th className="pb-3 text-blue-200 font-semibold">Accuracy %</th>
+                        <th className="pb-3 text-blue-200 font-semibold">Result / Trigger Status</th>
                         <th className="pb-3 text-blue-200 font-semibold">Time</th>
                       </tr>
                     </thead>
@@ -808,15 +809,36 @@ export default function AutoTrade() {
                             })()
                           : 'N/A';
                         const absoluteTime = timestamp ? timestamp.toLocaleString() : 'N/A';
-                        const accuracy = typeof entry.accuracy === 'number' 
+                        const accuracy = typeof entry.accuracy === 'number'
                           ? (entry.accuracy > 1 ? entry.accuracy : entry.accuracy * 100).toFixed(1)
                           : 'N/A';
+
+                        // Calculate normalized accuracy for trigger comparison
+                        const normalizedAccuracy = typeof entry.accuracy === 'number'
+                          ? (entry.accuracy > 1 ? entry.accuracy : entry.accuracy * 100)
+                          : 0;
+
+                        // Get accuracy trigger from config (default 75)
+                        const accuracyTrigger = config.accuracyTrigger?.min ?? 75;
+
+                        // Determine Result / Trigger Status based on rules
+                        let triggerStatus = 'Unknown';
+                        if (normalizedAccuracy < accuracyTrigger) {
+                          triggerStatus = 'Accuracy Not Triggered';
+                        } else if (entry.decision === 'EXECUTED') {
+                          triggerStatus = 'Trade Executed';
+                        } else if (entry.decision === 'SKIPPED') {
+                          triggerStatus = entry.skipReason ? 'Skipped' : 'Triggered but Trade Not Executed';
+                        } else {
+                          triggerStatus = 'Triggered but Trade Not Executed';
+                        }
 
                         return (
                           <tr key={entry.id || index} className="border-b border-blue-500/10 hover:bg-blue-500/5">
                             <td className="py-3 text-blue-100">{index + 1}</td>
                             <td className="py-3 text-blue-100 font-medium">{entry.symbol || 'N/A'}</td>
                             <td className="py-3 text-blue-100">{accuracy}%</td>
+                            <td className="py-3 text-blue-100">{triggerStatus}</td>
                             <td className="py-3 text-blue-100" title={absoluteTime}>{timeAgo}</td>
                           </tr>
                         );

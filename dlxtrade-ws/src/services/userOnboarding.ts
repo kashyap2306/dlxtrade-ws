@@ -229,7 +229,9 @@ export async function ensureUser(
         engineStatus: 'stopped',
         engineRunning: false,
         hftRunning: false,
-        autoTradeEnabled: false,
+        // CRITICAL: Do NOT set autoTradeEnabled in main user document - it's LEGACY
+        // Auto-trade status is stored in autoTradeConfig/current subcollection only
+        // autoTradeEnabled: false,
 
         // Stats
         totalPnl: 0,
@@ -322,9 +324,11 @@ export async function ensureUser(
       if (existingData.engineRunning === undefined) {
         updateData.engineRunning = false;
       }
-      if (existingData.autoTradeEnabled === undefined) {
-        updateData.autoTradeEnabled = false;
-      }
+      // CRITICAL: Do NOT set autoTradeEnabled in main user document - it's LEGACY
+      // Auto-trade status is stored in autoTradeConfig/current subcollection only
+      // if (existingData.autoTradeEnabled === undefined) {
+      //   updateData.autoTradeEnabled = false;
+      // }
       if (existingData.role === undefined) {
         updateData.role = 'user';
       }
@@ -360,7 +364,8 @@ export async function ensureUser(
       await engineStatusRef.set({
         uid,
         engineRunning: false,
-        autoTradeEnabled: false,
+        // CRITICAL: Do NOT set autoTradeEnabled in engineStatus - it's LEGACY
+        // Auto-trade status is stored in autoTradeConfig/current subcollection only
         lastStarted: null,
         lastStopped: null,
         ordersExecuted: 0,
@@ -678,7 +683,8 @@ export async function ensureUser(
     if (!userEngineStatusDoc.exists) {
       await userEngineStatusRef.set({
         engineRunning: false,
-        autoTradeEnabled: false,
+        // CRITICAL: Do NOT set autoTradeEnabled in user engineStatus - it's LEGACY
+        // Auto-trade status is stored in autoTradeConfig/current subcollection only
         lastStarted: null,
         lastStopped: null,
         ordersExecuted: 0,

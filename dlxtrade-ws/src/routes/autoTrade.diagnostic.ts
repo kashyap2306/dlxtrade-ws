@@ -53,12 +53,25 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
         ])
       ]);
 
-      // LIGHTWEIGHT: Use cached flags from background research settings
-      const hasEncryptedKeys = bgSettingsDoc?.exchangeConfigured ?? false;
-      const exchangeConfigSource = 'canonical'; // HARD REQUIRE: Only canonical path
-      const exchangeUsabilityReason = hasEncryptedKeys
-        ? 'Exchange configured and validated'
-        : 'Exchange not configured or validation failed';
+      // EXCHANGE CHECK: Use ONLY isExchangeUsable() for consistency with status route
+      let hasEncryptedKeys = false;
+      let exchangeUsabilityReason = 'Exchange not configured';
+      let exchangeConfigSource = 'canonical';
+      try {
+        const { isExchangeUsable } = await import('../services/firestoreAdapter');
+        const exchangeUsability = await Promise.race([
+          isExchangeUsable(uid),
+          new Promise<{ usable: boolean; reason: string }>((_, reject) =>
+            setTimeout(() => reject(new Error('TIMEOUT')), 200)
+          )
+        ]);
+        hasEncryptedKeys = exchangeUsability.usable;
+        exchangeUsabilityReason = exchangeUsability.reason;
+      } catch (err: any) {
+        // On exchange check failure, keep defaults
+        hasEncryptedKeys = false;
+        exchangeUsabilityReason = 'Exchange status check failed';
+      }
 
       // Simplified exchange status check (purely informational)
       diagnostics.systemChecks.encryptionSecretConfigured = {
@@ -477,7 +490,9 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
       if (!schedulerRunning) {
         blockingReasons.push('Background research scheduler is NOT running - auto-trade execution loop cannot start');
       }
-      if (!bgResearchEnabled) {
+      // Background research is only required for TELEGRAM_BACKGROUND mode
+      // AUTO_TRADE mode does NOT depend on telegram background research settings
+      if (!bgResearchEnabled && !autoTradeResearchActive) {
         blockingReasons.push('Background research is disabled - execution loop will not run');
       }
       if (!userJobScheduled) {
