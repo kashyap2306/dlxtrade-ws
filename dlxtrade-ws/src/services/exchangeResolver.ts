@@ -36,6 +36,12 @@ export async function resolveExchangeConnector(
     if (configDoc.exists) {
       const config = configDoc.data()!;
 
+      // Check if user has explicitly disconnected
+      if (config.disconnected === true) {
+        logger.info({ uid }, 'Exchange resolver: User has disconnected exchange, returning null');
+        return null;
+      }
+
       // ONE-TIME CLEANUP: Delete corrupted exchangeConfig documents
       const hasExchange = !!config.exchange;
       const hasApiKey = !!config.apiKeyEncrypted;
@@ -55,7 +61,6 @@ export async function resolveExchangeConnector(
         return null; // Treat as not connected
       }
 
-      try {
         // Normalize exchange name
         const exchange = (config.exchange as string).toLowerCase().trim() as ExchangeName;
         const validExchanges: ExchangeName[] = ['binance', 'bitget', 'bingx', 'weex'];
@@ -67,38 +72,36 @@ export async function resolveExchangeConnector(
         }
 
         // Proceed with decryption and connector creation
-        // CRITICAL: Use decryptOrThrow to fail hard on decryption failure
+        // CRITICAL: For background operations, use graceful decrypt (don't fail permanently)
+        // Only user-initiated actions should trigger key cleanup
         let apiKey: string;
         let secret: string;
         let passphrase: string | undefined;
-        let decryptionFailed = false;
-        let decryptionError: string | null = null;
 
-        // HARD RESET: one-time clean up if decrypt fails (cache per UID)
-        const memory = (global as any).__EXCHANGE_KEY_INVALID_CACHE = (global as any).__EXCHANGE_KEY_INVALID_CACHE || {};
-        if (!memory[uid]) {
-          try {
-            apiKey = decryptOrThrow(config.apiKeyEncrypted, 'API key');
-            secret = decryptOrThrow(config.secretKeyEncrypted || config.secretEncrypted, 'secret key');
-            passphrase = config.passphraseEncrypted ? decryptOrThrow(config.passphraseEncrypted, 'passphrase') : undefined;
-            memory[uid] = false;
-          } catch (decryptErr: any) {
-            decryptionFailed = true;
-            decryptionError = decryptErr.message || 'Unknown decryption error';
-            logger.error({ uid, exchange, error: decryptErr.message, errorCode: decryptErr.message?.includes('EXCHANGE_KEY_DECRYPTION_FAILED') ? 'DECRYPTION_FAILED' : 'UNKNOWN' }, 'EXCHANGE_KEY_DECRYPTION_FAILED: Cleaning up undecryptable exchange credentials');
-            // HARD DELETE keys + mark status
-            await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').set({
-              apiKeyEncrypted: require('firebase-admin').firestore.FieldValue.delete(),
-              secretKeyEncrypted: require('firebase-admin').firestore.FieldValue.delete(),
-              passphraseEncrypted: require('firebase-admin').firestore.FieldValue.delete(),
-              exchangeStatus: 'INVALID_KEYS',
-              updatedAt: new Date()
-            }, { merge: true });
-            memory[uid] = true;
+        try {
+          // Try graceful decryption first
+          const { decrypt } = await import('./keyManager');
+          apiKey = decrypt(config.apiKeyEncrypted);
+          secret = decrypt(config.secretKeyEncrypted || config.secretEncrypted);
+          passphrase = config.passphraseEncrypted ? decrypt(config.passphraseEncrypted) : undefined;
+
+          // If any key failed to decrypt, exchange is not usable
+          if (apiKey === null || secret === null) {
+            logger.warn({
+              uid,
+              exchange,
+              apiKeyDecrypted: apiKey !== null,
+              secretDecrypted: secret !== null,
+              passphraseDecrypted: passphrase !== null
+            }, 'EXCHANGE_DECRYPTION_FAILED: Exchange keys exist but cannot be decrypted - exchange not usable');
             return null;
           }
-        } else if (memory[uid] === true) {
-          // Already zapped for this session
+        } catch (decryptErr: any) {
+          logger.warn({
+            uid,
+            exchange,
+            error: decryptErr.message
+          }, 'EXCHANGE_DECRYPTION_FAILED: Unexpected decryption error - exchange not usable');
           return null;
         }
 
@@ -144,10 +147,6 @@ export async function resolveExchangeConnector(
           logger.error({ uid, exchange, error: createErr.message }, 'Failed to create exchange connector');
           return null;
         }
-      } catch (parseErr: any) {
-        logger.error({ uid, error: parseErr.message }, 'Error parsing exchange config');
-        return null;
-      }
     }
 
     // No credentials found in exchangeConfig/current

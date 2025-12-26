@@ -333,20 +333,19 @@ export const useAutoTradeConfig = (user: any) => {
       }
     } catch (err: any) {
       console.warn("[AT_STATUS_POLL] Failed to load status:", err?.message);
-      // CRITICAL FIX: On timeout/error, do NOT set backendDiagnostics to a fallback
-      // Keep it as null to indicate "still loading" instead of "loaded with unknown state"
-      // This ensures UI shows "Checking exchange status..." instead of "disconnected"
-      // The next successful poll will set the correct value
-      // Only update reason message if we have previous diagnostics (preserve last known good state)
+
+      // GRACEFUL ERROR HANDLING: Handle 504 timeouts specifically - they're expected, not fatal
+      const isTimeout = err?.response?.status === 504 || err?.code === 'ECONNABORTED';
+
       if (isMountedRef.current) {
         setBackendDiagnostics(prev => {
           if (prev) {
-            // Preserve last known good value, just update the reason
+            // Preserve last known good value, just update the reason for timeouts
             return {
               ...prev,
               diagnostics: {
                 ...prev.diagnostics,
-                exchangeReason: 'Status check failed - will retry',
+                exchangeReason: isTimeout ? 'Status check timed out - exchange status preserved' : 'Status check failed - will retry',
               },
             };
           }

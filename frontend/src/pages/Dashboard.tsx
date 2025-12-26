@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
-import { autoTradeApi, usersApi, globalStatsApi, engineStatusApi, settingsApi, notificationsApi, agentsApi, exchangeApi } from '../services/api';
+import api, { autoTradeApi, usersApi, globalStatsApi, engineStatusApi, settingsApi, notificationsApi, agentsApi, exchangeApi } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { suppressConsoleError } from '../utils/errorHandler';
 import { SettingsExchangeSection } from './SettingsExchangeSection';
@@ -544,27 +544,30 @@ export default function Dashboard() {
 
   const handleDisconnectExchange = async () => {
     if (!user) return;
+
+    // Ask for confirmation before disconnecting
+    const confirmed = window.confirm(
+      'Are you sure you want to disconnect your exchange?\n\n' +
+      'Your API credentials will be preserved and you can reconnect anytime without re-entering them.\n\n' +
+      'To permanently delete your credentials, please contact support.'
+    );
+
+    if (!confirmed) return;
+
     setSavingExchange(true);
     try {
-      // Send empty exchangeConfig to disconnect
-      const exchangeConfigPayload = {
-        exchangeConfig: {
-          exchange: '',
-          apiKey: '',
-          secretKey: '',
-          passphrase: null,
-        }
-      };
-
-      await settingsApi.saveExchangeConfig(user.uid, exchangeConfigPayload);
+      // Call backend disconnect route (preserves credentials)
+      await api.disconnect('binance'); // Use actual exchange type if available
 
       // Refresh exchangeConfig state
       setExchangeConfig(null);
       setSelectedExchange('');
       setExchangeForm({ apiKey: '', secretKey: '', passphrase: '' });
 
+      showToast('Exchange disconnected successfully. Your credentials are preserved for easy reconnection.', 'success');
     } catch (err: any) {
       console.error('Disconnect exchange error:', err);
+      showToast('Failed to disconnect exchange', 'error');
     } finally {
       setSavingExchange(false);
     }

@@ -9,8 +9,9 @@ export async function firebaseAuthMiddleware(
 ): Promise<void> {
   const url = request.url || '';
 
-  // 1. FAST BYPASS FOR RESEARCH/RUN: Sync lightweight decode only
-  if (url.startsWith('/api/research/run')) {
+  // 1. FAST BYPASS FOR CONTROL-PLANE ROUTES: Sync lightweight decode only
+  // CRITICAL: /api/auto-trade/status must bypass all Firestore/admin checks for instant response
+  if (url.startsWith('/api/research/run') || url === '/api/auto-trade/status') {
     try {
       const authHeader = request.headers.authorization;
       if (authHeader?.startsWith('Bearer ')) {

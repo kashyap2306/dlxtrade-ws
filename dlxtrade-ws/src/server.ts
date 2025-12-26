@@ -51,37 +51,101 @@ process.on('unhandledRejection', (reason: any, promise) => {
 
 async function start() {
   try {
-    // CRITICAL: Verify ENCRYPTION_KEY/ENCRYPTION_SECRET is set
-    // Use same priority order as config.encryption.key for consistency
-    // This ensures the same secret is used for encrypting and decrypting exchange API keys
-    const encryptionKey = process.env.ENCRYPTION_KEY || process.env.ENCRYPTION_SECRET || process.env.JWT_SECRET;
-    if (!encryptionKey || encryptionKey.length < 32) {
-      console.error('❌ [ENCRYPTION] CRITICAL: ENCRYPTION_KEY/ENCRYPTION_SECRET not set or too short (< 32 chars)');
-      console.error('❌ [ENCRYPTION] Exchange API key decryption will FAIL');
-      console.error('❌ [ENCRYPTION] Set ENCRYPTION_KEY or ENCRYPTION_SECRET in .env file');
-      logger.error({ 
-        keyLength: encryptionKey?.length || 0,
-        hasEncryptionKey: !!process.env.ENCRYPTION_KEY,
-        hasEncryptionSecret: !!process.env.ENCRYPTION_SECRET,
-        hasJwtSecret: !!process.env.JWT_SECRET
-      }, 'ENCRYPTION_SECRET not configured or too short - exchange key decryption will fail');
-    } else {
-      const { getEncryptionKeyHash } = await import('./services/keyManager');
+    // CRITICAL: Initialize encryption key cache - HARD FAIL if invalid/missing
+    // This establishes the SINGLE SOURCE OF TRUTH for encryption/decryption
+    console.log('🔐 [ENCRYPTION] Initializing encryption key cache...');
+    const { initializeEncryptionKey, getEncryptionKeyHash } = await import('./services/keyManager');
+
+    try {
+      initializeEncryptionKey();
       const keyHash = getEncryptionKeyHash(8);
-      const keySource = process.env.ENCRYPTION_KEY ? 'ENCRYPTION_KEY' : (process.env.ENCRYPTION_SECRET ? 'ENCRYPTION_SECRET' : 'JWT_SECRET');
-      const keyLength = encryptionKey.length;
-      console.log(`✅ [ENCRYPTION] Encryption key configured (source: ${keySource}, length: ${keyLength}, hash: ${keyHash})`);
-      console.log(`✅ [ENCRYPTION] Same secret will be used for all encrypt/decrypt operations`);
-      console.log(`✅ [ENCRYPTION] Hash fingerprint: ${keyHash} (use this to verify secret consistency across restarts)`);
-      logger.info({ 
-        keySource,
-        keyLength,
+      console.log(`✅ [ENCRYPTION] Encryption key cache initialized successfully`);
+      console.log(`✅ [ENCRYPTION] Key hash fingerprint: ${keyHash} (same key used for all encrypt/decrypt operations)`);
+      console.log(`🔒 [ENCRYPTION] SINGLE SOURCE OF TRUTH established - key cached for process lifetime`);
+      logger.info({
         keyHash,
-        hasEncryptionKey: !!process.env.ENCRYPTION_KEY,
-        hasEncryptionSecret: !!process.env.ENCRYPTION_SECRET,
-        hasJwtSecret: !!process.env.JWT_SECRET
-      }, 'ENCRYPTION_SECRET loaded successfully - same secret used for encrypt/decrypt');
+        initialized: true
+      }, 'ENCRYPTION_KEY_CACHE_INITIALIZED - Single source of truth established');
+    } catch (keyError: any) {
+      console.error('❌ [ENCRYPTION] CRITICAL FAILURE: Encryption key initialization failed');
+      console.error(`❌ [ENCRYPTION] Error: ${keyError.message}`);
+      console.error('❌ [ENCRYPTION] Server cannot start without valid ENCRYPTION_SECRET');
+      console.error('❌ [ENCRYPTION] Set ENCRYPTION_SECRET in .env file (32+ characters)');
+      logger.error({
+        error: keyError.message,
+        stack: keyError.stack
+      }, 'ENCRYPTION_KEY_INITIALIZATION_FAILED - Server startup aborted');
+      // HARD FAIL: Exit process immediately
+      process.exit(1);
     }
+
+    // CRITICAL: Runtime assertion - verify exchangeConfig canonical path usage
+    console.log('🔍 [EXCHANGE_CONFIG] Performing startup verification...');
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const usersSnapshot = await db.collection('users').limit(10).get(); // Sample first 10 users
+
+      let usersWithExchangeConfig = 0;
+      let usersWithLegacyData = 0;
+
+      for (const userDoc of usersSnapshot.docs) {
+        const uid = userDoc.id;
+        if (uid.startsWith('system-') || uid.length < 10) continue;
+
+        // Check canonical path
+        const canonicalDoc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+        if (canonicalDoc.exists) {
+          usersWithExchangeConfig++;
+        }
+
+        // Check for legacy data (warning only, don't crash)
+        const integrationsSnapshot = await db.collection('users').doc(uid).collection('integrations').get();
+        let hasLegacyData = false;
+
+        for (const integrationDoc of integrationsSnapshot.docs) {
+          const integrationData = integrationDoc.data();
+          if (integrationData.apiKeyEncrypted || integrationData.secretEncrypted || integrationData.secretKeyEncrypted) {
+            hasLegacyData = true;
+            usersWithLegacyData++;
+            break;
+          }
+        }
+
+        if (!hasLegacyData) {
+          const userData = userDoc.data();
+          if (userData?.apiKeyEncrypted || userData?.secretEncrypted || userData?.secretKeyEncrypted) {
+            hasLegacyData = true;
+            usersWithLegacyData++;
+          }
+        }
+
+        if (hasLegacyData) {
+          logger.warn({
+            uid,
+            sampledUsers: usersSnapshot.docs.length
+          }, 'LEGACY_EXCHANGE_DATA_DETECTED_AFTER_MIGRATION - Startup verification found legacy data');
+        }
+      }
+
+      console.log(`✅ [EXCHANGE_CONFIG] Startup verification completed:`);
+      console.log(`   - Sampled ${usersSnapshot.docs.length} users`);
+      console.log(`   - ${usersWithExchangeConfig} have canonical exchangeConfig`);
+      console.log(`   - ${usersWithLegacyData} have legacy exchange data (warnings logged)`);
+
+      logger.info({
+        sampledUsers: usersSnapshot.docs.length,
+        usersWithExchangeConfig,
+        usersWithLegacyData
+      }, 'EXCHANGE_CONFIG_STARTUP_VERIFICATION_COMPLETED');
+
+    } catch (verifyErr: any) {
+      // Don't crash server, just log warning
+      console.log(`⚠️ [EXCHANGE_CONFIG] Startup verification failed: ${verifyErr.message}`);
+      logger.warn({
+        error: verifyErr.message
+      }, 'EXCHANGE_CONFIG_STARTUP_VERIFICATION_FAILED');
+    }
+
     // CRITICAL: Server boot diagnostic
     const SERVER_PID = process.pid;
     console.log('[SERVER_BOOT]', SERVER_PID, process.env.PORT || config.port);

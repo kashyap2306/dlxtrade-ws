@@ -94,7 +94,14 @@ export const AutoTradeEngineControls: React.FC<AutoTradeEngineControlsProps> = (
       setShowStartModal(false); // Close modal on success
     } catch (err: any) {
       console.error("AUTO-TRADE TOGGLE API ERROR:", err);
-      showToast('Failed to toggle Auto-Trade', 'error');
+
+      // Handle specific error types from backend
+      const errorType = err?.response?.data?.error?.type;
+      if (errorType === 'EXCHANGE_KEYS_INVALID_OR_REQUIRES_RECONNECT') {
+        showToast('Exchange API keys are invalid. Please reconnect your exchange in Settings.', 'error');
+      } else {
+        showToast('Failed to toggle Auto-Trade', 'error');
+      }
     } finally {
       setSaving(false);
       togglingRef.current = false;

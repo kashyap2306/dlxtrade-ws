@@ -3603,23 +3603,13 @@ export class AutoTradeEngine {
         if (engine.adapter) {
           exchangeStatus = 'available';
         } else {
-          // Try to check if exchange config exists but decryption failed
+          // Use unified exchange usability check (SINGLE SOURCE OF TRUTH)
           try {
-            const db = getFirebaseAdmin().firestore();
-            const exchangeConfigDoc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
-            if (exchangeConfigDoc.exists && exchangeConfigDoc.data()?.apiKeyEncrypted) {
-              try {
-                const { decryptOrThrow } = await import('./keyManager');
-                decryptOrThrow(exchangeConfigDoc.data()!.apiKeyEncrypted, 'API key');
-                exchangeStatus = 'available';
-              } catch {
-                exchangeStatus = 'decryption_failed';
-              }
-            } else {
-              exchangeStatus = 'unavailable';
-            }
-          } catch {
-            exchangeStatus = 'unavailable';
+            const { isExchangeUsable } = await import('./firestoreAdapter');
+            const usability = await isExchangeUsable(uid);
+            exchangeStatus = usability.usable ? 'available' : 'decryption_failed';
+          } catch (checkErr: any) {
+            exchangeStatus = 'unknown';
           }
         }
       }
@@ -3648,7 +3638,7 @@ export class AutoTradeEngine {
         reason,
         accuracy: Number(context.accuracy) || 0,
         accuracyUsed: Number(context.accuracy) || 0,
-        signal: context.signal as 'BUY' | 'SELL' | 'HOLD' | undefined,
+        signal: (context.signal as 'BUY' | 'SELL' | 'HOLD') || 'HOLD',
         status: `SKIPPED: ${reason}`,
       });
 
@@ -4258,6 +4248,11 @@ export class AutoTradeEngine {
   async runAutoTradeResearchCycleSafe(uid: string, skipHistoryStorage: boolean = false): Promise<ResearchDataResult | null> {
     const cycleStartTimestamp: number = Date.now();
     console.log('🔥 [HARD_LOG] [AUTO_TRADE_SAFE_START] runAutoTradeResearchCycleSafe() called for user:', uid, 'skipHistoryStorage:', skipHistoryStorage);
+
+    // CRITICAL: Verify encryption key consistency for auto-trade engine
+    const { verifyEncryptionKeyConsistency } = await import('./keyManager');
+    verifyEncryptionKeyConsistency(`auto-trade-engine-${uid}`);
+
     logger.info({ uid, cycleId: `cycle_${cycleStartTimestamp}` }, '🚀 [AUTO_TRADE_CYCLE] Cycle STARTED');
 
     // Check if we should run
@@ -4467,16 +4462,20 @@ export class AutoTradeEngine {
     const cycleStartTimestamp: number = Date.now();
 
     // CRITICAL: Check exchange usability once at cycle start and reuse result
-    const exchangeUsable = await isExchangeUsable(uid);
-    if (!exchangeUsable) {
-      logger.warn({ uid }, '[AUTO_TRADE_GUARD] Exchange not usable - research cycle aborted, saving SKIPPED history');
+    const exchangeUsability = await isExchangeUsable(uid);
+    if (!exchangeUsability.usable) {
+      logger.warn({
+        uid,
+        exchange: exchangeUsability.exchange,
+        reason: exchangeUsability.reason
+      }, `AUTO_TRADE_SKIPPED: EXCHANGE_NOT_USABLE - ${exchangeUsability.reason}`);
 
       // Save SKIPPED history for unusable exchange
       if (!skipHistoryStorage) {
         await this.saveAutoTradeHistorySkipped(
           uid,
           'EXCHANGE_NOT_USABLE',
-          'Exchange configuration is not usable (missing keys, invalid status, etc.)'
+          exchangeUsability.reason
         );
       }
 
@@ -4643,35 +4642,13 @@ export class AutoTradeEngine {
       let exchangeDecryptionFailed = false;
       let exchangeDecryptionError: string | null = null;
 
-      try {
-        const { resolveExchangeConnector } = await import('./exchangeResolver');
-        const exchangeResolved = await resolveExchangeConnector(uid);
+      // Use unified exchange usability check (SINGLE SOURCE OF TRUTH)
+      const { isExchangeUsable } = await import('./firestoreAdapter');
+      const exchangeUsability = await isExchangeUsable(uid);
 
-        if (!exchangeResolved) {
-          // Check if exchange config exists but decryption failed
-          const db = getFirebaseAdmin().firestore();
-          const exchangeConfigDoc = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
-
-          if (exchangeConfigDoc.exists && exchangeConfigDoc.data()?.apiKeyEncrypted) {
-            // Exchange config exists but resolver returned null - likely decryption failure
-            try {
-              const { decryptOrThrow } = await import('./keyManager');
-              decryptOrThrow(exchangeConfigDoc.data()!.apiKeyEncrypted, 'API key');
-              // If we get here, decryption worked - something else is wrong
-            } catch (decryptErr: any) {
-              // Decryption failed - this is the root cause
-              exchangeDecryptionFailed = true;
-              exchangeDecryptionError = decryptErr.message || 'EXCHANGE_KEY_DECRYPTION_FAILED';
-            }
-          }
-        }
-      } catch (resolveErr: any) {
-        if (resolveErr.message?.includes('EXCHANGE_KEY_DECRYPTION_FAILED') ||
-          resolveErr.message?.includes('decryption failed') ||
-          resolveErr.message?.includes('invalid ENCRYPTION_SECRET')) {
-          exchangeDecryptionFailed = true;
-          exchangeDecryptionError = resolveErr.message;
-        }
+      if (!exchangeUsability.usable) {
+        exchangeDecryptionFailed = true;
+        exchangeDecryptionError = exchangeUsability.reason;
       }
 
       // CRITICAL: If exchange decryption failed, do NOT skip research.

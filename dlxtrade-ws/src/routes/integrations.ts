@@ -279,6 +279,10 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
           return reply.code(400).send({ error: 'Exchange, API key, and secret are required for exchange configuration' });
         }
 
+        // CRITICAL: Assert write to canonical path only
+        const { assertExchangeConfigWritePath } = await import('../services/firestoreAdapter');
+        assertExchangeConfigWritePath(user.uid, `users/${user.uid}/exchangeConfig/current`);
+
         // ATOMIC WRITE: Always include all required fields, never partial
         const exchangeConfig: any = {
           exchange: resolvedExchange,

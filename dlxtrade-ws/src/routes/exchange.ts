@@ -78,6 +78,15 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
         }
 
         config = doc.data()!;
+
+        // Check if user has explicitly disconnected
+        if (config.disconnected === true) {
+          return reply.code(400).send({
+            message: { error: 'Exchange has been disconnected. Please reconnect to continue.' },
+            success: false,
+          });
+        }
+
         // Handle case where saved config exists but exchange is undefined (partial save)
         exchange = (config.exchange as ExchangeName) || (query.exchange as ExchangeName);
 
@@ -413,17 +422,13 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       const t1 = Date.now();
 
       // Check if user has a usable exchange configuration
-      const exchangeUsable = await isExchangeUsable(user.uid);
-      if (exchangeUsable) {
-        // Get the configured exchange
-        const exchangeConfig = await firestoreAdapter.getExchangeConfig(user.uid);
-        if (exchangeConfig?.exchange) {
-          connectedExchanges.push({
-            exchange: exchangeConfig.exchange,
-            connected: true,
-            testnet: exchangeConfig.testnet ?? true
-          });
-        }
+      const exchangeUsability = await isExchangeUsable(user.uid);
+      if (exchangeUsability.usable) {
+        connectedExchanges.push({
+          exchange: exchangeUsability.exchange!,
+          connected: true,
+          testnet: true // Default to testnet for status display
+        });
       }
       const dt1 = Date.now() - t1;
       fastify.log.info({ duration: dt1, exchangeCount: exchanges.length }, 'exchange.connected:db-calls');
@@ -447,7 +452,20 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
   fastify.post('/exchange/connect', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
+    // CRITICAL: Verify encryption key consistency for API requests
+    const { verifyEncryptionKeyConsistency } = await import('../services/keyManager');
+    verifyEncryptionKeyConsistency(`exchange-connect-api-${(request as any).user?.uid || 'unknown'}`);
+
     const user = (request as any).user;
+
+    // CRITICAL: Log UID consistency for exchange connect
+    logger.info({
+      uid: user.uid,
+      uidSource: 'auth_middleware_request_user_uid',
+      uidLength: user.uid.length,
+      action: 'exchange_connect_attempt'
+    }, 'EXCHANGE_CONNECT_UID_CONSISTENCY_CHECK');
+
     try {
       const body = request.body as any;
       const { apiKey, secret, exchange, passphrase, type } = body || {};
@@ -498,6 +516,10 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
 
       // ASSERT: Raw keys are valid before encryption
       console.log(`[EXCHANGE_CONNECT_VALIDATION] UID:${user.uid} - SUCCESS: All validations passed, proceeding to encrypt`);
+
+      // CRITICAL: Assert write to canonical path only
+      const { assertExchangeConfigWritePath } = await import('../services/firestoreAdapter');
+      assertExchangeConfigWritePath(user.uid, `users/${user.uid}/exchangeConfig/current`);
 
       // ATOMIC WRITE: Always include all required fields, never partial
       // CRITICAL: Clear any INVALID_KEYS status since keys are successfully encrypted
@@ -560,6 +582,15 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = (request as any).user;
+
+    // CRITICAL: Log UID consistency for exchange balance
+    logger.info({
+      uid: user.uid,
+      uidSource: 'auth_middleware_request_user_uid',
+      uidLength: user.uid.length,
+      action: 'exchange_balance_attempt'
+    }, 'EXCHANGE_BALANCE_UID_CONSISTENCY_CHECK');
+
     try {
       // 1. Get Exchange Config
       const { getFirebaseAdmin } = await import('../utils/firebase');
@@ -578,34 +609,34 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       const config = doc.data()!;
       const exchangeName = (config.exchange || 'unknown') as string;
 
-      // 2. Decrypt & Validate Credentials - Graceful handling for balance checks
-      let credentials: ExchangeCredentials;
-      try {
-        const { decrypt } = await import('../services/keyManager');
-        const decryptedApiKey = decrypt(config.apiKeyEncrypted);
-        const decryptedSecret = decrypt(config.secretKeyEncrypted || config.secretEncrypted);
-        const decryptedPassphrase = config.passphraseEncrypted ? decrypt(config.passphraseEncrypted) : undefined;
-
-        credentials = {
-          apiKey: decryptedApiKey,
-          secret: decryptedSecret,
-          passphrase: decryptedPassphrase,
-          testnet: config.testnet ?? true,
-        };
-
-        if (!credentials.apiKey || !credentials.secret) {
-          throw new Error('Incomplete credentials');
-        }
-      } catch (decryptErr) {
-        // Decrypt failure is informational only - skip balance gracefully
-        logger.info({ uid: user.uid, exchange: exchangeName }, 'Exchange balance: decrypt failed, skipping balance fetch');
+      // 2. Check Exchange Usability - Use unified logic
+      const exchangeUsability = await isExchangeUsable(user.uid);
+      if (!exchangeUsability.usable) {
+        logger.info({
+          uid: user.uid,
+          exchange: exchangeName,
+          reason: exchangeUsability.reason
+        }, 'Exchange balance: exchange not usable, skipping balance fetch');
         return reply.code(200).send({
           success: false,
-          reason: 'CREDENTIALS_DECRYPT_FAILED',
+          reason: 'EXCHANGE_NOT_USABLE',
           exchange: exchangeName,
-          message: { error: 'Exchange configured but credentials decryption failed. Balance unavailable but exchange remains usable for auto-trade.' }
+          message: { error: exchangeUsability.reason }
         });
       }
+
+      // 3. Decrypt & Validate Credentials - Now safe since usability check passed
+      const { decrypt } = await import('../services/keyManager');
+      const decryptedApiKey = decrypt(config.apiKeyEncrypted);
+      const decryptedSecret = decrypt(config.secretKeyEncrypted || config.secretEncrypted);
+      const decryptedPassphrase = config.passphraseEncrypted ? decrypt(config.passphraseEncrypted) : undefined;
+
+      const credentials: ExchangeCredentials = {
+        apiKey: decryptedApiKey!,
+        secret: decryptedSecret!,
+        passphrase: decryptedPassphrase,
+        testnet: config.testnet ?? true,
+      };
 
       // 3. Create Adapter
       let connector;
@@ -674,26 +705,49 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
     const user = (request as any).user;
     try {
       const body = request.body as any;
-      const { exchange } = body;
+      const { exchange, permanentDelete = false } = body;
 
       logger.info({
         uid: user.uid,
-        exchange
+        exchange,
+        permanentDelete
       }, 'Exchange disconnect request');
 
-      // Remove exchange configuration
       const { getFirebaseAdmin } = await import('../utils/firebase');
       const db = admin.firestore(getFirebaseAdmin());
-      await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').delete();
 
-      logger.info({
-        uid: user.uid,
-        exchange
-      }, 'Exchange disconnected successfully');
+      if (permanentDelete) {
+        // Only delete credentials if explicitly requested
+        await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').delete();
+        logger.info({
+          uid: user.uid,
+          exchange
+        }, 'Exchange credentials permanently deleted');
+      } else {
+        // Default behavior: Mark as disconnected but preserve credentials
+        const docRef = db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current');
+        const existingDoc = await docRef.get();
+
+        if (existingDoc.exists) {
+          const existingData = existingDoc.data() || {};
+          await docRef.set({
+            ...existingData,
+            disconnected: true,
+            disconnectedAt: admin.firestore.FieldValue.serverTimestamp(),
+            // Preserve all credentials for potential reconnection
+          }, { merge: true });
+
+          logger.info({
+            uid: user.uid,
+            exchange
+          }, 'Exchange marked as disconnected - credentials preserved for reconnection');
+        }
+      }
 
       return {
         success: true,
-        connected: false
+        connected: false,
+        credentialsPreserved: !permanentDelete
       };
     } catch (err: any) {
       logger.error({ error: err.message, uid: user.uid }, 'Exchange disconnect failed');

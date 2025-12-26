@@ -1,11 +1,12 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { diagnosticCheckRoute } from './autoTrade.diagnostic';
-import { statusRoutes } from './autoTrade.status';
+import { statusRoutes, initializeSchedulerReference } from './autoTrade.status';
 import { controllerRoutes } from './autoTrade.controller';
 import { executionRoutes } from './autoTrade.execution';
 import { routesRoutes } from './autoTrade.routes';
 import { adminAuthMiddleware } from '../middleware/adminAuth';
+import { backgroundResearchScheduler } from '../services/backgroundResearchScheduler';
 
 // Export schemas for use by other modules
 export const toggleAutoTradeSchema = z.object({
@@ -50,6 +51,9 @@ export const executeTradeSchema = z.object({
  */
 export async function autoTradeRoutes(fastify: FastifyInstance) {
   console.log('[AUTO-TRADE ROUTES] ENTRY POINT LOADED');
+
+  // CRITICAL: Initialize synchronous scheduler reference for instant status checks
+  initializeSchedulerReference(backgroundResearchScheduler);
 
   // Register admin auth middleware
   fastify.decorate('adminAuth', adminAuthMiddleware);

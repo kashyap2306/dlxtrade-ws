@@ -39,14 +39,9 @@ export const config = {
   
   encryption: {
     algorithm: 'aes-256-cbc',
-    // CRITICAL: Use ONLY ENCRYPTION_SECRET. No fallback. Fail fast if missing.
-    key: (() => {
-      const val = process.env.ENCRYPTION_SECRET;
-      if (!val || val.length < 32) {
-        throw new Error('ENCRYPTION_SECRET (32+ chars) is REQUIRED for all API key encryption/decryption.');
-      }
-      return val;
-    })(),
+    // CRITICAL: Encryption key is now initialized at server startup via initializeEncryptionKey()
+    // Config validation moved to startup to establish SINGLE SOURCE OF TRUTH
+    key: process.env.ENCRYPTION_SECRET || '',
   },
   
   rateLimit: {

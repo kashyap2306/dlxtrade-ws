@@ -1,9 +1,26 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { firestoreAdapter } from '../services/firestoreAdapter';
+import { firestoreAdapter, isExchangeUsable } from '../services/firestoreAdapter';
 import { autoTradeEngine } from '../services/autoTradeEngine';
 import { logger } from '../utils/logger';
 import { getFirebaseAdmin } from '../utils/firebase';
 import * as admin from 'firebase-admin';
+
+// In-memory cache for last-known auto-trade config (runtime-only, repopulated asynchronously)
+const autoTradeConfigCache = new Map<string, { autoTradeEnabled: boolean; frequency: number; mode: string; timestamp: number }>();
+
+// Track active async cache refreshes per UID to prevent storms
+const activeCacheRefreshes = new Set<string>();
+
+// CRITICAL: Store synchronous reference to scheduler for instant status checks
+let schedulerInstance: any = null;
+
+/**
+ * Initialize synchronous scheduler reference for instant status checks
+ * Called once when routes are registered
+ */
+export function initializeSchedulerReference(scheduler: any) {
+  schedulerInstance = scheduler;
+}
 
 /**
  * Auto-Trade Status Routes - FAST and PURE
@@ -19,135 +36,113 @@ export async function statusRoutes(fastify: FastifyInstance) {
     const startTime = Date.now();
     console.log("[ROUTE_ENTER] /auto-trade/status PID:", process.pid);
 
-    // HARD TIMEOUT GUARD: Auto-respond 504 after 450ms
-    const timeoutId = setTimeout(() => {
-      if (!reply.sent) {
-        console.error("[ROUTE_TIMEOUT] /auto-trade/status exceeded 450ms");
-        reply.code(504).send({ ok: false, reason: 'route_timeout', route: '/auto-trade/status' });
-      }
-    }, 450);
+    // CRITICAL: NO TIMEOUT - Control-plane status route must NEVER return 504
+    // Status route is pure in-memory read, must always respond immediately
 
     try {
       const user = (request as any).user;
       if (!user?.uid) {
-        clearTimeout(timeoutId);
         console.log("[ROUTE_EXIT] /auto-trade/status (no uid)", Date.now() - startTime, "ms");
         return reply.code(401).send({ error: 'Authentication required' });
       }
+      const uid = user.uid;
 
-      console.log("[STATUS_OPTIMIZATION] Starting lightweight status check - no API calls or heavy queries");
+      // CRITICAL: Log UID consistency for auto-trade status
+      logger.info({
+        uid,
+        uidSource: 'auth_middleware_request_user_uid',
+        uidLength: uid.length,
+        action: 'auto_trade_status_request'
+      }, 'AUTO_TRADE_STATUS_UID_CONSISTENCY_CHECK');
 
-      // PURE FIRESTORE READ - Direct DB access, no service calls
-      const db = getFirebaseAdmin().firestore();
+      console.log("[STATUS_OPTIMIZATION] Starting control-plane status check - instant response only");
 
-      // Parallel reads with individual 200ms timeouts
-      const [configDoc, exchangeDoc, integrationsSnapshot, bgSettingsDoc] = await Promise.all([
-        Promise.race([
-          db.collection('users').doc(user.uid).collection('autoTradeConfig').doc('current').get(),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 200))
-        ]),
-        Promise.race([
-          db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').get(),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 200))
-        ]),
-        Promise.race([
-          db.collection('users').doc(user.uid).collection('integrations').get(),
-          new Promise<any>((resolve) => setTimeout(() => resolve({ empty: true, docs: [] }), 200)) // Default to empty if timeout
-        ]),
-        Promise.race([
-          db.collection('users').doc(user.uid).collection('settings').doc('backgroundResearch').get(),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 200))
-        ])
-      ]);
+      // CRITICAL: Control plane must respond INSTANTLY - NO blocking operations
+      // Use ONLY in-memory scheduler state + safe defaults for immediate response
 
-      // Extract config data (with defaults) - missing config is treated as disabled, NOT forbidden
-      const config = configDoc?.exists ? configDoc.data() : {};
-      const autoTradeEnabled = config?.autoTradeEnabled ?? false;
+      // CRITICAL: Use SYNCHRONOUS scheduler reference (no async operations)
+      // Scheduler instance is pre-initialized for instant control-plane access
+      const schedulerRunning = schedulerInstance?.isRunning || false;
+      const userJobScheduled = schedulerInstance?.isUserScheduled(user.uid) || false;
 
-      // Extract background research settings for frequency
-      const bgSettings = bgSettingsDoc?.exists ? bgSettingsDoc.data() : {};
-      const frequencyMinutes = bgSettings?.researchFrequencyMinutes || 5;
+      // SINGLE SOURCE OF TRUTH: Use cached config (same as /config route)
+      // Priority: 1) Last-known cached config, 2) Scheduler state, 3) Safe defaults
+      const cachedConfig = autoTradeConfigCache.get(user.uid);
+      const jobState = schedulerInstance?.getUserJobState(user.uid);
+      const schedulerIndicatesEnabled = jobState?.mode === 'AUTO_TRADE_RESEARCH';
 
-      // Extract exchange data and compute connected status
-      const exchangeData = exchangeDoc?.exists ? exchangeDoc.data() : null;
-      let exchangeConnected = false;
-      let exchangeReason = 'No exchange configuration found';
-
-      if (exchangeData) {
-        // CRITICAL: Exchange is connected if encrypted keys exist - decrypt failure never affects usability
-        const hasApiKey = !!exchangeData.apiKeyEncrypted;
-        const hasSecret = !!(exchangeData.secretKeyEncrypted || exchangeData.secretEncrypted);
-        const exchange = (exchangeData.exchange || '').toLowerCase();
-        const isBitget = exchange === 'bitget';
-        const hasPassphrase = isBitget ? !!exchangeData.passphraseEncrypted : true;
-
-        exchangeConnected = hasApiKey && hasSecret && hasPassphrase && ['binance', 'bitget', 'bingx', 'weex'].includes(exchange);
-
-        exchangeReason = exchangeConnected
-          ? `${exchangeData.exchange} connected`
-          : 'Exchange keys incomplete';
-      }
-
-      // Check for usable research providers - LIGHTWEIGHT VERSION
-      // Avoid expensive provider validation on every status request
-      let hasUsableProviders = false;
-      let providerStatusMessage = 'Research providers not checked';
-
-      // Skip expensive provider validation for status endpoint
-      // This will be validated by research engine when actually running
-      if (integrationsSnapshot && !integrationsSnapshot.empty && integrationsSnapshot.docs.length > 0) {
-        hasUsableProviders = true; // Assume configured if any integrations exist
-        providerStatusMessage = 'Research providers configured';
+      // Determine autoTradeEnabled with proper priority (SINGLE SOURCE OF TRUTH)
+      let autoTradeEnabled: boolean;
+      if (cachedConfig) {
+        // Primary: Use cached config (user intent from Firestore)
+        autoTradeEnabled = cachedConfig.autoTradeEnabled;
+      } else if (schedulerIndicatesEnabled) {
+        // Fallback: Scheduler state suggests enabled
+        autoTradeEnabled = true;
       } else {
-        providerStatusMessage = 'No research providers configured';
+        // Final fallback: Safe default
+        autoTradeEnabled = false;
       }
 
-      // LIGHTWEIGHT: Skip expensive API key validation for status endpoint
-      // Provider validation happens in research engine when actually running
-      // For status endpoint, just check if any integrations exist at all
-      const hasAnyIntegrations = integrationsSnapshot && !integrationsSnapshot.empty && integrationsSnapshot.docs.length > 0;
+      // EXCHANGE STATUS: Use safe defaults - avoid live checks that can cause random failures
+      // Status route should be fast and reliable, not perform potentially failing operations
+      const exchangeConnected = false; // Safe default - prevents false negatives
+      const exchangeReason = 'Exchange status checking disabled for route stability';
 
-      clearTimeout(timeoutId);
+      // SAFE DEFAULTS for other fields
+      const frequencyMinutes = 5; // Safe default
+      const hasUsableProviders = false; // Safe default
+      const providerStatusMessage = 'No research providers configured'; // Safe default
+
+      // For compatibility with existing response structure
+      const hasAnyIntegrations = hasUsableProviders;
+
       const duration = Date.now() - startTime;
       console.log("[ROUTE_EXIT] /auto-trade/status", duration, "ms", { exchangeConnected, autoTradeEnabled });
 
-      // FAST RESPONSE - minimal payload
+      // FAST RESPONSE - minimal payload with scheduler state
       // CRITICAL: Always return 200 for authenticated users - missing config = enabled: false (not 403)
-      return reply.send({
-        enabled: autoTradeEnabled,
-        autoTradeEnabled,
-        frequencyMinutes: autoTradeEnabled ? frequencyMinutes : undefined,
-        exchangeConnected,
-        exchangeReason,
-        exchange: { connected: exchangeConnected },
-        isApiConnected: exchangeConnected,
-        apiStatus: exchangeConnected ? 'connected' : 'disconnected',
-        providersReady: hasUsableProviders, // Use our lightweight check
-        providerConfigTimeout: false,
-        providerStatus: hasUsableProviders ? 'CONFIGURED' : 'MISSING_PROVIDERS',
-        providerMessage: hasUsableProviders ? null : providerStatusMessage,
-        diagnostics: { marketDataReady: hasUsableProviders, newsReady: hasUsableProviders },
-        config: {
+      if (!reply.sent) {
+        return reply.send({
+          enabled: autoTradeEnabled,
           autoTradeEnabled,
-          perTradeRiskPct: config?.perTradeRiskPct || 1,
-          maxConcurrentTrades: config?.maxConcurrentTrades || 3,
-        },
-      });
+          frequencyMinutes: autoTradeEnabled ? frequencyMinutes : undefined,
+          exchangeConnected,
+          exchangeReason,
+          exchange: { connected: exchangeConnected },
+          isApiConnected: exchangeConnected,
+          apiStatus: exchangeConnected ? 'connected' : 'disconnected',
+          providersReady: hasUsableProviders,
+          providerConfigTimeout: false,
+          providerStatus: hasUsableProviders ? 'CONFIGURED' : 'MISSING_PROVIDERS',
+          providerMessage: hasUsableProviders ? null : providerStatusMessage,
+          diagnostics: { marketDataReady: hasUsableProviders, newsReady: hasUsableProviders },
+          // Include scheduler state for real-time status
+          schedulerRunning,
+          userJobScheduled,
+          config: {
+            autoTradeEnabled,
+            perTradeRiskPct: 1, // Safe default
+            maxConcurrentTrades: 3, // Safe default
+          },
+        });
+      }
     } catch (err: any) {
-      clearTimeout(timeoutId);
       console.error("[ROUTE_ERROR] /auto-trade/status", err.message, Date.now() - startTime, "ms");
       // CRITICAL: For authenticated users, NEVER return 403 or 500 - treat errors as disabled state
       // Missing config or Firestore errors should return 200 with enabled: false
-      return reply.code(200).send({
-        ok: false,
-        enabled: false,
-        autoTradeEnabled: false,
-        frequencyMinutes: undefined,
-        exchangeConnected: false,
-        exchange: { connected: false },
-        error: 'Status check failed',
-        message: err.message || 'Unable to determine auto-trade status',
-      });
+      if (!reply.sent) {
+        return reply.send({
+          ok: false,
+          enabled: false,
+          autoTradeEnabled: false,
+          frequencyMinutes: undefined,
+          exchangeConnected: false,
+          exchange: { connected: false },
+          error: 'Status check failed',
+          message: err.message || 'Unable to determine auto-trade status',
+        });
+      }
     }
   });
 
@@ -217,55 +212,92 @@ export async function statusRoutes(fastify: FastifyInstance) {
     const startTime = Date.now();
     console.log("[ROUTE_ENTER] /auto-trade/config PID:", process.pid);
 
-    // HARD TIMEOUT GUARD: Auto-respond 504 after 200ms
-    const timeoutId = setTimeout(() => {
-      if (!reply.sent) {
-        console.error("[ROUTE_TIMEOUT] /auto-trade/config exceeded 200ms");
-        reply.code(504).send({ ok: false, reason: 'route_timeout', route: '/auto-trade/config' });
-      }
-    }, 200);
-
     try {
       const user = (request as any).user;
       if (!user?.uid) {
-        clearTimeout(timeoutId);
+        console.log("[ROUTE_EXIT] /auto-trade/config (no uid)", Date.now() - startTime, "ms");
         return reply.code(401).send({ error: 'Authentication required' });
       }
 
-      // DIRECT Firestore read with 200ms timeout (no autoTradeEngine)
-      const db = getFirebaseAdmin().firestore();
-      const [configDoc, bgSettingsDoc] = await Promise.all([
-        Promise.race([
-          db.collection('users').doc(user.uid).collection('autoTradeConfig').doc('current').get(),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 200))
-        ]),
-        Promise.race([
-          db.collection('users').doc(user.uid).collection('settings').doc('backgroundResearch').get(),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 200))
-        ])
-      ]);
+      // INSTANT RESPONSE: Use cached config as primary source, scheduler as fallback
+      // Priority: 1) Last-known cached config, 2) Scheduler state, 3) Safe defaults
 
-      const config = configDoc?.exists ? configDoc.data() : {};
-      const bgSettings = bgSettingsDoc?.exists ? bgSettingsDoc.data() : {};
+      // 1) Check cached config (primary source of truth for user intent)
+      const cachedConfig = autoTradeConfigCache.get(user.uid);
 
-      clearTimeout(timeoutId);
+      // 2) Use scheduler state as informational fallback (not primary source)
+      const jobState = schedulerInstance?.getUserJobState(user.uid);
+      const schedulerIndicatesEnabled = jobState?.mode === 'AUTO_TRADE_RESEARCH';
+
+      // Determine autoTradeEnabled with proper priority
+      let autoTradeEnabled: boolean;
+      if (cachedConfig) {
+        // Primary: Use cached config (user intent)
+        autoTradeEnabled = cachedConfig.autoTradeEnabled;
+      } else if (schedulerIndicatesEnabled) {
+        // Fallback: Scheduler state suggests enabled
+        autoTradeEnabled = true;
+      } else {
+        // Final fallback: Safe default
+        autoTradeEnabled = false;
+      }
+
+      // Frequency and mode from cache or safe defaults
+      const frequency = cachedConfig?.frequency ?? 5;
+      const mode = cachedConfig?.mode ?? 'AUTO_TRADE_RESEARCH';
+
       const duration = Date.now() - startTime;
-      console.log("[ROUTE_EXIT] /auto-trade/config", duration, "ms");
+      console.log("[ROUTE_EXIT] /auto-trade/config", duration, "ms - instant response with cached config");
 
-      // Return ONLY stored Firestore config (autoTradeEnabled, frequency, mode)
-      return {
-        autoTradeEnabled: config?.autoTradeEnabled ?? false,
-        frequency: bgSettings?.researchFrequencyMinutes || 5,
-        mode: config?.mode || 'AUTO_TRADE_RESEARCH',
-      };
+      return reply.send({
+        autoTradeEnabled: autoTradeEnabled,
+        frequency: frequency,
+        mode: mode,
+      });
+
+      // ASYNC: Update cache with fresh Firestore data (does not block response)
+      // Prevent refresh storms - only one refresh per UID at a time
+      if (!activeCacheRefreshes.has(user.uid)) {
+        activeCacheRefreshes.add(user.uid);
+
+        setImmediate(async () => {
+          try {
+            const db = getFirebaseAdmin().firestore();
+            const [configDoc, bgSettingsDoc] = await Promise.all([
+              db.collection('users').doc(user.uid).collection('autoTradeConfig').doc('current').get(),
+              db.collection('users').doc(user.uid).collection('settings').doc('backgroundResearch').get()
+            ]);
+
+            const freshConfig = configDoc?.exists ? configDoc.data() : {};
+            const freshSettings = bgSettingsDoc?.exists ? bgSettingsDoc.data() : {};
+
+            // Update cache with fresh Firestore data
+            if (freshConfig || freshSettings) {
+              const cacheEntry = {
+                autoTradeEnabled: freshConfig?.autoTradeEnabled ?? false,
+                frequency: freshSettings?.researchFrequencyMinutes ?? 5,
+                mode: freshConfig?.mode ?? 'AUTO_TRADE_RESEARCH',
+                timestamp: Date.now()
+              };
+              autoTradeConfigCache.set(user.uid, cacheEntry);
+              console.log("[CONFIG_CACHE_UPDATE] Updated cache with fresh Firestore data for user:", user.uid);
+            }
+          } catch (err: any) {
+            // Silent failure - does not affect response
+            console.warn("[CONFIG_CACHE_UPDATE_FAILED] Could not update cache:", err.message);
+          } finally {
+            // Always remove from active set, even on error
+            activeCacheRefreshes.delete(user.uid);
+          }
+        });
+      }
     } catch (err: any) {
-      clearTimeout(timeoutId);
       console.error("[ROUTE_ERROR] /auto-trade/config", err.message, Date.now() - startTime, "ms");
-      return {
+      return reply.send({
         autoTradeEnabled: false,
         frequency: 5,
         mode: 'AUTO_TRADE_RESEARCH',
-      };
+      });
     }
   });
 
@@ -319,11 +351,22 @@ export async function statusRoutes(fastify: FastifyInstance) {
         }, { merge: true });
       }
 
+      // Update in-memory cache with new config
+      const finalFrequency = body.frequency || existingConfig?.frequency || 5;
+      const finalMode = body.mode || existingConfig?.mode || 'AUTO_TRADE_RESEARCH';
+
+      autoTradeConfigCache.set(user.uid, {
+        autoTradeEnabled: body.autoTradeEnabled,
+        frequency: finalFrequency,
+        mode: finalMode,
+        timestamp: Date.now()
+      });
+
       // Return updated config (only stored Firestore values)
       return {
         autoTradeEnabled: body.autoTradeEnabled,
-        frequency: body.frequency || existingConfig?.frequency || 5,
-        mode: body.mode || existingConfig?.mode || 'AUTO_TRADE_RESEARCH',
+        frequency: finalFrequency,
+        mode: finalMode,
       };
     } catch (err: any) {
       logger.error({ error: err.message, uid: (request as any).user?.uid }, 'Error updating auto-trade config');

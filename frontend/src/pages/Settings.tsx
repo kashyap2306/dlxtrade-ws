@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { settingsApi, providerApi, exchangeService, adminApi, autoTradeApi } from '../services/api';
+import api, { settingsApi, providerApi, exchangeService, adminApi, autoTradeApi } from '../services/api';
 import Toast from '../components/Toast';
 import { API_NAME_MAP, PROVIDER_CONFIG } from "../constants/providers";
 import { EXCHANGES } from "../constants/exchanges";
@@ -1239,23 +1239,25 @@ const Settings = () => {
 
   const handleDisconnectExchange = async () => {
     if (!user) return;
-    try {
-      // Explicitly clear exchange config so downstream checks see it as disconnected
-      const exchangeConfigPayload = {
-        exchange: null,
-        apiKey: '',
-        secret: '',
-        passphrase: '',
-        testnet: false,
-      };
 
-      await settingsApi.saveExchangeConfig(user.uid, exchangeConfigPayload);
+    // Ask for confirmation before disconnecting
+    const confirmed = window.confirm(
+      'Are you sure you want to disconnect your exchange?\n\n' +
+      'Your API credentials will be preserved and you can reconnect anytime without re-entering them.\n\n' +
+      'To permanently delete your credentials, please contact support.'
+    );
+
+    if (!confirmed) return;
+
+    try {
+      // Call backend disconnect route (preserves credentials)
+      await api.disconnect('binance'); // Use actual exchange type if available
 
       // Refresh exchangeConfig state
       await loadExchangeConfig(user.uid);
 
       setExchangeTestResult(undefined);
-      showToast('Exchange disconnected successfully.', 'success');
+      showToast('Exchange disconnected successfully. Your credentials are preserved for easy reconnection.', 'success');
     } catch (err: any) {
       if (err.response?.status === 401) {
         handleLogout();

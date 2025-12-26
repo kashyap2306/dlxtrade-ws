@@ -46,6 +46,15 @@ export async function walletRoutes(fastify: FastifyInstance) {
       }
 
       const exchangeConfig = exchangeConfigDoc.data();
+
+      // Check if user has explicitly disconnected
+      if (exchangeConfig?.disconnected === true) {
+        return reply.code(404).send({
+          error: 'Exchange has been disconnected',
+          connected: false,
+        });
+      }
+
       if (!exchangeConfig?.apiKeyEncrypted || !exchangeConfig?.secretEncrypted) {
         return reply.code(404).send({
           error: 'No exchange connected',

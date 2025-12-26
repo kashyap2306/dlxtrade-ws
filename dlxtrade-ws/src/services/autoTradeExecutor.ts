@@ -145,10 +145,13 @@ export class AutoTradeExecutor {
 
       // 5. Check user's exchange credentials (from exchangeConfig, NOT integrations)
       const { isExchangeUsable } = await import('./firestoreAdapter');
-      const hasExchangeCredentials = await isExchangeUsable(request.userId);
-      if (!hasExchangeCredentials) {
-        logger.info({ userId: this.maskUserId(request.userId) }, '[AUTO-TRADE] SKIPPED - No exchange credentials');
-        return { success: false, error: 'No exchange credentials' };
+      const exchangeUsability = await isExchangeUsable(request.userId);
+      if (!exchangeUsability.usable) {
+        logger.info({
+          userId: this.maskUserId(request.userId),
+          reason: exchangeUsability.reason
+        }, '[AUTO-TRADE] SKIPPED - Exchange not usable');
+        return { success: false, error: exchangeUsability.reason };
       }
 
       // 6. Check open orders limit
@@ -328,29 +331,22 @@ export class AutoTradeExecutor {
    */
   private async getUserBalanceUSD(userId: string): Promise<number> {
     try {
-      // Check if exchange is configured (from exchangeConfig, NOT integrations)
+      // Check if exchange is configured and usable (SINGLE SOURCE OF TRUTH)
       const { isExchangeUsable } = await import('./firestoreAdapter');
-      const hasExchangeCredentials = await isExchangeUsable(userId);
-      if (!hasExchangeCredentials) {
-        logger.warn({ userId: this.maskUserId(userId) }, 'No exchange credentials for balance check');
+      const exchangeUsability = await isExchangeUsable(userId);
+      if (!exchangeUsability.usable) {
+        logger.warn({
+          userId: this.maskUserId(userId),
+          reason: exchangeUsability.reason
+        }, 'Exchange not usable for balance check');
         return 0;
       }
 
-      // Get decrypted credentials from exchangeConfig
+      // Get decrypted credentials - safe since isExchangeUsable() verified decrypt works
       const exchangeConfig = await firestoreAdapter.getExchangeConfig(userId);
-      if (!exchangeConfig?.apiKeyEncrypted || (!exchangeConfig.secretEncrypted && !exchangeConfig.secretKeyEncrypted)) {
-        logger.warn({ userId: this.maskUserId(userId) }, 'Exchange config missing encrypted keys');
-        return 0;
-      }
-
-      // Decrypt credentials
       const { decrypt } = await import('./keyManager');
-      const apiKey = decrypt(exchangeConfig.apiKeyEncrypted);
-      const secretKey = decrypt(exchangeConfig.secretEncrypted || exchangeConfig.secretKeyEncrypted);
-      if (!apiKey || !secretKey) {
-        logger.warn({ userId: this.maskUserId(userId) }, 'Exchange credential decryption failed');
-        return 0;
-      }
+      const apiKey = decrypt(exchangeConfig!.apiKeyEncrypted);
+      const secretKey = decrypt(exchangeConfig!.secretEncrypted || exchangeConfig!.secretKeyEncrypted);
 
       // Use Binance adapter to get account balance
       const { BinanceAdapter } = await import('./binanceAdapter');
@@ -415,19 +411,18 @@ export class AutoTradeExecutor {
     } = params;
 
     try {
-      // Get exchange credentials from exchangeConfig
-      const exchangeConfig = await firestoreAdapter.getExchangeConfig(userId);
-      if (!exchangeConfig?.apiKeyEncrypted || (!exchangeConfig.secretEncrypted && !exchangeConfig.secretKeyEncrypted)) {
-        throw new Error('Exchange credentials not configured');
+      // Verify exchange is usable (SINGLE SOURCE OF TRUTH) before attempting trade
+      const { isExchangeUsable } = await import('./firestoreAdapter');
+      const exchangeUsability = await isExchangeUsable(userId);
+      if (!exchangeUsability.usable) {
+        throw new Error(`Exchange not usable: ${exchangeUsability.reason}`);
       }
 
-      // Decrypt credentials
+      // Get decrypted credentials - safe since isExchangeUsable() verified decrypt works
+      const exchangeConfig = await firestoreAdapter.getExchangeConfig(userId);
       const { decrypt } = await import('./keyManager');
-      const apiKey = decrypt(exchangeConfig.apiKeyEncrypted);
-      const secretKey = decrypt(exchangeConfig.secretEncrypted || exchangeConfig.secretKeyEncrypted);
-      if (!apiKey || !secretKey) {
-        throw new Error('Exchange credential decryption failed');
-      }
+      const apiKey = decrypt(exchangeConfig!.apiKeyEncrypted);
+      const secretKey = decrypt(exchangeConfig!.secretEncrypted || exchangeConfig!.secretKeyEncrypted);
 
       if (dryRun) {
         // Dry run mode - simulate the trade

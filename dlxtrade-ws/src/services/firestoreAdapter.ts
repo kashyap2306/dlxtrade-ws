@@ -5,16 +5,167 @@ import { encrypt, decrypt, maskKey } from './keyManager';
 
 const db = () => getFirebaseAdmin().firestore();
 
+// WARN when non-canonical exchange config paths are accessed
+export function warnNonCanonicalExchangeConfigAccess(uid: string, accessedPath: string, context: string): void {
+  const canonicalPath = `users/${uid}/exchangeConfig/current`;
+  if (accessedPath !== canonicalPath) {
+    logger.warn({
+      uid,
+      accessedPath,
+      canonicalPath,
+      context,
+      warning: 'NON_CANONICAL_EXCHANGE_CONFIG_ACCESS'
+    }, `⚠️ NON_CANONICAL_EXCHANGE_CONFIG_ACCESS: ${context} accessed ${accessedPath} instead of ${canonicalPath}`);
+  }
+}
+
+// CRITICAL: Write guard for exchange config - ONLY canonical path allowed
+export function assertExchangeConfigWritePath(uid: string, attemptedPath: string): void {
+  const canonicalPath = `users/${uid}/exchangeConfig/current`;
+
+  if (attemptedPath !== canonicalPath) {
+    logger.error({
+      uid,
+      attemptedPath,
+      canonicalPath,
+      blocked: true
+    }, 'LEGACY_EXCHANGE_WRITE_ATTEMPT_BLOCKED');
+
+    // CRITICAL: Block the write by throwing
+    throw new Error(`EXCHANGE_CONFIG_WRITE_BLOCKED: Only canonical path allowed. Attempted: ${attemptedPath}, Required: ${canonicalPath}`);
+  }
+
+  logger.debug({
+    uid,
+    writePath: canonicalPath,
+    canonical: true
+  }, 'EXCHANGE_CONFIG_WRITE_TO_CANONICAL_PATH_VERIFIED');
+}
+
 // SHARED exchange usability guard for all major code paths
-export async function isExchangeUsable(uid: string): Promise<boolean> {
+/**
+ * Update cached flags for control-plane routes
+ * Called by background processes only - NEVER from routes
+ */
+export async function updateCachedFlags(uid: string): Promise<void> {
+  try {
+    // Check exchange configuration
+    const exchangeUsable = await isExchangeUsable(uid);
+    const exchangeConfigured = exchangeUsable.usable;
+
+    // Check provider configuration (lightweight check)
+    const dbInstance = db();
+    const integrationsSnapshot = await dbInstance.collection('users').doc(uid).collection('integrations').limit(1).get();
+    const providersConfigured = !integrationsSnapshot.empty;
+
+    // Update cached flags
+    await firestoreAdapter.saveBackgroundResearchSettings(uid, {
+      exchangeConfigured,
+      providersConfigured,
+      lastExchangeValidationAt: admin.firestore.Timestamp.now(),
+      lastProviderValidationAt: admin.firestore.Timestamp.now(),
+    });
+
+    logger.debug({
+      uid,
+      exchangeConfigured,
+      providersConfigured
+    }, 'CACHED_FLAGS_UPDATED_BY_BACKGROUND_PROCESS');
+
+  } catch (error: any) {
+    logger.warn({
+      uid,
+      error: error.message
+    }, 'FAILED_TO_UPDATE_CACHED_FLAGS');
+  }
+}
+
+export async function isExchangeUsable(uid: string): Promise<{ usable: boolean; reason: string; exchange?: string }> {
+  // ENFORCE: ONLY canonical path - users/{uid}/exchangeConfig/current
+  const canonicalPath = `users/${uid}/exchangeConfig/current`;
   const doc = await db().collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
-  if (!doc.exists) return false;
+
+  // Log canonical path usage once per request
+  logger.debug({
+    uid,
+    firestorePathUsed: canonicalPath,
+    canonical: true
+  }, 'EXCHANGE_CONFIG_READ_FROM_CANONICAL_PATH');
+
+  if (!doc.exists) {
+    logger.info({
+      uid,
+      canonicalPath,
+      reason: 'EXCHANGE_CONFIG_MISSING_AT_CANONICAL_PATH'
+    }, 'EXCHANGE_CONFIG_MISSING_AT_CANONICAL_PATH - treating as NOT_USABLE');
+    return { usable: false, reason: 'No exchange configuration found' };
+  }
+
   const config = doc.data();
-  if (!config) return false;
-  // Exchange is usable if encrypted keys exist - decrypt failure is informational only
-  if (!config.apiKeyEncrypted) return false;
-  if (!config.secretEncrypted && !config.secretKeyEncrypted) return false;
-  return true;
+  if (!config) {
+    return { usable: false, reason: 'Exchange configuration is empty' };
+  }
+
+  // Check if user has explicitly disconnected
+  if (config.disconnected === true) {
+    return { usable: false, reason: 'Exchange disconnected by user', exchange: config.exchange };
+  }
+
+  const exchange = (config.exchange || '').toLowerCase().trim();
+
+  // Check basic requirements
+  if (!config.apiKeyEncrypted) {
+    return { usable: false, reason: 'API key not configured', exchange };
+  }
+  if (!config.secretEncrypted && !config.secretKeyEncrypted) {
+    return { usable: false, reason: 'Secret key not configured', exchange };
+  }
+  if (!['binance', 'bitget', 'bingx', 'weex'].includes(exchange)) {
+    return { usable: false, reason: `Unsupported exchange: ${exchange}`, exchange };
+  }
+
+  // CRITICAL: Test actual decryption to verify usability
+  // DO NOT rely on cached exchangeStatus - always test current decryption capability
+  try {
+    const { decrypt } = await import('./keyManager');
+    const apiKey = decrypt(config.apiKeyEncrypted);
+    const secret = decrypt(config.secretKeyEncrypted || config.secretEncrypted);
+    const passphrase = config.passphraseEncrypted ? decrypt(config.passphraseEncrypted) : undefined;
+
+    const isBitget = exchange === 'bitget';
+    const decryptionValid = apiKey !== null && secret !== null && (isBitget ? passphrase !== null : true);
+
+    const result = {
+      usable: decryptionValid,
+      reason: decryptionValid ? 'Exchange configured and decryptable' : 'Exchange keys exist but decryption failed',
+      exchange
+    };
+
+    // Log exchange usability decision once per request
+    logger.info({
+      uid,
+      exchange,
+      usable: result.usable,
+      reason: result.reason
+    }, `EXCHANGE_USABILITY_CHECKED: ${result.usable ? 'USABLE' : 'NOT_USABLE'} - ${result.reason}`);
+
+    return result;
+  } catch (error: any) {
+    const result = {
+      usable: false,
+      reason: `Exchange decryption error: ${error.message}`,
+      exchange
+    };
+
+    logger.warn({
+      uid,
+      exchange,
+      error: error.message
+    }, `EXCHANGE_USABILITY_CHECKED: NOT_USABLE - ${result.reason}`);
+
+    return result;
+  }
+
 }
 
 /**
@@ -1400,6 +1551,11 @@ export class FirestoreAdapter {
     engineState?: 'RUNNING' | 'STOPPED'; // Engine state persistence
     scheduled?: boolean; // User is registered in scheduler
     lastScheduledAt?: admin.firestore.Timestamp; // When user was last scheduled
+    // CACHED FLAGS for control-plane routes (updated by background processes only)
+    exchangeConfigured?: boolean; // Cached: exchange keys exist and decryptable
+    providersConfigured?: boolean; // Cached: at least one research provider configured
+    lastExchangeValidationAt?: admin.firestore.Timestamp; // When exchange was last validated
+    lastProviderValidationAt?: admin.firestore.Timestamp; // When providers were last validated
   }): Promise<void> {
     try {
       const docRef = db().collection('users').doc(uid).collection('settings').doc('backgroundResearch');

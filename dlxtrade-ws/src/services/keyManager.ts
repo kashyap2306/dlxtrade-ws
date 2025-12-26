@@ -286,9 +286,137 @@ export function maskKey(key: string): string {
   return `${key.slice(0, 4)}****${key.slice(-4)}`;
 }
 
+/**
+ * CRITICAL: Verify encryption key consistency across the application
+ * Call this from background jobs and API routes to ensure same key is used
+ */
+export function verifyEncryptionKeyConsistency(context: string): void {
+  if (CACHED_ENCRYPTION_KEY === null || CACHED_KEY_HASH === null) {
+    throw new Error(`ENCRYPTION_KEY_NOT_INITIALIZED in ${context} - initializeEncryptionKey() must be called at server startup`);
+  }
+
+  const currentHash = getEncryptionKeyHash(8);
+  logger.debug({
+    context,
+    keyHash: currentHash,
+    cached: true
+  }, `ENCRYPTION_KEY_VERIFIED in ${context} - using cached key`);
+}
+
+/**
+ * CRITICAL: Get encryption key status for diagnostics
+ */
+export function getEncryptionKeyStatus(): {
+  initialized: boolean;
+  keyLength: number;
+  keyHash: string;
+  cached: boolean;
+} {
+  return {
+    initialized: CACHED_ENCRYPTION_KEY !== null,
+    keyLength: CACHED_ENCRYPTION_SECRET?.length || 0,
+    keyHash: CACHED_KEY_HASH ? CACHED_KEY_HASH.slice(0, 8) : '',
+    cached: CACHED_ENCRYPTION_KEY !== null
+  };
+}
+
+/**
+ * CRITICAL: Test function to verify encryption/decryption consistency
+ * Used for auditing and debugging encryption stability
+ */
+export async function testEncryptionConsistency(): Promise<{
+  success: boolean;
+  keyHash: string;
+  testResults: any[];
+  errors: string[];
+}> {
+  const results = [];
+  const errors = [];
+
+  try {
+    // Test 1: Verify key is cached
+    const status = getEncryptionKeyStatus();
+    results.push({ test: 'key_cached', success: status.cached, details: status });
+
+    if (!status.cached) {
+      errors.push('Encryption key not cached - initializeEncryptionKey() not called');
+      return { success: false, keyHash: '', testResults: results, errors };
+    }
+
+    // Test 2: Verify hash consistency
+    const hash1 = getEncryptionKeyHash(8);
+    const hash2 = getEncryptionKeyHash(8);
+    const hashConsistent = hash1 === hash2;
+    results.push({ test: 'hash_consistent', success: hashConsistent, details: { hash1, hash2 } });
+
+    if (!hashConsistent) {
+      errors.push('Encryption key hash inconsistent between calls');
+    }
+
+    // Test 3: Test encrypt/decrypt round trip
+    const testData = 'test_encryption_data_' + Date.now();
+    const encrypted = encrypt(testData);
+    const decrypted = decrypt(encrypted);
+    const roundTripSuccess = decrypted === testData;
+    results.push({ test: 'round_trip', success: roundTripSuccess, details: { original: testData, encrypted: encrypted?.substring(0, 20) + '...', decrypted } });
+
+    if (!roundTripSuccess) {
+      errors.push('Encrypt/decrypt round trip failed');
+    }
+
+    // Test 4: Test decryptOrThrow with valid data
+    try {
+      const throwResult = decryptOrThrow(encrypted, 'test_field');
+      const throwSuccess = throwResult === testData;
+      results.push({ test: 'decrypt_or_throw', success: throwSuccess, details: { result: throwResult } });
+
+      if (!throwSuccess) {
+        errors.push('decryptOrThrow returned wrong result');
+      }
+    } catch (throwErr: any) {
+      errors.push(`decryptOrThrow failed: ${throwErr.message}`);
+      results.push({ test: 'decrypt_or_throw', success: false, details: { error: throwErr.message } });
+    }
+
+    // Test 5: Test decryptOrThrow with invalid data
+    try {
+      decryptOrThrow('invalid_encrypted_data', 'test_field');
+      errors.push('decryptOrThrow should have thrown for invalid data');
+      results.push({ test: 'decrypt_or_throw_invalid', success: false, details: { error: 'Should have thrown' } });
+    } catch (throwErr: any) {
+      const expectedError = throwErr.message?.includes('EXCHANGE_KEY_DECRYPTION_FAILED');
+      results.push({ test: 'decrypt_or_throw_invalid', success: expectedError, details: { error: throwErr.message } });
+
+      if (!expectedError) {
+        errors.push(`decryptOrThrow threw unexpected error: ${throwErr.message}`);
+      }
+    }
+
+    const success = errors.length === 0;
+    return {
+      success,
+      keyHash: hash1,
+      testResults: results,
+      errors
+    };
+
+  } catch (err: any) {
+    errors.push(`Test execution failed: ${err.message}`);
+    return {
+      success: false,
+      keyHash: '',
+      testResults: results,
+      errors
+    };
+  }
+}
+
 export const keyManager = {
   encrypt,
   decrypt,
   decryptOrThrow,
-  maskKey
+  maskKey,
+  verifyEncryptionKeyConsistency,
+  getEncryptionKeyStatus,
+  testEncryptionConsistency
 };
