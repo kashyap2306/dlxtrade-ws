@@ -355,7 +355,9 @@ export const useAutoTradeConfig = (user: any) => {
         });
       }
     }
-  }, [user, config.autoTradeEnabled]);
+    // CRITICAL: Remove config.autoTradeEnabled from deps to prevent callback recreation
+    // This stabilizes the callback reference and prevents polling interval recreation
+  }, [user]);
 
   const loadPerformanceStats = useCallback(async () => {
     // CRITICAL: Only load performance stats when auto-trade is enabled to prevent unnecessary API calls

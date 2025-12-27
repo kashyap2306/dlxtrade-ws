@@ -2999,19 +2999,20 @@ export class AutoTradeEngine {
    * @param uid User ID
    * @param skipHistoryStorage If true, history storage is skipped (caller will handle it)
    */
-  async runAutoTradeResearchCycleSafe(uid: string, skipHistoryStorage: boolean = false): Promise<ResearchDataResult | null> {
+  async runAutoTradeResearchCycleSafe(uid: string, skipHistoryStorage: boolean = false, schedulerCycleId: string, researchResult: any): Promise<ResearchDataResult | null> {
     const cycleStartTimestamp: number = Date.now();
-    console.log('🔥 [HARD_LOG] [AUTO_TRADE_SAFE_START] runAutoTradeResearchCycleSafe() called for user:', uid, 'skipHistoryStorage:', skipHistoryStorage);
+    const cycleId = schedulerCycleId || `engine_${cycleStartTimestamp}`;
+    console.log('🔥 [HARD_LOG] [AUTO_TRADE_SAFE_START] runAutoTradeResearchCycleSafe() called for user:', uid, 'skipHistoryStorage:', skipHistoryStorage, 'cycleId:', cycleId);
 
     // CRITICAL: Verify encryption key consistency for auto-trade engine
     const { verifyEncryptionKeyConsistency } = await import('./keyManager');
     verifyEncryptionKeyConsistency(`auto-trade-engine-${uid}`);
 
-    logger.info({ uid, cycleId: `cycle_${cycleStartTimestamp}` }, '🚀 [AUTO_TRADE_CYCLE] Cycle STARTED');
+    logger.info({ uid, cycleId }, '🚀 [AUTO_TRADE_CYCLE] Cycle STARTED');
 
     // Check if we should run
     if (!shouldRunBackgroundTasks()) {
-      logger.info({ uid, cycleId: `cycle_${cycleStartTimestamp}`, reason: 'BACKGROUND_TASKS_PAUSED' }, '⏸️ [AUTO_TRADE_CYCLE] Cycle SKIPPED - background tasks paused');
+      logger.info({ uid, cycleId, reason: 'BACKGROUND_TASKS_PAUSED' }, '⏸️ [AUTO_TRADE_CYCLE] Cycle SKIPPED - background tasks paused');
 
       // Save SKIPPED history for background tasks paused
       await saveAutoTradeHistorySkipped(
@@ -3031,11 +3032,262 @@ export class AutoTradeEngine {
       uid,
       skipHistoryStorage,
       serverSide: true,
-      frontendIndependent: true
+      frontendIndependent: true,
+      cycleId,
+      hasResearchResult: !!researchResult
     }, '🔍 [AUTO_TRADE_LIFECYCLE_DEBUG] Starting auto-trade research cycle - server-side only');
 
-    // Run the actual research cycle
-    return await this.runAutoTradeResearchCycle(uid, skipHistoryStorage);
+    // AUTO_TRADE IS CONSUMER ONLY: Use research result provided by scheduler
+    if (!researchResult) {
+      logger.info({ uid, cycleId }, '🚫 [AUTO_TRADE_CONSUMER] No research result provided by scheduler - skipping cycle gracefully');
+
+      // Save SKIPPED history for no research result
+      if (!skipHistoryStorage) {
+        await saveAutoTradeHistorySkipped(
+          uid,
+          'NO_RESEARCH_RESULT',
+          'Scheduler provided no research result for auto-trade execution',
+          cycleId
+        );
+      }
+
+      return null; // Exit gracefully - no research to consume
+    }
+
+    // Run trade execution with provided research result
+    return await this.runAutoTradeExecutionCycle(uid, skipHistoryStorage, cycleId, researchResult);
+  }
+
+  /**
+   * Run auto-trade execution cycle with provided research result
+   * CRITICAL: AUTO_TRADE IS CONSUMER ONLY - this function NEVER generates research
+   * It only executes trades based on research result provided by scheduler
+   */
+  private async runAutoTradeExecutionCycle(
+    uid: string,
+    skipHistoryStorage: boolean,
+    cycleId: string,
+    researchResult: any
+  ): Promise<ResearchDataResult | null> {
+    // CRITICAL: Load config and settings ONCE at cycle start
+    let userConfig: AutoTradeConfig;
+    let userSettings: any;
+    let tradingSettings: any;
+
+    try {
+      userConfig = await this.loadConfig(uid);
+      userSettings = await firestoreAdapter.getSettings(uid);
+      tradingSettings = await AutoTradeEngine.getTradingSettings(uid);
+    } catch (configError: any) {
+      logger.error({ uid, error: configError.message }, '❌ [CONFIG_LOAD] Failed to load user config/settings at cycle start');
+      if (!skipHistoryStorage) {
+        await saveAutoTradeHistorySkipped(
+          uid,
+          'SYSTEM_ERROR',
+          `CONFIG_LOAD_FAILED: ${configError.message}`,
+          cycleId
+        );
+      }
+      return null;
+    }
+
+    // CRITICAL: Check exchange usability once at cycle start and reuse result
+    const exchangeUsability = await isExchangeUsable(uid);
+    if (!exchangeUsability.usable) {
+      logger.warn({
+        uid,
+        exchange: exchangeUsability.exchange,
+        reason: exchangeUsability.reason
+      }, `AUTO_TRADE_SKIPPED: EXCHANGE_NOT_USABLE - ${exchangeUsability.reason}`);
+
+      // Save SKIPPED history for unusable exchange
+      if (!skipHistoryStorage) {
+        await saveAutoTradeHistorySkipped(
+          uid,
+          'EXCHANGE_NOT_USABLE',
+          exchangeUsability.reason,
+          cycleId
+        );
+      }
+
+      return null; // Cycle completed with SKIPPED history
+    }
+
+    // CRITICAL: Validate provided research result
+    if (!researchResult || !researchResult.symbol || !researchResult.signal) {
+      logger.error({ uid, cycleId, researchResult }, '❌ [AUTO_TRADE_CONSUMER] Invalid research result provided by scheduler');
+      if (!skipHistoryStorage) {
+        await saveAutoTradeHistorySkipped(
+          uid,
+          'INVALID_RESEARCH_RESULT',
+          'Scheduler provided invalid research result for auto-trade execution',
+          cycleId
+        );
+      }
+      return null;
+    }
+
+    // Check if research meets trade criteria
+    const hasValidSignal = researchResult.signal === 'BUY' || researchResult.signal === 'SELL';
+    const hasValidAccuracy = researchResult.accuracy >= 0.70;
+    const hasTradePlan = !!researchResult.tradePlan;
+
+    if (!hasValidSignal || !hasValidAccuracy || !hasTradePlan) {
+      logger.info({
+        uid,
+        cycleId,
+        symbol: researchResult.symbol,
+        signal: researchResult.signal,
+        accuracy: researchResult.accuracy,
+        hasTradePlan
+      }, '🚫 [AUTO_TRADE_CONSUMER] Research result does not meet trade criteria - skipping');
+
+      if (!skipHistoryStorage) {
+        await saveAutoTradeHistorySkipped(
+          uid,
+          'TRADE_CRITERIA_NOT_MET',
+          `Signal: ${researchResult.signal}, Accuracy: ${researchResult.accuracy}, TradePlan: ${hasTradePlan}`,
+          cycleId
+        );
+      }
+
+      return null;
+    }
+
+    // Research meets criteria - proceed with trade execution
+    logger.info({
+      uid,
+      cycleId,
+      symbol: researchResult.symbol,
+      signal: researchResult.signal,
+      accuracy: researchResult.accuracy
+    }, '✅ [AUTO_TRADE_CONSUMER] Research meets criteria - proceeding with trade execution');
+
+    // Execute the trade using the existing trade execution logic
+    return await this.executeTradeWithResearchResult(uid, userConfig, tradingSettings, researchResult, cycleId, skipHistoryStorage);
+  }
+
+  /**
+   * Execute trade with provided research result
+   * This is the core trade execution logic extracted from runAutoTradeResearchCycle
+   */
+  private async executeTradeWithResearchResult(
+    uid: string,
+    userConfig: AutoTradeConfig,
+    tradingSettings: any,
+    researchResult: any,
+    cycleId: string,
+    skipHistoryStorage: boolean
+  ): Promise<ResearchDataResult | null> {
+    // Convert research result to ResearchDataResult format for execution pipeline
+    const researchDataResult: ResearchDataResult = {
+      symbol: researchResult.symbol,
+      signal: researchResult.signal,
+      accuracy: researchResult.accuracy,
+      result: {
+        signal: researchResult.signal,
+        accuracy: researchResult.accuracy,
+        tradePlan: researchResult.tradePlan,
+        price: researchResult.price || 0,
+        snapshotAccuracy: researchResult.accuracy,
+        accuracyBreakdown: researchResult.accuracyBreakdown || { indicatorScore: 0, marketStructureScore: 0, momentumScore: 0, volumeScore: 0, newsScore: 0, riskPenalty: 0 },
+        accuracyWeightsUsed: researchResult.accuracyWeightsUsed || {},
+        indicators: researchResult.indicators || {
+          rsi: null, ma50: null, ma200: null, ema20: null, ema50: null,
+          macd: null, volume: null, vwap: null, atr: null, pattern: null, momentum: null
+        },
+        metadata: researchResult.metadata || {},
+        news: researchResult.news || { articles: [] },
+        raw: researchResult.raw || { marketData: null, cryptocompare: null, metadata: null, news: null },
+        providers: researchResult.providers || { marketData: null, metadata: null, news: null }
+      },
+      processingTimeMs: researchResult.processingTimeMs || 0,
+      metadata: researchResult.metadata || { symbol: researchResult.symbol }
+    };
+
+    // Use the existing trade execution pipeline but with pre-validated research
+    const cycleStartTimestamp = Date.now();
+
+    // Set up execution variables
+    let cycleResult: AutoTradeReason = AUTO_TRADE_REASONS.TRADE_EXECUTED;
+    let accuracy = researchResult.accuracy;
+    let signal: TradeSignalType = researchResult.signal;
+    let skipReason = '';
+    let decisionStatus: 'EXECUTED' | 'SKIPPED' = 'EXECUTED';
+    let tradeId: string | null = null;
+
+    // Mark research as executed (since it was provided)
+    const researchExecuted = true;
+    const useCachedResults = true; // We have the research result
+
+    // Set up function-level variables
+    let executionBlocked = false;
+    let executionBlockReason = '';
+
+    // Set up research data for history
+    const researchData = {
+      results: [researchDataResult],
+      coinsAnalyzed: [researchResult.symbol]
+    };
+    const researchSymbol = researchResult.symbol;
+    const finalResult = researchDataResult.result;
+    const finalTradePlan = researchResult.tradePlan;
+
+    try {
+      // Execute trade using existing logic
+      // Only execute if signal is BUY or SELL (not HOLD)
+      if (signal === 'BUY' || signal === 'SELL') {
+        // Build trade signal from research result
+        const tradeSignal: TradeSignal = {
+          symbol: researchResult.symbol,
+          signal: signal,
+          accuracy,
+          entryPrice: researchResult.price || 0,
+          stopLoss: finalTradePlan?.stopLoss || 0,
+          takeProfit: finalTradePlan?.takeProfit || 0,
+          takeProfit1: finalTradePlan?.takeProfit1,
+          takeProfit2: finalTradePlan?.takeProfit2,
+          takeProfit3: finalTradePlan?.takeProfit3,
+          reasoning: `Auto-trade execution from background research (cycle: ${cycleId})`,
+          requestId: cycleId,
+          timestamp: new Date(cycleStartTimestamp),
+          leverage: finalTradePlan?.leverage
+        };
+
+        // Execute the trade
+        const execution = await this.executeTrade(uid, tradeSignal, false);
+
+        logger.info({ uid, cycleId, tradeId: execution.tradeId, symbol: researchResult.symbol }, '✅ [AUTO_TRADE_EXECUTION] Trade executed successfully');
+      } else {
+        logger.info({ uid, cycleId, signal, symbol: researchResult.symbol }, '⏭️ [AUTO_TRADE_EXECUTION] Skipping trade - signal is HOLD');
+      }
+
+      // Return the research result
+      return researchDataResult;
+
+    } catch (executionError: any) {
+      logger.error({ uid, cycleId, error: executionError.message }, '❌ [AUTO_TRADE_EXECUTION] Trade execution failed');
+
+      // Save error history
+      if (!skipHistoryStorage) {
+        await saveAutoTradeHistoryWithExecutionStatus(
+          uid,
+          researchDataResult,
+          researchData,
+          researchSymbol,
+          finalResult,
+          finalTradePlan,
+          accuracy,
+          signal,
+          finalResult.price || 0,
+          'SKIPPED',
+          null,
+          null
+        );
+      }
+
+      return null;
+    }
   }
 
   /**
@@ -3192,7 +3444,7 @@ export class AutoTradeEngine {
    * @param uid User ID
    * @param skipHistoryStorage If true, history storage is skipped (caller handles it with correct source)
    */
-  async runAutoTradeResearchCycle(uid: string, skipHistoryStorage: boolean = false): Promise<ResearchDataResult | null> {
+  async runAutoTradeResearchCycle(uid: string, skipHistoryStorage: boolean = false, cycleId?: string): Promise<ResearchDataResult | null> {
     const cycleStartTimestamp: number = Date.now();
 
     // CRITICAL: Load config and settings ONCE at cycle start and reuse throughout
@@ -3209,7 +3461,8 @@ export class AutoTradeEngine {
       await saveAutoTradeHistorySkipped(
         uid,
         'SYSTEM_ERROR',
-        `CONFIG_LOAD_FAILED: ${configError.message} (timestamp: ${cycleStartTimestamp})`
+        `CONFIG_LOAD_FAILED: ${configError.message} (timestamp: ${cycleStartTimestamp})`,
+        cycleId
       );
       return null;
     }
@@ -3254,45 +3507,38 @@ export class AutoTradeEngine {
     let finalTradePlan: any = null;
     let settings: any = null;
 
-    // CRITICAL: Check for existing auto-trade research result first (research idempotency)
+    // CRITICAL: AUTO-TRADE ENGINE IS A CONSUMER ONLY - it consumes research generated by scheduler
+    // The scheduler should have already generated and cached research results for this cycle
     try {
       const { firestoreAdapter } = await import('./firestoreAdapter');
-      const recentHistory = await firestoreAdapter.getResearchHistory(uid, 10); // Get last 10 entries
 
-      // Find the most recent AUTO_TRADE research result within the last 3 minutes
-      const threeMinutesAgo = new Date(Date.now() - 3 * 60 * 1000);
-      const recentAutoTradeResult = recentHistory.find(entry =>
-        entry.source === 'AUTO_TRADE' &&
-        entry.timestamp &&
-        new Date(entry.timestamp) > threeMinutesAgo &&
-        entry.status === 'FINAL' &&
-        entry.accuracy > 0 &&
-        (entry.signal === 'BUY' || entry.signal === 'SELL' || entry.signal === 'HOLD')
-      );
-
-      if (recentAutoTradeResult) {
-        console.log('🔥 [RESEARCH_IDEMPOTENCY] ✅ REUSING EXISTING AUTO-TRADE RESEARCH RESULT:', {
-          symbol: recentAutoTradeResult.symbol,
-          signal: recentAutoTradeResult.signal,
-          accuracy: recentAutoTradeResult.accuracy,
-          timestamp: recentAutoTradeResult.timestamp,
-          ageMinutes: ((Date.now() - new Date(recentAutoTradeResult.timestamp).getTime()) / (1000 * 60)).toFixed(1)
+      // FIRST: Check for fresh cached research result (generated by scheduler in this cycle)
+      const cachedResearch = await firestoreAdapter.getLatestResearchResult(uid);
+      if (cachedResearch && cachedResearch.source === 'TELEGRAM_BACKGROUND' &&
+          cachedResearch.timestamp && (Date.now() - cachedResearch.timestamp.toDate().getTime()) < (5 * 60 * 1000)) {
+        // Use cached research result from scheduler
+        console.log('🔥 [AUTO_TRADE_CONSUMER] ✅ USING SCHEDULER-GENERATED RESEARCH RESULT:', {
+          symbol: cachedResearch.symbol,
+          signal: cachedResearch.signal,
+          accuracy: cachedResearch.accuracy,
+          source: cachedResearch.source,
+          ageSeconds: ((Date.now() - cachedResearch.timestamp.toDate().getTime()) / 1000).toFixed(1)
         });
 
-        // Convert recent result to ResearchDataResult format for execution pipeline
+        // Convert cached result to ResearchDataResult format for execution pipeline
         const researchDataResult: ResearchDataResult = {
-          symbol: recentAutoTradeResult.symbol,
-          signal: recentAutoTradeResult.signal,
-          accuracy: recentAutoTradeResult.accuracy,
+          symbol: cachedResearch.symbol,
+          signal: cachedResearch.signal,
+          accuracy: cachedResearch.accuracy,
           result: {
-            signal: recentAutoTradeResult.signal,
-            accuracy: recentAutoTradeResult.accuracy,
-            tradePlan: recentAutoTradeResult.tradePlan,
-            price: recentAutoTradeResult.price || 0,
-            snapshotAccuracy: recentAutoTradeResult.accuracy,
+            signal: cachedResearch.signal,
+            accuracy: cachedResearch.accuracy,
+            tradePlan: cachedResearch.tradePlan,
+            price: cachedResearch.price || 0,
+            snapshotAccuracy: cachedResearch.accuracy,
             accuracyBreakdown: { indicatorScore: 0, marketStructureScore: 0, momentumScore: 0, volumeScore: 0, newsScore: 0, riskPenalty: 0 },
             accuracyWeightsUsed: {},
-            indicators: recentAutoTradeResult.indicators || {
+            indicators: cachedResearch.indicators || {
               rsi: null,
               ma50: null,
               ma200: null,
@@ -3311,19 +3557,19 @@ export class AutoTradeEngine {
             providers: { marketData: null, metadata: null, news: null }
           },
           processingTimeMs: 0,
-          metadata: { symbol: recentAutoTradeResult.symbol }
+          metadata: { symbol: cachedResearch.symbol }
         };
 
         // Set function-level variables as if research just completed successfully
-        console.log('🔥 [RESEARCH_IDEMPOTENCY] Setting up execution variables from existing result');
+        console.log('🔥 [AUTO_TRADE_CONSUMER] Setting up execution variables from cached research');
 
         // Set function-level variables as if research just completed successfully
         cycleResult = AUTO_TRADE_REASONS.TRADE_EXECUTED;
-        accuracy = recentAutoTradeResult.accuracy;
-        signal = recentAutoTradeResult.signal as TradeSignalType;
+        accuracy = cachedResearch.accuracy;
+        signal = cachedResearch.signal as TradeSignalType;
         skipReason = '';
         decisionStatus = 'EXECUTED';
-        tradeId = recentAutoTradeResult.tradeId || null;
+        tradeId = cachedResearch.tradeId || null;
         executionBlocked = false;
         executionBlockReason = '';
         researchExecuted = true;
@@ -3332,11 +3578,11 @@ export class AutoTradeEngine {
         researchResult = researchDataResult;
         researchData = {
           results: [researchDataResult],
-          coinsAnalyzed: [recentAutoTradeResult.symbol]
+          coinsAnalyzed: [cachedResearch.symbol]
         };
         finalResult = researchDataResult.result;
-        finalTradePlan = recentAutoTradeResult.tradePlan;
-        researchSymbol = recentAutoTradeResult.symbol;
+        finalTradePlan = cachedResearch.tradePlan;
+        researchSymbol = cachedResearch.symbol;
 
         // Use pre-loaded settings for existing results
         settings = tradingSettings;
@@ -3344,101 +3590,45 @@ export class AutoTradeEngine {
         // Set flag to skip research execution
         useCachedResults = true;
 
-        console.log('🔥 [RESEARCH_IDEMPOTENCY] Function-level variables set, continuing to execution pipeline');
+        console.log('🔥 [AUTO_TRADE_CONSUMER] Function-level variables set, continuing to execution pipeline');
       } else {
-        // No recent auto-trade result, check for UI cached result
-        const cachedResult = await firestoreAdapter.getLatestResearchResult(uid);
+        // AUTO-TRADE CONSUMER: No cached research available - skip gracefully
+        console.log('🔥 [AUTO_TRADE_CONSUMER] No cached research available - skipping auto-trade cycle');
+        logger.info({ uid, cycleId }, '🚫 [AUTO_TRADE_CONSUMER] No cached research available - skipping cycle gracefully');
 
-        if (cachedResult && cachedResult.accuracy >= 0.70 && (cachedResult.signal === 'BUY' || cachedResult.signal === 'SELL') && cachedResult.tradePlan) {
-          console.log('🔥 [RESEARCH_CACHE] ✅ USING CACHED UI RESEARCH RESULT for auto-trade:', {
-            symbol: cachedResult.symbol,
-            signal: cachedResult.signal,
-            accuracy: cachedResult.accuracy,
-            hasTradePlan: !!cachedResult.tradePlan,
-            source: cachedResult.source
-          });
-
-          // Convert cached result to ResearchDataResult format for execution pipeline
-          const researchDataResult: ResearchDataResult = {
-            symbol: cachedResult.symbol,
-            signal: cachedResult.signal,
-            accuracy: cachedResult.accuracy,
-            result: {
-              signal: cachedResult.signal,
-              accuracy: cachedResult.accuracy,
-              tradePlan: cachedResult.tradePlan,
-              price: 0,
-              snapshotAccuracy: cachedResult.accuracy,
-              accuracyBreakdown: { indicatorScore: 0, marketStructureScore: 0, momentumScore: 0, volumeScore: 0, newsScore: 0, riskPenalty: 0 },
-              accuracyWeightsUsed: {},
-              indicators: {
-                rsi: null,
-                ma50: null,
-                ma200: null,
-                ema20: null,
-                ema50: null,
-                macd: null,
-                volume: null,
-                vwap: null,
-                atr: null,
-                pattern: null,
-                momentum: null
-              },
-              metadata: {},
-              news: { articles: [] },
-              raw: { marketData: null, cryptocompare: null, metadata: null, news: null },
-              providers: { marketData: null, metadata: null, news: null }
-            },
-            processingTimeMs: 0,
-            metadata: { symbol: cachedResult.symbol }
-          };
-
-          // Clear the cache after use to prevent stale data
-          await firestoreAdapter.clearLatestResearchResult(uid);
-
-          // CRITICAL: Set up execution variables from cached result and continue through pipeline
-          console.log('🔥 [RESEARCH_CACHE] Setting up execution variables from cached result');
-
-          // Set function-level variables as if research just completed successfully
-          cycleResult = AUTO_TRADE_REASONS.TRADE_EXECUTED;
-          accuracy = cachedResult.accuracy;
-          signal = cachedResult.signal as TradeSignalType;
-          skipReason = '';
-          decisionStatus = 'EXECUTED';
-          tradeId = null;
-          executionBlocked = false;
-          executionBlockReason = '';
-          researchExecuted = true;
-
-          // Set function-level variables for execution
-          researchResult = researchDataResult;
-          finalResult = researchDataResult.result;
-          finalTradePlan = cachedResult.tradePlan;
-          researchSymbol = cachedResult.symbol;
-
-          // Set function-level researchData for history
-          researchData = {
-            results: [{
-              symbol: cachedResult.symbol,
-              signal: cachedResult.signal,
-              accuracy: cachedResult.accuracy
-            }],
-            coinsAnalyzed: [cachedResult.symbol]
-          };
-
-          // Use pre-loaded settings for cached results
-          settings = tradingSettings;
-
-          // Set flag to skip research execution
-          useCachedResults = true;
-
-          console.log('🔥 [RESEARCH_CACHE] Function-level variables set, continuing to execution pipeline');
+        // Save SKIPPED history for no cached research
+        if (!skipHistoryStorage) {
+          await saveAutoTradeHistorySkipped(
+            uid,
+            'NO_CACHED_RESEARCH',
+            'Auto-trade is consumer-only - no research results available to consume',
+            cycleId
+          );
         }
+
+        return null; // Exit gracefully - no research to consume
       }
     } catch (cacheError) {
-      console.error('🔥 [RESEARCH_CACHE] Error checking cached research:', cacheError.message);
-      // Continue with normal research cycle
+      console.error('🔥 [AUTO_TRADE_CONSUMER] Error checking cached research:', cacheError.message);
+      // For consumer mode, if cache check fails, skip gracefully
+      logger.info({ uid, cycleId }, '🚫 [AUTO_TRADE_CONSUMER] Cache check failed - skipping cycle gracefully');
+
+      // Save SKIPPED history for cache error
+      if (!skipHistoryStorage) {
+        await saveAutoTradeHistorySkipped(
+          uid,
+          'CACHE_CHECK_FAILED',
+          'Failed to check for cached research results',
+          cycleId
+        );
+      }
+
+      return null; // Exit gracefully on cache error
     }
+
+    // CRITICAL: Auto-trade generates research AND executes trades
+    // If no cached result exists, we run research normally
+    // This ensures research is always generated for auto-trade consumption
 
     // CRITICAL: Prevent duplicate execution per cycle using uid+timestamp key
     // This ensures only ONE execution per user per cycle, even if called multiple times
@@ -3454,39 +3644,9 @@ export class AutoTradeEngine {
     }
     const activeCycles = globalWithCycles.__autoTradeActiveCycles;
 
-    // Check if cycle is already running (within same second window)
-    const cycleWindow = Math.floor(Date.now() / 1000); // 1-second window
-    const cycleId = `${uid}_${cycleWindow}`;
-    if (activeCycles.has(cycleId)) {
-      const reason = 'DUPLICATE_CYCLE: Auto-trade cycle already running for this user';
-      logger.warn({
-        uid,
-        cycleId,
-        duplicateBlocked: true
-      }, '⏭️ [CYCLE_GUARD] BLOCKED: Duplicate auto-trade cycle execution prevented - cycle already running');
-      await logAutoTradeSkip(uid, reason, {
-        exchangeStatus: 'unknown',
-        additionalDetails: {
-          cycleId,
-          duplicateBlocked: true
-        }
-      });
-
-      // Save SKIPPED history for duplicate cycle prevention
-      await saveAutoTradeHistorySkipped(
-        uid,
-        'DUPLICATE_CYCLE',
-        'Auto-trade cycle prevented due to duplicate execution in progress'
-      );
-
-      return null; // Cycle completed with SKIPPED history
-    }
-    activeCycles.add(cycleId);
-
-    // Cleanup: Remove cycle ID after 5 seconds (cycle should complete by then)
-    setTimeout(() => {
-      activeCycles.delete(cycleId);
-    }, 5000);
+    // SCHEDULER IS SINGLE SOURCE OF TRUTH: No duplicate cycle guard in AutoTradeEngine
+    // The scheduler ensures only one cycle runs at a time, so this guard is redundant
+    // and can cause conflicts with the scheduler's cycle management
 
     // CRITICAL: Load config and settings ONCE at cycle start and reuse throughout
     try {

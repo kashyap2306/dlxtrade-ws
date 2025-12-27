@@ -171,40 +171,59 @@ export default function AutoTrade() {
     }
   }, [loading]);
 
-  // Use centralized polling for live data (30 second intervals when visible)
+  // CONSOLIDATED POLLING: Single polling mechanism for live data AND status
   // CRITICAL: Only poll when auto-trade is enabled to prevent unnecessary API calls
-  usePolling(loadLiveData, 60000, !!user && config.autoTradeEnabled); // Only poll when auto-trade is ON
-
-  // CRITICAL: Load auto-trade status IMMEDIATELY on mount to get backend exchangeConnected
-  // This must run before readiness computation to ensure backend is source of truth
-  // CRITICAL: Only poll when auto-trade is enabled to prevent unnecessary API calls
+  // Combines loadLiveData + loadAutoTradeStatus into one controlled polling loop
+  const consolidatedPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isPollingEnabledRef = useRef(false);
+  
   useEffect(() => {
-    console.log("[AT_STATUS_EFFECT] useEffect triggered", {
-      hasUser: !!user,
-      userId: user?.uid,
-      autoTradeEnabled: config.autoTradeEnabled,
-      hasLoadAutoTradeStatus: typeof loadAutoTradeStatus === 'function',
-    });
-
-    if (user) {
-      // Load immediately once to get initial status
-      loadAutoTradeStatus();
-
-      // Only set up polling if auto-trade is enabled and not blocked
-      if (config.autoTradeEnabled && !backendDiagnostics?.blocked) {
-        console.log("[AT_STATUS_EFFECT] Auto-trade enabled, starting status polling...");
-        const interval = setInterval(() => {
-          console.log("[AT_STATUS_EFFECT] Interval tick, calling loadAutoTradeStatus...");
-          loadAutoTradeStatus();
-        }, 60000); // 1 minute
-        return () => clearInterval(interval);
-      } else {
-        console.log("[AT_STATUS_EFFECT] Auto-trade disabled or blocked, skipping status polling");
-      }
-    } else {
-      console.log("[AT_STATUS_EFFECT] No user, skipping loadAutoTradeStatus");
+    // Clear any existing interval first
+    if (consolidatedPollRef.current) {
+      clearInterval(consolidatedPollRef.current);
+      consolidatedPollRef.current = null;
     }
-  }, [user, config.autoTradeEnabled, loadAutoTradeStatus, backendDiagnostics?.blocked]);
+    
+    const shouldPoll = !!user && config.autoTradeEnabled && !backendDiagnostics?.blocked;
+    isPollingEnabledRef.current = shouldPoll;
+    
+    console.log("[AT_POLLING] Polling state changed", {
+      hasUser: !!user,
+      autoTradeEnabled: config.autoTradeEnabled,
+      blocked: backendDiagnostics?.blocked,
+      shouldPoll
+    });
+    
+    if (!user) {
+      console.log("[AT_POLLING] No user, skipping all polling");
+      return;
+    }
+    
+    // Always load status once on mount/user change to get initial state
+    loadAutoTradeStatus();
+    
+    if (shouldPoll) {
+      console.log("[AT_POLLING] Starting consolidated polling (60s interval)");
+      
+      // Single interval for all polling - minimum 60 seconds
+      consolidatedPollRef.current = setInterval(() => {
+        if (isPollingEnabledRef.current) {
+          loadAutoTradeStatus();
+          loadLiveData();
+        }
+      }, 60000); // 60 seconds minimum
+    } else {
+      console.log("[AT_POLLING] Auto-trade disabled/blocked, polling stopped");
+    }
+    
+    return () => {
+      if (consolidatedPollRef.current) {
+        clearInterval(consolidatedPollRef.current);
+        consolidatedPollRef.current = null;
+      }
+    };
+    // CRITICAL: Stable dependencies only - loadAutoTradeStatus is now stable (user-only dep)
+  }, [user, config.autoTradeEnabled, backendDiagnostics?.blocked]);
 
   // Load pending trades when Auto-Trade is enabled
   const loadPendingTrades = useCallback(async () => {
@@ -228,7 +247,9 @@ export default function AutoTrade() {
     }
   }, [user, config.autoTradeEnabled, isProcessingTrade, currentPendingTrade]);
 
-  // Poll pending trades when Auto-Trade is enabled
+  // Load pending trades when Auto-Trade is enabled
+  // CONSOLIDATED: Uses same enable condition, no separate polling interval
+  // Pending trades are loaded once on enable and then on demand (trade actions)
   useEffect(() => {
     if (!user || !config.autoTradeEnabled || backendDiagnostics?.blocked) {
       setPendingTrades([]);
@@ -236,13 +257,12 @@ export default function AutoTrade() {
       return;
     }
 
-    // Load immediately
+    // Load immediately once when enabled
     loadPendingTrades();
-
-    // Poll every 60 seconds for pending trades (reduced from 10s to prevent over-polling)
-    const interval = setInterval(loadPendingTrades, 60000);
-    return () => clearInterval(interval);
-  }, [user, config.autoTradeEnabled, backendDiagnostics?.blocked, loadPendingTrades]);
+    
+    // REMOVED: Separate polling interval - consolidated into main polling loop above
+    // Pending trades will be refreshed via the consolidated polling or on user action
+  }, [user, config.autoTradeEnabled, backendDiagnostics?.blocked]);
 
   // Handle trade approval
   const handleApproveTrade = useCallback(async (requestId: string) => {
@@ -320,17 +340,28 @@ export default function AutoTrade() {
       const response = await researchApi.deepResearch.getHistory(100);
       const allHistory = response.data?.data || response.data || [];
       
-      // Filter for AUTO_TRADE source only
-      const autoTradeOnly = allHistory.filter((entry: any) => entry.source === 'AUTO_TRADE');
-      
-      setAutoTradeHistory(autoTradeOnly);
+      // Filter for AUTO_TRADE source only and non-empty symbols
+      const autoTradeOnly = allHistory.filter((entry: any) =>
+        entry.source === 'AUTO_TRADE' &&
+        entry.symbol &&
+        entry.symbol.trim().length > 0
+      );
 
-      // Check for new skipped trades that should show popup
+      // Sort by timestamp DESC (latest first) - no grouping
+      const sortedHistory = autoTradeOnly.sort((a: any, b: any) => {
+        const timeA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+        const timeB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+        return timeB - timeA;
+      });
+
+      setAutoTradeHistory(sortedHistory);
+
+      // Check for new skipped trades that should show popup (use grouped history)
       if (config.autoTradeEnabled) {
-        // Get accuracy trigger from config or default to 75
-        const accuracyTrigger = config.accuracyTrigger?.min ?? 75;
+        // Use default accuracy trigger (simplified)
+        const accuracyTrigger = 75;
         
-        for (const entry of autoTradeOnly) {
+        for (const entry of sortedHistory) {
           // Only show popup for SKIPPED entries with accuracy >= trigger
           // Normalize accuracy to 0-100 range
           const normalizedAccuracy = typeof entry.accuracy === 'number' 
@@ -350,9 +381,9 @@ export default function AutoTrade() {
               isOpen: true,
               symbol: entry.symbol || 'UNKNOWN',
               accuracy: normalizedAccuracy,
-              accuracyTrigger,
+              accuracyTrigger: 75, // Use default
               skipReasons: Array.isArray(skipReasons) ? skipReasons : [skipReasons],
-              timestamp: entry.timestamp || entry.createdAt || new Date().toISOString()
+              timestamp: entry.timestamp || new Date().toISOString()
             });
             
             // Mark as shown to prevent duplicate popups
@@ -367,7 +398,7 @@ export default function AutoTrade() {
     } finally {
       setLoadingAutoTradeHistory(false);
     }
-  }, [user, config.autoTradeEnabled, config.accuracyTrigger]);
+  }, [user, config.autoTradeEnabled]);
 
   // Load history when modal opens
   useEffect(() => {
@@ -795,6 +826,7 @@ export default function AutoTrade() {
                     </thead>
                     <tbody>
                       {autoTradeHistory.map((entry, index) => {
+                        // TIME DISPLAY: Use timestamp from backend
                         const timestamp = entry.timestamp ? new Date(entry.timestamp) : null;
                         const timeAgo = timestamp
                           ? (() => {
@@ -807,38 +839,130 @@ export default function AutoTrade() {
                               const days = Math.floor(hours / 24);
                               return `${days}d ago`;
                             })()
-                          : 'N/A';
-                        const absoluteTime = timestamp ? timestamp.toLocaleString() : 'N/A';
-                        const accuracy = typeof entry.accuracy === 'number'
-                          ? (entry.accuracy > 1 ? entry.accuracy : entry.accuracy * 100).toFixed(1)
-                          : 'N/A';
+                          : '--';
+                        const absoluteTime = timestamp ? timestamp.toLocaleString() : '--';
 
-                        // Calculate normalized accuracy for trigger comparison
-                        const normalizedAccuracy = typeof entry.accuracy === 'number'
-                          ? (entry.accuracy > 1 ? entry.accuracy : entry.accuracy * 100)
-                          : 0;
+                        // COIN (SYMBOL) DISPLAY RULES
+                        let coinDisplay = '--';
+                        if (entry.symbol === 'AUTO_TRADE_CYCLE') {
+                          coinDisplay = 'Cycle Skipped';
+                        } else if (entry.symbol && entry.symbol.trim().length > 0) {
+                          coinDisplay = entry.symbol;
+                        }
 
-                        // Get accuracy trigger from config (default 75)
-                        const accuracyTrigger = config.accuracyTrigger?.min ?? 75;
+                        // ACCURACY DISPLAY RULES (FINAL entry only)
+                        let accuracyDisplay = '--';
+                        const rawAccuracy = typeof entry.accuracy === 'number' ? entry.accuracy : null;
+                        if (rawAccuracy !== null && rawAccuracy > 0) {
+                          // Valid accuracy - normalize to percentage
+                          const normalizedAccuracy = rawAccuracy > 1 ? rawAccuracy : rawAccuracy * 100;
+                          accuracyDisplay = `${normalizedAccuracy.toFixed(1)}%`;
+                        } else if (rawAccuracy === 0 && entry.decision === 'SKIPPED') {
+                          accuracyDisplay = 'Not Calculated';
+                        } else if (rawAccuracy === 0 && entry.executionStatus === 'FAILED') {
+                          accuracyDisplay = '0%';
+                        }
 
-                        // Determine Result / Trigger Status based on rules
-                        let triggerStatus = 'Unknown';
-                        if (normalizedAccuracy < accuracyTrigger) {
-                          triggerStatus = 'Accuracy Not Triggered';
-                        } else if (entry.decision === 'EXECUTED') {
-                          triggerStatus = 'Trade Executed';
+                        // RESULT / STATUS COLUMN - Map using backend fields
+                        let resultStatus = 'Completed'; // Default for entries without specific status
+                        if (entry.executionStatus === 'SUCCESS') {
+                          resultStatus = 'Trade Executed';
+                        } else if (entry.executionStatus === 'FAILED') {
+                          resultStatus = 'Execution Failed';
                         } else if (entry.decision === 'SKIPPED') {
-                          triggerStatus = entry.skipReason ? 'Skipped' : 'Triggered but Trade Not Executed';
-                        } else {
-                          triggerStatus = 'Triggered but Trade Not Executed';
+                          // Use skipReason to derive meaningful label
+                          const skipReason = entry.skipReason || '';
+                          switch (skipReason) {
+                            case 'BACKGROUND_TASKS_PAUSED':
+                              resultStatus = 'System Paused';
+                              break;
+                            case 'DUPLICATE_CYCLE':
+                              resultStatus = 'Duplicate Cycle Skipped';
+                              break;
+                            case 'EXCHANGE_NOT_USABLE':
+                              resultStatus = 'Exchange Not Usable';
+                              break;
+                            case 'ACCURACY_BELOW_THRESHOLD':
+                              resultStatus = 'Accuracy Not Triggered';
+                              break;
+                            case 'NO_RESEARCH_RESULTS':
+                              resultStatus = 'No Research Data';
+                              break;
+                            case 'CONFIG_LOAD_FAILED':
+                              resultStatus = 'Config Load Failed';
+                              break;
+                            case 'AUTO_TRADE_DISABLED':
+                              resultStatus = 'Auto-Trade Disabled';
+                              break;
+                            case 'NO_RESEARCH_KEYS':
+                              resultStatus = 'Research Keys Missing';
+                              break;
+                            case 'NO_USABLE_PROVIDERS':
+                              resultStatus = 'No Providers Available';
+                              break;
+                            case 'RESEARCH_FAILED':
+                              resultStatus = 'Research Failed';
+                              break;
+                            case 'SYMBOL_OUTSIDE_TOP_25':
+                              resultStatus = 'Symbol Outside Top 25';
+                              break;
+                            case 'INVALID_ACCURACY':
+                              resultStatus = 'Invalid Accuracy';
+                              break;
+                            case 'SYSTEM_RISK_FAILURE':
+                              resultStatus = 'Risk Limits Exceeded';
+                              break;
+                            case 'INVALID_SIGNAL':
+                              resultStatus = 'Invalid Signal';
+                              break;
+                            case 'DYNAMIC_PARAMS_SKIP':
+                              resultStatus = 'Params Calculation Failed';
+                              break;
+                            case 'EXECUTION_BLOCKED':
+                              resultStatus = 'Execution Blocked';
+                              break;
+                            case 'MODE_VALIDATION_FAILED':
+                              resultStatus = 'Mode Validation Failed';
+                              break;
+                            case 'LOW_RR_PRE_EXECUTION':
+                              resultStatus = 'Low Risk-Reward';
+                              break;
+                            case 'INVALID_TP_LOGIC':
+                              resultStatus = 'Invalid TP Logic';
+                              break;
+                            case 'TRADE_EXECUTION_FAILED':
+                              resultStatus = 'Trade Execution Failed';
+                              break;
+                            case 'MISSING_FINAL_RESULT':
+                              resultStatus = 'Missing Final Result';
+                              break;
+                            case 'RESEARCH_EXECUTION_FAILED':
+                              resultStatus = 'Research Execution Failed';
+                              break;
+                            case 'RESEARCH_RESULT_MISSING':
+                              resultStatus = 'Research Result Missing';
+                              break;
+                            case 'FINAL_GUARD_CACHED':
+                              resultStatus = 'Cached Result';
+                              break;
+                            default:
+                              resultStatus = 'Skipped';
+                          }
+                        } else if (entry.executionStatus === 'SUCCESS' || entry.decision === 'EXECUTED') {
+                          resultStatus = 'Trade Executed';
+                        }
+
+                        // Ensure result status is never empty (use default if needed)
+                        if (!resultStatus) {
+                          resultStatus = 'Completed';
                         }
 
                         return (
                           <tr key={entry.id || index} className={`border-b border-blue-500/10 ${index % 2 === 0 ? 'bg-[#0d1421]' : 'bg-[#0b0f18]'} hover:bg-blue-900/20`}>
                             <td className="py-1 text-blue-100">{index + 1}</td>
-                            <td className="py-1 text-blue-100 font-medium">{entry.symbol && entry.symbol !== 'AUTO_TRADE_CYCLE' ? entry.symbol : '—'}</td>
-                            <td className="py-1 text-blue-100">{accuracy}%</td>
-                            <td className="py-1 text-blue-100">{triggerStatus}</td>
+                            <td className="py-1 text-blue-100 font-medium">{coinDisplay}</td>
+                            <td className="py-1 text-blue-100">{accuracyDisplay}</td>
+                            <td className="py-1 text-blue-100">{resultStatus}</td>
                             <td className="py-1 text-blue-100" title={absoluteTime}>{timeAgo}</td>
                           </tr>
                         );

@@ -111,20 +111,19 @@ export async function buildApp(): Promise<FastifyInstance> {
   // CRITICAL: Handle OPTIONS requests immediately (CORS preflight)
   // This MUST run before any other request processing
   app.addHook('onRequest', async (req, reply) => {
-    // Handle OPTIONS preflight requests immediately
+    // Handle OPTIONS preflight requests immediately - NO logging unless error
     if (req.method === 'OPTIONS') {
-      console.log("[CORS PREFLIGHT] OPTIONS request for:", req.url, "Origin:", req.headers.origin);
       reply.code(204).send();
       return; // Stop processing - CORS plugin will add headers
     }
-    const origin = req.headers.origin || 'unknown';
-    // Log OPTIONS explicitly with IP and Protocol for Render visibility
-    console.log("[FASTIFY_ONREQUEST]", req.method, req.url,
-      "Origin:", origin,
-      "IP:", req.ip,
-      "Proto:", req.protocol,
-      "PID:", process.pid
-    );
+    
+    // REDUCED LOGGING: Only log non-health/non-polling routes
+    const url = req.url || '';
+    const isPollingRoute = url.includes('/status') || url.includes('/health') || url.includes('/config');
+    if (!isPollingRoute) {
+      console.log("[REQ]", req.method, url, "PID:", process.pid);
+    }
+    
     try {
       (req as any).__startTime = Date.now();
 
@@ -183,14 +182,14 @@ export async function buildApp(): Promise<FastifyInstance> {
       return;
     }
 
-    console.log("[PREHANDLER_ENTER]", req.url, "PID:", process.pid);
+    // REDUCED LOGGING: Skip verbose preHandler logs for polling routes
+    const isPollingRoute = url.includes('/status') || url.includes('/health') || url.includes('/config');
 
     try {
       const authHeader = req.headers.authorization;
 
       // Skip auth for health/test routes
       if (req.url === '/api/health' || req.url === '/api/test' || req.url.startsWith('/ws')) {
-        console.log("[PREHANDLER_EXIT]", req.url, "skipped", Date.now() - preHandlerStart, "ms");
         return;
       }
 
@@ -204,12 +203,11 @@ export async function buildApp(): Promise<FastifyInstance> {
           emailVerified: true,
           claims: { testMode: true }
         };
-        console.log("[PREHANDLER_EXIT]", req.url, "test-mode", Date.now() - preHandlerStart, "ms");
         return;
       }
 
       if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        console.log("[PREHANDLER_EXIT]", req.url, "no-auth-header", Date.now() - preHandlerStart, "ms");
+        if (!isPollingRoute) console.log("[AUTH] No header:", req.url);
         reply.code(401).send({ error: 'Missing or invalid authorization header' });
         return;
       }
@@ -217,7 +215,6 @@ export async function buildApp(): Promise<FastifyInstance> {
       const token = authHeader.substring(7);
 
       // CRITICAL: Wrap Firebase token verification with 3s timeout
-      console.log("[AUTH_VERIFY_START]", req.url);
       const { verifyFirebaseToken } = await import('./utils/firebase');
 
       let decodedToken: any;
@@ -227,11 +224,10 @@ export async function buildApp(): Promise<FastifyInstance> {
           new Promise((_, reject) => setTimeout(() => reject(new Error('Token verification timeout (5s)')), 5000))
         ]);
       } catch (tokenErr: any) {
-        console.error("[AUTH_VERIFY_TIMEOUT]", req.url, tokenErr.message, Date.now() - preHandlerStart, "ms");
+        console.error("[AUTH_TIMEOUT]", req.url, tokenErr.message);
         reply.code(401).send({ error: 'Authentication timeout - please retry' });
         return;
       }
-      console.log("[AUTH_VERIFY_DONE]", req.url, Date.now() - preHandlerStart, "ms");
 
       // Attach user info to request
       (req as any).userId = decodedToken.uid;
@@ -241,10 +237,8 @@ export async function buildApp(): Promise<FastifyInstance> {
         emailVerified: decodedToken.email_verified,
         claims: decodedToken,
       };
-
-      console.log("[PREHANDLER_EXIT]", req.url, "authenticated", Date.now() - preHandlerStart, "ms");
     } catch (err: any) {
-      console.error("[PREHANDLER_ERROR]", req.url, err?.message, Date.now() - preHandlerStart, "ms");
+      console.error("[AUTH_ERROR]", req.url, err?.message);
       if (!reply.sent) {
         reply.code(401).send({ error: 'Authentication failed' });
       }
@@ -253,22 +247,19 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   app.addHook('onResponse', async (req, reply) => {
     const url = req.url || '';
-    if (url.startsWith('/api/research/')) return; // SKIP for research routes per architectural rules
+    
+    // SKIP logging for research routes, health checks, and polling routes
+    if (url.startsWith('/api/research/')) return;
+    const isPollingRoute = url.includes('/status') || url.includes('/health') || url.includes('/config');
+    if (isPollingRoute) return; // Reduce noise from polling
 
-    console.log("🔥 FASTIFY_ONRESPONSE_ENTER", req.url);
     try {
       const start = (req as any).__startTime || Date.now();
       const duration = Date.now() - start;
-      app.log.info({
-        url: req.raw.url,
-        method: req.raw.method,
-        duration,
-        userAgent: req.headers['user-agent']?.substring(0, 50)
-      }, 'request-timing');
-      console.log("🔥 FASTIFY_ONRESPONSE_EXIT", req.url);
+      // SINGLE consolidated log per request - not duplicated
+      console.log("[RES]", req.method, url, reply.statusCode, duration + "ms");
     } catch (err: any) {
-      console.error("[FASTIFY_ONRESPONSE_ERROR]", err);
-      // Don't block response processing
+      console.error("[RES_ERROR]", err);
     }
   });
 

@@ -1992,16 +1992,40 @@ export class FirestoreAdapter {
 
   // ========== AUTO-TRADE SPECIFIC METHODS ==========
   async getActiveTrades(uid: string, limit: number = 50): Promise<any[]> {
-    // FIX: Read from trades collection where status='open' instead of autoTradeActiveTrades
-    // This ensures we get real exchange open positions that were saved via saveTrade()
+    // PERFORMANCE OPTIMIZATION: Avoid composite index dependency
+    // Use single where clause on uid and filter status in memory
     try {
       const snapshot = await db()
         .collection('trades')
         .where('uid', '==', uid)
-        .where('status', '==', 'open')
         .orderBy('timestamp', 'desc')
-        .limit(limit)
+        .limit(limit * 2) // Fetch more to account for filtering
         .get();
+
+      // Filter for open status in memory (no composite index required)
+      const activeTrades = snapshot.docs
+        .filter(doc => doc.data().status === 'open')
+        .slice(0, limit) // Apply limit after filtering
+        .map(doc => {
+          const data = doc.data();
+          return {
+            id: doc.id,
+            symbol: data.symbol,
+            side: data.side,
+            entryPrice: data.entryPrice,
+            currentPrice: data.currentPrice,
+            pnl: data.pnl,
+            pnlPercent: data.pnlPercent,
+            stopLoss: data.stopLoss,
+            takeProfit: data.takeProfit,
+            accuracyAtEntry: data.signalAccuracy,
+            status: data.status,
+            entryTime: data.timestamp?.toDate?.()?.toISOString() || new Date(data.timestamp).toISOString(),
+            ...data,
+          };
+        });
+
+      return activeTrades;
 
       return snapshot.docs.map(doc => {
         const data = doc.data();
@@ -2542,13 +2566,34 @@ export class FirestoreAdapter {
    * Store research history entry for a user
    */
   async storeResearchHistory(uid: string, historyEntry: any): Promise<void> {
+    // HARD BLOCK: ERROR_CYCLE must NEVER be written for AUTO_TRADE source
+    if (historyEntry.symbol === 'ERROR_CYCLE' && historyEntry.source === 'AUTO_TRADE') {
+      logger.error({
+        uid,
+        symbol: historyEntry.symbol,
+        source: historyEntry.source,
+        entry: historyEntry
+      }, '🚫 [ARCHITECTURE_VIOLATION] ERROR_CYCLE BLOCKED for AUTO_TRADE source - this should NEVER happen');
+      throw new Error('ARCHITECTURE_VIOLATION: ERROR_CYCLE not allowed for AUTO_TRADE source');
+    }
+
+    // DEBUG: Log ERROR_CYCLE writes to catch any remaining violations
+    if (historyEntry.symbol === 'ERROR_CYCLE') {
+      console.log('🔥 [FIRESTORE_DEBUG] ERROR_CYCLE being written:', {
+        uid,
+        source: historyEntry.source,
+        skipReason: historyEntry.skipReason,
+        error: historyEntry.error
+      });
+    }
+
     // CRITICAL: Validate required fields before attempting Firestore write
     // Skip save cleanly if accuracy or result is missing - do NOT attempt partial writes
     if (typeof historyEntry.accuracy !== 'number' || isNaN(historyEntry.accuracy)) {
       logger.warn({ uid, symbol: historyEntry.symbol }, 'Skipping history save - accuracy is missing or invalid');
       return; // Skip save cleanly, do NOT throw
     }
-    
+
     if (!historyEntry.symbol && historyEntry.status !== 'SKIPPED') {
       logger.warn({ uid }, 'Skipping history save - symbol is missing and status is not SKIPPED');
       return; // Skip save cleanly for non-SKIPPED entries without symbol
@@ -2598,6 +2643,26 @@ export class FirestoreAdapter {
   }
 
   /**
+   * Update existing research history entry
+   */
+  async updateResearchHistory(uid: string, historyId: string, updates: any): Promise<void> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const historyRef = db.collection('users').doc(uid).collection('research_history').doc(historyId);
+
+      await historyRef.update({
+        ...updates,
+        updatedAt: admin.firestore.Timestamp.now()
+      });
+
+      logger.debug({ uid, historyId }, '✅ [HISTORY_UPDATE] Research history entry updated');
+    } catch (error: any) {
+      logger.error({ uid, historyId, error: error.message }, '❌ [HISTORY_UPDATE] Failed to update research history');
+      throw error;
+    }
+  }
+
+  /**
    * Retrieve research history for a user
    * OPTIMIZED: Returns lightweight version for list view performance
    * Uses select() to only fetch required fields from Firestore
@@ -2625,6 +2690,12 @@ export class FirestoreAdapter {
           ...lightweightData,
           // Convert Firestore Timestamp to ISO string
           timestamp: data.timestamp?.toDate ? data.timestamp.toDate().toISOString() : new Date().toISOString(),
+          // Normalize status for UI display
+          status: data.decision === 'EXECUTED' ? 'COMPLETED' :
+                 data.decision === 'SKIPPED' ? 'SKIPPED' :
+                 data.executionStatus === 'SUCCESS' ? 'COMPLETED' :
+                 data.executionStatus === 'FAILED' ? 'FAILED' :
+                 data.status || 'UNKNOWN',
           // Include minimal tradePlan info for display (exclude nested objects)
           tradePlan: tradePlan ? {
             entryPrice: tradePlan.entryPrice,

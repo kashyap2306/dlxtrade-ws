@@ -142,8 +142,37 @@ export async function logAutoTradeSkip(
 export async function saveAutoTradeHistorySkipped(
   uid: string,
   skipReason: string,
-  skipDetails: string
+  skipDetails: string,
+  cycleId?: string
 ): Promise<void> {
+  // ENFORCE: ONE CYCLE = ONE HISTORY ENTRY
+  if (cycleId) {
+    try {
+      // Check if history already exists for this cycleId (limit to recent entries for performance)
+      const recentHistory = await firestoreAdapter.getResearchHistory(uid, 20);
+      const existingEntry = recentHistory.find(entry => entry.cycleId === cycleId);
+
+      if (existingEntry) {
+        // UPDATE existing entry instead of creating duplicate
+        logger.info({ uid, cycleId, skipReason, existingId: existingEntry.id }, '🔄 [HISTORY_ENFORCE] Updating existing cycle history entry instead of creating duplicate');
+        await firestoreAdapter.updateResearchHistory(uid, existingEntry.id, {
+          skipReason: skipReason,
+          skipDetails: skipDetails,
+          status: 'SKIPPED',
+          decision: 'SKIPPED',
+          executionStatus: null,
+          symbol: existingEntry.symbol || 'AUTO_TRADE_CYCLE', // Preserve existing symbol
+          signal: existingEntry.signal || 'HOLD', // Preserve existing signal
+          accuracy: existingEntry.accuracy || 0, // Preserve existing accuracy
+          // Keep other fields from existing entry
+        });
+        return;
+      }
+    } catch (checkErr: any) {
+      logger.warn({ uid, cycleId, error: checkErr.message }, 'Failed to check for existing history entry, proceeding with new entry');
+    }
+  }
+
   const historyEntry: any = {
     symbol: 'AUTO_TRADE_CYCLE', // Placeholder symbol for cycle tracking
     signal: 'HOLD', // No signal generated
@@ -159,6 +188,7 @@ export async function saveAutoTradeHistorySkipped(
     executionStatus: null,
     skipReason: skipReason,
     skipDetails: skipDetails,
+    cycleId: cycleId,
     entryPrice: 0,
     stopLoss: 0,
     takeProfit: 0,
@@ -168,7 +198,7 @@ export async function saveAutoTradeHistorySkipped(
   };
 
   await firestoreAdapter.storeResearchHistory(uid, historyEntry);
-  logger.info({ uid, skipReason }, '✅ [HISTORY] Auto-trade SKIPPED history saved for cycle');
+  logger.info({ uid, skipReason, cycleId }, '✅ [HISTORY] Auto-trade SKIPPED history saved for cycle');
 }
 
 /**

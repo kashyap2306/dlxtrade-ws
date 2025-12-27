@@ -1495,6 +1495,10 @@ export class BackgroundResearchScheduler {
       const skipHistoryStorage = mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH;
       console.log('🔥 [HARD_LOG] [RESEARCH_EXEC_START] Starting research execution for user:', uid, 'skipHistoryStorage:', skipHistoryStorage);
 
+      // Generate cycle ID for tracking
+      const schedulerCycleId = `scheduler_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      console.log('🔥 [HARD_LOG] [SCHEDULER_CYCLE_ID] Generated cycleId:', schedulerCycleId);
+
       // CRITICAL: Execute based on mode - COMPLETELY ISOLATED LOGIC
       let deepResearchResult: any = null;
       let executionError: any = null;
@@ -1503,11 +1507,11 @@ export class BackgroundResearchScheduler {
         if (mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
           // AUTO_TRADE_RESEARCH: Full execution with trading logic
           console.log('🔥 [HARD_LOG] [AUTO_TRADE_EXEC] Starting AUTO_TRADE_RESEARCH execution for user:', uid);
-          deepResearchResult = await autoTradeEngine.runAutoTradeResearchCycleSafe(uid, false); // Store history
+          deepResearchResult = await autoTradeEngine.runAutoTradeResearchCycleSafe(uid, false, schedulerCycleId, null); // Store history, no research (consume only)
         } else if (mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH) {
           // TELEGRAM_BACKGROUND_RESEARCH: Research only, no trading
           console.log('🔥 [HARD_LOG] [TELEGRAM_EXEC] Starting TELEGRAM_BACKGROUND_RESEARCH execution for user:', uid);
-          deepResearchResult = await autoTradeEngine.runAutoTradeResearchCycleSafe(uid, true); // Skip history (we'll store)
+          deepResearchResult = await autoTradeEngine.runAutoTradeResearchCycleSafe(uid, true, schedulerCycleId, null); // Skip history (we'll store), no research (will generate)
         } else {
           // Unknown mode - should not happen
           logger.error({ uid, mode }, '❌ [SCHEDULER] Unknown mode in processUserResearch');
