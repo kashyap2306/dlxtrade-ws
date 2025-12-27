@@ -1523,6 +1523,13 @@ export class BackgroundResearchScheduler {
 
       console.log('🔥 [HARD_LOG] [RESEARCH_RESULT_CHECK] Checking research result for user:', uid, 'result exists:', !!deepResearchResult);
 
+      // HARD ASSERT: If we expect research result but got null, this is critical
+      if (!deepResearchResult) {
+        const errorMsg = `CRITICAL ARCHITECTURE BUG: Auto-Trade received null research result despite being triggered. UI research may have succeeded but Auto-Trade re-ran research and failed.`;
+        logger.error({ uid, mode }, errorMsg);
+        throw new Error(errorMsg);
+      }
+
       // CRITICAL: If auto-trade cycle was skipped (deepResearchResult is null) and mode is AUTO_TRADE,
       // STOP execution cleanly - no further research, no Telegram logic, no duplicate history
       if (!deepResearchResult && mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
@@ -1736,11 +1743,52 @@ export class BackgroundResearchScheduler {
           return; // Exit early on error
         }
 
-        // CRITICAL: Use tradePlan directly from research result (single source of truth)
-        // Do NOT recompute or mutate - trust the finalized research result
-        // deepResearchResult.result contains the full FreeModeDeepResearchResult
-        const fullResult = deepResearchResult.result || {};
-        const tradePlan = fullResult.tradePlan || null; // Explicitly null if not present
+
+        // TEMP ASSERT: tradePlan must exist for BUY/SELL signals
+        if ((signal === 'BUY' || signal === 'SELL') && !deepResearchResult.result?.tradePlan) {
+          throw new Error(`INVARIANT VIOLATION: Signal is ${signal} but tradePlan missing in background research`);
+        }
+
+        // DEFINE FINAL CONTEXT ONCE - SINGLE SOURCE OF TRUTH FOR BACKGROUND
+        const context = {
+          symbol: deepResearchResult.symbol,
+          accuracy: deepResearchResult.accuracy,
+          signal: deepResearchResult.signal,
+          tradePlan: deepResearchResult.result?.tradePlan || null
+        };
+
+        // VALIDATE CONTEXT COMPLETENESS
+        if (!context.symbol || context.accuracy == null || !context.signal) {
+          throw new Error(`INVALID CONTEXT IN BACKGROUND: symbol=${context.symbol}, accuracy=${context.accuracy}, signal=${context.signal}`);
+        }
+
+        if ((context.signal === 'BUY' || context.signal === 'SELL') && !context.tradePlan) {
+          throw new Error(`INVALID CONTEXT IN BACKGROUND: Signal is ${context.signal} but tradePlan missing`);
+        }
+
+        // SINGLE PIPELINE GUARANTEE - TEMP LOG
+        console.log('🔥 [PIPELINE_GUARANTEE] Background context defined:', {
+          uid,
+          contextSymbol: context.symbol,
+          contextSignal: context.signal,
+          contextAccuracy: context.accuracy,
+          contextHasTradePlan: !!context.tradePlan,
+          contextTradePlanKeys: context.tradePlan ? Object.keys(context.tradePlan) : []
+        });
+
+        // INVARIANT LOGGING: Background research result
+        console.log('🔥 [INVARIANT] Background research result:', {
+          uid,
+          symbol: context.symbol,
+          signal: context.signal,
+          accuracy: context.accuracy,
+          hasTradePlan: !!context.tradePlan,
+          tradePlanKeys: context.tradePlan ? Object.keys(context.tradePlan) : []
+        });
+
+        // CRITICAL: Use tradePlan from context (single source of truth)
+        const tradePlan = context.tradePlan;
+        const fullResult = deepResearchResult.result || {}; // Keep fullResult for other properties
         const metadata = (fullResult.metadata || deepResearchResult.metadata || {}) as any;
 
         // Verify signal/tradePlan consistency
@@ -1973,29 +2021,44 @@ export class BackgroundResearchScheduler {
                 // This prevents blocking alerts due to history validation failures
               } else {
                 // CRITICAL HARD GUARD 2: Verify accuracy is a real computed value (not 0 unless genuinely computed)
-                if (finalAccuracyPercent === 0 && signal !== 'HOLD') {
+                // TEMP ASSERT: tradePlan must exist for BUY/SELL signals
+                if ((signal === 'BUY' || signal === 'SELL') && !tradePlan) {
+                  throw new Error(`INVARIANT VIOLATION: Signal is ${signal} but tradePlan missing before background history save`);
+                }
+
+                if (context.accuracy === 0 && context.signal !== 'HOLD') {
                   logger.error({
                     uid,
-                    symbol: coin,
-                    accuracy: finalAccuracyPercent,
-                    signal,
-                    isFinal: fullResult.isFinal
-                  }, '❌ [HISTORY_GUARD] BLOCKED: Telegram history save attempted with accuracy=0 and signal !== HOLD - invalid state');
+                    symbol: context.symbol,
+                    accuracy: context.accuracy,
+                    signal: context.signal
+                  }, '❌ [HISTORY_GUARD] BLOCKED: Background history save attempted with accuracy=0 and signal !== HOLD - invalid state');
                   // Do NOT throw - log error and skip history save, but continue with Telegram alert
+                } else if (!context.tradePlan && (context.signal === 'BUY' || context.signal === 'SELL')) {
+                  logger.error({
+                    uid,
+                    symbol: context.symbol,
+                    signal: context.signal,
+                    accuracy: context.accuracy,
+                    hasTradePlan: !!context.tradePlan
+                  }, '❌ [HISTORY_GUARD] BLOCKED: tradePlan missing for BUY/SELL signal - aborting history save');
+                  // Do NOT throw - skip history save but continue with Telegram alert
                 } else {
                   const historyPrice = metadata?.price || fullResult.price || 0;
+                  // CRITICAL: Use tradePlan from context (single source of truth)
+
                   const historyEntry = {
-                    symbol: coin,
-                    signal: signal || 'HOLD',
-                    accuracy: finalAccuracyPercent,
+                    symbol: context.symbol,
+                    signal: context.signal || 'HOLD',
+                    accuracy: context.accuracy,
                     price: historyPrice,
-                    tradePlan: (finalAccuracyPercent >= 70 && tradePlan) ? tradePlan : null,
-                    entryPrice: (finalAccuracyPercent >= 70 && tradePlan?.entryPrice) ? tradePlan.entryPrice : 0,
-                    stopLoss: (finalAccuracyPercent >= 70 && tradePlan?.stopLoss) ? tradePlan.stopLoss : 0,
-                    takeProfit: (finalAccuracyPercent >= 70 && tradePlan?.takeProfit) ? tradePlan.takeProfit : 0,
-                    takeProfit1: (finalAccuracyPercent >= 70 && tradePlan?.takeProfit1) ? tradePlan.takeProfit1 : 0,
-                    takeProfit2: (finalAccuracyPercent >= 70 && tradePlan?.takeProfit2) ? tradePlan.takeProfit2 : 0,
-                    takeProfit3: (finalAccuracyPercent >= 70 && tradePlan?.takeProfit3) ? tradePlan.takeProfit3 : 0,
+                    tradePlan: context.tradePlan, // Use from context
+                    entryPrice: tradePlan?.entryPrice || 0,
+                    stopLoss: tradePlan?.stopLoss || 0,
+                    takeProfit: tradePlan?.takeProfit || 0,
+                    takeProfit1: tradePlan?.takeProfit1 || 0,
+                    takeProfit2: tradePlan?.takeProfit2 || 0,
+                    takeProfit3: tradePlan?.takeProfit3 || 0,
                     indicators: fullResult.analysis || null,
                     isDeepResearch: true,
                     source: 'TELEGRAM_BACKGROUND',
@@ -2024,19 +2087,20 @@ export class BackgroundResearchScheduler {
               reason: 'Accuracy >= trigger, alert sent on research completion'
             }, '📱 [TELEGRAM_ALERT_SEND] Sending Telegram alert - accuracy >= trigger, all guards passed (history written)');
 
+
             // CRITICAL: Telegram message must match UI exactly
             // If signal is HOLD, show HOLD clearly with no prices
             // If signal is BUY/SELL, show full trade plan with TP1/TP2/TP3
             const timestamp = new Date().toISOString();
             let message = '';
 
-            if (signal === 'HOLD') {
+            if (context.signal === 'HOLD') {
               // HOLD signal: No prices, clear HOLD message
               message = `🚨 *DLXTRADE Background Research Alert*
 
-**Coin:** ${coin}
+**Coin:** ${context.symbol}
 **Signal:** HOLD
-**Accuracy:** ${finalAccuracyPercent}%
+**Accuracy:** ${context.accuracy.toFixed(1)}%
 **Reason:** Accuracy below 60% threshold - no trade plan generated
 **Timestamp:** ${timestamp}
 
@@ -2046,19 +2110,12 @@ export class BackgroundResearchScheduler {
                 '[TELEGRAM] Sending HOLD signal (no trade plan)');
             } else {
               // BUY/SELL signal: Full trade plan with TP1/TP2/TP3
-              // Validate trade plan exists and has required fields
+              // CRITICAL: Validate trade plan exists and has required fields - ABORT if missing
               if (!tradePlan || !tradePlan.entryPrice || !tradePlan.stopLoss) {
                 logger.error({ uid, coin, signal, accuracy: finalAccuracyPercent, tradePlan },
-                  '[TELEGRAM_ERROR] BUY/SELL signal but trade plan is missing or incomplete!');
-                // Fallback: Send HOLD message instead
-                message = `🚨 *DLXTRADE Background Research Alert*
-
-**Coin:** ${coin}
-**Signal:** HOLD (Trade plan generation failed)
-**Accuracy:** ${finalAccuracyPercent}%
-**Timestamp:** ${timestamp}
-
-⚡ *Action:* Trade plan unavailable - signal not actionable.`;
+                  '[TELEGRAM_ERROR] BUY/SELL signal but trade plan is missing or incomplete - ABORTING ALERT!');
+                // CRITICAL: No fallback message - abort completely as per requirements
+                return; // Abort alert sending
               } else {
                 // BUY/SELL signal: Show trade plan if accuracy meets user's Telegram trigger (not hardcoded 70%)
                 // CRITICAL: Trade plan should be shown when accuracy >= user's Telegram accuracy trigger
@@ -2089,9 +2146,9 @@ export class BackgroundResearchScheduler {
 
                   message = `🚨 *DLXTRADE Background Research Alert*
 
-**Coin:** ${coin}
-**Signal:** ${signal}
-**Accuracy:** ${finalAccuracyPercent}%
+**Coin:** ${context.symbol}
+**Signal:** ${context.signal}
+**Accuracy:** ${context.accuracy.toFixed(1)}%
 **Entry Price:** $${formatPrice(entryPrice)}
 **Stop Loss:** $${formatPrice(stopLoss)}
 **Take Profit 1:** ${tp1 ? `$${formatPrice(tp1)}` : 'N/A'}
@@ -2103,9 +2160,9 @@ export class BackgroundResearchScheduler {
                   // BUY/SELL signal but accuracy < 70% - don't show trade plan
                   message = `🚨 *DLXTRADE Background Research Alert*
 
-**Coin:** ${coin}
-**Signal:** ${signal}
-**Accuracy:** ${finalAccuracyPercent}%
+**Coin:** ${context.symbol}
+**Signal:** ${context.signal}
+**Accuracy:** ${context.accuracy.toFixed(1)}%
 **Reason:** Accuracy below 70% threshold - trade plan not generated
 **Timestamp:** ${timestamp}
 

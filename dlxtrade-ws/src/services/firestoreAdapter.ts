@@ -2464,6 +2464,81 @@ export class FirestoreAdapter {
   }
 
   /**
+   * Store the latest successful research result for a user
+   * Used to share research results between UI and Auto-Trade
+   */
+  async storeLatestResearchResult(uid: string, researchResult: any): Promise<void> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const userRef = db.collection('users').doc(uid);
+
+      await userRef.collection('researchCache').doc('latest').set({
+        researchResult,
+        timestamp: admin.firestore.Timestamp.now(),
+        source: 'ui_research'
+      });
+
+      logger.info({ uid, symbol: researchResult.symbol }, '✅ [RESEARCH_CACHE] Stored latest research result');
+    } catch (error: any) {
+      logger.error({ uid, error: error.message }, '❌ [RESEARCH_CACHE] Failed to store latest research result');
+      // Don't throw - caching failure shouldn't break research
+    }
+  }
+
+  /**
+   * Get the latest successful research result for a user
+   * Returns null if no cached result or result is too old (>5 minutes)
+   */
+  async getLatestResearchResult(uid: string): Promise<any | null> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const userRef = db.collection('users').doc(uid);
+      const cacheDoc = await userRef.collection('researchCache').doc('latest').get();
+
+      if (!cacheDoc.exists) {
+        return null;
+      }
+
+      const cacheData = cacheDoc.data();
+      if (!cacheData) {
+        return null;
+      }
+
+      const cacheTime = cacheData.timestamp.toDate();
+      const now = new Date();
+      const ageMinutes = (now.getTime() - cacheTime.getTime()) / (1000 * 60);
+
+      // Cache expires after 5 minutes
+      if (ageMinutes > 5) {
+        logger.info({ uid, ageMinutes }, '📅 [RESEARCH_CACHE] Cached research result expired');
+        return null;
+      }
+
+      logger.info({ uid, ageMinutes: ageMinutes.toFixed(1) }, '✅ [RESEARCH_CACHE] Retrieved valid cached research result');
+      return cacheData.researchResult;
+    } catch (error: any) {
+      logger.error({ uid, error: error.message }, '❌ [RESEARCH_CACHE] Failed to retrieve latest research result');
+      return null;
+    }
+  }
+
+  /**
+   * Clear the cached research result for a user
+   */
+  async clearLatestResearchResult(uid: string): Promise<void> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const userRef = db.collection('users').doc(uid);
+
+      await userRef.collection('researchCache').doc('latest').delete();
+      logger.info({ uid }, '🗑️ [RESEARCH_CACHE] Cleared cached research result');
+    } catch (error: any) {
+      logger.error({ uid, error: error.message }, '❌ [RESEARCH_CACHE] Failed to clear cached research result');
+      // Don't throw - clearing failure shouldn't break anything
+    }
+  }
+
+  /**
    * Store research history entry for a user
    */
   async storeResearchHistory(uid: string, historyEntry: any): Promise<void> {

@@ -782,15 +782,15 @@ export default function AutoTrade() {
                   <p className="text-sm text-gray-500 mt-2">Research history will appear here once Auto-Trade executes research cycles.</p>
                 </div>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left">
+                <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-blue-700 scrollbar-track-blue-900">
+                  <table className="min-w-[900px] w-full text-sm">
                     <thead>
                       <tr className="border-b border-blue-500/20">
-                        <th className="pb-3 text-blue-200 font-semibold">Sr. No</th>
-                        <th className="pb-3 text-blue-200 font-semibold">Coin Name</th>
-                        <th className="pb-3 text-blue-200 font-semibold">Accuracy %</th>
-                        <th className="pb-3 text-blue-200 font-semibold">Result / Trigger Status</th>
-                        <th className="pb-3 text-blue-200 font-semibold">Time</th>
+                        <th className="text-left text-blue-100/60 py-2">SR</th>
+                        <th className="text-left text-blue-100/60 py-2">Coin</th>
+                        <th className="text-left text-blue-100/60 py-2">Accuracy</th>
+                        <th className="text-left text-blue-100/60 py-2">Result / Trigger Status</th>
+                        <th className="text-left text-blue-100/60 py-2">Time</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -834,12 +834,12 @@ export default function AutoTrade() {
                         }
 
                         return (
-                          <tr key={entry.id || index} className="border-b border-blue-500/10 hover:bg-blue-500/5">
-                            <td className="py-3 text-blue-100">{index + 1}</td>
-                            <td className="py-3 text-blue-100 font-medium">{entry.symbol || 'N/A'}</td>
-                            <td className="py-3 text-blue-100">{accuracy}%</td>
-                            <td className="py-3 text-blue-100">{triggerStatus}</td>
-                            <td className="py-3 text-blue-100" title={absoluteTime}>{timeAgo}</td>
+                          <tr key={entry.id || index} className={`border-b border-blue-500/10 ${index % 2 === 0 ? 'bg-[#0d1421]' : 'bg-[#0b0f18]'} hover:bg-blue-900/20`}>
+                            <td className="py-1 text-blue-100">{index + 1}</td>
+                            <td className="py-1 text-blue-100 font-medium">{entry.symbol && entry.symbol !== 'AUTO_TRADE_CYCLE' ? entry.symbol : '—'}</td>
+                            <td className="py-1 text-blue-100">{accuracy}%</td>
+                            <td className="py-1 text-blue-100">{triggerStatus}</td>
+                            <td className="py-1 text-blue-100" title={absoluteTime}>{timeAgo}</td>
                           </tr>
                         );
                       })}

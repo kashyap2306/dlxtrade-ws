@@ -328,6 +328,36 @@ export async function researchRoutes(fastify: FastifyInstance) {
           const { runFreeModeDeepResearch } = await import('../services/deepResearchEngine');
           const result = await runFreeModeDeepResearch(uid, symbol, undefined, integrations);
 
+          // CACHE SUCCESSFUL RESEARCH RESULT for Auto-Trade
+          // Only cache if research produced actionable results (accuracy >= 60% and valid signal)
+          if (result.accuracy >= 0.60 && (result.signal === 'BUY' || result.signal === 'SELL') && result.tradePlan) {
+            try {
+              const { firestoreAdapter } = await import('../services/firestoreAdapter');
+              await firestoreAdapter.storeLatestResearchResult(uid, {
+                symbol,
+                signal: result.signal,
+                accuracy: result.accuracy,
+                tradePlan: result.tradePlan,
+                timestamp: new Date().toISOString(),
+                source: 'ui_research'
+              });
+              console.log('🔥 [RESEARCH_CACHE] Stored successful UI research result for auto-trade');
+            } catch (cacheError) {
+              console.error('🔥 [RESEARCH_CACHE] Failed to cache research result:', cacheError.message);
+              // Continue - caching failure shouldn't break research
+            }
+          }
+
+          // SINGLE PIPELINE GUARANTEE - TEMP LOG
+          console.log('🔥 [PIPELINE_GUARANTEE] Manual research result:', {
+            uid,
+            symbol,
+            signal: result.signal,
+            accuracy: result.accuracy,
+            hasTradePlan: !!result.tradePlan,
+            tradePlanKeys: result.tradePlan ? Object.keys(result.tradePlan) : []
+          });
+
           results.push({
             symbol,
             requestId,

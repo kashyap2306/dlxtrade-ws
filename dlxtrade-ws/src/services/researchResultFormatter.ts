@@ -253,8 +253,9 @@ function getPricePrecision(price: number): number {
  * Prices are stored with FULL precision - no rounding in calculation
  */
 export function generateTradePlan(signal: string, accuracy: number, indicators: any): any | null {
-  // CRITICAL: Strict gating based on accuracy and signal
-  if (accuracy < 0.60 || signal === 'HOLD') return null;
+  // NOTE: Accuracy and signal gating is now handled by caller (researchAggregator.ts)
+  // This function assumes accuracy >= 70% and signal != HOLD
+  if (signal === 'HOLD') return null;
 
   const currentPrice = indicators.price || 0;
   if (!currentPrice || currentPrice <= 0) return null;

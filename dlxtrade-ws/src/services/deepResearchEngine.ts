@@ -907,6 +907,7 @@ export class DeepResearchEngine {
 
       logger.info({ uid, symbol, accuracy: (result.accuracy * 100).toFixed(1) + '%' }, "[FINAL_VERDICT_COMPUTED] Deep Research researchTask complete.");
 
+
       // CRITICAL: FINAL is a terminal state - function MUST return immediately
       // Continuing execution after freeze causes crashes because:
       // - The result object is frozen and cannot be mutated

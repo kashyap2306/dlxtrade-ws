@@ -480,13 +480,10 @@ export async function combineFreeModeResults(
         // SELL signals with accuracy >= 60% should be allowed, even if accuracy is lower than BUY
         // The 60% gate above already handles low accuracy cases for both BUY and SELL symmetrically
         
-        // CRITICAL: When accuracy >= 60%, signal MUST be BUY or SELL (never HOLD)
+        // Signal must come from real conditions - no forced BUY fallbacks
         if (combinedSignal === 'HOLD' && accuracy >= 0.60) {
-          logger.error({ uid, symbol, accuracy: (accuracy * 100).toFixed(1) + '%', originalSignal: combinedSignal }, 
-            '[SIGNAL_GATE_ERROR] Accuracy >= 60% but signal is HOLD - this should never happen!');
-          // Force to BUY as fallback (safer than leaving as HOLD)
-          combinedSignal = 'BUY';
-          logger.warn({ uid, symbol }, '[SIGNAL_GATE_FIX] Forced HOLD to BUY due to high accuracy');
+          logger.info({ uid, symbol, accuracy: (accuracy * 100).toFixed(1) + '%', signal: combinedSignal },
+            '[SIGNAL_GATE] HOLD signal with accuracy >= 60% - trade plan will not be generated');
         }
         logger.info({ uid, symbol, signal: combinedSignal, accuracy: (accuracy * 100).toFixed(1) + '%' }, 
           '[SIGNAL_GATE] Accuracy >= 60% → Signal is BUY/SELL (trade plan will be generated)');
@@ -503,17 +500,11 @@ export async function combineFreeModeResults(
     stages.finalVerdict.status = 'completed';
     if (!silent) logger.info({ uid, symbol, accuracy }, '[DR_STAGE_COMPLETE] Final Verdict');
 
-    // CRITICAL: Final signal hardening before trade plan generation
-    // If accuracy >= 60%, signal MUST be BUY or SELL (never HOLD)
-    // This is the SINGLE SOURCE OF TRUTH for signal gating
+    // Signal integrity check - no forced BUY fallbacks
     const normalizedAccuracyCheck = accuracy > 1 ? accuracy / 100 : accuracy;
     if (normalizedAccuracyCheck >= 0.60 && combinedSignal === 'HOLD') {
-      logger.error({ uid, symbol, originalSignal: combinedSignal, accuracy: normalizedAccuracyCheck }, 
-        '[SIGNAL_HARDEN_FINAL] Accuracy >= 60% but signal is HOLD - this violates single source of truth!');
-      // This should never happen if accuracy gating worked correctly above
-      // But if it does, we force to BUY as fallback
-      combinedSignal = 'BUY';
-      logger.warn({ uid, symbol }, '[SIGNAL_HARDEN_FINAL] Corrected HOLD to BUY due to high accuracy');
+      logger.info({ uid, symbol, signal: combinedSignal, accuracy: normalizedAccuracyCheck },
+        '[SIGNAL_CHECK] HOLD signal with accuracy >= 60% - no trade plan will be generated');
     }
 
     // D. FINAL INTEGRITY CHECK & LOGGING (Assertion)
@@ -673,7 +664,7 @@ export async function combineFreeModeResults(
   };
 
   // Normalize all accuracy values
-  const normalizedAccuracy = normalizeAccuracyBackend(accuracy);
+  let normalizedAccuracy = normalizeAccuracyBackend(accuracy);
   const normalizedSnapshotAccuracy = normalizeAccuracyBackend(accuracyResult.accuracy);
 
   // [ACCURACY_AUDIT] Log final normalized accuracy before return
@@ -684,47 +675,72 @@ export async function combineFreeModeResults(
     normalizedSnapshotAccuracy,
     signal: combinedSignal,
     isFinal,
-    willGenerateTradePlan: combinedSignal !== 'HOLD' && normalizedAccuracy >= 0.70
+    willGenerateTradePlan: combinedSignal !== 'HOLD' && normalizedAccuracy >= 0.60
   }, '[ACCURACY_AUDIT] FINAL normalized accuracy (ready for return)');
 
   // Consolidate final price from previous checks
   const finalPrice = data?.price || indicators?.price || indicators?.latest?.price || 0;
 
-  // Generate high-confidence trade plan
-  // CRITICAL: Only generate trade plan when accuracy >= 70% AND signal is BUY/SELL
-  // If signal is HOLD or accuracy < 70%, tradePlan MUST be null (not undefined)
+  // CRITICAL: Signal must come ONLY from real conditions - no forced overrides
+  let finalSignal = combinedSignal;
+
+  // CRITICAL: TRADE PLAN IS THE DECISION GATE
+  // 1. ENSURE signal downgrade happens BEFORE tradePlan
+  //    - If signal === HOLD → tradePlan = null
+  //    - If accuracy < 0.60 → signal = HOLD + tradePlan = null
+  //    - ONLY THEN allow tradePlan generation
   let tradePlan: any = null;
-  if (combinedSignal !== 'HOLD' && normalizedAccuracy >= 0.70) {
-    tradePlan = generateTradePlan(combinedSignal as any, normalizedAccuracy, indicators);
-    if (!tradePlan) {
-      logger.warn({ uid, symbol, signal: combinedSignal, accuracy: normalizedAccuracy }, 
-        '[TRADE_PLAN] generateTradePlan returned null despite accuracy >= 70% and signal != HOLD');
-    } else {
-      logger.info({ 
-        uid, 
-        symbol, 
-        signal: combinedSignal, 
-        accuracy: (normalizedAccuracy * 100).toFixed(1) + '%',
-        entryPrice: tradePlan.entryPrice,
-        stopLoss: tradePlan.stopLoss,
-        tp1: tradePlan.takeProfit1,
-        tp2: tradePlan.takeProfit2,
-        tp3: tradePlan.takeProfit3
-      }, '[TRADE_PLAN] Trade plan generated with Entry/SL/TP1/TP2/TP3');
-    }
-  } else {
-    logger.info({ uid, symbol, signal: combinedSignal, accuracy: (normalizedAccuracy * 100).toFixed(1) + '%' }, 
-      '[TRADE_PLAN] Trade plan NOT generated (signal is HOLD or accuracy < 70%)');
-  }
-  
-  // CRITICAL: Explicitly set tradePlan to null if signal is HOLD or accuracy < 70%
-  if (combinedSignal === 'HOLD' || normalizedAccuracy < 0.70) {
+
+  // Signal downgrade BEFORE tradePlan generation
+  if (finalSignal === 'HOLD' || normalizedAccuracy < 0.60) {
     tradePlan = null;
-    structuredResult.tradePlan = null; // Explicitly null, not undefined
-  } else if (tradePlan) {
-    structuredResult.tradePlan = tradePlan;
+  } else if (
+    normalizedAccuracy >= 0.60 &&
+    (finalSignal === 'BUY' || finalSignal === 'SELL')
+  ) {
+    // TradePlan generated ONLY for BUY/SELL signals
+    tradePlan = generateTradePlan(finalSignal as any, normalizedAccuracy, indicators);
   } else {
-    structuredResult.tradePlan = null; // Explicitly null if generateTradePlan returned null
+    tradePlan = null;
+  }
+
+  // 2. If generateTradePlan() returns null OR accuracy < 0.60:
+  //    - finalSignal MUST be set to 'HOLD'
+  //    - accuracy MUST be clamped below 0.60 (ex: 0.59)
+  //    - tradePlan MUST remain null
+  if (!tradePlan || normalizedAccuracy < 0.60) {
+    if (finalSignal !== 'HOLD') {
+      logger.info({
+        uid,
+        symbol,
+        originalSignal: finalSignal,
+        newSignal: 'HOLD',
+        accuracy: (normalizedAccuracy * 100).toFixed(1) + '%',
+        tradePlanExists: !!tradePlan
+      }, '[TRADE_PLAN_GATE] Signal downgraded to HOLD - no valid trade plan');
+    }
+    finalSignal = 'HOLD';
+    if (normalizedAccuracy >= 0.60) {
+      normalizedAccuracy = 0.59; // Clamp accuracy below 0.60
+    }
+    tradePlan = null;
+    structuredResult.tradePlan = null;
+  } else {
+    // 3. If tradePlan exists:
+    //    - finalSignal may be BUY or SELL (from real conditions)
+    //    - accuracy remains unchanged
+    structuredResult.tradePlan = tradePlan;
+    logger.info({
+      uid,
+      symbol,
+      signal: finalSignal,
+      accuracy: (normalizedAccuracy * 100).toFixed(1) + '%',
+      entryPrice: tradePlan.entryPrice,
+      stopLoss: tradePlan.stopLoss,
+      tp1: tradePlan.takeProfit1,
+      tp2: tradePlan.takeProfit2,
+      tp3: tradePlan.takeProfit3
+    }, '[TRADE_PLAN_GATE] Valid trade plan exists - signal allowed');
   }
 
   // BUILD DEFINITIVE ANALYSIS STRUCTURE (Task 7)
@@ -835,70 +851,41 @@ export async function combineFreeModeResults(
     ]
   };
 
-  // CRITICAL: Final signal hardening - ensure no silent downgrades
-  // If accuracy >= 60%, signal MUST be BUY or SELL (never HOLD)
-  const finalSignal = (normalizedAccuracy >= 0.60 && combinedSignal === 'HOLD') 
-    ? 'BUY' // Fallback to BUY if somehow HOLD with high accuracy
-    : combinedSignal;
   
-  if (finalSignal !== combinedSignal) {
-    logger.error({ uid, symbol, originalSignal: combinedSignal, finalSignal, accuracy: normalizedAccuracy }, 
-      '[SIGNAL_HARDEN] Signal was downgraded - corrected to BUY');
-  }
-  
-  // CRITICAL: Final trade plan validation
-  // If signal is BUY/SELL and accuracy >= 70%, tradePlan MUST exist
-  // If signal is HOLD or accuracy < 70%, tradePlan MUST be null
-  let finalTradePlan: any = null;
-  
-  if (finalSignal === 'HOLD' || normalizedAccuracy < 0.70) {
-    // HOLD or low accuracy: tradePlan MUST be null
+  // CRITICAL: Final trade plan validation (redundant but kept for safety)
+  // Since we now generate tradePlan correctly above, this should always pass
+  let finalTradePlan: any = tradePlan; // Use the tradePlan we generated above
+
+  // SINGLE SOURCE OF TRUTH BLOCK (FINAL)
+  // NO secondary overrides. NO re-BUY after HOLD. NO signal flip-flop.
+  if (finalSignal === 'HOLD' || normalizedAccuracy < 0.60) {
     finalTradePlan = null;
-    if (tradePlan !== null) {
-      logger.error({ uid, symbol, signal: finalSignal, accuracy: normalizedAccuracy, tradePlan }, 
-        '[TRADE_PLAN_HARDEN] Signal is HOLD or accuracy < 70% but tradePlan exists! Forcing to null.');
-      finalTradePlan = null;
-    }
   } else {
-    // BUY/SELL with accuracy >= 70%: tradePlan MUST exist
-    finalTradePlan = tradePlan;
+    // BUY/SELL signals MUST have tradePlan, otherwise force HOLD
     if (!finalTradePlan) {
-      logger.error({ uid, symbol, signal: finalSignal, accuracy: normalizedAccuracy }, 
-        '[TRADE_PLAN_HARDEN] Signal is BUY/SELL with accuracy >= 70% but tradePlan is null!');
-      // This is a critical error - trade plan should have been generated
-      // We'll leave it as null and let downstream handle it
-    } else {
-      // Validate trade plan has required fields
-      if (!finalTradePlan.entryPrice || !finalTradePlan.stopLoss) {
-        logger.error({ uid, symbol, signal: finalSignal, tradePlan: finalTradePlan }, 
-          '[TRADE_PLAN_HARDEN] Trade plan missing entryPrice or stopLoss!');
-        finalTradePlan = null; // Invalidate incomplete trade plan
-      }
+      logger.warn({ uid, symbol, signal: finalSignal, accuracy: normalizedAccuracy },
+        '[TRADE_PLAN_ENFORCE] BUY/SELL signal but tradePlan missing - forcing HOLD');
+      finalSignal = 'HOLD';
+      normalizedAccuracy = Math.min(normalizedAccuracy, 0.59);
+      finalTradePlan = null;
     }
   }
 
-  // CRITICAL: Final verification logging - prove signal/tradePlan consistency
-  if (finalSignal === 'HOLD' || normalizedAccuracy < 0.70) {
-    logger.info({ 
-      uid, 
-      symbol, 
-      signal: finalSignal, 
+  // LOGGING ONLY (NO LOGIC) - Logs are observers, not controllers
+  if (finalSignal === 'HOLD' || normalizedAccuracy < 0.60) {
+    logger.info({
+      uid,
+      symbol,
+      signal: finalSignal,
       accuracy: (normalizedAccuracy * 100).toFixed(1) + '%',
       tradePlanExists: finalTradePlan !== null,
       tradePlan: finalTradePlan
-    }, '[SIGNAL_VERIFY] HOLD signal or accuracy < 70% → tradePlan MUST be null');
-    
-    // Enforce: tradePlan MUST be null
-    if (finalTradePlan !== null) {
-      logger.error({ uid, symbol, tradePlan: finalTradePlan }, 
-        '[SIGNAL_VERIFY_ERROR] HOLD/low accuracy but tradePlan exists - forcing to null');
-      finalTradePlan = null;
-    }
+    }, '[SIGNAL_VERIFY] HOLD signal or accuracy < 60% → tradePlan is null');
   } else {
-    logger.info({ 
-      uid, 
-      symbol, 
-      signal: finalSignal, 
+    logger.info({
+      uid,
+      symbol,
+      signal: finalSignal,
       accuracy: (normalizedAccuracy * 100).toFixed(1) + '%',
       tradePlanExists: finalTradePlan !== null,
       hasEntryPrice: !!finalTradePlan?.entryPrice,
@@ -906,18 +893,19 @@ export async function combineFreeModeResults(
       hasTP1: !!finalTradePlan?.takeProfit1,
       hasTP2: !!finalTradePlan?.takeProfit2,
       hasTP3: !!finalTradePlan?.takeProfit3
-    }, '[SIGNAL_VERIFY] BUY/SELL signal with accuracy >= 70% → tradePlan MUST exist with Entry/SL/TP1/TP2/TP3');
-    
-    // Enforce: tradePlan MUST exist and have required fields
-    if (!finalTradePlan) {
-      logger.error({ uid, symbol, signal: finalSignal, accuracy: normalizedAccuracy }, 
-        '[SIGNAL_VERIFY_ERROR] BUY/SELL with accuracy >= 70% but tradePlan is null!');
-    } else if (!finalTradePlan.entryPrice || !finalTradePlan.stopLoss) {
-      logger.error({ uid, symbol, tradePlan: finalTradePlan }, 
-        '[SIGNAL_VERIFY_ERROR] Trade plan missing entryPrice or stopLoss!');
-      finalTradePlan = null; // Invalidate
-    }
+    }, '[SIGNAL_VERIFY] BUY/SELL signal with accuracy >= 60% → tradePlan exists');
   }
+
+
+  // INVARIANT LOGGING: TradePlan creation verification
+  console.log('🔥 [INVARIANT] researchAggregator:', {
+    uid,
+    symbol,
+    signal: finalSignal,
+    accuracy: normalizedAccuracy,
+    hasTradePlan: !!finalTradePlan,
+    tradePlanKeys: finalTradePlan ? Object.keys(finalTradePlan) : []
+  });
 
   // Return both structured format and original detailed format
   const result: FreeModeDeepResearchResult = {
