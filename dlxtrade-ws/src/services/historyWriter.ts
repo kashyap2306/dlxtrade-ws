@@ -2,7 +2,7 @@ import { logger } from '../utils/logger';
 import { firestoreAdapter, isExchangeUsable } from './firestoreAdapter';
 import { getFirebaseAdmin } from '../utils/firebase';
 import * as admin from 'firebase-admin';
-import type { ResearchDataResult, ResearchData, TradeSignalType, TradeExecutionStatus } from './researchTypes';
+import type { ResearchDataResult, ResearchData, TradeSignalType, TradeExecutionStatus } from './autoTradeEngine';
 
 // Import the AutoTradeConfig type and DEFAULT_CONFIG
 interface AutoTradeConfig {

@@ -378,7 +378,7 @@ export async function runDeepResearchWithCoinSelection(
         logger.info({
           uid, symbol, signal: result.signal, accuracy: result.accuracy, hasTradePlan: !!result.tradePlan,
           hasEntry: !!result.tradePlan?.entryPrice, hasSL: !!result.tradePlan?.stopLoss,
-          hasTP: !!(result.tradePlan as any)?.takeProfit2 || !!(result.tradePlan as any)?.takeProfit1 || !!result.tradePlan?.takeProfit
+          hasTP: !!(result.tradePlan as any)?.takeProfit2 || !!(result.tradePlan as any)?.takeProfit1
         },
           '[RESEARCH_RESULT] BUY/SELL with accuracy >= 60% → tradePlan should exist with Entry/SL/TP1/TP2/TP3');
       }

@@ -1,6 +1,7 @@
 import { logger } from '../utils/logger';
 import { AutoTradeEngine } from './autoTradeEngine';
 import { logAutoTradeSkip } from './historyWriter';
+import type { TradePlan } from './researchTypes';
 
 export interface TradeSignal {
   symbol: string;
@@ -18,6 +19,11 @@ export interface TradingSettings {
   accuracyTrigger: {
     min: number;
     max: number;
+  };
+  // Optional notifications settings for trade confirmation and whale alerts
+  notifications?: {
+    tradeConfirmationRequired?: boolean;
+    whaleAlerts?: boolean;
   };
 }
 
@@ -333,7 +339,7 @@ export async function checkRiskGuards(uid: string, signal: TradeSignal, isManual
  * Check system-wide risk settings (Daily Loss, Cooldown, Circuit Breaker)
  * Does NOT check signal-specific constraints (Accuracy, Symbol)
  */
-async function checkSystemRisk(uid: string, isManualApproval: boolean, settings: TradingSettings, symbol?: string): Promise<{ allowed: boolean; reason?: string }> {
+export async function checkSystemRisk(uid: string, isManualApproval: boolean, settings: TradingSettings, symbol?: string): Promise<{ allowed: boolean; reason?: string }> {
   const engine = await (AutoTradeEngine as any).getUserEngine(uid);
   const config = engine.config;
   const stats = config.stats || (AutoTradeEngine as any).DEFAULT_CONFIG.stats!;

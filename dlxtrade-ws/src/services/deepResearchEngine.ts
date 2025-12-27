@@ -978,4 +978,21 @@ export async function runFreeModeDeepResearch(
 
 export const selectCoinsForResearch = selectCoins;
 
+/**
+ * Simplified runDeepResearch function for backward compatibility
+ * Adapts the call to runFreeModeDeepResearch with appropriate parameters
+ */
+export async function runDeepResearch(params: {
+  uid: string;
+  symbol: string;
+  providerConfigs?: any;
+  integrations?: any;
+  mode?: string;
+}): Promise<FreeModeDeepResearchResult> {
+  const { uid, symbol, providerConfigs, integrations, mode } = params;
+  const backgroundMode = mode === 'background';
+
+  return await runFreeModeDeepResearch(uid, symbol, providerConfigs, integrations, backgroundMode);
+}
+
 export default deepResearchEngine;

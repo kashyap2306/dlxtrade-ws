@@ -27,6 +27,7 @@ export interface FreeModeDeepResearchResult {
   price?: number;
   snapshotAccuracy: number;
   tradePlan?: TradePlan;
+  processingTimeMs?: number;
   accuracyBreakdown: {
     indicatorScore: number;
     marketStructureScore: number;
