@@ -6,6 +6,7 @@ import { autoTradeEngine } from './autoTradeEngine';
 import { getFirebaseAdmin } from '../utils/firebase';
 import { getUserIntegrationsByUid } from '../routes/users/providerConfig';
 import * as admin from 'firebase-admin';
+import { checkWhaleAlerts } from './autoTradeTelegram';
 import {
   safeSetInterval,
   shouldRunBackgroundTasks,
@@ -1807,7 +1808,9 @@ export class BackgroundResearchScheduler {
         try {
           const userSettings = await firestoreAdapter.getSettings(uid);
           if (userSettings?.notifications?.whaleAlerts) {
-            await autoTradeEngine.checkWhaleAlerts(uid, coin);
+            // Get adapter through autoTradeEngine initialization
+            const adapter = await autoTradeEngine.initializeAdapter(uid);
+            await checkWhaleAlerts(uid, coin, adapter, (uid, eventType, data) => autoTradeEngine.logTradeEvent(uid, eventType, data));
           }
         } catch (whaleErr) {
           // logger.warn({ uid, coin }, 'Failed to check whale alerts in background');
@@ -2578,7 +2581,9 @@ export class BackgroundResearchScheduler {
     try {
       const userSettings = await firestoreAdapter.getSettings(uid);
       if (userSettings?.notifications?.whaleAlerts) {
-        await autoTradeEngine.checkWhaleAlerts(uid, coin);
+        // Get adapter through autoTradeEngine initialization
+        const adapter = await autoTradeEngine.initializeAdapter(uid);
+        await checkWhaleAlerts(uid, coin, adapter, (uid, eventType, data) => autoTradeEngine.logTradeEvent(uid, eventType, data));
       }
     } catch (whaleErr) {
       // Silent failure for whale alerts

@@ -2,6 +2,7 @@ import { logger } from '../utils/logger';
 import { AutoTradeEngine } from './autoTradeEngine';
 import { logAutoTradeSkip } from './historyWriter';
 import type { TradePlan } from './researchTypes';
+import { getDefaultAccuracyRiskConfig } from './autoTradeUtils';
 
 export interface TradeSignal {
   symbol: string;
@@ -517,7 +518,7 @@ export async function calculateDynamicParams(uid: string, accuracy: number, vola
   // CRITICAL: Execution-time fallback guard - validate config structure
   // If config is missing, invalid, partially invalid, or non-continuous, fallback to defaults
   if (!Array.isArray(config) || config.length === 0) {
-    config = AutoTradeEngine.getDefaultAccuracyRiskConfig();
+    config = getDefaultAccuracyRiskConfig();
     usingFallback = true;
     fallbackReason = 'Config missing or empty';
     logger.warn({ uid, reason: fallbackReason }, '⚠️ [ACCURACY_RISK_CONFIG] Falling back to system defaults - config missing or empty');
@@ -534,7 +535,7 @@ export async function calculateDynamicParams(uid: string, accuracy: number, vola
     );
 
     if (invalidItems.length > 0) {
-      config = AutoTradeEngine.getDefaultAccuracyRiskConfig();
+      config = getDefaultAccuracyRiskConfig();
       usingFallback = true;
       fallbackReason = 'Config contains invalid items';
       logger.warn({ uid, reason: fallbackReason, invalidCount: invalidItems.length }, '⚠️ [ACCURACY_RISK_CONFIG] Falling back to system defaults - config contains invalid items');
@@ -560,7 +561,7 @@ export async function calculateDynamicParams(uid: string, accuracy: number, vola
       }
 
       if (!isContinuous) {
-        config = AutoTradeEngine.getDefaultAccuracyRiskConfig();
+        config = getDefaultAccuracyRiskConfig();
         usingFallback = true;
         fallbackReason = 'Config ranges are not continuous or do not cover up to 100%';
         logger.warn({ uid, reason: fallbackReason }, '⚠️ [ACCURACY_RISK_CONFIG] Falling back to system defaults - ranges not continuous');

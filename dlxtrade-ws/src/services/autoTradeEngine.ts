@@ -16,9 +16,32 @@ import type { FreeModeDeepResearchResult, TradePlan } from './researchTypes';
 import { evaluateTelegramAlertDecision } from './telegramAlertDecisionService';
 import { adjustAutoTradeFrequencyForTelegram } from './telegramConfigService';
 import { sendConsolidatedTelegramAlert } from './telegramAlertOrchestrator';
-import { logAutoTradeSkip, saveAutoTradeHistorySkipped, saveAutoTradeHistoryWithExecutionStatus } from './historyWriter';
+import { logAutoTradeSkip, saveAutoTradeHistorySkipped, saveAutoTradeHistoryWithExecutionStatus } from './autoTradeHistory';
 import { checkRiskGuards, calculateDynamicParams, validateAccuracyForExecution, checkSystemRisk } from './riskAndLimitsEngine';
 import { AccuracyGuard, runDeepResearchWithCoinSelection } from './accuracyAndSignalEngine';
+// Import functions from new supporting files
+import { isSymbolInTop10, getCurrentEquity } from './autoTradeGuards';
+import { sendTradeConfirmationNotification, checkWhaleAlerts } from './autoTradeTelegram';
+import {
+  calculateNewsScoreFromArticles,
+  calculateSLTP,
+  getCurrentMarketPrice,
+  validateTradeSignal,
+  validateTradingMode,
+  calculatePositionSize,
+  getDefaultAccuracyRiskConfig
+} from './autoTradeUtils';
+import {
+  setLeverageOnExchange,
+  setMarginType,
+  placeEntryOrder,
+  placeScalpingTPOrders,
+  placeSingleTPOrder,
+  placeStopLossOrder,
+  executeEmergencyClose,
+  cancelOrder,
+  placePanicCloseOrder
+} from './autoTradeOrderExecutor';
 
 // Accuracy-based Risk Configuration (Single Source of Truth)
 export interface AccuracyRiskConfigItem {
@@ -458,27 +481,6 @@ export class AutoTradeEngine {
   // Guard to prevent infinite recursion and redundant default config creation
   private static configCreatedOnce: Set<string> = new Set();
 
-  /**
-   * Calculate simplified news score for sentiment-aware trading
-   */
-  private calculateNewsScoreFromArticles(news: Array<{ sentiment?: number; impact?: string;[key: string]: unknown }>): number {
-    if (!news || news.length === 0) return 50;
-
-    let totalSentiment = 0;
-    let count = 0;
-
-    for (const item of news) {
-      let val = 0;
-      if (typeof item.sentiment === 'number') val = item.sentiment;
-      else if (item.sentiment === 'positive' || item.sentiment === 'buy') val = 1;
-      else if (item.sentiment === 'negative' || item.sentiment === 'sell') val = -1;
-      totalSentiment += val;
-      count++;
-    }
-
-    const avg = count > 0 ? totalSentiment / count : 0;
-    return 50 + (avg * 50); // 0 to 100
-  }
 
   /**
    * Get or create user engine instance
@@ -508,134 +510,6 @@ export class AutoTradeEngine {
    * CRITICAL: Uses user's accuracyRiskConfig (single source of truth) instead of hardcoded values
    */
 
-  /**
-   * P5: Deterministic SL/TP Logic
-   */
-  private calculateSLTP(
-    side: 'BUY' | 'SELL',
-    price: number,
-    accuracy: number,
-    atr: number,
-    sr: { supportLevel?: number, resistanceLevel?: number },
-    isScalping: boolean = false
-  ): { stopLoss: number, takeProfit: number, takeProfit1?: number, takeProfit2?: number, takeProfit3?: number } {
-    // Ensure accuracy is 0-100 scale
-    const acc = accuracy > 1 ? accuracy : accuracy * 100;
-
-    // SCALPING RULES - STRICT ENFORCEMENT
-    if (isScalping) {
-      const SL_MAX_DISTANCE_PCT = 0.01; // 1% HARD CAP - NEVER exceed
-      const SL_DEFAULT_DISTANCE_PCT = 0.005; // 0.5% default
-      const SL_MIN_DISTANCE_PCT = 0.003; // 0.3% minimum
-      const SL_MAX_DISTANCE_PCT_ATR = 0.008; // 0.8% maximum (ATR-based)
-      const TP1_DISTANCE_PCT = 0.008; // 0.8%
-      const TP2_DISTANCE_PCT = 0.015; // 1.5%
-      const TP3_DISTANCE_PCT = 0.022; // 2.2%
-
-      let stopLoss = 0;
-      let takeProfit1 = 0;
-      let takeProfit2 = 0;
-      let takeProfit3 = 0;
-
-      if (side === 'BUY') {
-        // SCALPING SL: Ignore support/resistance, ignore wide ATR
-        // Use ATR if available but clamp strictly
-        const atrDistance = atr > 0 ? (atr / price) : 0;
-        // Clamp SL distance: 0.3% - 0.8% range, default 0.5%
-        const slDistance = Math.max(SL_MIN_DISTANCE_PCT, Math.min(SL_MAX_DISTANCE_PCT_ATR, atrDistance || SL_DEFAULT_DISTANCE_PCT));
-        stopLoss = price * (1 - slDistance);
-
-        // HARD CAP: NEVER exceed 1% under any condition
-        if (price - stopLoss > price * SL_MAX_DISTANCE_PCT) {
-          stopLoss = price * (1 - SL_MAX_DISTANCE_PCT);
-          logger.warn({ price, calculatedSL: price * (1 - slDistance), clampedSL: stopLoss }, 'SCALPING SL clamped to 1% hard cap');
-        }
-
-        // TP levels
-        takeProfit1 = price * (1 + TP1_DISTANCE_PCT);
-        takeProfit2 = price * (1 + TP2_DISTANCE_PCT);
-        takeProfit3 = price * (1 + TP3_DISTANCE_PCT);
-
-        logger.info({
-          entry: price,
-          sl: stopLoss,
-          slDistance: ((price - stopLoss) / price * 100).toFixed(3) + '%',
-          tp1: takeProfit1,
-          tp2: takeProfit2,
-          tp3: takeProfit3
-        }, '[SCALPING_PLAN] BUY - Strict scalping SL/TP calculated');
-      } else {
-        // SELL side
-        const atrDistance = atr > 0 ? (atr / price) : 0;
-        const slDistance = Math.max(SL_MIN_DISTANCE_PCT, Math.min(SL_MAX_DISTANCE_PCT_ATR, atrDistance || SL_DEFAULT_DISTANCE_PCT));
-        stopLoss = price * (1 + slDistance);
-
-        // HARD CAP: NEVER exceed 1%
-        if (stopLoss - price > price * SL_MAX_DISTANCE_PCT) {
-          stopLoss = price * (1 + SL_MAX_DISTANCE_PCT);
-          logger.warn({ price, calculatedSL: price * (1 + slDistance), clampedSL: stopLoss }, 'SCALPING SL clamped to 1% hard cap');
-        }
-
-        // TP levels
-        takeProfit1 = price * (1 - TP1_DISTANCE_PCT);
-        takeProfit2 = price * (1 - TP2_DISTANCE_PCT);
-        takeProfit3 = price * (1 - TP3_DISTANCE_PCT);
-
-        logger.info({
-          entry: price,
-          sl: stopLoss,
-          slDistance: ((stopLoss - price) / price * 100).toFixed(3) + '%',
-          tp1: takeProfit1,
-          tp2: takeProfit2,
-          tp3: takeProfit3
-        }, '[SCALPING_PLAN] SELL - Strict scalping SL/TP calculated');
-      }
-
-      return {
-        stopLoss,
-        takeProfit: takeProfit2, // Default to TP2 for backward compatibility
-        takeProfit1,
-        takeProfit2,
-        takeProfit3
-      };
-    }
-
-    // NON-SCALPING: Original logic (swing/position trading)
-    // Determine Target RR based on accuracy (Requirement: min RR 1:2)
-    let targetRR = 2.0;
-    if (acc >= 85) targetRR = 3.0;
-    else if (acc >= 80) targetRR = 2.5;
-
-    let stopLoss = 0;
-    let takeProfit = 0;
-
-    if (side === 'BUY') {
-      const atrSL = price - (2.5 * atr);
-      const fixedSL = price * 0.985;
-      if (sr.supportLevel && sr.supportLevel < price && sr.supportLevel > price * 0.90) {
-        stopLoss = sr.supportLevel;
-      } else if (atr > 0 && atrSL < price) {
-        stopLoss = atrSL;
-      } else {
-        stopLoss = fixedSL;
-      }
-      const riskAmount = price - stopLoss;
-      takeProfit = price + (riskAmount * targetRR);
-    } else {
-      const atrSL = price + (2.5 * atr);
-      const fixedSL = price * 1.015;
-      if (sr.resistanceLevel && sr.resistanceLevel > price && sr.resistanceLevel < price * 1.10) {
-        stopLoss = sr.resistanceLevel;
-      } else if (atr > 0 && atrSL > price) {
-        stopLoss = atrSL;
-      } else {
-        stopLoss = fixedSL;
-      }
-      const riskAmount = stopLoss - price;
-      takeProfit = price - (riskAmount * targetRR);
-    }
-    return { stopLoss, takeProfit }; // Non-scalping: no TP1/TP2/TP3
-  }
 
   /**
    * Load user configuration from Firestore
@@ -869,34 +743,6 @@ export class AutoTradeEngine {
     }
   }
 
-  /**
-   * CRITICAL: Validate symbol is in top 25 high-liquidity non-stablecoins by market cap
-   * System is restricted to top 25 coins (single source of truth)
-   * Function name kept for compatibility but checks Top 25
-   */
-  private async isSymbolInTop10(uid: string, symbol: string): Promise<boolean> {
-    try {
-      const { getTop100Coins } = await import('./researchModes');
-      const top25 = await getTop100Coins(uid, 25);
-      const normalizedSymbol = symbol.toUpperCase();
-      const isInTop25 = top25.some(coin => coin.symbol === normalizedSymbol);
-
-      if (!isInTop25) {
-        logger.error({
-          uid,
-          symbol: normalizedSymbol,
-          top25Symbols: top25.map(c => c.symbol),
-          stack: new Error().stack
-        }, '❌ [TOP_25_VIOLATION] Symbol outside Top 25 detected in auto-trade engine');
-      }
-
-      return isInTop25;
-    } catch (error: any) {
-      logger.error({ uid, symbol, error: error.message, stack: error.stack }, '❌ [TOP_25_ERROR] Error checking if symbol is in top 25');
-      // On error, be safe and block (don't allow non-top-25 coins)
-      return false;
-    }
-  }
 
 
 
@@ -979,7 +825,7 @@ export class AutoTradeEngine {
         // Calculate position size for pending trade
         const equity = config.equitySnapshot || 1000;
         // Calculate actual position size
-        const positionSizing = AutoTradeEngine.calculatePositionSize(signal.accuracy, settings);
+        const positionSizing = calculatePositionSize(signal.accuracy, settings);
         let finalPositionPercent = Math.min(positionSizing.positionPercent, settings.maxPositionPct);
 
         // If it would be a 0% position, force 1% for the pending trade so the user can see/approve it
@@ -1009,7 +855,7 @@ export class AutoTradeEngine {
         });
 
         // Send trade confirmation notification
-        await this.sendTradeConfirmationNotification(uid, signal);
+        await sendTradeConfirmationNotification(uid, signal);
         await this.logTradeEvent(uid, 'TRADE_CONFIRMATION_REQUIRED', {
           signal,
           requestId,
@@ -1039,7 +885,8 @@ export class AutoTradeEngine {
     // Check for whale alerts if enabled AND auto trade is active
     try {
       if (settings.notifications?.whaleAlerts) {
-        await this.checkWhaleAlerts(uid, signal.symbol);
+        const engine = await this.getUserEngine(uid);
+        await checkWhaleAlerts(uid, signal.symbol, engine.adapter, this.logTradeEvent.bind(this));
       }
     } catch (whaleError: any) {
       logger.warn({ uid, error: whaleError.message }, 'Failed to check whale alerts');
@@ -1154,99 +1001,8 @@ export class AutoTradeEngine {
       }, '🔍 [DEBUG_TRACE] Adapter already exists');
     }
 
-    // Get current equity
-    // CRITICAL: ALWAYS use USDT-M Futures balance - NEVER use spot balance
-    // Single source of truth: getFuturesBalance() or futures data from getAccount()
-    let equity = config.equitySnapshot || 1000; // Default fallback
-    let futuresBalanceFetched = false;
-
-    try {
-      // PRIORITY 1: ALWAYS try getFuturesBalance() first if available
-      if (engine.adapter && typeof engine.adapter.getFuturesBalance === 'function') {
-        try {
-          const futuresBalance = await engine.adapter.getFuturesBalance();
-          // CRITICAL: Use futures balance even if it's 0 (don't fall back to spot)
-          equity = futuresBalance.totalBalance || futuresBalance.availableBalance || 0;
-          futuresBalanceFetched = true;
-          logger.info({
-            uid,
-            equity,
-            availableBalance: futuresBalance.availableBalance,
-            source: 'futures',
-            marketType: futuresBalance.marketType
-          }, '✅ Equity fetched from USDT-M Futures balance');
-          // Update equity snapshot
-          await this.saveConfig(uid, { equitySnapshot: equity });
-        } catch (futuresErr: any) {
-          // CRITICAL: Check if error is due to decryption failure
-          if (futuresErr.message?.includes('EXCHANGE_KEY_DECRYPTION_FAILED') ||
-            futuresErr.message?.includes('empty') ||
-            futuresErr.message?.includes('decryption failed')) {
-            logger.error({ uid, error: futuresErr.message }, '❌ getFuturesBalance() failed due to decryption error - aborting equity fetch');
-            throw futuresErr; // Re-throw to abort execution
-          } else {
-            logger.warn({ uid, error: futuresErr.message }, '❌ getFuturesBalance() failed');
-          }
-        }
-      }
-
-      // PRIORITY 2: If getFuturesBalance() not available, try getAccount() for futures data
-      // CRITICAL: Only check for futures data - NEVER use spot balance
-      if (!futuresBalanceFetched && engine.adapter && typeof engine.adapter.getAccount === 'function') {
-        const accountInfo = await engine.adapter.getAccount();
-
-        // Check for futures balance in account response
-        if (accountInfo.futuresBalances && Array.isArray(accountInfo.futuresBalances)) {
-          const usdtBalance = accountInfo.futuresBalances.find((b: any) =>
-            b.asset === 'USDT' || b.asset === 'USDT'
-          );
-          if (usdtBalance) {
-            const free = parseFloat(usdtBalance.free || usdtBalance.available || '0');
-            const locked = parseFloat(usdtBalance.locked || usdtBalance.frozen || '0');
-            equity = free + locked;
-            futuresBalanceFetched = true;
-            logger.info({ uid, equity, source: 'futures-balances-array' }, '✅ Equity fetched from futures balances array');
-          }
-        }
-        // Check for Bitget futures format in data field
-        else if (accountInfo.data && Array.isArray(accountInfo.data)) {
-          const usdtAccount = accountInfo.data.find((acc: any) => acc.marginCoin === 'USDT' && acc.productType === 'USDT-FUTURES');
-          if (usdtAccount) {
-            equity = parseFloat(usdtAccount.equity || usdtAccount.available || '0');
-            futuresBalanceFetched = true;
-            logger.info({ uid, equity, source: 'futures-data-array' }, '✅ Equity fetched from futures data array');
-          }
-        }
-        // Check for direct equity/available fields (futures balance directly)
-        else if (accountInfo.totalEquity !== undefined) {
-          // If totalEquity exists (even if 0), assume it's futures balance
-          equity = parseFloat(accountInfo.totalEquity.toString());
-          futuresBalanceFetched = true;
-          logger.info({ uid, equity, source: 'futures-totalEquity' }, '✅ Equity fetched from totalEquity (futures)');
-        } else if (accountInfo.equity !== undefined) {
-          equity = parseFloat(accountInfo.equity.toString());
-          futuresBalanceFetched = true;
-          logger.info({ uid, equity, source: 'futures-equity' }, '✅ Equity fetched from equity (futures)');
-        }
-
-        // Update equity snapshot if futures balance was found
-        if (futuresBalanceFetched) {
-          await this.saveConfig(uid, { equitySnapshot: equity });
-        }
-      }
-
-      // If no futures balance found, use snapshot or default
-      if (!futuresBalanceFetched) {
-        logger.warn({ uid }, '❌ No USDT-M Futures balance found - using snapshot or default');
-        equity = config.equitySnapshot || 1000;
-      } else if (equity === 0 || isNaN(equity)) {
-        // Even if balance is 0, we fetched it from futures API - that's valid
-        logger.info({ uid, equity }, 'Futures balance is 0 - using snapshot as fallback for position sizing');
-        equity = config.equitySnapshot || 1000;
-      }
-    } catch (error: any) {
-      logger.warn({ error: error.message, uid }, 'Could not fetch futures balance from exchange, using snapshot');
-    }
+    // Get current equity using imported function from autoTradeGuards
+    const equity = await getCurrentEquity(uid, engine.adapter, config, this.saveConfig.bind(this));
 
     // Get trading settings for position sizing
     const tradingSettings = await AutoTradeEngine.getTradingSettings(uid);
@@ -2446,7 +2202,7 @@ export class AutoTradeEngine {
       }
     } else {
       // Consolidated mode validation
-      const modeCheck = this.validateTradingMode(config, 'executeTrade');
+      const modeCheck = validateTradingMode(config, 'executeTrade');
       const reason = modeCheck.reason || 'MODE_VALIDATION_FAILED';
 
       trade.status = 'CANCELLED';
@@ -2487,19 +2243,6 @@ export class AutoTradeEngine {
     return trade;
   }
 
-  /**
-   * Default accuracy-based risk configuration (system defaults)
-   * CRITICAL: This is the single source of truth for default values
-   * Leverage for ≥90% is 9x by default (10x is hard cap only)
-   */
-  public static getDefaultAccuracyRiskConfig(): AccuracyRiskConfigItem[] {
-    return [
-      { minAccuracy: 75, maxAccuracy: 79, tradeSizePct: 3, leverage: 4 },
-      { minAccuracy: 80, maxAccuracy: 84, tradeSizePct: 5, leverage: 5 },
-      { minAccuracy: 85, maxAccuracy: 89, tradeSizePct: 7, leverage: 7 },
-      { minAccuracy: 90, maxAccuracy: null, tradeSizePct: 10, leverage: 9 } // null = no upper limit (≥90%), default leverage 9x (10x is hard cap)
-    ];
-  }
 
   /**
    * Get trading settings for a user with caching
@@ -2528,7 +2271,7 @@ export class AutoTradeEngine {
             '95-99': 8.5,
             '100': 10
           },
-          accuracyRiskConfig: AutoTradeEngine.getDefaultAccuracyRiskConfig()
+          accuracyRiskConfig: getDefaultAccuracyRiskConfig()
         };
       }
 
@@ -2567,7 +2310,7 @@ export class AutoTradeEngine {
         },
         accuracyRiskConfig: settings.accuracyRiskConfig && Array.isArray(settings.accuracyRiskConfig) && settings.accuracyRiskConfig.length > 0
           ? settings.accuracyRiskConfig
-          : AutoTradeEngine.getDefaultAccuracyRiskConfig()
+          : getDefaultAccuracyRiskConfig()
       };
     } catch (error: any) {
       logger.error({ error: error.message, uid }, 'Error getting trading settings, using defaults');
@@ -2591,47 +2334,11 @@ export class AutoTradeEngine {
           '95-99': 8.5,
           '100': 10
         },
-        accuracyRiskConfig: AutoTradeEngine.getDefaultAccuracyRiskConfig()
+        accuracyRiskConfig: getDefaultAccuracyRiskConfig()
       };
     }
   }
 
-  /**
-   * Calculate position size based on accuracy and trading settings
-   * Returns the position percentage to use for the trade
-   */
-  static calculatePositionSize(accuracy: number, settings: TradingSettings): PositionSizingResult {
-    // P4: Use dynamic sizing model
-    const acc = accuracy > 1 ? accuracy : accuracy * 100;
-
-    // CRITICAL: Use user-defined accuracyTrigger.min for execution sizing
-    // This ensures auto-trade respects user's selected accuracy threshold
-    const minThreshold = settings.accuracyTrigger?.min ?? 75;
-
-    if (acc < minThreshold) {
-      return {
-        positionPercent: 0,
-        reason: `Accuracy ${acc.toFixed(1)}% below user-defined threshold (${minThreshold}%)`
-      };
-    }
-
-    // Note: The modelPercent calculation below is legacy and may be replaced by accuracyRiskConfig
-    // For now, it's kept for backward compatibility but accuracyRiskConfig in calculateDynamicParams takes precedence
-    let modelPercent = 0;
-    if (acc < minThreshold) modelPercent = 1;
-    else if (acc < 80) modelPercent = 2;
-    else if (acc < 85) modelPercent = 3;
-    else if (acc < 90) modelPercent = 4;
-    else modelPercent = 5;
-
-    // Apply the user's hard cap from settings as well
-    const positionPercent = Math.min(modelPercent, settings.maxPositionPct || 10);
-
-    return {
-      positionPercent,
-      reason: `Accuracy ${acc.toFixed(1)}% maps to ${modelPercent}% (capped at ${settings.maxPositionPct}% user limit)`
-    };
-  }
 
   /**
    * Update trade statistics
@@ -3473,26 +3180,6 @@ export class AutoTradeEngine {
     }
   }
 
-  /**
-   * Get current market price for a symbol
-   */
-  private async getCurrentMarketPrice(symbol: string, uid: string): Promise<number> {
-    try {
-      // Try to get from exchange if adapter is available
-      const engine = await this.getUserEngine(uid);
-      if (engine.adapter) {
-        const ticker = await engine.adapter.getTicker(symbol);
-        return parseFloat(ticker.price.toString());
-      }
-    } catch (error: any) {
-      logger.warn({ uid, symbol, error: error.message }, 'Could not get price from exchange');
-      // P0 FIX: Throw hard error instead of dangerous fallback
-      throw new Error(`PRICE_FETCH_FAILED: Could not get market price for ${symbol} - Trade aborted for safety`);
-    }
-
-    // If no adapter or failed to get price
-    throw new Error(`PRICE_FETCH_FAILED: No adapter available or price fetch failed for ${symbol}`);
-  }
 
 
 
@@ -4125,24 +3812,10 @@ export class AutoTradeEngine {
         }
 
         // CRITICAL: Verify symbol is in Top 25 before processing
-        // CRITICAL FIX: Safe call to isSymbolInTop10 - ensure method exists before calling
-        // Default to PASS (allow research) if any error occurs - never crash research
         let symbolTop25Check = true; // Default to PASS - only block if check succeeds and returns false
         try {
-          if (this && typeof this.isSymbolInTop10 === 'function') {
-            symbolTop25Check = await this.isSymbolInTop10(uid, researchResult?.symbol || 'UNKNOWN');
-          } else {
-            // Fallback: use direct helper if method not available
-            try {
-              const { getTop100Coins } = await import('./researchModes');
-              const top25 = await getTop100Coins(uid, 25);
-              const normalizedSymbol = researchResult?.symbol || 'UNKNOWN'.toUpperCase();
-              symbolTop25Check = top25.some(coin => coin.symbol === normalizedSymbol);
-            } catch (fallbackError: any) {
-              logger.error({ uid, symbol: researchResult?.symbol || 'UNKNOWN', error: fallbackError.message }, '❌ [TOP_25_ERROR] Fallback helper failed - defaulting to PASS');
-              symbolTop25Check = true; // Default to PASS on fallback error
-            }
-          }
+          // Use imported function from autoTradeGuards
+          symbolTop25Check = await isSymbolInTop10(uid, researchResult?.symbol || 'UNKNOWN');
         } catch (error: any) {
           logger.error({ uid, symbol: researchResult?.symbol || 'UNKNOWN', error: error.message }, '❌ [TOP_25_ERROR] Error checking if symbol is in top 25 - defaulting to PASS');
           // On error, be safe and allow (don't block research) - default to PASS
@@ -4448,7 +4121,7 @@ export class AutoTradeEngine {
       }
 
       // Consolidated signal validation
-      const signalValidation = this.validateTradeSignal(signal);
+      const signalValidation = validateTradeSignal(signal);
       if (!signalValidation.valid) {
         skipReason = signalValidation.reason || AUTO_TRADE_REASONS.NO_SIGNAL;
         cycleResult = AUTO_TRADE_REASONS.TRADE_SKIPPED;
@@ -4478,7 +4151,7 @@ export class AutoTradeEngine {
 
       // Calculate news score for sentiment adjustment
       const newsArticles = researchResult.result?.news || [];
-      const newsScore = this.calculateNewsScoreFromArticles(newsArticles);
+      const newsScore = calculateNewsScoreFromArticles(newsArticles);
 
       const params = await calculateDynamicParams(uid, accuracy, volClassification, newsScore);
 
@@ -4511,7 +4184,8 @@ export class AutoTradeEngine {
       }
 
       // 8. Deterministic SL/TP (Requirement P5)
-      const currentPrice = await this.getCurrentMarketPrice(researchResult?.symbol || 'UNKNOWN', uid);
+      const engine = await this.getUserEngine(uid);
+      const currentPrice = await getCurrentMarketPrice(researchResult?.symbol || 'UNKNOWN', uid, engine.adapter);
       const atr = researchResult.result?.analysis?.volatility?.atr || 0;
       const sr = {
         supportLevel: researchResult.result?.analysis?.structure?.support,
@@ -4527,7 +4201,7 @@ export class AutoTradeEngine {
         logger.warn({ uid, error: e.message }, 'Failed to fetch trading settings, defaulting to non-scalping');
       }
 
-      const sltp = this.calculateSLTP(signal as 'BUY' | 'SELL', currentPrice, accuracy, atr, sr, isScalping);
+      const sltp = calculateSLTP(signal as 'BUY' | 'SELL', currentPrice, accuracy, atr, sr, isScalping);
 
       // 9. Create & Execute Trade Signal
       const tradeSignal: TradeSignal = {
@@ -4625,7 +4299,7 @@ export class AutoTradeEngine {
       }
 
       // CRITICAL: Race Condition Guard - Consolidated mode validation
-      const modeCheck = this.validateTradingMode(freshConfig, 'runAutoTradeResearchCycle');
+      const modeCheck = validateTradingMode(freshConfig, 'runAutoTradeResearchCycle');
       if (!modeCheck.allowed) {
         skipReason = modeCheck.reason || 'MODE_VALIDATION_FAILED_DURING_RESEARCH';
         cycleResult = AUTO_TRADE_REASONS.TRADE_SKIPPED;
@@ -4998,83 +4672,6 @@ export class AutoTradeEngine {
   }
 
 
-  /**
-   * Save SKIPPED auto-trade history when research never executes
-   * Called when auto-trade cycle runs but cannot proceed due to provider/config issues
-   */
-
-  /**
-   * Save auto-trade history AFTER execution attempt with executionStatus
-   * CRITICAL: This is called ONLY after execution attempt (success or failure)
-   * History includes executionStatus from actual execution attempt
-   */
-
-  private async sendTradeConfirmationNotification(uid: string, signal: TradeSignal): Promise<void> {
-    try {
-      // Send notification that trade confirmation is required with full details
-      userNotificationService.sendTradeConfirmationAlert(uid, {
-        coin: signal.symbol,
-        side: signal.signal.toLowerCase() as 'buy' | 'sell',
-        entry: signal.entryPrice,
-        sl: signal.stopLoss,
-        tp: signal.takeProfit,
-        tp1: signal.takeProfit1,
-        tp2: signal.takeProfit2,
-        tp3: signal.takeProfit3,
-        accuracy: signal.accuracy,
-        requestId: signal.requestId
-      });
-
-      logger.info({ uid, symbol: signal.symbol }, 'Trade confirmation notification sent with rich data');
-    } catch (error: any) {
-      logger.error({ uid, error: error.message }, 'Failed to send trade confirmation notification');
-    }
-  }
-
-  async checkWhaleAlerts(uid: string, symbol: string): Promise<void> {
-    try {
-      // Initialize adapter if needed
-      let adapter = this.userEngines.get(uid)?.adapter;
-      if (!adapter) {
-        adapter = await this.initializeAdapter(uid);
-      }
-      if (!adapter) return;
-
-      // Get 24h ticker data for whale/vol spike detection
-      const ticker = await adapter.getTicker(symbol);
-      if (!ticker) return;
-
-      const priceChangePct = Math.abs(parseFloat(ticker.priceChangePercent || '0'));
-      const volume = parseFloat(ticker.volume || '0');
-      const quoteVolume = parseFloat(ticker.quoteVolume || '0'); // USD value usually
-
-      // 1. PRICE WHALE: Detect large price moves (> 3% in 24h)
-      if (priceChangePct >= 3.0) {
-        const direction = parseFloat(ticker.priceChangePercent) > 0 ? 'buy' : 'sell';
-        userNotificationService.sendWhaleAlert(uid, symbol, direction, quoteVolume);
-
-        await this.logTradeEvent(uid, 'WHALE_ALERT_PRICE', {
-          symbol,
-          priceChangePct,
-          direction,
-          volume: quoteVolume
-        });
-
-        logger.info({ uid, symbol, priceChangePct }, '🐋 WHALE ALERT: Large price movement detected');
-      }
-
-      // 2. VOLUME SPIKE: Detect volume spikes (> 200% of "normal" - here we simplified to absolute large vol)
-      // Normally we'd compare to 24h avg, but ticker already gives 24h sum.
-      // If quoteVolume > $1,000,000 for non-major or $10,000,000 for major, it's a "whale" move in this context
-      if (quoteVolume >= 5000000) { // $5M+ volume is significant
-        userNotificationService.sendWhaleAlert(uid, symbol, 'buy', quoteVolume);
-        logger.info({ uid, symbol, quoteVolume }, '🐋 WHALE ALERT: High volume detected');
-      }
-
-    } catch (error: any) {
-      logger.error({ uid, symbol, error: error.message }, 'Failed to check whale alerts');
-    }
-  }
 
   /**
    * Handle settings change (e.g. frequency update)
@@ -5099,45 +4696,6 @@ export class AutoTradeEngine {
     }
   }
 
-  /**
-   * CONSOLIDATED SIGNAL VALIDATION - Single source of truth for signal checking
-   * Centralizes BUY/SELL/HOLD signal validation to prevent scattered logic
-   */
-  private validateTradeSignal(signal: string): { valid: boolean; reason?: string } {
-    if (!signal || signal === 'UNKNOWN' || signal === 'ANALYZING' || signal === 'PENDING') {
-      return { valid: false, reason: 'INVALID_SIGNAL_UNKNOWN' };
-    }
-    if (signal === 'HOLD') {
-      return { valid: false, reason: 'HOLD_SIGNAL' };
-    }
-    if (signal !== 'BUY' && signal !== 'SELL') {
-      return { valid: false, reason: 'INVALID_SIGNAL_FORMAT' };
-    }
-    return { valid: true };
-  }
-
-  /**
-   * CONSOLIDATED ACCURACY VALIDATION - Single source of truth for accuracy checking
-   * Centralizes accuracy threshold validation using AccuracyGuard
-   */
-
-  /**
-   * CONSOLIDATED MODE VALIDATION - Single source of truth for mode checking
-   * Centralizes AUTO/MANUAL mode validation to prevent scattered logic
-   */
-  private validateTradingMode(config: AutoTradeConfig, context: string): { allowed: boolean; reason?: string } {
-    // Check if auto-trade is enabled
-    if (!config.autoTradeEnabled) {
-      return { allowed: false, reason: 'AUTO_TRADE_DISABLED' };
-    }
-
-    // Check for manual override
-    if (config.manualOverride) {
-      return { allowed: false, reason: 'MANUAL_OVERRIDE_ACTIVE' };
-    }
-
-    return { allowed: true };
-  }
 }
 
 
