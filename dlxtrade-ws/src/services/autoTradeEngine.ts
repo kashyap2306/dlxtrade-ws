@@ -16,6 +16,9 @@ import type { FreeModeDeepResearchResult, TradePlan } from './researchTypes';
 import { evaluateTelegramAlertDecision } from './telegramAlertDecisionService';
 import { adjustAutoTradeFrequencyForTelegram } from './telegramConfigService';
 import { sendConsolidatedTelegramAlert } from './telegramAlertOrchestrator';
+import { logAutoTradeSkip, saveAutoTradeHistorySkipped, saveAutoTradeHistoryWithExecutionStatus } from './historyWriter';
+import { checkRiskGuards, calculateDynamicParams, validateAccuracyForExecution } from './riskAndLimitsEngine';
+import { AccuracyGuard, makeUnifiedTradeDecision, runDeepResearchWithCoinSelection } from './accuracyAndSignalEngine';
 
 // Accuracy-based Risk Configuration (Single Source of Truth)
 export interface AccuracyRiskConfigItem {
@@ -276,79 +279,6 @@ export type TradeSignalType = 'BUY' | 'SELL' | 'HOLD';
 // Strict volatility state enum
 export type VolatilityState = 'OK' | 'HIGH' | 'EXTREME';
 
-/**
- * Centralized Accuracy Guard
- * Single source of truth for accuracy validation and normalization
- * Ensures accuracy is always in 0-100 range and validates against threshold
- */
-export class AccuracyGuard {
-  /**
-   * Normalize and validate accuracy value
-   * @param accuracy - Accuracy value (may be 0-1 decimal or 0-100 percentage)
-   * @returns Validation result with normalized accuracy (0-100 scale)
-   */
-  static validateAndNormalize(accuracy: number): AccuracyValidationResult {
-    // Normalize to 0-100 scale
-    let normalized: number;
-    if (accuracy <= 1 && accuracy >= 0) {
-      normalized = accuracy * 100;
-    } else if (accuracy > 1 && accuracy <= 100) {
-      normalized = accuracy;
-    } else {
-      // Invalid range - clamp to valid bounds
-      normalized = Math.max(0, Math.min(100, accuracy));
-      logger.warn({
-        originalAccuracy: accuracy,
-        clampedAccuracy: normalized
-      }, '⚠️ [ACCURACY_GUARD] Accuracy value out of range, clamped to 0-100');
-    }
-
-    // Sanity check: ensure normalized is in valid range
-    if (normalized < 0 || normalized > 100 || isNaN(normalized) || !isFinite(normalized)) {
-      return {
-        isValid: false,
-        normalizedAccuracy: 0,
-        reason: `Invalid accuracy value: ${accuracy} (normalized: ${normalized})`
-      };
-    }
-
-    return {
-      isValid: true,
-      normalizedAccuracy: normalized
-    };
-  }
-
-  /**
-   * Check if accuracy meets execution threshold
-   * @param accuracy - Accuracy value (will be normalized)
-   * @param threshold - Minimum threshold (0-100)
-   * @param isManualApproval - If true, uses 60% threshold, otherwise uses provided threshold
-   * @returns true if accuracy >= threshold
-   */
-  static meetsThreshold(
-    accuracy: number,
-    threshold: number,
-    isManualApproval: boolean = false
-  ): boolean {
-    const validation = this.validateAndNormalize(accuracy);
-    if (!validation.isValid) {
-      return false;
-    }
-
-    const effectiveThreshold = isManualApproval ? 60 : threshold;
-    return validation.normalizedAccuracy >= effectiveThreshold;
-  }
-
-  /**
-   * Get normalized accuracy with safety checks
-   * @param accuracy - Accuracy value
-   * @returns Normalized accuracy (0-100) or 0 if invalid
-   */
-  static getNormalized(accuracy: number): number {
-    const validation = this.validateAndNormalize(accuracy);
-    return validation.isValid ? validation.normalizedAccuracy : 0;
-  }
-}
 
 /**
  * Unified Trade Decision Function
@@ -362,64 +292,7 @@ export class AccuracyGuard {
  * @param threshold - Accuracy threshold (uses user-defined accuracyTrigger.min for auto-trade, 60 for manual)
  * @returns Unified decision result
  */
-export interface UnifiedTradeDecision {
-  allowed: boolean;
-  reason?: string;
-  accuracyUsed: number; // Percentage (0-100)
-  rr: number; // Risk-Reward ratio
-  volatilityState: 'OK' | 'HIGH' | 'EXTREME';
-  entryZoneValid: boolean;
-  isFinal: boolean;
-}
 
-export function makeUnifiedTradeDecision(
-  signal: TradeSignalType,
-  accuracy: number,
-  isFinal: boolean,
-  tradePlan: { entryPrice?: number; stopLoss?: number; takeProfit?: number; riskRewardRatio?: number } | null,
-  indicators: { vwap?: { deviation?: number }; atr?: { classification?: string; atrPercentile?: number }; supportResistance?: { majorSupport?: number; majorResistance?: number } } | null,
-  threshold: number = 75
-): UnifiedTradeDecision {
-  // 1. Use centralized accuracy guard for normalization and validation
-  const accuracyValidation = AccuracyGuard.validateAndNormalize(accuracy);
-  if (!accuracyValidation.isValid) {
-    return {
-      allowed: false,
-      reason: `INVALID_ACCURACY: ${accuracyValidation.reason || 'Invalid accuracy value'}`,
-      accuracyUsed: 0,
-      rr: 0,
-      volatilityState: 'OK',
-      entryZoneValid: false,
-      isFinal: false
-    };
-  }
-  const accuracyPercent = accuracyValidation.normalizedAccuracy;
-
-  // 2. FINAL research enforcement
-  if (!isFinal) {
-    return {
-      allowed: false,
-      reason: 'NOT_FINAL: Research result is not final',
-      accuracyUsed: accuracyPercent,
-      rr: 0,
-      volatilityState: 'OK',
-      entryZoneValid: false,
-      isFinal: false
-    };
-  }
-
-  // 3. HOLD signal check
-  if (signal === 'HOLD') {
-    return {
-      allowed: false,
-      reason: 'HOLD_SIGNAL: Signal is HOLD',
-      accuracyUsed: accuracyPercent,
-      rr: 0,
-      volatilityState: 'OK',
-      entryZoneValid: false,
-      isFinal: true
-    };
-  }
 
   // 4. Accuracy threshold check
   if (accuracyPercent < threshold) {
@@ -530,131 +403,11 @@ export function makeUnifiedTradeDecision(
     entryZoneValid: true,
     isFinal: true
   };
-}
-
 
 interface ResearchData {
   results: ResearchDataResult[];
   coinsAnalyzed: string[];
 }
-
-// Helper function to run deep research with coin selection based on trading settings
-// REFACTORED: Now uses UNIFIED selectBestCoinByAccuracy logic (only 1 best coin)
-async function runDeepResearchWithCoinSelection(
-  uid: string,
-  settings: TradingSettings,
-  providerConfigs: ProviderConfigs,
-  integrations: IntegrationResult
-): Promise<ResearchData> {
-  const coinsAnalyzed: string[] = [];
-  const results: ResearchDataResult[] = [];
-
-  // STATS: Increment Auto Trade Runs
-  try {
-    const { firestoreAdapter } = await import('./firestoreAdapter');
-    firestoreAdapter.incrementUserStat(uid, 'autoTradeRuns', 1, {
-      lastActivity: {
-        type: 'Auto Trade',
-        timestamp: new Date().toISOString(),
-        symbol: 'BATCH_SCAN'
-      }
-    });
-  } catch (err) {
-    logger.error({ uid, error: err }, 'Failed to update stats for Auto Trade');
-  }
-
-  // CRITICAL: Use the unified selectBestCoinByAccuracy logic
-  // This ensures rotation, cooldowns, and TOP 100 scan (not just BTC)
-  const { selectBestCoinByAccuracy } = await import('./researchModes');
-
-  // Exclude nothing for start, selectBestCoinByAccuracy handles internal cooldowns
-  const selectionResult = await selectBestCoinByAccuracy(uid, []);
-
-  if (!selectionResult) {
-    logger.warn({ uid }, 'Auto-trade selection: No suitable coin found by accuracy scan');
-    return { results: [], coinsAnalyzed: [] };
-  }
-
-  const { symbol, accuracy: estimatedAccuracy } = selectionResult;
-  coinsAnalyzed.push(symbol);
-
-  // CRITICAL: Verify symbol is in Top 25 before proceeding
-  // CRITICAL FIX: Safe call to isSymbolInTop10 - use static helper to avoid undefined crash
-  // Default to PASS (allow research) if any error occurs - never crash research
-  let isTop25 = true; // Default to PASS - only block if check succeeds and returns false
-  try {
-    const { getTop100Coins } = await import('./researchModes');
-    const top25 = await getTop100Coins(uid, 25);
-    const normalizedSymbol = symbol.toUpperCase();
-    isTop25 = top25.some(coin => coin.symbol === normalizedSymbol);
-  } catch (error: any) {
-    logger.error({ uid, symbol, error: error.message }, '❌ [TOP_25_ERROR] Error checking if symbol is in top 25 - defaulting to PASS');
-    // On error, be safe and allow (don't block research) - default to PASS
-    isTop25 = true;
-  }
-  if (!isTop25) {
-    logger.error({
-      uid,
-      symbol,
-      stack: new Error().stack
-    }, '❌ [TOP_25_VIOLATION] Selected coin outside Top 25 - blocking research');
-    return { results: [], coinsAnalyzed: [] };
-  }
-
-  // Run deep research for ONLY the selected best coin
-  try {
-    logger.info({ uid, symbol, estimatedAccuracy, top25Verified: true }, '✅ [TOP_25_RESEARCH] Running deep research for selected best coin (Top 25 verified)');
-    const { runFreeModeDeepResearch } = await import('./deepResearchEngine');
-    const startTime = Date.now();
-
-    // Execute research with background mode (parallel providers internally)
-    const result = await runFreeModeDeepResearch(uid, symbol, providerConfigs, integrations, true);
-    const processingTimeMs = Date.now() - startTime;
-
-    if (result) {
-      // CRITICAL: Ensure result structure includes tradePlan for signal propagation
-      // result is FreeModeDeepResearchResult which has tradePlan at root level
-      results.push({
-        symbol,
-        signal: result.signal as 'BUY' | 'SELL' | 'HOLD',
-        accuracy: result.accuracy,
-        result, // Contains full FreeModeDeepResearchResult with tradePlan
-        processingTimeMs,
-        metadata: {
-          symbol,
-          ...(result.metadata || {})
-        }
-      });
-
-      // Log signal/tradePlan consistency for verification
-      const resultSignal: TradeSignalType = (result.signal === 'HOLD' ? 'HOLD' : (result.signal === 'BUY' ? 'BUY' : 'SELL')) as TradeSignalType;
-      if (resultSignal === 'HOLD' || (result.accuracy < 0.60 && result.accuracy > 0)) {
-        logger.info({ uid, symbol, signal: result.signal, accuracy: result.accuracy, hasTradePlan: !!result.tradePlan },
-          '[RESEARCH_RESULT] HOLD or low accuracy → tradePlan should be null');
-      } else if ((resultSignal === 'BUY' || resultSignal === 'SELL') && result.accuracy >= 0.60) {
-        logger.info({
-          uid, symbol, signal: result.signal, accuracy: result.accuracy, hasTradePlan: !!result.tradePlan,
-          hasEntry: !!result.tradePlan?.entryPrice, hasSL: !!result.tradePlan?.stopLoss,
-          hasTP1: !!result.tradePlan?.takeProfit1, hasTP2: !!result.tradePlan?.takeProfit2, hasTP3: !!result.tradePlan?.takeProfit3
-        },
-          '[RESEARCH_RESULT] BUY/SELL with accuracy >= 60% → tradePlan should exist with Entry/SL/TP1/TP2/TP3');
-      }
-      logger.info({ uid, symbol, signal: result.signal, accuracy: result.accuracy }, 'Deep research completed for selected best coin');
-    }
-  } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    logger.error({ uid, symbol, error: errorMessage }, 'Research failed for selected coin - not adding result');
-    // CRITICAL: Do NOT add accuracy=0 result when research fails
-    // Research must actually run and produce valid accuracy to be included in results
-    // Empty results array indicates research did not execute successfully
-  }
-
-  return {
-    results,
-    coinsAnalyzed
-  };
-}
-
 
 export class AutoTradeEngine {
   private userEngines: Map<string, {
@@ -725,190 +478,6 @@ export class AutoTradeEngine {
    * P4: Calculate dynamic trade parameters based on accuracy and volatility
    * CRITICAL: Uses user's accuracyRiskConfig (single source of truth) instead of hardcoded values
    */
-  private async calculateDynamicParams(uid: string, accuracy: number, volatilityClassification: string, newsScore: number): Promise<{
-    sizePct: number,
-    leverage: number,
-    skip?: string,
-    matchedRange?: AccuracyRiskConfigItem
-  }> {
-    // Use centralized accuracy guard for normalization
-    const accuracyValidation = AccuracyGuard.validateAndNormalize(accuracy);
-    if (!accuracyValidation.isValid) {
-      logger.error({ uid, accuracy, reason: accuracyValidation.reason }, '❌ [ACCURACY_GUARD] Invalid accuracy value in calculateDynamicParams');
-      return { sizePct: 0, leverage: 1, skip: 'INVALID_ACCURACY' };
-    }
-    const acc = accuracyValidation.normalizedAccuracy;
-
-    // Get user's trading settings (includes accuracyRiskConfig)
-    const settings = await AutoTradeEngine.getTradingSettings(uid);
-    let config = settings.accuracyRiskConfig || [];
-    let usingFallback = false;
-    let fallbackReason = '';
-
-    // CRITICAL: Execution-time fallback guard - validate config structure
-    // If config is missing, invalid, partially invalid, or non-continuous, fallback to defaults
-    if (!Array.isArray(config) || config.length === 0) {
-      config = AutoTradeEngine.getDefaultAccuracyRiskConfig();
-      usingFallback = true;
-      fallbackReason = 'Config missing or empty';
-      logger.warn({ uid, reason: fallbackReason }, '⚠️ [ACCURACY_RISK_CONFIG] Falling back to system defaults - config missing or empty');
-    } else {
-      // Validate each item structure
-      const invalidItems = config.filter((item: AccuracyRiskConfigItem) =>
-        typeof item.minAccuracy !== 'number' ||
-        (item.maxAccuracy !== null && typeof item.maxAccuracy !== 'number') ||
-        typeof item.tradeSizePct !== 'number' ||
-        typeof item.leverage !== 'number' ||
-        item.minAccuracy < 0 || item.minAccuracy > 100 ||
-        item.tradeSizePct < 0 || item.tradeSizePct > 10 ||
-        item.leverage < 1 || item.leverage > 10
-      );
-
-      if (invalidItems.length > 0) {
-        config = AutoTradeEngine.getDefaultAccuracyRiskConfig();
-        usingFallback = true;
-        fallbackReason = 'Config contains invalid items';
-        logger.warn({ uid, reason: fallbackReason, invalidCount: invalidItems.length }, '⚠️ [ACCURACY_RISK_CONFIG] Falling back to system defaults - config contains invalid items');
-      } else {
-        // Validate continuity (ranges must be continuous and non-overlapping)
-        const sorted = [...config].sort((a, b) => a.minAccuracy - b.minAccuracy);
-        let isContinuous = true;
-
-        for (let i = 1; i < sorted.length; i++) {
-          const prev = sorted[i - 1];
-          const curr = sorted[i];
-          const prevMax = prev.maxAccuracy ?? 100;
-          if (curr.minAccuracy !== prevMax + 1 && curr.minAccuracy !== prevMax) {
-            isContinuous = false;
-            break;
-          }
-        }
-
-        // Last range should cover up to 100%
-        const last = sorted[sorted.length - 1];
-        if (last && last.maxAccuracy !== null && last.maxAccuracy < 100) {
-          isContinuous = false;
-        }
-
-        if (!isContinuous) {
-          config = AutoTradeEngine.getDefaultAccuracyRiskConfig();
-          usingFallback = true;
-          fallbackReason = 'Config ranges are not continuous or do not cover up to 100%';
-          logger.warn({ uid, reason: fallbackReason }, '⚠️ [ACCURACY_RISK_CONFIG] Falling back to system defaults - ranges not continuous');
-        }
-      }
-    }
-
-    // Determine minimum accuracy threshold from user's config (lowest minAccuracy in config)
-    const minConfigAccuracy = config.length > 0 ? Math.min(...config.map(r => r.minAccuracy)) : 75;
-
-    // Log user-selected accuracy slabs and minimum threshold
-    logger.info({
-      uid,
-      accuracy: acc,
-      userAccuracySlabs: config.map(r => `${r.minAccuracy}-${r.maxAccuracy ?? '∞'}%: ${r.tradeSizePct}% size, ${r.leverage}x leverage`),
-      minimumConfigAccuracy: minConfigAccuracy,
-      usingFallback
-    }, `[ACCURACY_RISK_CONFIG] User config: ${config.length} slabs, minimum threshold: ${minConfigAccuracy}%`);
-
-    // Default: no trade if accuracy < minimum configured threshold
-    let params = { sizePct: 0, leverage: 1 };
-    let matchedRange: AccuracyRiskConfigItem | undefined = undefined;
-
-    // Find matching accuracy range from config (user config or fallback defaults)
-    for (const range of config) {
-      const minMatch = acc >= range.minAccuracy;
-      const maxMatch = range.maxAccuracy === null || acc <= range.maxAccuracy;
-
-      if (minMatch && maxMatch) {
-        // CRITICAL: Trade size % is calculated as percentage of wallet balance (not margin-based or fixed amount)
-        // sizePct represents the percentage of total account equity to allocate to this trade
-        params = {
-          sizePct: Math.min(10, Math.max(0, range.tradeSizePct)), // Hard cap at 10% of wallet balance
-          leverage: Math.min(10, Math.max(1, range.leverage)) // Hard cap at 10x
-        };
-        matchedRange = range;
-        logger.info({
-          uid,
-          accuracy: acc,
-          matchedRange: `${range.minAccuracy}-${range.maxAccuracy ?? '∞'}%`,
-          userSelectedSizePct: range.tradeSizePct,
-          userSelectedLeverage: range.leverage,
-          finalSizePct: params.sizePct,
-          finalLeverage: params.leverage,
-          usingFallback,
-          fallbackReason: usingFallback ? fallbackReason : undefined
-        }, usingFallback
-          ? '✅ [ACCURACY_RISK_CONFIG] Matched accuracy range from system defaults (user config invalid)'
-          : '✅ [ACCURACY_RISK_CONFIG] Matched accuracy range from user config');
-        break;
-      }
-    }
-
-    // If no match found and accuracy < minimum configured threshold, skip trade
-    if (!matchedRange && acc < minConfigAccuracy) {
-      logger.info({
-        uid,
-        accuracy: acc,
-        minimumConfigAccuracy: minConfigAccuracy
-      }, `⏭️ [ACCURACY_RISK_CONFIG] Accuracy ${acc.toFixed(1)}% below minimum configured threshold (${minConfigAccuracy}%) - skipping trade`);
-      return { sizePct: 0, leverage: 1, skip: 'ACCURACY_BELOW_MINIMUM' };
-    }
-
-    // If no match found but accuracy >= minimum, use lowest configured range as fallback
-    if (!matchedRange && acc >= minConfigAccuracy && config.length > 0) {
-      const lowestRange = config[0];
-      params = {
-        sizePct: Math.min(10, Math.max(0, lowestRange.tradeSizePct)),
-        leverage: Math.min(10, Math.max(1, lowestRange.leverage))
-      };
-      matchedRange = lowestRange;
-      logger.warn({
-        uid,
-        accuracy: acc,
-        fallbackRange: `${lowestRange.minAccuracy}-${lowestRange.maxAccuracy ?? '∞'}%`,
-        sizePct: params.sizePct,
-        leverage: params.leverage,
-        usingFallback,
-        fallbackReason: usingFallback ? fallbackReason : 'No exact match found'
-      }, '⚠️ [ACCURACY_RISK_CONFIG] No exact match found, using lowest configured range as fallback');
-    }
-
-    // Defensive log if params computed without valid user config
-    if (usingFallback) {
-      logger.info({
-        uid,
-        accuracy: acc,
-        matchedRange: matchedRange ? `${matchedRange.minAccuracy}-${matchedRange.maxAccuracy ?? '∞'}%` : 'none',
-        sizePct: params.sizePct,
-        leverage: params.leverage,
-        fallbackReason
-      }, '🔍 [ACCURACY_RISK_CONFIG] Computed params using system defaults due to invalid user config');
-    }
-
-    // 3. Volatility Adjustment Rules (Safety Rules)
-    // HIGH -> reduce leverage by 2x and trade size by 25%
-    if (volatilityClassification === 'high') {
-      params.leverage = Math.max(1, params.leverage - 2);
-      params.sizePct = params.sizePct * 0.75;
-      logger.info({ uid, acc, volatilityClassification, originalParams: params }, 'Volatility HIGH: Reduced leverage and size');
-    }
-    // EXTREME -> skip trade completely
-    else if (volatilityClassification === 'extreme') {
-      return { sizePct: 0, leverage: 1, skip: AUTO_TRADE_REASONS.EXTREME_VOLATILITY };
-    }
-
-    // 4. SIMPLIFIED News Logic (for 2-5 trades/day)
-    // CRITICAL: Only high-impact news blocks trades (handled in trade signal check)
-    // Normal news sentiment does NOT block trades - removed deep sentiment penalties
-    // News score can still adjust position size slightly, but does NOT skip trades
-    if (newsScore < 30) {
-      params.sizePct = params.sizePct * 0.9; // Slight reduction (10%) for negative news, but trade still executes
-      logger.info({ uid, acc, newsScore, adjustedSize: params.sizePct }, 'Negative news detected: Slight size reduction (trade NOT blocked)');
-    }
-
-    return { ...params, matchedRange };
-  }
 
   /**
    * P5: Deterministic SL/TP Logic
@@ -1271,11 +840,6 @@ export class AutoTradeEngine {
     }
   }
 
-
-
-  /**
-   * Check risk guards before placing order
-   */
   /**
    * CRITICAL: Validate symbol is in top 25 high-liquidity non-stablecoins by market cap
    * System is restricted to top 25 coins (single source of truth)
@@ -1305,460 +869,7 @@ export class AutoTradeEngine {
     }
   }
 
-  async checkRiskGuards(uid: string, signal: TradeSignal, isManualApproval: boolean = false): Promise<{ allowed: boolean; reason?: string }> {
-    // CRITICAL: Ensure engine and config exist before proceeding
-    const engine = await this.getUserEngine(uid);
-    if (!engine) {
-      logger.error({ uid }, 'Risk guard check failed - engine is undefined');
-      return { allowed: false, reason: 'Engine initialization failed' };
-    }
-    const config = engine.config;
-    if (!config) {
-      logger.error({ uid }, 'Risk guard check failed - config is undefined');
-      return { allowed: false, reason: 'Config initialization failed' };
-    }
 
-    // CRITICAL DIAGNOSTIC: Log config state at guard entry
-    logger.info({
-      uid,
-      symbol: signal.symbol,
-      accuracy: signal.accuracy,
-      isManualApproval,
-      autoTradeEnabled: config.autoTradeEnabled,
-      manualOverride: config.manualOverride,
-      circuitBreaker: engine.circuitBreaker,
-      activeTradesCount: engine.activeTrades.size,
-      maxConcurrentTrades: config.maxConcurrentTrades,
-      cooldownUntil: config.cooldownUntil,
-      configSource: 'in-memory'
-    }, '🔍 [RISK_GUARDS] Starting risk guard checks');
-
-    // CRITICAL: TOP 25 COIN RESTRICTION - Block non-top-25 coins immediately (single source of truth)
-    // CRITICAL FIX: Safe call to isSymbolInTop10 - ensure method exists before calling
-    // Default to PASS (allow research) if any error occurs - never crash research
-    let isTop25 = true; // Default to PASS - only block if check succeeds and returns false
-    try {
-      if (this && typeof this.isSymbolInTop10 === 'function') {
-        isTop25 = await this.isSymbolInTop10(uid, signal.symbol);
-      } else {
-        // Fallback: use direct helper if method not available
-        try {
-          const { getTop100Coins } = await import('./researchModes');
-          const top25 = await getTop100Coins(uid, 25);
-          const normalizedSymbol = signal.symbol.toUpperCase();
-          isTop25 = top25.some(coin => coin.symbol === normalizedSymbol);
-        } catch (fallbackError: any) {
-          logger.error({ uid, symbol: signal.symbol, error: fallbackError.message }, '❌ [TOP_25_ERROR] Fallback helper failed - defaulting to PASS');
-          isTop25 = true; // Default to PASS on fallback error
-        }
-      }
-    } catch (error: any) {
-      logger.error({ uid, symbol: signal.symbol, error: error.message }, '❌ [TOP_25_ERROR] Error checking if symbol is in top 25 - defaulting to PASS');
-      // On error, be safe and allow (don't block research) - default to PASS
-      isTop25 = true;
-    }
-    if (!isTop25) {
-      logger.error({
-        uid,
-        symbol: signal.symbol,
-        stack: new Error().stack
-      }, '❌ [TOP_25_BLOCK] Trade blocked - symbol not in top 25 high-liquidity non-stablecoins by market cap');
-      return {
-        allowed: false,
-        reason: `NOT_TOP_25: ${signal.symbol} is not in top 25 high-liquidity non-stablecoins by market cap - system restricted to top 25 only`
-      };
-    }
-
-    // FETCH TRADING SETTINGS FOR ENFORCEMENT
-    const settings = await AutoTradeEngine.getTradingSettings(uid);
-
-    // 0. SYSTEM RISK CHECKS (Shared Logic)
-    const systemCheck = await this.checkSystemRisk(uid, isManualApproval, settings, signal.symbol);
-    if (!systemCheck.allowed) {
-      return systemCheck;
-    }
-
-    // MANDATORY RISK GUARDS - Trade/Signal Specific Checks
-
-    // 1. Unified trade decision (GLOBAL validation)
-    // Extract indicators and trade plan from signal or research result
-    const researchResult = (signal as any).researchResult;
-    const finalResult = researchResult?.result;
-    const indicators = finalResult?.indicators || finalResult?.analysis?.technicalIndicators || {};
-
-    // Build trade plan from signal or final result
-    let tradePlan: { entryPrice?: number; stopLoss?: number; takeProfit?: number; riskRewardRatio?: number } | null = null;
-    if (signal.entryPrice && signal.stopLoss && signal.takeProfit) {
-      // Calculate RR from signal
-      const risk = Math.abs(signal.entryPrice - signal.stopLoss);
-      const reward = Math.abs(signal.takeProfit - signal.entryPrice);
-      const rr = risk > 0 ? reward / risk : 0;
-      tradePlan = {
-        entryPrice: signal.entryPrice,
-        stopLoss: signal.stopLoss,
-        takeProfit: signal.takeProfit,
-        riskRewardRatio: rr
-      };
-    } else if (finalResult?.tradePlan) {
-      tradePlan = finalResult.tradePlan;
-    }
-
-    // CRITICAL: Use user-defined accuracy trigger, NOT hardcoded 75%
-    // For manual approval, use 60% (safety for manual trades)
-    // For auto-trade, use user's accuracyTrigger.min from settings
-    const threshold = isManualApproval ? 60 : (settings.accuracyTrigger?.min ?? 75);
-
-    // Log user-selected vs execution-time threshold
-    logger.info({
-      uid,
-      symbol: signal.symbol,
-      userAccuracyTrigger: settings.accuracyTrigger,
-      executionThreshold: threshold,
-      isManualApproval,
-      usingUserSetting: !isManualApproval && settings.accuracyTrigger?.min !== undefined
-    }, `[ACCURACY_TRIGGER] Using threshold: ${threshold}% (user-defined: ${settings.accuracyTrigger?.min ?? 'not set, using default 75%'})`);
-    const isFinal = finalResult?.isFinal !== false; // Default to true if not specified (assume final for execution)
-    const unifiedDecision = makeUnifiedTradeDecision(
-      signal.signal,
-      signal.accuracy,
-      isFinal,
-      tradePlan,
-      indicators,
-      threshold
-    );
-
-    // [TRADE_DECISION] Unified log with Top 25 verification
-    logger.info({
-      uid,
-      symbol: signal.symbol,
-      FINAL: unifiedDecision.isFinal,
-      acc: unifiedDecision.accuracyUsed.toFixed(1),
-      rr: unifiedDecision.rr.toFixed(2),
-      atr: unifiedDecision.volatilityState,
-      entryZone: unifiedDecision.entryZoneValid ? 'OK' : 'INVALID',
-      decision: unifiedDecision.allowed ? 'ALLOWED' : 'BLOCKED',
-      reason: unifiedDecision.reason,
-      top25Verified: true,
-      timestamp: new Date().toISOString()
-    }, `[TRADE_DECISION] FINAL=${unifiedDecision.isFinal} acc=${unifiedDecision.accuracyUsed.toFixed(1)} rr=${unifiedDecision.rr.toFixed(2)} atr=${unifiedDecision.volatilityState} → ${unifiedDecision.allowed ? 'ALLOWED' : 'BLOCKED'}${unifiedDecision.reason ? ` (${unifiedDecision.reason})` : ''} [TOP_25_VERIFIED]`);
-
-    if (!unifiedDecision.allowed) {
-      const reason = unifiedDecision.reason || 'Trade blocked by unified decision logic';
-      // Log skip with full context
-      await this.logAutoTradeSkip(uid, reason, {
-        symbol: signal.symbol,
-        accuracy: unifiedDecision.accuracyUsed,
-        threshold,
-        signal: signal.signal,
-        additionalDetails: {
-          rr: unifiedDecision.rr,
-          volatilityState: unifiedDecision.volatilityState,
-          entryZoneValid: unifiedDecision.entryZoneValid,
-          isFinal: unifiedDecision.isFinal,
-        }
-      });
-      return { allowed: false, reason };
-    }
-
-    // 🔍 [DEBUG] Unified decision PASSED - tracing execution path
-    logger.info({
-      uid,
-      symbol: signal.symbol,
-      step: 'UNIFIED_DECISION_PASSED',
-      tradePlanExists: !!tradePlan,
-      tradePlanSL: tradePlan?.stopLoss,
-      tradePlanTP: (tradePlan as TradePlan | null)?.takeProfit2 || (tradePlan as TradePlan | null)?.takeProfit1 || tradePlan?.takeProfit, // Support both TradePlan (takeProfit1/2/3) and legacy (takeProfit)
-      tradePlanRR: tradePlan?.riskRewardRatio,
-      entryPrice: tradePlan?.entryPrice || signal.entryPrice
-    }, '🔍 [DEBUG_TRACE] Unified decision ALLOWED - proceeding to position checks');
-
-    // 2. Skip if same coin already has an open position
-    if (engine.activeTrades.has(signal.symbol)) {
-      const reason = `OPEN_POSITION_EXISTS: ${signal.symbol} already has an active trade`;
-      logger.info({
-        uid,
-        symbol: signal.symbol,
-        reason: 'OPEN_POSITION_EXISTS'
-      }, '⛔ [RISK_GUARDS] BLOCKED: Open position already exists');
-      await this.logAutoTradeSkip(uid, reason, {
-        symbol: signal.symbol,
-        accuracy: signal.accuracy,
-        threshold,
-        signal: signal.signal,
-        additionalDetails: {
-          activeTradesCount: engine.activeTrades.size,
-        }
-      });
-      return { allowed: false, reason };
-    }
-
-    // Check max concurrent trades (KEEP - This is a resource/exchange limit)
-    // But maybe allow override if user insists? Exchange limits are real.
-    // Let's enforce it but maybe higher limit? No, just enforce.
-    if (engine.activeTrades.size >= config.maxConcurrentTrades) {
-      // Maybe manual bypasses this too?
-      // "ensure manual approvals ALWAYS execute".
-      // If I approve, I want it executed.
-      if (isManualApproval) {
-        logger.info({ uid }, 'MANUAL_APPROVAL_OVERRIDE: Bypassing Max Concurrent Trades');
-      } else {
-        const reason = `MAX_CONCURRENT_TRADES: ${engine.activeTrades.size} >= ${config.maxConcurrentTrades} limit`;
-        logger.info({
-          uid,
-          symbol: signal.symbol,
-          activeTradesCount: engine.activeTrades.size,
-          maxConcurrentTrades: config.maxConcurrentTrades,
-          reason: 'MAX_CONCURRENT_TRADES'
-        }, '⛔ [RISK_GUARDS] BLOCKED: Max concurrent trades reached');
-        await this.logAutoTradeSkip(uid, reason, {
-          symbol: signal.symbol,
-          accuracy: signal.accuracy,
-          threshold,
-          signal: signal.signal,
-          additionalDetails: {
-            activeTradesCount: engine.activeTrades.size,
-            maxConcurrentTrades: config.maxConcurrentTrades,
-          }
-        });
-        return { allowed: false, reason };
-      }
-    }
-
-    // Additional safety checks
-
-    // Check if already have position in this symbol (Bypass on manual)
-    if (!isManualApproval) {
-      for (const trade of engine.activeTrades.values()) {
-        if (trade.symbol === signal.symbol && trade.status === 'FILLED') {
-          const reason = `OPEN_POSITION_EXISTS: ${signal.symbol} already has an active trade`;
-          logger.info({
-            uid,
-            symbol: signal.symbol,
-            existingTradeId: trade.tradeId,
-            existingTradeStatus: trade.status,
-            reason: 'EXISTING_POSITION'
-          }, '⛔ [RISK_GUARDS] BLOCKED: Already have active position in symbol');
-          await this.logAutoTradeSkip(uid, reason, {
-            symbol: signal.symbol,
-            accuracy: signal.accuracy,
-            threshold,
-            signal: signal.signal,
-            additionalDetails: {
-              existingTradeId: trade.tradeId,
-              existingTradeStatus: trade.status,
-            }
-          });
-          return { allowed: false, reason };
-        }
-      }
-    }
-
-    // [ACCURACY_AUDIT] Log successful guard pass
-    logger.info({
-      uid,
-      symbol: signal.symbol,
-      accuracy: signal.accuracy,
-      threshold,
-      allGuardsPassed: true,
-      executionDecision: 'ALLOWED'
-    }, '[ACCURACY_AUDIT] Execution gate PASSED - trade will proceed');
-
-    logger.info({
-      uid,
-      symbol: signal.symbol,
-      accuracy: signal.accuracy,
-      allGuardsPassed: true
-    }, '✅ [RISK_GUARDS] All guards passed - trade allowed');
-
-    // 🔍 [DEBUG] All risk guards PASSED - returning to executeTrade
-    logger.info({
-      uid,
-      symbol: signal.symbol,
-      step: 'RISK_GUARDS_PASSED',
-      nextStep: 'EXECUTE_TRADE_CONTINUES'
-    }, '🔍 [DEBUG_TRACE] Risk guards PASSED - executeTrade will continue');
-
-    return { allowed: true };
-  }
-
-  /**
-   * Check system-wide risk settings (Daily Loss, Cooldown, Circuit Breaker)
-   * Does NOT check signal-specific constraints (Accuracy, Symbol)
-   */
-
-
-  /**
-   * Check system-wide risk settings (Daily Loss, Cooldown, Circuit Breaker)
-   * Does NOT check signal-specific constraints (Accuracy, Symbol)
-   */
-  async checkSystemRisk(uid: string, isManualApproval: boolean, settings: TradingSettings, symbol?: string): Promise<{ allowed: boolean; reason?: string }> {
-    const engine = await this.getUserEngine(uid);
-    const config = engine.config;
-    const stats = config.stats || DEFAULT_CONFIG.stats!;
-    const equity = config.equitySnapshot || 1000;
-
-    // 1. Check daily loss limit (SAFETY - KEEP)
-    // CRITICAL: Use settings.maxDailyLossPct (Default 5%)
-    const maxLossPct = settings.maxDailyLossPct || 5;
-    const maxDailyLossAmount = equity * (maxLossPct / 100);
-
-    // If daily PnL is negative and exceeds max allowance
-    if (stats.dailyPnL < 0 && Math.abs(stats.dailyPnL) >= maxDailyLossAmount) {
-      if (!isManualApproval) {
-        engine.circuitBreaker = true;
-        const reason = `DAILY_LOSS_LIMIT: ${Math.abs(stats.dailyPnL).toFixed(2)} >= ${maxDailyLossAmount.toFixed(2)} (${maxLossPct}% of ${equity})`;
-        await this.logTradeEvent(uid, 'CIRCUIT_BREAKER_TRIGGERED', {
-          reason: 'Daily loss limit exceeded',
-          dailyPnL: stats.dailyPnL,
-          maxDailyLoss: maxLossPct,
-        });
-        await this.logAutoTradeSkip(uid, reason, {
-          exchangeStatus: 'available',
-          additionalDetails: {
-            dailyPnL: stats.dailyPnL,
-            maxDailyLossAmount,
-            maxDailyLossPct: maxLossPct,
-            equity,
-            circuitBreaker: true,
-          }
-        });
-        return { allowed: false, reason };
-      } else {
-        logger.warn({ uid, dailyPnL: stats.dailyPnL }, 'MANUAL_APPROVAL_OVERRIDE: Bypassing Daily Loss Limit');
-      }
-    }
-
-    // 2. Check max trades per day (BYPASS ON MANUAL)
-    if (!isManualApproval && stats.dailyTrades >= settings.maxTradesPerDay) {
-      const reason = `MAX_TRADES_PER_DAY: ${stats.dailyTrades} >= ${settings.maxTradesPerDay} limit`;
-      logger.info({
-        uid,
-        dailyTrades: stats.dailyTrades,
-        maxTradesPerDay: settings.maxTradesPerDay,
-        reason: 'MAX_TRADES_PER_DAY'
-      }, '⛔ [RISK_GUARDS] BLOCKED: Max trades per day reached');
-      await this.logAutoTradeSkip(uid, reason, {
-        exchangeStatus: 'available',
-        additionalDetails: {
-          dailyTrades: stats.dailyTrades,
-          maxTradesPerDay: settings.maxTradesPerDay,
-        }
-      });
-      return { allowed: false, reason };
-    }
-
-    // 3. Per-Symbol Cooldown Check (BYPASS ON MANUAL)
-    // CRITICAL: Cooldown is now per-symbol, not global - allows trading other symbols
-    if (!isManualApproval && symbol) {
-      const cooldownSeconds = config.cooldownSeconds || 15; // Default 15 seconds for 2-5 trades/day
-      const symbolCooldowns = config.symbolCooldowns || {};
-      const symbolCooldownEndStr = symbolCooldowns[symbol];
-
-      if (symbolCooldownEndStr) {
-        const cooldownEnd = new Date(symbolCooldownEndStr);
-        if (new Date() < cooldownEnd) {
-          const reason = `SYMBOL_COOLDOWN_ACTIVE: ${symbol} in cooldown until ${cooldownEnd.toISOString()} (${cooldownSeconds}s per-symbol cooldown)`;
-          logger.info({
-            uid,
-            symbol: symbol,
-            cooldownUntil: cooldownEnd.toISOString(),
-            now: new Date().toISOString(),
-            cooldownSeconds,
-            reason: 'SYMBOL_COOLDOWN_ACTIVE'
-          }, '⛔ [RISK_GUARDS] BLOCKED: Per-symbol cooldown active (other symbols can still trade)');
-          await this.logAutoTradeSkip(uid, reason, {
-            symbol: symbol,
-            exchangeStatus: 'available',
-            additionalDetails: {
-              cooldownUntil: cooldownEnd.toISOString(),
-              now: new Date().toISOString(),
-              cooldownSeconds,
-              perSymbolCooldown: true
-            }
-          });
-          return { allowed: false, reason };
-        }
-      }
-
-      // Also check global cooldown for consecutive losses (keep for safety)
-      if (config.cooldownUntil) {
-        const globalCooldownEnd = config.cooldownUntil instanceof Date ? config.cooldownUntil : new Date(config.cooldownUntil);
-        if (new Date() < globalCooldownEnd) {
-          const reason = `GLOBAL_COOLDOWN_ACTIVE: Trading paused until ${globalCooldownEnd.toISOString()} due to consecutive losses`;
-          logger.info({
-            uid,
-            cooldownUntil: globalCooldownEnd.toISOString(),
-            now: new Date().toISOString(),
-            reason: 'GLOBAL_COOLDOWN_ACTIVE'
-          }, '⛔ [RISK_GUARDS] BLOCKED: Global cooldown active (consecutive losses)');
-          await this.logAutoTradeSkip(uid, reason, {
-            exchangeStatus: 'available',
-            additionalDetails: {
-              cooldownUntil: globalCooldownEnd.toISOString(),
-              now: new Date().toISOString(),
-              consecutiveLosses: config.consecutiveLosses,
-            }
-          });
-          return { allowed: false, reason };
-        }
-      }
-    }
-
-    // 4. Check circuit breaker (BYPASS ON MANUAL)
-    if (!isManualApproval && engine.circuitBreaker) {
-      const reason = 'CIRCUIT_BREAKER_ACTIVE: Daily loss limit exceeded';
-      logger.info({
-        uid,
-        circuitBreaker: engine.circuitBreaker,
-        reason: 'CIRCUIT_BREAKER_ACTIVE'
-      }, '⛔ [RISK_GUARDS] BLOCKED: Circuit breaker active');
-      await this.logAutoTradeSkip(uid, reason, {
-        exchangeStatus: 'available',
-        additionalDetails: {
-          circuitBreaker: engine.circuitBreaker,
-          dailyPnL: config.stats?.dailyPnL,
-        }
-      });
-      return { allowed: false, reason };
-    }
-
-    // 5. Check manual override (BYPASS ON MANUAL)
-    if (!isManualApproval && config.manualOverride) {
-      const reason = 'MANUAL_OVERRIDE_ACTIVE: Trading paused by user';
-      logger.info({
-        uid,
-        manualOverride: config.manualOverride,
-        reason: 'MANUAL_OVERRIDE_ACTIVE'
-      }, '⛔ [RISK_GUARDS] BLOCKED: Manual override active');
-      await this.logAutoTradeSkip(uid, reason, {
-        exchangeStatus: 'available',
-        additionalDetails: {
-          manualOverride: config.manualOverride,
-        }
-      });
-      return { allowed: false, reason };
-    }
-
-    // 6. Check if auto-trade is enabled (BYPASS ON MANUAL)
-    if (!isManualApproval && !config.autoTradeEnabled) {
-      const reason = 'AUTO_TRADE_DISABLED: Auto-trading is not enabled';
-      logger.warn({
-        uid,
-        autoTradeEnabled: config.autoTradeEnabled,
-        isManualApproval,
-        reason: 'AUTO_TRADE_DISABLED'
-      }, '⛔ [RISK_GUARDS] BLOCKED: Auto-trade is not enabled in config');
-      await this.logAutoTradeSkip(uid, reason, {
-        exchangeStatus: 'available',
-        additionalDetails: {
-          autoTradeEnabled: config.autoTradeEnabled,
-        }
-      });
-      return { allowed: false, reason };
-    }
-
-    return { allowed: true };
-  }
 
   /**
    * Execute trade
@@ -1810,7 +921,7 @@ export class AutoTradeEngine {
     }
 
     // CRITICAL: Consolidated accuracy validation
-    const accuracyValidation = this.validateAccuracyForExecution(signal.accuracy, settings, skipConfirmationCheck);
+    const accuracyValidation = validateAccuracyForExecution(signal.accuracy, settings, skipConfirmationCheck);
     const accuracyThreshold = accuracyValidation.threshold;
 
     logger.info({
@@ -1824,7 +935,7 @@ export class AutoTradeEngine {
 
     // Check if trade confirmation is required
     // CRITICAL: Use pre-loaded user settings (centralized source)
-
+    try {
       const requiresConfirmation = !skipConfirmationCheck && (
         userSettings.notifications?.tradeConfirmationRequired === true
       );
@@ -1923,7 +1034,7 @@ export class AutoTradeEngine {
     }, '🔍 [EXECUTE_TRADE] Starting trade execution with fresh config');
 
     // Check risk guards (passing skipConfirmationCheck as isManualApproval)
-    const riskCheck = await this.checkRiskGuards(uid, signal, skipConfirmationCheck);
+    const riskCheck = await checkRiskGuards(uid, signal, skipConfirmationCheck);
     if (!riskCheck.allowed) {
       const reason = riskCheck.reason || 'Trade rejected by risk guards';
       logger.error({
@@ -1941,7 +1052,7 @@ export class AutoTradeEngine {
       const userThreshold = skipConfirmationCheck ? 60 : (tradingSettings.accuracyTrigger?.min ?? 75);
 
       // Note: Skip logging already done in checkRiskGuards, but log here too for executeTrade context
-      await this.logAutoTradeSkip(uid, reason, {
+      await logAutoTradeSkip(uid, reason, {
         symbol: signal.symbol,
         accuracy: signal.accuracy,
         threshold: userThreshold,
@@ -2186,7 +1297,7 @@ export class AutoTradeEngine {
         slDistancePct: (slDistance / signal.entryPrice * 100).toFixed(4) + '%'
       }, `❌ [AUTO_TRADE_EXECUTION] BLOCKED: ${reason} - SL distance (${slDistance.toFixed(8)}) < minimum tick size (${minimumTickSize.toFixed(8)})`);
 
-      await this.logAutoTradeSkip(uid, reason, {
+      await logAutoTradeSkip(uid, reason, {
         symbol: signal.symbol,
         accuracy: signal.accuracy,
         threshold: accuracyThreshold,
@@ -2237,7 +1348,7 @@ export class AutoTradeEngine {
 
     // P4: Dynamic Params (Leverage and Model-based Size)
     // CRITICAL: Uses user's accuracyRiskConfig (single source of truth)
-    const modelParams = await this.calculateDynamicParams(uid, signal.accuracy, (signal as any).volatilityClassification || 'low', 50);
+    const modelParams = await calculateDynamicParams(uid, signal.accuracy, (signal as any).volatilityClassification || 'low', 50);
     const modelLeverage = signal.leverage || modelParams.leverage || 1;
 
     // CRITICAL: Trade size % is calculated as percentage of wallet balance (account equity)
@@ -2351,7 +1462,7 @@ export class AutoTradeEngine {
           minNotional
         }, `❌ [AUTO_TRADE_EXECUTION] BLOCKED: ${reason} - Adjusting to min notional (${minNotional} USDT) would exceed max risk (${adjustedRiskPct.toFixed(2)}% > ${maxAllowedRiskPct.toFixed(2)}%)`);
 
-        await this.logAutoTradeSkip(uid, reason, {
+        await logAutoTradeSkip(uid, reason, {
           symbol: signal.symbol,
           accuracy: signal.accuracy,
           threshold: accuracyThreshold,
@@ -2434,7 +1545,7 @@ export class AutoTradeEngine {
         minNotional: 10
       }, `❌ [AUTO_TRADE_EXECUTION] BLOCKED: ${reason} - Calculated quantity is zero or negative`);
 
-      await this.logAutoTradeSkip(uid, reason, {
+      await logAutoTradeSkip(uid, reason, {
         symbol: signal.symbol,
         accuracy: signal.accuracy,
         threshold: accuracyThreshold,
@@ -2525,7 +1636,7 @@ export class AutoTradeEngine {
         quantity
       }, `❌ [AUTO_TRADE_EXECUTION] BLOCKED: ${reason} - Equity (${equity}) < min notional (${minNotional})`);
 
-      await this.logAutoTradeSkip(uid, reason, {
+      await logAutoTradeSkip(uid, reason, {
         symbol: signal.symbol,
         accuracy: signal.accuracy,
         threshold: accuracyThreshold,
@@ -2677,7 +1788,7 @@ export class AutoTradeEngine {
         reason
       }, `[AUTO_TRADE_EXECUTION] acc=${signal.accuracy.toFixed(1)} rr=${rr.toFixed(2)} qty=${quantity.toFixed(6)} minNotional=10 → BLOCKED (${reason})`);
 
-      await this.logAutoTradeSkip(uid, reason, {
+      await logAutoTradeSkip(uid, reason, {
         symbol: signal.symbol,
         accuracy: signal.accuracy,
         threshold: accuracyThreshold,
@@ -2768,7 +1879,7 @@ export class AutoTradeEngine {
                 error: levErr.message
               }, `❌ [LEVERAGE_VALIDATION] BLOCKED: ${reason} - Exchange rejected leverage ${finalLeverage}x`);
 
-              await this.logAutoTradeSkip(uid, reason, {
+              await logAutoTradeSkip(uid, reason, {
                 symbol: signal.symbol,
                 accuracy: signal.accuracy,
                 threshold: accuracyThreshold,
@@ -2850,7 +1961,7 @@ export class AutoTradeEngine {
             stepSize: exchangeConstraints.stepSize
           }, `❌ [AUTO_TRADE_EXECUTION] BLOCKED: ${reason} - Calculated quantity (${quantity}) < exchange minQty (${exchangeConstraints.minQty})`);
 
-          await this.logAutoTradeSkip(uid, reason, {
+          await logAutoTradeSkip(uid, reason, {
             symbol: signal.symbol,
             accuracy: signal.accuracy,
             threshold: accuracyThreshold,
@@ -2905,7 +2016,7 @@ export class AutoTradeEngine {
                 minQty: exchangeConstraints.minQty
               }, `❌ [AUTO_TRADE_EXECUTION] BLOCKED: ${reason} - Rounded quantity (${quantity}) < minQty (${exchangeConstraints.minQty})`);
 
-              await this.logAutoTradeSkip(uid, reason, {
+              await logAutoTradeSkip(uid, reason, {
                 symbol: signal.symbol,
                 accuracy: signal.accuracy,
                 threshold: accuracyThreshold,
@@ -3349,10 +2460,6 @@ export class AutoTradeEngine {
 
   /**
    * Default accuracy-based risk configuration (system defaults)
-   * This is the single source of truth for default values
-   */
-  /**
-   * Default accuracy-based risk configuration (system defaults)
    * CRITICAL: This is the single source of truth for default values
    * Leverage for ≥90% is 9x by default (10x is hard cap only)
    */
@@ -3559,73 +2666,6 @@ export class AutoTradeEngine {
    * - exchange status
    * - signal availability
    */
-  private async logAutoTradeSkip(
-    uid: string,
-    reason: string | AutoTradeReason,
-    context: {
-      symbol?: string;
-      accuracy?: number;
-      threshold?: number;
-      signal?: TradeSignalType | string;
-      exchangeStatus?: 'available' | 'unavailable' | 'decryption_failed' | 'unknown';
-      additionalDetails?: Record<string, unknown>;
-    }
-  ): Promise<void> {
-    try {
-      const engine = await this.getUserEngine(uid);
-      const config = engine.config;
-
-      // Determine exchange status
-      let exchangeStatus: 'available' | 'unavailable' | 'decryption_failed' | 'unknown' = context.exchangeStatus || 'unknown';
-      if (exchangeStatus === 'unknown') {
-        if (engine.adapter) {
-          exchangeStatus = 'available';
-        } else {
-          // Use unified exchange usability check (SINGLE SOURCE OF TRUTH)
-          try {
-            const { isExchangeUsable } = await import('./firestoreAdapter');
-            const usability = await isExchangeUsable(uid);
-            exchangeStatus = usability.usable ? 'available' : 'decryption_failed';
-          } catch (checkErr: any) {
-            exchangeStatus = 'unknown';
-          }
-        }
-      }
-
-      // CRITICAL FIX: Ensure NO undefined values - use proper coercion
-      const skipLog = {
-        uid,
-        symbol: context.symbol ?? null,
-        reason,
-        accuracy: Number(context.accuracy) || 0,
-        accuracyUsed: Number(context.accuracy) || 0,
-        threshold: Number(context.threshold) || 0,
-        signal: context.signal,
-        exchangeStatus,
-        autoTradeEnabled: config.autoTradeEnabled,
-        manualOverride: config.manualOverride,
-        ...context.additionalDetails,
-        timestamp: admin.firestore.Timestamp.now(),
-      };
-
-      // Log to execution logs
-      await firestoreAdapter.saveExecutionLog(uid, {
-        symbol: context.symbol ?? null,
-        timestamp: admin.firestore.Timestamp.now(),
-        action: 'SKIPPED',
-        reason,
-        accuracy: Number(context.accuracy) || 0,
-        accuracyUsed: Number(context.accuracy) || 0,
-        signal: (context.signal as 'BUY' | 'SELL' | 'HOLD') || 'HOLD',
-        status: `SKIPPED: ${reason}`,
-      });
-
-      // Log to console with full context
-      logger.info(skipLog, `⛔ [AUTO_TRADE_SKIP] ${reason} - acc=${context.accuracy?.toFixed(1) || 'N/A'}% threshold=${context.threshold || 'N/A'}% signal=${context.signal || 'N/A'} exchange=${exchangeStatus}`);
-    } catch (error: any) {
-      logger.error({ error: error.message, uid, reason }, 'Failed to log auto-trade skip');
-    }
-  }
 
   /**
    * Get engine status
@@ -4238,7 +3278,7 @@ export class AutoTradeEngine {
       logger.info({ uid, cycleId: `cycle_${cycleStartTimestamp}`, reason: 'BACKGROUND_TASKS_PAUSED' }, '⏸️ [AUTO_TRADE_CYCLE] Cycle SKIPPED - background tasks paused');
 
       // Save SKIPPED history for background tasks paused
-      await this.saveAutoTradeHistorySkipped(
+      await saveAutoTradeHistorySkipped(
         uid,
         'BACKGROUND_TASKS_PAUSED',
         'Background tasks are currently paused by system administrator'
@@ -4450,7 +3490,7 @@ export class AutoTradeEngine {
 
       // Save SKIPPED history for unusable exchange
       if (!skipHistoryStorage) {
-        await this.saveAutoTradeHistorySkipped(
+        await saveAutoTradeHistorySkipped(
           uid,
           'EXCHANGE_NOT_USABLE',
           exchangeUsability.reason
@@ -4689,7 +3729,7 @@ export class AutoTradeEngine {
         cycleId,
         duplicateBlocked: true
       }, '⏭️ [CYCLE_GUARD] BLOCKED: Duplicate auto-trade cycle execution prevented - cycle already running');
-      await this.logAutoTradeSkip(uid, reason, {
+      await logAutoTradeSkip(uid, reason, {
         exchangeStatus: 'unknown',
         additionalDetails: {
           cycleId,
@@ -4698,7 +3738,7 @@ export class AutoTradeEngine {
       });
 
       // Save SKIPPED history for duplicate cycle prevention
-      await this.saveAutoTradeHistorySkipped(
+      await saveAutoTradeHistorySkipped(
         uid,
         'DUPLICATE_CYCLE',
         'Auto-trade cycle prevented due to duplicate execution in progress'
@@ -4724,7 +3764,7 @@ export class AutoTradeEngine {
       tradingSettings = await AutoTradeEngine.getTradingSettings(uid);
     } catch (configError: any) {
       logger.error({ uid, error: configError.message }, '❌ [CONFIG_LOAD] Failed to load user config/settings at cycle start');
-      await this.saveAutoTradeHistorySkipped(
+      await saveAutoTradeHistorySkipped(
         uid,
         'CONFIG_LOAD_FAILED',
         `Failed to load user configuration: ${configError.message}`
@@ -4744,12 +3784,12 @@ export class AutoTradeEngine {
       if (process.env.DISABLE_AUTOTRADE === 'true') {
         const reason = 'DISABLE_AUTOTRADE_ENV_FLAG: Auto-trade disabled by environment variable';
         logger.info({ uid, reason }, '⏭️ [AUTO_TRADE_SKIP] Research skipped - DISABLE_AUTOTRADE env flag set');
-        await this.logAutoTradeSkip(uid, reason, {
+        await logAutoTradeSkip(uid, reason, {
           exchangeStatus: 'unknown',
         });
 
       // Save SKIPPED history when auto-trade is disabled
-      await this.saveAutoTradeHistorySkipped(
+      await saveAutoTradeHistorySkipped(
         uid,
         'AUTO_TRADE_DISABLED',
         'Auto-trade is currently disabled in user settings'
@@ -4760,12 +3800,12 @@ export class AutoTradeEngine {
       if (!shouldRunBackgroundTasks()) {
         const reason = 'BACKGROUND_TASKS_PAUSED: Background tasks are paused';
         logger.info({ uid, reason }, '⏭️ [AUTO_TRADE_SKIP] Research skipped - background tasks paused');
-        await this.logAutoTradeSkip(uid, reason, {
+        await logAutoTradeSkip(uid, reason, {
           exchangeStatus: 'unknown',
         });
 
         // Save SKIPPED history when background tasks are paused
-        await this.saveAutoTradeHistorySkipped(
+        await saveAutoTradeHistorySkipped(
           uid,
           'BACKGROUND_TASKS_PAUSED',
           'Background tasks are paused by system administrator'
@@ -4799,7 +3839,7 @@ export class AutoTradeEngine {
           reason: 'Research keys missing - research did not execute'
         }, '⏭️ [HISTORY_GUARD] BLOCKED: Skipping history save for no-research-keys - only FINAL completed research should be saved');
 
-        await this.logAutoTradeSkip(uid, reason, {
+        await logAutoTradeSkip(uid, reason, {
           exchangeStatus: 'unknown',
           additionalDetails: {
             details: 'No research API keys configured. Please add keys to enable auto-trading.',
@@ -4823,7 +3863,7 @@ export class AutoTradeEngine {
         }, '⏭️ [HISTORY_GUARD] BLOCKED: Research did not run (no research keys) - saving SKIPPED history');
 
         // Save SKIPPED history when no research keys are configured
-        await this.saveAutoTradeHistorySkipped(
+        await saveAutoTradeHistorySkipped(
           uid,
           'NO_RESEARCH_KEYS',
           'No research API keys configured (CryptoCompare, NewsData, etc.)'
@@ -4889,7 +3929,7 @@ export class AutoTradeEngine {
           }, 'Auto-trade cycle: No usable providers - saving SKIPPED history');
 
           // Save SKIPPED history entry for this cycle
-          await this.saveAutoTradeHistorySkipped(
+          await saveAutoTradeHistorySkipped(
             uid,
             'NO_USABLE_PROVIDERS',
             'No usable market data providers configured. Please enable and configure market data and news providers in Settings.'
@@ -4938,13 +3978,13 @@ export class AutoTradeEngine {
             reason: 'RESEARCH_FAILED_BEFORE_COIN_SELECTION'
           }, 'Auto-trade cycle: Research failed before coin selection - saving SKIPPED history');
 
-          await this.saveAutoTradeHistorySkipped(
+          await saveAutoTradeHistorySkipped(
             uid,
             'RESEARCH_FAILED',
             `Research execution failed before coin selection: ${researchErr.message}`
           );
 
-          await this.logAutoTradeSkip(uid, AUTO_TRADE_REASONS.NO_SIGNAL, {
+          await logAutoTradeSkip(uid, AUTO_TRADE_REASONS.NO_SIGNAL, {
             exchangeStatus: 'available',
             additionalDetails: {
               error: researchErr.message,
@@ -4968,7 +4008,7 @@ export class AutoTradeEngine {
         // Research that fails before completion should not generate history entries
 
         // Log skip and save history
-        await this.logAutoTradeSkip(uid, AUTO_TRADE_REASONS.NO_SIGNAL, {
+        await logAutoTradeSkip(uid, AUTO_TRADE_REASONS.NO_SIGNAL, {
           exchangeStatus: 'available',
           additionalDetails: {
             error: researchErr.message,
@@ -4979,7 +4019,7 @@ export class AutoTradeEngine {
         // CRITICAL: Save ERROR history for research execution failure
         // Every execution path must save history before returning
         if (!skipHistoryStorage) {
-          await this.saveAutoTradeHistorySkipped(
+          await saveAutoTradeHistorySkipped(
             uid,
             'RESEARCH_EXECUTION_FAILED',
             `Research execution failed: ${researchErr.message}`
@@ -5004,13 +4044,13 @@ export class AutoTradeEngine {
           reason: 'NO_RESEARCH_RESULTS'
         }, 'Auto-trade cycle: Research produced no results - saving SKIPPED history');
 
-        await this.saveAutoTradeHistorySkipped(
+        await saveAutoTradeHistorySkipped(
           uid,
           'NO_RESEARCH_RESULTS',
           'Research completed but produced no actionable signals or results'
         );
 
-        await this.logAutoTradeSkip(uid, skipReason, {
+        await logAutoTradeSkip(uid, skipReason, {
           symbol: researchSymbol,
           exchangeStatus: 'available',
           additionalDetails: {
@@ -5033,14 +4073,14 @@ export class AutoTradeEngine {
 
         // Write ONE SKIPPED history with reason: RESEARCH_RESULT_MISSING
         if (!skipHistoryStorage) {
-          await this.saveAutoTradeHistorySkipped(
+          await saveAutoTradeHistorySkipped(
             uid,
             'RESEARCH_RESULT_MISSING',
             'Research execution completed but returned null result - no data available for trading decisions'
           );
         }
 
-        await this.logAutoTradeSkip(uid, 'RESEARCH_RESULT_MISSING', {
+        await logAutoTradeSkip(uid, 'RESEARCH_RESULT_MISSING', {
           exchangeStatus: 'available',
           additionalDetails: {
             reason: 'Research completed but result is null'
@@ -5081,13 +4121,13 @@ export class AutoTradeEngine {
           reason: 'SYMBOL_OUTSIDE_TOP_25'
         }, 'Auto-trade cycle: Symbol outside Top 25 - saving SKIPPED history');
 
-        await this.saveAutoTradeHistorySkipped(
+        await saveAutoTradeHistorySkipped(
           uid,
           'SYMBOL_OUTSIDE_TOP_25',
           `Research completed but symbol ${safeSymbol} is outside Top 25`
         );
 
-        await this.logAutoTradeSkip(uid, 'NOT_TOP_25', {
+        await logAutoTradeSkip(uid, 'NOT_TOP_25', {
           symbol: safeSymbol,
           exchangeStatus: 'available',
           additionalDetails: {
@@ -5113,13 +4153,13 @@ export class AutoTradeEngine {
           reason: 'MISSING_FINAL_RESULT'
         }, 'Auto-trade cycle: Research missing final aggregated result - saving SKIPPED history');
 
-        await this.saveAutoTradeHistorySkipped(
+        await saveAutoTradeHistorySkipped(
           uid,
           'MISSING_FINAL_RESULT',
           `Research completed for ${safeSymbol} but final aggregated result is missing`
         );
 
-        await this.logAutoTradeSkip(uid, AUTO_TRADE_REASONS.NO_SIGNAL, {
+        await logAutoTradeSkip(uid, AUTO_TRADE_REASONS.NO_SIGNAL, {
           symbol: safeSymbol,
           exchangeStatus: 'available',
           additionalDetails: {
@@ -5146,7 +4186,7 @@ export class AutoTradeEngine {
           validationReason: accuracyValidation.reason
         }, 'Auto-trade cycle: Research produced invalid accuracy - saving SKIPPED history');
 
-        await this.saveAutoTradeHistorySkipped(
+        await saveAutoTradeHistorySkipped(
           uid,
           'INVALID_ACCURACY',
           `Research completed for ${safeSymbol} but accuracy ${finalAccuracyRaw} is invalid: ${accuracyValidation.reason}`
@@ -5184,13 +4224,13 @@ export class AutoTradeEngine {
           reason: 'FINAL_GUARD_CACHED_RESULT'
         }, 'Auto-trade cycle: FINAL guard returned cached result - saving SKIPPED history');
 
-        await this.saveAutoTradeHistorySkipped(
+        await saveAutoTradeHistorySkipped(
           uid,
           'FINAL_GUARD_CACHED',
           `Symbol ${safeSymbol} has existing FINAL result - research was skipped`
         );
 
-        await this.logAutoTradeSkip(uid, AUTO_TRADE_REASONS.NO_SIGNAL, {
+        await logAutoTradeSkip(uid, AUTO_TRADE_REASONS.NO_SIGNAL, {
           symbol: safeSymbol,
           exchangeStatus: 'available',
           additionalDetails: {
@@ -5312,7 +4352,7 @@ export class AutoTradeEngine {
         skipReason = systemRiskCheck.reason || 'System risk check failed';
         cycleResult = AUTO_TRADE_REASONS.SYSTEM_RISK_FAILURE;
         logger.info({ uid, reason: skipReason, step: 'SYSTEM_RISK_CHECK' }, '⛔ [EXECUTION_ORDER] BLOCKED: System risk check failed');
-        await this.logAutoTradeSkip(uid, skipReason, {
+        await logAutoTradeSkip(uid, skipReason, {
           symbol: safeSymbol,
           accuracy,
           threshold: settings.accuracyTrigger?.min ?? 75,
@@ -5323,7 +4363,7 @@ export class AutoTradeEngine {
         // CRITICAL: Save SKIPPED history for system risk failure
         // Every execution path must save history before returning
         if (!skipHistoryStorage && researchExecuted) {
-          await this.saveAutoTradeHistorySkipped(
+          await saveAutoTradeHistorySkipped(
             uid,
             'SYSTEM_RISK_FAILURE',
             skipReason
@@ -5334,7 +4374,7 @@ export class AutoTradeEngine {
 
       // STEP 2: ACCURACY GATE (User-Defined)
       // Consolidated accuracy validation for trade execution
-      const accuracyValidation = this.validateAccuracyForExecution(accuracy, settings, false); // Always use auto-trade threshold
+      const accuracyValidation = validateAccuracyForExecution(accuracy, settings, false); // Always use auto-trade threshold
 
       logger.info({
         uid,
@@ -5358,7 +4398,7 @@ export class AutoTradeEngine {
           threshold: accuracyValidation.threshold,
           reason: skipReason
         }, '⛔ [RESEARCH_CYCLE] BLOCKED: Accuracy validation failed');
-        await this.logAutoTradeSkip(uid, skipReason, {
+        await logAutoTradeSkip(uid, skipReason, {
           symbol: safeSymbol,
           accuracy,
           threshold: accuracyValidation.threshold,
@@ -5368,7 +4408,7 @@ export class AutoTradeEngine {
         await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', { symbol: safeSymbol, reason: skipReason, accuracy, timestamp: new Date().toISOString() });
         // CRITICAL: Save SKIPPED history for accuracy validation failure
         if (!skipHistoryStorage && researchExecuted) {
-          await this.saveAutoTradeHistorySkipped(
+          await saveAutoTradeHistorySkipped(
             uid,
             'ACCURACY_BELOW_THRESHOLD',
             skipReason
@@ -5383,7 +4423,7 @@ export class AutoTradeEngine {
         skipReason = signalValidation.reason || AUTO_TRADE_REASONS.NO_SIGNAL;
         cycleResult = AUTO_TRADE_REASONS.TRADE_SKIPPED;
         decisionStatus = 'SKIPPED';
-        await this.logAutoTradeSkip(uid, skipReason, {
+        await logAutoTradeSkip(uid, skipReason, {
           symbol: safeSymbol,
           accuracy,
           threshold: settings.accuracyTrigger?.min ?? 75,
@@ -5393,7 +4433,7 @@ export class AutoTradeEngine {
         await firestoreAdapter.logActivity(uid, 'TRADE_SKIPPED', { symbol: safeSymbol, reason: skipReason, accuracy, timestamp: new Date().toISOString() });
         // CRITICAL: Save SKIPPED history for signal validation failure
         if (!skipHistoryStorage && researchExecuted) {
-          await this.saveAutoTradeHistorySkipped(
+          await saveAutoTradeHistorySkipped(
             uid,
             signalValidation.reason || 'INVALID_SIGNAL',
             skipReason
@@ -5410,13 +4450,13 @@ export class AutoTradeEngine {
       const newsArticles = researchResult.result?.news || [];
       const newsScore = this.calculateNewsScoreFromArticles(newsArticles);
 
-      const params = await this.calculateDynamicParams(uid, accuracy, volClassification, newsScore);
+      const params = await calculateDynamicParams(uid, accuracy, volClassification, newsScore);
 
       if (params.skip) {
         skipReason = params.skip;
         cycleResult = AUTO_TRADE_REASONS.TRADE_SKIPPED;
         decisionStatus = 'SKIPPED';
-        await this.logAutoTradeSkip(uid, skipReason, {
+        await logAutoTradeSkip(uid, skipReason, {
           symbol: safeSymbol,
           accuracy,
           threshold: settings.accuracyTrigger?.min ?? 75,
@@ -5431,7 +4471,7 @@ export class AutoTradeEngine {
         // CRITICAL: Save SKIPPED history for dynamic params failure
         // Every execution path must save history before returning
         if (!skipHistoryStorage && researchExecuted) {
-          await this.saveAutoTradeHistorySkipped(
+          await saveAutoTradeHistorySkipped(
             uid,
             'DYNAMIC_PARAMS_SKIP',
             skipReason
@@ -5524,7 +4564,7 @@ export class AutoTradeEngine {
           executionBlocked: true
         }, '⛔ [EXECUTION_BLOCKED] Trade execution blocked - Exchange API key decryption failed or exchange not connected. Research completed, but trade execution skipped.');
 
-        await this.logAutoTradeSkip(uid, 'EXECUTION_BLOCKED', {
+        await logAutoTradeSkip(uid, 'EXECUTION_BLOCKED', {
           symbol: researchResult.symbol,
           accuracy,
           threshold: settings.accuracyTrigger?.min ?? 75,
@@ -5545,7 +4585,7 @@ export class AutoTradeEngine {
         // CRITICAL: Save SKIPPED history for execution blocked
         // Every execution path must save history before returning
         if (!skipHistoryStorage && researchExecuted) {
-          await this.saveAutoTradeHistorySkipped(
+          await saveAutoTradeHistorySkipped(
             uid,
             'EXECUTION_BLOCKED',
             executionBlockReason || 'Execution blocked due to exchange issues'
@@ -5568,7 +4608,7 @@ export class AutoTradeEngine {
           step: 'PRE_EXECUTION_GUARD'
         }, '⛔ [RACE_CONDITION_PREVENTED] Mode validation failed during research cycle - aborting execution');
 
-        await this.logAutoTradeSkip(uid, modeCheck.reason || 'MODE_VALIDATION_FAILED', {
+        await logAutoTradeSkip(uid, modeCheck.reason || 'MODE_VALIDATION_FAILED', {
           symbol: researchResult.symbol,
           accuracy,
           threshold: threshold,
@@ -5588,7 +4628,7 @@ export class AutoTradeEngine {
 
         // CRITICAL: Save SKIPPED history for mode validation failure
         if (!skipHistoryStorage && researchExecuted) {
-          await this.saveAutoTradeHistorySkipped(
+          await saveAutoTradeHistorySkipped(
             uid,
             modeCheck.reason || 'MODE_VALIDATION_FAILED',
             `Mode validation failed: ${modeCheck.reason}`
@@ -5653,7 +4693,7 @@ export class AutoTradeEngine {
           rewardAmount
         }, `❌ [PRE_EXECUTION_VALIDATION] BLOCKED: ${reason} - RR ${rr.toFixed(2)} < 1.2 minimum`);
 
-        await this.logAutoTradeSkip(uid, reason, {
+        await logAutoTradeSkip(uid, reason, {
           symbol: researchResult.symbol,
           accuracy: tradeSignal.accuracy,
           threshold: settings.accuracyTrigger?.min ?? 75,
@@ -5686,7 +4726,7 @@ export class AutoTradeEngine {
           takeProfit: tradeSignal.takeProfit
         }, `❌ [PRE_EXECUTION_VALIDATION] BLOCKED: ${reason} - ${tpValidationError}`);
 
-        await this.logAutoTradeSkip(uid, reason, {
+        await logAutoTradeSkip(uid, reason, {
           symbol: researchResult.symbol,
           accuracy: tradeSignal.accuracy,
           threshold: settings.accuracyTrigger?.min ?? 75,
@@ -5764,7 +4804,7 @@ export class AutoTradeEngine {
           const executionStatus = execution.status; // 'PENDING' | 'FILLED' | 'CANCELLED' | 'REJECTED' | 'PANIC_CLOSED'
 
           // Save complete history entry with execution status
-          await this.saveAutoTradeHistoryWithExecutionStatus(
+          await saveAutoTradeHistoryWithExecutionStatus(
             uid,
             researchResult,
             researchData,
@@ -5796,7 +4836,7 @@ export class AutoTradeEngine {
       // Every execution path must save history before returning
       if (!skipHistoryStorage) {
         try {
-          await this.saveAutoTradeHistorySkipped(
+          await saveAutoTradeHistorySkipped(
             uid,
             'TRADE_EXECUTION_FAILED',
             `Trade cycle failed: ${error.message}`
@@ -5933,117 +4973,12 @@ export class AutoTradeEngine {
    * Save SKIPPED auto-trade history when research never executes
    * Called when auto-trade cycle runs but cannot proceed due to provider/config issues
    */
-  private async saveAutoTradeHistorySkipped(
-    uid: string,
-    skipReason: string,
-    skipDetails: string
-  ): Promise<void> {
-    const historyEntry: any = {
-      symbol: 'AUTO_TRADE_CYCLE', // Placeholder symbol for cycle tracking
-      signal: 'HOLD', // No signal generated
-      accuracy: 0, // No accuracy computed
-      price: 0, // No price data
-      tradePlan: null, // No trade plan
-      indicators: null, // No indicators
-      isDeepResearch: false, // Research never ran
-      source: 'AUTO_TRADE',
-      status: 'SKIPPED',
-      isFinal: true,
-      decision: 'SKIPPED',
-      executionStatus: null,
-      skipReason: skipReason,
-      skipDetails: skipDetails,
-      entryPrice: 0,
-      stopLoss: 0,
-      takeProfit: 0,
-      takeProfit1: 0,
-      takeProfit2: 0,
-      takeProfit3: 0
-    };
-
-    await firestoreAdapter.storeResearchHistory(uid, historyEntry);
-    logger.info({ uid, skipReason }, '✅ [HISTORY] Auto-trade SKIPPED history saved for cycle');
-  }
 
   /**
    * Save auto-trade history AFTER execution attempt with executionStatus
    * CRITICAL: This is called ONLY after execution attempt (success or failure)
    * History includes executionStatus from actual execution attempt
    */
-  private async saveAutoTradeHistoryWithExecutionStatus(
-    uid: string,
-    researchResult: ResearchDataResult,
-    researchData: ResearchData,
-    researchSymbol: string | null,
-    finalResult: any,
-    finalTradePlan: any,
-    accuracy: number,
-    signal: TradeSignalType | string,
-    historyPrice: number,
-    decisionStatus: 'EXECUTED' | 'SKIPPED',
-    executionStatus: TradeExecutionStatus | null,
-    tradeId: string | null
-  ): Promise<void> {
-    // CRITICAL: HISTORY MUST ALWAYS BE SAVED when research runs
-    // If symbol is missing, force executionStatus = "SKIPPED" instead of skipping history
-    const historySymbol = (researchSymbol ?? researchResult.symbol) ?? null;
-    let forceSkipped = false;
-
-    if (!historySymbol || historySymbol.trim().length === 0) {
-      logger.warn({ uid, accuracy, signal }, '[HISTORY_FORCE_SKIPPED] Symbol missing from research - forcing executionStatus=SKIPPED but saving history');
-      forceSkipped = true;
-    }
-    if (typeof accuracy !== 'number' || accuracy <= 0) {
-      logger.warn({ uid, symbol: historySymbol, accuracy }, '[HISTORY_FORCE_SKIPPED] Invalid accuracy - forcing executionStatus=SKIPPED but saving history');
-      forceSkipped = true;
-    }
-    if (!signal || signal === 'UNKNOWN' || signal === 'ANALYZING' || signal === 'PENDING') {
-      logger.warn({ uid, symbol: historySymbol, signal }, '[HISTORY_FORCE_SKIPPED] Invalid signal - forcing executionStatus=SKIPPED but saving history');
-      forceSkipped = true;
-    }
-
-    // Force executionStatus to SKIPPED if any guard failed
-    const finalExecutionStatus = forceSkipped ? 'SKIPPED' : executionStatus;
-    const finalDecisionStatus = forceSkipped ? 'SKIPPED' : decisionStatus;
-
-    // CRITICAL: Preserve actual research signal in history, even if tradePlan is null
-    // Do NOT force BUY/SELL to HOLD - history should reflect the research result accurately
-    const finalSignal = forceSkipped ? 'HOLD' : signal;
-    const storedAccuracy = forceSkipped ? 0 : Math.max(0, Math.min(100, Number(accuracy) || 0));
-    const safeTradePlan = finalTradePlan ?? null;
-
-    // Build history entry - ALWAYS SAVE when research runs
-    const historyEntry: any = {
-      symbol: historySymbol || 'BTCUSDT', // Fallback symbol if missing
-      signal: finalSignal,
-      accuracy: storedAccuracy,
-      price: Number(historyPrice) || 0,
-      tradePlan: safeTradePlan,
-      indicators: finalResult?.analysis || null,
-      isDeepResearch: true,
-      source: 'AUTO_TRADE',
-      status: 'FINAL',
-      isFinal: true,
-      decision: finalDecisionStatus,
-      executionStatus: finalExecutionStatus || null, // CRITICAL: Include executionStatus
-      entryPrice: safeTradePlan?.entryPrice ?? 0,
-      stopLoss: safeTradePlan?.stopLoss ?? 0,
-      takeProfit: safeTradePlan?.takeProfit2 ?? 0,
-      takeProfit1: safeTradePlan?.takeProfit1 ?? 0,
-      takeProfit2: safeTradePlan?.takeProfit2 ?? 0,
-      takeProfit3: safeTradePlan?.takeProfit3 ?? 0
-    };
-
-    if (decisionStatus === 'EXECUTED' && tradeId) {
-      historyEntry.tradeId = tradeId;
-    }
-
-    // CRITICAL: For AUTO_TRADE_RESEARCH, ensure exactly ONE history entry per cycle
-    // If executionStatus is provided, this is an update to existing research history
-    // If executionStatus is null, this is the initial research completion history save
-    await firestoreAdapter.storeResearchHistory(uid, historyEntry);
-    logger.info({ uid, symbol: researchResult.symbol, executionStatus, decisionStatus }, '✅ [HISTORY] Auto-trade history saved after execution');
-  }
 
   private async sendTradeConfirmationNotification(uid: string, signal: TradeSignal): Promise<void> {
     try {
@@ -6157,21 +5092,6 @@ export class AutoTradeEngine {
    * CONSOLIDATED ACCURACY VALIDATION - Single source of truth for accuracy checking
    * Centralizes accuracy threshold validation using AccuracyGuard
    */
-  private validateAccuracyForExecution(accuracy: number, settings: any, skipConfirmationCheck: boolean): { allowed: boolean; threshold: number; reason?: string } {
-    // Determine threshold: manual approval uses 60%, auto-trade uses user setting
-    const threshold = skipConfirmationCheck ? 60 : (settings.accuracyTrigger?.min ?? 75);
-
-    // Use AccuracyGuard for consistent validation
-    if (!AccuracyGuard.meetsThreshold(accuracy, threshold, false)) {
-      return {
-        allowed: false,
-        threshold,
-        reason: `Accuracy ${accuracy.toFixed(1)}% below mandatory threshold (${threshold}%)`
-      };
-    }
-
-    return { allowed: true, threshold };
-  }
 
   /**
    * CONSOLIDATED MODE VALIDATION - Single source of truth for mode checking
