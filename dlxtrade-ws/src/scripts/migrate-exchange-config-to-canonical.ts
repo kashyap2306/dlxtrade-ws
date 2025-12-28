@@ -257,7 +257,7 @@ async function verifyMigrationConsistency(): Promise<void> {
 
       // Test isExchangeUsable (this will verify the canonical path and decryption)
       const { isExchangeUsable } = await import('../services/firestoreAdapter');
-      const usability = await isExchangeUsable(uid);
+      const usability = await isExchangeUsable(uid, 'background_job');
 
       // Log detailed usability result
       logger.info({

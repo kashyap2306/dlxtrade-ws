@@ -401,6 +401,8 @@ export async function settingsRoutes(fastify: FastifyInstance) {
 
       const { autoTradeEngine } = await import('../services/autoTradeEngine');
 
+      const db = getFirebaseAdmin().firestore();
+
       if (body.enabled) {
         await autoTradeEngine.startAutoTradeLoop(user.uid);
         await firestoreAdapter.logActivity(user.uid, 'AUTO_TRADE_STARTED', {

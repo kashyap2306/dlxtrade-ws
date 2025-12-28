@@ -466,7 +466,7 @@ export async function buildApp(): Promise<FastifyInstance> {
         email: decoded.email,
         name: decoded.name || decoded.display_name,
         phone: null
-      });
+      }, 'user_request');
 
       if (!ensureResult.success) {
         logger.error({ uid, error: ensureResult.error }, '❌ ensureUser failed in WebSocket handler - closing connection');

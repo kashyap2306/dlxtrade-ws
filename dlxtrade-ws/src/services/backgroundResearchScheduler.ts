@@ -418,14 +418,24 @@ export class BackgroundResearchScheduler {
           telegramFrequencyIgnored: true
         }, '🎯 [MODE_PRIORITY] Auto-Trade ENABLED → AUTO_TRADE_RESEARCH mode selected, Telegram Background Research BYPASSED');
 
-        // CRITICAL: Exchange API decryption failure must NOT block scheduler
-        // Scheduler should ALWAYS run when autoTradeEnabled === true
-        // Exchange API decryption failure will block trade execution at runtime, not scheduler execution
+        // CRITICAL: Exchange disconnection MUST block AUTO_TRADE_RESEARCH mode
+        // Scheduler should NOT run when exchange is explicitly disconnected
         const hasExchangeAPIs = await this.hasUsableExchangeAPIs(uid);
         if (!hasExchangeAPIs) {
-          // Exchange APIs missing - log warning but continue with AUTO_TRADE_RESEARCH mode
-          // Trade execution will be blocked at runtime, but research will continue
-          logger.warn({ uid }, '⚠️ [SCHEDULER] Auto-Trade exchange APIs missing - scheduler continues, trade execution will be blocked at runtime');
+          // HARD BLOCK: Exchange disconnected - do NOT allow AUTO_TRADE_RESEARCH mode
+          console.log('🔥 [HARD_LOG] [AUTO_TRADE_BLOCKED_EXCHANGE_DISCONNECTED]', {
+            uid,
+            reason: 'exchange_disconnected_or_unusable',
+            mode: 'AUTO_TRADE_RESEARCH_BLOCKED'
+          });
+
+          logger.warn({ uid }, '🚫 [SCHEDULER] Auto-Trade BLOCKED - exchange disconnected or unusable - scheduler will not run');
+
+          // Force clear any existing interval for this user
+          await this.forceStopUserScheduler(uid);
+
+          // Do NOT continue with AUTO_TRADE_RESEARCH mode
+          return null;
         }
 
         // CRITICAL: Primary API missing should NOT block scheduler
@@ -518,26 +528,17 @@ export class BackgroundResearchScheduler {
       const existingInterval = this.userIntervals.get(uid);
       const existingState = this.userJobStates.get(uid);
 
-      // CRITICAL: INTERVAL LIFECYCLE HARDENING - Never clear intervals mid-cycle
-      // Only create intervals if they don't exist. Let existing intervals finish their current cycle.
-      // Changes to frequency/mode apply on the NEXT cycle, not the current one.
+      // CRITICAL: Clear existing interval to prevent duplicates from rapid settings changes
+      // Multiple calls to onUserSettingsChanged (from settings route) can create duplicate intervals
+      // Always clear and recreate to ensure exactly one active interval per user
       if (existingInterval) {
-        // CRITICAL: Interval exists - DO NOT clear it mid-cycle
-        // Even if frequency or mode changed, let current cycle complete
-        // Changes will apply automatically on next checkAndScheduleUserResearch cycle
-        logger.info({
-          uid,
-          frequency: finalFrequency,
-          mode,
-          intervalExists: true,
-          action: 'PRESERVE_EXISTING_INTERVAL',
-          reason: 'Never clear intervals mid-cycle - changes apply next cycle'
-        }, '✅ [SCHEDULER_IMMORTAL] Interval exists - preserving to prevent mid-cycle interruption');
-        return;
+        console.log('🔥 [HARD_LOG] [INTERVAL_CLEAR] Clearing existing interval for user:', uid, 'before creating new one');
+        clearInterval(existingInterval);
+        this.userIntervals.delete(uid);
       }
 
-      // CRITICAL: Only create interval if it doesn't exist
-      // This ensures jobState and interval always exist together
+      // CRITICAL: Always create new interval (existing ones are cleared above)
+      // This ensures jobState and interval always exist together and prevents duplicates
       logger.info({
         uid,
         frequency: finalFrequency,
@@ -682,6 +683,33 @@ export class BackgroundResearchScheduler {
   }
 
   /**
+   * Force stop scheduler for a user (call this when exchange is disconnected)
+   */
+  async forceStopUserScheduler(uid: string) {
+    logger.info({ uid }, '🛑 [SCHEDULER] Force stopping scheduler for user');
+
+    // Clear any existing interval
+    const existingInterval = this.userIntervals.get(uid);
+    if (existingInterval) {
+      clearInterval(existingInterval);
+      this.userIntervals.delete(uid);
+      console.log('🔥 [HARD_LOG] [SCHEDULER_INTERVAL_CLEARED]', {
+        uid,
+        reason: 'force_stop_exchange_disconnect'
+      });
+    }
+
+    // Clear job state
+    this.userJobStates.delete(uid);
+    console.log('🔥 [HARD_LOG] [SCHEDULER_JOB_STATE_CLEARED]', {
+      uid,
+      reason: 'force_stop_exchange_disconnect'
+    });
+
+    logger.info({ uid }, '✅ [SCHEDULER] Force stopped scheduler for user');
+  }
+
+  /**
    * HARD GUARANTEE: Ensure user is registered in scheduler
    * CRITICAL: This function MUST be called when:
    * - background-research/start is called
@@ -707,11 +735,6 @@ export class BackgroundResearchScheduler {
       // Check current state
       const isCurrentlyScheduled = this.isUserScheduled(uid);
 
-      if (isCurrentlyScheduled) {
-        logger.info({ uid }, '✅ [SCHEDULER] User already scheduled - no action needed');
-        return { scheduled: true, reason: 'Already scheduled' };
-      }
-
       // Load settings to determine if user should be scheduled
       const db = getFirebaseAdmin().firestore();
 
@@ -719,6 +742,25 @@ export class BackgroundResearchScheduler {
       const autoTradeConfigDoc = await db.collection('users').doc(uid).collection('autoTradeConfig').doc('current').get();
       const autoTradeConfig = autoTradeConfigDoc.exists ? autoTradeConfigDoc.data() : null;
       const autoTradeEnabled = autoTradeConfig?.autoTradeEnabled === true;
+
+      if (isCurrentlyScheduled) {
+        // CRITICAL: Even if user is scheduled, check if we need to force immediate execution
+        // This handles the case where scheduler was paused but user just enabled auto-trade
+        if (autoTradeEnabled) {
+          logger.info({ uid }, '🔄 [SCHEDULER] User already scheduled but auto-trade enabled - forcing immediate execution');
+          try {
+            // Force immediate execution for auto-trade users
+            await this.processUserResearch(uid);
+            logger.info({ uid }, '✅ [SCHEDULER] Forced immediate auto-trade research execution');
+            console.log('🔥 [HARD_LOG] [AUTO_TRADE_IMMEDIATE_EXECUTION] Forced immediate research execution for auto-trade enable');
+          } catch (execError: any) {
+            logger.warn({ uid, error: execError.message }, '⚠️ [SCHEDULER] Failed to force immediate execution');
+          }
+        }
+
+        logger.info({ uid }, '✅ [SCHEDULER] User already scheduled - no action needed');
+        return { scheduled: true, reason: 'Already scheduled' };
+      }
 
       // Check Telegram Background Research
       const settings = await firestoreAdapter.getBackgroundResearchSettings(uid);
@@ -1238,19 +1280,21 @@ export class BackgroundResearchScheduler {
           Date.now() + (errorFrequencyMinutes * 60 * 1000)
         );
 
-        // Write history for the error
-        await firestoreAdapter.storeResearchHistory(uid, {
-          symbol: 'ERROR_CYCLE',
-          signal: 'HOLD',
-          accuracy: 0,
-          price: 0,
-          tradePlan: null,
-          isDeepResearch: true,
-          source: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH ? 'AUTO_TRADE' : 'TELEGRAM_BACKGROUND',
-          status: 'SKIPPED',
-          error: err?.message,
-          skipReason: 'Research cycle error in safe wrapper'
-        });
+        // Write history for the error (skip for AUTO_TRADE - AutoTradeEngine is the authority)
+        if (mode !== RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
+          await firestoreAdapter.storeResearchHistory(uid, {
+            symbol: 'ERROR_CYCLE',
+            signal: 'HOLD',
+            accuracy: 0,
+            price: 0,
+            tradePlan: null,
+            isDeepResearch: true,
+            source: 'TELEGRAM_BACKGROUND',
+            status: 'SKIPPED',
+            error: err?.message,
+            skipReason: 'Research cycle error in safe wrapper'
+          });
+        }
 
         // Update state
         if (jobState) {
@@ -1293,57 +1337,31 @@ export class BackgroundResearchScheduler {
     const settings = await firestoreAdapter.getBackgroundResearchSettings(uid);
 
     const jobState = this.userJobStates.get(uid);
-    console.log('🔥 [HARD_LOG] [PROCESS_JOB_STATE] Job state for user:', uid, 'exists:', !!jobState, 'isRunning:', jobState?.isRunning);
+    const intervalExists = this.userIntervals.has(uid);
+    
+    // Comprehensive state logging for debugging
+    logger.info({
+      uid,
+      frequencyMinutes: settings?.researchFrequencyMinutes || 'unknown',
+      lastRunAt: jobState?.lastRunAt?.toISOString() || 'never',
+      nextRunAt: jobState?.nextRunAt?.toISOString() || 'unknown',
+      isRunning: jobState?.isRunning || false,
+      intervalExists,
+      mode: (jobState as any)?.mode || 'unknown'
+    }, '🔍 [RESEARCH_CYCLE_START] Research cycle initiated - state snapshot');
+
+    console.log('🔥 [HARD_LOG] [PROCESS_JOB_STATE] Job state for user:', uid, 'exists:', !!jobState, 'isRunning:', jobState?.isRunning, 'intervalExists:', intervalExists);
 
     // Get mode from job state - this is frozen until next reschedule
     const mode = (jobState as any)?.mode || null;
 
     // Prevent duplicate jobs - check if already running
     if (jobState?.isRunning) {
-      logger.warn({ uid }, '⏭️ [BACKGROUND_RESEARCH_SKIPPED] Background research already running for user');
+      logger.warn({ uid }, '⏭️ [BACKGROUND_RESEARCH_SKIPPED] Background research already running for user - blocking duplicate execution');
       console.log('🔥 [HARD_LOG] [PROCESS_BLOCKED_DUPLICATE] Research already running, skipping for user:', uid);
-
-      // CRITICAL: Update state and write history even for duplicate run early return
-      const now = admin.firestore.Timestamp.now();
-      const frequencyMinutes = settings?.researchFrequencyMinutes || 5;
-      const nextRunAt = admin.firestore.Timestamp.fromMillis(
-        Date.now() + (frequencyMinutes * 60 * 1000)
-      );
-
-      if (jobState) {
-        jobState.lastRunAt = now.toDate();
-        jobState.nextRunAt = nextRunAt.toDate();
-        // Keep isRunning = true to prevent duplicate execution
-      }
-
-      // Write history for duplicate run skip
-      try {
-        await firestoreAdapter.storeResearchHistory(uid, {
-          symbol: 'DUPLICATE_RUN',
-          signal: 'HOLD',
-          accuracy: 0,
-          price: 0,
-          tradePlan: null,
-          isDeepResearch: true,
-          source: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH ? 'AUTO_TRADE' : 'TELEGRAM_BACKGROUND',
-          status: 'SKIPPED',
-          skipReason: 'Research already running (duplicate execution prevented)'
-        });
-      } catch (histError: any) {
-        logger.warn({ uid, error: histError.message }, 'Failed to store duplicate run skip history');
-      }
-
-      // Update Firestore state
-      try {
-        await firestoreAdapter.saveBackgroundResearchSettings(uid, {
-          lastRunAt: now,
-          nextRunAt,
-          lastAccuracy: 0,
-        });
-      } catch (updateError: any) {
-        logger.warn({ uid, error: updateError.message }, 'Failed to update state for duplicate run');
-      }
-
+      // CRITICAL: Do NOT write history, do NOT update state for blocked duplicates
+      // Only the actual running research cycle should write history and update state
+      // This prevents duplicate history entries and ensures exactly 1 entry per frequency window
       return;
     }
 
@@ -1499,27 +1517,154 @@ export class BackgroundResearchScheduler {
       const schedulerCycleId = `scheduler_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
       console.log('🔥 [HARD_LOG] [SCHEDULER_CYCLE_ID] Generated cycleId:', schedulerCycleId);
 
-      // CRITICAL: Execute based on mode - COMPLETELY ISOLATED LOGIC
-      let deepResearchResult: any = null;
+      // PRODUCER: Generate research first
+      logger.info({ uid, mode }, '🔬 [RESEARCH_PRODUCER] Scheduler generating research...');
+      
+      let generatedResearch: any = null;
       let executionError: any = null;
 
+      // CRITICAL: Check if background tasks are paused BEFORE generating research
+      // If paused, DO NOT generate research, DO NOT call AutoTradeEngine
+      // EXCEPTION: Allow AUTO_TRADE_RESEARCH to proceed even when paused (critical user-triggered operation)
+      const backgroundTasksPaused = !shouldRunBackgroundTasks();
+      const isAutoTradeResearch = mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH;
+
+      if (backgroundTasksPaused && !isAutoTradeResearch) {
+        executionError = new Error('Background tasks are currently paused by system administrator');
+        logger.info({ uid, mode, reason: 'BACKGROUND_TASKS_PAUSED' }, '⏸️ [SCHEDULER] Research generation skipped - background tasks paused');
+        console.log('🔥 [HARD_LOG] [SCHEDULER_PAUSED] Background tasks paused, skipping research generation for user:', uid);
+        // Skip research generation - fall through to existing !generatedResearch flow
+      } else {
+        if (backgroundTasksPaused && isAutoTradeResearch) {
+          logger.info({ uid, mode }, '⚠️ [SCHEDULER] Background tasks paused but allowing AUTO_TRADE_RESEARCH to proceed');
+          console.log('🔥 [HARD_LOG] [SCHEDULER_AUTO_TRADE_BYPASS] Background tasks paused but proceeding with auto-trade research');
+        }
+        // Generate research only if background tasks are not paused
+        try {
+          // Get user integrations for research
+          const integrations = await getUserIntegrationsByUid(uid);
+          
+          // Load trading settings
+          const { AutoTradeEngine } = await import('./autoTradeEngine');
+          const tradingSettings = await AutoTradeEngine.getTradingSettings(uid);
+          
+          // Generate research using Top 100 accuracy scan
+          const { runDeepResearchWithCoinSelection } = await import('./accuracyAndSignalEngine');
+          const researchData = await runDeepResearchWithCoinSelection(
+            uid,
+            tradingSettings,
+            undefined,
+            integrations
+          );
+
+          // Extract best result from research
+          if (researchData && researchData.results && researchData.results.length > 0) {
+            generatedResearch = researchData.results[0]; // Best coin by accuracy
+            logger.info({ 
+              uid, 
+              symbol: generatedResearch.symbol, 
+              signal: generatedResearch.signal,
+              accuracy: generatedResearch.accuracy 
+            }, '✅ [RESEARCH_PRODUCER] Research generated successfully');
+          } else {
+            logger.warn({ uid }, '⚠️ [RESEARCH_PRODUCER] No suitable research result found');
+          }
+        } catch (researchErr: any) {
+          executionError = researchErr;
+          logger.error({ uid, error: researchErr.message }, '❌ [RESEARCH_PRODUCER] Failed to generate research');
+        }
+      }
+
+      // CONSUMER: Pass research to AutoTradeEngine ONLY if research was generated
+      let deepResearchResult: any = null;
+
+      // Check if research generation succeeded
+      if (!generatedResearch) {
+        // No research generated - save SKIPPED history directly from scheduler
+        logger.warn({ uid, mode, executionError: executionError?.message }, '⏭️ [SCHEDULER] No research generated - saving SKIPPED history');
+        
+        const skipReason = executionError 
+          ? `Research generation failed: ${executionError.message}`
+          : 'No suitable coin found by accuracy scan';
+
+        // Write history for NO_RESEARCH skip (skip for AUTO_TRADE - AutoTradeEngine is the authority)
+        if (mode !== RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
+          try {
+            await firestoreAdapter.storeResearchHistory(uid, {
+              symbol: 'NO_RESEARCH',
+              signal: 'HOLD',
+              accuracy: 0,
+              price: 0,
+              tradePlan: null,
+              isDeepResearch: true,
+              source: 'TELEGRAM_BACKGROUND',
+              status: 'SKIPPED',
+              skipReason
+            });
+          } catch (histErr: any) {
+            logger.warn({ uid, error: histErr.message }, 'Failed to store NO_RESEARCH skip history');
+          }
+        }
+
+        // Update state and exit early - don't call AutoTradeEngine
+        if (jobState) {
+          jobState.isRunning = false;
+          jobState.lastRunAt = now.toDate();
+          jobState.nextRunAt = nextRunAt.toDate();
+        }
+
+        try {
+          await firestoreAdapter.saveBackgroundResearchSettings(uid, {
+            lastRunAt: now,
+            nextRunAt,
+            lastAccuracy: 0,
+          });
+        } catch (updateErr: any) {
+          logger.warn({ uid, error: updateErr.message }, 'Failed to update state after NO_RESEARCH');
+        }
+
+        return; // Exit early - no research to execute
+      }
+
+      // Research exists - proceed with execution
       try {
         if (mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
-          // AUTO_TRADE_RESEARCH: Full execution with trading logic
-          console.log('🔥 [HARD_LOG] [AUTO_TRADE_EXEC] Starting AUTO_TRADE_RESEARCH execution for user:', uid);
-          deepResearchResult = await autoTradeEngine.runAutoTradeResearchCycleSafe(uid, false, schedulerCycleId, null); // Store history, no research (consume only)
+          // HARD GUARD: NEVER call AutoTradeEngine with null research
+          // Defense-in-depth: if generatedResearch is null, skip AutoTradeEngine call
+          // Set executionError so unified skip flow (line 1648) saves history properly
+          if (!generatedResearch) {
+            logger.info({ uid, mode }, '⏭️ [SCHEDULER] Skipping AutoTradeEngine call - no research generated (safety guard)');
+            console.log('🔥 [HARD_LOG] [AUTO_TRADE_GUARD] AutoTradeEngine call blocked - null research for user:', uid);
+            // Do NOT call AutoTradeEngine - set executionError for unified skip flow
+            executionError = new Error('AutoTradeEngine call skipped - no research generated');
+            deepResearchResult = null;
+            // Continue to existing error flow at line 1648 which saves SKIPPED history
+          } else {
+            // AUTO_TRADE_RESEARCH: Pass research to engine for trade execution
+            console.log('🔥 [HARD_LOG] [AUTO_TRADE_EXEC] Passing research to AutoTradeEngine for user:', uid, 'research:', {
+              symbol: generatedResearch.symbol,
+              signal: generatedResearch.signal,
+              accuracy: generatedResearch.accuracy
+            });
+            deepResearchResult = await autoTradeEngine.runAutoTradeResearchCycleSafe(
+              uid, 
+              false, 
+              schedulerCycleId, 
+              generatedResearch
+            );
+          }
         } else if (mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH) {
-          // TELEGRAM_BACKGROUND_RESEARCH: Research only, no trading
-          console.log('🔥 [HARD_LOG] [TELEGRAM_EXEC] Starting TELEGRAM_BACKGROUND_RESEARCH execution for user:', uid);
-          deepResearchResult = await autoTradeEngine.runAutoTradeResearchCycleSafe(uid, true, schedulerCycleId, null); // Skip history (we'll store), no research (will generate)
+          // TELEGRAM_BACKGROUND_RESEARCH: Use research for alerts, no trading
+          console.log('🔥 [HARD_LOG] [TELEGRAM_EXEC] Using research for Telegram alerts for user:', uid);
+          deepResearchResult = generatedResearch; // Use directly for Telegram alerts
         } else {
           // Unknown mode - should not happen
           logger.error({ uid, mode }, '❌ [SCHEDULER] Unknown mode in processUserResearch');
           throw new Error(`Unknown research mode: ${mode}`);
         }
-      } catch (researchErr: any) {
-        executionError = researchErr;
-        logger.warn({ uid, mode, error: researchErr.message }, '⚠️ [SCHEDULER] Research execution failed, continuing with state update');
+      } catch (executeErr: any) {
+        executionError = executeErr;
+        logger.warn({ uid, mode, error: executeErr.message }, '⚠️ [SCHEDULER] Execution failed, continuing with state update');
       }
 
       const researchNow = admin.firestore.Timestamp.now();
@@ -1528,19 +1673,30 @@ export class BackgroundResearchScheduler {
 
       console.log('🔥 [HARD_LOG] [RESEARCH_RESULT_CHECK] Checking research result for user:', uid, 'result exists:', !!deepResearchResult);
 
-      // HARD ASSERT: If we expect research result but got null, this is critical
-      if (!deepResearchResult) {
-        const errorMsg = `CRITICAL ARCHITECTURE BUG: Auto-Trade received null research result despite being triggered. UI research may have succeeded but Auto-Trade re-ran research and failed.`;
-        logger.error({ uid, mode }, errorMsg);
-        throw new Error(errorMsg);
-      }
+      // If execution failed after research was generated, handle gracefully
+      if (!deepResearchResult && executionError) {
+        logger.warn({ uid, mode, error: executionError.message }, '⚠️ [EXECUTION_FAILED] Research generated but execution failed - saving SKIPPED history');
 
-      // CRITICAL: If auto-trade cycle was skipped (deepResearchResult is null) and mode is AUTO_TRADE,
-      // STOP execution cleanly - no further research, no Telegram logic, no duplicate history
-      if (!deepResearchResult && mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
-        logger.info({ uid, mode }, '🚫 [AUTO_TRADE_SKIP] Auto-trade cycle was skipped - stopping execution cleanly');
+        // Save SKIPPED history for execution failure (skip for AUTO_TRADE - AutoTradeEngine is the authority)
+        if (mode !== RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
+          try {
+            await firestoreAdapter.storeResearchHistory(uid, {
+              symbol: generatedResearch?.symbol || 'EXECUTION_FAILED',
+              signal: 'HOLD',
+              accuracy: generatedResearch?.accuracy || 0,
+              price: generatedResearch?.price || 0,
+              tradePlan: null,
+              isDeepResearch: true,
+              source: 'TELEGRAM_BACKGROUND',
+              status: 'SKIPPED',
+              skipReason: `Execution failed: ${executionError.message}`
+            });
+          } catch (histErr: any) {
+            logger.warn({ uid, error: histErr.message }, 'Failed to store EXECUTION_FAILED skip history');
+          }
+        }
 
-        // Update state and exit - AutoTradeEngine already saved SKIPPED history
+        // Update state and exit
         if (jobState) {
           jobState.isRunning = false;
           jobState.lastRunAt = researchNow.toDate();
@@ -1568,8 +1724,18 @@ export class BackgroundResearchScheduler {
         logger.info({ uid, mode }, '📊 [RESEARCH] Research cycle completed - no signal generated');
         console.log('🔥 [HARD_LOG] [RESEARCH_NO_RESULT] Research returned null for user:', uid);
 
-        // CRITICAL: Store history ONLY for TELEGRAM_BACKGROUND mode
-        // AUTO_TRADE mode: AutoTradeEngine already saved history (skipHistoryStorage=false)
+        // AUTO_TRADE mode: If AutoTradeEngine already handled NO_RESEARCH_RESULT, respect and exit cleanly
+        if (mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
+          logger.info({ uid, mode }, '[RESEARCH] No signal generated, no ERROR_CYCLE, AUTO_TRADE engine is the final authority.');
+          // Mark isRunning = false and exit (no error, no duplicate history, no architecture violation)
+          if (jobState) {
+            jobState.isRunning = false;
+            jobState.lastRunAt = new Date();
+            const frequencyMinutes = settings?.researchFrequencyMinutes || 5;
+            jobState.nextRunAt = new Date(Date.now() + (frequencyMinutes * 60 * 1000));
+          }
+          return;
+        }
         // TELEGRAM_BACKGROUND mode: Scheduler must save history (skipHistoryStorage=true)
         if (mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH) {
           try {
@@ -1666,21 +1832,23 @@ export class BackgroundResearchScheduler {
               }
             }
 
-            // Write history for top-25 filter skip
-            try {
-              await firestoreAdapter.storeResearchHistory(uid, {
-                symbol: normalizedCoin,
-                signal: signal || 'HOLD',
-                accuracy: finalAccuracyPercent,
-                price: 0,
-                tradePlan: null,
-                isDeepResearch: true,
-                source: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH ? 'AUTO_TRADE' : 'TELEGRAM_BACKGROUND',
-                status: 'SKIPPED',
-                skipReason: 'Symbol not in top 25 high-liquidity coins'
-              });
-            } catch (histError: any) {
-              logger.warn({ uid, coin: normalizedCoin, error: histError.message }, 'Failed to store top-25 filter history');
+            // Write history for top-25 filter skip (skip for AUTO_TRADE - AutoTradeEngine is the authority)
+            if (mode !== RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
+              try {
+                await firestoreAdapter.storeResearchHistory(uid, {
+                  symbol: normalizedCoin,
+                  signal: signal || 'HOLD',
+                  accuracy: finalAccuracyPercent,
+                  price: 0,
+                  tradePlan: null,
+                  isDeepResearch: true,
+                  source: 'TELEGRAM_BACKGROUND',
+                  status: 'SKIPPED',
+                  skipReason: 'Symbol not in top 25 high-liquidity coins'
+                });
+              } catch (histError: any) {
+                logger.warn({ uid, coin: normalizedCoin, error: histError.message }, 'Failed to store top-25 filter history');
+              }
             }
 
             // Update Firestore state
@@ -1717,20 +1885,21 @@ export class BackgroundResearchScheduler {
             }
           }
 
-          // Write history for top-25 error skip
-          try {
-            await firestoreAdapter.storeResearchHistory(uid, {
-              symbol: coin,
-              signal: signal || 'HOLD',
-              accuracy: finalAccuracyPercent,
-              price: 0,
-              tradePlan: null,
-              isDeepResearch: true,
-              source: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH ? 'AUTO_TRADE' : 'TELEGRAM_BACKGROUND',
-              status: 'SKIPPED',
-              skipReason: 'Top 25 check error - blocking for safety'
-            });
-          } catch (histError: any) {
+          // Write history for top-25 error skip (skip for AUTO_TRADE - AutoTradeEngine is the authority)
+          if (mode !== RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
+            try {
+              await firestoreAdapter.storeResearchHistory(uid, {
+                symbol: coin,
+                signal: signal || 'HOLD',
+                accuracy: finalAccuracyPercent,
+                price: 0,
+                tradePlan: null,
+                isDeepResearch: true,
+                source: 'TELEGRAM_BACKGROUND',
+                status: 'SKIPPED',
+                skipReason: 'Top 25 check error - blocking for safety'
+              });
+            } catch (histError: any) {
             logger.warn({ uid, coin, error: histError.message }, 'Failed to store top-25 error history');
           }
 
@@ -2407,7 +2576,7 @@ export class BackgroundResearchScheduler {
         nextRunAt: researchNextRunAt.toDate().toISOString()
       }, '✅ [RESEARCH] Background research cycle completed (Delegate Mode)');
       console.log('🔥 [HARD_LOG] [PROCESS_COMPLETE_FINAL] processUserResearch() completed successfully for user:', uid, 'maxAccuracy:', maxAccuracy, 'alertsSent:', alertsSent);
-
+    }
     } catch (error: any) {
       console.log('🔥 [HARD_LOG] [PROCESS_ERROR_FINAL] processUserResearch() error for user:', uid, 'error:', error?.message);
       logger.error({
@@ -2442,25 +2611,24 @@ export class BackgroundResearchScheduler {
         }
       }
 
-      try {
-        const historySource = mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH
-          ? 'TELEGRAM_BACKGROUND'
-          : 'AUTO_TRADE';
-
-        await firestoreAdapter.storeResearchHistory(uid, {
-          symbol: 'ERROR_CYCLE',
-          signal: 'HOLD',
-          accuracy: 0,
-          price: 0,
-          tradePlan: null,
-          isDeepResearch: true,
-          source: historySource,
-          status: 'SKIPPED',
-          error: error.message,
-          skipReason: 'Research cycle error'
-        });
-      } catch (histError: any) {
-        logger.warn({ uid, error: histError.message }, 'Failed to store history for error cycle');
+      // Write ERROR_CYCLE history (skip for AUTO_TRADE - AutoTradeEngine is the authority)
+      if (mode !== RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
+        try {
+          await firestoreAdapter.storeResearchHistory(uid, {
+            symbol: 'ERROR_CYCLE',
+            signal: 'HOLD',
+            accuracy: 0,
+            price: 0,
+            tradePlan: null,
+            isDeepResearch: true,
+            source: 'TELEGRAM_BACKGROUND',
+            status: 'SKIPPED',
+            error: error.message,
+            skipReason: 'Research cycle error'
+          });
+        } catch (histError: any) {
+          logger.warn({ uid, error: histError.message }, 'Failed to store history for error cycle');
+        }
       }
 
       if (state) {
@@ -2727,7 +2895,7 @@ export class BackgroundResearchScheduler {
       // CRITICAL: Exchange is usable if encrypted keys exist - NEVER use decryption to determine usability
       // This check determines if auto-trade can execute, based on Firestore presence only
       const { isExchangeUsable } = await import('./firestoreAdapter');
-      const result = await isExchangeUsable(uid);
+      const result = await isExchangeUsable(uid, 'background_job');
       return result.usable;
     } catch (error: any) {
       // Log error but return false - this should not happen with pure Firestore checks

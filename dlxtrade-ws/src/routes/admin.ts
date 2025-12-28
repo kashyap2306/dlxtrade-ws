@@ -2,7 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import * as admin from 'firebase-admin';
 import { firestoreAdapter } from '../services/firestoreAdapter';
-import { encrypt, decrypt, maskKey } from '../services/keyManager';
+import { encrypt, decrypt, maskKey, getEncryptionKeyStatus, testEncryptionConsistency } from '../services/keyManager';
 import { userEngineManager } from '../services/userEngineManager';
 import { adminStatsService } from '../services/adminStatsService';
 import { adminAuthMiddleware } from '../middleware/adminAuth';
@@ -28,6 +28,63 @@ const updateKeySchema = z.object({
 export async function adminRoutes(fastify: FastifyInstance) {
   // Decorate with admin auth middleware
   fastify.decorate('adminAuth', adminAuthMiddleware);
+
+  // ========== ENCRYPTION DIAGNOSTICS ==========
+  fastify.get('/encryption/status', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const status = getEncryptionKeyStatus();
+      const testResults = await testEncryptionConsistency();
+
+      return {
+        success: true,
+        encryption: {
+          status,
+          testResults,
+          envVar: {
+            ENCRYPTION_SECRET_set: !!process.env.ENCRYPTION_SECRET,
+            ENCRYPTION_SECRET_length: process.env.ENCRYPTION_SECRET?.length || 0,
+            ENCRYPTION_SECRET_prefix: process.env.ENCRYPTION_SECRET?.substring(0, 8) + '...',
+          }
+        }
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.message,
+        encryption: {
+          status: getEncryptionKeyStatus(),
+          envVar: {
+            ENCRYPTION_SECRET_set: !!process.env.ENCRYPTION_SECRET,
+            ENCRYPTION_SECRET_length: process.env.ENCRYPTION_SECRET?.length || 0,
+          }
+        }
+      };
+    }
+  });
+
+  fastify.get('/encryption/test-decrypt/:uid', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { uid } = request.params as any;
+      const { isExchangeUsable } = await import('../services/firestoreAdapter');
+      const result = await isExchangeUsable(uid, 'user_request');
+
+      return {
+        success: true,
+        uid,
+        exchangeUsability: result
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.message,
+        uid: (request.params as any).uid
+      };
+    }
+  });
 
   // ========== EXISTING ADMIN ROUTES (for backward compatibility) ==========
   fastify.get('/keys', {

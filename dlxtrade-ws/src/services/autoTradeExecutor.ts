@@ -145,7 +145,7 @@ export class AutoTradeExecutor {
 
       // 5. Check user's exchange credentials (from exchangeConfig, NOT integrations)
       const { isExchangeUsable } = await import('./firestoreAdapter');
-      const exchangeUsability = await isExchangeUsable(request.userId);
+      const exchangeUsability = await isExchangeUsable(request.userId, 'background_job');
       if (!exchangeUsability.usable) {
         logger.info({
           userId: this.maskUserId(request.userId),

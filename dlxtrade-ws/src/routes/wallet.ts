@@ -5,6 +5,58 @@ import { decrypt } from '../services/keyManager';
 import { logger } from '../utils/logger';
 import { getFirebaseAdmin } from '../utils/firebase';
 
+/**
+ * Determine if exchange keys should be auto-cleared based on context and timing
+ */
+function shouldAutoClearKeys(
+  uid: string,
+  exchange: string,
+  context: 'background_job' | 'user_request',
+  existingDoc: any,
+  reason: string
+): { shouldClear: boolean; logData: any } {
+  const now = Date.now();
+  const updatedAt = existingDoc?.updatedAt?.toDate?.()?.getTime?.() || 0;
+  const timeSinceUpdate = now - updatedAt;
+  const RECENT_SAVE_WINDOW_MS = 60 * 1000; // 60 seconds as requested
+
+  const wasRecentlySaved = timeSinceUpdate < RECENT_SAVE_WINDOW_MS;
+  const isBackgroundJob = context === 'background_job';
+
+  const logData = {
+    uid,
+    exchange,
+    context,
+    reason,
+    wasRecentlySaved,
+    timeSinceUpdateMs: timeSinceUpdate,
+    updatedAt: existingDoc?.updatedAt?.toDate?.()?.toISOString?.(),
+    recentSaveWindowMs: RECENT_SAVE_WINDOW_MS,
+    timestamp: now
+  };
+
+  // Block auto-clearing if:
+  // 1. It's a background job AND keys were recently saved, OR
+  // 2. It's a user request (never auto-clear for user requests)
+  const shouldClear = !(isBackgroundJob && wasRecentlySaved);
+
+  if (!shouldClear) {
+    console.log('🔥 [HARD_LOG] [EXCHANGE_AUTO_INVALIDATION_BLOCKED]', {
+      ...logData,
+      action: 'SKIPPED_KEY_CLEARING',
+      blockReason: isBackgroundJob && wasRecentlySaved ? 'recent_manual_save' : 'user_request_context'
+    });
+  } else {
+    console.log('🔥 [HARD_LOG] [EXCHANGE_AUTO_INVALIDATION_DETECTED]', {
+      ...logData,
+      action: 'KEYS_WILL_BE_CLEARED',
+      caller: 'shouldAutoClearKeys'
+    });
+  }
+
+  return { shouldClear, logData };
+}
+
 interface Balance {
   asset: string;
   free: number;
@@ -86,18 +138,40 @@ export async function walletRoutes(fastify: FastifyInstance) {
           ? decryptOrThrow(exchangeConfig.passphraseEncrypted, 'passphrase')
           : undefined;
       } catch (decryptErr: any) {
-        // HARD RESET: one-time clean up if decrypt fails (cache per UID)
-        const memory = (global as any).__EXCHANGE_KEY_INVALID_CACHE = (global as any).__EXCHANGE_KEY_INVALID_CACHE || {};
-        if (!memory[user.uid]) {
-          const admin = await import('firebase-admin');
-          await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').set({
-            apiKeyEncrypted: admin.firestore.FieldValue.delete(),
-            secretKeyEncrypted: admin.firestore.FieldValue.delete(),
-            passphraseEncrypted: admin.firestore.FieldValue.delete(),
-            exchangeStatus: 'INVALID_KEYS',
-            updatedAt: new Date()
-          }, { merge: true });
-          memory[user.uid] = true;
+        // Get the current exchange config document to check timestamps
+        const exchangeConfig = await firestoreAdapter.getExchangeConfig(user.uid);
+        const dbInstance = getFirebaseAdmin().firestore();
+        const docRef = dbInstance.collection('users').doc(user.uid).collection('exchangeConfig').doc('current');
+        const docSnapshot = await docRef.get();
+
+        const { shouldClear, logData } = shouldAutoClearKeys(
+          user.uid,
+          exchangeConfig?.exchange || 'unknown',
+          'user_request', // This is a user-facing API call
+          docSnapshot.data(),
+          'wallet_balance_decrypt_failed'
+        );
+
+        if (!shouldClear) {
+          logger.warn({
+            uid: user.uid,
+            timeSinceUpdateMs: logData.timeSinceUpdateMs,
+            error: decryptErr.message
+          }, 'EXCHANGE_AUTO_INVALIDATION_BLOCKED: Skipping key clearing in wallet balance check for recently manually saved exchange');
+        } else {
+          // HARD RESET: one-time clean up if decrypt fails (cache per UID)
+          const memory = (global as any).__EXCHANGE_KEY_INVALID_CACHE = (global as any).__EXCHANGE_KEY_INVALID_CACHE || {};
+          if (!memory[user.uid]) {
+            const admin = await import('firebase-admin');
+            await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').set({
+              apiKeyEncrypted: admin.firestore.FieldValue.delete(),
+              secretKeyEncrypted: admin.firestore.FieldValue.delete(),
+              passphraseEncrypted: admin.firestore.FieldValue.delete(),
+              exchangeStatus: 'INVALID_KEYS',
+              updatedAt: new Date()
+            }, { merge: true });
+            memory[user.uid] = true;
+          }
         }
         return reply.code(400).send({
           error: 'Exchange keys invalid. Please re-enter API keys.',

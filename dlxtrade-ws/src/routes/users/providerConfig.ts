@@ -9,8 +9,35 @@ import { decrypt } from '../../services/keyManager';
 import { providerRequiresApiKey, getProviderById } from '../../config/apiProviders';
 import { apiUsageTracker } from '../../services/apiUsageTracker';
 
+/**
+ * Sanitize Firestore payload by removing undefined values and converting them to FieldValue.delete()
+ */
+function sanitizeFirestorePayload(payload: any): any {
+  const sanitized: any = {};
+  let sanitizedCount = 0;
 
+  for (const [key, value] of Object.entries(payload)) {
+    if (value === undefined) {
+      sanitized[key] = admin.firestore.FieldValue.delete();
+      console.log('🔥 [HARD_LOG] [PROVIDER_FIELD_SANITIZED]', {
+        field: key,
+        action: 'CONVERTED_UNDEFINED_TO_DELETE'
+      });
+      sanitizedCount++;
+    } else {
+      sanitized[key] = value;
+    }
+  }
 
+  if (sanitizedCount > 0) {
+    console.log('🔥 [HARD_LOG] [PAYLOAD_SANITIZED]', {
+      sanitizedFields: sanitizedCount,
+      totalFields: Object.keys(payload).length
+    });
+  }
+
+  return sanitized;
+}
 
 // Extract provider config logic into a separate function for testing
 // BACKGROUND SERVICE FUNCTION: Safe for schedulers/jobs - NO request context required
@@ -82,6 +109,18 @@ export async function getUserIntegrationsByUid(uid: string, context: 'user_reque
         const apiKeyEncrypted = data.apiKeyEncrypted;
         const secretKeyEncrypted = data.secretKeyEncrypted;
 
+        // 🔥 HARD_LOG: PROVIDER_READ
+        console.log('🔥 [HARD_LOG] [PROVIDER_READ]', {
+          uid,
+          providerId,
+          context,
+          hasApiKeyEncrypted: !!apiKeyEncrypted,
+          apiKeyEncryptedLength: apiKeyEncrypted?.length || 0,
+          hasSecretKeyEncrypted: !!secretKeyEncrypted,
+          secretKeyEncryptedLength: secretKeyEncrypted?.length || 0,
+          willAttemptDecrypt: context === 'user_request' && apiKeyRequired === true
+        });
+
         let apiKey = '';
         let secretKey = '';
 
@@ -118,26 +157,37 @@ export async function getUserIntegrationsByUid(uid: string, context: 'user_reque
                 isEmpty: !apiKey || apiKey.trim().length === 0
               });
 
-              // CRITICAL: If decryption fails, log debug (not warning) and treat provider as unavailable
-              // Do NOT abort background research - gracefully handle missing provider
-              // Reduce noisy warnings - only log if encrypted value exists
+              // HARD ASSERTION: If decryption returns empty result, mark provider as INVALID
               if (!apiKey && apiKeyEncrypted.trim().length > 0) {
-                logger.debug({
+                console.log('🔥 [HARD_LOG] [PROVIDER_INVALIDATED]', {
                   uid,
                   providerId,
-                  context
-                }, `API key decryption failed for ${providerId} - treating as unavailable`);
-                // Continue with empty key - provider will be marked as unavailable
+                  context,
+                  reason: 'API_KEY_DECRYPT_RETURNED_EMPTY',
+                  encryptedLength: apiKeyEncrypted.length,
+                  decryptedLength: 0,
+                  action: 'MARKED_INVALID'
+                });
+                // Continue with empty key - provider will be marked as invalid
               }
             } catch (decryptErr: any) {
-              // CRITICAL: Graceful decryption failure handling
-              // Log debug (not warning) to reduce noise - treat provider as unavailable
+              // CRITICAL: Decryption failure indicates corrupted encrypted key
+              // Log as HARD_LOG and treat provider as INVALID (not just unavailable)
+              console.log('🔥 [HARD_LOG] [DECRYPTION_FAILED]', {
+                uid,
+                providerId,
+                context,
+                error: decryptErr.message,
+                apiKeyEncryptedLength: apiKeyEncrypted?.length || 0,
+                action: 'TREAT_AS_INVALID'
+              });
+
               logger.debug({
                 uid,
                 providerId,
                 context,
                 error: decryptErr.message
-              }, `Failed to decrypt API key for ${providerId} - treating as unavailable`);
+              }, `Failed to decrypt API key for ${providerId} - corrupted encrypted key, treating as invalid`);
               // Continue with empty key - provider will be marked as unavailable
               apiKey = ''; // Ensure empty key on any decryption error
           }
@@ -148,16 +198,18 @@ export async function getUserIntegrationsByUid(uid: string, context: 'user_reque
         if (secretKeyEncrypted && secretKeyEncrypted.trim().length > 0) {
           try {
             secretKey = decrypt(secretKeyEncrypted) || '';
-            // CRITICAL: If decryption fails, log debug (not warning) and treat provider as unavailable
-            // Do NOT abort background research - gracefully handle missing provider
-            // Reduce noisy warnings - only log if encrypted value exists
+            // HARD ASSERTION: If secret decryption returns empty result, mark provider as INVALID
             if (!secretKey && secretKeyEncrypted.trim().length > 0) {
-              logger.debug({
+              console.log('🔥 [HARD_LOG] [PROVIDER_INVALIDATED]', {
                 uid,
                 providerId,
-                context
-              }, `Secret key decryption failed for ${providerId} - treating as unavailable`);
-              // Continue with empty key - provider will be marked as unavailable
+                context,
+                reason: 'SECRET_KEY_DECRYPT_RETURNED_EMPTY',
+                encryptedLength: secretKeyEncrypted.length,
+                decryptedLength: 0,
+                action: 'MARKED_INVALID'
+              });
+              // Continue with empty key - provider will be marked as invalid
             }
           } catch (decryptErr: any) {
             // CRITICAL: Graceful decryption failure handling
@@ -466,6 +518,18 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
         let encryptionSuccess = true;
         const isApiKeyEmpty = !apiKey || apiKey.trim() === '';
 
+        // 🔥 HARD_LOG: PROVIDER_SAVE
+        console.log('🔥 [HARD_LOG] [PROVIDER_SAVE]', {
+          uid: targetUid,
+          providerId: normalizedProviderName,
+          action: 'SAVE_PROVIDER',
+          hasApiKeyEncrypted: !!finalEncryptedApiKey,
+          apiKeyEncryptedLength: finalEncryptedApiKey?.length || 0,
+          hasSecretKeyEncrypted: !!finalEncryptedSecretKey,
+          secretKeyEncryptedLength: finalEncryptedSecretKey?.length || 0,
+          willEncryptNew: (!finalEncryptedApiKey && !isApiKeyEmpty) || (!finalEncryptedSecretKey && secretKey && secretKey.trim() !== '')
+        });
+
         try {
           if (!finalEncryptedApiKey && !isApiKeyEmpty) {
             finalEncryptedApiKey = keyManager.encrypt(apiKey);
@@ -480,6 +544,53 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
           console.error("ENCRYPT ERROR:", err);
           encryptionSuccess = false;
           // Continue with other providers but log the error
+        }
+
+        // HARD ASSERTION: Test decrypt immediately after encryption to ensure validity
+        if (encryptionSuccess) {
+          let testDecryptSuccess = true;
+          let testApiKeyLength = 0;
+          let testSecretKeyLength = 0;
+
+          try {
+            // Test decrypt apiKey if we just encrypted it
+            if (finalEncryptedApiKey && !isApiKeyEmpty) {
+              const testApiKey = decrypt(finalEncryptedApiKey);
+              testApiKeyLength = testApiKey?.length || 0;
+              if (!testApiKey || testApiKey.trim().length === 0 || testApiKey !== apiKey) {
+                throw new Error('API key test decrypt failed');
+              }
+            }
+
+            // Test decrypt secretKey if we just encrypted it
+            if (finalEncryptedSecretKey && secretKey && secretKey.trim() !== '') {
+              const testSecretKey = decrypt(finalEncryptedSecretKey);
+              testSecretKeyLength = testSecretKey?.length || 0;
+              if (!testSecretKey || testSecretKey.trim().length === 0 || testSecretKey !== secretKey) {
+                throw new Error('Secret key test decrypt failed');
+              }
+            }
+          } catch (testDecryptErr: any) {
+            testDecryptSuccess = false;
+            console.log('🔥 [HARD_LOG] [PROVIDER_SAVE_ABORTED_INVALID_ENCRYPTION]', {
+              uid: targetUid,
+              providerId: normalizedProviderName,
+              action: 'SAVE_ABORTED',
+              reason: 'TEST_DECRYPT_FAILED_AFTER_ENCRYPT',
+              error: testDecryptErr.message,
+              encryptedApiKeyLength: finalEncryptedApiKey?.length || 0,
+              encryptedSecretKeyLength: finalEncryptedSecretKey?.length || 0,
+              testApiKeyLength,
+              testSecretKeyLength,
+              aborted: true
+            });
+          }
+
+          // ABORT SAVE if test decrypt fails
+          if (!testDecryptSuccess) {
+            console.error(`❌ PROVIDER SAVE ABORTED: ${normalizedProviderName} - encryption/decryption test failed`);
+            continue; // Skip this provider
+          }
         }
 
         console.log("[PROVIDER_SAVE_ENCRYPTED]", {
@@ -514,7 +625,8 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
         let providerWriteSuccess = false;
         try {
           console.log("[PROVIDER_SAVE_WRITE] ABOUT TO CALL set() for", normalizedProviderName);
-          await integrationsDocRef.set(integrationsPayload, { merge: true });
+          const sanitizedPayload = sanitizeFirestorePayload(integrationsPayload);
+          await integrationsDocRef.set(sanitizedPayload, { merge: true });
           console.log("[PROVIDER_SAVE_WRITE] SUCCESS: set() completed for", normalizedProviderName);
           providerWriteSuccess = true;
         } catch (err: any) {

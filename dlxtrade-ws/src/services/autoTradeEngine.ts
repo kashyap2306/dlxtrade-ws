@@ -2965,7 +2965,24 @@ export class AutoTradeEngine {
         updatedAt: admin.firestore.Timestamp.now()
       }, { merge: true });
 
-      // 3. Update backgroundResearchSettings - ensure scheduler knows it should run
+      // 3. CRITICAL: Sync root users/{uid} document with auto-trade state
+      // UI reads from root document - must be in sync with autoTradeConfig/current
+      await userRef.set({
+        autoTradeEnabled: true,
+        autoTrade: { enabled: true },
+        apiConnected: true,  // Exchange already validated - enforce connection state
+        apiStatus: 'connected',
+        updatedAt: admin.firestore.Timestamp.now(),
+      }, { merge: true });
+
+      console.log('🔥 [HARD_LOG] [AUTO_TRADE_USERS_DOC_SYNCED]', {
+        uid,
+        autoTradeEnabled: true,
+        apiConnected: true,
+        source: 'startAutoTradeLoop'
+      });
+
+      // 4. Update backgroundResearchSettings - ensure scheduler knows it should run
       // CRITICAL: Persist research frequency for scheduler
       await userRef.collection('settings').doc('backgroundResearch').set({
         backgroundResearchEnabled: true,
@@ -3004,58 +3021,76 @@ export class AutoTradeEngine {
     const cycleId = schedulerCycleId || `engine_${cycleStartTimestamp}`;
     console.log('🔥 [HARD_LOG] [AUTO_TRADE_SAFE_START] runAutoTradeResearchCycleSafe() called for user:', uid, 'skipHistoryStorage:', skipHistoryStorage, 'cycleId:', cycleId);
 
-    // CRITICAL: Verify encryption key consistency for auto-trade engine
-    const { verifyEncryptionKeyConsistency } = await import('./keyManager');
-    verifyEncryptionKeyConsistency(`auto-trade-engine-${uid}`);
-
-    logger.info({ uid, cycleId }, '🚀 [AUTO_TRADE_CYCLE] Cycle STARTED');
-
-    // Check if we should run
-    if (!shouldRunBackgroundTasks()) {
-      logger.info({ uid, cycleId, reason: 'BACKGROUND_TASKS_PAUSED' }, '⏸️ [AUTO_TRADE_CYCLE] Cycle SKIPPED - background tasks paused');
-
-      // Save SKIPPED history for background tasks paused
-      await saveAutoTradeHistorySkipped(
-        uid,
-        'BACKGROUND_TASKS_PAUSED',
-        'Background tasks are currently paused by system administrator'
-      );
-
-      return null; // Cycle completed with SKIPPED history
+    // CRITICAL: Atomic concurrency guard - ensure only ONE auto-trade cycle runs at a time per user
+    const userLoopState = this.autoTradeLoops.get(uid);
+    if (userLoopState?.researchInProgress) {
+      logger.warn({ uid, cycleId }, '⚠️ [AUTO_TRADE_CONCURRENCY] Cycle blocked - another auto-trade cycle already running for user');
+      console.log('🔥 [HARD_LOG] [AUTO_TRADE_CONCURRENCY_BLOCK] Cycle blocked for user:', uid, 'cycleId:', cycleId);
+      return null; // Exit immediately without creating duplicate history
     }
 
-    // Yield control before heavy operations
-    await yieldToEventLoop();
+    // Set concurrency guard BEFORE any async operations
+    if (!userLoopState) {
+      this.autoTradeLoops.set(uid, {
+        intervalId: null,
+        isRunning: false,
+        lastResearchTime: null,
+        researchInProgress: true
+      });
+    } else {
+      userLoopState.researchInProgress = true;
+    }
 
-    // 🔥 DEBUG: Log auto-trade research cycle start
-    logger.info({
-      uid,
-      skipHistoryStorage,
-      serverSide: true,
-      frontendIndependent: true,
-      cycleId,
-      hasResearchResult: !!researchResult
-    }, '🔍 [AUTO_TRADE_LIFECYCLE_DEBUG] Starting auto-trade research cycle - server-side only');
+    try {
+      // CRITICAL: Verify encryption key consistency for auto-trade engine
+      const { verifyEncryptionKeyConsistency } = await import('./keyManager');
+      verifyEncryptionKeyConsistency(`auto-trade-engine-${uid}`);
 
-    // AUTO_TRADE IS CONSUMER ONLY: Use research result provided by scheduler
-    if (!researchResult) {
-      logger.info({ uid, cycleId }, '🚫 [AUTO_TRADE_CONSUMER] No research result provided by scheduler - skipping cycle gracefully');
+      logger.info({ uid, cycleId }, '🚀 [AUTO_TRADE_CYCLE] Cycle STARTED');
 
-      // Save SKIPPED history for no research result
-      if (!skipHistoryStorage) {
+      // Check if we should run
+      if (!shouldRunBackgroundTasks()) {
+        logger.info({ uid, cycleId, reason: 'BACKGROUND_TASKS_PAUSED' }, '⏸️ [AUTO_TRADE_CYCLE] Cycle SKIPPED - background tasks paused');
+
+        // Save SKIPPED history for background tasks paused
         await saveAutoTradeHistorySkipped(
           uid,
-          'NO_RESEARCH_RESULT',
-          'Scheduler provided no research result for auto-trade execution',
-          cycleId
+          'BACKGROUND_TASKS_PAUSED',
+          'Background tasks are currently paused by system administrator'
         );
+
+        return null; // Cycle completed with SKIPPED history
       }
 
-      return null; // Exit gracefully - no research to consume
-    }
+      // Yield control before heavy operations
+      await yieldToEventLoop();
 
-    // Run trade execution with provided research result
-    return await this.runAutoTradeExecutionCycle(uid, skipHistoryStorage, cycleId, researchResult);
+      // 🔥 DEBUG: Log auto-trade research cycle start
+      logger.info({
+        uid,
+        skipHistoryStorage,
+        serverSide: true,
+        frontendIndependent: true,
+        cycleId,
+        hasResearchResult: !!researchResult
+      }, '🔍 [AUTO_TRADE_LIFECYCLE_DEBUG] Starting auto-trade research cycle - server-side only');
+
+      // AUTO_TRADE IS CONSUMER ONLY: Use research result provided by scheduler
+      if (!researchResult) {
+        logger.info({ uid, cycleId }, '🚫 [AUTO_TRADE_CONSUMER] No research result provided by scheduler - exiting silently (scheduler should never call with null research)');
+        return null; // Exit silently - no SKIPPED history for AUTO_TRADE mode
+      }
+
+      // Run trade execution with provided research result
+      return await this.runAutoTradeExecutionCycle(uid, skipHistoryStorage, cycleId, researchResult);
+    } finally {
+      // CRITICAL: Always clear concurrency guard when function exits
+      const userLoopState = this.autoTradeLoops.get(uid);
+      if (userLoopState) {
+        userLoopState.researchInProgress = false;
+        console.log('🔥 [HARD_LOG] [AUTO_TRADE_CONCURRENCY_CLEAR] Concurrency guard cleared for user:', uid, 'cycleId:', cycleId);
+      }
+    }
   }
 
   /**
@@ -3092,7 +3127,7 @@ export class AutoTradeEngine {
     }
 
     // CRITICAL: Check exchange usability once at cycle start and reuse result
-    const exchangeUsability = await isExchangeUsable(uid);
+    const exchangeUsability = await isExchangeUsable(uid, 'background_job');
     if (!exchangeUsability.usable) {
       logger.warn({
         uid,
@@ -3306,7 +3341,22 @@ export class AutoTradeEngine {
         updatedAt: admin.firestore.Timestamp.now()
       }, { merge: true });
 
-      // 2. Update backgroundResearchSettings
+      // 2. CRITICAL: Sync root users/{uid} document with auto-trade state
+      // UI reads from root document - must be in sync with autoTradeConfig/current
+      await userRef.set({
+        autoTradeEnabled: false,
+        autoTrade: { enabled: false },
+        updatedAt: admin.firestore.Timestamp.now(),
+      }, { merge: true });
+
+      console.log('🔥 [HARD_LOG] [AUTO_TRADE_USERS_DOC_SYNCED]', {
+        uid,
+        autoTradeEnabled: false,
+        apiConnected: undefined, // Don't touch exchange flags when disabling
+        source: 'stopAutoTradeLoop'
+      });
+
+      // 3. Update backgroundResearchSettings
       await userRef.collection('settings').doc('backgroundResearch').set({
         backgroundResearchEnabled: false,
         updatedAt: admin.firestore.Timestamp.now()
@@ -3468,7 +3518,7 @@ export class AutoTradeEngine {
     }
 
     // CRITICAL: Check exchange usability once at cycle start and reuse result
-    const exchangeUsability = await isExchangeUsable(uid);
+    const exchangeUsability = await isExchangeUsable(uid, 'background_job');
     if (!exchangeUsability.usable) {
       logger.warn({
         uid,

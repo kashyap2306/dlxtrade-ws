@@ -8,6 +8,36 @@ import { logger } from '../utils/logger';
 import * as admin from 'firebase-admin';
 import { getFirebaseAdmin } from '../utils/firebase';
 
+/**
+ * Sanitize Firestore payload by removing undefined values and converting them to FieldValue.delete()
+ */
+function sanitizeFirestorePayload(payload: any): any {
+  const sanitized: any = {};
+  let sanitizedCount = 0;
+
+  for (const [key, value] of Object.entries(payload)) {
+    if (value === undefined) {
+      sanitized[key] = admin.firestore.FieldValue.delete();
+      console.log('🔥 [HARD_LOG] [PROVIDER_FIELD_SANITIZED]', {
+        field: key,
+        action: 'CONVERTED_UNDEFINED_TO_DELETE'
+      });
+      sanitizedCount++;
+    } else {
+      sanitized[key] = value;
+    }
+  }
+
+  if (sanitizedCount > 0) {
+    console.log('🔥 [HARD_LOG] [PAYLOAD_SANITIZED]', {
+      sanitizedFields: sanitizedCount,
+      totalFields: Object.keys(payload).length
+    });
+  }
+
+  return sanitized;
+}
+
 // REQUIRED HARD MAPPING - STRICT PROVIDER TYPE NORMALIZATION
 const MARKET_DATA_PROVIDERS = new Set([
   "cryptocompare", "bybit", "okx", "kucoin", "bitget", "coinstats",
@@ -235,13 +265,32 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // If disabling, just update enabled status
+    // If disabling, clear ALL encrypted keys to prevent corrupted keys from persisting
     if (!body.enabled) {
-      logger.info({ uid: user.uid, apiName: body.apiName, docName }, 'Disabling integration');
-      await firestoreAdapter.saveIntegration(user.uid, docName, {
-        enabled: false,
+      // 🔥 HARD_LOG: PROVIDER_DELETE
+      console.log('🔥 [HARD_LOG] [PROVIDER_DELETE]', {
+        uid: user.uid,
+        providerId: body.apiName,
+        action: 'DISABLE_PROVIDER',
+        clearingEncryptedKeys: true
       });
-      return { message: 'Integration disabled', apiName: body.apiName };
+
+      logger.info({ uid: user.uid, apiName: body.apiName, docName }, 'Disabling integration and clearing encrypted keys');
+
+      // CRITICAL: Directly update Firestore to clear encrypted keys when disabling
+      const db = getFirebaseAdmin().firestore();
+      const docRef = db.collection('users').doc(user.uid).collection('integrations').doc(docName);
+
+      const disablePayload = {
+        enabled: false,
+        // CRITICAL: Explicitly clear encrypted keys when disabling to prevent corrupted keys from persisting
+        apiKeyEncrypted: admin.firestore.FieldValue.delete(),
+        secretKeyEncrypted: admin.firestore.FieldValue.delete(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      const sanitizedDisablePayload = sanitizeFirestorePayload(disablePayload);
+      await docRef.set(sanitizedDisablePayload, { merge: true });
+      return { message: 'Integration disabled and keys cleared', apiName: body.apiName };
     }
 
     // If enabling, require keys - save to appropriate location
@@ -297,7 +346,8 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         }
 
         // FORCE COMPLETE: Use merge:false to ensure no partial overwrites
-        await docRef.set(exchangeConfig, { merge: false });
+        const sanitizedExchangeConfig = sanitizeFirestorePayload(exchangeConfig);
+        await docRef.set(sanitizedExchangeConfig, { merge: false });
 
         logger.info({
           uid: user.uid,
@@ -443,13 +493,32 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // If disabling, just update enabled status
+    // If disabling, clear ALL encrypted keys to prevent corrupted keys from persisting
     if (!body.enabled) {
-      logger.info({ uid: user.uid, apiName: body.apiName, docName }, 'Disabling integration');
-      await firestoreAdapter.saveIntegration(user.uid, docName, {
-        enabled: false,
+      // 🔥 HARD_LOG: PROVIDER_DELETE
+      console.log('🔥 [HARD_LOG] [PROVIDER_DELETE]', {
+        uid: user.uid,
+        providerId: body.apiName,
+        action: 'DISABLE_PROVIDER',
+        clearingEncryptedKeys: true
       });
-      return { message: 'Integration disabled', apiName: body.apiName };
+
+      logger.info({ uid: user.uid, apiName: body.apiName, docName }, 'Disabling integration and clearing encrypted keys');
+
+      // CRITICAL: Directly update Firestore to clear encrypted keys when disabling
+      const db = getFirebaseAdmin().firestore();
+      const docRef = db.collection('users').doc(user.uid).collection('integrations').doc(docName);
+
+      const disablePayload = {
+        enabled: false,
+        // CRITICAL: Explicitly clear encrypted keys when disabling to prevent corrupted keys from persisting
+        apiKeyEncrypted: admin.firestore.FieldValue.delete(),
+        secretKeyEncrypted: admin.firestore.FieldValue.delete(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      const sanitizedDisablePayload = sanitizeFirestorePayload(disablePayload);
+      await docRef.set(sanitizedDisablePayload, { merge: true });
+      return { message: 'Integration disabled and keys cleared', apiName: body.apiName };
     }
 
     // If enabling, require keys - save to appropriate location
@@ -488,7 +557,8 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
           exchangeConfig.createdAt = admin.firestore.Timestamp.now();
         }
 
-        await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').set(exchangeConfig, { merge: true });
+        const sanitizedExchangeConfig2 = sanitizeFirestorePayload(exchangeConfig);
+        await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').set(sanitizedExchangeConfig2, { merge: true });
 
         logger.info({
           uid: user.uid,
@@ -1028,7 +1098,8 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         configData.passphraseEncrypted = encrypt(passphrase);
       }
 
-      await docRef.set(configData, { merge: true });
+      const sanitizedConfigData = sanitizeFirestorePayload(configData);
+      await docRef.set(sanitizedConfigData, { merge: true });
 
       logger.info({
         uid: user.uid,
@@ -1257,8 +1328,8 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
 
       await firestoreAdapter.saveIntegration(user.uid, apiName, {
         enabled,
-        apiKey: apiKey || undefined,
-        apiType: type
+        ...(apiKey ? { apiKey } : {}),
+        ...(type ? { apiType: type } : {})
       });
 
       return { success: true };

@@ -917,10 +917,11 @@ export const useAutoTradeConfig = (user: any) => {
   }, [user, resolveExchangeName]);
 
   const updateEngineStatus = () => {
-    if (!config.autoTradeEnabled) {
-      setEngineStatus('Stopped');
-    } else {
+    const exchangeConnected = isExchangeConnected(exchangeConfig);
+    if (config.autoTradeEnabled && exchangeConnected) {
       setEngineStatus('Running');
+    } else {
+      setEngineStatus('Stopped');
     }
   };
 
@@ -932,6 +933,11 @@ export const useAutoTradeConfig = (user: any) => {
 
     return currentTime >= start && currentTime <= end;
   };
+
+  // Update engine status whenever config or exchange config changes
+  useEffect(() => {
+    updateEngineStatus();
+  }, [config.autoTradeEnabled, exchangeConfig, updateEngineStatus]);
 
   // Cleanup on unmount
   // Track mount/unmount state for async operations

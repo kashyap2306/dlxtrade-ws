@@ -340,11 +340,9 @@ export default function AutoTrade() {
       const response = await researchApi.deepResearch.getHistory(100);
       const allHistory = response.data?.data || response.data || [];
       
-      // Filter for AUTO_TRADE source only and non-empty symbols
+      // Filter for AUTO_TRADE source only - include all entries (executed trades may have symbols, skipped cycles have null symbols)
       const autoTradeOnly = allHistory.filter((entry: any) =>
-        entry.source === 'AUTO_TRADE' &&
-        entry.symbol &&
-        entry.symbol.trim().length > 0
+        entry.source === 'AUTO_TRADE'
       );
 
       // Sort by timestamp DESC (latest first) - no grouping
@@ -842,114 +840,166 @@ export default function AutoTrade() {
                           : '--';
                         const absoluteTime = timestamp ? timestamp.toLocaleString() : '--';
 
-                        // COIN (SYMBOL) DISPLAY RULES
+                        // COIN (SYMBOL) DISPLAY RULES - Handle AUTO_TRADE records correctly
                         let coinDisplay = '--';
-                        if (entry.symbol === 'AUTO_TRADE_CYCLE') {
-                          coinDisplay = 'Cycle Skipped';
-                        } else if (entry.symbol && entry.symbol.trim().length > 0) {
-                          coinDisplay = entry.symbol;
+                        if (entry.source === 'AUTO_TRADE') {
+                          // For AUTO_TRADE records: show symbol if non-empty, otherwise "Auto-Trade Cycle"
+                          if (entry.symbol && typeof entry.symbol === 'string' && entry.symbol.trim().length > 0) {
+                            coinDisplay = entry.symbol;
+                          } else {
+                            coinDisplay = 'Auto-Trade Cycle'; // Show descriptive label for cycle tracking
+                          }
+                        } else {
+                          // TELEGRAM logic (unchanged)
+                          if (entry.symbol && entry.symbol.trim().length > 0) {
+                            coinDisplay = entry.symbol;
+                          }
                         }
 
-                        // ACCURACY DISPLAY RULES (FINAL entry only)
+                        // ACCURACY DISPLAY RULES - Handle AUTO_TRADE records correctly
                         let accuracyDisplay = '--';
                         const rawAccuracy = typeof entry.accuracy === 'number' ? entry.accuracy : null;
-                        if (rawAccuracy !== null && rawAccuracy > 0) {
-                          // Valid accuracy - normalize to percentage
-                          const normalizedAccuracy = rawAccuracy > 1 ? rawAccuracy : rawAccuracy * 100;
-                          accuracyDisplay = `${normalizedAccuracy.toFixed(1)}%`;
-                        } else if (rawAccuracy === 0 && entry.decision === 'SKIPPED') {
-                          accuracyDisplay = 'Not Calculated';
-                        } else if (rawAccuracy === 0 && entry.executionStatus === 'FAILED') {
-                          accuracyDisplay = '0%';
+                        if (entry.source === 'AUTO_TRADE') {
+                          // For AUTO_TRADE records, show accuracy whenever it's a valid number
+                          if (rawAccuracy !== null) {
+                            const normalizedAccuracy = rawAccuracy > 1 ? rawAccuracy : rawAccuracy * 100;
+                            accuracyDisplay = `${normalizedAccuracy.toFixed(1)}%`;
+                          } else {
+                            accuracyDisplay = '--';
+                          }
+                        } else {
+                          // TELEGRAM logic (unchanged)
+                          if (rawAccuracy !== null && rawAccuracy > 0) {
+                            const normalizedAccuracy = rawAccuracy > 1 ? rawAccuracy : rawAccuracy * 100;
+                            accuracyDisplay = `${normalizedAccuracy.toFixed(1)}%`;
+                          } else if (rawAccuracy === 0 && entry.decision === 'SKIPPED') {
+                            accuracyDisplay = 'Not Calculated';
+                          } else if (rawAccuracy === 0 && entry.executionStatus === 'FAILED') {
+                            accuracyDisplay = '0%';
+                          }
                         }
 
-                        // RESULT / STATUS COLUMN - Map using backend fields
+                        // RESULT / STATUS COLUMN - Handle AUTO_TRADE vs TELEGRAM records correctly
                         let resultStatus = 'Completed'; // Default for entries without specific status
-                        if (entry.executionStatus === 'SUCCESS') {
-                          resultStatus = 'Trade Executed';
-                        } else if (entry.executionStatus === 'FAILED') {
-                          resultStatus = 'Execution Failed';
-                        } else if (entry.decision === 'SKIPPED') {
-                          // Use skipReason to derive meaningful label
-                          const skipReason = entry.skipReason || '';
-                          switch (skipReason) {
-                            case 'BACKGROUND_TASKS_PAUSED':
-                              resultStatus = 'System Paused';
-                              break;
-                            case 'DUPLICATE_CYCLE':
-                              resultStatus = 'Duplicate Cycle Skipped';
-                              break;
-                            case 'EXCHANGE_NOT_USABLE':
-                              resultStatus = 'Exchange Not Usable';
-                              break;
-                            case 'ACCURACY_BELOW_THRESHOLD':
-                              resultStatus = 'Accuracy Not Triggered';
-                              break;
-                            case 'NO_RESEARCH_RESULTS':
-                              resultStatus = 'No Research Data';
-                              break;
-                            case 'CONFIG_LOAD_FAILED':
-                              resultStatus = 'Config Load Failed';
-                              break;
-                            case 'AUTO_TRADE_DISABLED':
-                              resultStatus = 'Auto-Trade Disabled';
-                              break;
-                            case 'NO_RESEARCH_KEYS':
-                              resultStatus = 'Research Keys Missing';
-                              break;
-                            case 'NO_USABLE_PROVIDERS':
-                              resultStatus = 'No Providers Available';
-                              break;
-                            case 'RESEARCH_FAILED':
-                              resultStatus = 'Research Failed';
-                              break;
-                            case 'SYMBOL_OUTSIDE_TOP_25':
-                              resultStatus = 'Symbol Outside Top 25';
-                              break;
-                            case 'INVALID_ACCURACY':
-                              resultStatus = 'Invalid Accuracy';
-                              break;
-                            case 'SYSTEM_RISK_FAILURE':
-                              resultStatus = 'Risk Limits Exceeded';
-                              break;
-                            case 'INVALID_SIGNAL':
-                              resultStatus = 'Invalid Signal';
-                              break;
-                            case 'DYNAMIC_PARAMS_SKIP':
-                              resultStatus = 'Params Calculation Failed';
-                              break;
-                            case 'EXECUTION_BLOCKED':
-                              resultStatus = 'Execution Blocked';
-                              break;
-                            case 'MODE_VALIDATION_FAILED':
-                              resultStatus = 'Mode Validation Failed';
-                              break;
-                            case 'LOW_RR_PRE_EXECUTION':
-                              resultStatus = 'Low Risk-Reward';
-                              break;
-                            case 'INVALID_TP_LOGIC':
-                              resultStatus = 'Invalid TP Logic';
-                              break;
-                            case 'TRADE_EXECUTION_FAILED':
-                              resultStatus = 'Trade Execution Failed';
-                              break;
-                            case 'MISSING_FINAL_RESULT':
-                              resultStatus = 'Missing Final Result';
-                              break;
-                            case 'RESEARCH_EXECUTION_FAILED':
-                              resultStatus = 'Research Execution Failed';
-                              break;
-                            case 'RESEARCH_RESULT_MISSING':
-                              resultStatus = 'Research Result Missing';
-                              break;
-                            case 'FINAL_GUARD_CACHED':
-                              resultStatus = 'Cached Result';
-                              break;
-                            default:
-                              resultStatus = 'Skipped';
+
+                        if (entry.source === 'AUTO_TRADE') {
+                          // AUTO_TRADE logic: Use ONLY status and skipReason fields
+                          if (entry.status === 'EXECUTED') {
+                            resultStatus = 'Executed';
+                          } else if (entry.status === 'SKIPPED') {
+                            // Use skipReason to derive status for SKIPPED AUTO_TRADE records
+                            const skipReason = entry.skipReason || 'Unknown';
+                            switch (skipReason) {
+                              case 'BACKGROUND_TASKS_PAUSED':
+                                resultStatus = 'Skipped (System Paused)';
+                                break;
+                              case 'NO_RESEARCH_RESULT':
+                                resultStatus = 'Skipped (No Research Found)';
+                                break;
+                              case 'EXCHANGE_NOT_USABLE':
+                                resultStatus = 'Skipped (Exchange Not Connected)';
+                                break;
+                              case 'TRADE_CRITERIA_NOT_MET':
+                                resultStatus = 'Skipped (Low Accuracy)';
+                                break;
+                              case 'SYSTEM_ERROR':
+                                resultStatus = 'Skipped (System Error)';
+                                break;
+                              case 'INVALID_RESEARCH_RESULT':
+                                resultStatus = 'Skipped (Invalid Research)';
+                                break;
+                              default:
+                                resultStatus = `Skipped (${skipReason.replace(/_/g, ' ').toLowerCase()})`;
+                            }
                           }
-                        } else if (entry.executionStatus === 'SUCCESS' || entry.decision === 'EXECUTED') {
-                          resultStatus = 'Trade Executed';
+                        } else {
+                          // TELEGRAM logic (unchanged)
+                          if (entry.executionStatus === 'SUCCESS') {
+                            resultStatus = 'Trade Executed';
+                          } else if (entry.executionStatus === 'FAILED') {
+                            resultStatus = 'Execution Failed';
+                          } else if (entry.decision === 'SKIPPED') {
+                            // Use skipReason to derive meaningful label
+                            const skipReason = entry.skipReason || '';
+                            switch (skipReason) {
+                              case 'BACKGROUND_TASKS_PAUSED':
+                                resultStatus = 'System Paused';
+                                break;
+                              case 'DUPLICATE_CYCLE':
+                                resultStatus = 'Duplicate Cycle Skipped';
+                                break;
+                              case 'EXCHANGE_NOT_USABLE':
+                                resultStatus = 'Exchange Not Usable';
+                                break;
+                              case 'ACCURACY_BELOW_THRESHOLD':
+                                resultStatus = 'Accuracy Not Triggered';
+                                break;
+                              case 'NO_RESEARCH_RESULTS':
+                                resultStatus = 'No Research Data';
+                                break;
+                              case 'CONFIG_LOAD_FAILED':
+                                resultStatus = 'Config Load Failed';
+                                break;
+                              case 'AUTO_TRADE_DISABLED':
+                                resultStatus = 'Auto-Trade Disabled';
+                                break;
+                              case 'NO_RESEARCH_KEYS':
+                                resultStatus = 'Research Keys Missing';
+                                break;
+                              case 'NO_USABLE_PROVIDERS':
+                                resultStatus = 'No Providers Available';
+                                break;
+                              case 'RESEARCH_FAILED':
+                                resultStatus = 'Research Failed';
+                                break;
+                              case 'SYMBOL_OUTSIDE_TOP_25':
+                                resultStatus = 'Symbol Outside Top 25';
+                                break;
+                              case 'INVALID_ACCURACY':
+                                resultStatus = 'Invalid Accuracy';
+                                break;
+                              case 'SYSTEM_RISK_FAILURE':
+                                resultStatus = 'Risk Limits Exceeded';
+                                break;
+                              case 'INVALID_SIGNAL':
+                                resultStatus = 'Invalid Signal';
+                                break;
+                              case 'DYNAMIC_PARAMS_SKIP':
+                                resultStatus = 'Params Calculation Failed';
+                                break;
+                              case 'EXECUTION_BLOCKED':
+                                resultStatus = 'Execution Blocked';
+                                break;
+                              case 'MODE_VALIDATION_FAILED':
+                                resultStatus = 'Mode Validation Failed';
+                                break;
+                              case 'LOW_RR_PRE_EXECUTION':
+                                resultStatus = 'Low Risk-Reward';
+                                break;
+                              case 'INVALID_TP_LOGIC':
+                                resultStatus = 'Invalid TP Logic';
+                                break;
+                              case 'TRADE_EXECUTION_FAILED':
+                                resultStatus = 'Trade Execution Failed';
+                                break;
+                              case 'MISSING_FINAL_RESULT':
+                                resultStatus = 'Missing Final Result';
+                                break;
+                              case 'RESEARCH_EXECUTION_FAILED':
+                                resultStatus = 'Research Execution Failed';
+                                break;
+                              case 'RESEARCH_RESULT_MISSING':
+                                resultStatus = 'Research Result Missing';
+                                break;
+                              case 'FINAL_GUARD_CACHED':
+                                resultStatus = 'Cached Result';
+                                break;
+                              default:
+                                resultStatus = 'Skipped';
+                            }
+                          } else if (entry.executionStatus === 'SUCCESS' || entry.decision === 'EXECUTED') {
+                            resultStatus = 'Trade Executed';
+                          }
                         }
 
                         // Ensure result status is never empty (use default if needed)

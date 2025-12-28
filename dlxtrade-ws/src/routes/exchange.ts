@@ -6,6 +6,36 @@ import { encrypt, decrypt } from '../services/keyManager';
 import { logger } from '../utils/logger';
 import * as admin from 'firebase-admin';
 
+/**
+ * Sanitize Firestore payload by removing undefined values and converting them to FieldValue.delete()
+ */
+function sanitizeFirestorePayload(payload: any): any {
+  const sanitized: any = {};
+  let sanitizedCount = 0;
+
+  for (const [key, value] of Object.entries(payload)) {
+    if (value === undefined) {
+      sanitized[key] = admin.firestore.FieldValue.delete();
+      console.log('🔥 [HARD_LOG] [PROVIDER_FIELD_SANITIZED]', {
+        field: key,
+        action: 'CONVERTED_UNDEFINED_TO_DELETE'
+      });
+      sanitizedCount++;
+    } else {
+      sanitized[key] = value;
+    }
+  }
+
+  if (sanitizedCount > 0) {
+    console.log('🔥 [HARD_LOG] [PAYLOAD_SANITIZED]', {
+      sanitizedFields: sanitizedCount,
+      totalFields: Object.keys(payload).length
+    });
+  }
+
+  return sanitized;
+}
+
 function safeDate(value: any) {
   if (!value) return null;
   const d = new Date(value);
@@ -306,6 +336,7 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       if (query.exchange) {
         // Get status for specific exchange
         const exchangeConfig = await firestoreAdapter.getExchangeConfig(user.uid);
+        const userDoc = await firestoreAdapter.getUser(user.uid);
 
         // Check if exchange is configured and matches requested exchange
         if (!exchangeConfig || exchangeConfig.exchange !== query.exchange) {
@@ -328,7 +359,11 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
           };
         }
 
-        // Check if decrypt would fail (informational only)
+        // PRIMARY: Use users document as source of truth for connected status
+        const isConnected = userDoc?.apiConnected === true &&
+                           userDoc?.connectedExchanges?.includes(query.exchange);
+
+        // Check if decrypt would fail (informational only for exchangeStatus)
         const { decrypt } = await import('../services/keyManager');
         let decryptFailed = false;
 
@@ -344,13 +379,14 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
 
         return {
           exchange: query.exchange,
-          connected: !decryptFailed, // Connected if decrypt succeeds
+          connected: isConnected, // Use users document as truth
           exchangeStatus: decryptFailed ? 'CONFIGURED_BUT_DECRYPT_FAILED' : 'CONFIGURED'
         };
       } else {
         // Get status for all exchanges
         const exchanges: ExchangeName[] = ['binance', 'bitget', 'weex', 'bingx'];
         const exchangeConfig = await firestoreAdapter.getExchangeConfig(user.uid);
+        const userDoc = await firestoreAdapter.getUser(user.uid);
 
         const statusPromises = exchanges.map(async (exchange) => {
           // Check if this exchange is configured
@@ -374,7 +410,11 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
             };
           }
 
-          // Check if decrypt would fail (informational only)
+          // PRIMARY: Use users document as source of truth for connected status
+          const isConnected = userDoc?.apiConnected === true &&
+                             userDoc?.connectedExchanges?.includes(exchange);
+
+          // Check if decrypt would fail (informational only for exchangeStatus)
           const { decrypt } = await import('../services/keyManager');
           let decryptFailed = false;
 
@@ -390,7 +430,7 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
 
           return {
             exchange,
-            connected: !decryptFailed, // Connected if decrypt succeeds
+            connected: isConnected, // Use users document as truth
             exchangeStatus: decryptFailed ? 'CONFIGURED_BUT_DECRYPT_FAILED' : 'CONFIGURED'
           };
         });
@@ -421,11 +461,13 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
 
       const t1 = Date.now();
 
-      // Check if user has a usable exchange configuration
-      const exchangeUsability = await isExchangeUsable(user.uid);
-      if (exchangeUsability.usable) {
+      // PRIMARY: Check users document as source of truth
+      const userDoc = await firestoreAdapter.getUser(user.uid);
+      if (userDoc?.apiConnected === true && userDoc?.connectedExchanges?.length > 0) {
+        // Get the configured exchange from users document
+        const configuredExchange = userDoc.connectedExchanges[0]; // Take first connected exchange
         connectedExchanges.push({
-          exchange: exchangeUsability.exchange!,
+          exchange: configuredExchange,
           connected: true,
           testnet: true // Default to testnet for status display
         });
@@ -501,16 +543,37 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       // VALIDATE: Check for missing/empty API keys BEFORE encryption
       if (!resolvedExchange) {
         console.log(`[EXCHANGE_CONNECT_VALIDATION] UID:${user.uid} - FAIL: Missing exchange`);
+        // 🔥 HARD_LOG: VALIDATION_FAILED_RETURN_PATH
+        console.log('🔥 [HARD_LOG] [VALIDATION_FAILED_RETURN_PATH]', {
+          uid: user.uid,
+          error: 'Exchange is required for exchange configuration',
+          validationField: 'exchange',
+          operation: 'exchange_connect'
+        });
         return reply.code(400).send({ error: 'Exchange is required for exchange configuration' });
       }
 
       if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length === 0) {
         console.log(`[EXCHANGE_CONNECT_VALIDATION] UID:${user.uid} - FAIL: apiKey missing/empty`);
+        // 🔥 HARD_LOG: VALIDATION_FAILED_RETURN_PATH
+        console.log('🔥 [HARD_LOG] [VALIDATION_FAILED_RETURN_PATH]', {
+          uid: user.uid,
+          error: 'Exchange API key is missing from request',
+          validationField: 'apiKey',
+          operation: 'exchange_connect'
+        });
         return reply.code(400).send({ error: 'Exchange API key is missing from request' });
       }
 
       if (!secret || typeof secret !== 'string' || secret.trim().length === 0) {
         console.log(`[EXCHANGE_CONNECT_VALIDATION] UID:${user.uid} - FAIL: secret missing/empty`);
+        // 🔥 HARD_LOG: VALIDATION_FAILED_RETURN_PATH
+        console.log('🔥 [HARD_LOG] [VALIDATION_FAILED_RETURN_PATH]', {
+          uid: user.uid,
+          error: 'Exchange API secret is missing from request',
+          validationField: 'secret',
+          operation: 'exchange_connect'
+        });
         return reply.code(400).send({ error: 'Exchange API secret is missing from request' });
       }
 
@@ -521,27 +584,131 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       const { assertExchangeConfigWritePath } = await import('../services/firestoreAdapter');
       assertExchangeConfigWritePath(user.uid, `users/${user.uid}/exchangeConfig/current`);
 
+      // 🔥 HARD_LOG: BEFORE_ENCRYPTION
+      console.log('🔥 [HARD_LOG] [BEFORE_ENCRYPTION]', {
+        uid: user.uid,
+        exchange: resolvedExchange,
+        apiKeyLength: apiKey.length,
+        secretLength: secret.length,
+        passphraseLength: passphrase?.length || 0
+      });
+
       // ATOMIC WRITE: Always include all required fields, never partial
       // CRITICAL: Clear any INVALID_KEYS status since keys are successfully encrypted
-      const exchangeConfig: any = {
+      let exchangeConfig: any;
+
+      try {
+        exchangeConfig = {
+          exchange: resolvedExchange,
+          apiKeyEncrypted: encrypt(apiKey),
+          secretEncrypted: encrypt(secret),
+          testnet: false,
+          exchangeStatus: admin.firestore.FieldValue.delete(), // Clear INVALID_KEYS status
+          disconnected: false, // Clear disconnected flag when reconnecting
+          updatedAt: admin.firestore.Timestamp.now(),
+        };
+
+        if (passphrase) {
+          exchangeConfig.passphraseEncrypted = encrypt(passphrase);
+        }
+
+        if (!existingDoc.exists) {
+          exchangeConfig.createdAt = admin.firestore.Timestamp.now();
+        }
+
+        // 🔥 HARD_LOG: AFTER_ENCRYPTION
+        console.log('🔥 [HARD_LOG] [AFTER_ENCRYPTION]', {
+          uid: user.uid,
+          exchange: resolvedExchange,
+          apiKeyEncryptedLength: exchangeConfig.apiKeyEncrypted.length,
+          secretEncryptedLength: exchangeConfig.secretEncrypted.length,
+          passphraseEncryptedLength: exchangeConfig.passphraseEncrypted?.length || 0,
+          encryptionSuccess: true
+        });
+
+      } catch (encryptError: any) {
+        // 🔥 HARD_LOG: ENCRYPTION_FAILED
+        console.log('🔥 [HARD_LOG] [ENCRYPTION_FAILED]', {
+          uid: user.uid,
+          exchange: resolvedExchange,
+          error: encryptError.message,
+          errorType: 'ENCRYPTION_ERROR'
+        });
+        throw encryptError; // Re-throw to prevent Firestore write
+      }
+
+      // 🔥 HARD_LOG: IMMEDIATELY_BEFORE_FIRESTORE_WRITE
+      console.log('🔥 [HARD_LOG] [IMMEDIATELY_BEFORE_FIRESTORE_WRITE]', {
+        uid: user.uid,
         exchange: resolvedExchange,
-        apiKeyEncrypted: encrypt(apiKey),
-        secretEncrypted: encrypt(secret),
-        testnet: false,
-        exchangeStatus: admin.firestore.FieldValue.delete(), // Clear INVALID_KEYS status
-        updatedAt: admin.firestore.Timestamp.now(),
-      };
+        firestorePath: `users/${user.uid}/exchangeConfig/current`,
+        mergeMode: 'merge_true',
+        dataKeys: Object.keys(exchangeConfig)
+      });
 
-      if (passphrase) {
-        exchangeConfig.passphraseEncrypted = encrypt(passphrase);
+      // CRITICAL: Firestore write MUST ALWAYS execute if encryption succeeds
+      // No early returns allowed between encryption and Firestore write
+      // CRITICAL: Always OVERWRITE entire document with fresh config - do NOT merge
+      const sanitizedExchangeConfig = sanitizeFirestorePayload(exchangeConfig);
+      await docRef.set(sanitizedExchangeConfig); // No merge = full overwrite
+
+      // 🔥 HARD_LOG: IMMEDIATELY_AFTER_FIRESTORE_WRITE
+      console.log('🔥 [HARD_LOG] [IMMEDIATELY_AFTER_FIRESTORE_WRITE]', {
+        uid: user.uid,
+        exchange: resolvedExchange,
+        firestorePath: `users/${user.uid}/exchangeConfig/current`,
+        writeSuccess: true
+      });
+
+      // CRITICAL: IMMEDIATELY read back the same document and log verification
+      try {
+        const readBackDoc = await docRef.get();
+        const readBackData = readBackDoc.data();
+
+        // 🔥 HARD_LOG: READ_BACK_VERIFICATION
+        console.log('🔥 [HARD_LOG] [READ_BACK_VERIFICATION]', {
+          uid: user.uid,
+          exchange: resolvedExchange,
+          documentExists: readBackDoc.exists,
+          hasApiKeyEncrypted: !!readBackData?.apiKeyEncrypted,
+          hasSecretEncrypted: !!readBackData?.secretEncrypted,
+          hasPassphraseEncrypted: !!readBackData?.passphraseEncrypted,
+          exchangeInDoc: readBackData?.exchange,
+          fieldsPresent: Object.keys(readBackData || {}),
+          readBackSuccess: true
+        });
+
+        if (!readBackDoc.exists) {
+          // 🔥 HARD_LOG: READ_BACK_FAILED_DOCUMENT_MISSING
+          console.log('🔥 [HARD_LOG] [READ_BACK_FAILED_DOCUMENT_MISSING]', {
+            uid: user.uid,
+            exchange: resolvedExchange,
+            firestorePath: `users/${user.uid}/exchangeConfig/current`
+          });
+          throw new Error('CRITICAL: Document not found after write - Firestore write failed');
+        }
+
+        if (!readBackData?.apiKeyEncrypted || !readBackData?.secretEncrypted) {
+          // 🔥 HARD_LOG: READ_BACK_FAILED_KEYS_MISSING
+          console.log('🔥 [HARD_LOG] [READ_BACK_FAILED_KEYS_MISSING]', {
+            uid: user.uid,
+            exchange: resolvedExchange,
+            hasApiKey: !!readBackData?.apiKeyEncrypted,
+            hasSecret: !!readBackData?.secretEncrypted
+          });
+          throw new Error('CRITICAL: Encrypted keys missing after write - Firestore write corrupted');
+        }
+
+      } catch (readBackError: any) {
+        // 🔥 HARD_LOG: READ_BACK_EXCEPTION
+        console.log('🔥 [HARD_LOG] [READ_BACK_EXCEPTION]', {
+          uid: user.uid,
+          exchange: resolvedExchange,
+          error: readBackError.message,
+          readBackFailed: true
+        });
+        throw readBackError; // Re-throw to fail the entire operation
       }
-
-      if (!existingDoc.exists) {
-        exchangeConfig.createdAt = admin.firestore.Timestamp.now();
-      }
-
-      // FORCE COMPLETE: Use merge:false to ensure no partial overwrites
-      await docRef.set(exchangeConfig, { merge: false });
 
       // LOG: Confirm encrypted keys saved to Firestore
       console.log(`[EXCHANGE_CONNECT_SAVED] UID:${user.uid} - Firestore save verification:`, {
@@ -560,6 +727,33 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
         exchange
       }, 'Exchange connected successfully');
 
+      // CRITICAL: Update users/{uid} document with exchange connection status
+      // This ensures UI and engine read correct state instead of stale flags
+      // MUST succeed for operation to be considered successful
+      await db.collection('users').doc(user.uid).set({
+        apiConnected: true,
+        isApiConnected: true,
+        apiStatus: 'connected',
+        connectedExchanges: [resolvedExchange],
+        exchangeLastConnected: admin.firestore.Timestamp.now(),
+        updatedAt: admin.firestore.Timestamp.now(),
+      }, { merge: true });
+
+      console.log('🔥 [HARD_LOG] [EXCHANGE_CONNECT_USERS_DOC_SYNCED]', {
+        uid: user.uid,
+        exchange: resolvedExchange,
+        fieldsUpdated: ['apiConnected', 'isApiConnected', 'apiStatus', 'connectedExchanges']
+      });
+
+      // 🔥 HARD_LOG: SUCCESS_RETURN_PATH
+      console.log('🔥 [HARD_LOG] [SUCCESS_RETURN_PATH]', {
+        uid: user.uid,
+        exchange: resolvedExchange,
+        operation: 'exchange_connect',
+        result: 'success',
+        connected: true
+      });
+
       return {
         success: true,
         connected: true,
@@ -568,11 +762,25 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       if (err.message && err.message.includes('EXCHANGE_KEY_DECRYPTION_FAILED')) {
         logger.error({ error: err.message, uid: user.uid }, 'Exchange credential decryption failed');
+        // 🔥 HARD_LOG: DECRYPTION_FAILED_RETURN_PATH
+        console.log('🔥 [HARD_LOG] [DECRYPTION_FAILED_RETURN_PATH]', {
+          uid: user.uid,
+          error: err.message,
+          operation: 'exchange_connect',
+          result: 'decryption_failed'
+        });
         return reply.code(400).send({ error: err.message || 'Failed to decrypt credentials', connected: false });
       }
-      logger.warn({ error: err.message, uid: user.uid }, 'Exchange test failed: returning CONNECTED but with warning');
-      // Only transient (non-decryption) errors: treat as still connected for UX
-      return reply.code(200).send({ success: true, connected: true, warning: err.message });
+      logger.error({ error: err.message, uid: user.uid }, 'Exchange connect failed: users document sync not completed');
+      // CRITICAL: Cannot return success without users/{uid} sync completion
+      // 🔥 HARD_LOG: TRANSIENT_ERROR_RETURN_PATH
+      console.log('🔥 [HARD_LOG] [TRANSIENT_ERROR_RETURN_PATH]', {
+        uid: user.uid,
+        error: err.message,
+        operation: 'exchange_connect',
+        result: 'transient_error_users_sync_failed'
+      });
+      return reply.code(500).send({ error: 'Exchange connection failed: ' + err.message, connected: false });
     }
   });
 
@@ -610,7 +818,7 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       const exchangeName = (config.exchange || 'unknown') as string;
 
       // 2. Check Exchange Usability - Use unified logic
-      const exchangeUsability = await isExchangeUsable(user.uid);
+      const exchangeUsability = await isExchangeUsable(user.uid, 'user_request');
       if (!exchangeUsability.usable) {
         logger.info({
           uid: user.uid,
@@ -719,31 +927,104 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       if (permanentDelete) {
         // Only delete credentials if explicitly requested
         await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').delete();
+
+        // 🔥 HARD_LOG: EXCHANGE_DISCONNECT
+        console.log('🔥 [HARD_LOG] [EXCHANGE_DISCONNECT]', {
+          uid: user.uid,
+          exchange,
+          permanentDelete: true,
+          credentialsDeleted: true
+        });
+
         logger.info({
           uid: user.uid,
           exchange
         }, 'Exchange credentials permanently deleted');
-      } else {
+      }
+
+      if (!permanentDelete) {
         // Default behavior: Clear all exchange credentials to prevent usage
+        // CRITICAL: Disconnect ALWAYS succeeds, even if exchangeConfig/current doesn't exist
         const docRef = db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current');
         const existingDoc = await docRef.get();
 
-        if (existingDoc.exists) {
-          await docRef.set({
-            exchange: null,
-            apiKeyEncrypted: admin.firestore.FieldValue.delete(),
-            secretEncrypted: admin.firestore.FieldValue.delete(),
-            passphraseEncrypted: admin.firestore.FieldValue.delete(),
-            disconnected: true,
-            disconnectedAt: admin.firestore.FieldValue.serverTimestamp(),
-          }, { merge: true });
+        const disconnectPayload = {
+          exchange: null,
+          apiKeyEncrypted: admin.firestore.FieldValue.delete(),
+          secretEncrypted: admin.firestore.FieldValue.delete(),
+          passphraseEncrypted: admin.firestore.FieldValue.delete(),
+          disconnected: true,
+          disconnectedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+        const sanitizedDisconnectPayload = sanitizeFirestorePayload(disconnectPayload);
+        await docRef.set(sanitizedDisconnectPayload, { merge: true });
 
-          logger.info({
-            uid: user.uid,
-            exchange
-          }, 'Exchange disconnected - all credentials cleared');
-        }
+        // 🔥 HARD_LOG: EXCHANGE_DISCONNECT
+        console.log('🔥 [HARD_LOG] [EXCHANGE_DISCONNECT]', {
+          uid: user.uid,
+          exchange,
+          permanentDelete: false,
+          credentialsCleared: true,
+          documentExisted: existingDoc.exists,
+          disconnectAlwaysSucceeds: true
+        });
+
+        logger.info({
+          uid: user.uid,
+          exchange,
+          documentExisted: existingDoc.exists
+        }, 'Exchange disconnected - always succeeds, credentials cleared or document created in disconnected state');
       }
+
+      // CRITICAL: Update users/{uid} document to reflect disconnected state
+      // This ensures UI and engine read correct state instead of stale flags
+      try {
+        await db.collection('users').doc(user.uid).set({
+          apiConnected: false,
+          isApiConnected: false,
+          apiStatus: 'disconnected',
+          connectedExchanges: [],
+          exchangeLastDisconnected: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+
+        console.log('🔥 [HARD_LOG] [EXCHANGE_DISCONNECT_USERS_DOC_SYNCED]', {
+          uid: user.uid,
+          fieldsUpdated: ['apiConnected', 'isApiConnected', 'apiStatus', 'connectedExchanges']
+        });
+      } catch (syncError: any) {
+        console.error('🔥 [HARD_LOG] [EXCHANGE_DISCONNECT_USERS_DOC_SYNC_FAILED]', {
+          uid: user.uid,
+          error: syncError.message
+        });
+        // Don't fail the entire operation if sync fails
+      }
+
+      // CRITICAL: Force disable auto-trade when exchange is disconnected/disconnected (both cases)
+      const autoTradeRef = db.collection('users').doc(user.uid).collection('autoTradeConfig').doc('current');
+      await autoTradeRef.set({
+        autoTradeEnabled: false,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+
+      // 🔥 HARD_LOG: AUTO_TRADE_FORCE_DISABLED
+      console.log('🔥 [HARD_LOG] [AUTO_TRADE_FORCE_DISABLED]', {
+        uid: user.uid,
+        reason: permanentDelete ? 'exchange_permanently_deleted' : 'exchange_disconnected',
+        autoTradeEnabled: false
+      });
+
+      // CRITICAL: Force stop background research scheduler for this UID
+      const { backgroundResearchScheduler } = await import('../services/backgroundResearchScheduler');
+      await backgroundResearchScheduler.forceStopUserScheduler(user.uid);
+
+      // 🔥 HARD_LOG: SCHEDULER_FORCE_STOPPED
+      console.log('🔥 [HARD_LOG] [SCHEDULER_FORCE_STOPPED]', {
+        uid: user.uid,
+        reason: permanentDelete ? 'exchange_permanently_deleted' : 'exchange_disconnected',
+        intervalsCleared: true,
+        jobStateCleared: true
+      });
 
       return {
         success: true,

@@ -343,7 +343,18 @@ async function start() {
             // Don't throw - allow server to continue
           }
 
-
+          // Run ONE-TIME provider key migration
+          try {
+            console.log('[PROVIDER_MIGRATION] Running one-time corrupted key cleanup...');
+            const { migrateCorruptedProviderKeys } = await import('./services/userOnboarding');
+            const db = getFirebaseAdmin().firestore();
+            await migrateCorruptedProviderKeys(db);
+            console.log('[PROVIDER_MIGRATION] ✅ One-time migration completed successfully');
+          } catch (migrationErr: any) {
+            console.error('⚠️ Provider key migration failed:', migrationErr.message);
+            logger.error({ error: migrationErr.message, stack: migrationErr.stack }, 'Provider key migration failed');
+            // Don't throw - allow server to continue
+          }
 
           console.log('');
           console.log('═══════════════════════════════════════════════════════════════');

@@ -44,7 +44,7 @@ export async function controllerRoutes(fastify: FastifyInstance) {
         try {
           // Use unified isExchangeUsable() for consistent validation
           const { isExchangeUsable } = await import('../services/firestoreAdapter');
-          const usability = await isExchangeUsable(user.uid);
+          const usability = await isExchangeUsable(user.uid, 'user_request');
 
           if (!usability.usable) {
             exchangeKeysValid = false;
@@ -100,6 +100,71 @@ export async function controllerRoutes(fastify: FastifyInstance) {
         lastToggledAt: admin.firestore.Timestamp.now(),
       }, { merge: true });
 
+      // CRITICAL: SYNC ROOT users/{uid} document with auto-trade state
+      // UI reads from root document - must be in sync with autoTradeConfig/current
+      const userDocRef = db.collection('users').doc(user.uid);
+
+      if (enabled) {
+        // When enabling auto-trade: set all related flags
+        await userDocRef.set({
+          autoTradeEnabled: true,
+          autoTrade: {
+            enabled: true,
+            // Preserve any existing strategy/accuracyThreshold if they exist
+          },
+          apiConnected: true,  // Exchange already validated - enforce connection state
+          apiStatus: 'connected',
+          updatedAt: admin.firestore.Timestamp.now(),
+        }, { merge: true });
+
+        console.log('🔥 [HARD_LOG] [AUTO_TRADE_USERS_DOC_SYNCED]', {
+          uid: user.uid,
+          autoTradeEnabled: true,
+          apiConnected: true,
+          source: 'auto_trade_toggle'
+        });
+      } else {
+        // When disabling auto-trade: reset auto-trade flags only
+        await userDocRef.set({
+          autoTradeEnabled: false,
+          autoTrade: {
+            enabled: false,
+          },
+          updatedAt: admin.firestore.Timestamp.now(),
+        }, { merge: true });
+
+        console.log('🔥 [HARD_LOG] [AUTO_TRADE_USERS_DOC_SYNCED]', {
+          uid: user.uid,
+          autoTradeEnabled: false,
+          apiConnected: undefined, // Don't touch exchange flags when disabling
+          source: 'auto_trade_toggle'
+        });
+      }
+
+      // CRITICAL: MUTUAL EXCLUSIVITY - Auto-Trade and Telegram Background Research cannot both be enabled
+      if (enabled) {
+        // When Auto-Trade is enabled, FORCE disable Telegram Background Research
+        const { firestoreAdapter } = await import('../services/firestoreAdapter');
+        await firestoreAdapter.saveBackgroundResearchSettings(user.uid, {
+          telegramBackgroundResearchEnabled: false, // FORCE disable
+        });
+
+        console.log('🔥 [HARD_LOG] [AUTO_TRADE_PRIORITY_LOCKED]', {
+          uid: user.uid,
+          autoTradeEnabled: true,
+          telegramBgResearchEnabled: false,
+          selectedMode: 'AUTO_TRADE_RESEARCH',
+          mutualExclusivityEnforced: true
+        });
+
+        logger.info({
+          uid: user.uid,
+          autoTradeEnabled: true,
+          telegramBgResearchEnabled: false,
+          selectedMode: 'AUTO_TRADE_RESEARCH'
+        }, '[AUTO_TRADE_PRIORITY_LOCKED] Auto-Trade enabled - Telegram Background Research disabled for mutual exclusivity');
+      }
+
       // CRITICAL: Update cached flags for control-plane routes (background process)
       try {
         const { updateCachedFlags } = await import('../services/firestoreAdapter');
@@ -114,6 +179,13 @@ export async function controllerRoutes(fastify: FastifyInstance) {
       // CRITICAL: Bind auto-trade toggle to scheduler registration
       try {
         if (enabled) {
+          // CRITICAL: Check if scheduler is paused and log the issue
+          const { isBackgroundPaused } = await import('../utils/safeBackgroundRunner');
+          if (isBackgroundPaused()) {
+            console.log('🔥 [HARD_LOG] [AUTO_TRADE_ENGINE_RESUMED_AFTER_TOGGLE] Background tasks paused, ensuring user registration proceeds');
+            logger.info({ uid: user.uid }, '🔥 [AUTO_TRADE_ENGINE_RESUMED_AFTER_TOGGLE] Background tasks paused but proceeding with user registration');
+          }
+
           // Register user with scheduler when auto-trade is enabled
           logger.info({ uid: user.uid }, '🔗 [AUTO_TRADE_TOGGLE] Registering user with scheduler');
           const scheduleResult = await backgroundResearchScheduler.ensureUserResearchScheduled(user.uid);

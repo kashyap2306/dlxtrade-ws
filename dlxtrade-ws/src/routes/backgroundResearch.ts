@@ -2,6 +2,8 @@ import { FastifyInstance } from 'fastify';
 import { firestoreAdapter } from '../services/firestoreAdapter';
 import { z } from 'zod';
 import { logger } from '../utils/logger';
+import { getFirebaseAdmin } from '../utils/firebase';
+import * as admin from 'firebase-admin';
 
 // Support both number (legacy) and object (range) formats for accuracyTrigger
 const accuracyTriggerSchema = z.union([
@@ -163,6 +165,33 @@ export async function backgroundResearchRoutes(fastify: FastifyInstance) {
           engineState: engineState, // Persist STOPPED when disabling
           // CRITICAL: Do NOT set lastResearchRun here - scheduler handles this
         });
+
+        // CRITICAL: MUTUAL EXCLUSIVITY - Telegram Background Research and Auto-Trade cannot both be enabled
+        if (telegramBackgroundResearchEnabled) {
+          // When Telegram Background Research is enabled, FORCE disable Auto-Trade
+          const db = getFirebaseAdmin().firestore();
+          const autoTradeConfigDocRef = db.collection('users').doc(uid).collection('autoTradeConfig').doc('current');
+
+          await autoTradeConfigDocRef.set({
+            autoTradeEnabled: false, // FORCE disable
+            updatedAt: admin.firestore.Timestamp.now(),
+          }, { merge: true });
+
+          console.log('🔥 [HARD_LOG] [TELEGRAM_PRIORITY_LOCKED]', {
+            uid,
+            autoTradeEnabled: false,
+            telegramBgResearchEnabled: true,
+            selectedMode: 'TELEGRAM_BACKGROUND_RESEARCH',
+            mutualExclusivityEnforced: true
+          });
+
+          logger.info({
+            uid,
+            autoTradeEnabled: false,
+            telegramBgResearchEnabled: true,
+            selectedMode: 'TELEGRAM_BACKGROUND_RESEARCH'
+          }, '[TELEGRAM_PRIORITY_LOCKED] Telegram Background Research enabled - Auto-Trade disabled for mutual exclusivity');
+        }
       } catch (firestoreError: any) {
         // CRITICAL: Firestore errors are infrastructure issues, return structured 500
         logger.error({ uid, error: firestoreError.message, stack: firestoreError.stack }, 'Firestore save failed');

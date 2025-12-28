@@ -304,7 +304,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
         name: body.name || user?.displayName || '',
         email: body.email || user?.email || '',
         phone: body.phone || null,
-      });
+      }, 'user_request');
 
       if (!onboardingResult.success) {
         logger.error({ uid: authUid, error: onboardingResult.error }, 'User onboarding failed');

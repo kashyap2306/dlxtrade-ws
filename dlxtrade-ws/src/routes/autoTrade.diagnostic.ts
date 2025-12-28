@@ -60,7 +60,7 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
       try {
         const { isExchangeUsable } = await import('../services/firestoreAdapter');
         const exchangeUsability = await Promise.race([
-          isExchangeUsable(uid),
+          isExchangeUsable(uid, 'user_request'),
           new Promise<{ usable: boolean; reason: string }>((_, reject) =>
             setTimeout(() => reject(new Error('TIMEOUT')), 200)
           )

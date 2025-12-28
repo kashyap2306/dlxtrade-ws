@@ -94,7 +94,7 @@ export async function statusRoutes(fastify: FastifyInstance) {
       try {
         const { isExchangeUsable } = await import('../services/firestoreAdapter');
         const exchangeUsability = await Promise.race([
-          isExchangeUsable(user.uid),
+          isExchangeUsable(user.uid, 'user_request'),
           new Promise<never>((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 500))
         ]);
         exchangeConnected = exchangeUsability.usable;

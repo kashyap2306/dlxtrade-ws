@@ -58,7 +58,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       }
 
       // Only check Firebase token, upsert user, return minimal session
-      await ensureUser(uid, { name, email, phone: null });
+      await ensureUser(uid, { name, email, phone: null }, 'user_request');
       return {
         success: true,
         user: { uid, email },
@@ -92,7 +92,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       email: user.email,
       name: user.name || user.displayName,
       phone: null,
-    });
+    }, 'user_request');
 
     if (!result.success) {
       logger.error({ uid: user.uid, error: result.error }, '❌ ensureUser failed in /auth/verify endpoint');

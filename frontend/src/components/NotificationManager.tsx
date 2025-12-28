@@ -3,6 +3,7 @@ import { useNotificationContext } from '../contexts/NotificationContext';
 import { wsService } from '../services/ws';
 import { settingsApi } from '../services/api';
 import { playNotificationSound, triggerVibration, isVibrationEnabled } from '../utils/soundNotification';
+import { useAuth } from '../hooks/useAuth';
 import NotificationToast from './NotificationToast';
 import NotificationBanner from './NotificationBanner';
 import NotificationModal from './NotificationModal';
@@ -18,6 +19,7 @@ const NotificationManager: React.FC<NotificationManagerProps> = ({
   vibrationEnabled = false
 }) => {
   const { notifications } = useNotificationContext();
+  const { user, loading: authLoading } = useAuth();
   const [activeNotifications, setActiveNotifications] = useState<any[]>([]);
   const [notificationSettings, setNotificationSettings] = useState<{
     soundEnabled: boolean;
@@ -39,10 +41,20 @@ const NotificationManager: React.FC<NotificationManagerProps> = ({
     requestId: string;
   } | null>(null);
 
-  // Load notification settings from backend and listen for updates
+  // Load notification settings from backend ONLY when auth is ready
   useEffect(() => {
+    // Skip API call if auth is still loading or no user
+    if (authLoading || !user) {
+      console.log('[NotificationManager] Skipping notification settings load - auth not ready:', {
+        authLoading,
+        hasUser: !!user
+      });
+      return;
+    }
+
     const loadNotificationSettings = async () => {
       try {
+        console.log('[NotificationManager] Loading notification settings from backend...');
         const response = await settingsApi.notifications.load();
         const data = response.data || {};
         const newSettings = {
@@ -51,7 +63,9 @@ const NotificationManager: React.FC<NotificationManagerProps> = ({
           autoTradeAlerts: data.autoTradeAlerts || false
         };
         setNotificationSettings(newSettings);
+        console.log('[NotificationManager] Notification settings loaded successfully');
       } catch (err) {
+        console.warn('[NotificationManager] Backend notification settings failed, using localStorage fallback:', err);
         // Fallback to localStorage if backend fails
         setNotificationSettings({
           soundEnabled: localStorage.getItem('notificationSounds') === 'true',
@@ -80,7 +94,7 @@ const NotificationManager: React.FC<NotificationManagerProps> = ({
     return () => {
       window.removeEventListener('settingsUpdated', handleSettingsUpdate as EventListener);
     };
-  }, []);
+  }, [authLoading, user]); // Depend on auth state to trigger when auth becomes ready
 
   // Handle WebSocket newAlert messages
   useEffect(() => {

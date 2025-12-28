@@ -93,7 +93,7 @@ export async function logAutoTradeSkip(
     if (exchangeStatus === 'unknown') {
       // Use unified exchange usability check (SINGLE SOURCE OF TRUTH)
       try {
-        const usability = await isExchangeUsable(uid);
+        const usability = await isExchangeUsable(uid, 'background_job');
         exchangeStatus = usability.usable ? 'available' : 'decryption_failed';
       } catch (checkErr: any) {
         exchangeStatus = 'unknown';

@@ -5,6 +5,88 @@ import { encrypt, decrypt, maskKey } from './keyManager';
 
 const db = () => getFirebaseAdmin().firestore();
 
+/**
+ * Determine if exchange keys should be auto-cleared based on context and timing
+ */
+function shouldAutoClearKeys(
+  uid: string,
+  exchange: string,
+  context: 'background_job' | 'user_request',
+  existingDoc: any,
+  reason: string
+): { shouldClear: boolean; logData: any } {
+  const now = Date.now();
+  const updatedAt = existingDoc?.updatedAt?.toDate?.()?.getTime?.() || 0;
+  const timeSinceUpdate = now - updatedAt;
+  const RECENT_SAVE_WINDOW_MS = 60 * 1000; // 60 seconds as requested
+
+  const wasRecentlySaved = timeSinceUpdate < RECENT_SAVE_WINDOW_MS;
+  const isBackgroundJob = context === 'background_job';
+
+  const logData = {
+    uid,
+    exchange,
+    context,
+    reason,
+    wasRecentlySaved,
+    timeSinceUpdateMs: timeSinceUpdate,
+    updatedAt: existingDoc?.updatedAt?.toDate?.()?.toISOString?.(),
+    recentSaveWindowMs: RECENT_SAVE_WINDOW_MS,
+    timestamp: now
+  };
+
+  // Block auto-clearing if:
+  // 1. It's a background job AND keys were recently saved, OR
+  // 2. It's a user request (never auto-clear for user requests)
+  const shouldClear = !((isBackgroundJob && wasRecentlySaved) || !isBackgroundJob);
+
+  if (!shouldClear) {
+    console.log('🔥 [HARD_LOG] [EXCHANGE_AUTO_INVALIDATION_BLOCKED]', {
+      ...logData,
+      action: 'SKIPPED_KEY_CLEARING',
+      blockReason: isBackgroundJob && wasRecentlySaved ? 'recent_manual_save' : 'user_request_context'
+    });
+  } else {
+    console.log('🔥 [HARD_LOG] [EXCHANGE_AUTO_INVALIDATION_DETECTED]', {
+      ...logData,
+      action: 'KEYS_WILL_BE_CLEARED',
+      caller: 'shouldAutoClearKeys'
+    });
+  }
+
+  return { shouldClear, logData };
+}
+
+/**
+ * Sanitize Firestore payload by removing undefined values and converting them to FieldValue.delete()
+ */
+function sanitizeFirestorePayload(payload: any): any {
+  const sanitized: any = {};
+  let sanitizedCount = 0;
+
+  for (const [key, value] of Object.entries(payload)) {
+    if (value === undefined) {
+      sanitized[key] = admin.firestore.FieldValue.delete();
+      console.log('🔥 [HARD_LOG] [PROVIDER_FIELD_SANITIZED]', {
+        field: key,
+        action: 'CONVERTED_UNDEFINED_TO_DELETE'
+      });
+      sanitizedCount++;
+    } else {
+      sanitized[key] = value;
+    }
+  }
+
+  if (sanitizedCount > 0) {
+    console.log('🔥 [HARD_LOG] [PAYLOAD_SANITIZED]', {
+      sanitizedFields: sanitizedCount,
+      totalFields: Object.keys(payload).length
+    });
+  }
+
+  return sanitized;
+}
+
 // WARN when non-canonical exchange config paths are accessed
 export function warnNonCanonicalExchangeConfigAccess(uid: string, accessedPath: string, context: string): void {
   const canonicalPath = `users/${uid}/exchangeConfig/current`;
@@ -80,7 +162,10 @@ export async function updateCachedFlags(uid: string): Promise<void> {
   }
 }
 
-export async function isExchangeUsable(uid: string): Promise<{ usable: boolean; reason: string; exchange?: string }> {
+export async function isExchangeUsable(
+  uid: string,
+  context?: 'background_job' | 'user_request'
+): Promise<{ usable: boolean; reason: string; exchange?: string }> {
   // ENFORCE: ONLY canonical path - users/{uid}/exchangeConfig/current
   const canonicalPath = `users/${uid}/exchangeConfig/current`;
   const doc = await db().collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
@@ -127,13 +212,84 @@ export async function isExchangeUsable(uid: string): Promise<{ usable: boolean; 
   // CRITICAL: Test actual decryption to verify usability
   // DO NOT rely on cached exchangeStatus - always test current decryption capability
   try {
-    const { decrypt } = await import('./keyManager');
+    const { decrypt, getEncryptionKeyStatus } = await import('./keyManager');
+
+    // Verify encryption key is properly initialized
+    const keyStatus = getEncryptionKeyStatus();
+    if (!keyStatus.initialized) {
+      logger.error({
+        uid,
+        exchange,
+        keyStatus
+      }, 'EXCHANGE_DECRYPTION_FAILED: Encryption key not initialized - server startup issue');
+      return {
+        usable: false,
+        reason: 'Encryption key not initialized - server startup issue',
+        exchange
+      };
+    }
+
     const apiKey = decrypt(config.apiKeyEncrypted);
     const secret = decrypt(config.secretKeyEncrypted || config.secretEncrypted);
     const passphrase = config.passphraseEncrypted ? decrypt(config.passphraseEncrypted) : undefined;
 
+    // Log detailed decryption results for diagnosis
     const isBitget = exchange === 'bitget';
     const decryptionValid = apiKey !== null && secret !== null && (isBitget ? passphrase !== null : true);
+
+    // Log decryption details for troubleshooting
+    logger.info({
+      uid,
+      exchange,
+      decryptionValid,
+      apiKeyDecrypted: apiKey !== null,
+      secretDecrypted: secret !== null,
+      passphraseRequired: isBitget,
+      passphraseDecrypted: isBitget ? (passphrase !== null) : 'N/A',
+      apiKeyLength: config.apiKeyEncrypted?.length || 0,
+      secretLength: (config.secretKeyEncrypted || config.secretEncrypted)?.length || 0,
+      passphraseLength: config.passphraseEncrypted?.length || 0,
+      encryptionKeyHash: keyStatus.keyHash,
+      encryptionKeyInitialized: keyStatus.initialized
+    }, 'EXCHANGE_DECRYPTION_DIAGNOSIS');
+
+    // If decryption failed, check if we should auto-clear keys
+    if (!decryptionValid) {
+      const { shouldClear, logData } = shouldAutoClearKeys(uid, exchange, context || 'background_job', config, 'decryption_failed');
+
+      if (!shouldClear) {
+        // Do NOT clear keys - preserve user's recent manual save
+        logger.warn({
+          uid,
+          exchange,
+          timeSinceUpdateMs: logData.timeSinceUpdateMs
+        }, 'EXCHANGE_AUTO_INVALIDATION_BLOCKED: Skipping key clearing for recently manually saved exchange');
+      } else {
+        logger.warn({
+          uid,
+          exchange,
+          apiKeyEncryptedPrefix: config.apiKeyEncrypted?.substring(0, 20) + '...',
+          secretEncryptedPrefix: (config.secretKeyEncrypted || config.secretEncrypted)?.substring(0, 20) + '...',
+          passphraseEncryptedPrefix: config.passphraseEncrypted?.substring(0, 20) + '...',
+          apiKeyNull: apiKey === null,
+          secretNull: secret === null,
+          passphraseNull: passphrase === null
+        }, 'EXCHANGE_DECRYPTION_FAILED: Clearing corrupted keys - user must re-enter exchange credentials');
+
+        // CRITICAL: Clear corrupted keys when decryption fails
+        // This prevents silent failures and forces re-entry with current ENCRYPTION_SECRET
+        try {
+          await clearInvalidExchangeKeys(uid);
+        } catch (clearError: any) {
+          logger.error({
+            uid,
+            exchange,
+            clearError: clearError.message
+          }, 'FAILED_TO_CLEAR_CORRUPTED_EXCHANGE_KEYS');
+          // Continue with unusable result even if clearing failed
+        }
+      }
+    }
 
     const result = {
       usable: decryptionValid,
@@ -151,6 +307,35 @@ export async function isExchangeUsable(uid: string): Promise<{ usable: boolean; 
 
     return result;
   } catch (error: any) {
+    const config = doc.data();
+    const { shouldClear, logData } = shouldAutoClearKeys(uid, exchange || 'unknown', context || 'background_job', config, 'decryption_exception');
+
+    if (!shouldClear) {
+      logger.warn({
+        uid,
+        exchange,
+        timeSinceUpdateMs: logData.timeSinceUpdateMs,
+        error: error.message
+      }, 'EXCHANGE_AUTO_INVALIDATION_BLOCKED: Skipping key clearing for recently manually saved exchange (exception case)');
+    } else {
+      logger.warn({
+        uid,
+        exchange,
+        error: error.message
+      }, 'EXCHANGE_DECRYPTION_EXCEPTION: Clearing keys due to decryption error');
+
+      // Clear keys when decryption throws exception
+      try {
+        await clearInvalidExchangeKeys(uid);
+      } catch (clearError: any) {
+        logger.error({
+          uid,
+          exchange,
+          clearError: clearError.message
+        }, 'FAILED_TO_CLEAR_EXCHANGE_KEYS_AFTER_EXCEPTION');
+      }
+    }
+
     const result = {
       usable: false,
       reason: `Exchange decryption error: ${error.message}`,
@@ -175,6 +360,14 @@ export async function isExchangeUsable(uid: string): Promise<{ usable: boolean; 
  */
 export async function clearInvalidExchangeKeys(uid: string): Promise<void> {
   const exchangeRef = db().collection('users').doc(uid).collection('exchangeConfig').doc('current');
+
+  // 🔥 HARD_LOG: EXCHANGE_MANUAL_DISCONNECT - when we actually clear keys
+  console.log('🔥 [HARD_LOG] [EXCHANGE_MANUAL_DISCONNECT]', {
+    uid,
+    action: 'CLEARING_INVALID_KEYS',
+    reason: 'Decryption failure - ENCRYPTION_SECRET mismatch',
+    timestamp: Date.now()
+  });
 
   try {
     await exchangeRef.update({
@@ -907,7 +1100,8 @@ export class FirestoreAdapter {
       docData.type = data.type;
     }
 
-    await docRef.set(docData, { merge: true });
+    const sanitizedDocData = sanitizeFirestorePayload(docData);
+    await docRef.set(sanitizedDocData, { merge: true });
     logger.info({
       uid,
       apiName,
@@ -975,10 +1169,13 @@ export class FirestoreAdapter {
   async saveHFTSettings(uid: string, settings: Partial<HFTSettingsDocument>): Promise<void> {
     const docRef = db().collection('users').doc(uid).collection('hftSettings').doc('current');
 
-    await docRef.set({
+    const payload = {
       ...settings,
       updatedAt: admin.firestore.Timestamp.now(),
-    }, { merge: true });
+    };
+    const sanitizedPayload = sanitizeFirestorePayload(payload);
+
+    await docRef.set(sanitizedPayload, { merge: true });
 
     logger.info({ uid }, 'HFT settings saved to Firestore');
   }
@@ -2100,13 +2297,16 @@ export class FirestoreAdapter {
       .collection('pendingTrades')
       .doc(tradeData.requestId);
 
-    await docRef.set({
+    const payload = {
       ...tradeData,
       status: 'PENDING',
       createdAt: admin.firestore.Timestamp.fromDate(tradeData.createdAt),
       expiresAt: admin.firestore.Timestamp.fromDate(tradeData.expiresAt),
       updatedAt: admin.firestore.Timestamp.now(),
-    });
+    };
+    const sanitizedPayload = sanitizeFirestorePayload(payload);
+
+    await docRef.set(sanitizedPayload);
 
     logger.info({ uid, requestId: tradeData.requestId, symbol: tradeData.symbol }, 'Pending trade saved');
     return docRef.id;
@@ -2262,10 +2462,13 @@ export class FirestoreAdapter {
   async savePredictionMetrics(uid: string, snapshotData: any): Promise<void> {
     try {
       const docRef = db().collection('users').doc(uid).collection('predictions').doc();
-      await docRef.set({
+      const payload = {
         ...snapshotData,
         id: docRef.id
-      });
+      };
+      const sanitizedPayload = sanitizeFirestorePayload(payload);
+
+      await docRef.set(sanitizedPayload);
       logger.debug({ uid, predictionId: docRef.id }, 'Prediction snapshot saved');
     } catch (error: any) {
       logger.error({ error: error.message, uid }, 'Error saving prediction snapshot');
@@ -2588,17 +2791,36 @@ export class FirestoreAdapter {
     }
 
     // CRITICAL: Validate required fields before attempting Firestore write
-    // Skip save cleanly if accuracy or result is missing - do NOT attempt partial writes
-    if (typeof historyEntry.accuracy !== 'number' || isNaN(historyEntry.accuracy)) {
-      logger.warn({ uid, symbol: historyEntry.symbol }, 'Skipping history save - accuracy is missing or invalid');
-      return; // Skip save cleanly, do NOT throw
-    }
+    // AUTO_TRADE SKIPPED entries: Allow missing accuracy and symbol (they track research cycles)
+    // TELEGRAM entries: Require accuracy for all entries, require symbol for non-SKIPPED
+    if (historyEntry.source === 'AUTO_TRADE' && historyEntry.status === 'SKIPPED') {
+      // AUTO_TRADE SKIPPED: Allow missing accuracy and symbol - these are research cycle trackers
+      // No validation needed, proceed with save
+    } else {
+      // TELEGRAM or AUTO_TRADE EXECUTED: Require accuracy
+      if (typeof historyEntry.accuracy !== 'number' || isNaN(historyEntry.accuracy)) {
+        logger.warn({ uid, symbol: historyEntry.symbol, source: historyEntry.source, status: historyEntry.status }, 'Skipping history save - accuracy is missing or invalid');
+        return; // Skip save cleanly, do NOT throw
+      }
 
-    if (!historyEntry.symbol && historyEntry.status !== 'SKIPPED') {
-      logger.warn({ uid }, 'Skipping history save - symbol is missing and status is not SKIPPED');
-      return; // Skip save cleanly for non-SKIPPED entries without symbol
+      // Require symbol for non-SKIPPED entries
+      if (!historyEntry.symbol && historyEntry.status !== 'SKIPPED') {
+        logger.warn({ uid, source: historyEntry.source, status: historyEntry.status }, 'Skipping history save - symbol is missing and status is not SKIPPED');
+        return; // Skip save cleanly for non-SKIPPED entries without symbol
+      }
     }
     
+    // TEMPORARY DEBUG LOGGING: Log before saving history
+    console.log("🔥 [HISTORY_DEBUG] BEFORE save", {
+      uid,
+      source: historyEntry.source,
+      symbol: historyEntry.symbol,
+      accuracy: historyEntry.accuracy,
+      status: historyEntry.status,
+      skipReason: historyEntry.skipReason,
+      timestamp: new Date().toISOString()
+    });
+
     // 🔥 DIAGNOSTIC: PROVE HISTORY WRITE ATTEMPT
     console.log("🔥 [FIRESTORE_HISTORY] BEFORE write", {
       uid,
@@ -2620,6 +2842,18 @@ export class FirestoreAdapter {
           timestamp: admin.firestore.FieldValue.serverTimestamp()
         });
       
+      // TEMPORARY DEBUG LOGGING: Log after successful save
+      console.log("🔥 [HISTORY_DEBUG] AFTER save success", {
+        uid,
+        source: historyEntry.source,
+        symbol: historyEntry.symbol,
+        accuracy: historyEntry.accuracy,
+        status: historyEntry.status,
+        skipReason: historyEntry.skipReason,
+        docId: result.id,
+        timestamp: new Date().toISOString()
+      });
+
       // 🔥 DIAGNOSTIC: PROVE HISTORY WRITE SUCCESS
       console.log("🔥 [FIRESTORE_HISTORY] AFTER write success", {
         uid,
@@ -2627,7 +2861,7 @@ export class FirestoreAdapter {
         docId: result.id,
         timestamp: new Date().toISOString()
       });
-      
+
       logger.info({ uid, symbol: historyEntry.symbol }, '✅ [FIRESTORE] Research history entry saved');
     } catch (error: any) {
       // 🔥 DIAGNOSTIC: PROVE HISTORY WRITE FAILURE
@@ -2673,7 +2907,7 @@ export class FirestoreAdapter {
       const snapshot = await db().collection('users')
         .doc(uid)
         .collection('research_history')
-        .select('symbol', 'signal', 'accuracy', 'price', 'timestamp', 'source', 'status', 'decision', 'executionStatus', 'tradePlan')
+        .select('symbol', 'signal', 'accuracy', 'price', 'timestamp', 'source', 'status', 'decision', 'executionStatus', 'tradePlan', 'skipReason')
         .orderBy('timestamp', 'desc')
         .limit(safeLimit)
         .get();
@@ -2685,17 +2919,33 @@ export class FirestoreAdapter {
         // Keep only essential fields needed for history list display
         const { indicators, analysis, tradePlan, ...lightweightData } = data;
 
+        // Normalize status based on source
+        let normalizedStatus;
+        if (data.source === 'AUTO_TRADE') {
+          // AUTO_TRADE: Use status field AS-IS, or force SKIPPED if skipReason exists
+          if (data.status) {
+            normalizedStatus = data.status;
+          } else if (data.skipReason) {
+            normalizedStatus = 'SKIPPED';
+          } else {
+            normalizedStatus = 'UNKNOWN';
+          }
+        } else {
+          // TELEGRAM: Use existing normalization logic
+          normalizedStatus = data.decision === 'EXECUTED' ? 'COMPLETED' :
+                 data.decision === 'SKIPPED' ? 'SKIPPED' :
+                 data.executionStatus === 'SUCCESS' ? 'COMPLETED' :
+                 data.executionStatus === 'FAILED' ? 'FAILED' :
+                 data.status || 'UNKNOWN';
+        }
+
         return {
           id: doc.id,
           ...lightweightData,
           // Convert Firestore Timestamp to ISO string
           timestamp: data.timestamp?.toDate ? data.timestamp.toDate().toISOString() : new Date().toISOString(),
-          // Normalize status for UI display
-          status: data.decision === 'EXECUTED' ? 'COMPLETED' :
-                 data.decision === 'SKIPPED' ? 'SKIPPED' :
-                 data.executionStatus === 'SUCCESS' ? 'COMPLETED' :
-                 data.executionStatus === 'FAILED' ? 'FAILED' :
-                 data.status || 'UNKNOWN',
+          // Use normalized status
+          status: normalizedStatus,
           // Include minimal tradePlan info for display (exclude nested objects)
           tradePlan: tradePlan ? {
             entryPrice: tradePlan.entryPrice,

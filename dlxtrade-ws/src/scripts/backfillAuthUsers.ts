@@ -61,7 +61,7 @@ async function backfillAuthUsers() {
             name,
             email,
             phone,
-          });
+          }, 'background_job');
           
           if (result.success) {
             if (result.createdNew) {
