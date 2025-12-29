@@ -1,61 +1,9 @@
 import * as admin from 'firebase-admin';
 import { getFirebaseAdmin } from '../utils/firebase';
 import { logger } from '../utils/logger';
-import { encrypt, decrypt, maskKey } from './keyManager';
+import { encrypt } from './keyManager';
 
 const db = () => getFirebaseAdmin().firestore();
-
-/**
- * Determine if exchange keys should be auto-cleared based on context and timing
- */
-function shouldAutoClearKeys(
-  uid: string,
-  exchange: string,
-  context: 'background_job' | 'user_request',
-  existingDoc: any,
-  reason: string
-): { shouldClear: boolean; logData: any } {
-  const now = Date.now();
-  const updatedAt = existingDoc?.updatedAt?.toDate?.()?.getTime?.() || 0;
-  const timeSinceUpdate = now - updatedAt;
-  const RECENT_SAVE_WINDOW_MS = 60 * 1000; // 60 seconds as requested
-
-  const wasRecentlySaved = timeSinceUpdate < RECENT_SAVE_WINDOW_MS;
-  const isBackgroundJob = context === 'background_job';
-
-  const logData = {
-    uid,
-    exchange,
-    context,
-    reason,
-    wasRecentlySaved,
-    timeSinceUpdateMs: timeSinceUpdate,
-    updatedAt: existingDoc?.updatedAt?.toDate?.()?.toISOString?.(),
-    recentSaveWindowMs: RECENT_SAVE_WINDOW_MS,
-    timestamp: now
-  };
-
-  // Block auto-clearing if:
-  // 1. It's a background job AND keys were recently saved, OR
-  // 2. It's a user request (never auto-clear for user requests)
-  const shouldClear = !((isBackgroundJob && wasRecentlySaved) || !isBackgroundJob);
-
-  if (!shouldClear) {
-    console.log('🔥 [HARD_LOG] [EXCHANGE_AUTO_INVALIDATION_BLOCKED]', {
-      ...logData,
-      action: 'SKIPPED_KEY_CLEARING',
-      blockReason: isBackgroundJob && wasRecentlySaved ? 'recent_manual_save' : 'user_request_context'
-    });
-  } else {
-    console.log('🔥 [HARD_LOG] [EXCHANGE_AUTO_INVALIDATION_DETECTED]', {
-      ...logData,
-      action: 'KEYS_WILL_BE_CLEARED',
-      caller: 'shouldAutoClearKeys'
-    });
-  }
-
-  return { shouldClear, logData };
-}
 
 /**
  * Sanitize Firestore payload by removing undefined values and converting them to FieldValue.delete()
@@ -64,7 +12,24 @@ function sanitizeFirestorePayload(payload: any): any {
   const sanitized: any = {};
   let sanitizedCount = 0;
 
+  // WRITE-ONCE exchange fields: NEVER convert undefined to FieldValue.delete()
+  const writeOnceExchangeFields = [
+    'exchangeStatus',
+    'keysClearedAt',
+    'keysClearedReason'
+  ];
+
   for (const [key, value] of Object.entries(payload)) {
+    // PROTECTED: Skip WRITE-ONCE exchange fields if undefined
+    if (writeOnceExchangeFields.includes(key) && value === undefined) {
+      // SKIP: Do not include in sanitized payload
+      console.log('🔥 [HARD_LOG] [WRITE_ONCE_FIELD_PROTECTED]', {
+        field: key,
+        action: 'SKIPPED_UNDEFINED_FIELD'
+      });
+      continue;
+    }
+
     if (value === undefined) {
       sanitized[key] = admin.firestore.FieldValue.delete();
       console.log('🔥 [HARD_LOG] [PROVIDER_FIELD_SANITIZED]', {
@@ -124,16 +89,195 @@ export function assertExchangeConfigWritePath(uid: string, attemptedPath: string
   }, 'EXCHANGE_CONFIG_WRITE_TO_CANONICAL_PATH_VERIFIED');
 }
 
+/**
+ * CRITICAL: Runtime guard against INVALID_KEYS writes outside connect flow
+ * This should NEVER be called except in POST /exchange/connect
+ */
+export function assertInvalidKeysWriteAllowed(context: string): void {
+  const allowedContexts = ['exchange_connect'];
+
+  if (!allowedContexts.includes(context)) {
+    const error = new Error(
+      `INVALID_KEYS_WRITE_VIOLATION: INVALID_KEYS can only be written in ${allowedContexts.join(', ')}, ` +
+      `not in '${context}'. This indicates a critical regression.`
+    );
+
+    logger.error({
+      context,
+      allowedContexts,
+      violation: 'INVALID_KEYS_WRITE_OUTSIDE_CONNECT'
+    }, 'INVALID_KEYS_WRITE_VIOLATION_DETECTED');
+
+    throw error;
+  }
+
+  logger.debug({ context }, 'INVALID_KEYS_WRITE_ALLOWED: Context verified for connect flow');
+}
+
+/**
+ * CRITICAL: Runtime guard against ANY exchangeStatus writes outside exchange routes
+ * Background jobs, schedulers, and other services MUST NEVER write exchangeStatus
+ */
+export function assertExchangeStatusWriteAllowed(context: string): void {
+  const allowedContexts = ['exchange_connect', 'exchange_disconnect'];
+
+  if (!allowedContexts.includes(context)) {
+    const error = new Error(
+      `EXCHANGE_STATUS_WRITE_VIOLATION: exchangeStatus can only be written in ${allowedContexts.join(', ')}, ` +
+      `not in '${context}'. Background jobs must never mutate exchange state.`
+    );
+
+    logger.error({
+      context,
+      allowedContexts,
+      violation: 'EXCHANGE_STATUS_WRITE_OUTSIDE_EXCHANGE_ROUTES'
+    }, 'EXCHANGE_STATUS_WRITE_VIOLATION_DETECTED');
+
+    throw error;
+  }
+
+  logger.debug({ context }, 'EXCHANGE_STATUS_WRITE_ALLOWED: Context verified for exchange operations');
+}
+
+// REQUEST-SCOPED CACHE: Prevent multiple Firestore reads for exchange usability in same request
+// Key: `${uid}:${context}`, Value: Promise<{ usable: boolean; reason: string; exchange?: string }>
+const REQUEST_CACHE = new Map<string, Promise<{ usable: boolean; reason: string; exchange?: string }>>();
+
+/**
+ * REQUEST CACHE MANAGEMENT: Clear exchange usability cache for diagnostic contexts
+ * Call this at the start of diagnostic routes to ensure fresh reads
+ */
+export function clearExchangeUsabilityCache(): void {
+  REQUEST_CACHE.clear();
+  console.log('🔄 [EXCHANGE_CACHE_CLEARED] Request-scoped exchange usability cache cleared');
+}
+
 // SHARED exchange usability guard for all major code paths
+/**
+ * SAFE STARTUP CLEANUP: Automatically clear stale INVALID_KEYS states
+ * INVALID_KEYS is transient and should not persist. This runs on server startup
+ * to clean any stale INVALID_KEYS found in the database.
+ *
+ * CRITICAL SAFETY: Only affects INVALID_KEYS states, never touches valid exchanges
+ */
+export async function startupCleanupStaleInvalidKeys(): Promise<{ processed: number; cleared: number; errors: number }> {
+  try {
+    const usersSnapshot = await db().collection('users').limit(1000).get(); // Process in batches
+    let processed = 0;
+    let cleared = 0;
+    let errors = 0;
+
+    logger.info({ userCount: usersSnapshot.docs.length }, 'STARTUP_CLEANUP_STALE_INVALID_KEYS: Starting cleanup of stale INVALID_KEYS states');
+
+    for (const userDoc of usersSnapshot.docs) {
+      const uid = userDoc.id;
+
+      // Skip system UIDs
+      if (uid.startsWith('system-') || uid.length < 10) continue;
+
+      try {
+        processed++;
+        const exchangeDoc = await db().collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+
+        if (exchangeDoc.exists) {
+          const config = exchangeDoc.data();
+
+          // ONLY clear INVALID_KEYS states - never touch CONNECTED or DISCONNECTED
+          if (config?.exchangeStatus === 'INVALID_KEYS') {
+            await exchangeDoc.ref.update({
+              exchangeStatus: 'DISCONNECTED',
+              keysClearedAt: admin.firestore.FieldValue.delete(),
+              keysClearedReason: admin.firestore.FieldValue.delete(),
+              updatedAt: admin.firestore.Timestamp.now(),
+            });
+
+            logger.info({
+              uid,
+              exchange: config.exchange,
+              originalReason: config.keysClearedReason
+            }, 'STARTUP_CLEANUP: Cleared stale INVALID_KEYS → DISCONNECTED');
+
+            cleared++;
+          }
+        }
+      } catch (userError: any) {
+        logger.warn({ uid, error: userError.message }, 'STARTUP_CLEANUP: Error processing user');
+        errors++;
+      }
+
+      // Yield to prevent blocking
+      if (processed % 10 === 0) {
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+    }
+
+    logger.info({
+      processed,
+      cleared,
+      errors,
+      cleanupRate: processed > 0 ? (cleared / processed * 100).toFixed(1) + '%' : '0%'
+    }, 'STARTUP_CLEANUP_STALE_INVALID_KEYS: Completed');
+
+    return { processed, cleared, errors };
+  } catch (error: any) {
+    logger.error({ error: error.message }, 'STARTUP_CLEANUP_STALE_INVALID_KEYS: Failed');
+    return { processed: 0, cleared: 0, errors: 1 };
+  }
+}
+
+/**
+ * MANUAL UTILITY: Clear stale INVALID_KEYS for specific user
+ */
+export async function clearStaleInvalidKeys(uid: string): Promise<{ cleared: boolean; reason: string }> {
+  try {
+    const doc = await db().collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+
+    if (!doc.exists) {
+      return { cleared: false, reason: 'No exchange config found' };
+    }
+
+    const config = doc.data();
+    if (!config || config.exchangeStatus !== 'INVALID_KEYS') {
+      return { cleared: false, reason: 'Exchange status is not INVALID_KEYS' };
+    }
+
+    // Clear the INVALID_KEYS state by setting to DISCONNECTED
+    await doc.ref.update({
+      exchangeStatus: 'DISCONNECTED',
+      keysClearedAt: admin.firestore.FieldValue.delete(),
+      keysClearedReason: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.Timestamp.now(),
+    });
+
+    logger.info({
+      uid,
+      exchange: config.exchange,
+      keysClearedReason: config.keysClearedReason
+    }, 'CLEARED_STALE_INVALID_KEYS: Converted INVALID_KEYS to DISCONNECTED');
+
+    return { cleared: true, reason: 'Stale INVALID_KEYS cleared successfully' };
+  } catch (error: any) {
+    logger.error({ uid, error: error.message }, 'FAILED_TO_CLEAR_STALE_INVALID_KEYS');
+    return { cleared: false, reason: `Clear failed: ${error.message}` };
+  }
+}
+
 /**
  * Update cached flags for control-plane routes
  * Called by background processes only - NEVER from routes
  */
 export async function updateCachedFlags(uid: string): Promise<void> {
   try {
-    // Check exchange configuration
-    const exchangeUsable = await isExchangeUsable(uid);
-    const exchangeConfigured = exchangeUsable.usable;
+    // Check exchange configuration presence
+    // exchangeConfigured = exchangeConfig document EXISTS (nothing else)
+    let exchangeConfigured = false;
+    try {
+      const exchangeDoc = await db().collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+      exchangeConfigured = exchangeDoc.exists;
+    } catch (configError: any) {
+      logger.debug({ uid, error: configError.message }, 'Failed to check exchange config for cached flags');
+      exchangeConfigured = false;
+    }
 
     // Check provider configuration (lightweight check)
     const dbInstance = db();
@@ -144,7 +288,7 @@ export async function updateCachedFlags(uid: string): Promise<void> {
     await firestoreAdapter.saveBackgroundResearchSettings(uid, {
       exchangeConfigured,
       providersConfigured,
-      lastExchangeValidationAt: admin.firestore.Timestamp.now(),
+      lastExchangeCheckAt: admin.firestore.Timestamp.now(),
       lastProviderValidationAt: admin.firestore.Timestamp.now(),
     });
 
@@ -164,193 +308,160 @@ export async function updateCachedFlags(uid: string): Promise<void> {
 
 export async function isExchangeUsable(
   uid: string,
-  context?: 'background_job' | 'user_request'
+  context?: 'background_job' | 'user_request' | 'exchange_connect' | 'exchange_validate' | 'engine_check'
 ): Promise<{ usable: boolean; reason: string; exchange?: string }> {
-  // ENFORCE: ONLY canonical path - users/{uid}/exchangeConfig/current
-  const canonicalPath = `users/${uid}/exchangeConfig/current`;
-  const doc = await db().collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+  console.log(`🔍 [EXCHANGE_USABLE_CALLED] uid: ${uid}, context: '${context || 'undefined'}', timestamp: ${Date.now()}`);
 
-  // Log canonical path usage once per request
-  logger.debug({
-    uid,
-    firestorePathUsed: canonicalPath,
-    canonical: true
-  }, 'EXCHANGE_CONFIG_READ_FROM_CANONICAL_PATH');
+  // REQUEST-SCOPED CACHING: For diagnostic contexts (user_request), cache result to prevent multiple Firestore reads
+  const cacheKey = `${uid}:${context || 'undefined'}`;
+  if ((context === 'user_request') && REQUEST_CACHE.has(cacheKey)) {
+    console.log(`🔍 [EXCHANGE_CACHE_HIT] Returning cached result for uid: ${uid}, context: ${context}`);
+    return REQUEST_CACHE.get(cacheKey)!;
+  }
 
-  if (!doc.exists) {
-    logger.info({
+  // CRITICAL: Full validation (with decryption) ONLY for explicit exchange operations
+  // All other contexts (background_job, engine_check, user_request, etc.) just check exchangeStatus
+  const shouldDoFullValidation = context === 'exchange_connect' || context === 'exchange_validate';
+
+  if (!shouldDoFullValidation) {
+    console.log(`🔍 [EXCHANGE_GUARD] Context '${context || 'undefined'}' is NON-EXCHANGE - checking exchangeStatus only for uid: ${uid}`);
+    logger.debug({
       uid,
-      canonicalPath,
-      reason: 'EXCHANGE_CONFIG_MISSING_AT_CANONICAL_PATH'
-    }, 'EXCHANGE_CONFIG_MISSING_AT_CANONICAL_PATH - treating as NOT_USABLE');
-    return { usable: false, reason: 'No exchange configuration found' };
-  }
+      context,
+      action: 'EXCHANGE_VALIDATION_SKIPPED'
+    }, 'EXCHANGE_VALIDATION_SKIPPED: Non-exchange context - checking status only');
 
-  const config = doc.data();
-  if (!config) {
-    return { usable: false, reason: 'Exchange configuration is empty' };
-  }
+    // For non-exchange contexts: ONLY check if exchangeStatus === 'CONNECTED'
+    // HARD GUARD: keysClearedReason, keysClearedAt, and ALL legacy flags MUST NOT affect runtime usability
+    // These fields are WRITE-ONCE and only relevant during exchange_connect operations
+    const doc = await db().collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
 
-  // Check if user has explicitly disconnected
-  if (config.disconnected === true) {
-    return { usable: false, reason: 'Exchange disconnected by user', exchange: config.exchange };
-  }
+    if (!doc.exists) {
+      console.log(`🔍 [EXCHANGE_GUARD] No config document for uid: ${uid}. Returning { usable: false, reason: 'not_connected' }`);
+      return { usable: false, reason: 'not_connected' };
+    }
 
-  const exchange = (config.exchange || '').toLowerCase().trim();
+    const config = doc.data();
 
-  // Check basic requirements
-  if (!config.apiKeyEncrypted) {
-    return { usable: false, reason: 'API key not configured', exchange };
-  }
-  if (!config.secretEncrypted && !config.secretKeyEncrypted) {
-    return { usable: false, reason: 'Secret key not configured', exchange };
-  }
-  if (!['binance', 'bitget', 'bingx', 'weex'].includes(exchange)) {
-    return { usable: false, reason: `Unsupported exchange: ${exchange}`, exchange };
-  }
-
-  // CRITICAL: Test actual decryption to verify usability
-  // DO NOT rely on cached exchangeStatus - always test current decryption capability
-  try {
-    const { decrypt, getEncryptionKeyStatus } = await import('./keyManager');
-
-    // Verify encryption key is properly initialized
-    const keyStatus = getEncryptionKeyStatus();
-    if (!keyStatus.initialized) {
-      logger.error({
-        uid,
-        exchange,
-        keyStatus
-      }, 'EXCHANGE_DECRYPTION_FAILED: Encryption key not initialized - server startup issue');
+    // RULE: If exchangeConfig/current is missing, empty {}, or exchangeStatus missing/undefined/empty
+    if (!config || !config.exchangeStatus || config.exchangeStatus === '') {
+      console.log(`🔍 [EXCHANGE_GUARD] Missing/empty/undefined exchangeConfig for uid: ${uid}. Returning { usable: false, reason: 'not_connected' }`);
       return {
         usable: false,
-        reason: 'Encryption key not initialized - server startup issue',
-        exchange
+        reason: 'not_connected',
+        exchange: config?.exchange
       };
     }
 
-    const apiKey = decrypt(config.apiKeyEncrypted);
-    const secret = decrypt(config.secretKeyEncrypted || config.secretEncrypted);
-    const passphrase = config.passphraseEncrypted ? decrypt(config.passphraseEncrypted) : undefined;
+    const exchangeStatus = config?.exchangeStatus;
+    const keysClearedReason = config?.keysClearedReason;
+    const keysClearedAt = config?.keysClearedAt;
 
-    // Log detailed decryption results for diagnosis
-    const isBitget = exchange === 'bitget';
-    const decryptionValid = apiKey !== null && secret !== null && (isBitget ? passphrase !== null : true);
-
-    // Log decryption details for troubleshooting
-    logger.info({
+    // HARD LOGGING: Track ALL exchange usability decisions
+    logger.error({
       uid,
-      exchange,
-      decryptionValid,
-      apiKeyDecrypted: apiKey !== null,
-      secretDecrypted: secret !== null,
-      passphraseRequired: isBitget,
-      passphraseDecrypted: isBitget ? (passphrase !== null) : 'N/A',
-      apiKeyLength: config.apiKeyEncrypted?.length || 0,
-      secretLength: (config.secretKeyEncrypted || config.secretEncrypted)?.length || 0,
-      passphraseLength: config.passphraseEncrypted?.length || 0,
-      encryptionKeyHash: keyStatus.keyHash,
-      encryptionKeyInitialized: keyStatus.initialized
-    }, 'EXCHANGE_DECRYPTION_DIAGNOSIS');
+      exchangeStatus,
+      keysClearedReason,
+      keysClearedAt,
+      context,
+      decision: exchangeStatus === 'CONNECTED' ? 'USABLE' : 'NOT_USABLE',
+      exchange: config?.exchange
+    }, '[EXCHANGE_RUNTIME_PROOF] isExchangeUsable decision');
 
-    // If decryption failed, check if we should auto-clear keys
-    if (!decryptionValid) {
-      const { shouldClear, logData } = shouldAutoClearKeys(uid, exchange, context || 'background_job', config, 'decryption_failed');
+    // HARD GUARD: Explicitly ignore poisoned legacy fields in non-exchange contexts
+    // keysClearedReason, keysClearedAt must NEVER influence usability decisions here
+    // They are only relevant during exchange_connect for setting INVALID_KEYS
 
-      if (!shouldClear) {
-        // Do NOT clear keys - preserve user's recent manual save
-        logger.warn({
-          uid,
-          exchange,
-          timeSinceUpdateMs: logData.timeSinceUpdateMs
-        }, 'EXCHANGE_AUTO_INVALIDATION_BLOCKED: Skipping key clearing for recently manually saved exchange');
-      } else {
-        logger.warn({
-          uid,
-          exchange,
-          apiKeyEncryptedPrefix: config.apiKeyEncrypted?.substring(0, 20) + '...',
-          secretEncryptedPrefix: (config.secretKeyEncrypted || config.secretEncrypted)?.substring(0, 20) + '...',
-          passphraseEncryptedPrefix: config.passphraseEncrypted?.substring(0, 20) + '...',
-          apiKeyNull: apiKey === null,
-          secretNull: secret === null,
-          passphraseNull: passphrase === null
-        }, 'EXCHANGE_DECRYPTION_FAILED: Clearing corrupted keys - user must re-enter exchange credentials');
+    // CRITICAL: exchangeStatus is the ONLY source of truth for validity
+    // HARD GUARD: When CONNECTED, ignore ALL legacy invalid markers (keysClearedReason, keysClearedAt, etc.)
+    // These fields MUST NEVER be checked or used in usability decisions in non-exchange contexts
+    if (exchangeStatus === 'CONNECTED') {
+      console.log(`🔍 [EXCHANGE_GUARD] exchangeStatus=CONNECTED for uid: ${uid}, exchange: ${config?.exchange}`);
+      const result = {
+        usable: true,
+        reason: 'connected',
+        exchange: config?.exchange
+      };
 
-        // CRITICAL: Clear corrupted keys when decryption fails
-        // This prevents silent failures and forces re-entry with current ENCRYPTION_SECRET
-        try {
-          await clearInvalidExchangeKeys(uid);
-        } catch (clearError: any) {
-          logger.error({
-            uid,
-            exchange,
-            clearError: clearError.message
-          }, 'FAILED_TO_CLEAR_CORRUPTED_EXCHANGE_KEYS');
-          // Continue with unusable result even if clearing failed
-        }
+      // CACHE RESULT: For diagnostic contexts, cache to prevent multiple Firestore reads per request
+      if (context === 'user_request') {
+        REQUEST_CACHE.set(cacheKey, Promise.resolve(result));
       }
+
+      return result;
     }
 
-    const result = {
-      usable: decryptionValid,
-      reason: decryptionValid ? 'Exchange configured and decryptable' : 'Exchange keys exist but decryption failed',
-      exchange
-    };
+    // STRICT REASON MAPPING (Fix 1)
+    let mappedReason = 'not_connected';
+    if (exchangeStatus === 'INVALID_KEYS') {
+      // FIX 2: INVALID_KEYS is a transient event, not persistent state
+      // If we encounter INVALID_KEYS outside connect flow, it means stale state
+      // Must return not_connected to prevent INVALID_KEYS from persisting
 
-    // Log exchange usability decision once per request
-    logger.info({
-      uid,
-      exchange,
-      usable: result.usable,
-      reason: result.reason
-    }, `EXCHANGE_USABILITY_CHECKED: ${result.usable ? 'USABLE' : 'NOT_USABLE'} - ${result.reason}`);
+      // REGRESSION PROTECTION: INVALID_KEYS must never be returned when exchangeConfig is missing or after disconnect
+      // This assertion documents the invariant that INVALID_KEYS is transient and should be treated as stale state
+      console.log(`🔒 [REGRESSION_GUARD] INVALID_KEYS encountered in non-connect context (${context}) for uid: ${uid} - treating as stale event, returning not_connected`);
 
-    return result;
-  } catch (error: any) {
-    const config = doc.data();
-    const { shouldClear, logData } = shouldAutoClearKeys(uid, exchange || 'unknown', context || 'background_job', config, 'decryption_exception');
-
-    if (!shouldClear) {
-      logger.warn({
-        uid,
-        exchange,
-        timeSinceUpdateMs: logData.timeSinceUpdateMs,
-        error: error.message
-      }, 'EXCHANGE_AUTO_INVALIDATION_BLOCKED: Skipping key clearing for recently manually saved exchange (exception case)');
-    } else {
-      logger.warn({
-        uid,
-        exchange,
-        error: error.message
-      }, 'EXCHANGE_DECRYPTION_EXCEPTION: Clearing keys due to decryption error');
-
-      // Clear keys when decryption throws exception
-      try {
-        await clearInvalidExchangeKeys(uid);
-      } catch (clearError: any) {
-        logger.error({
-          uid,
-          exchange,
-          clearError: clearError.message
-        }, 'FAILED_TO_CLEAR_EXCHANGE_KEYS_AFTER_EXCEPTION');
-      }
+      mappedReason = 'not_connected';
+    } else if (exchangeStatus === 'DISCONNECTED') {
+      mappedReason = 'disconnected';
     }
 
+    console.log(`🔍 [EXCHANGE_GUARD] exchangeStatus=${exchangeStatus} for uid: ${uid} - returning strict reason: ${mappedReason}`);
     const result = {
       usable: false,
-      reason: `Exchange decryption error: ${error.message}`,
-      exchange
+      reason: mappedReason,
+      exchange: config?.exchange
     };
 
-    logger.warn({
-      uid,
-      exchange,
-      error: error.message
-    }, `EXCHANGE_USABILITY_CHECKED: NOT_USABLE - ${result.reason}`);
+    // CACHE RESULT: For diagnostic contexts, cache to prevent multiple Firestore reads per request
+    if (context === 'user_request') {
+      REQUEST_CACHE.set(cacheKey, Promise.resolve(result));
+    }
 
     return result;
-  }
+  } else {
+    // --- VALIDATION CONTEXTS: exchange_connect | exchange_validate ---
+    // DO NOT decrypt inside firestoreAdapter - only check config existence and encrypted fields
+    console.log(`🔍 [EXCHANGE_GUARD] Context '${context}' is VALIDATION - checking config existence and encrypted fields for uid: ${uid}`);
 
+    try {
+      // Load exchange config document
+      const doc = await db().collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+
+      if (!doc.exists) {
+        console.log(`🔍 [EXCHANGE_VALIDATION] No config document for uid: ${uid}`);
+        return { usable: false, reason: 'not_connected' };
+      }
+
+      const config = doc.data();
+      if (!config) {
+        console.log(`🔍 [EXCHANGE_VALIDATION] Empty config for uid: ${uid}`);
+        return { usable: false, reason: 'not_connected' };
+      }
+
+      // Check for encrypted keys existence (NO DECRYPTION)
+      const hasApiKey = config.apiKeyEncrypted || config.apiKey;
+      const hasSecret = config.secretEncrypted || config.secretKeyEncrypted || config.secret;
+
+      if (!hasApiKey || !hasSecret) {
+        console.log(`🔍 [EXCHANGE_VALIDATION] Missing encrypted fields for uid: ${uid}`);
+        return { usable: false, reason: 'not_connected' };
+      }
+
+      // SUCCESS: Config exists and has encrypted fields (no decryption attempted)
+      console.log(`🔍 [EXCHANGE_VALIDATION] Config exists with encrypted fields for uid: ${uid}, exchange: ${config.exchange}`);
+      return {
+        usable: true,
+        reason: 'connected',
+        exchange: config.exchange
+      };
+
+    } catch (error: any) {
+      console.log(`🔍 [EXCHANGE_VALIDATION] Error loading config for uid: ${uid}: ${error.message}`);
+      return { usable: false, reason: 'not_connected' };
+    }
+  }
 }
 
 /**
@@ -358,33 +469,28 @@ export async function isExchangeUsable(
  * Forces user to reconnect exchange, preventing silent failures
  * Should be called when decryptOrThrow fails for exchange keys
  */
-export async function clearInvalidExchangeKeys(uid: string): Promise<void> {
-  const exchangeRef = db().collection('users').doc(uid).collection('exchangeConfig').doc('current');
-
-  // 🔥 HARD_LOG: EXCHANGE_MANUAL_DISCONNECT - when we actually clear keys
-  console.log('🔥 [HARD_LOG] [EXCHANGE_MANUAL_DISCONNECT]', {
+export async function clearInvalidExchangeKeys(
+  uid: string,
+  markInvalid: boolean = false,
+  context?: string
+): Promise<void> {
+  // 🚫 HARD-DISABLED: Background/adapter code MUST NEVER delete exchange keys
+  // Only /exchange/connect route can reset credentials
+  console.log('🚫 [HARD_DISABLED] [EXCHANGE_KEY_CLEAR_BLOCKED]', {
     uid,
-    action: 'CLEARING_INVALID_KEYS',
-    reason: 'Decryption failure - ENCRYPTION_SECRET mismatch',
+    context,
+    reason: 'clearInvalidExchangeKeys() is NO-OP - background processes cannot mutate credentials',
+    action: 'LOG_ONLY_NO_MUTATION',
     timestamp: Date.now()
   });
 
-  try {
-    await exchangeRef.update({
-      apiKeyEncrypted: admin.firestore.FieldValue.delete(),
-      secretKeyEncrypted: admin.firestore.FieldValue.delete(),
-      secretEncrypted: admin.firestore.FieldValue.delete(),
-      passphraseEncrypted: admin.firestore.FieldValue.delete(),
-      exchangeStatus: 'INVALID_KEYS',
-      keysClearedAt: admin.firestore.FieldValue.serverTimestamp(),
-      keysClearedReason: 'Decryption failure - ENCRYPTION_SECRET mismatch'
-    });
+  logger.warn({
+    uid,
+    context,
+    blocked: true
+  }, '🚫 clearInvalidExchangeKeys() BLOCKED - background processes cannot delete exchange keys');
 
-    logger.warn({ uid }, 'Cleared encrypted exchange keys due to decryption failure - user must reconnect exchange');
-  } catch (error: any) {
-    logger.error({ uid, error: error.message }, 'Failed to clear invalid exchange keys');
-    throw error;
-  }
+  // NO-OP: Do not delete keys, do not update timestamps, do not mutate Firestore
 }
 
 
@@ -610,7 +716,18 @@ export class FirestoreAdapter {
    * CRITICAL: Prevent ANY code from writing notification settings to wrong locations.
    * As per requirements, all notification settings MUST be in users/{uid}/settings/current.
    */
-  public guardAgainstIllegalWrites(path: string, data: any) {
+  public guardAgainstIllegalWrites(path: string, data: any, context?: string) {
+    // 🔍 INSTRUMENTATION: Log all attempts to write to exchangeConfig/current
+    const isExchangeConfigCurrent = path.includes('/exchangeConfig/current');
+    if (isExchangeConfigCurrent) {
+      logger.info({
+        path,
+        context,
+        attemptedKeys: data ? Object.keys(data) : [],
+        operation: 'EXCHANGE_CONFIG_WRITE_ATTEMPT'
+      }, '🔍 [INSTRUMENTATION] Exchange config write attempt detected');
+    }
+
     const restrictedKeys = [
       'notifications',
       'notificationSettings',
@@ -622,15 +739,54 @@ export class FirestoreAdapter {
       'notificationVibration'
     ];
 
+    const exchangeRestrictedKeys = [
+      'exchangeStatus',
+      'keysClearedAt',
+      'keysClearedReason'
+    ];
+
     const isSettingsCurrent = path.includes('/settings/current');
 
-    // Check if any restricted key is present in the data being written
+    // 🚨 HARD ASSERT: Non-exchange_connect contexts CANNOT touch exchangeConfig/current
+    if (isExchangeConfigCurrent && context !== 'exchange_connect') {
+      logger.error({
+        path,
+        data,
+        context,
+        isExchangeConfigCurrent,
+        operation: 'EXCHANGE_CONFIG_ACCESS_BLOCKED'
+      }, '🚨 [HARD_ASSERT] Non-exchange_connect context attempted to write to exchangeConfig/current');
+
+      throw new Error(`HARD_ASSERT_VIOLATION: Only 'exchange_connect' context can write to exchangeConfig/current. Context: ${context}, Path: ${path}`);
+    }
+
+    // 1. Check notification restricted keys
     for (const key of restrictedKeys) {
       if (data && data[key] !== undefined) {
-        // If it's NOT the authorized path, throw HARD error
         if (!isSettingsCurrent) {
           logger.error({ path, key, data }, '🚨 HARD ERROR: Attempted to write notification fields outside authorized path');
           throw new Error(`ILLEGAL_WRITE: Field "${key}" can only be written to users/{uid}/settings/current. Path attempted: ${path}`);
+        }
+      }
+    }
+
+    // 2. STRICT WRITE-ONCE RULE: Exchange status fields can ONLY be written during exchange_connect
+    for (const key of exchangeRestrictedKeys) {
+      if (data && (data[key] !== undefined || data[key] instanceof admin.firestore.FieldValue)) {
+        const isAuthorizedContext = context === 'exchange_connect';
+        const isAuthorizedPath = isExchangeConfigCurrent;
+
+        if (!isAuthorizedContext || !isAuthorizedPath) {
+          logger.error({
+            path,
+            key,
+            data,
+            context,
+            isAuthorizedContext,
+            isAuthorizedPath
+          }, '🚨 [SAFETY] Non-user context attempted exchangeStatus mutation — blocked');
+
+          throw new Error(`ILLEGAL_EXCHANGE_STATUS_WRITE: Field "${key}" can only be written to users/{uid}/exchangeConfig/current during 'exchange_connect'. Context: ${context}, Path: ${path}`);
         }
       }
     }
@@ -817,7 +973,7 @@ export class FirestoreAdapter {
       }
 
       // CRITICAL: Runtime Guard Check
-      this.guardAgainstIllegalWrites(`users/${uid}/settings/current`, sanitized);
+      this.guardAgainstIllegalWrites(`users/${uid}/settings/current`, sanitized, 'background_job');
 
       // CRITICAL: Use set() with merge: true, but sanitized data has no undefined values
       await docRef.set(sanitized, { merge: true });
@@ -1060,6 +1216,11 @@ export class FirestoreAdapter {
     return out;
   }
 
+  async getEnabledIntegrations(uid: string): Promise<Record<string, { apiKey: string; secretKey?: string }>> {
+    // 🚫 ADAPTER CRYPTO-AGNOSTIC: Integration decryption should happen at application layer
+    throw new Error('CRYPTO_OPERATION_BLOCKED: getEnabledIntegrations() performs decryption and should not be called from firestoreAdapter. Use integration service layer instead.');
+  }
+
   async saveIntegration(uid: string, apiName: string, data: {
     enabled: boolean;
     apiKey?: string; // plain text, will be encrypted
@@ -1088,10 +1249,10 @@ export class FirestoreAdapter {
     }
 
     if (data.apiKey) {
-      docData.apiKey = encrypt(data.apiKey);
+      docData.apiKeyEncrypted = encrypt(data.apiKey);
     }
     if (data.secretKey) {
-      docData.secretKey = encrypt(data.secretKey);
+      docData.secretKeyEncrypted = encrypt(data.secretKey);
     }
     if (data.apiType) {
       docData.apiType = data.apiType;
@@ -1123,47 +1284,6 @@ export class FirestoreAdapter {
     logger.info({ uid, apiName }, 'Integration deleted from Firestore');
   }
 
-  async getEnabledIntegrations(uid: string): Promise<Record<string, { apiKey: string; secretKey?: string }>> {
-    const allIntegrations = await this.getAllIntegrations(uid);
-    const enabled: Record<string, { apiKey: string; secretKey?: string }> = {};
-
-    for (const [apiName, integration] of Object.entries(allIntegrations)) {
-      if (integration.enabled && integration.apiKeyEncrypted) {
-        try {
-          const decryptedApiKey = decrypt(integration.apiKeyEncrypted);
-          const decryptedSecretKey = integration.secretKeyEncrypted
-            ? decrypt(integration.secretKeyEncrypted)
-            : undefined;
-
-          if (decryptedApiKey && decryptedApiKey.trim() !== '') {
-            enabled[apiName] = {
-              apiKey: decryptedApiKey,
-              ...(decryptedSecretKey && decryptedSecretKey.trim() !== '' ? { secretKey: decryptedSecretKey } : {}),
-            };
-            logger.debug({
-              uid,
-              apiName,
-              apiKeyLen: decryptedApiKey.length,
-              hasSecret: !!decryptedSecretKey,
-            }, 'Enabled integration loaded with decrypted key');
-          } else {
-            logger.warn({ uid, apiName }, 'Skipping integration with invalid/empty decrypted API key');
-          }
-        } catch (error: any) {
-          logger.error({ error: error.message, uid, apiName }, 'Failed to decrypt integration keys, skipping');
-        }
-      } else {
-        logger.debug({
-          uid,
-          apiName,
-          enabled: integration.enabled,
-          hasApiKeyEncrypted: !!integration.apiKeyEncrypted,
-        }, 'Integration not enabled or missing apiKeyEncrypted, skipping for diagnostics');
-      }
-    }
-
-    return enabled;
-  }
 
   // HFT Settings
   async saveHFTSettings(uid: string, settings: Partial<HFTSettingsDocument>): Promise<void> {
@@ -1618,14 +1738,14 @@ export class FirestoreAdapter {
     try {
       // PRIMARY: Fetch from users/{uid}/agents - same source as getUserAgents
       const snapshot = await db().collection('users').doc(uid).collection('agents').get();
-      
+
       const unlockedAgentIds: string[] = [];
       snapshot.docs.forEach((doc) => {
         // Skip system documents
         if (doc.id === '_init' || doc.id.startsWith('_')) {
           return;
         }
-        
+
         const data = doc.data();
         // Treat as unlocked by default unless explicitly locked
         // unlocked field can be: true (explicitly unlocked), false (explicitly locked), or undefined (default unlocked)
@@ -1717,7 +1837,7 @@ export class FirestoreAdapter {
     };
 
     // CRITICAL: Runtime Guard Check
-    this.guardAgainstIllegalWrites(`engineStatus/${uid}`, statusDoc);
+    this.guardAgainstIllegalWrites(`engineStatus/${uid}`, statusDoc, 'background_job');
 
     const statusRef = db().collection('engineStatus').doc(uid);
     await statusRef.set(statusDoc, { merge: true });
@@ -1751,7 +1871,7 @@ export class FirestoreAdapter {
     // CACHED FLAGS for control-plane routes (updated by background processes only)
     exchangeConfigured?: boolean; // Cached: exchange keys exist and decryptable
     providersConfigured?: boolean; // Cached: at least one research provider configured
-    lastExchangeValidationAt?: admin.firestore.Timestamp; // When exchange was last validated
+    lastExchangeCheckAt?: admin.firestore.Timestamp; // When exchange configuration was last checked
     lastProviderValidationAt?: admin.firestore.Timestamp; // When providers were last validated
   }): Promise<void> {
     try {
@@ -1764,11 +1884,11 @@ export class FirestoreAdapter {
       // CRITICAL: Preserve Telegram credentials if not explicitly provided in settings
       // Never clear Telegram credentials on decrypt failure or other errors
       // Only update if explicitly provided (not undefined)
-      const preservedTelegramBotToken = settings.telegramBotToken !== undefined 
-        ? settings.telegramBotToken 
+      const preservedTelegramBotToken = settings.telegramBotToken !== undefined
+        ? settings.telegramBotToken
         : (existingData.telegramBotToken || undefined);
-      const preservedTelegramChatId = settings.telegramChatId !== undefined 
-        ? settings.telegramChatId 
+      const preservedTelegramChatId = settings.telegramChatId !== undefined
+        ? settings.telegramChatId
         : (existingData.telegramChatId || undefined);
 
       // CRITICAL: Preserve enabled state if not explicitly provided
@@ -1797,7 +1917,7 @@ export class FirestoreAdapter {
       const sanitized = this.sanitizeForFirestore(merged);
 
       // CRITICAL: Runtime Guard Check
-      this.guardAgainstIllegalWrites(`users/${uid}/settings/backgroundResearch`, sanitized);
+      this.guardAgainstIllegalWrites(`users/${uid}/settings/backgroundResearch`, sanitized, 'background_job');
 
       await docRef.set(sanitized, { merge: true });
       logger.info({ uid }, 'Background research settings saved to Firestore');
@@ -2439,7 +2559,7 @@ export class FirestoreAdapter {
       };
 
       // CRITICAL: Runtime Guard Check
-      this.guardAgainstIllegalWrites(`users/${uid}/settings/trading`, settingsDoc);
+      this.guardAgainstIllegalWrites(`users/${uid}/settings/trading`, settingsDoc, 'background_job');
 
       await db()
         .collection('users')
@@ -2625,6 +2745,12 @@ export class FirestoreAdapter {
 
   /**
    * Get exchange config for a user
+   *
+   * WARNING: keysClearedReason and keysClearedAt fields should NEVER be used
+   * for usability decisions in non-exchange_connect contexts. Use isExchangeUsable()
+   * instead, which properly ignores these legacy fields.
+   *
+   * If exchangeStatus === 'CONNECTED', legacy fields MUST be ignored completely.
    */
   async getExchangeConfig(uid: string): Promise<any> {
     try {
@@ -2632,7 +2758,34 @@ export class FirestoreAdapter {
       if (!doc.exists) {
         return null;
       }
-      return doc.data();
+
+      const data = doc.data();
+
+      // HARD LOGGING: Track getExchangeConfig calls
+      logger.error({
+        uid,
+        exchangeStatus: data?.exchangeStatus,
+        keysClearedReason: data?.keysClearedReason,
+        keysClearedAt: data?.keysClearedAt,
+        hasLegacyFields: !!(data?.keysClearedReason || data?.keysClearedAt),
+        context: 'getExchangeConfig'
+      }, '[EXCHANGE_RUNTIME_PROOF] getExchangeConfig called');
+
+      // RUNTIME PROTECTION: Strip legacy poison fields from CONNECTED exchanges
+      // NO Firestore writes during READ operations - just protect runtime usage
+      if (data?.exchangeStatus === 'CONNECTED') {
+        // Strip from runtime object to prevent any usage of legacy fields
+        delete data.keysClearedReason;
+        delete data.keysClearedAt;
+
+        logger.error({
+          uid,
+          strippedLegacyFields: true,
+          context: 'getExchangeConfig'
+        }, '[EXCHANGE_RUNTIME_PROTECTION] Legacy fields stripped from CONNECTED exchange');
+      }
+
+      return data;
     } catch (error: any) {
       logger.error({ error: error.message, uid }, 'Error getting exchange config');
       return null;
@@ -2809,7 +2962,7 @@ export class FirestoreAdapter {
         return; // Skip save cleanly for non-SKIPPED entries without symbol
       }
     }
-    
+
     // TEMPORARY DEBUG LOGGING: Log before saving history
     console.log("🔥 [HISTORY_DEBUG] BEFORE save", {
       uid,
@@ -2829,11 +2982,11 @@ export class FirestoreAdapter {
       entry: historyEntry,
       timestamp: new Date().toISOString()
     });
-    
+
     try {
       // CRITICAL: Sanitize entry to remove any undefined values before Firestore write
       const sanitizedEntry = this.sanitizeForFirestore(historyEntry);
-      
+
       const result = await db().collection('users')
         .doc(uid)
         .collection('research_history')
@@ -2841,7 +2994,7 @@ export class FirestoreAdapter {
           ...sanitizedEntry,
           timestamp: admin.firestore.FieldValue.serverTimestamp()
         });
-      
+
       // TEMPORARY DEBUG LOGGING: Log after successful save
       console.log("🔥 [HISTORY_DEBUG] AFTER save success", {
         uid,
@@ -2933,10 +3086,10 @@ export class FirestoreAdapter {
         } else {
           // TELEGRAM: Use existing normalization logic
           normalizedStatus = data.decision === 'EXECUTED' ? 'COMPLETED' :
-                 data.decision === 'SKIPPED' ? 'SKIPPED' :
-                 data.executionStatus === 'SUCCESS' ? 'COMPLETED' :
-                 data.executionStatus === 'FAILED' ? 'FAILED' :
-                 data.status || 'UNKNOWN';
+            data.decision === 'SKIPPED' ? 'SKIPPED' :
+              data.executionStatus === 'SUCCESS' ? 'COMPLETED' :
+                data.executionStatus === 'FAILED' ? 'FAILED' :
+                  data.status || 'UNKNOWN';
         }
 
         return {

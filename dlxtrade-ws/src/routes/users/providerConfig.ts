@@ -146,7 +146,7 @@ export async function getUserIntegrationsByUid(uid: string, context: 'user_reque
                 apiKeyEncryptedLength: apiKeyEncrypted?.length || 0
               });
 
-              apiKey = decrypt(apiKeyEncrypted) || '';
+              apiKey = decrypt(apiKeyEncrypted, 'provider_config') || '';
 
               // 🔥 DIAGNOSTIC: PROVE API KEY DECRYPTION RESULT
               console.log("🔥 [API_KEY_DECRYPT] AFTER decrypt", {
@@ -197,7 +197,7 @@ export async function getUserIntegrationsByUid(uid: string, context: 'user_reque
         // Do NOT attempt decryption on missing or empty values
         if (secretKeyEncrypted && secretKeyEncrypted.trim().length > 0) {
           try {
-            secretKey = decrypt(secretKeyEncrypted) || '';
+            secretKey = decrypt(secretKeyEncrypted, 'provider_config') || '';
             // HARD ASSERTION: If secret decryption returns empty result, mark provider as INVALID
             if (!secretKey && secretKeyEncrypted.trim().length > 0) {
               console.log('🔥 [HARD_LOG] [PROVIDER_INVALIDATED]', {
@@ -349,7 +349,7 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
   // 🚨 PROVIDER-CONFIG ROUTE MOVED TO TOP - BEFORE ANY OTHER ROUTES
   // POST /api/users/:uid/provider-config - Save provider configuration
   fastify.post('/:uid/provider-config', {
-    preHandler: [fastify.authenticate],
+    preHandler: [(fastify as any).authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string }; Body: any }>, reply: FastifyReply) => {
     console.log("🔥 BACKEND_POST_PROVIDER_CONFIG_HIT", request.body);
     let responseSent = false; // FIX: Track response to ensure exactly one response per request
@@ -555,7 +555,7 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
           try {
             // Test decrypt apiKey if we just encrypted it
             if (finalEncryptedApiKey && !isApiKeyEmpty) {
-              const testApiKey = decrypt(finalEncryptedApiKey);
+              const testApiKey = decrypt(finalEncryptedApiKey, 'provider_config');
               testApiKeyLength = testApiKey?.length || 0;
               if (!testApiKey || testApiKey.trim().length === 0 || testApiKey !== apiKey) {
                 throw new Error('API key test decrypt failed');
@@ -564,7 +564,7 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
 
             // Test decrypt secretKey if we just encrypted it
             if (finalEncryptedSecretKey && secretKey && secretKey.trim() !== '') {
-              const testSecretKey = decrypt(finalEncryptedSecretKey);
+              const testSecretKey = decrypt(finalEncryptedSecretKey, 'provider_config');
               testSecretKeyLength = testSecretKey?.length || 0;
               if (!testSecretKey || testSecretKey.trim().length === 0 || testSecretKey !== secretKey) {
                 throw new Error('Secret key test decrypt failed');
@@ -704,7 +704,7 @@ export async function providerConfigRoutes(fastify: FastifyInstance) {
 
   // GET /api/users/:uid/provider-config - Get provider configuration
   fastify.get('/:uid/provider-config', {
-    preHandler: [fastify.authenticate],
+    preHandler: [(fastify as any).authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
     const { uid: paramUid } = request.params;
     const authUid = (request as any).user?.uid;

@@ -139,7 +139,9 @@ class UserIntegrationsMigrationVerifier {
     }
 
     console.log(`   ✅ Encryption Method Verified: AES-256-GCM with scrypt key derivation`);
-    console.log(`   🔑 Key Length: ${config.encryption.key.length} chars`);
+    const { getEncryptionKeyStatus } = await import('../services/keyManager');
+    const keyStatus = getEncryptionKeyStatus();
+    console.log(`   🔑 Key Length: ${keyStatus.keyLength} chars`);
 
     // Count users with integrations
     const allUsers = await firestoreAdapter.getAllUsers();
@@ -414,7 +416,7 @@ class UserIntegrationsMigrationVerifier {
         encryptionSecretSource: process.env.ENCRYPTION_KEY ? 'ENCRYPTION_KEY env var' :
                                process.env.JWT_SECRET ? 'JWT_SECRET env var (fallback)' : 'default hardcoded',
         encryptionMethod: 'AES-256-GCM with scrypt key derivation',
-        encryptionKeyLength: config.encryption.key.length
+        encryptionKeyLength: (await import('../services/keyManager')).getEncryptionKeyStatus().keyLength
       },
       migration: this.migrationStats,
       deepResearchVerification: {

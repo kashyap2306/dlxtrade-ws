@@ -1,5 +1,5 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { firestoreAdapter, isExchangeUsable } from '../services/firestoreAdapter';
+import { firestoreAdapter, isExchangeUsable, clearExchangeUsabilityCache } from '../services/firestoreAdapter';
 import { autoTradeEngine } from '../services/autoTradeEngine';
 import { logger } from '../utils/logger';
 import { getFirebaseAdmin } from '../utils/firebase';
@@ -50,6 +50,9 @@ export async function statusRoutes(fastify: FastifyInstance) {
         console.log("[ROUTE_EXIT] /auto-trade/status (no uid)", Date.now() - startTime, "ms");
         return reply.code(401).send({ error: 'Authentication required' });
       }
+
+      // CLEAR CACHE: Ensure fresh exchange usability read for diagnostic context
+      clearExchangeUsabilityCache();
       const uid = user.uid;
 
       // CRITICAL: Log UID consistency for auto-trade status
@@ -99,6 +102,14 @@ export async function statusRoutes(fastify: FastifyInstance) {
         ]);
         exchangeConnected = exchangeUsability.usable;
         exchangeReason = exchangeUsability.reason;
+
+        // HARD LOGGING: Track auto-trade status exchange decisions
+        console.log('[EXCHANGE_RUNTIME_PROOF] auto-trade status decision', {
+          uid: user.uid,
+          exchangeConnected,
+          exchangeReason,
+          context: 'auto_trade_status'
+        });
       } catch (err: any) {
         // On exchange check failure, indicate unknown status rather than false
         // This prevents false negatives when exchange might actually be configured

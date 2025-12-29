@@ -176,35 +176,35 @@ export default function AutoTrade() {
   // Combines loadLiveData + loadAutoTradeStatus into one controlled polling loop
   const consolidatedPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isPollingEnabledRef = useRef(false);
-  
+
   useEffect(() => {
     // Clear any existing interval first
     if (consolidatedPollRef.current) {
       clearInterval(consolidatedPollRef.current);
       consolidatedPollRef.current = null;
     }
-    
+
     const shouldPoll = !!user && config.autoTradeEnabled && !backendDiagnostics?.blocked;
     isPollingEnabledRef.current = shouldPoll;
-    
+
     console.log("[AT_POLLING] Polling state changed", {
       hasUser: !!user,
       autoTradeEnabled: config.autoTradeEnabled,
       blocked: backendDiagnostics?.blocked,
       shouldPoll
     });
-    
+
     if (!user) {
       console.log("[AT_POLLING] No user, skipping all polling");
       return;
     }
-    
+
     // Always load status once on mount/user change to get initial state
     loadAutoTradeStatus();
-    
+
     if (shouldPoll) {
       console.log("[AT_POLLING] Starting consolidated polling (60s interval)");
-      
+
       // Single interval for all polling - minimum 60 seconds
       consolidatedPollRef.current = setInterval(() => {
         if (isPollingEnabledRef.current) {
@@ -215,7 +215,7 @@ export default function AutoTrade() {
     } else {
       console.log("[AT_POLLING] Auto-trade disabled/blocked, polling stopped");
     }
-    
+
     return () => {
       if (consolidatedPollRef.current) {
         clearInterval(consolidatedPollRef.current);
@@ -259,7 +259,7 @@ export default function AutoTrade() {
 
     // Load immediately once when enabled
     loadPendingTrades();
-    
+
     // REMOVED: Separate polling interval - consolidated into main polling loop above
     // Pending trades will be refreshed via the consolidated polling or on user action
   }, [user, config.autoTradeEnabled, backendDiagnostics?.blocked]);
@@ -334,12 +334,12 @@ export default function AutoTrade() {
   // Load Auto-Trade research history
   const loadAutoTradeHistory = useCallback(async () => {
     if (!user) return;
-    
+
     setLoadingAutoTradeHistory(true);
     try {
       const response = await researchApi.deepResearch.getHistory(100);
       const allHistory = response.data?.data || response.data || [];
-      
+
       // Filter for AUTO_TRADE source only - include all entries (executed trades may have symbols, skipped cycles have null symbols)
       const autoTradeOnly = allHistory.filter((entry: any) =>
         entry.source === 'AUTO_TRADE'
@@ -358,23 +358,23 @@ export default function AutoTrade() {
       if (config.autoTradeEnabled) {
         // Use default accuracy trigger (simplified)
         const accuracyTrigger = 75;
-        
+
         for (const entry of sortedHistory) {
           // Only show popup for SKIPPED entries with accuracy >= trigger
           // Normalize accuracy to 0-100 range
-          const normalizedAccuracy = typeof entry.accuracy === 'number' 
+          const normalizedAccuracy = typeof entry.accuracy === 'number'
             ? (entry.accuracy > 1 ? entry.accuracy : entry.accuracy * 100)
             : 0;
-          
-          if (entry.decision === 'SKIPPED' && 
-              normalizedAccuracy >= accuracyTrigger && 
-              entry.skipReason &&
-              entry.id &&
-              !shownSkipHistoryIdsRef.current.has(entry.id)) {
-            
+
+          if (entry.decision === 'SKIPPED' &&
+            normalizedAccuracy >= accuracyTrigger &&
+            entry.skipReason &&
+            entry.id &&
+            !shownSkipHistoryIdsRef.current.has(entry.id)) {
+
             // Parse skip reasons (can be string or array)
             const skipReasons = entry.skipReasons || (entry.skipReason ? [entry.skipReason] : []);
-            
+
             setSkipPopupData({
               isOpen: true,
               symbol: entry.symbol || 'UNKNOWN',
@@ -383,7 +383,7 @@ export default function AutoTrade() {
               skipReasons: Array.isArray(skipReasons) ? skipReasons : [skipReasons],
               timestamp: entry.timestamp || new Date().toISOString()
             });
-            
+
             // Mark as shown to prevent duplicate popups
             shownSkipHistoryIdsRef.current.add(entry.id);
             break; // Only show one popup at a time
@@ -828,26 +828,26 @@ export default function AutoTrade() {
                         const timestamp = entry.timestamp ? new Date(entry.timestamp) : null;
                         const timeAgo = timestamp
                           ? (() => {
-                              const seconds = Math.floor((Date.now() - timestamp.getTime()) / 1000);
-                              if (seconds < 60) return `${seconds}s ago`;
-                              const minutes = Math.floor(seconds / 60);
-                              if (minutes < 60) return `${minutes}m ago`;
-                              const hours = Math.floor(minutes / 60);
-                              if (hours < 24) return `${hours}h ago`;
-                              const days = Math.floor(hours / 24);
-                              return `${days}d ago`;
-                            })()
+                            const seconds = Math.floor((Date.now() - timestamp.getTime()) / 1000);
+                            if (seconds < 60) return `${seconds}s ago`;
+                            const minutes = Math.floor(seconds / 60);
+                            if (minutes < 60) return `${minutes}m ago`;
+                            const hours = Math.floor(minutes / 60);
+                            if (hours < 24) return `${hours}h ago`;
+                            const days = Math.floor(hours / 24);
+                            return `${days}d ago`;
+                          })()
                           : '--';
                         const absoluteTime = timestamp ? timestamp.toLocaleString() : '--';
 
                         // COIN (SYMBOL) DISPLAY RULES - Handle AUTO_TRADE records correctly
                         let coinDisplay = '--';
                         if (entry.source === 'AUTO_TRADE') {
-                          // For AUTO_TRADE records: show symbol if non-empty, otherwise "Auto-Trade Cycle"
+                          // For AUTO_TRADE records: show symbol if non-empty, otherwise "—" or "N/A"
                           if (entry.symbol && typeof entry.symbol === 'string' && entry.symbol.trim().length > 0) {
                             coinDisplay = entry.symbol;
                           } else {
-                            coinDisplay = 'Auto-Trade Cycle'; // Show descriptive label for cycle tracking
+                            coinDisplay = '—'; // Never display cycleType or source as Coin name
                           }
                         } else {
                           // TELEGRAM logic (unchanged)
@@ -861,11 +861,12 @@ export default function AutoTrade() {
                         const rawAccuracy = typeof entry.accuracy === 'number' ? entry.accuracy : null;
                         if (entry.source === 'AUTO_TRADE') {
                           // For AUTO_TRADE records, show accuracy whenever it's a valid number
+                          // If skipped before accuracy calculation, show "0%" explicitly
                           if (rawAccuracy !== null) {
                             const normalizedAccuracy = rawAccuracy > 1 ? rawAccuracy : rawAccuracy * 100;
                             accuracyDisplay = `${normalizedAccuracy.toFixed(1)}%`;
                           } else {
-                            accuracyDisplay = '--';
+                            accuracyDisplay = '0%';
                           }
                         } else {
                           // TELEGRAM logic (unchanged)
@@ -883,34 +884,11 @@ export default function AutoTrade() {
                         let resultStatus = 'Completed'; // Default for entries without specific status
 
                         if (entry.source === 'AUTO_TRADE') {
-                          // AUTO_TRADE logic: Use ONLY status and skipReason fields
-                          if (entry.status === 'EXECUTED') {
-                            resultStatus = 'Executed';
-                          } else if (entry.status === 'SKIPPED') {
-                            // Use skipReason to derive status for SKIPPED AUTO_TRADE records
-                            const skipReason = entry.skipReason || 'Unknown';
-                            switch (skipReason) {
-                              case 'BACKGROUND_TASKS_PAUSED':
-                                resultStatus = 'Skipped (System Paused)';
-                                break;
-                              case 'NO_RESEARCH_RESULT':
-                                resultStatus = 'Skipped (No Research Found)';
-                                break;
-                              case 'EXCHANGE_NOT_USABLE':
-                                resultStatus = 'Skipped (Exchange Not Connected)';
-                                break;
-                              case 'TRADE_CRITERIA_NOT_MET':
-                                resultStatus = 'Skipped (Low Accuracy)';
-                                break;
-                              case 'SYSTEM_ERROR':
-                                resultStatus = 'Skipped (System Error)';
-                                break;
-                              case 'INVALID_RESEARCH_RESULT':
-                                resultStatus = 'Skipped (Invalid Research)';
-                                break;
-                              default:
-                                resultStatus = `Skipped (${skipReason.replace(/_/g, ' ').toLowerCase()})`;
-                            }
+                          // Quick display of backend text as requested
+                          if (entry.status === 'SKIPPED') {
+                            resultStatus = entry.skipReason || 'SKIPPED';
+                          } else {
+                            resultStatus = entry.status || 'UNKNOWN';
                           }
                         } else {
                           // TELEGRAM logic (unchanged)

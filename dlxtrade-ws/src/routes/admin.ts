@@ -1003,6 +1003,38 @@ export async function adminRoutes(fastify: FastifyInstance) {
       });
     }
   });
+
+  // POST /api/admin/clear-stale-invalid-keys - Clear stale INVALID_KEYS states
+  fastify.post('/clear-stale-invalid-keys', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { uid } = request.body as { uid: string };
+
+      if (!uid || typeof uid !== 'string') {
+        return reply.code(400).send({
+          error: 'uid parameter is required and must be a string'
+        });
+      }
+
+      const { clearStaleInvalidKeys } = await import('../services/firestoreAdapter');
+      const result = await clearStaleInvalidKeys(uid);
+
+      return {
+        success: result.cleared,
+        uid,
+        message: result.reason,
+        timestamp: new Date().toISOString()
+      };
+    } catch (error: any) {
+      logger.error({ error: error.message }, 'Failed to clear stale INVALID_KEYS');
+      return reply.code(500).send({
+        error: 'Failed to clear stale INVALID_KEYS',
+        message: error.message,
+        timestamp: new Date().toISOString()
+      });
+    }
+  });
 }
 
 /**

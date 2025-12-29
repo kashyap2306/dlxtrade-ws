@@ -427,6 +427,13 @@ const Settings = () => {
     }
   }, []);
 
+  // Helper function: Single source of truth for exchange connection state
+  const isExchangeConnected = useCallback((config: any) => {
+    return config &&
+           config.exchange &&
+           (config.apiKeyEncrypted || config.apiKey || config.secretKeyEncrypted || config.secret);
+  }, []);
+
   // REQ 3 & 7: Fix token/401 errors and initialization order
   useEffect(() => {
     isMountedRef.current = true;
@@ -1250,11 +1257,15 @@ const Settings = () => {
     if (!confirmed) return;
 
     try {
-      // Call backend disconnect route (preserves credentials)
-      await api.disconnect('binance'); // Use actual exchange type if available
+      // Determine exchange dynamically using existing state
+      const resolvedExchange = exchangeConfig?.exchange || connectedExchange?.exchange;
 
-      // Refresh exchangeConfig state
-      await loadExchangeConfig(user.uid);
+      // Call backend disconnect route (preserves credentials)
+      await exchangeService.disconnect(resolvedExchange);
+
+      // Immediately clear state after successful disconnect
+      setExchangeConfig(null);
+      setConnectedExchange(null);
 
       setExchangeTestResult(undefined);
       showToast('Exchange disconnected successfully. Your credentials are preserved for easy reconnection.', 'success');
@@ -1470,6 +1481,7 @@ const Settings = () => {
                 handleSaveExchange={handleSaveExchange}
                 handleDisconnectExchange={handleDisconnectExchange}
                 savingExchange={savingExchange}
+                isExchangeConnected={isExchangeConnected}
               />
 
               {/* Background Research Wizard */}

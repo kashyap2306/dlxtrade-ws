@@ -52,8 +52,21 @@ async function testExchangeFlow() {
     console.log(`Exchange config exists:`, exchangeConfigDoc.exists);
     console.log(`Exchange config disconnected:`, exchangeConfigData?.disconnected);
 
-    // STEP 4: Simulate what /exchange/connect should do - update users document
-    console.log('\n📋 STEP 4: Simulating exchange connect - updating users document');
+    // STEP 4: Simulate what /exchange/connect should do - create exchangeConfig and update users document
+    console.log('\n📋 STEP 4: Simulating exchange connect - creating exchangeConfig and updating users document');
+
+    // Simulate creating exchangeConfig/current with VALID status (as the real endpoint should do)
+    await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').set({
+      exchange: 'bitget',
+      apiKeyEncrypted: 'simulated_encrypted_key_' + Date.now(), // Mock encrypted key
+      secretEncrypted: 'simulated_encrypted_secret_' + Date.now(), // Mock encrypted secret
+      testnet: false,
+      exchangeStatus: 'VALID', // Should be set to VALID after successful connect
+      exchangeConnectedAt: admin.firestore.Timestamp.now(), // Grace window timestamp
+      updatedAt: admin.firestore.Timestamp.now(),
+      createdAt: admin.firestore.Timestamp.now(),
+    });
+
     await db.collection('users').doc(uid).set({
       apiConnected: true,
       isApiConnected: true,
@@ -63,10 +76,29 @@ async function testExchangeFlow() {
       updatedAt: admin.firestore.Timestamp.now(),
     }, { merge: true });
 
-    console.log('✅ Simulated exchange connect - updated users document');
+    console.log('✅ Simulated exchange connect - created exchangeConfig with VALID status and updated users document');
 
-    // STEP 5: Verify users document after simulated connect
-    console.log('\n📋 STEP 5: Verifying users document after connect');
+    // STEP 5: Verify exchangeConfig document after simulated connect
+    console.log('\n📋 STEP 5: Verifying exchangeConfig document after connect');
+    const exchangeConfigAfterConnect = await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+    const exchangeConfigDataAfterConnect = exchangeConfigAfterConnect.data();
+
+    console.log(`After connect exchangeConfig exists:`, exchangeConfigAfterConnect.exists);
+    console.log(`After connect exchangeConfig.exchangeStatus:`, exchangeConfigDataAfterConnect?.exchangeStatus);
+    console.log(`After connect exchangeConfig.keysClearedReason:`, exchangeConfigDataAfterConnect?.keysClearedReason);
+    console.log(`After connect exchangeConfig has apiKeyEncrypted:`, !!exchangeConfigDataAfterConnect?.apiKeyEncrypted);
+    console.log(`After connect exchangeConfig has secretEncrypted:`, !!exchangeConfigDataAfterConnect?.secretEncrypted);
+
+    const exchangeConfigValid = exchangeConfigAfterConnect.exists &&
+                               exchangeConfigDataAfterConnect?.exchangeStatus === 'VALID' &&
+                               !exchangeConfigDataAfterConnect?.keysClearedReason &&
+                               !!exchangeConfigDataAfterConnect?.apiKeyEncrypted &&
+                               !!exchangeConfigDataAfterConnect?.secretEncrypted;
+
+    console.log(`Exchange config VALID after connect: ${exchangeConfigValid ? 'YES' : 'NO'}`);
+
+    // STEP 6: Verify users document after simulated connect
+    console.log('\n📋 STEP 6: Verifying users document after connect');
     const userDocAfterConnect = await db.collection('users').doc(uid).get();
     const userDataAfterConnect = userDocAfterConnect.data();
 
@@ -78,16 +110,34 @@ async function testExchangeFlow() {
     const connectSuccess = userDataAfterConnect?.apiConnected === true &&
                            userDataAfterConnect?.isApiConnected === true &&
                            userDataAfterConnect?.apiStatus === 'connected' &&
-                           userDataAfterConnect?.connectedExchanges?.includes('bitget');
+                           userDataAfterConnect?.connectedExchanges?.includes('bitget') &&
+                           exchangeConfigValid;
 
     console.log(`✅ Connect simulation successful: ${connectSuccess}`);
 
     if (!connectSuccess) {
-      throw new Error('Connect simulation failed - users document not updated correctly');
+      throw new Error('Connect simulation failed - users document or exchangeConfig not updated correctly');
     }
 
-    // STEP 6: Test /exchange/status endpoint logic (simulate what it should return)
-    console.log('\n📋 STEP 6: Testing /exchange/status logic');
+    // STEP 7: Test grace window - isExchangeUsable should return usable=true immediately after connect
+    console.log('\n📋 STEP 7: Testing grace window - immediate exchange usability check');
+    const { isExchangeUsable } = await import('./src/services/firestoreAdapter');
+    const graceWindowResult = await isExchangeUsable(uid, 'background_job');
+
+    console.log(`Grace window check - usable: ${graceWindowResult.usable}`);
+    console.log(`Grace window check - reason: ${graceWindowResult.reason}`);
+    console.log(`Grace window check - exchange: ${graceWindowResult.exchange}`);
+
+    const graceWindowWorked = graceWindowResult.usable && graceWindowResult.reason.includes('grace window');
+
+    console.log(`Grace window protection working: ${graceWindowWorked ? 'YES' : 'NO'}`);
+
+    if (!graceWindowWorked) {
+      console.log('❌ Grace window not working - background scheduler could interfere immediately after connect');
+    }
+
+    // STEP 8: Test /exchange/status endpoint logic (simulate what it should return)
+    console.log('\n📋 STEP 8: Testing /exchange/status logic');
     // Simulate the logic from the endpoint
     const isConnected = userDataAfterConnect?.apiConnected === true &&
                        userDataAfterConnect?.connectedExchanges?.includes('bitget');
@@ -95,8 +145,8 @@ async function testExchangeFlow() {
     console.log(`Status endpoint would return connected: ${isConnected}`);
     console.log(`Status endpoint simulation: ${isConnected ? 'PASS' : 'FAIL'}`);
 
-    // STEP 7: Test /exchange/connected endpoint logic
-    console.log('\n📋 STEP 7: Testing /exchange/connected logic');
+    // STEP 9: Test /exchange/connected endpoint logic
+    console.log('\n📋 STEP 9: Testing /exchange/connected logic');
     const connected = userDataAfterConnect?.apiConnected === true &&
                      userDataAfterConnect?.connectedExchanges?.length > 0;
     const exchange = userDataAfterConnect?.connectedExchanges?.[0];
@@ -105,13 +155,20 @@ async function testExchangeFlow() {
     console.log(`Connected endpoint would return exchange: ${exchange}`);
     console.log(`Connected endpoint simulation: ${connected && exchange === 'bitget' ? 'PASS' : 'FAIL'}`);
 
-    // STEP 8: Simulate disconnect
-    console.log('\n📋 STEP 8: Simulating exchange disconnect');
+    // STEP 10: Simulate disconnect
+    console.log('\n📋 STEP 10: Simulating exchange disconnect');
+
+    // Delete the exchangeConfig document to match real disconnect behavior
+    await db.collection('users').doc(uid).collection('exchangeConfig').doc('current').delete();
+
     await db.collection('users').doc(uid).set({
       apiConnected: false,
       isApiConnected: false,
       apiStatus: 'disconnected',
+      exchangeStatus: 'DISCONNECTED',
       connectedExchanges: [],
+      engineRunning: false,
+      autoTradeEnabled: false,
       exchangeLastDisconnected: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
@@ -124,8 +181,8 @@ async function testExchangeFlow() {
 
     console.log('✅ Simulated exchange disconnect');
 
-    // STEP 9: Verify final state
-    console.log('\n📋 STEP 9: Verifying final state after disconnect');
+    // STEP 11: Verify final state
+    console.log('\n📋 STEP 11: Verifying final state after disconnect');
     const userDocAfterDisconnect = await db.collection('users').doc(uid).get();
     const userDataAfterDisconnect = userDocAfterDisconnect.data();
 
@@ -135,12 +192,18 @@ async function testExchangeFlow() {
     console.log(`After disconnect users/${uid}.apiConnected:`, userDataAfterDisconnect?.apiConnected);
     console.log(`After disconnect users/${uid}.isApiConnected:`, userDataAfterDisconnect?.isApiConnected);
     console.log(`After disconnect users/${uid}.apiStatus:`, userDataAfterDisconnect?.apiStatus);
+    console.log(`After disconnect users/${uid}.exchangeStatus:`, userDataAfterDisconnect?.exchangeStatus);
+    console.log(`After disconnect users/${uid}.engineRunning:`, userDataAfterDisconnect?.engineRunning);
+    console.log(`After disconnect users/${uid}.autoTradeEnabled:`, userDataAfterDisconnect?.autoTradeEnabled);
     console.log(`After disconnect users/${uid}.connectedExchanges:`, userDataAfterDisconnect?.connectedExchanges);
     console.log(`After disconnect autoTradeConfig/current.autoTradeEnabled:`, autoTradeData?.autoTradeEnabled);
 
     const disconnectSuccess = userDataAfterDisconnect?.apiConnected === false &&
                              userDataAfterDisconnect?.isApiConnected === false &&
                              userDataAfterDisconnect?.apiStatus === 'disconnected' &&
+                             userDataAfterDisconnect?.exchangeStatus === 'DISCONNECTED' &&
+                             userDataAfterDisconnect?.engineRunning === false &&
+                             userDataAfterDisconnect?.autoTradeEnabled === false &&
                              (!userDataAfterDisconnect?.connectedExchanges || userDataAfterDisconnect.connectedExchanges.length === 0) &&
                              autoTradeData?.autoTradeEnabled === false;
 
@@ -150,8 +213,8 @@ async function testExchangeFlow() {
       throw new Error('Disconnect simulation failed');
     }
 
-    // STEP 10: Test status endpoints after disconnect
-    console.log('\n📋 STEP 10: Testing status endpoints after disconnect');
+    // STEP 12: Test status endpoints after disconnect
+    console.log('\n📋 STEP 12: Testing status endpoints after disconnect');
     const isConnectedAfterDisconnect = userDataAfterDisconnect?.apiConnected === true &&
                                       userDataAfterDisconnect?.connectedExchanges?.includes('bitget');
     const connectedAfterDisconnect = userDataAfterDisconnect?.apiConnected === true &&
@@ -161,8 +224,8 @@ async function testExchangeFlow() {
     console.log(`Connected endpoint after disconnect would return connected: ${connectedAfterDisconnect}`);
     console.log(`Post-disconnect status check: ${!isConnectedAfterDisconnect && !connectedAfterDisconnect ? 'PASS' : 'FAIL'}`);
 
-    // STEP 11: Check current state of root document vs subcollection
-    console.log('\n📋 STEP 11: Checking root document vs subcollection consistency');
+    // STEP 13: Check current state of root document vs subcollection
+    console.log('\n📋 STEP 13: Checking root document vs subcollection consistency');
 
     // Check root document
     const rootUserDoc = await db.collection('users').doc(uid).get();
@@ -191,8 +254,8 @@ async function testExchangeFlow() {
     console.log(`Root document has expected initial values: ${rootHasCorrectValues ? 'YES' : 'NO'}`);
     console.log(`Subcollection has expected initial values: ${subcollectionHasCorrectValues ? 'YES' : 'NO'}`);
 
-    // STEP 12: Test autoTradeEngine.startAutoTradeLoop (used by /api/trading/autotrade/toggle)
-    console.log('\n📋 STEP 12: Testing autoTradeEngine.startAutoTradeLoop method');
+    // STEP 14: Test autoTradeEngine.startAutoTradeLoop (used by /api/trading/autotrade/toggle)
+    console.log('\n📋 STEP 14: Testing autoTradeEngine.startAutoTradeLoop method');
 
     const { autoTradeEngine } = await import('./src/services/autoTradeEngine');
     await autoTradeEngine.startAutoTradeLoop(uid);
@@ -218,8 +281,8 @@ async function testExchangeFlow() {
 
     console.log(`startAutoTradeLoop sync worked: ${startLoopSyncWorked ? 'PASS' : 'FAIL'}`);
 
-    // STEP 13: Test autoTradeEngine.stopAutoTradeLoop
-    console.log('\n📋 STEP 13: Testing autoTradeEngine.stopAutoTradeLoop method');
+    // STEP 15: Test autoTradeEngine.stopAutoTradeLoop
+    console.log('\n📋 STEP 15: Testing autoTradeEngine.stopAutoTradeLoop method');
 
     await autoTradeEngine.stopAutoTradeLoop(uid);
 
