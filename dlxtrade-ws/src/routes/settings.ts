@@ -827,12 +827,12 @@ export async function settingsRoutes(fastify: FastifyInstance) {
           if (providerId) {
             // Check primary first
             if (providerTypeSettings.primary?.encryptedApiKey && API_PROVIDERS_CONFIG[type].primary.providerName === providerName) {
-              const decryptedKey = keyManager.decrypt(providerTypeSettings.primary.encryptedApiKey, 'provider_config');
+              const decryptedKey = keyManager.decrypt(providerTypeSettings.primary.encryptedApiKey);
               body.apiKey = decryptedKey;
             }
             // Check backups
             else if (providerTypeSettings.backups?.[providerId]?.encryptedApiKey) {
-              const decryptedKey = keyManager.decrypt(providerTypeSettings.backups[providerId].encryptedApiKey, 'provider_config');
+              const decryptedKey = keyManager.decrypt(providerTypeSettings.backups[providerId].encryptedApiKey);
               body.apiKey = decryptedKey;
             }
           }
@@ -992,11 +992,11 @@ export async function settingsRoutes(fastify: FastifyInstance) {
           if (providerId) {
             // Check primary first
             if (isPrimary && providerTypeSettings.primary?.encryptedApiKey) {
-              finalApiKey = keyManager.decrypt(providerTypeSettings.primary.encryptedApiKey, 'provider_config');
+              finalApiKey = keyManager.decrypt(providerTypeSettings.primary.encryptedApiKey);
             }
             // Check backups
             else if (!isPrimary && providerTypeSettings.backups?.[providerId]?.encryptedApiKey) {
-              finalApiKey = keyManager.decrypt(providerTypeSettings.backups[providerId].encryptedApiKey, 'provider_config');
+              finalApiKey = keyManager.decrypt(providerTypeSettings.backups[providerId].encryptedApiKey);
             }
           }
         }

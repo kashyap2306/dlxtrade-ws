@@ -252,36 +252,18 @@ export async function engineRoutes(fastify: FastifyInstance) {
           return { success: true, message: 'Auto-trade started', config };
         } else {
           // Use legacy flow - need exchange credentials
-          // Use normalized exchange usability check instead of raw status
-          const { isExchangeUsable } = await import('../services/firestoreAdapter');
-          const exchangeUsability = await isExchangeUsable(user.uid, 'user_request');
-
-          if (!exchangeUsability.usable) {
+          const exchangeCredentials = await firestoreAdapter.getExchangeCredentials(user.uid, 'binance');
+          if (!exchangeCredentials) {
             return reply.code(400).send({
-              error: 'Exchange not connected or has invalid keys. Please reconnect your exchange.'
+              error: 'No exchange API keys configured. Please set up your exchange API credentials first.'
             });
           }
-
-          // Get exchange config for testnet setting
-          const exchangeConfig = await firestoreAdapter.getExchangeConfig(user.uid);
-          if (!exchangeConfig) {
-            return reply.code(400).send({
-              error: 'Exchange configuration not found'
-            });
-          }
-
-          // CONNECTED exchanges: Skip decryption to avoid poisoning usability
-          logger.info({
-            uid: user.uid,
-            exchange: exchangeUsability.exchange,
-            context: 'engine_creation'
-          }, 'Exchange verified usable - creating engine with placeholder credentials');
 
           await userEngineManager.createUserEngine(
             user.uid,
-            'CONNECTED_EXCHANGE_PLACEHOLDER',
-            'CONNECTED_EXCHANGE_PLACEHOLDER',
-            exchangeConfig.testnet
+            decrypt(exchangeCredentials.apiKeyEncrypted),
+            decrypt(exchangeCredentials.secretKeyEncrypted || exchangeCredentials.secretEncrypted),
+            exchangeCredentials.testnet
           );
 
           await userEngineManager.startUserEngine(user.uid, config.symbol, 5000);

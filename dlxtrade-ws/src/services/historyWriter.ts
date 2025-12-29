@@ -89,18 +89,12 @@ export async function logAutoTradeSkip(
     }
 
     // Determine exchange status
-    let exchangeStatus: 'available' | 'unavailable' | 'decryption_failed' | 'not_connected' | 'unknown' = context.exchangeStatus || 'unknown';
+    let exchangeStatus: 'available' | 'unavailable' | 'decryption_failed' | 'unknown' = context.exchangeStatus || 'unknown';
     if (exchangeStatus === 'unknown') {
       // Use unified exchange usability check (SINGLE SOURCE OF TRUTH)
       try {
         const usability = await isExchangeUsable(uid, 'background_job');
-        if (usability.usable) {
-          exchangeStatus = 'available';
-        } else if (usability.reason === 'not_connected') {
-          exchangeStatus = 'not_connected';
-        } else {
-          exchangeStatus = 'decryption_failed';
-        }
+        exchangeStatus = usability.usable ? 'available' : 'decryption_failed';
       } catch (checkErr: any) {
         exchangeStatus = 'unknown';
       }

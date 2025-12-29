@@ -84,10 +84,8 @@ export async function controllerRoutes(fastify: FastifyInstance) {
           ok: false,
           enabled: false,
           error: {
-            type: exchangeKeyError === 'not_connected' ? 'EXCHANGE_NOT_CONNECTED' : 'EXCHANGE_KEYS_INVALID_OR_REQUIRES_RECONNECT',
-            message: exchangeKeyError === 'not_connected'
-              ? 'Exchange not connected. Please connect your exchange in Settings → Trading API Integration.'
-              : 'Exchange API keys are invalid or corrupted. Please reconnect your exchange.'
+            type: 'EXCHANGE_KEYS_INVALID_OR_REQUIRES_RECONNECT',
+            message: 'Exchange API keys are invalid or corrupted. Please reconnect your exchange.'
           }
         });
       }

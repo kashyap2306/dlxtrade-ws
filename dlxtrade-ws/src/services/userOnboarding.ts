@@ -2,42 +2,7 @@ import * as admin from 'firebase-admin';
 import { getFirebaseAdmin } from '../utils/firebase';
 import { firestoreAdapter } from './firestoreAdapter';
 import { logger } from '../utils/logger';
-
-/**
- * HARD SAFETY GUARD: Strip WRITE-ONCE exchange fields from payloads when context !== 'exchange_connect'
- */
-function stripProtectedExchangeFields(payload: any, context: string, operation: string): any {
-  if (!payload) return payload;
-
-  const protectedFields = ['exchangeStatus', 'keysClearedAt', 'keysClearedReason'];
-  let strippedCount = 0;
-
-  protectedFields.forEach(field => {
-    if (payload[field] !== undefined) {
-      if (context !== 'exchange_connect') {
-        console.log('🚨 [HARD_SAFETY] [PROTECTED_FIELD_BLOCKED]', {
-          field,
-          context,
-          operation,
-          action: 'STRIPPED_FROM_PAYLOAD',
-          reason: 'WRITE_ONCE_FIELD_PROTECTION'
-        });
-        delete payload[field];
-        strippedCount++;
-      }
-    }
-  });
-
-  if (strippedCount > 0) {
-    console.log('🔥 [HARD_LOG] [SAFETY_GUARD_ACTIVATED]', {
-      context,
-      operation,
-      protectedFieldsStripped: strippedCount
-    });
-  }
-
-  return payload;
-}
+import { decrypt } from './keyManager';
 
 /**
  * Sanitize Firestore payload by removing undefined values and converting them to FieldValue.delete()
@@ -46,25 +11,7 @@ function sanitizeFirestorePayload(payload: any): any {
   const sanitized: any = {};
   let sanitizedCount = 0;
 
-  // WRITE-ONCE exchange fields: NEVER convert undefined → FieldValue.delete()
-  const writeOnceExchangeFields = [
-    'exchangeStatus',
-    'keysClearedAt',
-    'keysClearedReason'
-  ];
-
   for (const [key, value] of Object.entries(payload)) {
-    // HARD PROTECTION: Skip WRITE-ONCE exchange fields if undefined
-    if (writeOnceExchangeFields.includes(key) && value === undefined) {
-      // SILENT SKIP: Do not include in sanitized payload, do not convert to delete
-      console.log('🔥 [HARD_LOG] [WRITE_ONCE_FIELD_SANITIZED_SKIP]', {
-        field: key,
-        action: 'SKIPPED_UNDEFINED_FIELD',
-        reason: 'WRITE_ONCE_PROTECTION'
-      });
-      continue;
-    }
-
     if (value === undefined) {
       sanitized[key] = admin.firestore.FieldValue.delete();
       console.log('🔥 [HARD_LOG] [PROVIDER_FIELD_SANITIZED]', {
@@ -203,21 +150,61 @@ export async function seedProviderIntegrations(
         ? 'news'
         : 'metadata';
 
-    // SAFETY: Preserve encrypted values blindly - NO decryption testing in background
-    // Provider seeding MUST never judge corruption or delete keys
+    // CRITICAL: HARD ASSERTION - BLOCK AUTO-SEEDING OF CORRUPTED ENCRYPTED KEYS
+    // Test actual decryption and FORCE DELETE if corrupted
     let apiKeyEncrypted = existing.apiKeyEncrypted || null;
     let secretKeyEncrypted = existing.secretKeyEncrypted || null;
 
-    // Provider seeding rules: If encrypted field exists → keep as-is, if missing → leave null
-    // NEVER mutate based on decrypt results - preserve blindly
-    console.log('🔥 [HARD_LOG] [PROVIDER_SEED_SAFETY]', {
-      uid,
-      providerId: provider,
-      action: 'PRESERVE_ENCRYPTED_VALUES_BLINDLY',
-      hasApiKeyEncrypted: !!apiKeyEncrypted,
-      hasSecretKeyEncrypted: !!secretKeyEncrypted,
-      reason: 'Background processes cannot decrypt provider keys'
-    });
+    // HARD ASSERTION: Test decryption of existing keys
+    if (apiKeyEncrypted && apiKeyEncrypted.trim().length > 0) {
+      try {
+        // Test decrypt with current ENCRYPTION_SECRET
+        const testDecrypt = decrypt(apiKeyEncrypted);
+        if (!testDecrypt || testDecrypt.trim().length === 0) {
+          throw new Error('Decryption returned empty result');
+        }
+      } catch (decryptTestErr: any) {
+        console.log('🔥 [HARD_LOG] [AUTO_SEED_FINAL_ASSERT]', {
+          uid,
+          providerId: provider,
+          action: 'HARD_ASSERTION_FAILED',
+          encryptedLength: apiKeyEncrypted.length,
+          error: decryptTestErr.message,
+          deleted: true
+        });
+        // FORCE DELETE corrupted key
+        apiKeyEncrypted = null;
+      }
+    }
+
+    // Test secret key decryption if it exists
+    if (secretKeyEncrypted && secretKeyEncrypted.trim().length > 0) {
+      try {
+        const testDecrypt = decrypt(secretKeyEncrypted);
+        if (!testDecrypt || testDecrypt.trim().length === 0) {
+          throw new Error('Secret decryption returned empty result');
+        }
+      } catch (decryptTestErr: any) {
+        console.log('🔥 [HARD_LOG] [AUTO_SEED_FINAL_ASSERT]', {
+          uid,
+          providerId: provider,
+          action: 'SECRET_HARD_ASSERTION_FAILED',
+          encryptedLength: secretKeyEncrypted.length,
+          error: decryptTestErr.message,
+          deleted: true
+        });
+        // FORCE DELETE corrupted secret key
+        secretKeyEncrypted = null;
+      }
+    }
+
+    // Legacy check for empty/null keys (fallback)
+    if (apiKeyEncrypted !== undefined && (!apiKeyEncrypted || apiKeyEncrypted.trim().length === 0)) {
+      apiKeyEncrypted = null;
+    }
+    if (secretKeyEncrypted !== undefined && (!secretKeyEncrypted || secretKeyEncrypted.trim().length === 0)) {
+      secretKeyEncrypted = null;
+    }
 
     // 🔥 HARD_LOG: PROVIDER_AUTO_SEED
     console.log('🔥 [HARD_LOG] [PROVIDER_AUTO_SEED]', {
@@ -226,9 +213,8 @@ export async function seedProviderIntegrations(
       action: existingDoc.exists ? 'UPDATE_EXISTING' : 'CREATE_NEW',
       hasExistingApiKeyEncrypted: !!existing.apiKeyEncrypted,
       existingApiKeyEncryptedLength: existing.apiKeyEncrypted?.length || 0,
-      preservedApiKeyEncrypted: !!apiKeyEncrypted,
-      preservedApiKeyEncryptedLength: apiKeyEncrypted?.length || 0,
-      safetyMode: 'BLIND_PRESERVATION_NO_DECRYPT'
+      preservingApiKeyEncrypted: !!apiKeyEncrypted,
+      finalApiKeyEncryptedLength: apiKeyEncrypted?.length || 0
     });
 
     // Create the exact required structure - NEVER overwrite existing VALID data
@@ -261,16 +247,135 @@ export async function seedProviderIntegrations(
  * This runs once on backend startup to ensure no corrupted keys persist
  */
 export async function migrateCorruptedProviderKeys(db: admin.firestore.Firestore) {
-  // 🚫 HARD DISABLED: Background decryption of provider keys is FORBIDDEN
-  // This migration could cause INVALID_KEYS by deleting encrypted keys during global scans
-  console.log('🚫 [HARD_DISABLED] [PROVIDER_MIGRATION_BLOCKED]', {
-    reason: 'Background decryption of provider keys is forbidden',
-    action: 'MIGRATION_DISABLED',
-    safety: 'Prevents INVALID_KEYS from global provider key validation'
-  });
+  console.log('[PROVIDER_MIGRATION] Starting one-time migration of corrupted provider keys');
 
-  // DISABLED: Return without doing any migration work
-  return;
+  let totalScanned = 0;
+  let cleaned = 0;
+  let errors = 0;
+
+  try {
+    // Get all users
+    const usersSnapshot = await db.collection('users').get();
+
+    for (const userDoc of usersSnapshot.docs) {
+      const uid = userDoc.id;
+
+      // Skip system users
+      if (uid.startsWith('_') || uid.startsWith('test_') || uid.startsWith('demo_')) {
+        continue;
+      }
+
+      try {
+        // Get all provider documents for this user
+        const providersSnapshot = await db.collection('users').doc(uid).collection('integrations').get();
+
+        for (const providerDoc of providersSnapshot.docs) {
+          const providerId = providerDoc.id;
+          const data = providerDoc.data();
+          totalScanned++;
+
+          const apiKeyEncrypted = data?.apiKeyEncrypted;
+          const secretKeyEncrypted = data?.secretKeyEncrypted;
+
+          let needsUpdate = false;
+          const updateData: any = {};
+
+          // Test API key decryption
+          if (apiKeyEncrypted && apiKeyEncrypted.trim().length > 0) {
+            try {
+              const testDecrypt = decrypt(apiKeyEncrypted);
+              if (!testDecrypt || testDecrypt.trim().length === 0) {
+                console.log('🔥 [HARD_LOG] [PROVIDER_MIGRATION_CLEANUP]', {
+                  uid,
+                  providerId,
+                  field: 'apiKeyEncrypted',
+                  action: 'DELETE_CORRUPTED',
+                  encryptedLength: apiKeyEncrypted.length,
+                  reason: 'DECRYPT_FAILED'
+                });
+                updateData.apiKeyEncrypted = admin.firestore.FieldValue.delete();
+                updateData.enabled = false; // Disable provider with corrupted keys
+                needsUpdate = true;
+                cleaned++;
+              }
+            } catch (decryptErr: any) {
+              console.log('🔥 [HARD_LOG] [PROVIDER_MIGRATION_CLEANUP]', {
+                uid,
+                providerId,
+                field: 'apiKeyEncrypted',
+                action: 'DELETE_CORRUPTED',
+                encryptedLength: apiKeyEncrypted.length,
+                error: decryptErr.message
+              });
+              updateData.apiKeyEncrypted = admin.firestore.FieldValue.delete();
+              updateData.enabled = false;
+              needsUpdate = true;
+              cleaned++;
+            }
+          }
+
+          // Test secret key decryption
+          if (secretKeyEncrypted && secretKeyEncrypted.trim().length > 0) {
+            try {
+              const testDecrypt = decrypt(secretKeyEncrypted);
+              if (!testDecrypt || testDecrypt.trim().length === 0) {
+                console.log('🔥 [HARD_LOG] [PROVIDER_MIGRATION_CLEANUP]', {
+                  uid,
+                  providerId,
+                  field: 'secretKeyEncrypted',
+                  action: 'DELETE_CORRUPTED',
+                  encryptedLength: secretKeyEncrypted.length,
+                  reason: 'DECRYPT_FAILED'
+                });
+                updateData.secretKeyEncrypted = admin.firestore.FieldValue.delete();
+                if (!needsUpdate) {
+                  updateData.enabled = false; // Disable if not already disabled
+                }
+                needsUpdate = true;
+                cleaned++;
+              }
+            } catch (decryptErr: any) {
+              console.log('🔥 [HARD_LOG] [PROVIDER_MIGRATION_CLEANUP]', {
+                uid,
+                providerId,
+                field: 'secretKeyEncrypted',
+                action: 'DELETE_CORRUPTED',
+                encryptedLength: secretKeyEncrypted.length,
+                error: decryptErr.message
+              });
+              updateData.secretKeyEncrypted = admin.firestore.FieldValue.delete();
+              if (!needsUpdate) {
+                updateData.enabled = false;
+              }
+              needsUpdate = true;
+              cleaned++;
+            }
+          }
+
+          // Update document if needed
+          if (needsUpdate) {
+            updateData.updatedAt = admin.firestore.Timestamp.now();
+            const sanitizedUpdateData = sanitizeFirestorePayload(updateData);
+            await providerDoc.ref.update(sanitizedUpdateData);
+          }
+        }
+      } catch (userErr: any) {
+        console.error('[PROVIDER_MIGRATION] Error processing user:', uid, userErr.message);
+        errors++;
+      }
+    }
+
+    console.log('[PROVIDER_MIGRATION] Migration completed', {
+      totalScanned,
+      cleaned,
+      errors,
+      success: true
+    });
+
+  } catch (err: any) {
+    console.error('[PROVIDER_MIGRATION] Migration failed:', err.message);
+    throw err;
+  }
 }
 
 // Providers that require API keys
@@ -491,7 +596,7 @@ export async function ensureUser(
       console.log(`🔥 [HARD_LOG] [PROVIDER_SEED_SKIPPED] User request context - skipping provider seeding for uid: ${uid}`);
     }
 
-    // 2. API keys are now stored in users/{uid}/integrations/{apiName}
+    // 2. API keys are now stored in users/{uid}/exchangeConfig/current and users/{uid}/integrations/{apiName}
     // No need to create apiKeys collection document
 
     // 3. Create engineStatus/{uid}
@@ -754,6 +859,53 @@ export async function ensureUser(
     // 9. Initialize required collections and docs under users/{uid}
     const userDocRef = db.collection('users').doc(uid);
 
+    // users/{uid}/integrations: create default disabled docs for ALL 33 DLXTRADE providers
+    // Trading exchanges (binance, bitget, bingx, weex) are stored in exchangeConfig/current, NOT in integrations
+    for (const providerId of ALL_PROVIDERS) {
+      const ref = userDocRef.collection('integrations').doc(providerId);
+      const doc = await ref.get();
+      if (!doc.exists) {
+        const integrationData = {
+          enabled: false,
+          apiKey: "",
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+
+        await ref.set(integrationData);
+        logger.info({ uid, providerId, path: `users/${uid}/integrations/${providerId}` }, `✅ Provider integration doc created: users/{uid}/integrations/${providerId}`);
+      }
+    }
+
+    // users/{uid}/exchangeConfig/current - Create empty trading exchange config doc
+    const exchangeConfigRef = userDocRef.collection('exchangeConfig').doc('current');
+    const exchangeConfigDoc = await exchangeConfigRef.get();
+    if (!exchangeConfigDoc.exists) {
+      // Create empty trading exchange config - fields will be set when user configures an exchange
+      await exchangeConfigRef.set({
+        testnet: true,
+        createdAt: now,
+        updatedAt: now,
+      });
+      logger.info({ uid, path: `users/${uid}/exchangeConfig/current` }, `✅ Trading exchange config doc created: users/{uid}/exchangeConfig/current`);
+    } else {
+      // Ensure required fields exist
+      const existingData = exchangeConfigDoc.data() || {};
+      const updateData: any = {};
+      if (existingData.createdAt === undefined) {
+        updateData.createdAt = now;
+      }
+      if (existingData.updatedAt === undefined) {
+        updateData.updatedAt = now;
+      }
+      if (existingData.testnet === undefined) {
+        updateData.testnet = true;
+      }
+      if (Object.keys(updateData).length > 0) {
+        await exchangeConfigRef.update(updateData);
+        logger.info({ uid, updatedFields: Object.keys(updateData), path: `users/${uid}/exchangeConfig/current` }, 'Exchange config updated with missing fields');
+      }
+    }
+
     // users/{uid}/riskLimits/current
     const riskRef = userDocRef.collection('riskLimits').doc('current');
     const riskDoc = await riskRef.get();
@@ -953,6 +1105,7 @@ export async function ensureUser(
     if (createdNew) {
       createdDocs.push(`users/${uid}`);
       createdDocs.push(`users/${uid}/integrations/* (33 DLXTRADE providers)`);
+      createdDocs.push(`users/${uid}/exchangeConfig/current`);
     }
 
     logger.info({
@@ -965,6 +1118,7 @@ export async function ensureUser(
       requiredDocs: [
         `users/${uid}`,
         `users/${uid}/integrations/* (33 DLXTRADE providers)`,
+        `users/${uid}/exchangeConfig/current`
       ]
     }, '✅ User onboarding completed successfully - all required Firestore documents created/verified');
 

@@ -8,7 +8,54 @@ import { getFirebaseAdmin } from '../utils/firebase';
 /**
  * Determine if exchange keys should be auto-cleared based on context and timing
  */
+function shouldAutoClearKeys(
+  uid: string,
+  exchange: string,
+  context: 'background_job' | 'user_request',
+  existingDoc: any,
+  reason: string
+): { shouldClear: boolean; logData: any } {
+  const now = Date.now();
+  const updatedAt = existingDoc?.updatedAt?.toDate?.()?.getTime?.() || 0;
+  const timeSinceUpdate = now - updatedAt;
+  const RECENT_SAVE_WINDOW_MS = 60 * 1000; // 60 seconds as requested
 
+  const wasRecentlySaved = timeSinceUpdate < RECENT_SAVE_WINDOW_MS;
+  const isBackgroundJob = context === 'background_job';
+
+  const logData = {
+    uid,
+    exchange,
+    context,
+    reason,
+    wasRecentlySaved,
+    timeSinceUpdateMs: timeSinceUpdate,
+    updatedAt: existingDoc?.updatedAt?.toDate?.()?.toISOString?.(),
+    recentSaveWindowMs: RECENT_SAVE_WINDOW_MS,
+    timestamp: now
+  };
+
+  // Block auto-clearing if:
+  // 1. It's a background job AND keys were recently saved, OR
+  // 2. It's a user request (never auto-clear for user requests)
+  const shouldClear = !(isBackgroundJob && wasRecentlySaved);
+
+  if (!shouldClear) {
+    console.log('🔥 [HARD_LOG] [EXCHANGE_AUTO_INVALIDATION_BLOCKED]', {
+      ...logData,
+      action: 'SKIPPED_KEY_CLEARING',
+      blockReason: isBackgroundJob && wasRecentlySaved ? 'recent_manual_save' : 'user_request_context'
+    });
+  } else {
+    console.log('🔥 [HARD_LOG] [EXCHANGE_AUTO_INVALIDATION_DETECTED]', {
+      ...logData,
+      action: 'KEYS_WILL_BE_CLEARED',
+      caller: 'shouldAutoClearKeys'
+    });
+  }
+
+  return { shouldClear, logData };
+}
 
 interface Balance {
   asset: string;
@@ -27,10 +74,9 @@ export async function walletRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = (request as any).user;
-    // Use normalized exchange usability check - INVALID_KEYS must not leak outside connect flow
-    const exchangeUsability = await isExchangeUsable(user?.uid, 'user_request');
-    if (!exchangeUsability.usable) {
-      return reply.code(200).send({ blocked: true, reason: "EXCHANGE_NOT_CONNECTED" });
+    const exchangeConfig = await firestoreAdapter.getExchangeConfig(user?.uid);
+    if (exchangeConfig?.exchangeStatus === 'INVALID_KEYS') {
+      return reply.code(200).send({ blocked: true, reason: "INVALID_KEYS" });
     }
     try {
       const user = (request as any).user;
@@ -83,36 +129,56 @@ export async function walletRoutes(fastify: FastifyInstance) {
       let secret: string;
       let passphrase: string | undefined;
 
-      // RUNTIME PROTECTION: Use normalized exchange usability check
-      // Do NOT call decrypt() in wallet balance context - decryption should not poison exchange usability
-      const exchangeUsability = await isExchangeUsable(user.uid, 'user_request');
-      const isConnectedExchange = exchangeUsability.usable;
+      try {
+        // CRITICAL: Use decryptOrThrow to fail hard on decryption failure
+        const { decryptOrThrow } = await import('../services/keyManager');
+        apiKey = decryptOrThrow(exchangeConfig.apiKeyEncrypted, 'API key');
+        secret = decryptOrThrow(exchangeConfig.secretEncrypted, 'secret key');
+        passphrase = exchangeConfig.passphraseEncrypted
+          ? decryptOrThrow(exchangeConfig.passphraseEncrypted, 'passphrase')
+          : undefined;
+      } catch (decryptErr: any) {
+        // Get the current exchange config document to check timestamps
+        const exchangeConfig = await firestoreAdapter.getExchangeConfig(user.uid);
+        const dbInstance = getFirebaseAdmin().firestore();
+        const docRef = dbInstance.collection('users').doc(user.uid).collection('exchangeConfig').doc('current');
+        const docSnapshot = await docRef.get();
 
-      if (isConnectedExchange) {
-        // CONNECTED exchanges: Skip decryption to avoid poisoning usability
-        logger.info({
-          uid: user.uid,
-          exchangeUsability: exchangeUsability.usable,
-          reason: exchangeUsability.reason,
-          context: 'wallet_balance'
-        }, 'Exchange usable - skipping decryption in wallet context to protect usability');
+        const { shouldClear, logData } = shouldAutoClearKeys(
+          user.uid,
+          exchangeConfig?.exchange || 'unknown',
+          'user_request', // This is a user-facing API call
+          docSnapshot.data(),
+          'wallet_balance_decrypt_failed'
+        );
 
-        // Use placeholder credentials - the balance check will fail gracefully
-        apiKey = 'CONNECTED_EXCHANGE_PLACEHOLDER';
-        secret = 'CONNECTED_EXCHANGE_PLACEHOLDER';
-        passphrase = undefined;
-      } else {
-        // Non-CONNECTED exchanges should not reach here - status check should block them
-        logger.error({
-          uid: user.uid,
-          exchangeUsability: exchangeUsability.usable,
-          exchangeReason: exchangeUsability.reason,
-          context: 'wallet_balance'
-        }, 'FATAL: Non-usable exchange reached wallet balance decryption');
+        if (!shouldClear) {
+          logger.warn({
+            uid: user.uid,
+            timeSinceUpdateMs: logData.timeSinceUpdateMs,
+            error: decryptErr.message
+          }, 'EXCHANGE_AUTO_INVALIDATION_BLOCKED: Skipping key clearing in wallet balance check for recently manually saved exchange');
+        } else {
+          // HARD RESET: one-time clean up if decrypt fails (cache per UID)
+          const memory = (global as any).__EXCHANGE_KEY_INVALID_CACHE = (global as any).__EXCHANGE_KEY_INVALID_CACHE || {};
+          if (!memory[user.uid]) {
+            const admin = await import('firebase-admin');
+            await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').set({
+              apiKeyEncrypted: admin.firestore.FieldValue.delete(),
+              secretKeyEncrypted: admin.firestore.FieldValue.delete(),
+              passphraseEncrypted: admin.firestore.FieldValue.delete(),
+              exchangeStatus: 'INVALID_KEYS',
+              updatedAt: new Date()
+            }, { merge: true });
+            memory[user.uid] = true;
+          }
+        }
         return reply.code(400).send({
-          error: 'Exchange not connected',
+          error: 'Exchange keys invalid. Please re-enter API keys.',
           connected: false,
-          exchangeStatus: 'NOT_CONNECTED'
+          exchangeStatus: 'INVALID_KEYS',
+          decryptionFailed: true,
+          diagnostic: 'Balance fetch failed - Exchange API keys invalidated. User must re-enter keys.',
         });
       }
       const testnet = exchangeConfig.testnet ?? true;
@@ -218,7 +284,7 @@ export async function walletRoutes(fastify: FastifyInstance) {
       };
     } catch (err: any) {
       logger.error({ err, uid: (request as any).user?.uid }, 'Error fetching wallet balances');
-
+      
       // Don't expose internal errors
       if (err.message?.includes('Invalid API-key') || err.message?.includes('authentication')) {
         return reply.code(401).send({

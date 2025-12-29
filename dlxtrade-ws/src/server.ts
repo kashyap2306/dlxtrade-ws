@@ -9,22 +9,6 @@ console.log("ENV CHECK project_id:", process.env.FIREBASE_PROJECT_ID);
 console.log("ENV CHECK client_email:", process.env.FIREBASE_CLIENT_EMAIL);
 console.log("ENV CHECK private_key exists:", !!process.env.FIREBASE_PRIVATE_KEY);
 
-// CRITICAL: HARD FAIL if ENCRYPTION_SECRET is missing or invalid
-// This prevents any runtime ENCRYPTION_SECRET mismatch issues
-if (!process.env.ENCRYPTION_SECRET) {
-  console.error('❌ CRITICAL: ENCRYPTION_SECRET environment variable is not set');
-  console.error('💥 SERVER CANNOT START - encryption key required for all operations');
-  process.exit(1);
-}
-
-if (process.env.ENCRYPTION_SECRET.length < 32) {
-  console.error(`❌ CRITICAL: ENCRYPTION_SECRET must be at least 32 characters, got ${process.env.ENCRYPTION_SECRET.length}`);
-  console.error('💥 SERVER CANNOT START - encryption key too short');
-  process.exit(1);
-}
-
-console.log("✅ ENV CHECK encryption_secret: set and valid length");
-
 import { buildApp } from './app';
 import { initDb } from './db';
 import { initRedis } from './db/redis';
@@ -310,22 +294,6 @@ async function start() {
           console.log('🛑 [AUTOTRADE] APIs will remain fully functional');
           logger.warn('Background services disabled by DISABLE_AUTOTRADE=true');
         } else {
-          // CRITICAL: Run data cleanup BEFORE starting background services
-          console.log('🧹 RUNNING DATA CLEANUP: Clearing stale INVALID_KEYS states...');
-          try {
-            const { startupCleanupStaleInvalidKeys } = await import('./services/firestoreAdapter');
-            const cleanupResult = await startupCleanupStaleInvalidKeys();
-            console.log(`✅ DATA CLEANUP: Processed ${cleanupResult.processed} users, cleared ${cleanupResult.cleared} stale INVALID_KEYS`);
-            if (cleanupResult.errors > 0) {
-              console.log(`⚠️  DATA CLEANUP: ${cleanupResult.errors} errors encountered`);
-            }
-            logger.info(cleanupResult, 'STARTUP_DATA_CLEANUP_COMPLETED');
-          } catch (cleanupError: any) {
-            console.error('❌ DATA CLEANUP FAILED:', cleanupError.message);
-            logger.error({ error: cleanupError.message }, 'STARTUP_DATA_CLEANUP_FAILED');
-            // Don't crash server, continue with background services
-          }
-
           // CRITICAL: Background loops start ONLY after server is fully listening
           // This ensures HTTP APIs are always available first
           console.log('');

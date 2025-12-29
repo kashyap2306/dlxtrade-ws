@@ -39,8 +39,9 @@ export const config = {
   
   encryption: {
     algorithm: 'aes-256-cbc',
-    // CRITICAL: Encryption key is initialized at server startup via initializeEncryptionKey()
-    // NO fallback key - server crashes if ENCRYPTION_SECRET is missing/invalid
+    // CRITICAL: Encryption key is now initialized at server startup via initializeEncryptionKey()
+    // Config validation moved to startup to establish SINGLE SOURCE OF TRUTH
+    key: process.env.ENCRYPTION_SECRET || '',
   },
   
   rateLimit: {

@@ -14,7 +14,6 @@ interface SettingsExchangeSectionProps {
   handleSaveExchange: () => void;
   handleDisconnectExchange: () => void;
   savingExchange: boolean;
-  isExchangeConnected: (config: any) => boolean;
 }
 
 interface BalanceData {
@@ -32,7 +31,6 @@ export const SettingsExchangeSection: React.FC<SettingsExchangeSectionProps> = (
   handleSaveExchange,
   handleDisconnectExchange,
   savingExchange,
-  isExchangeConnected,
 }) => {
   return (
     <section id="exchange-connection" className="mb-12">
@@ -40,7 +38,7 @@ export const SettingsExchangeSection: React.FC<SettingsExchangeSectionProps> = (
         🏦 Exchange Connection
       </h2>
       <SettingsCard>
-        {isExchangeConnected(exchangeConfig) ? (
+        {exchangeConfig && exchangeConfig.exchange ? (
           <div className="p-6 bg-green-500/10 border border-green-500/30 rounded-xl space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">

@@ -38,7 +38,7 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
         const encrypted = integrations?.[name]?.apiKeyEncrypted || '';
         if (!encrypted) return '';
         try {
-          return decrypt(encrypted, 'diagnostics') || '';
+          return decrypt(encrypted) || '';
         } catch {
           return '';
         }

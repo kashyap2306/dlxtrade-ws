@@ -11,11 +11,6 @@ import { createHash } from 'crypto';
  * - Old encrypted data is unrecoverable by design (security feature)
  * - If ENCRYPTION_SECRET changes, ALL users must reconnect their exchanges
  * - No fallback secrets, no recovery mechanisms, no migrations
- *
- * CRITICAL INVALID_KEYS PROTECTION:
- * - decrypt() failures MUST NEVER set INVALID_KEYS or mutate exchangeStatus
- * - Decryption failures should be treated as "exchange not configured" not "invalid keys"
- * - INVALID_KEYS is ONLY for credential validation failures, not encryption failures
  */
 
 const ALGORITHM = 'aes-256-cbc';
@@ -73,12 +68,6 @@ function getIV(): Buffer {
 
 export function encrypt(text: string): string {
   if (!text) return '';
-
-  // CRITICAL: Verify key is initialized before encryption
-  if (CACHED_ENCRYPTION_KEY === null || CACHED_KEY_HASH === null) {
-    throw new Error('ENCRYPTION_KEY_NOT_INITIALIZED - encrypt() called before initializeEncryptionKey()');
-  }
-
   try {
     const key = getEncryptionKey();
     const iv = getIV();
@@ -95,34 +84,11 @@ export function encrypt(text: string): string {
   }
 }
 
-export function decrypt(cipherText: string, context?: string): string | null {
+export function decrypt(cipherText: string): string | null {
   // CRITICAL: If encrypted value is missing or empty, do NOT attempt decryption
   // Treat as unconfigured provider / invalidated keys
   if (!cipherText || cipherText.trim().length === 0) {
     return null;
-  }
-
-  // CRITICAL: Verify key is initialized before decryption
-  if (CACHED_ENCRYPTION_KEY === null || CACHED_KEY_HASH === null) {
-    logger.error('ENCRYPTION_KEY_NOT_INITIALIZED - decrypt() called before initializeEncryptionKey()');
-    return null;
-  }
-
-  // RUNTIME PROTECTION: Prevent background decryption that can poison exchange usability
-  // decrypt() is allowed for exchange operations and provider configurations
-  const allowedContexts = ['exchange_connect', 'exchange_validate', 'user_request', 'provider_config', 'diagnostics'];
-  if (context && !allowedContexts.includes(context)) {
-    const error = new Error(
-      `FATAL: decrypt() called in forbidden context '${context}'. ` +
-      `Decryption is ONLY allowed in: ${allowedContexts.join(', ')}. ` +
-      `This prevents background decryption failures from poisoning exchange usability.`
-    );
-    logger.error({
-      context,
-      allowedContexts,
-      stack: error.stack
-    }, '[DECRYPTION_VIOLATION]');
-    throw error;
   }
 
   try {
@@ -325,14 +291,8 @@ export function maskKey(key: string): string {
  * Call this from background jobs and API routes to ensure same key is used
  */
 export function verifyEncryptionKeyConsistency(context: string): void {
-  if (CACHED_ENCRYPTION_KEY === null || CACHED_KEY_HASH === null || CACHED_ENCRYPTION_SECRET === null) {
+  if (CACHED_ENCRYPTION_KEY === null || CACHED_KEY_HASH === null) {
     throw new Error(`ENCRYPTION_KEY_NOT_INITIALIZED in ${context} - initializeEncryptionKey() must be called at server startup`);
-  }
-
-  // Verify the cached key still matches the original secret
-  const currentKey = Buffer.from(CACHED_ENCRYPTION_SECRET.slice(0, KEY_LENGTH), 'utf8');
-  if (!CACHED_ENCRYPTION_KEY.equals(currentKey)) {
-    throw new Error(`ENCRYPTION_KEY_CORRUPTED in ${context} - cached key does not match original secret`);
   }
 
   const currentHash = getEncryptionKeyHash(8);

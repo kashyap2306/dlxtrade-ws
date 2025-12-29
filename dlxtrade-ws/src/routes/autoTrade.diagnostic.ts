@@ -24,9 +24,6 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
       }
       const uid = user.uid;
 
-      // CLEAR CACHE: Ensure fresh exchange usability read for diagnostic context
-      clearExchangeUsabilityCache();
-
       const diagnostics: any = {
         timestamp: new Date().toISOString(),
         systemChecks: {},
@@ -61,7 +58,7 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
       let exchangeUsabilityReason = 'Exchange not configured';
       let exchangeConfigSource = 'canonical';
       try {
-        const { isExchangeUsable, clearExchangeUsabilityCache } = await import('../services/firestoreAdapter');
+        const { isExchangeUsable } = await import('../services/firestoreAdapter');
         const exchangeUsability = await Promise.race([
           isExchangeUsable(uid, 'user_request'),
           new Promise<{ usable: boolean; reason: string }>((_, reject) =>
@@ -192,17 +189,17 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
         backgroundTasksEnabled = shouldRunBackgroundTasks();
 
         // Check scheduler status - LIGHTWEIGHT, no heavy operations
-        try {
-          const { backgroundResearchScheduler } = await import('../services/backgroundResearchScheduler');
-          schedulerRunning = (backgroundResearchScheduler as any).isRunning || false;
-          userJobState = (backgroundResearchScheduler as any).getUserJobState(uid);
-          userJobScheduled = !!userJobState;
-        } catch (err: any) {
-          // On error, use safe defaults - don't fail diagnostic
-          schedulerRunning = false;
-          userJobState = null;
-          userJobScheduled = false;
-        }
+      try {
+        const { backgroundResearchScheduler } = await import('../services/backgroundResearchScheduler');
+        schedulerRunning = (backgroundResearchScheduler as any).isRunning || false;
+        userJobState = (backgroundResearchScheduler as any).getUserJobState(uid);
+        userJobScheduled = !!userJobState;
+      } catch (err: any) {
+        // On error, use safe defaults - don't fail diagnostic
+        schedulerRunning = false;
+        userJobState = null;
+        userJobScheduled = false;
+      }
 
         // Calculate last research run age
         if (userJobState?.lastRunAt) {
@@ -263,8 +260,8 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
         status: bgResearchEnabled ? 'PASS' : 'FAIL',
         message: bgResearchEnabled
           ? (autoTradeResearchActive && !telegramBgResearchEnabled
-            ? 'Auto-trade research is active (background research via auto-trade)'
-            : 'Background research is enabled')
+              ? 'Auto-trade research is active (background research via auto-trade)'
+              : 'Background research is enabled')
           : 'Background research is disabled',
         value: bgResearchEnabled,
       };
@@ -564,7 +561,7 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
       if (!autoTradeEnabled) {
         diagnostics.finalVerdict = 'AUTO-TRADE DISABLED';
       } else if (!hasEncryptedKeys) {
-        diagnostics.finalVerdict = 'AUTO-TRADE SKIPPED: Exchange not connected (Soft state: Connect exchange to enable trading)';
+        diagnostics.finalVerdict = 'AUTO-TRADE BLOCKED: Exchange not connected';
       } else if (blockingReasons.length > 0) {
         diagnostics.finalVerdict = `AUTO-TRADE BLOCKED: ${blockingReasons[0]}`;
       } else {

@@ -420,46 +420,22 @@ export class BackgroundResearchScheduler {
 
         // CRITICAL: Exchange disconnection MUST block AUTO_TRADE_RESEARCH mode
         // Scheduler should NOT run when exchange is explicitly disconnected
-        // BUT missing exchangeConfig should NOT be treated as disconnection
-        const { isExchangeUsable } = await import('./firestoreAdapter');
-        const exchangeUsability = await isExchangeUsable(uid, 'background_job');
+        const hasExchangeAPIs = await this.hasUsableExchangeAPIs(uid);
+        if (!hasExchangeAPIs) {
+          // HARD BLOCK: Exchange disconnected - do NOT allow AUTO_TRADE_RESEARCH mode
+          console.log('🔥 [HARD_LOG] [AUTO_TRADE_BLOCKED_EXCHANGE_DISCONNECTED]', {
+            uid,
+            reason: 'exchange_disconnected_or_unusable',
+            mode: 'AUTO_TRADE_RESEARCH_BLOCKED'
+          });
 
-        if (!exchangeUsability.usable) {
-          // Check if this is due to missing exchangeConfig (not_connected) vs actual disconnection
-          if (exchangeUsability.reason === 'not_connected') {
-            // NOT_CONNECTED: Missing exchangeConfig is NOT a fatal error
-            // Log once and SKIP scheduling for this tick, but keep scheduler alive
-            console.log('🔥 [HARD_LOG] [EXCHANGE_NOT_CONNECTED_SKIP]', {
-              uid,
-              reason: 'not_connected',
-              action: 'scheduler_skip_tick_soft_state'
-            });
+          logger.warn({ uid }, '🚫 [SCHEDULER] Auto-Trade BLOCKED - exchange disconnected or unusable - scheduler will not run');
 
-            logger.info({ uid }, '💡 [SOFT_STATE] Auto-Trade SKIP TICK - no exchange config (not connected) - scheduler remains alive');
+          // Force clear any existing interval for this user
+          await this.forceStopUserScheduler(uid);
 
-            // ABSOLUTE HARD RULE: Missing exchangeConfig MUST be treated as SOFT STATE.
-            // ONLY skip this tick, NEVER clear jobState, NEVER clear interval, NEVER force stop.
-            return null;
-          } else {
-            // RUNTIME ASSERTION: If reason is 'not_connected' here, it's a critical logic failure
-            if (exchangeUsability.reason === 'not_connected') {
-              throw new Error(`FATAL_INVARIANT_VIOLATION: 'not_connected' reached BLOCKED logic in scheduler | uid=${uid}`);
-            }
-
-            console.log('🔥 [HARD_LOG] [AUTO_TRADE_BLOCKED_EXCHANGE_DISCONNECTED]', {
-              uid,
-              reason: exchangeUsability.reason,
-              mode: 'AUTO_TRADE_RESEARCH_BLOCKED'
-            });
-
-            logger.warn({ uid }, '🚫 [SCHEDULER] Auto-Trade BLOCKED - exchange disconnected or unusable - scheduler will not run');
-
-            // Force clear any existing interval for this user (for ACTUAL disconnection only)
-            await this.forceStopUserScheduler(uid, exchangeUsability.reason);
-
-            // Do NOT continue with AUTO_TRADE_RESEARCH mode
-            return null;
-          }
+          // Do NOT continue with AUTO_TRADE_RESEARCH mode
+          return null;
         }
 
         // CRITICAL: Primary API missing should NOT block scheduler
@@ -478,8 +454,7 @@ export class BackgroundResearchScheduler {
           telegramBgResearchEnabled,
           mode: 'AUTO_TRADE_RESEARCH',
           frequency: finalFrequency,
-          exchangeUsable: exchangeUsability.usable,
-          exchangeReason: exchangeUsability.reason,
+          hasExchangeAPIs,
           hasPrimaryAPIs,
           telegramEngineBypassed: true,
           telegramAlertsFromAutoTrade: true
@@ -710,20 +685,8 @@ export class BackgroundResearchScheduler {
   /**
    * Force stop scheduler for a user (call this when exchange is disconnected)
    */
-  async forceStopUserScheduler(uid: string, reason?: string) {
-    // HARD GUARD: Soft state or missing reason MUST return immediately (NO logs, NO mutation)
-    if (!reason || reason === 'not_connected') {
-      return;
-    }
-
-    // FINAL SAFETY ASSERTION: Only 'disconnected' or 'invalid_keys' allowed here
-    if (reason !== 'disconnected' && reason !== 'invalid_keys') {
-      throw new Error(
-        `FATAL_INVARIANT_VIOLATION: forceStopUserScheduler called with illegal reason: ${reason}`
-      );
-    }
-
-    logger.info({ uid, reason }, '🛑 [SCHEDULER] Force stopping scheduler for user');
+  async forceStopUserScheduler(uid: string) {
+    logger.info({ uid }, '🛑 [SCHEDULER] Force stopping scheduler for user');
 
     // Clear any existing interval
     const existingInterval = this.userIntervals.get(uid);
@@ -732,7 +695,7 @@ export class BackgroundResearchScheduler {
       this.userIntervals.delete(uid);
       console.log('🔥 [HARD_LOG] [SCHEDULER_INTERVAL_CLEARED]', {
         uid,
-        reason: reason || 'force_stop_exchange_disconnect'
+        reason: 'force_stop_exchange_disconnect'
       });
     }
 
@@ -740,7 +703,7 @@ export class BackgroundResearchScheduler {
     this.userJobStates.delete(uid);
     console.log('🔥 [HARD_LOG] [SCHEDULER_JOB_STATE_CLEARED]', {
       uid,
-      reason: reason || 'force_stop_exchange_disconnect'
+      reason: 'force_stop_exchange_disconnect'
     });
 
     logger.info({ uid }, '✅ [SCHEDULER] Force stopped scheduler for user');
@@ -1375,7 +1338,7 @@ export class BackgroundResearchScheduler {
 
     const jobState = this.userJobStates.get(uid);
     const intervalExists = this.userIntervals.has(uid);
-
+    
     // Comprehensive state logging for debugging
     logger.info({
       uid,
@@ -1556,7 +1519,7 @@ export class BackgroundResearchScheduler {
 
       // PRODUCER: Generate research first
       logger.info({ uid, mode }, '🔬 [RESEARCH_PRODUCER] Scheduler generating research...');
-
+      
       let generatedResearch: any = null;
       let executionError: any = null;
 
@@ -1580,11 +1543,11 @@ export class BackgroundResearchScheduler {
         try {
           // Get user integrations for research
           const integrations = await getUserIntegrationsByUid(uid);
-
+          
           // Load trading settings
           const { AutoTradeEngine } = await import('./autoTradeEngine');
           const tradingSettings = await AutoTradeEngine.getTradingSettings(uid);
-
+          
           // Generate research using Top 100 accuracy scan
           const { runDeepResearchWithCoinSelection } = await import('./accuracyAndSignalEngine');
           const researchData = await runDeepResearchWithCoinSelection(
@@ -1597,11 +1560,11 @@ export class BackgroundResearchScheduler {
           // Extract best result from research
           if (researchData && researchData.results && researchData.results.length > 0) {
             generatedResearch = researchData.results[0]; // Best coin by accuracy
-            logger.info({
-              uid,
-              symbol: generatedResearch.symbol,
+            logger.info({ 
+              uid, 
+              symbol: generatedResearch.symbol, 
               signal: generatedResearch.signal,
-              accuracy: generatedResearch.accuracy
+              accuracy: generatedResearch.accuracy 
             }, '✅ [RESEARCH_PRODUCER] Research generated successfully');
           } else {
             logger.warn({ uid }, '⚠️ [RESEARCH_PRODUCER] No suitable research result found');
@@ -1619,8 +1582,8 @@ export class BackgroundResearchScheduler {
       if (!generatedResearch) {
         // No research generated - save SKIPPED history directly from scheduler
         logger.warn({ uid, mode, executionError: executionError?.message }, '⏭️ [SCHEDULER] No research generated - saving SKIPPED history');
-
-        const skipReason = executionError
+        
+        const skipReason = executionError 
           ? `Research generation failed: ${executionError.message}`
           : 'No suitable coin found by accuracy scan';
 
@@ -1684,9 +1647,9 @@ export class BackgroundResearchScheduler {
               accuracy: generatedResearch.accuracy
             });
             deepResearchResult = await autoTradeEngine.runAutoTradeResearchCycleSafe(
-              uid,
-              false,
-              schedulerCycleId,
+              uid, 
+              false, 
+              schedulerCycleId, 
               generatedResearch
             );
           }
@@ -1937,379 +1900,379 @@ export class BackgroundResearchScheduler {
                 skipReason: 'Top 25 check error - blocking for safety'
               });
             } catch (histError: any) {
-              logger.warn({ uid, coin, error: histError.message }, 'Failed to store top-25 error history');
-            }
-
-            // Update Firestore state
-            try {
-              await firestoreAdapter.saveBackgroundResearchSettings(uid, {
-                lastRunAt: now,
-                nextRunAt,
-                lastAccuracy: finalAccuracyPercent,
-              });
-            } catch (updateError: any) {
-              logger.warn({ uid, error: updateError.message }, 'Failed to update state for top-25 error');
-            }
-
-            return; // Exit early on error
+            logger.warn({ uid, coin, error: histError.message }, 'Failed to store top-25 error history');
           }
 
-
-          // TEMP ASSERT: tradePlan must exist for BUY/SELL signals
-          if ((signal === 'BUY' || signal === 'SELL') && !deepResearchResult.result?.tradePlan) {
-            throw new Error(`INVARIANT VIOLATION: Signal is ${signal} but tradePlan missing in background research`);
-          }
-
-          // DEFINE FINAL CONTEXT ONCE - SINGLE SOURCE OF TRUTH FOR BACKGROUND
-          const context = {
-            symbol: deepResearchResult.symbol,
-            accuracy: deepResearchResult.accuracy,
-            signal: deepResearchResult.signal,
-            tradePlan: deepResearchResult.result?.tradePlan || null
-          };
-
-          // VALIDATE CONTEXT COMPLETENESS
-          if (!context.symbol || context.accuracy == null || !context.signal) {
-            throw new Error(`INVALID CONTEXT IN BACKGROUND: symbol=${context.symbol}, accuracy=${context.accuracy}, signal=${context.signal}`);
-          }
-
-          if ((context.signal === 'BUY' || context.signal === 'SELL') && !context.tradePlan) {
-            throw new Error(`INVALID CONTEXT IN BACKGROUND: Signal is ${context.signal} but tradePlan missing`);
-          }
-
-          // SINGLE PIPELINE GUARANTEE - TEMP LOG
-          console.log('🔥 [PIPELINE_GUARANTEE] Background context defined:', {
-            uid,
-            contextSymbol: context.symbol,
-            contextSignal: context.signal,
-            contextAccuracy: context.accuracy,
-            contextHasTradePlan: !!context.tradePlan,
-            contextTradePlanKeys: context.tradePlan ? Object.keys(context.tradePlan) : []
-          });
-
-          // INVARIANT LOGGING: Background research result
-          console.log('🔥 [INVARIANT] Background research result:', {
-            uid,
-            symbol: context.symbol,
-            signal: context.signal,
-            accuracy: context.accuracy,
-            hasTradePlan: !!context.tradePlan,
-            tradePlanKeys: context.tradePlan ? Object.keys(context.tradePlan) : []
-          });
-
-          // CRITICAL: Use tradePlan from context (single source of truth)
-          const tradePlan = context.tradePlan;
-          const fullResult = deepResearchResult.result || {}; // Keep fullResult for other properties
-          const metadata = (fullResult.metadata || deepResearchResult.metadata || {}) as any;
-
-          // Verify signal/tradePlan consistency
-          if (signal === 'HOLD' && tradePlan !== null) {
-            logger.error({ uid, coin, signal, tradePlan },
-              '[TELEGRAM_VERIFY_ERROR] Signal is HOLD but tradePlan exists - this should never happen!');
-          } else if (signal !== 'HOLD' && finalAccuracyPercent >= 60 && !tradePlan) {
-            logger.error({ uid, coin, signal, accuracy: finalAccuracyPercent },
-              '[TELEGRAM_VERIFY_ERROR] BUY/SELL signal with accuracy >= 60% but tradePlan is null!');
-          } else {
-            logger.info({ uid, coin, signal, accuracy: finalAccuracyPercent, hasTradePlan: tradePlan !== null },
-              '[TELEGRAM_VERIFY] Signal and tradePlan consistency verified');
-          }
-
-          // WHALE ALERT: Check for large moves independently of auto-trade
+          // Update Firestore state
           try {
-            const userSettings = await firestoreAdapter.getSettings(uid);
-            if (userSettings?.notifications?.whaleAlerts) {
-              // Get adapter through autoTradeEngine initialization
-              const adapter = await autoTradeEngine.initializeAdapter(uid);
-              await checkWhaleAlerts(uid, coin, adapter, (uid, eventType, data) => autoTradeEngine.logTradeEvent(uid, eventType, data));
-            }
-          } catch (whaleErr) {
-            // logger.warn({ uid, coin }, 'Failed to check whale alerts in background');
+            await firestoreAdapter.saveBackgroundResearchSettings(uid, {
+              lastRunAt: now,
+              nextRunAt,
+              lastAccuracy: finalAccuracyPercent,
+            });
+          } catch (updateError: any) {
+            logger.warn({ uid, error: updateError.message }, 'Failed to update state for top-25 error');
           }
 
-          // Track max accuracy
-          maxAccuracy = finalAccuracyPercent;
+          return; // Exit early on error
+        }
 
-          // CRITICAL: Accuracy trigger is evaluated AFTER research completes
-          // This is an output evaluation, not a prerequisite check
-          const minTrigger = accuracyTrigger?.min ?? (typeof accuracyTrigger === 'number' ? accuracyTrigger : 80);
-          const maxTrigger = accuracyTrigger?.max ?? 100;
-          const isInRange = finalAccuracyPercent >= minTrigger && finalAccuracyPercent <= maxTrigger;
 
-          // HARD LOG: Active mode and frequency source
-          logger.info({
+        // TEMP ASSERT: tradePlan must exist for BUY/SELL signals
+        if ((signal === 'BUY' || signal === 'SELL') && !deepResearchResult.result?.tradePlan) {
+          throw new Error(`INVARIANT VIOLATION: Signal is ${signal} but tradePlan missing in background research`);
+        }
+
+        // DEFINE FINAL CONTEXT ONCE - SINGLE SOURCE OF TRUTH FOR BACKGROUND
+        const context = {
+          symbol: deepResearchResult.symbol,
+          accuracy: deepResearchResult.accuracy,
+          signal: deepResearchResult.signal,
+          tradePlan: deepResearchResult.result?.tradePlan || null
+        };
+
+        // VALIDATE CONTEXT COMPLETENESS
+        if (!context.symbol || context.accuracy == null || !context.signal) {
+          throw new Error(`INVALID CONTEXT IN BACKGROUND: symbol=${context.symbol}, accuracy=${context.accuracy}, signal=${context.signal}`);
+        }
+
+        if ((context.signal === 'BUY' || context.signal === 'SELL') && !context.tradePlan) {
+          throw new Error(`INVALID CONTEXT IN BACKGROUND: Signal is ${context.signal} but tradePlan missing`);
+        }
+
+        // SINGLE PIPELINE GUARANTEE - TEMP LOG
+        console.log('🔥 [PIPELINE_GUARANTEE] Background context defined:', {
+          uid,
+          contextSymbol: context.symbol,
+          contextSignal: context.signal,
+          contextAccuracy: context.accuracy,
+          contextHasTradePlan: !!context.tradePlan,
+          contextTradePlanKeys: context.tradePlan ? Object.keys(context.tradePlan) : []
+        });
+
+        // INVARIANT LOGGING: Background research result
+        console.log('🔥 [INVARIANT] Background research result:', {
+          uid,
+          symbol: context.symbol,
+          signal: context.signal,
+          accuracy: context.accuracy,
+          hasTradePlan: !!context.tradePlan,
+          tradePlanKeys: context.tradePlan ? Object.keys(context.tradePlan) : []
+        });
+
+        // CRITICAL: Use tradePlan from context (single source of truth)
+        const tradePlan = context.tradePlan;
+        const fullResult = deepResearchResult.result || {}; // Keep fullResult for other properties
+        const metadata = (fullResult.metadata || deepResearchResult.metadata || {}) as any;
+
+        // Verify signal/tradePlan consistency
+        if (signal === 'HOLD' && tradePlan !== null) {
+          logger.error({ uid, coin, signal, tradePlan },
+            '[TELEGRAM_VERIFY_ERROR] Signal is HOLD but tradePlan exists - this should never happen!');
+        } else if (signal !== 'HOLD' && finalAccuracyPercent >= 60 && !tradePlan) {
+          logger.error({ uid, coin, signal, accuracy: finalAccuracyPercent },
+            '[TELEGRAM_VERIFY_ERROR] BUY/SELL signal with accuracy >= 60% but tradePlan is null!');
+        } else {
+          logger.info({ uid, coin, signal, accuracy: finalAccuracyPercent, hasTradePlan: tradePlan !== null },
+            '[TELEGRAM_VERIFY] Signal and tradePlan consistency verified');
+        }
+
+        // WHALE ALERT: Check for large moves independently of auto-trade
+        try {
+          const userSettings = await firestoreAdapter.getSettings(uid);
+          if (userSettings?.notifications?.whaleAlerts) {
+            // Get adapter through autoTradeEngine initialization
+            const adapter = await autoTradeEngine.initializeAdapter(uid);
+            await checkWhaleAlerts(uid, coin, adapter, (uid, eventType, data) => autoTradeEngine.logTradeEvent(uid, eventType, data));
+          }
+        } catch (whaleErr) {
+          // logger.warn({ uid, coin }, 'Failed to check whale alerts in background');
+        }
+
+        // Track max accuracy
+        maxAccuracy = finalAccuracyPercent;
+
+        // CRITICAL: Accuracy trigger is evaluated AFTER research completes
+        // This is an output evaluation, not a prerequisite check
+        const minTrigger = accuracyTrigger?.min ?? (typeof accuracyTrigger === 'number' ? accuracyTrigger : 80);
+        const maxTrigger = accuracyTrigger?.max ?? 100;
+        const isInRange = finalAccuracyPercent >= minTrigger && finalAccuracyPercent <= maxTrigger;
+
+        // HARD LOG: Active mode and frequency source
+        logger.info({
+          uid,
+          coin,
+          activeMode: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH ? 'AUTO_TRADE' : 'TELEGRAM_BACKGROUND',
+          frequencySource: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH ? 'AUTO_TRADE' : 'TELEGRAM',
+          telegramEngineActive: mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH,
+          autoTradeEngineActive: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH,
+          timestamp: new Date().toISOString()
+        }, '📱 [TELEGRAM_MODE] Active mode determined - frequency source and engine selection logged');
+
+        logger.info({
+          coin,
+          mode,
+          finalAccuracy: finalAccuracyPercent,
+          range: { min: minTrigger, max: maxTrigger },
+          decision: isInRange ? 'QUALIFIED' : 'NOT_QUALIFIED',
+          alertDecision: isInRange ? 'SEND_ALERT' : 'SKIP_ALERT',
+          reason: isInRange ? 'Accuracy >= trigger' : `Accuracy ${finalAccuracyPercent}% outside range [${minTrigger}-${maxTrigger}]%`
+        }, '🎯 [ACCURACY] Accuracy range evaluation (post-research) - alert decision based on accuracy >= trigger only');
+
+        // 🔥 DEBUG: Log scheduler mode and accuracy trigger evaluation
+        logger.info({
+          uid,
+          coin,
+          mode,
+          finalAccuracy: finalAccuracyPercent,
+          minTrigger,
+          maxTrigger,
+          isInRange,
+          accuracyTrigger: settings.accuracyTrigger
+        }, '🔍 [SCHEDULER_DEBUG] Scheduler mode and accuracy trigger evaluation');
+
+        // MODE-SPECIFIC HANDLING:
+        // AUTO_TRADE_RESEARCH: Trade execution is handled by AutoTradeEngine.runAutoTradeResearchCycleSafe
+        //   - AutoTradeEngine runs server-side, independent of frontend
+        //   - Called by BackgroundResearchScheduler at configured frequency
+        //   - Continues running when website is closed (server-side execution)
+        //   - Only exchange decryption failure blocks execution (not UI state)
+        //   - CRITICAL: Telegram alerts are sent FROM AutoTradeEngine, NOT from processUserResearch
+        //   - This Telegram alert logic below is BYPASSED when mode is AUTO_TRADE_RESEARCH
+        // TELEGRAM_BACKGROUND_RESEARCH: Send Telegram alert if accuracy >= trigger
+        //   - Telegram alerts sent server-side, independent of frontend
+        //   - Alerts trigger when FINAL accuracy crosses threshold
+        //   - Uses ONLY background research settings (telegramBotToken, telegramChatId, accuracyTrigger)
+        //   - Does NOT depend on UI being open, WebSocket connections, or frontend polling
+
+        // CRITICAL: For AUTO_TRADE_RESEARCH mode, state update and history writing is handled below
+        // Continue to the end of function for proper state management
+        // Telegram alerts are handled by AutoTradeEngine, not here
+
+        // 🔥 PROOF: Log mode and accuracy range check
+        if (mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH) {
+          console.log("[TELEGRAM_BG_ACCURACY_CHECK]", {
             uid,
-            coin,
-            activeMode: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH ? 'AUTO_TRADE' : 'TELEGRAM_BACKGROUND',
-            frequencySource: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH ? 'AUTO_TRADE' : 'TELEGRAM',
-            telegramEngineActive: mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH,
-            autoTradeEngineActive: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH,
-            timestamp: new Date().toISOString()
-          }, '📱 [TELEGRAM_MODE] Active mode determined - frequency source and engine selection logged');
-
-          logger.info({
-            coin,
-            mode,
-            finalAccuracy: finalAccuracyPercent,
-            range: { min: minTrigger, max: maxTrigger },
-            decision: isInRange ? 'QUALIFIED' : 'NOT_QUALIFIED',
-            alertDecision: isInRange ? 'SEND_ALERT' : 'SKIP_ALERT',
-            reason: isInRange ? 'Accuracy >= trigger' : `Accuracy ${finalAccuracyPercent}% outside range [${minTrigger}-${maxTrigger}]%`
-          }, '🎯 [ACCURACY] Accuracy range evaluation (post-research) - alert decision based on accuracy >= trigger only');
-
-          // 🔥 DEBUG: Log scheduler mode and accuracy trigger evaluation
-          logger.info({
-            uid,
-            coin,
-            mode,
-            finalAccuracy: finalAccuracyPercent,
+            symbol: coin,
+            mode: 'TELEGRAM_BACKGROUND',
+            accuracy: finalAccuracyPercent,
             minTrigger,
             maxTrigger,
             isInRange,
-            accuracyTrigger: settings.accuracyTrigger
-          }, '🔍 [SCHEDULER_DEBUG] Scheduler mode and accuracy trigger evaluation');
+            timestamp: new Date().toISOString()
+          });
+        }
 
-          // MODE-SPECIFIC HANDLING:
-          // AUTO_TRADE_RESEARCH: Trade execution is handled by AutoTradeEngine.runAutoTradeResearchCycleSafe
-          //   - AutoTradeEngine runs server-side, independent of frontend
-          //   - Called by BackgroundResearchScheduler at configured frequency
-          //   - Continues running when website is closed (server-side execution)
-          //   - Only exchange decryption failure blocks execution (not UI state)
-          //   - CRITICAL: Telegram alerts are sent FROM AutoTradeEngine, NOT from processUserResearch
-          //   - This Telegram alert logic below is BYPASSED when mode is AUTO_TRADE_RESEARCH
-          // TELEGRAM_BACKGROUND_RESEARCH: Send Telegram alert if accuracy >= trigger
-          //   - Telegram alerts sent server-side, independent of frontend
-          //   - Alerts trigger when FINAL accuracy crosses threshold
-          //   - Uses ONLY background research settings (telegramBotToken, telegramChatId, accuracyTrigger)
-          //   - Does NOT depend on UI being open, WebSocket connections, or frontend polling
+        if (mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH && isInRange) {
+          const alertId = `telegram_bg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-          // CRITICAL: For AUTO_TRADE_RESEARCH mode, state update and history writing is handled below
-          // Continue to the end of function for proper state management
-          // Telegram alerts are handled by AutoTradeEngine, not here
+          // 🔥 PROOF: Log before Telegram send attempt
+          console.log("[TELEGRAM_BG_BEFORE_SEND]", {
+            alertId,
+            uid,
+            symbol: coin,
+            mode: 'TELEGRAM_BACKGROUND',
+            accuracy: finalAccuracyPercent,
+            threshold: accuracyTrigger,
+            isInRange,
+            timestamp: new Date().toISOString()
+          });
 
-          // 🔥 PROOF: Log mode and accuracy range check
-          if (mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH) {
-            console.log("[TELEGRAM_BG_ACCURACY_CHECK]", {
-              uid,
-              symbol: coin,
-              mode: 'TELEGRAM_BACKGROUND',
-              accuracy: finalAccuracyPercent,
-              minTrigger,
-              maxTrigger,
-              isInRange,
-              timestamp: new Date().toISOString()
-            });
-          }
+          logger.info({
+            alertId,
+            uid,
+            symbol: coin,
+            mode: 'TELEGRAM_BACKGROUND',
+            accuracy: finalAccuracyPercent,
+            threshold: accuracyTrigger
+          }, '🎯 [ACCURACY] Accuracy condition met for Telegram alert');
 
-          if (mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH && isInRange) {
-            const alertId = `telegram_bg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          // CRITICAL: Alerts fire on EVERY research cycle when accuracy >= trigger
+          // Removed spam prevention check - alerts must fire based on accuracy threshold ONLY
+          // Trade execution is NOT required for alerts
 
-            // 🔥 PROOF: Log before Telegram send attempt
-            console.log("[TELEGRAM_BG_BEFORE_SEND]", {
+          // CRITICAL: Hard guards for Telegram alert
+          // Use ONLY background research settings - do NOT depend on notification settings
+          // telegramBackgroundResearchEnabled is the source of truth for Telegram alerts in Background Research
+          const telegramEnabled = settings.telegramBackgroundResearchEnabled === true ||
+            (settings.backgroundResearchEnabled === true && settings.telegramBackgroundResearchEnabled !== false);
+          const hasBotToken = !!settings.telegramBotToken && settings.telegramBotToken.trim().length > 0;
+          const hasChatId = !!settings.telegramChatId && settings.telegramChatId.trim().length > 0;
+
+          // 🔥 DEBUG: Log Telegram enablement state
+          logger.info({
+            uid,
+            coin,
+            mode: 'TELEGRAM_BACKGROUND_RESEARCH',
+            telegramBackgroundResearchEnabled: settings.telegramBackgroundResearchEnabled,
+            backgroundResearchEnabled: settings.backgroundResearchEnabled,
+            telegramEnabled,
+            hasBotToken,
+            hasChatId,
+            finalAccuracy: finalAccuracyPercent,
+            isInRange
+          }, '🔍 [TELEGRAM_DEBUG] Telegram alert enablement check');
+
+          // 🔥 PROOF: Log skip reasons explicitly (both console and logger for visibility)
+          if (!telegramEnabled) {
+            const skipReason = 'TELEGRAM_DISABLED: Telegram Background Research not enabled';
+            console.log("[TELEGRAM_BG_SKIPPED_REASON=telegram_disabled]", {
               alertId,
               uid,
               symbol: coin,
-              mode: 'TELEGRAM_BACKGROUND',
-              accuracy: finalAccuracyPercent,
-              threshold: accuracyTrigger,
-              isInRange,
+              telegramEnabled,
               timestamp: new Date().toISOString()
             });
-
             logger.info({
               alertId,
               uid,
               symbol: coin,
               mode: 'TELEGRAM_BACKGROUND',
               accuracy: finalAccuracyPercent,
-              threshold: accuracyTrigger
-            }, '🎯 [ACCURACY] Accuracy condition met for Telegram alert');
-
-            // CRITICAL: Alerts fire on EVERY research cycle when accuracy >= trigger
-            // Removed spam prevention check - alerts must fire based on accuracy threshold ONLY
-            // Trade execution is NOT required for alerts
-
-            // CRITICAL: Hard guards for Telegram alert
-            // Use ONLY background research settings - do NOT depend on notification settings
-            // telegramBackgroundResearchEnabled is the source of truth for Telegram alerts in Background Research
-            const telegramEnabled = settings.telegramBackgroundResearchEnabled === true ||
-              (settings.backgroundResearchEnabled === true && settings.telegramBackgroundResearchEnabled !== false);
-            const hasBotToken = !!settings.telegramBotToken && settings.telegramBotToken.trim().length > 0;
-            const hasChatId = !!settings.telegramChatId && settings.telegramChatId.trim().length > 0;
-
-            // 🔥 DEBUG: Log Telegram enablement state
-            logger.info({
-              uid,
-              coin,
-              mode: 'TELEGRAM_BACKGROUND_RESEARCH',
               telegramBackgroundResearchEnabled: settings.telegramBackgroundResearchEnabled,
               backgroundResearchEnabled: settings.backgroundResearchEnabled,
-              telegramEnabled,
+              status: 'SKIPPED',
+              reason: skipReason
+            }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Telegram background alert skipped - Telegram not enabled');
+          } else if (!hasBotToken) {
+            const skipReason = 'MISSING_BOT_TOKEN: Telegram bot token not configured';
+            console.log("[TELEGRAM_BG_SKIPPED_REASON=missing_bot_token]", {
+              alertId,
+              uid,
+              symbol: coin,
               hasBotToken,
+              timestamp: new Date().toISOString()
+            });
+            logger.info({
+              alertId,
+              uid,
+              symbol: coin,
+              mode: 'TELEGRAM_BACKGROUND',
+              accuracy: finalAccuracyPercent,
+              hasBotToken,
+              status: 'SKIPPED',
+              reason: skipReason
+            }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Telegram background alert skipped - bot token missing');
+          } else if (!hasChatId) {
+            const skipReason = 'MISSING_CHAT_ID: Telegram chat ID not configured';
+            console.log("[TELEGRAM_BG_SKIPPED_REASON=missing_chat_id]", {
+              alertId,
+              uid,
+              symbol: coin,
               hasChatId,
-              finalAccuracy: finalAccuracyPercent,
-              isInRange
-            }, '🔍 [TELEGRAM_DEBUG] Telegram alert enablement check');
+              timestamp: new Date().toISOString()
+            });
+            logger.info({
+              alertId,
+              uid,
+              symbol: coin,
+              mode: 'TELEGRAM_BACKGROUND',
+              accuracy: finalAccuracyPercent,
+              hasChatId,
+              status: 'SKIPPED',
+              reason: skipReason
+            }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Telegram background alert skipped - chat ID missing');
+          }
 
-            // 🔥 PROOF: Log skip reasons explicitly (both console and logger for visibility)
-            if (!telegramEnabled) {
-              const skipReason = 'TELEGRAM_DISABLED: Telegram Background Research not enabled';
-              console.log("[TELEGRAM_BG_SKIPPED_REASON=telegram_disabled]", {
-                alertId,
-                uid,
-                symbol: coin,
-                telegramEnabled,
-                timestamp: new Date().toISOString()
-              });
-              logger.info({
-                alertId,
-                uid,
-                symbol: coin,
-                mode: 'TELEGRAM_BACKGROUND',
-                accuracy: finalAccuracyPercent,
-                telegramBackgroundResearchEnabled: settings.telegramBackgroundResearchEnabled,
-                backgroundResearchEnabled: settings.backgroundResearchEnabled,
-                status: 'SKIPPED',
-                reason: skipReason
-              }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Telegram background alert skipped - Telegram not enabled');
-            } else if (!hasBotToken) {
-              const skipReason = 'MISSING_BOT_TOKEN: Telegram bot token not configured';
-              console.log("[TELEGRAM_BG_SKIPPED_REASON=missing_bot_token]", {
-                alertId,
-                uid,
-                symbol: coin,
-                hasBotToken,
-                timestamp: new Date().toISOString()
-              });
-              logger.info({
-                alertId,
-                uid,
-                symbol: coin,
-                mode: 'TELEGRAM_BACKGROUND',
-                accuracy: finalAccuracyPercent,
-                hasBotToken,
-                status: 'SKIPPED',
-                reason: skipReason
-              }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Telegram background alert skipped - bot token missing');
-            } else if (!hasChatId) {
-              const skipReason = 'MISSING_CHAT_ID: Telegram chat ID not configured';
-              console.log("[TELEGRAM_BG_SKIPPED_REASON=missing_chat_id]", {
-                alertId,
-                uid,
-                symbol: coin,
-                hasChatId,
-                timestamp: new Date().toISOString()
-              });
-              logger.info({
-                alertId,
-                uid,
-                symbol: coin,
-                mode: 'TELEGRAM_BACKGROUND',
-                accuracy: finalAccuracyPercent,
-                hasChatId,
-                status: 'SKIPPED',
-                reason: skipReason
-              }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Telegram background alert skipped - chat ID missing');
-            }
+          if (telegramEnabled && hasBotToken && hasChatId) {
+            // CRITICAL: Alerts must fire based on accuracy >= trigger ONLY
+            // DO NOT check unifiedDecision.allowed - that's for trade execution, not alerts
+            // DO NOT block alerts based on spam prevention - alerts should fire on EVERY qualifying cycle
+            // Alert logic: IF accuracy >= trigger THEN send alert (simple rule)
 
-            if (telegramEnabled && hasBotToken && hasChatId) {
-              // CRITICAL: Alerts must fire based on accuracy >= trigger ONLY
-              // DO NOT check unifiedDecision.allowed - that's for trade execution, not alerts
-              // DO NOT block alerts based on spam prevention - alerts should fire on EVERY qualifying cycle
-              // Alert logic: IF accuracy >= trigger THEN send alert (simple rule)
+            // CRITICAL: Write history BEFORE sending Telegram alert (guaranteed order)
+            // This ensures history is always written before alert is sent
+            try {
+              // CRITICAL HARD GUARD 1: Verify isFinal === true before saving history
+              // History must NEVER be saved for partial/intermediate results
+              if (fullResult.isFinal !== true) {
+                logger.error({
+                  uid,
+                  symbol: coin,
+                  isFinal: fullResult.isFinal,
+                  accuracy: finalAccuracyPercent,
+                  signal
+                }, '❌ [HISTORY_GUARD] BLOCKED: Telegram history save attempted with isFinal !== true - this is a partial/intermediate result');
+                // Do NOT throw - log error and skip history save, but continue with Telegram alert
+                // This prevents blocking alerts due to history validation failures
+              } else {
+                // CRITICAL HARD GUARD 2: Verify accuracy is a real computed value (not 0 unless genuinely computed)
+                // TEMP ASSERT: tradePlan must exist for BUY/SELL signals
+                if ((signal === 'BUY' || signal === 'SELL') && !tradePlan) {
+                  throw new Error(`INVARIANT VIOLATION: Signal is ${signal} but tradePlan missing before background history save`);
+                }
 
-              // CRITICAL: Write history BEFORE sending Telegram alert (guaranteed order)
-              // This ensures history is always written before alert is sent
-              try {
-                // CRITICAL HARD GUARD 1: Verify isFinal === true before saving history
-                // History must NEVER be saved for partial/intermediate results
-                if (fullResult.isFinal !== true) {
+                if (context.accuracy === 0 && context.signal !== 'HOLD') {
                   logger.error({
                     uid,
-                    symbol: coin,
-                    isFinal: fullResult.isFinal,
-                    accuracy: finalAccuracyPercent,
-                    signal
-                  }, '❌ [HISTORY_GUARD] BLOCKED: Telegram history save attempted with isFinal !== true - this is a partial/intermediate result');
+                    symbol: context.symbol,
+                    accuracy: context.accuracy,
+                    signal: context.signal
+                  }, '❌ [HISTORY_GUARD] BLOCKED: Background history save attempted with accuracy=0 and signal !== HOLD - invalid state');
                   // Do NOT throw - log error and skip history save, but continue with Telegram alert
-                  // This prevents blocking alerts due to history validation failures
+                } else if (!context.tradePlan && (context.signal === 'BUY' || context.signal === 'SELL')) {
+                  logger.error({
+                    uid,
+                    symbol: context.symbol,
+                    signal: context.signal,
+                    accuracy: context.accuracy,
+                    hasTradePlan: !!context.tradePlan
+                  }, '❌ [HISTORY_GUARD] BLOCKED: tradePlan missing for BUY/SELL signal - aborting history save');
+                  // Do NOT throw - skip history save but continue with Telegram alert
                 } else {
-                  // CRITICAL HARD GUARD 2: Verify accuracy is a real computed value (not 0 unless genuinely computed)
-                  // TEMP ASSERT: tradePlan must exist for BUY/SELL signals
-                  if ((signal === 'BUY' || signal === 'SELL') && !tradePlan) {
-                    throw new Error(`INVARIANT VIOLATION: Signal is ${signal} but tradePlan missing before background history save`);
-                  }
+                  const historyPrice = metadata?.price || fullResult.price || 0;
+                  // CRITICAL: Use tradePlan from context (single source of truth)
 
-                  if (context.accuracy === 0 && context.signal !== 'HOLD') {
-                    logger.error({
-                      uid,
-                      symbol: context.symbol,
-                      accuracy: context.accuracy,
-                      signal: context.signal
-                    }, '❌ [HISTORY_GUARD] BLOCKED: Background history save attempted with accuracy=0 and signal !== HOLD - invalid state');
-                    // Do NOT throw - log error and skip history save, but continue with Telegram alert
-                  } else if (!context.tradePlan && (context.signal === 'BUY' || context.signal === 'SELL')) {
-                    logger.error({
-                      uid,
-                      symbol: context.symbol,
-                      signal: context.signal,
-                      accuracy: context.accuracy,
-                      hasTradePlan: !!context.tradePlan
-                    }, '❌ [HISTORY_GUARD] BLOCKED: tradePlan missing for BUY/SELL signal - aborting history save');
-                    // Do NOT throw - skip history save but continue with Telegram alert
-                  } else {
-                    const historyPrice = metadata?.price || fullResult.price || 0;
-                    // CRITICAL: Use tradePlan from context (single source of truth)
+                  const historyEntry = {
+                    symbol: context.symbol,
+                    signal: context.signal || 'HOLD',
+                    accuracy: context.accuracy,
+                    price: historyPrice,
+                    tradePlan: context.tradePlan, // Use from context
+                    entryPrice: tradePlan?.entryPrice || 0,
+                    stopLoss: tradePlan?.stopLoss || 0,
+                    takeProfit: tradePlan?.takeProfit || 0,
+                    takeProfit1: tradePlan?.takeProfit1 || 0,
+                    takeProfit2: tradePlan?.takeProfit2 || 0,
+                    takeProfit3: tradePlan?.takeProfit3 || 0,
+                    indicators: fullResult.analysis || null,
+                    isDeepResearch: true,
+                    source: 'TELEGRAM_BACKGROUND',
+                    isFinal: true // CRITICAL: Explicitly mark as final for history validation
+                  };
 
-                    const historyEntry = {
-                      symbol: context.symbol,
-                      signal: context.signal || 'HOLD',
-                      accuracy: context.accuracy,
-                      price: historyPrice,
-                      tradePlan: context.tradePlan, // Use from context
-                      entryPrice: tradePlan?.entryPrice || 0,
-                      stopLoss: tradePlan?.stopLoss || 0,
-                      takeProfit: tradePlan?.takeProfit || 0,
-                      takeProfit1: tradePlan?.takeProfit1 || 0,
-                      takeProfit2: tradePlan?.takeProfit2 || 0,
-                      takeProfit3: tradePlan?.takeProfit3 || 0,
-                      indicators: fullResult.analysis || null,
-                      isDeepResearch: true,
-                      source: 'TELEGRAM_BACKGROUND',
-                      isFinal: true // CRITICAL: Explicitly mark as final for history validation
-                    };
-
-                    await firestoreAdapter.storeResearchHistory(uid, historyEntry);
-                    logger.info({ uid, symbol: coin, accuracy: finalAccuracyPercent }, '✅ [HISTORY] Telegram background research history stored');
-                  }
+                  await firestoreAdapter.storeResearchHistory(uid, historyEntry);
+                  logger.info({ uid, symbol: coin, accuracy: finalAccuracyPercent }, '✅ [HISTORY] Telegram background research history stored');
                 }
-              } catch (histErr: any) {
-                logger.error({ uid, symbol: coin, error: histErr.message }, '❌ [HISTORY] Failed to store Telegram background history');
-                // Continue with Telegram alert even if history fails
               }
+            } catch (histErr: any) {
+              logger.error({ uid, symbol: coin, error: histErr.message }, '❌ [HISTORY] Failed to store Telegram background history');
+              // Continue with Telegram alert even if history fails
+            }
 
-              logger.info({
-                alertId,
-                uid,
-                symbol: coin,
-                mode: 'TELEGRAM_BACKGROUND',
-                accuracy: finalAccuracyPercent,
-                accuracyTrigger: accuracyTrigger,
-                thresholdMet: isInRange,
-                frequencySource: 'TELEGRAM',
-                status: 'ATTEMPT',
-                reason: 'Accuracy >= trigger, alert sent on research completion'
-              }, '📱 [TELEGRAM_ALERT_SEND] Sending Telegram alert - accuracy >= trigger, all guards passed (history written)');
+            logger.info({
+              alertId,
+              uid,
+              symbol: coin,
+              mode: 'TELEGRAM_BACKGROUND',
+              accuracy: finalAccuracyPercent,
+              accuracyTrigger: accuracyTrigger,
+              thresholdMet: isInRange,
+              frequencySource: 'TELEGRAM',
+              status: 'ATTEMPT',
+              reason: 'Accuracy >= trigger, alert sent on research completion'
+            }, '📱 [TELEGRAM_ALERT_SEND] Sending Telegram alert - accuracy >= trigger, all guards passed (history written)');
 
 
-              // CRITICAL: Telegram message must match UI exactly
-              // If signal is HOLD, show HOLD clearly with no prices
-              // If signal is BUY/SELL, show full trade plan with TP1/TP2/TP3
-              const timestamp = new Date().toISOString();
-              let message = '';
+            // CRITICAL: Telegram message must match UI exactly
+            // If signal is HOLD, show HOLD clearly with no prices
+            // If signal is BUY/SELL, show full trade plan with TP1/TP2/TP3
+            const timestamp = new Date().toISOString();
+            let message = '';
 
-              if (context.signal === 'HOLD') {
-                // HOLD signal: No prices, clear HOLD message
-                message = `🚨 *DLXTRADE Background Research Alert*
+            if (context.signal === 'HOLD') {
+              // HOLD signal: No prices, clear HOLD message
+              message = `🚨 *DLXTRADE Background Research Alert*
 
 **Coin:** ${context.symbol}
 **Signal:** HOLD
@@ -2319,45 +2282,45 @@ export class BackgroundResearchScheduler {
 
 ⚡ *Action:* Wait for higher confidence signal before trading.`;
 
-                logger.info({ uid, coin, accuracy: finalAccuracyPercent },
-                  '[TELEGRAM] Sending HOLD signal (no trade plan)');
+              logger.info({ uid, coin, accuracy: finalAccuracyPercent },
+                '[TELEGRAM] Sending HOLD signal (no trade plan)');
+            } else {
+              // BUY/SELL signal: Full trade plan with TP1/TP2/TP3
+              // CRITICAL: Validate trade plan exists and has required fields - ABORT if missing
+              if (!tradePlan || !tradePlan.entryPrice || !tradePlan.stopLoss) {
+                logger.error({ uid, coin, signal, accuracy: finalAccuracyPercent, tradePlan },
+                  '[TELEGRAM_ERROR] BUY/SELL signal but trade plan is missing or incomplete - ABORTING ALERT!');
+                // CRITICAL: No fallback message - abort completely as per requirements
+                return; // Abort alert sending
               } else {
-                // BUY/SELL signal: Full trade plan with TP1/TP2/TP3
-                // CRITICAL: Validate trade plan exists and has required fields - ABORT if missing
-                if (!tradePlan || !tradePlan.entryPrice || !tradePlan.stopLoss) {
-                  logger.error({ uid, coin, signal, accuracy: finalAccuracyPercent, tradePlan },
-                    '[TELEGRAM_ERROR] BUY/SELL signal but trade plan is missing or incomplete - ABORTING ALERT!');
-                  // CRITICAL: No fallback message - abort completely as per requirements
-                  return; // Abort alert sending
-                } else {
-                  // BUY/SELL signal: Show trade plan if accuracy meets user's Telegram trigger (not hardcoded 70%)
-                  // CRITICAL: Trade plan should be shown when accuracy >= user's Telegram accuracy trigger
-                  let entryPrice: number | undefined;
-                  let stopLoss: number | undefined;
-                  let tp1: number | undefined;
-                  let tp2: number | undefined;
-                  let tp3: number | undefined;
+                // BUY/SELL signal: Show trade plan if accuracy meets user's Telegram trigger (not hardcoded 70%)
+                // CRITICAL: Trade plan should be shown when accuracy >= user's Telegram accuracy trigger
+                let entryPrice: number | undefined;
+                let stopLoss: number | undefined;
+                let tp1: number | undefined;
+                let tp2: number | undefined;
+                let tp3: number | undefined;
 
-                  // Use user's Telegram accuracy trigger (already calculated as minTrigger)
-                  if (finalAccuracyPercent >= minTrigger) {
-                    // BUY/SELL with valid trade plan and accuracy >= 70% - show full TP1/TP2/TP3
-                    entryPrice = tradePlan.entryPrice;
-                    stopLoss = tradePlan.stopLoss;
-                    tp1 = tradePlan.takeProfit1;
-                    tp2 = tradePlan.takeProfit2;
-                    tp3 = tradePlan.takeProfit3;
+                // Use user's Telegram accuracy trigger (already calculated as minTrigger)
+                if (finalAccuracyPercent >= minTrigger) {
+                  // BUY/SELL with valid trade plan and accuracy >= 70% - show full TP1/TP2/TP3
+                  entryPrice = tradePlan.entryPrice;
+                  stopLoss = tradePlan.stopLoss;
+                  tp1 = tradePlan.takeProfit1;
+                  tp2 = tradePlan.takeProfit2;
+                  tp3 = tradePlan.takeProfit3;
 
-                    // Format prices with dynamic precision to prevent identical values
-                    const formatPrice = (price: number): string => {
-                      if (!price || price <= 0) return '0.00';
-                      if (price >= 1000) return price.toFixed(2);
-                      if (price >= 100) return price.toFixed(3);
-                      if (price >= 10) return price.toFixed(4);
-                      if (price >= 1) return price.toFixed(5);
-                      return price.toFixed(6);
-                    };
+                  // Format prices with dynamic precision to prevent identical values
+                  const formatPrice = (price: number): string => {
+                    if (!price || price <= 0) return '0.00';
+                    if (price >= 1000) return price.toFixed(2);
+                    if (price >= 100) return price.toFixed(3);
+                    if (price >= 10) return price.toFixed(4);
+                    if (price >= 1) return price.toFixed(5);
+                    return price.toFixed(6);
+                  };
 
-                    message = `🚨 *DLXTRADE Background Research Alert*
+                  message = `🚨 *DLXTRADE Background Research Alert*
 
 **Coin:** ${context.symbol}
 **Signal:** ${context.signal}
@@ -2369,9 +2332,9 @@ export class BackgroundResearchScheduler {
 **Timestamp:** ${timestamp}
 
 ⚡ *Action Required:* Position size adjusted dynamically. Review and execute if conditions remain favorable.`;
-                  } else {
-                    // BUY/SELL signal but accuracy < 70% - don't show trade plan
-                    message = `🚨 *DLXTRADE Background Research Alert*
+                } else {
+                  // BUY/SELL signal but accuracy < 70% - don't show trade plan
+                  message = `🚨 *DLXTRADE Background Research Alert*
 
 **Coin:** ${context.symbol}
 **Signal:** ${context.signal}
@@ -2380,88 +2343,56 @@ export class BackgroundResearchScheduler {
 **Timestamp:** ${timestamp}
 
 ⚡ *Action:* Wait for higher confidence signal (>= 70%) before trading.`;
-                  }
-
-                  logger.info({ uid, coin, signal, accuracy: finalAccuracyPercent, entryPrice, stopLoss, tp1, tp2, tp3 },
-                    '[TELEGRAM] Sending BUY/SELL signal with full trade plan (TP1/TP2/TP3)');
                 }
+
+                logger.info({ uid, coin, signal, accuracy: finalAccuracyPercent, entryPrice, stopLoss, tp1, tp2, tp3 },
+                  '[TELEGRAM] Sending BUY/SELL signal with full trade plan (TP1/TP2/TP3)');
               }
+            }
 
-              // CRITICAL: Send Telegram alert using existing service
-              // sendMessage signature: (botToken: string, chatId: string, message: string)
-              const telegramResult = await telegramService.sendMessage(
-                settings.telegramBotToken!,
-                settings.telegramChatId!,
-                message
-              );
+            // CRITICAL: Send Telegram alert using existing service
+            // sendMessage signature: (botToken: string, chatId: string, message: string)
+            const telegramResult = await telegramService.sendMessage(
+              settings.telegramBotToken!,
+              settings.telegramChatId!,
+              message
+            );
 
-              // 🔥 DEBUG: Log Telegram alert attempt
-              logger.info({
-                alertId,
-                uid,
-                symbol: coin,
-                mode: 'TELEGRAM_BACKGROUND',
-                accuracy: finalAccuracyPercent,
-                success: telegramResult.success
-              }, '🔍 [TELEGRAM_BG_DEBUG] Telegram alert send attempt');
+            // 🔥 DEBUG: Log Telegram alert attempt
+            logger.info({
+              alertId,
+              uid,
+              symbol: coin,
+              mode: 'TELEGRAM_BACKGROUND',
+              accuracy: finalAccuracyPercent,
+              success: telegramResult.success
+            }, '🔍 [TELEGRAM_BG_DEBUG] Telegram alert send attempt');
 
-              if (telegramResult.success) {
-                alertsSent++;
+            if (telegramResult.success) {
+              alertsSent++;
 
-                // Update last alert sent timestamp
-                const updatedLastAlertSent = {
-                  ...(settings.lastAlertSent || {}),
-                  [coin]: {
-                    timestamp: now,
-                    accuracy: finalAccuracyPercent,
-                  },
-                };
-
-                // CRITICAL: Build clean object without undefined values
-                const cleanAlertSettings: any = {
-                  backgroundResearchEnabled: settings.backgroundResearchEnabled,
-                  lastAlertSent: updatedLastAlertSent,
-                };
-                // Only include defined fields
-                if (settings.telegramBotToken !== undefined) cleanAlertSettings.telegramBotToken = settings.telegramBotToken;
-                if (settings.telegramChatId !== undefined) cleanAlertSettings.telegramChatId = settings.telegramChatId;
-                if (settings.researchFrequencyMinutes !== undefined) cleanAlertSettings.researchFrequencyMinutes = settings.researchFrequencyMinutes;
-                if (settings.accuracyTrigger !== undefined) cleanAlertSettings.accuracyTrigger = settings.accuracyTrigger;
-                if (settings.selectedCoins !== undefined) cleanAlertSettings.selectedCoins = settings.selectedCoins;
-
-                await firestoreAdapter.saveBackgroundResearchSettings(uid, cleanAlertSettings);
-
-                logger.info({
-                  alertId,
-                  uid,
-                  symbol: coin,
-                  mode: 'TELEGRAM_BACKGROUND',
+              // Update last alert sent timestamp
+              const updatedLastAlertSent = {
+                ...(settings.lastAlertSent || {}),
+                [coin]: {
+                  timestamp: now,
                   accuracy: finalAccuracyPercent,
-                  accuracyTrigger: accuracyTrigger,
-                  thresholdMet: isInRange,
-                  frequencySource: 'TELEGRAM',
-                  status: 'SENT',
-                  reason: 'Alert sent successfully - accuracy >= trigger on research completion'
-                }, '✅ [TELEGRAM_ALERT_SENT] Telegram background research alert sent successfully - accuracy >= trigger');
-              } else {
-                logger.error({
-                  alertId,
-                  uid,
-                  symbol: coin,
-                  mode: 'TELEGRAM_BACKGROUND',
-                  accuracy: finalAccuracyPercent,
-                  status: 'FAILED',
-                  error: telegramResult.error
-                }, '❌ [TELEGRAM_ALERT_FAILED] Telegram alert failed after retries');
-              }
-            } else {
-              // Log exact reason for skipping with structured logging
-              let reason = '';
-              if (!telegramEnabled) reason = 'Telegram disabled in settings';
-              else if (!hasBotToken) reason = 'Telegram bot token missing';
-              else if (!hasChatId) reason = 'Telegram chat ID missing';
-              else if (!isInRange) reason = `Accuracy ${finalAccuracyPercent}% outside trigger range`;
-              else reason = 'Unknown reason';
+                },
+              };
+
+              // CRITICAL: Build clean object without undefined values
+              const cleanAlertSettings: any = {
+                backgroundResearchEnabled: settings.backgroundResearchEnabled,
+                lastAlertSent: updatedLastAlertSent,
+              };
+              // Only include defined fields
+              if (settings.telegramBotToken !== undefined) cleanAlertSettings.telegramBotToken = settings.telegramBotToken;
+              if (settings.telegramChatId !== undefined) cleanAlertSettings.telegramChatId = settings.telegramChatId;
+              if (settings.researchFrequencyMinutes !== undefined) cleanAlertSettings.researchFrequencyMinutes = settings.researchFrequencyMinutes;
+              if (settings.accuracyTrigger !== undefined) cleanAlertSettings.accuracyTrigger = settings.accuracyTrigger;
+              if (settings.selectedCoins !== undefined) cleanAlertSettings.selectedCoins = settings.selectedCoins;
+
+              await firestoreAdapter.saveBackgroundResearchSettings(uid, cleanAlertSettings);
 
               logger.info({
                 alertId,
@@ -2472,148 +2403,180 @@ export class BackgroundResearchScheduler {
                 accuracyTrigger: accuracyTrigger,
                 thresholdMet: isInRange,
                 frequencySource: 'TELEGRAM',
-                status: 'SKIPPED',
-                reason
-              }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Telegram background alert skipped');
+                status: 'SENT',
+                reason: 'Alert sent successfully - accuracy >= trigger on research completion'
+              }, '✅ [TELEGRAM_ALERT_SENT] Telegram background research alert sent successfully - accuracy >= trigger');
+            } else {
+              logger.error({
+                alertId,
+                uid,
+                symbol: coin,
+                mode: 'TELEGRAM_BACKGROUND',
+                accuracy: finalAccuracyPercent,
+                status: 'FAILED',
+                error: telegramResult.error
+              }, '❌ [TELEGRAM_ALERT_FAILED] Telegram alert failed after retries');
             }
-          } else if (mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
-            // AUTO_TRADE_RESEARCH mode: 
-            // - Trade execution is handled by AutoTradeEngine
-            // - Telegram alerts are handled by AutoTradeEngine (based on telegramAccuracyTrigger)
-            // - History is already stored by AutoTradeEngine with source='AUTO_TRADE' (skipHistoryStorage=false)
-            // CRITICAL: Telegram background research engine is COMPLETELY DISABLED in this mode
-            // No Telegram alerts should be sent from the scheduler in AUTO_TRADE_RESEARCH mode
-            // 
-            // AUTO-TRADE LIFECYCLE DOCUMENTATION:
-            // - AutoTradeEngine.runAutoTradeResearchCycleSafe() is called by BackgroundResearchScheduler
-            // - Runs server-side independently of frontend
-            // - Survives user logout, tab close, or browser shutdown
-            // - Does NOT depend on WebSocket connections, frontend polling, or UI presence
-            // - Only exchange decryption failure blocks execution (not UI state)
-            // - Execution continues when website is closed
+          } else {
+            // Log exact reason for skipping with structured logging
+            let reason = '';
+            if (!telegramEnabled) reason = 'Telegram disabled in settings';
+            else if (!hasBotToken) reason = 'Telegram bot token missing';
+            else if (!hasChatId) reason = 'Telegram chat ID missing';
+            else if (!isInRange) reason = `Accuracy ${finalAccuracyPercent}% outside trigger range`;
+            else reason = 'Unknown reason';
+
             logger.info({
+              alertId,
               uid,
-              coin,
-              finalAccuracy: finalAccuracyPercent,
-              signal,
-              isInRange,
-              serverSide: true,
-              frontendIndependent: true
-            }, '🎯 [AUTO_TRADE] Research cycle completed - trade execution, Telegram alerts, and history handled by AutoTradeEngine (server-side)');
-
-            // 🔥 DEBUG: Log auto-trade execution confirmation
-            logger.info({
-              uid,
-              coin,
-              mode: 'AUTO_TRADE_RESEARCH',
-              serverSide: true,
-              frontendIndependent: true
-            }, '🔍 [AUTO_TRADE_LIFECYCLE_DEBUG] Auto-Trade execution - server-side only');
+              symbol: coin,
+              mode: 'TELEGRAM_BACKGROUND',
+              accuracy: finalAccuracyPercent,
+              accuracyTrigger: accuracyTrigger,
+              thresholdMet: isInRange,
+              frequencySource: 'TELEGRAM',
+              status: 'SKIPPED',
+              reason
+            }, '⏭️ [TELEGRAM_ALERT_SKIPPED] Telegram background alert skipped');
           }
+        } else if (mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
+          // AUTO_TRADE_RESEARCH mode: 
+          // - Trade execution is handled by AutoTradeEngine
+          // - Telegram alerts are handled by AutoTradeEngine (based on telegramAccuracyTrigger)
+          // - History is already stored by AutoTradeEngine with source='AUTO_TRADE' (skipHistoryStorage=false)
+          // CRITICAL: Telegram background research engine is COMPLETELY DISABLED in this mode
+          // No Telegram alerts should be sent from the scheduler in AUTO_TRADE_RESEARCH mode
+          // 
+          // AUTO-TRADE LIFECYCLE DOCUMENTATION:
+          // - AutoTradeEngine.runAutoTradeResearchCycleSafe() is called by BackgroundResearchScheduler
+          // - Runs server-side independently of frontend
+          // - Survives user logout, tab close, or browser shutdown
+          // - Does NOT depend on WebSocket connections, frontend polling, or UI presence
+          // - Only exchange decryption failure blocks execution (not UI state)
+          // - Execution continues when website is closed
+          logger.info({
+            uid,
+            coin,
+            finalAccuracy: finalAccuracyPercent,
+            signal,
+            isInRange,
+            serverSide: true,
+            frontendIndependent: true
+          }, '🎯 [AUTO_TRADE] Research cycle completed - trade execution, Telegram alerts, and history handled by AutoTradeEngine (server-side)');
 
-          // CRITICAL: For TELEGRAM_BACKGROUND_RESEARCH mode, store history with correct source
-          // AutoTradeEngine was called with skipHistoryStorage=true, so we must store here
-          if (mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH && deepResearchResult) {
-            try {
-              // CRITICAL HARD GUARD 1: Verify isFinal === true before saving history
-              if (fullResult.isFinal !== true) {
-                logger.error({
-                  uid,
-                  symbol: coin,
-                  isFinal: fullResult.isFinal,
-                  accuracy: finalAccuracyPercent,
-                  signal
-                }, '❌ [HISTORY_GUARD] BLOCKED: Telegram history save attempted with isFinal !== true - this is a partial/intermediate result');
-                // Skip history save but continue execution
-              } else if (finalAccuracyPercent === 0 && signal !== 'HOLD') {
-                // CRITICAL HARD GUARD 2: Verify accuracy is a real computed value
-                logger.error({
-                  uid,
-                  symbol: coin,
-                  accuracy: finalAccuracyPercent,
-                  signal,
-                  isFinal: fullResult.isFinal
-                }, '❌ [HISTORY_GUARD] BLOCKED: Telegram history save attempted with accuracy=0 and signal !== HOLD - invalid state');
-                // Skip history save but continue execution
-              } else {
-                const historyPrice = fullResult.price ||
-                  fullResult.analysis?.priceAction?.currentPrice ||
-                  fullResult.analysis?.priceAction?.price ||
-                  fullResult.indicators?.price ||
-                  fullResult.metadata?.price ||
-                  0;
-
-                await firestoreAdapter.storeResearchHistory(uid, {
-                  symbol: coin,
-                  signal: signal || 'HOLD',
-                  accuracy: finalAccuracyPercent,
-                  price: historyPrice,
-                  tradePlan: tradePlan,
-                  indicators: fullResult.analysis || null,
-                  isDeepResearch: true,
-                  source: 'TELEGRAM_BACKGROUND', // CRITICAL: Mark as Telegram background research
-                  status: 'FINAL', // Research completed successfully
-                  isFinal: true // CRITICAL: Explicitly mark as final for history validation
-                });
-
-                logger.info({ uid, coin, signal, accuracy: finalAccuracyPercent }, '✅ [HISTORY] Telegram background research history stored');
-              }
-            } catch (histError: any) {
-              logger.warn({ uid, error: histError.message }, 'Failed to store Telegram background research history');
-            }
-          }
+          // 🔥 DEBUG: Log auto-trade execution confirmation
+          logger.info({
+            uid,
+            coin,
+            mode: 'AUTO_TRADE_RESEARCH',
+            serverSide: true,
+            frontendIndependent: true
+          }, '🔍 [AUTO_TRADE_LIFECYCLE_DEBUG] Auto-Trade execution - server-side only');
         }
 
-        // Calculate next run time
-        const researchNextRunAt = admin.firestore.Timestamp.fromMillis(
-          Date.now() + (frequencyMinutes * 60 * 1000)
-        );
+        // CRITICAL: For TELEGRAM_BACKGROUND_RESEARCH mode, store history with correct source
+        // AutoTradeEngine was called with skipHistoryStorage=true, so we must store here
+        if (mode === RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH && deepResearchResult) {
+          try {
+            // CRITICAL HARD GUARD 1: Verify isFinal === true before saving history
+            if (fullResult.isFinal !== true) {
+              logger.error({
+                uid,
+                symbol: coin,
+                isFinal: fullResult.isFinal,
+                accuracy: finalAccuracyPercent,
+                signal
+              }, '❌ [HISTORY_GUARD] BLOCKED: Telegram history save attempted with isFinal !== true - this is a partial/intermediate result');
+              // Skip history save but continue execution
+            } else if (finalAccuracyPercent === 0 && signal !== 'HOLD') {
+              // CRITICAL HARD GUARD 2: Verify accuracy is a real computed value
+              logger.error({
+                uid,
+                symbol: coin,
+                accuracy: finalAccuracyPercent,
+                signal,
+                isFinal: fullResult.isFinal
+              }, '❌ [HISTORY_GUARD] BLOCKED: Telegram history save attempted with accuracy=0 and signal !== HOLD - invalid state');
+              // Skip history save but continue execution
+            } else {
+              const historyPrice = fullResult.price ||
+                fullResult.analysis?.priceAction?.currentPrice ||
+                fullResult.analysis?.priceAction?.price ||
+                fullResult.indicators?.price ||
+                fullResult.metadata?.price ||
+                0;
 
-        // CRITICAL: Update state in backend (lastRunAt, nextRunAt, lastAccuracy) - build clean object
-        // CRITICAL: Do NOT mutate user enable flags - only update runtime state
-        // firestoreAdapter.saveBackgroundResearchSettings will preserve enable flags automatically
-        const cleanUpdateSettings: any = {
-          // CRITICAL: Only update runtime state - do NOT include enable flags
-          // firestoreAdapter.saveBackgroundResearchSettings preserves existing enable flags
-          lastRunAt: researchNow,
-          nextRunAt: researchNextRunAt,
-          lastAccuracy: maxAccuracy,
-        };
-        // Only include defined fields (preserve Telegram credentials and other settings)
-        if (settings.telegramBotToken !== undefined) cleanUpdateSettings.telegramBotToken = settings.telegramBotToken;
-        if (settings.telegramChatId !== undefined) cleanUpdateSettings.telegramChatId = settings.telegramChatId;
-        if (settings.researchFrequencyMinutes !== undefined) cleanUpdateSettings.researchFrequencyMinutes = settings.researchFrequencyMinutes;
-        if (settings.accuracyTrigger !== undefined) cleanUpdateSettings.accuracyTrigger = settings.accuracyTrigger;
-        if (settings.selectedCoins !== undefined) cleanUpdateSettings.selectedCoins = settings.selectedCoins;
-        // CRITICAL: Do NOT include backgroundResearchEnabled or telegramBackgroundResearchEnabled
-        // These are user-controlled flags and should NOT be mutated by scheduler
+              await firestoreAdapter.storeResearchHistory(uid, {
+                symbol: coin,
+                signal: signal || 'HOLD',
+                accuracy: finalAccuracyPercent,
+                price: historyPrice,
+                tradePlan: tradePlan,
+                indicators: fullResult.analysis || null,
+                isDeepResearch: true,
+                source: 'TELEGRAM_BACKGROUND', // CRITICAL: Mark as Telegram background research
+                status: 'FINAL', // Research completed successfully
+                isFinal: true // CRITICAL: Explicitly mark as final for history validation
+              });
 
-        await firestoreAdapter.saveBackgroundResearchSettings(uid, cleanUpdateSettings);
-
-        // CRITICAL: Update in-memory state - ALWAYS update lastRunAt to track research cycle
-        const state = this.userJobStates.get(uid);
-        if (state) {
-          state.lastRunAt = researchNow.toDate();
-          state.nextRunAt = researchNextRunAt.toDate();
-          state.isRunning = false;
-        } else {
-          // Initialize state if it doesn't exist
-          this.userJobStates.set(uid, {
-            isRunning: false,
-            lastRunAt: researchNow.toDate(),
-            nextRunAt: researchNextRunAt.toDate(),
-            mode: mode as any
-          });
+              logger.info({ uid, coin, signal, accuracy: finalAccuracyPercent }, '✅ [HISTORY] Telegram background research history stored');
+            }
+          } catch (histError: any) {
+            logger.warn({ uid, error: histError.message }, 'Failed to store Telegram background research history');
+          }
         }
-
-        logger.info({
-          uid,
-          maxAccuracy,
-          alertsSent,
-          nextRunAt: researchNextRunAt.toDate().toISOString()
-        }, '✅ [RESEARCH] Background research cycle completed (Delegate Mode)');
-        console.log('🔥 [HARD_LOG] [PROCESS_COMPLETE_FINAL] processUserResearch() completed successfully for user:', uid, 'maxAccuracy:', maxAccuracy, 'alertsSent:', alertsSent);
       }
+
+      // Calculate next run time
+      const researchNextRunAt = admin.firestore.Timestamp.fromMillis(
+        Date.now() + (frequencyMinutes * 60 * 1000)
+      );
+
+      // CRITICAL: Update state in backend (lastRunAt, nextRunAt, lastAccuracy) - build clean object
+      // CRITICAL: Do NOT mutate user enable flags - only update runtime state
+      // firestoreAdapter.saveBackgroundResearchSettings will preserve enable flags automatically
+      const cleanUpdateSettings: any = {
+        // CRITICAL: Only update runtime state - do NOT include enable flags
+        // firestoreAdapter.saveBackgroundResearchSettings preserves existing enable flags
+        lastRunAt: researchNow,
+        nextRunAt: researchNextRunAt,
+        lastAccuracy: maxAccuracy,
+      };
+      // Only include defined fields (preserve Telegram credentials and other settings)
+      if (settings.telegramBotToken !== undefined) cleanUpdateSettings.telegramBotToken = settings.telegramBotToken;
+      if (settings.telegramChatId !== undefined) cleanUpdateSettings.telegramChatId = settings.telegramChatId;
+      if (settings.researchFrequencyMinutes !== undefined) cleanUpdateSettings.researchFrequencyMinutes = settings.researchFrequencyMinutes;
+      if (settings.accuracyTrigger !== undefined) cleanUpdateSettings.accuracyTrigger = settings.accuracyTrigger;
+      if (settings.selectedCoins !== undefined) cleanUpdateSettings.selectedCoins = settings.selectedCoins;
+      // CRITICAL: Do NOT include backgroundResearchEnabled or telegramBackgroundResearchEnabled
+      // These are user-controlled flags and should NOT be mutated by scheduler
+
+      await firestoreAdapter.saveBackgroundResearchSettings(uid, cleanUpdateSettings);
+
+      // CRITICAL: Update in-memory state - ALWAYS update lastRunAt to track research cycle
+      const state = this.userJobStates.get(uid);
+      if (state) {
+        state.lastRunAt = researchNow.toDate();
+        state.nextRunAt = researchNextRunAt.toDate();
+        state.isRunning = false;
+      } else {
+        // Initialize state if it doesn't exist
+        this.userJobStates.set(uid, {
+          isRunning: false,
+          lastRunAt: researchNow.toDate(),
+          nextRunAt: researchNextRunAt.toDate(),
+          mode: mode as any
+        });
+      }
+
+      logger.info({
+        uid,
+        maxAccuracy,
+        alertsSent,
+        nextRunAt: researchNextRunAt.toDate().toISOString()
+      }, '✅ [RESEARCH] Background research cycle completed (Delegate Mode)');
+      console.log('🔥 [HARD_LOG] [PROCESS_COMPLETE_FINAL] processUserResearch() completed successfully for user:', uid, 'maxAccuracy:', maxAccuracy, 'alertsSent:', alertsSent);
+    }
     } catch (error: any) {
       console.log('🔥 [HARD_LOG] [PROCESS_ERROR_FINAL] processUserResearch() error for user:', uid, 'error:', error?.message);
       logger.error({
@@ -2926,35 +2889,13 @@ export class BackgroundResearchScheduler {
   /**
    * Check if user has usable exchange APIs for Auto-Trade Research
    * REQUIRES: At least one exchange adapter (Binance, Bitget, BingX, WEEX)
-   *
-   * HARD RULE: Exchange usability is determined ONLY by exchangeStatus === 'CONNECTED'
-   * keysClearedReason, keysClearedAt, and ALL legacy fields MUST be ignored
    */
   private async hasUsableExchangeAPIs(uid: string): Promise<boolean> {
     try {
-      // Verify encryption key consistency before checking exchange usability
-      const { verifyEncryptionKeyConsistency } = await import('./keyManager');
-      verifyEncryptionKeyConsistency(`background-scheduler-hasUsableExchangeAPIs-${uid}`);
-
-      // CRITICAL: Exchange is usable if exchangeStatus === 'CONNECTED' - NEVER check legacy fields
-      // keysClearedReason, keysClearedAt, and ALL legacy fields MUST NOT affect this decision
-      // This check determines if auto-trade can execute, based on exchangeStatus only
+      // CRITICAL: Exchange is usable if encrypted keys exist - NEVER use decryption to determine usability
+      // This check determines if auto-trade can execute, based on Firestore presence only
       const { isExchangeUsable } = await import('./firestoreAdapter');
       const result = await isExchangeUsable(uid, 'background_job');
-
-      // HARD LOGGING: Track scheduler exchange decisions
-      console.log('[EXCHANGE_RUNTIME_PROOF] scheduler exchange decision', {
-        uid,
-        usable: result.usable,
-        reason: result.reason,
-        context: 'background_scheduler'
-      });
-
-      // HARD ASSERTION: If exchange is usable but reason is weird, just log it
-      if (!result.usable && result.reason === 'connected') {
-        throw new Error(`FATAL: connected reason but not usable in scheduler - uid: ${uid}`);
-      }
-
       return result.usable;
     } catch (error: any) {
       // Log error but return false - this should not happen with pure Firestore checks
