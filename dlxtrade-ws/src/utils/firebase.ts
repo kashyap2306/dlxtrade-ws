@@ -519,15 +519,33 @@ export async function sanitizedUpdate(
 
   if (isExchangeConfig) {
     // CRITICAL: Log stack trace BEFORE ANY write to exchange config
-    console.error("🚨 [EXCHANGE_CONFIG_UPDATE_ATTEMPT] STACK TRACE:", {
+    const stackTrace = new Error().stack || '';
+    const timestamp = new Date().toISOString();
+    
+    console.error("🚨 [EXCHANGE_CONFIG_WRITE_ATTEMPT] DETAILED TRACE:", {
       path: docRef.path,
-      timestamp: new Date().toISOString(),
-      stack: new Error().stack,
+      timestamp,
+      stack: stackTrace,
       payloadKeys: Object.keys(data),
       hasExchangeStatus: 'exchangeStatus' in data,
       hasKeysClearedAt: 'keysClearedAt' in data,
-      hasKeysClearedReason: 'keysClearedReason' in data
+      hasKeysClearedReason: 'keysClearedReason' in data,
+      payloadSize: JSON.stringify(data).length,
+      // Extract caller function names from stack
+      callerFunctions: stackTrace.split('\n').slice(1, 8).map(line => line.trim().replace(/^at\s+/, ''))
     });
+
+    // CRITICAL: Check for any INVALID_KEYS value being written
+    for (const [key, value] of Object.entries(data)) {
+      if (value === 'INVALID_KEYS') {
+        const errorMsg = `🚨 [INVALID_KEYS_WRITE_DETECTED] Attempted to write INVALID_KEYS to field "${key}" in ${docRef.path}`;
+        console.error(errorMsg);
+        console.error('   Timestamp:', timestamp);
+        console.error('   Full payload:', JSON.stringify(data, null, 2));
+        console.error('   Stack trace:', stackTrace.split('\n').slice(0, 15).join('\n'));
+        throw new Error(errorMsg);
+      }
+    }
   }
 
   // HARD WRITE BARRIER: Block any write to exchangeStatus/keysClearedAt/keysClearedReason
@@ -565,15 +583,35 @@ export async function sanitizedSet(
 
   if (isExchangeConfig) {
     // CRITICAL: Log stack trace BEFORE ANY write to exchange config
-    console.error("🚨 [EXCHANGE_CONFIG_WRITE_ATTEMPT] STACK TRACE:", {
+    const stackTrace = new Error().stack || '';
+    const timestamp = new Date().toISOString();
+    
+    console.error("🚨 [EXCHANGE_CONFIG_SET_ATTEMPT] DETAILED TRACE:", {
       path: docRef.path,
-      timestamp: new Date().toISOString(),
-      stack: new Error().stack,
+      timestamp,
+      stack: stackTrace,
       payloadKeys: Object.keys(data),
       hasExchangeStatus: 'exchangeStatus' in data,
       hasKeysClearedAt: 'keysClearedAt' in data,
-      hasKeysClearedReason: 'keysClearedReason' in data
+      hasKeysClearedReason: 'keysClearedReason' in data,
+      payloadSize: JSON.stringify(data).length,
+      options: options || {},
+      // Extract caller function names from stack
+      callerFunctions: stackTrace.split('\n').slice(1, 8).map(line => line.trim().replace(/^at\s+/, ''))
     });
+
+    // CRITICAL: Check for any INVALID_KEYS value being written
+    for (const [key, value] of Object.entries(data)) {
+      if (value === 'INVALID_KEYS') {
+        const errorMsg = `🚨 [INVALID_KEYS_SET_DETECTED] Attempted to set INVALID_KEYS to field "${key}" in ${docRef.path}`;
+        console.error(errorMsg);
+        console.error('   Timestamp:', timestamp);
+        console.error('   Full payload:', JSON.stringify(data, null, 2));
+        console.error('   Options:', options);
+        console.error('   Stack trace:', stackTrace.split('\n').slice(0, 15).join('\n'));
+        throw new Error(errorMsg);
+      }
+    }
   }
 
   // HARD WRITE BARRIER: Block any write to exchangeStatus/keysClearedAt/keysClearedReason
