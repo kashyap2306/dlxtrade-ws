@@ -15,9 +15,46 @@ function sanitizeFirestorePayload(payload: any): any {
   const sanitized: any = {};
   let sanitizedCount = 0;
 
+  // PHASE 1 RUNTIME TRACE: Log ALL sanitization operations
+  const stack = new Error().stack;
+  const callerFile = stack.split('\n')[2]?.includes('(')
+    ? stack.split('\n')[2].split('(')[1]?.split(':')[0]?.replace(__dirname, '[PROJECT_ROOT]') || 'unknown'
+    : 'unknown';
+
+  console.log(`🔍 [RUNTIME_SANITIZE_TRACE] INTEGRATIONS SANITIZE EXECUTION:`, {
+    callerFile,
+    inputPayload: payload,
+    inputKeys: Object.keys(payload),
+    exchangeValue: payload?.exchange,
+    exchangeType: typeof payload?.exchange,
+    timestamp: new Date().toISOString()
+  });
+
   for (const [key, value] of Object.entries(payload)) {
-    if (value === undefined) {
+    console.log(`🔍 [RUNTIME_SANITIZE_FIELD] INTEGRATIONS Processing field "${key}":`, {
+      value: value,
+      valueType: typeof value,
+      isUndefined: value === undefined,
+      isNull: value === null,
+      isEmptyString: value === '',
+      callerFile,
+      timestamp: new Date().toISOString()
+    });
+
+    // CRITICAL: Exchange field must never be undefined or empty - throw if invalid
+    if (key === 'exchange') {
+      if (!value || typeof value !== 'string' || value.trim() === '') {
+        console.error(`🚫 [RUNTIME_SANITIZE_VIOLATION] INTEGRATIONS Exchange field invalid during sanitization`);
+        console.error(`   Value: ${String(value)} (type: ${typeof value})`);
+        console.error(`   Payload:`, payload);
+        console.error(`   Caller:`, callerFile);
+        throw new Error(`Exchange field cannot be undefined/empty during sanitization: ${String(value)}`);
+      }
+      sanitized[key] = value;
+      console.log(`✅ [RUNTIME_SANITIZE_EXCHANGE] INTEGRATIONS Exchange field sanitized: "${value}"`);
+    } else if (value === undefined) {
       sanitized[key] = admin.firestore.FieldValue.delete();
+      console.log(`🔥 [RUNTIME_SANITIZE_DELETE] INTEGRATIONS Field "${key}" converted to delete`);
       console.log('🔥 [HARD_LOG] [PROVIDER_FIELD_SANITIZED]', {
         field: key,
         action: 'CONVERTED_UNDEFINED_TO_DELETE'
@@ -25,8 +62,17 @@ function sanitizeFirestorePayload(payload: any): any {
       sanitizedCount++;
     } else {
       sanitized[key] = value;
+      console.log(`✅ [RUNTIME_SANITIZE_KEEP] INTEGRATIONS Field "${key}" preserved: ${typeof value}`);
     }
   }
+
+  console.log(`🔍 [RUNTIME_SANITIZE_COMPLETE] INTEGRATIONS Sanitization finished:`, {
+    outputKeys: Object.keys(sanitized),
+    sanitizedCount,
+    exchangeOutput: sanitized?.exchange,
+    callerFile,
+    timestamp: new Date().toISOString()
+  });
 
   if (sanitizedCount > 0) {
     console.log('🔥 [HARD_LOG] [PAYLOAD_SANITIZED]', {
@@ -317,44 +363,11 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
         }
 
         // Save to exchangeConfig/current with all required fields
-        const db = admin.firestore(getFirebaseAdmin());
-        const docRef = db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current');
-        const existingDoc = await docRef.get();
-        const existingData = existingDoc.exists ? existingDoc.data() || {} : {};
-
-        // HARD REQUIRE: All critical fields must be present for complete save
-        const resolvedExchange = body.apiName || existingData.exchange;
-        if (!resolvedExchange || !body.apiKey || !body.secretKey) {
-          return reply.code(400).send({ error: 'Exchange, API key, and secret are required for exchange configuration' });
-        }
-
-        // CRITICAL: Assert write to canonical path only
-        const { assertExchangeConfigWritePath } = await import('../services/firestoreAdapter');
-        assertExchangeConfigWritePath(user.uid, `users/${user.uid}/exchangeConfig/current`);
-
-        // ATOMIC WRITE: Always include all required fields, never partial
-        const exchangeConfig: any = {
-          exchange: resolvedExchange,
-          apiKeyEncrypted: encrypt(body.apiKey!),
-          secretEncrypted: encrypt(body.secretKey!),
-          testnet: true,
-          updatedAt: admin.firestore.Timestamp.now(),
-        };
-
-        if (!existingDoc.exists) {
-          exchangeConfig.createdAt = admin.firestore.Timestamp.now();
-        }
-
-        // FORCE COMPLETE: Use merge:false to ensure no partial overwrites
-        const sanitizedExchangeConfig = sanitizeFirestorePayload(exchangeConfig);
-        await docRef.set(sanitizedExchangeConfig, { merge: false });
-
-        logger.info({
-          uid: user.uid,
-          exchange: body.apiName,
-          hasApiKey: !!body.apiKey,
-          hasSecretKey: !!body.secretKey
-        }, `Trading exchange ${body.apiName} saved to exchangeConfig/current`);
+        // BLOCKED: Illegal write to exchangeConfig/current from integrations.ts
+        // STRICT POLICY: Only /exchange/connect is allowed to write to exchangeConfig
+        console.log("exchangeConfig missing – valid NOT_CONNECTED state");
+        console.error("BLOCKED WRITE: Source is not /exchange/connect - integrations.ts save prevented");
+        logger.warn({ uid: user.uid, exchange: body.apiName }, "BLOCKED: integrations.ts attempted to write exchangeConfig");
       } catch (error: any) {
         logger.error({ error: error.message, stack: error.stack, uid: user.uid, exchange: body.apiName }, 'Trading exchange API key save error');
         return reply.code(400).send({
@@ -543,29 +556,17 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
           }
         }
 
-        const db = admin.firestore(getFirebaseAdmin());
-        const exchangeConfig: any = {
-          exchange: body.apiName,
-          apiKeyEncrypted: encrypt(body.apiKey!),
-          secretEncrypted: encrypt(body.secretKey!),
-          testnet: true,
-          updatedAt: admin.firestore.Timestamp.now(),
-        };
-
-        const existingDoc = await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').get();
-        if (!existingDoc.exists) {
-          exchangeConfig.createdAt = admin.firestore.Timestamp.now();
-        }
-
-        const sanitizedExchangeConfig2 = sanitizeFirestorePayload(exchangeConfig);
-        await db.collection('users').doc(user.uid).collection('exchangeConfig').doc('current').set(sanitizedExchangeConfig2, { merge: true });
+        // BLOCKED: Illegal write to exchangeConfig/current from integrations.ts
+        // STRICT POLICY: Only /exchange/connect is allowed to write to exchangeConfig
+        console.log("exchangeConfig missing – valid NOT_CONNECTED state");
+        console.error("BLOCKED WRITE: Source is not /exchange/connect - integrations.ts connect blocked");
 
         logger.info({
           uid: user.uid,
           exchange: body.apiName,
           hasApiKey: !!body.apiKey,
           hasSecretKey: !!body.secretKey
-        }, `Trading exchange ${body.apiName} saved to exchangeConfig/current`);
+        }, `BLOCKED: Trading exchange ${body.apiName} write to exchangeConfig/current prevented`);
 
         await firestoreAdapter.saveIntegration(user.uid, docName, {
           enabled: true,

@@ -5,6 +5,11 @@ dotenv.config({
   path: path.join(process.cwd(), ".env"),
 });
 
+// CRITICAL: Instrument Firestore writes to find the "Unknown Writer"
+import { getFirebaseAdmin, installFirestoreWriteTrap } from './utils/firebase';
+installFirestoreWriteTrap();
+
+
 console.log("ENV CHECK project_id:", process.env.FIREBASE_PROJECT_ID);
 console.log("ENV CHECK client_email:", process.env.FIREBASE_CLIENT_EMAIL);
 console.log("ENV CHECK private_key exists:", !!process.env.FIREBASE_PRIVATE_KEY);
@@ -14,7 +19,6 @@ import { initDb } from './db';
 import { initRedis } from './db/redis';
 import { config } from './config';
 import { logger } from './utils/logger';
-import { getFirebaseAdmin } from './utils/firebase';
 console.log("CHECK ENV:", !!process.env.FIREBASE_SERVICE_ACCOUNT);
 import { initializeFirestoreCollections } from './utils/firestoreInitializer';
 import { seedFirestoreData } from './utils/firestoreSeed';
@@ -62,9 +66,71 @@ async function start() {
       console.log(`✅ [ENCRYPTION] Encryption key cache initialized successfully`);
       console.log(`✅ [ENCRYPTION] Key hash fingerprint: ${keyHash} (same key used for all encrypt/decrypt operations)`);
       console.log(`🔒 [ENCRYPTION] SINGLE SOURCE OF TRUTH established - key cached for process lifetime`);
+
+      // PHASE 0: EXECUTION REALITY CHECK - ABSOLUTE RUNTIME PATHS
+      console.log(`🔍 [EXECUTION_REALITY_CHECK] ABSOLUTE FILE PATHS BEING EXECUTED:`);
+      console.log(`   SERVER_ENTRY_FILE: ${__filename}`);
+      console.log(`   KEYMANAGER_ACTUAL_PATH: ${require.resolve('./services/keyManager')}`);
+      console.log(`   EXCHANGE_ROUTE_ACTUAL_PATH: ${require.resolve('./routes/exchange')}`);
+      console.log(`   PROVIDER_CONFIG_ROUTE_ACTUAL_PATH: ${require.resolve('./routes/users/providerConfig')}`);
+      console.log(`   FIRESTORE_ADAPTER_ACTUAL_PATH: ${require.resolve('./services/firestoreAdapter')}`);
+      console.log(`   USER_ONBOARDING_ACTUAL_PATH: ${require.resolve('./services/userOnboarding')}`);
+      console.log(`   BUILD_TIMESTAMP: ${new Date().toISOString()}`);
+      console.log(`   NODE_VERSION: ${process.version}`);
+      console.log(`   WORKING_DIRECTORY: ${process.cwd()}`);
+      console.log(`   PROCESS_PID: ${process.pid}`);
+
+      // VERIFY: If any path contains dist and is OLD, this explains failures
+      const keyManagerPath = require.resolve('./services/keyManager');
+      const exchangePath = require.resolve('./routes/exchange');
+      const providerConfigPath = require.resolve('./routes/users/providerConfig');
+      const userOnboardingPath = require.resolve('./services/userOnboarding');
+
+      if (keyManagerPath.includes('dist')) {
+        console.log(`🚨 KEYMANAGER LOADING FROM DIST: ${keyManagerPath}`);
+      }
+      if (exchangePath.includes('dist')) {
+        console.log(`🚨 EXCHANGE ROUTE LOADING FROM DIST: ${exchangePath}`);
+      }
+      if (providerConfigPath.includes('dist')) {
+        console.log(`🚨 PROVIDER CONFIG ROUTE LOADING FROM DIST: ${providerConfigPath}`);
+      }
+      if (userOnboardingPath.includes('dist')) {
+        console.log(`🚨 USER ONBOARDING LOADING FROM DIST: ${userOnboardingPath}`);
+      }
+
+      // LOG FILE MODIFICATION TIMES TO CHECK IF DIST IS STALE
+      try {
+        const fs = require('fs');
+        const srcKeyManager = './src/services/keyManager.ts';
+        const distKeyManager = './dist/services/keyManager.js';
+        if (fs.existsSync(srcKeyManager) && fs.existsSync(distKeyManager)) {
+          const srcTime = fs.statSync(srcKeyManager).mtime;
+          const distTime = fs.statSync(distKeyManager).mtime;
+          console.log(`   SRC keyManager.ts modified: ${srcTime}`);
+          console.log(`   DIST keyManager.js modified: ${distTime}`);
+          if (srcTime > distTime) {
+            console.log(`🚨 DIST IS STALE - SRC MODIFIED AFTER DIST BUILD`);
+            console.log(`   SRC is ${Math.round((srcTime - distTime) / 1000)} seconds newer`);
+          } else {
+            console.log(`✅ DIST IS CURRENT - SRC and DIST timestamps match`);
+          }
+        } else {
+          console.log(`   File timestamp check: src=${fs.existsSync(srcKeyManager)}, dist=${fs.existsSync(distKeyManager)}`);
+        }
+      } catch (error) {
+        console.log(`   Could not check file timestamps: ${error.message}`);
+      }
+
       logger.info({
         keyHash,
-        initialized: true
+        initialized: true,
+        executedFiles: {
+          server: __filename,
+          keyManager: require.resolve('./services/keyManager'),
+          exchangeRoute: require.resolve('./routes/exchange'),
+          providerConfigRoute: require.resolve('./routes/users/providerConfig')
+        }
       }, 'ENCRYPTION_KEY_CACHE_INITIALIZED - Single source of truth established');
     } catch (keyError: any) {
       console.error('❌ [ENCRYPTION] CRITICAL FAILURE: Encryption key initialization failed');
@@ -348,7 +414,7 @@ async function start() {
             console.log('[PROVIDER_MIGRATION] Running one-time corrupted key cleanup...');
             const { migrateCorruptedProviderKeys } = await import('./services/userOnboarding');
             const db = getFirebaseAdmin().firestore();
-            await migrateCorruptedProviderKeys(db);
+            await migrateCorruptedProviderKeys(db, 'background_job');
             console.log('[PROVIDER_MIGRATION] ✅ One-time migration completed successfully');
           } catch (migrationErr: any) {
             console.error('⚠️ Provider key migration failed:', migrationErr.message);

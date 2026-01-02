@@ -94,7 +94,9 @@ export async function logAutoTradeSkip(
       // Use unified exchange usability check (SINGLE SOURCE OF TRUTH)
       try {
         const usability = await isExchangeUsable(uid, 'background_job');
-        exchangeStatus = usability.usable ? 'available' : 'decryption_failed';
+        // CRITICAL: For background jobs, usable=false means "not_connected" (no keys)
+        // NOT "decryption_failed" - background jobs don't attempt decryption
+        exchangeStatus = usability.usable ? 'available' : 'unavailable';
       } catch (checkErr: any) {
         exchangeStatus = 'unknown';
       }

@@ -1,127 +1,86 @@
-import * as admin from 'firebase-admin';
-import { getFirebaseAdmin } from '../utils/firebase';
-import { logger } from '../utils/logger';
-import { encrypt, decrypt, maskKey } from './keyManager';
+import * as admin from "firebase-admin";
+import { getFirebaseAdmin } from "../utils/firebase";
+import { logger } from "../utils/logger";
+import { encrypt, decrypt, maskKey, getEncryptionKeyHash } from "./keyManager";
+
 
 const db = () => getFirebaseAdmin().firestore();
 
-/**
- * Determine if exchange keys should be auto-cleared based on context and timing
- */
-function shouldAutoClearKeys(
-  uid: string,
-  exchange: string,
-  context: 'background_job' | 'user_request',
-  existingDoc: any,
-  reason: string
-): { shouldClear: boolean; logData: any } {
-  const now = Date.now();
-  const updatedAt = existingDoc?.updatedAt?.toDate?.()?.getTime?.() || 0;
-  const timeSinceUpdate = now - updatedAt;
-  const RECENT_SAVE_WINDOW_MS = 60 * 1000; // 60 seconds as requested
 
-  const wasRecentlySaved = timeSinceUpdate < RECENT_SAVE_WINDOW_MS;
-  const isBackgroundJob = context === 'background_job';
-
-  const logData = {
-    uid,
-    exchange,
-    context,
-    reason,
-    wasRecentlySaved,
-    timeSinceUpdateMs: timeSinceUpdate,
-    updatedAt: existingDoc?.updatedAt?.toDate?.()?.toISOString?.(),
-    recentSaveWindowMs: RECENT_SAVE_WINDOW_MS,
-    timestamp: now
-  };
-
-  // Block auto-clearing if:
-  // 1. It's a background job AND keys were recently saved, OR
-  // 2. It's a user request (never auto-clear for user requests)
-  const shouldClear = !((isBackgroundJob && wasRecentlySaved) || !isBackgroundJob);
-
-  if (!shouldClear) {
-    console.log('🔥 [HARD_LOG] [EXCHANGE_AUTO_INVALIDATION_BLOCKED]', {
-      ...logData,
-      action: 'SKIPPED_KEY_CLEARING',
-      blockReason: isBackgroundJob && wasRecentlySaved ? 'recent_manual_save' : 'user_request_context'
-    });
-  } else {
-    console.log('🔥 [HARD_LOG] [EXCHANGE_AUTO_INVALIDATION_DETECTED]', {
-      ...logData,
-      action: 'KEYS_WILL_BE_CLEARED',
-      caller: 'shouldAutoClearKeys'
-    });
-  }
-
-  return { shouldClear, logData };
-}
+// REMOVED: shouldAutoClearKeys function
+// Background jobs can NEVER write exchange status, and user requests don't auto-clear keys
+// This function was causing confusion and is no longer needed
 
 /**
  * Sanitize Firestore payload by removing undefined values and converting them to FieldValue.delete()
  */
 function sanitizeFirestorePayload(payload: any): any {
   const sanitized: any = {};
-  let sanitizedCount = 0;
 
   for (const [key, value] of Object.entries(payload)) {
     if (value === undefined) {
       sanitized[key] = admin.firestore.FieldValue.delete();
-      console.log('🔥 [HARD_LOG] [PROVIDER_FIELD_SANITIZED]', {
-        field: key,
-        action: 'CONVERTED_UNDEFINED_TO_DELETE'
-      });
-      sanitizedCount++;
     } else {
       sanitized[key] = value;
     }
-  }
-
-  if (sanitizedCount > 0) {
-    console.log('🔥 [HARD_LOG] [PAYLOAD_SANITIZED]', {
-      sanitizedFields: sanitizedCount,
-      totalFields: Object.keys(payload).length
-    });
   }
 
   return sanitized;
 }
 
 // WARN when non-canonical exchange config paths are accessed
-export function warnNonCanonicalExchangeConfigAccess(uid: string, accessedPath: string, context: string): void {
+export function warnNonCanonicalExchangeConfigAccess(
+  uid: string,
+  accessedPath: string,
+  context: string,
+): void {
   const canonicalPath = `users/${uid}/exchangeConfig/current`;
   if (accessedPath !== canonicalPath) {
-    logger.warn({
-      uid,
-      accessedPath,
-      canonicalPath,
-      context,
-      warning: 'NON_CANONICAL_EXCHANGE_CONFIG_ACCESS'
-    }, `⚠️ NON_CANONICAL_EXCHANGE_CONFIG_ACCESS: ${context} accessed ${accessedPath} instead of ${canonicalPath}`);
+    logger.warn(
+      {
+        uid,
+        accessedPath,
+        canonicalPath,
+        context,
+        warning: "NON_CANONICAL_EXCHANGE_CONFIG_ACCESS",
+      },
+      `⚠️ NON_CANONICAL_EXCHANGE_CONFIG_ACCESS: ${context} accessed ${accessedPath} instead of ${canonicalPath}`,
+    );
   }
 }
 
 // CRITICAL: Write guard for exchange config - ONLY canonical path allowed
-export function assertExchangeConfigWritePath(uid: string, attemptedPath: string): void {
+export function assertExchangeConfigWritePath(
+  uid: string,
+  attemptedPath: string,
+): void {
   const canonicalPath = `users/${uid}/exchangeConfig/current`;
 
   if (attemptedPath !== canonicalPath) {
-    logger.error({
-      uid,
-      attemptedPath,
-      canonicalPath,
-      blocked: true
-    }, 'LEGACY_EXCHANGE_WRITE_ATTEMPT_BLOCKED');
+    logger.error(
+      {
+        uid,
+        attemptedPath,
+        canonicalPath,
+        blocked: true,
+      },
+      "LEGACY_EXCHANGE_WRITE_ATTEMPT_BLOCKED",
+    );
 
     // CRITICAL: Block the write by throwing
-    throw new Error(`EXCHANGE_CONFIG_WRITE_BLOCKED: Only canonical path allowed. Attempted: ${attemptedPath}, Required: ${canonicalPath}`);
+    throw new Error(
+      `EXCHANGE_CONFIG_WRITE_BLOCKED: Only canonical path allowed. Attempted: ${attemptedPath}, Required: ${canonicalPath}`,
+    );
   }
 
-  logger.debug({
-    uid,
-    writePath: canonicalPath,
-    canonical: true
-  }, 'EXCHANGE_CONFIG_WRITE_TO_CANONICAL_PATH_VERIFIED');
+  logger.debug(
+    {
+      uid,
+      writePath: canonicalPath,
+      canonical: true,
+    },
+    "EXCHANGE_CONFIG_WRITE_TO_CANONICAL_PATH_VERIFIED",
+  );
 }
 
 // SHARED exchange usability guard for all major code paths
@@ -132,12 +91,17 @@ export function assertExchangeConfigWritePath(uid: string, attemptedPath: string
 export async function updateCachedFlags(uid: string): Promise<void> {
   try {
     // Check exchange configuration
-    const exchangeUsable = await isExchangeUsable(uid);
+    const exchangeUsable = await isExchangeUsable(uid, "background_job");
     const exchangeConfigured = exchangeUsable.usable;
 
     // Check provider configuration (lightweight check)
     const dbInstance = db();
-    const integrationsSnapshot = await dbInstance.collection('users').doc(uid).collection('integrations').limit(1).get();
+    const integrationsSnapshot = await dbInstance
+      .collection("users")
+      .doc(uid)
+      .collection("integrations")
+      .limit(1)
+      .get();
     const providersConfigured = !integrationsSnapshot.empty;
 
     // Update cached flags
@@ -148,209 +112,361 @@ export async function updateCachedFlags(uid: string): Promise<void> {
       lastProviderValidationAt: admin.firestore.Timestamp.now(),
     });
 
-    logger.debug({
-      uid,
-      exchangeConfigured,
-      providersConfigured
-    }, 'CACHED_FLAGS_UPDATED_BY_BACKGROUND_PROCESS');
-
+    logger.debug(
+      {
+        uid,
+        exchangeConfigured,
+        providersConfigured,
+      },
+      "CACHED_FLAGS_UPDATED_BY_BACKGROUND_PROCESS",
+    );
   } catch (error: any) {
-    logger.warn({
-      uid,
-      error: error.message
-    }, 'FAILED_TO_UPDATE_CACHED_FLAGS');
+    logger.warn(
+      {
+        uid,
+        error: error.message,
+      },
+      "FAILED_TO_UPDATE_CACHED_FLAGS",
+    );
   }
 }
 
 export async function isExchangeUsable(
   uid: string,
-  context?: 'background_job' | 'user_request'
+  context: "background_job" | "user_request",
 ): Promise<{ usable: boolean; reason: string; exchange?: string }> {
+  // Standardize context - treat anything other than "user_request" as "background_job"
+  const standardContext =
+    context === "user_request" ? "user_request" : "background_job";
+
+  // PURE READ-ONLY FUNCTION: NEVER write to Firestore
+  if (standardContext !== "user_request") {
+    // DO NOT decrypt, DO NOT validate keys
+    // Simply check if exchangeConfig/current exists with basic fields
+    const doc = await db()
+      .collection("users")
+      .doc(uid)
+      .collection("exchangeConfig")
+      .doc("current")
+      .get();
+
+    if (!doc.exists) {
+      return {
+        usable: false,
+        reason: "not_connected",
+      };
+    }
+
+    const config = doc.data();
+    if (!config) {
+      return {
+        usable: false,
+        reason: "not_connected",
+      };
+    }
+
+    // Check if user has explicitly disconnected
+    if (config.disconnected === true) {
+      return {
+        usable: false,
+        reason: "disconnected",
+        exchange: config.exchange,
+      };
+    }
+
+    // LEGACY SAFETY: Strip legacy fields if present (read-only cleanup)
+    const cleanConfig = { ...config };
+    if (cleanConfig.exchangeStatus !== undefined) {
+      delete cleanConfig.exchangeStatus;
+    }
+    if (cleanConfig.keysClearedAt !== undefined) {
+      delete cleanConfig.keysClearedAt;
+    }
+    if (cleanConfig.keysClearedReason !== undefined) {
+      delete cleanConfig.keysClearedReason;
+    }
+
+    const exchange = (cleanConfig.exchange && typeof cleanConfig.exchange === 'string')
+      ? cleanConfig.exchange.toLowerCase().trim()
+      : null;
+
+    // DO NOT decrypt, DO NOT validate - just return not_connected for background jobs
+    return {
+      usable: false,
+      reason: "not_connected",
+      exchange,
+    };
+  }
+
+  // USER REQUEST CONTEXT: Full decryption and validation
   // ENFORCE: ONLY canonical path - users/{uid}/exchangeConfig/current
   const canonicalPath = `users/${uid}/exchangeConfig/current`;
-  const doc = await db().collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+  const doc = await db()
+    .collection("users")
+    .doc(uid)
+    .collection("exchangeConfig")
+    .doc("current")
+    .get();
 
   // Log canonical path usage once per request
-  logger.debug({
-    uid,
-    firestorePathUsed: canonicalPath,
-    canonical: true
-  }, 'EXCHANGE_CONFIG_READ_FROM_CANONICAL_PATH');
+  logger.debug(
+    {
+      uid,
+      firestorePathUsed: canonicalPath,
+      canonical: true,
+    },
+    "EXCHANGE_CONFIG_READ_FROM_CANONICAL_PATH",
+  );
 
   if (!doc.exists) {
-    logger.info({
-      uid,
-      canonicalPath,
-      reason: 'EXCHANGE_CONFIG_MISSING_AT_CANONICAL_PATH'
-    }, 'EXCHANGE_CONFIG_MISSING_AT_CANONICAL_PATH - treating as NOT_USABLE');
-    return { usable: false, reason: 'No exchange configuration found' };
+    logger.info(
+      {
+        uid,
+        canonicalPath,
+        reason: "EXCHANGE_CONFIG_MISSING_AT_CANONICAL_PATH",
+      },
+      "EXCHANGE_CONFIG_MISSING_AT_CANONICAL_PATH - treating as NOT_USABLE",
+    );
+    return { usable: false, reason: "not_connected" };
   }
 
   const config = doc.data();
   if (!config) {
-    return { usable: false, reason: 'Exchange configuration is empty' };
+    return { usable: false, reason: "not_connected" };
+  }
+
+  // LEGACY SAFETY: Strip legacy fields if present (read-only cleanup)
+  const cleanConfig = { ...config };
+  if (cleanConfig.exchangeStatus !== undefined) {
+    delete cleanConfig.exchangeStatus;
+  }
+  if (cleanConfig.keysClearedAt !== undefined) {
+    delete cleanConfig.keysClearedAt;
+  }
+  if (cleanConfig.keysClearedReason !== undefined) {
+    delete cleanConfig.keysClearedReason;
   }
 
   // Check if user has explicitly disconnected
-  if (config.disconnected === true) {
-    return { usable: false, reason: 'Exchange disconnected by user', exchange: config.exchange };
+  if (cleanConfig.disconnected === true) {
+    return {
+      usable: false,
+      reason: "disconnected",
+      exchange: cleanConfig.exchange,
+    };
   }
 
-  const exchange = (config.exchange || '').toLowerCase().trim();
+  const exchange = (cleanConfig.exchange || "").toLowerCase().trim();
 
-  // Check basic requirements
-  if (!config.apiKeyEncrypted) {
-    return { usable: false, reason: 'API key not configured', exchange };
+  // CRITICAL: Check for encrypted keys presence BEFORE attempting decryption
+  // EMPTY/MISSING encrypted keys = NOT_CONNECTED (not decryption failure)
+  const hasApiKey = cleanConfig.apiKeyEncrypted &&
+    typeof cleanConfig.apiKeyEncrypted === 'string' &&
+    cleanConfig.apiKeyEncrypted.trim().length > 0;
+  const hasSecretKey = (cleanConfig.secretKeyEncrypted &&
+    typeof cleanConfig.secretKeyEncrypted === 'string' &&
+    cleanConfig.secretKeyEncrypted.trim().length > 0) ||
+    (cleanConfig.secretEncrypted &&
+      typeof cleanConfig.secretEncrypted === 'string' &&
+      cleanConfig.secretEncrypted.trim().length > 0);
+
+  if (!hasApiKey || !hasSecretKey) {
+    logger.debug(
+      { uid, context, exchange, hasApiKey, hasSecretKey },
+      "USER_REQUEST: Encrypted keys missing or empty - returning not_connected (NOT decryption failure)",
+    );
+    return { usable: false, reason: "not_connected", exchange };
   }
-  if (!config.secretEncrypted && !config.secretKeyEncrypted) {
-    return { usable: false, reason: 'Secret key not configured', exchange };
-  }
-  if (!['binance', 'bitget', 'bingx', 'weex'].includes(exchange)) {
-    return { usable: false, reason: `Unsupported exchange: ${exchange}`, exchange };
+  if (!["binance", "bitget", "bingx", "weex"].includes(exchange)) {
+    return {
+      usable: false,
+      reason: `Unsupported exchange: ${exchange}`,
+      exchange,
+    };
   }
 
-  // CRITICAL: Test actual decryption to verify usability
+  // CRITICAL: Test actual decryption to verify usability (USER REQUEST ONLY)
   // DO NOT rely on cached exchangeStatus - always test current decryption capability
   try {
-    const { decrypt, getEncryptionKeyStatus } = await import('./keyManager');
+    const { decrypt, getEncryptionKeyStatus } = await import("./keyManager");
 
     // Verify encryption key is properly initialized
     const keyStatus = getEncryptionKeyStatus();
     if (!keyStatus.initialized) {
-      logger.error({
-        uid,
-        exchange,
-        keyStatus
-      }, 'EXCHANGE_DECRYPTION_FAILED: Encryption key not initialized - server startup issue');
+      logger.error(
+        {
+          uid,
+          exchange,
+          keyStatus,
+        },
+        "EXCHANGE_DECRYPTION_FAILED: Encryption key not initialized - server startup issue",
+      );
       return {
         usable: false,
-        reason: 'Encryption key not initialized - server startup issue',
-        exchange
+        reason: "not_connected",
+        exchange,
       };
     }
 
-    const apiKey = decrypt(config.apiKeyEncrypted);
-    const secret = decrypt(config.secretKeyEncrypted || config.secretEncrypted);
-    const passphrase = config.passphraseEncrypted ? decrypt(config.passphraseEncrypted) : undefined;
+    const apiKey = decrypt(cleanConfig.apiKeyEncrypted, standardContext);
+    const secret = decrypt(
+      cleanConfig.secretKeyEncrypted || cleanConfig.secretEncrypted,
+      standardContext,
+    );
+    const passphrase = cleanConfig.passphraseEncrypted
+      ? decrypt(cleanConfig.passphraseEncrypted, standardContext)
+      : undefined;
 
     // Log detailed decryption results for diagnosis
-    const isBitget = exchange === 'bitget';
-    const decryptionValid = apiKey !== null && secret !== null && (isBitget ? passphrase !== null : true);
+    const isBitget = exchange === "bitget";
+    const passphraseValid = isBitget
+      ? passphrase !== null || !config.passphraseEncrypted
+      : true;
+    const decryptionValid =
+      apiKey !== null && secret !== null && passphraseValid;
 
     // Log decryption details for troubleshooting
-    logger.info({
-      uid,
-      exchange,
-      decryptionValid,
-      apiKeyDecrypted: apiKey !== null,
-      secretDecrypted: secret !== null,
-      passphraseRequired: isBitget,
-      passphraseDecrypted: isBitget ? (passphrase !== null) : 'N/A',
-      apiKeyLength: config.apiKeyEncrypted?.length || 0,
-      secretLength: (config.secretKeyEncrypted || config.secretEncrypted)?.length || 0,
-      passphraseLength: config.passphraseEncrypted?.length || 0,
-      encryptionKeyHash: keyStatus.keyHash,
-      encryptionKeyInitialized: keyStatus.initialized
-    }, 'EXCHANGE_DECRYPTION_DIAGNOSIS');
+    logger.info(
+      {
+        uid,
+        exchange,
+        decryptionValid,
+        apiKeyDecrypted: apiKey !== null,
+        secretDecrypted: secret !== null,
+        passphraseRequired: isBitget,
+        passphraseDecrypted: isBitget
+          ? passphrase !== null || !cleanConfig.passphraseEncrypted
+          : "N/A",
+        passphraseFieldExists: !!cleanConfig.passphraseEncrypted,
+        apiKeyLength: cleanConfig.apiKeyEncrypted?.length || 0,
+        secretLength:
+          (cleanConfig.secretKeyEncrypted || cleanConfig.secretEncrypted)?.length || 0,
+        passphraseLength: cleanConfig.passphraseEncrypted?.length || 0,
+        encryptionKeyHash: keyStatus.keyHash,
+        encryptionKeyInitialized: keyStatus.initialized,
+      },
+      "EXCHANGE_DECRYPTION_DIAGNOSIS",
+    );
 
-    // If decryption failed, check if we should auto-clear keys
-    if (!decryptionValid) {
-      const { shouldClear, logData } = shouldAutoClearKeys(uid, exchange, context || 'background_job', config, 'decryption_failed');
-
-      if (!shouldClear) {
-        // Do NOT clear keys - preserve user's recent manual save
-        logger.warn({
-          uid,
-          exchange,
-          timeSinceUpdateMs: logData.timeSinceUpdateMs
-        }, 'EXCHANGE_AUTO_INVALIDATION_BLOCKED: Skipping key clearing for recently manually saved exchange');
-      } else {
-        logger.warn({
-          uid,
-          exchange,
-          apiKeyEncryptedPrefix: config.apiKeyEncrypted?.substring(0, 20) + '...',
-          secretEncryptedPrefix: (config.secretKeyEncrypted || config.secretEncrypted)?.substring(0, 20) + '...',
-          passphraseEncryptedPrefix: config.passphraseEncrypted?.substring(0, 20) + '...',
-          apiKeyNull: apiKey === null,
-          secretNull: secret === null,
-          passphraseNull: passphrase === null
-        }, 'EXCHANGE_DECRYPTION_FAILED: Clearing corrupted keys - user must re-enter exchange credentials');
-
-        // CRITICAL: Clear corrupted keys when decryption fails
-        // This prevents silent failures and forces re-entry with current ENCRYPTION_SECRET
-        try {
-          await clearInvalidExchangeKeys(uid);
-        } catch (clearError: any) {
-          logger.error({
-            uid,
-            exchange,
-            clearError: clearError.message
-          }, 'FAILED_TO_CLEAR_CORRUPTED_EXCHANGE_KEYS');
-          // Continue with unusable result even if clearing failed
-        }
-      }
-    }
-
+    // CRITICAL: NEVER write INVALID_KEYS or clear keys in isExchangeUsable
+    // This function reports usability ONLY - status writes happen in POST /exchange/connect
+    // INVARIANT: isExchangeUsable is READ-ONLY - it never mutates Firestore
     const result = {
       usable: decryptionValid,
-      reason: decryptionValid ? 'Exchange configured and decryptable' : 'Exchange keys exist but decryption failed',
-      exchange
+      reason: decryptionValid ? "connected" : "not_connected",
+      exchange,
     };
 
     // Log exchange usability decision once per request
-    logger.info({
-      uid,
-      exchange,
-      usable: result.usable,
-      reason: result.reason
-    }, `EXCHANGE_USABILITY_CHECKED: ${result.usable ? 'USABLE' : 'NOT_USABLE'} - ${result.reason}`);
+    logger.info(
+      {
+        uid,
+        exchange,
+        usable: result.usable,
+        reason: result.reason,
+      },
+      `EXCHANGE_USABILITY_CHECKED: ${result.usable ? "USABLE" : "NOT_USABLE"} - ${result.reason}`,
+    );
 
     return result;
   } catch (error: any) {
-    const config = doc.data();
-    const { shouldClear, logData } = shouldAutoClearKeys(uid, exchange || 'unknown', context || 'background_job', config, 'decryption_exception');
-
-    if (!shouldClear) {
-      logger.warn({
+    // CRITICAL: Decryption exceptions are NOT credential validation failures
+    // NEVER write INVALID_KEYS here - only in POST /exchange/connect
+    logger.warn(
+      {
         uid,
         exchange,
-        timeSinceUpdateMs: logData.timeSinceUpdateMs,
-        error: error.message
-      }, 'EXCHANGE_AUTO_INVALIDATION_BLOCKED: Skipping key clearing for recently manually saved exchange (exception case)');
-    } else {
-      logger.warn({
-        uid,
-        exchange,
-        error: error.message
-      }, 'EXCHANGE_DECRYPTION_EXCEPTION: Clearing keys due to decryption error');
-
-      // Clear keys when decryption throws exception
-      try {
-        await clearInvalidExchangeKeys(uid);
-      } catch (clearError: any) {
-        logger.error({
-          uid,
-          exchange,
-          clearError: clearError.message
-        }, 'FAILED_TO_CLEAR_EXCHANGE_KEYS_AFTER_EXCEPTION');
-      }
-    }
+        error: error.message,
+      },
+      "EXCHANGE_DECRYPTION_EXCEPTION: Decryption failed - NOT writing INVALID_KEYS (invariant protection)",
+    );
 
     const result = {
       usable: false,
-      reason: `Exchange decryption error: ${error.message}`,
-      exchange
+      reason: "not_connected",
+      exchange,
     };
 
-    logger.warn({
-      uid,
-      exchange,
-      error: error.message
-    }, `EXCHANGE_USABILITY_CHECKED: NOT_USABLE - ${result.reason}`);
+    logger.warn(
+      {
+        uid,
+        exchange,
+        error: error.message,
+      },
+      `EXCHANGE_USABILITY_CHECKED: NOT_USABLE - ${result.reason}`,
+    );
 
     return result;
   }
+}
 
+/**
+ * CRITICAL SAFETY ASSERTION: Background jobs can NEVER write exchange status
+ * This is a permanent guard against background job state mutations
+ */
+function assertBackgroundJobCannotWriteExchangeStatus(context: string, operation: string): void {
+  if (context === "background_job") {
+    const errorMsg = `FATAL INVARIANT VIOLATION: Background job attempted ${operation} on exchange status. Background jobs are READ-ONLY for exchange state.`;
+    logger.error({ context, operation }, errorMsg);
+    throw new Error(errorMsg);
+  }
+}
+
+/**
+ * GLOBAL INVARIANT: Prevent ANY background job from writing exchangeStatus or INVALID_KEYS
+ * This function MUST be called before ANY Firestore write that could affect exchangeStatus
+ */
+export function assertNoExchangeStatusWriteInBackground(context: string, operation: string): void {
+  if (context === "background_job") {
+    const errorMsg = `CRITICAL SECURITY VIOLATION: Background job attempted to write exchange status during ${operation}. This is FORBIDDEN.`;
+    console.error(`🚨 [FATAL_SECURITY_VIOLATION] ${errorMsg}`);
+    logger.error({
+      context,
+      operation,
+      securityViolation: true,
+      forbiddenOperation: "exchange_status_write"
+    }, errorMsg);
+    console.error('   HARD ERROR: Write protection invariant triggered by assertNoExchangeStatusWriteInBackground. [PROOF]');
+    throw new Error(errorMsg);
+  }
+}
+
+/**
+ * COMPREHENSIVE FIRESTORE GUARD: Intercept ALL writes to exchangeConfig collection
+ * This is a final safety net that blocks background jobs from writing ANYTHING to exchangeConfig
+ */
+function createExchangeConfigWriteGuard(): void {
+  // This guard is installed at module load time
+  const originalDb = db;
+  // Note: This is a runtime guard that would need to be implemented at the Firestore adapter level
+  // For now, we rely on explicit guards in all write functions
+}
+
+/**
+ * FINAL SAFETY NET: Global exchangeConfig write blocker for background jobs
+ * This function wraps ALL Firestore operations that could modify exchangeConfig
+ */
+export async function safeExchangeConfigWrite(
+  uid: string,
+  operation: () => Promise<any>,
+  context: "background_job" | "user_request",
+  operationName: string
+): Promise<any> {
+  // CRITICAL: Block ALL background job writes to exchangeConfig
+  if (context === "background_job") {
+    const errorMsg = `BLOCKED: Background job attempted exchangeConfig write during ${operationName}. Background jobs are READ-ONLY.`;
+    console.error(`🚫 [EXCHANGE_CONFIG_WRITE_BLOCKED] ${errorMsg}`);
+    logger.error({
+      uid,
+      context,
+      operation: operationName,
+      blocked: true
+    }, errorMsg);
+    throw new Error(errorMsg);
+  }
+
+  // Allow user-initiated writes
+  return await operation();
 }
 
 /**
@@ -358,34 +474,9 @@ export async function isExchangeUsable(
  * Forces user to reconnect exchange, preventing silent failures
  * Should be called when decryptOrThrow fails for exchange keys
  */
-export async function clearInvalidExchangeKeys(uid: string): Promise<void> {
-  const exchangeRef = db().collection('users').doc(uid).collection('exchangeConfig').doc('current');
-
-  // 🔥 HARD_LOG: EXCHANGE_MANUAL_DISCONNECT - when we actually clear keys
-  console.log('🔥 [HARD_LOG] [EXCHANGE_MANUAL_DISCONNECT]', {
-    uid,
-    action: 'CLEARING_INVALID_KEYS',
-    reason: 'Decryption failure - ENCRYPTION_SECRET mismatch',
-    timestamp: Date.now()
-  });
-
-  try {
-    await exchangeRef.update({
-      apiKeyEncrypted: admin.firestore.FieldValue.delete(),
-      secretKeyEncrypted: admin.firestore.FieldValue.delete(),
-      secretEncrypted: admin.firestore.FieldValue.delete(),
-      passphraseEncrypted: admin.firestore.FieldValue.delete(),
-      exchangeStatus: 'INVALID_KEYS',
-      keysClearedAt: admin.firestore.FieldValue.serverTimestamp(),
-      keysClearedReason: 'Decryption failure - ENCRYPTION_SECRET mismatch'
-    });
-
-    logger.warn({ uid }, 'Cleared encrypted exchange keys due to decryption failure - user must reconnect exchange');
-  } catch (error: any) {
-    logger.error({ uid, error: error.message }, 'Failed to clear invalid exchange keys');
-    throw error;
-  }
-}
+// REMOVED: clearInvalidExchangeKeys function
+// INVALID_KEYS is no longer a stored state - it's computed by isExchangeUsable()
+// This function is permanently removed to prevent any INVALID_KEYS writes
 
 
 export interface ApiKeyDocument {
@@ -425,10 +516,10 @@ export interface SettingsDocument {
   };
   // Trading settings
   tradingSettings?: {
-    mode: 'MANUAL' | 'TOP_100' | 'TOP_10';
+    mode: "MANUAL" | "TOP_100" | "TOP_10";
     manualCoins: string[];
     maxPositionPerTrade: number;
-    tradeType: 'Scalping' | 'Swing' | 'Position';
+    tradeType: "Scalping" | "Swing" | "Position";
     accuracyTrigger: number;
     maxDailyLoss: number;
     maxTradesPerDay: number;
@@ -459,7 +550,7 @@ export interface SettingsDocument {
     };
     whaleAlerts?: {
       enabled?: boolean;
-      sensitivity?: 'low' | 'medium' | 'high';
+      sensitivity?: "low" | "medium" | "high";
     };
     tradeConfirmationRequired?: boolean;
     soundEnabled?: boolean;
@@ -487,7 +578,7 @@ export interface ResearchLogDocument {
   id?: string;
   symbol: string;
   timestamp: admin.firestore.Timestamp;
-  signal: 'BUY' | 'SELL' | 'HOLD';
+  signal: "BUY" | "SELL" | "HOLD";
   accuracy: number;
   orderbookImbalance: number;
   recommendedAction: string;
@@ -499,7 +590,7 @@ export interface ExecutionLogDocument {
   id?: string;
   symbol: string;
   timestamp: admin.firestore.Timestamp;
-  action: 'EXECUTED' | 'SKIPPED';
+  action: "EXECUTED" | "SKIPPED";
   reason?: string;
   accuracy?: number;
   accuracyUsed?: number; // The accuracy value used for decision
@@ -509,7 +600,7 @@ export interface ExecutionLogDocument {
   slippage?: number;
   pnl?: number;
   strategy?: string;
-  signal?: 'BUY' | 'SELL' | 'HOLD';
+  signal?: "BUY" | "SELL" | "HOLD";
   status?: string; // Order status
   createdAt: admin.firestore.Timestamp;
 }
@@ -550,7 +641,7 @@ export interface HFTSettingsDocument {
 export interface TradingSettingsDocument {
   symbol: string;
   maxPositionPerTrade: number;
-  tradeType: 'Scalping' | 'Swing' | 'Position';
+  tradeType: "Scalping" | "Swing" | "Position";
   accuracyTrigger: number;
   maxDailyLoss: number;
   maxTradesPerDay: number;
@@ -571,7 +662,7 @@ export interface HFTExecutionLogDocument {
   orderIds?: string[];
   price?: number;
   quantity?: number;
-  side?: 'BUY' | 'SELL';
+  side?: "BUY" | "SELL";
   reason?: string;
   strategy: string;
   status?: string;
@@ -582,27 +673,40 @@ export class FirestoreAdapter {
   // Warm start function to pre-load Firestore cache at startup
   async warmStart(): Promise<void> {
     try {
-      logger.info('Starting Firestore cache warm-up...');
+      logger.info("Starting Firestore cache warm-up...");
 
       // Touch agents collection
-      await db().collection('agents').limit(1).get();
+      await db().collection("agents").limit(1).get();
 
       // Touch a sample user document to warm settings and notifications
       // We'll use a dummy query that should be fast
-      const sampleQuery = await db().collection('users').limit(1).get();
+      const sampleQuery = await db().collection("users").limit(1).get();
       if (!sampleQuery.empty) {
         const sampleUid = sampleQuery.docs[0].id;
 
         // Touch settings subcollection
-        await db().collection('users').doc(sampleUid).collection('settings').limit(1).get();
+        await db()
+          .collection("users")
+          .doc(sampleUid)
+          .collection("settings")
+          .limit(1)
+          .get();
 
         // Touch notifications subcollection
-        await db().collection('notifications').doc(sampleUid).collection('items').limit(1).get();
+        await db()
+          .collection("notifications")
+          .doc(sampleUid)
+          .collection("items")
+          .limit(1)
+          .get();
       }
 
-      logger.info('Firestore cache warm-up completed');
+      logger.info("Firestore cache warm-up completed");
     } catch (err: any) {
-      logger.warn({ err: err.message }, 'Firestore cache warm-up failed, continuing...');
+      logger.warn(
+        { err: err.message },
+        "Firestore cache warm-up failed, continuing...",
+      );
     }
   }
 
@@ -612,39 +716,51 @@ export class FirestoreAdapter {
    */
   public guardAgainstIllegalWrites(path: string, data: any) {
     const restrictedKeys = [
-      'notifications',
-      'notificationSettings',
-      'enableAutoTradeAlerts',
-      'enableAccuracyAlerts',
-      'enableWhaleAlerts',
-      'tradeConfirmationRequired',
-      'notificationSounds',
-      'notificationVibration'
+      "notifications",
+      "notificationSettings",
+      "enableAutoTradeAlerts",
+      "enableAccuracyAlerts",
+      "enableWhaleAlerts",
+      "tradeConfirmationRequired",
+      "notificationSounds",
+      "notificationVibration",
     ];
 
-    const isSettingsCurrent = path.includes('/settings/current');
+    const isSettingsCurrent = path.includes("/settings/current");
 
     // Check if any restricted key is present in the data being written
     for (const key of restrictedKeys) {
       if (data && data[key] !== undefined) {
         // If it's NOT the authorized path, throw HARD error
         if (!isSettingsCurrent) {
-          logger.error({ path, key, data }, '🚨 HARD ERROR: Attempted to write notification fields outside authorized path');
-          throw new Error(`ILLEGAL_WRITE: Field "${key}" can only be written to users/{uid}/settings/current. Path attempted: ${path}`);
+          logger.error(
+            { path, key, data },
+            "🚨 HARD ERROR: Attempted to write notification fields outside authorized path",
+          );
+          throw new Error(
+            `ILLEGAL_WRITE: Field "${key}" can only be written to users/{uid}/settings/current. Path attempted: ${path}`,
+          );
         }
       }
     }
   }
 
   // API Keys
-  async saveApiKey(uid: string, keyData: {
-    exchange: string;
-    name: string;
-    apiKey: string;
-    apiSecret: string;
-    testnet: boolean;
-  }): Promise<string> {
-    const docRef = db().collection('users').doc(uid).collection('apikeys').doc();
+  async saveApiKey(
+    uid: string,
+    keyData: {
+      exchange: string;
+      name: string;
+      apiKey: string;
+      apiSecret: string;
+      testnet: boolean;
+    },
+  ): Promise<string> {
+    const docRef = db()
+      .collection("users")
+      .doc(uid)
+      .collection("apikeys")
+      .doc();
 
     const doc: ApiKeyDocument = {
       exchange: keyData.exchange,
@@ -657,29 +773,32 @@ export class FirestoreAdapter {
     };
 
     await docRef.set(doc);
-    logger.info({ uid, keyId: docRef.id }, 'API key saved to Firestore');
+    logger.info({ uid, keyId: docRef.id }, "API key saved to Firestore");
     return docRef.id;
   }
 
   async getApiKeys(uid: string): Promise<ApiKeyDocument[]> {
     const snapshot = await db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('apikeys')
-      .orderBy('createdAt', 'desc')
+      .collection("apikeys")
+      .orderBy("createdAt", "desc")
       .get();
 
-    return snapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-    } as ApiKeyDocument));
+    return snapshot.docs.map(
+      (doc) =>
+        ({
+          id: doc.id,
+          ...doc.data(),
+        }) as ApiKeyDocument,
+    );
   }
 
   async getApiKey(uid: string, keyId: string): Promise<ApiKeyDocument | null> {
     const doc = await db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('apikeys')
+      .collection("apikeys")
       .doc(keyId)
       .get();
 
@@ -691,49 +810,57 @@ export class FirestoreAdapter {
     } as ApiKeyDocument;
   }
 
-  async updateApiKey(uid: string, keyId: string, updates: Partial<{
-    name: string;
-    apiKey: string;
-    apiSecret: string;
-    testnet: boolean;
-  }>): Promise<void> {
+  async updateApiKey(
+    uid: string,
+    keyId: string,
+    updates: Partial<{
+      name: string;
+      apiKey: string;
+      apiSecret: string;
+      testnet: boolean;
+    }>,
+  ): Promise<void> {
     const updateData: any = {
       updatedAt: admin.firestore.Timestamp.now(),
     };
 
     if (updates.name) updateData.name = updates.name;
     if (updates.apiKey) updateData.apiKeyEncrypted = encrypt(updates.apiKey);
-    if (updates.apiSecret) updateData.apiSecretEncrypted = encrypt(updates.apiSecret);
+    if (updates.apiSecret)
+      updateData.apiSecretEncrypted = encrypt(updates.apiSecret);
     if (updates.testnet !== undefined) updateData.testnet = updates.testnet;
 
     await db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('apikeys')
+      .collection("apikeys")
       .doc(keyId)
       .update(updateData);
 
-    logger.info({ uid, keyId }, 'API key updated in Firestore');
+    logger.info({ uid, keyId }, "API key updated in Firestore");
   }
 
   async deleteApiKey(uid: string, keyId: string): Promise<void> {
     await db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('apikeys')
+      .collection("apikeys")
       .doc(keyId)
       .delete();
 
-    logger.info({ uid, keyId }, 'API key deleted from Firestore');
+    logger.info({ uid, keyId }, "API key deleted from Firestore");
   }
 
-  async getLatestApiKey(uid: string, exchange: string): Promise<ApiKeyDocument | null> {
+  async getLatestApiKey(
+    uid: string,
+    exchange: string,
+  ): Promise<ApiKeyDocument | null> {
     const snapshot = await db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('apikeys')
-      .where('exchange', '==', exchange)
-      .orderBy('updatedAt', 'desc')
+      .collection("apikeys")
+      .where("exchange", "==", exchange)
+      .orderBy("updatedAt", "desc")
       .limit(1)
       .get();
 
@@ -753,9 +880,9 @@ export class FirestoreAdapter {
       return null;
     }
     if (Array.isArray(obj)) {
-      return obj.map(item => this.sanitizeForFirestore(item));
+      return obj.map((item) => this.sanitizeForFirestore(item));
     }
-    if (typeof obj === 'object' && obj.constructor === Object) {
+    if (typeof obj === "object" && obj.constructor === Object) {
       const sanitized: any = {};
       for (const [key, value] of Object.entries(obj)) {
         // Skip undefined values completely
@@ -769,29 +896,42 @@ export class FirestoreAdapter {
   }
 
   // Settings
-  async saveSettings(uid: string, settings: Partial<SettingsDocument>): Promise<void> {
+  async saveSettings(
+    uid: string,
+    settings: Partial<SettingsDocument>,
+  ): Promise<void> {
     try {
-      const docRef = db().collection('users').doc(uid).collection('settings').doc('current');
+      const docRef = db()
+        .collection("users")
+        .doc(uid)
+        .collection("settings")
+        .doc("current");
 
       // CRITICAL: Get existing document first to merge properly
       const existingDoc = await docRef.get();
-      const existingData = existingDoc.exists ? (existingDoc.data() || {}) : {};
+      const existingData = existingDoc.exists ? existingDoc.data() || {} : {};
 
       // CRITICAL: Deep merge for structured notification objects to prevent partial overwrites
-      const mergedNotifications = settings.notifications ? {
-        ...(existingData.notifications || {}),
-        ...settings.notifications
-      } : existingData.notifications;
+      const mergedNotifications = settings.notifications
+        ? {
+          ...(existingData.notifications || {}),
+          ...settings.notifications,
+        }
+        : existingData.notifications;
 
-      const mergedNotificationSettings = settings.notificationSettings ? {
-        ...(existingData.notificationSettings || {}),
-        ...settings.notificationSettings
-      } : existingData.notificationSettings;
+      const mergedNotificationSettings = settings.notificationSettings
+        ? {
+          ...(existingData.notificationSettings || {}),
+          ...settings.notificationSettings,
+        }
+        : existingData.notificationSettings;
 
-      const mergedTradingSettings = settings.tradingSettings ? {
-        ...(existingData.tradingSettings || {}),
-        ...settings.tradingSettings
-      } : existingData.tradingSettings;
+      const mergedTradingSettings = settings.tradingSettings
+        ? {
+          ...(existingData.tradingSettings || {}),
+          ...settings.tradingSettings,
+        }
+        : existingData.tradingSettings;
 
       // CRITICAL: Merge with existing, then sanitize to remove ALL undefined values
       const merged = {
@@ -808,23 +948,34 @@ export class FirestoreAdapter {
 
       // CRITICAL: Log notification object writes (Task 4)
       if (settings.notifications || settings.notificationSettings) {
-        logger.info({
-          uid,
-          hasNotifications: !!settings.notifications,
-          hasNotificationSettings: !!settings.notificationSettings,
-          notificationsPayload: settings.notifications ? JSON.stringify(settings.notifications) : undefined
-        }, "🔔 [NOTIFICATION_WRITE] Writing notification objects to users/{uid}/settings/current");
+        logger.info(
+          {
+            uid,
+            hasNotifications: !!settings.notifications,
+            hasNotificationSettings: !!settings.notificationSettings,
+            notificationsPayload: settings.notifications
+              ? JSON.stringify(settings.notifications)
+              : undefined,
+          },
+          "🔔 [NOTIFICATION_WRITE] Writing notification objects to users/{uid}/settings/current",
+        );
       }
 
       // CRITICAL: Runtime Guard Check
-      this.guardAgainstIllegalWrites(`users/${uid}/settings/current`, sanitized);
+      this.guardAgainstIllegalWrites(
+        `users/${uid}/settings/current`,
+        sanitized,
+      );
 
       // CRITICAL: Use set() with merge: true, but sanitized data has no undefined values
       await docRef.set(sanitized, { merge: true });
 
-      logger.info({ uid }, 'Settings saved to Firestore');
+      logger.info({ uid }, "Settings saved to Firestore");
     } catch (error: any) {
-      logger.error({ uid, error: error.message, stack: error.stack }, 'Failed to save settings to Firestore');
+      logger.error(
+        { uid, error: error.message, stack: error.stack },
+        "Failed to save settings to Firestore",
+      );
       // Re-throw to allow route handlers to return 500
       throw error;
     }
@@ -832,10 +983,10 @@ export class FirestoreAdapter {
 
   async getSettings(uid: string): Promise<SettingsDocument | null> {
     const doc = await db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('settings')
-      .doc('current')
+      .collection("settings")
+      .doc("current")
       .get();
 
     if (!doc.exists) return null;
@@ -844,8 +995,15 @@ export class FirestoreAdapter {
   }
 
   // Research Logs
-  async saveResearchLog(uid: string, research: Omit<ResearchLogDocument, 'id' | 'createdAt'>): Promise<string> {
-    const docRef = db().collection('users').doc(uid).collection('researchLogs').doc();
+  async saveResearchLog(
+    uid: string,
+    research: Omit<ResearchLogDocument, "id" | "createdAt">,
+  ): Promise<string> {
+    const docRef = db()
+      .collection("users")
+      .doc(uid)
+      .collection("researchLogs")
+      .doc();
 
     const doc: ResearchLogDocument = {
       ...research,
@@ -853,29 +1011,45 @@ export class FirestoreAdapter {
     };
 
     await docRef.set(doc);
-    logger.debug({ uid, symbol: research.symbol, accuracy: research.accuracy }, 'Research log saved');
+    logger.debug(
+      { uid, symbol: research.symbol, accuracy: research.accuracy },
+      "Research log saved",
+    );
     return docRef.id;
   }
 
-  async getResearchLogs(uid: string, limit: number = 100): Promise<ResearchLogDocument[]> {
+  async getResearchLogs(
+    uid: string,
+    limit: number = 100,
+  ): Promise<ResearchLogDocument[]> {
     // Get logs from both researchLogs collection (scheduled research) and old research collection
     const snapshot = await db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('researchLogs')
-      .orderBy('timestamp', 'desc')
+      .collection("researchLogs")
+      .orderBy("timestamp", "desc")
       .limit(limit)
       .get();
 
-    return snapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-    } as ResearchLogDocument));
+    return snapshot.docs.map(
+      (doc) =>
+        ({
+          id: doc.id,
+          ...doc.data(),
+        }) as ResearchLogDocument,
+    );
   }
 
   // Execution Logs
-  async saveExecutionLog(uid: string, execution: Omit<ExecutionLogDocument, 'id' | 'createdAt'>): Promise<string> {
-    const docRef = db().collection('users').doc(uid).collection('executionLogs').doc();
+  async saveExecutionLog(
+    uid: string,
+    execution: Omit<ExecutionLogDocument, "id" | "createdAt">,
+  ): Promise<string> {
+    const docRef = db()
+      .collection("users")
+      .doc(uid)
+      .collection("executionLogs")
+      .doc();
 
     const doc: ExecutionLogDocument = {
       ...execution,
@@ -883,31 +1057,43 @@ export class FirestoreAdapter {
     };
 
     await docRef.set(doc);
-    logger.info({ uid, action: execution.action, symbol: execution.symbol }, 'Execution log saved');
+    logger.info(
+      { uid, action: execution.action, symbol: execution.symbol },
+      "Execution log saved",
+    );
     return docRef.id;
   }
 
-  async getExecutionLogs(uid: string, limit: number = 100): Promise<ExecutionLogDocument[]> {
+  async getExecutionLogs(
+    uid: string,
+    limit: number = 100,
+  ): Promise<ExecutionLogDocument[]> {
     const snapshot = await db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('executionLogs')
-      .orderBy('timestamp', 'desc')
+      .collection("executionLogs")
+      .orderBy("timestamp", "desc")
       .limit(limit)
       .get();
 
-    return snapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-    } as ExecutionLogDocument));
+    return snapshot.docs.map(
+      (doc) =>
+        ({
+          id: doc.id,
+          ...doc.data(),
+        }) as ExecutionLogDocument,
+    );
   }
 
   // Integrations
-  async getIntegration(uid: string, apiName: string): Promise<IntegrationDocument | null> {
+  async getIntegration(
+    uid: string,
+    apiName: string,
+  ): Promise<IntegrationDocument | null> {
     const doc = await db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('integrations')
+      .collection("integrations")
       .doc(apiName)
       .get();
 
@@ -916,7 +1102,9 @@ export class FirestoreAdapter {
     return doc.data() as IntegrationDocument;
   }
 
-  async getAllIntegrations(uid: string): Promise<Record<string, IntegrationDocument>> {
+  async getAllIntegrations(
+    uid: string,
+  ): Promise<Record<string, IntegrationDocument>> {
     // CRITICAL: Assert UID is provided and valid
     if (!uid) {
       throw new Error("getAllIntegrations called with null/undefined uid");
@@ -934,143 +1122,207 @@ export class FirestoreAdapter {
       .get();
 
     console.log("[INT-LOAD] Snap size =", snapshot.size);
-    snapshot.forEach((doc) => console.log("[INT-LOAD DOC]", doc.id, doc.data()));
+    snapshot.forEach((doc) =>
+      console.log("[INT-LOAD DOC]", doc.id, doc.data()),
+    );
 
     if (snapshot.size === 0) {
       console.log("[INT-LOAD] FIRESTORE CLIENT =", firestore.constructor.name);
-      if (firestore.constructor.name.toLowerCase().includes('mock')) {
-        console.log("[INT-LOAD WARNING] Using mock Firestore - data will always be empty");
+      if (firestore.constructor.name.toLowerCase().includes("mock")) {
+        console.log(
+          "[INT-LOAD WARNING] Using mock Firestore - data will always be empty",
+        );
       }
       try {
-        const cols = await firestore.collection('users').doc(uid).listCollections();
-        console.log("[INT DEBUG DOCS] Listing all subcollections:", cols.map((c) => c.id));
+        const cols = await firestore
+          .collection("users")
+          .doc(uid)
+          .listCollections();
+        console.log(
+          "[INT DEBUG DOCS] Listing all subcollections:",
+          cols.map((c) => c.id),
+        );
       } catch (err: any) {
-        console.log("[INT DEBUG DOCS] Failed to list subcollections:", err?.message);
+        console.log(
+          "[INT DEBUG DOCS] Failed to list subcollections:",
+          err?.message,
+        );
       }
     }
 
-    console.log("[FIRESTORE_INTEGRATIONS]", uid, snapshot.docs.map((d) => d.id));
+    console.log(
+      "[FIRESTORE_INTEGRATIONS]",
+      uid,
+      snapshot.docs.map((d) => d.id),
+    );
 
     const out: Record<string, any> = {};
 
     // FIX: Include ALL providers from providerConfig.ts sets to prevent filtering issues
     const OFFICIAL_PROVIDERS = new Set<string>([
       // Market Data Providers
-      "cryptocompare", "bybit", "okx", "kucoin", "bitget", "coinstats",
-      "livecoinwatch", "marketaux", "kaiko", "messari", "coinapi",
-      "coinmarketcap", "coinlore", "coincheckup", "bravenewcoin",
+      "cryptocompare",
+      "bybit",
+      "okx",
+      "kucoin",
+      "bitget",
+      "coinstats",
+      "livecoinwatch",
+      "marketaux",
+      "kaiko",
+      "messari",
+      "coinapi",
+      "coinmarketcap",
+      "coinlore",
+      "coincheckup",
+      "bravenewcoin",
 
       // News Providers
-      "newsdata", "cryptopanic", "reddit", "webzio",
-      "gnews", "newscatcher", "coinstatsnews",
-      "altcoinbuzz_rss", "cointelegraph_rss",
+      "newsdata",
+      "cryptopanic",
+      "reddit",
+      "webzio",
+      "gnews",
+      "newscatcher",
+      "coinstatsnews",
+      "altcoinbuzz_rss",
+      "cointelegraph_rss",
 
       // Metadata Providers
-      "coingecko", "coinpaprika", "coincap"
+      "coingecko",
+      "coinpaprika",
+      "coincap",
     ]);
     // FIX: Consistent provider type mapping matching providerConfig.ts
-    const PROVIDER_TYPES: Record<string, 'marketdata' | 'news' | 'metadata'> = {
+    const PROVIDER_TYPES: Record<string, "marketdata" | "news" | "metadata"> = {
       // Market Data Providers (normalized to lowercase)
-      'cryptocompare': 'marketdata',
-      'bybit': 'marketdata',
-      'okx': 'marketdata',
-      'kucoin': 'marketdata',
-      'bitget': 'marketdata',
-      'coinstats': 'marketdata',
-      'livecoinwatch': 'marketdata',
-      'marketaux': 'marketdata',
-      'kaiko': 'marketdata',
-      'messari': 'marketdata',
-      'coinapi': 'marketdata',
-      'coinmarketcap': 'marketdata',
-      'coinlore': 'marketdata',
-      'coincheckup': 'marketdata',
-      'bravenewcoin': 'marketdata',
+      cryptocompare: "marketdata",
+      bybit: "marketdata",
+      okx: "marketdata",
+      kucoin: "marketdata",
+      bitget: "marketdata",
+      coinstats: "marketdata",
+      livecoinwatch: "marketdata",
+      marketaux: "marketdata",
+      kaiko: "marketdata",
+      messari: "marketdata",
+      coinapi: "marketdata",
+      coinmarketcap: "marketdata",
+      coinlore: "marketdata",
+      coincheckup: "marketdata",
+      bravenewcoin: "marketdata",
 
       // News Providers
-      'newsdata': 'news',
-      'cryptopanic': 'news',
-      'reddit': 'news',
-      'webzio': 'news',
-      'gnews': 'news',
-      'newscatcher': 'news',
-      'coinstatsnews': 'news',
-      'altcoinbuzz_rss': 'news',
-      'cointelegraph_rss': 'news',
+      newsdata: "news",
+      cryptopanic: "news",
+      reddit: "news",
+      webzio: "news",
+      gnews: "news",
+      newscatcher: "news",
+      coinstatsnews: "news",
+      altcoinbuzz_rss: "news",
+      cointelegraph_rss: "news",
 
       // Metadata Providers
-      'coingecko': 'metadata',
-      'coinpaprika': 'metadata',
-      'coincap': 'metadata'
+      coingecko: "metadata",
+      coinpaprika: "metadata",
+      coincap: "metadata",
     };
-    const ALLOWED_TYPES = new Set(['marketdata', 'news', 'metadata']);
+    const ALLOWED_TYPES = new Set(["marketdata", "news", "metadata"]);
 
     snapshot.docs.forEach((doc) => {
       const data = doc.data() || {};
-      const providerId = (doc.id || '').toLowerCase();
+      const providerId = (doc.id || "").toLowerCase();
       if (!OFFICIAL_PROVIDERS.has(providerId)) {
         out[providerId] = {
           ...data,
           providerName: data.providerName || providerId,
-          enabled: typeof data.enabled === 'boolean' ? data.enabled : false,
-          type: (data.type && ALLOWED_TYPES.has(data.type)) ? data.type : (data.apiType || 'marketData'),
+          enabled: typeof data.enabled === "boolean" ? data.enabled : false,
+          type:
+            data.type && ALLOWED_TYPES.has(data.type)
+              ? data.type
+              : data.apiType || "marketData",
           updatedAt: data.updatedAt || null,
         };
-        console.log("[FIRESTORE_INTEGRATIONS_UNOFFICIAL]", providerId, out[providerId]);
+        console.log(
+          "[FIRESTORE_INTEGRATIONS_UNOFFICIAL]",
+          providerId,
+          out[providerId],
+        );
         return;
       }
 
       // HARD ENFORCE TYPE FOR KNOWN PROVIDERS - don't trust stored type blindly
       const rawType = data.type || data.apiType;
-      const resolvedType = PROVIDER_TYPES[providerId] || 'marketData';
+      const resolvedType = PROVIDER_TYPES[providerId] || "marketData";
 
       // SPECIAL ENFORCEMENT: CryptoCompare must ALWAYS be marketData
-      const finalType = providerId === 'cryptocompare' ? 'marketData' : resolvedType;
+      const finalType =
+        providerId === "cryptocompare" ? "marketData" : resolvedType;
 
       // WARN if type was corrected
       if (rawType && rawType !== finalType) {
-        console.warn(`[FIRESTORE_TYPE_CORRECTION] ${providerId}: stored type "${rawType}" corrected to "${finalType}"`);
+        console.warn(
+          `[FIRESTORE_TYPE_CORRECTION] ${providerId}: stored type "${rawType}" corrected to "${finalType}"`,
+        );
       }
 
-      console.log(`[FIRESTORE_TYPE_ENFORCEMENT] ${providerId}: rawType="${rawType}" → resolvedType="${finalType}"`);
+      console.log(
+        `[FIRESTORE_TYPE_ENFORCEMENT] ${providerId}: rawType="${rawType}" → resolvedType="${finalType}"`,
+      );
 
       const entry: any = {
         ...data,
-        providerName: (typeof data.providerName === 'string' && data.providerName.trim())
-          ? data.providerName
-          : providerId,
-        enabled: typeof data.enabled === 'boolean' ? data.enabled : false,
+        providerName:
+          typeof data.providerName === "string" && data.providerName.trim()
+            ? data.providerName
+            : providerId,
+        enabled: typeof data.enabled === "boolean" ? data.enabled : false,
         type: finalType, // Use the enforced type
         updatedAt: data.updatedAt || null,
       };
 
       // Ensure required fields always exist for downstream consumers
-      entry.apiKeyEncrypted = data.apiKeyEncrypted !== undefined ? data.apiKeyEncrypted : null;
-      entry.secretKeyEncrypted = data.secretKeyEncrypted !== undefined ? data.secretKeyEncrypted : null;
-      entry.usageStats = (entry.usageStats && typeof entry.usageStats === 'object') ? entry.usageStats : { calls: 0 };
+      entry.apiKeyEncrypted =
+        data.apiKeyEncrypted !== undefined ? data.apiKeyEncrypted : null;
+      entry.secretKeyEncrypted =
+        data.secretKeyEncrypted !== undefined ? data.secretKeyEncrypted : null;
+      entry.usageStats =
+        entry.usageStats && typeof entry.usageStats === "object"
+          ? entry.usageStats
+          : { calls: 0 };
 
       // Remove any accidental plaintext leakage (do not transform or re-encrypt)
       delete (entry as any).apiKey;
       delete (entry as any).secretKey;
 
       out[providerId] = entry;
-      console.log("[FIRESTORE_INTEGRATIONS_KEEP]", { providerId, resolvedType, hasApiKeyEncrypted: !!entry.apiKeyEncrypted, enabled: entry.enabled });
+      console.log("[FIRESTORE_INTEGRATIONS_KEEP]", {
+        providerId,
+        resolvedType,
+        hasApiKeyEncrypted: !!entry.apiKeyEncrypted,
+        enabled: entry.enabled,
+      });
     });
 
     return out;
   }
 
-  async saveIntegration(uid: string, apiName: string, data: {
-    enabled: boolean;
-    apiKey?: string; // plain text, will be encrypted
-    secretKey?: string; // plain text, will be encrypted (only for Binance)
-    apiType?: string; // For CoinAPI type
-    type?: string; // provider type: 'marketData' | 'news' | 'metadata' | 'trading'
-  }): Promise<void> {
+  async saveIntegration(
+    uid: string,
+    apiName: string,
+    data: {
+      enabled: boolean;
+      apiKey?: string; // plain text, will be encrypted
+      secretKey?: string; // plain text, will be encrypted (only for Binance)
+      apiType?: string; // For CoinAPI type
+      type?: string; // provider type: 'marketData' | 'news' | 'metadata' | 'trading'
+    },
+  ): Promise<void> {
     const docRef = db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('integrations')
+      .collection("integrations")
       .doc(apiName);
 
     // Check if document exists to determine if we should set createdAt
@@ -1102,63 +1354,91 @@ export class FirestoreAdapter {
 
     const sanitizedDocData = sanitizeFirestorePayload(docData);
     await docRef.set(sanitizedDocData, { merge: true });
-    logger.info({
-      uid,
-      apiName,
-      enabled: data.enabled,
-      hasApiKey: !!data.apiKey,
-      hasSecretKey: !!data.secretKey,
-      hasCreatedAt: !existingDoc.exists
-    }, 'Integration saved to Firestore');
+    logger.info(
+      {
+        uid,
+        apiName,
+        enabled: data.enabled,
+        hasApiKey: !!data.apiKey,
+        hasSecretKey: !!data.secretKey,
+        hasCreatedAt: !existingDoc.exists,
+      },
+      "Integration saved to Firestore",
+    );
   }
 
   async deleteIntegration(uid: string, apiName: string): Promise<void> {
     await db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('integrations')
+      .collection("integrations")
       .doc(apiName)
       .delete();
 
-    logger.info({ uid, apiName }, 'Integration deleted from Firestore');
+    logger.info({ uid, apiName }, "Integration deleted from Firestore");
   }
 
-  async getEnabledIntegrations(uid: string): Promise<Record<string, { apiKey: string; secretKey?: string }>> {
+  async getEnabledIntegrations(
+    uid: string,
+    context: string = "user_request",
+  ): Promise<Record<string, { apiKey: string; secretKey?: string }>> {
+    if (context !== "user_request") {
+      logger.warn(
+        { uid, context },
+        "BLOCKED: getEnabledIntegrations called outside user_request"
+      );
+      return {};
+    }
+
     const allIntegrations = await this.getAllIntegrations(uid);
     const enabled: Record<string, { apiKey: string; secretKey?: string }> = {};
 
     for (const [apiName, integration] of Object.entries(allIntegrations)) {
       if (integration.enabled && integration.apiKeyEncrypted) {
         try {
-          const decryptedApiKey = decrypt(integration.apiKeyEncrypted);
+          const decryptedApiKey = decrypt(integration.apiKeyEncrypted, "user_request");
           const decryptedSecretKey = integration.secretKeyEncrypted
-            ? decrypt(integration.secretKeyEncrypted)
+            ? decrypt(integration.secretKeyEncrypted, "user_request")
             : undefined;
 
-          if (decryptedApiKey && decryptedApiKey.trim() !== '') {
+          if (decryptedApiKey && decryptedApiKey.trim() !== "") {
             enabled[apiName] = {
               apiKey: decryptedApiKey,
-              ...(decryptedSecretKey && decryptedSecretKey.trim() !== '' ? { secretKey: decryptedSecretKey } : {}),
+              ...(decryptedSecretKey && decryptedSecretKey.trim() !== ""
+                ? { secretKey: decryptedSecretKey }
+                : {}),
             };
-            logger.debug({
-              uid,
-              apiName,
-              apiKeyLen: decryptedApiKey.length,
-              hasSecret: !!decryptedSecretKey,
-            }, 'Enabled integration loaded with decrypted key');
+            logger.debug(
+              {
+                uid,
+                apiName,
+                apiKeyLen: decryptedApiKey.length,
+                hasSecret: !!decryptedSecretKey,
+              },
+              "Enabled integration loaded with decrypted key",
+            );
           } else {
-            logger.warn({ uid, apiName }, 'Skipping integration with invalid/empty decrypted API key');
+            logger.warn(
+              { uid, apiName },
+              "Skipping integration with invalid/empty decrypted API key",
+            );
           }
         } catch (error: any) {
-          logger.error({ error: error.message, uid, apiName }, 'Failed to decrypt integration keys, skipping');
+          logger.error(
+            { error: error.message, uid, apiName },
+            "Failed to decrypt integration keys, skipping",
+          );
         }
       } else {
-        logger.debug({
-          uid,
-          apiName,
-          enabled: integration.enabled,
-          hasApiKeyEncrypted: !!integration.apiKeyEncrypted,
-        }, 'Integration not enabled or missing apiKeyEncrypted, skipping for diagnostics');
+        logger.debug(
+          {
+            uid,
+            apiName,
+            enabled: integration.enabled,
+            hasApiKeyEncrypted: !!integration.apiKeyEncrypted,
+          },
+          "Integration not enabled or missing apiKeyEncrypted, skipping for diagnostics",
+        );
       }
     }
 
@@ -1166,8 +1446,15 @@ export class FirestoreAdapter {
   }
 
   // HFT Settings
-  async saveHFTSettings(uid: string, settings: Partial<HFTSettingsDocument>): Promise<void> {
-    const docRef = db().collection('users').doc(uid).collection('hftSettings').doc('current');
+  async saveHFTSettings(
+    uid: string,
+    settings: Partial<HFTSettingsDocument>,
+  ): Promise<void> {
+    const docRef = db()
+      .collection("users")
+      .doc(uid)
+      .collection("hftSettings")
+      .doc("current");
 
     const payload = {
       ...settings,
@@ -1177,15 +1464,15 @@ export class FirestoreAdapter {
 
     await docRef.set(sanitizedPayload, { merge: true });
 
-    logger.info({ uid }, 'HFT settings saved to Firestore');
+    logger.info({ uid }, "HFT settings saved to Firestore");
   }
 
   async getHFTSettings(uid: string): Promise<HFTSettingsDocument | null> {
     const doc = await db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('hftSettings')
-      .doc('current')
+      .collection("hftSettings")
+      .doc("current")
       .get();
 
     if (!doc.exists) return null;
@@ -1194,8 +1481,15 @@ export class FirestoreAdapter {
   }
 
   // HFT Execution Logs
-  async saveHFTExecutionLog(uid: string, execution: Omit<HFTExecutionLogDocument, 'id' | 'createdAt'>): Promise<string> {
-    const docRef = db().collection('users').doc(uid).collection('hftExecutionLogs').doc();
+  async saveHFTExecutionLog(
+    uid: string,
+    execution: Omit<HFTExecutionLogDocument, "id" | "createdAt">,
+  ): Promise<string> {
+    const docRef = db()
+      .collection("users")
+      .doc(uid)
+      .collection("hftExecutionLogs")
+      .doc();
 
     const doc: HFTExecutionLogDocument = {
       ...execution,
@@ -1203,53 +1497,82 @@ export class FirestoreAdapter {
     };
 
     await docRef.set(doc);
-    logger.info({ uid, action: execution.action, symbol: execution.symbol }, 'HFT execution log saved');
+    logger.info(
+      { uid, action: execution.action, symbol: execution.symbol },
+      "HFT execution log saved",
+    );
     return docRef.id;
   }
 
-  async getHFTExecutionLogs(uid: string, limit: number = 100): Promise<HFTExecutionLogDocument[]> {
+  async getHFTExecutionLogs(
+    uid: string,
+    limit: number = 100,
+  ): Promise<HFTExecutionLogDocument[]> {
     const snapshot = await db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('hftExecutionLogs')
-      .orderBy('timestamp', 'desc')
+      .collection("hftExecutionLogs")
+      .orderBy("timestamp", "desc")
       .limit(limit)
       .get();
 
-    return snapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-    } as HFTExecutionLogDocument));
+    return snapshot.docs.map(
+      (doc) =>
+        ({
+          id: doc.id,
+          ...doc.data(),
+        }) as HFTExecutionLogDocument,
+    );
   }
 
   // Agent Management
   async unlockAgent(uid: string, agentName: string): Promise<void> {
-    const docRef = db().collection('users').doc(uid).collection('agents').doc(agentName);
+    const docRef = db()
+      .collection("users")
+      .doc(uid)
+      .collection("agents")
+      .doc(agentName);
 
-    await docRef.set({
-      unlocked: true,
-      unlockedAt: admin.firestore.Timestamp.now(),
-    }, { merge: true });
+    await docRef.set(
+      {
+        unlocked: true,
+        unlockedAt: admin.firestore.Timestamp.now(),
+      },
+      { merge: true },
+    );
 
-    logger.info({ uid, agentName }, 'Agent unlocked');
+    logger.info({ uid, agentName }, "Agent unlocked");
   }
 
   async lockAgent(uid: string, agentName: string): Promise<void> {
-    const docRef = db().collection('users').doc(uid).collection('agents').doc(agentName);
+    const docRef = db()
+      .collection("users")
+      .doc(uid)
+      .collection("agents")
+      .doc(agentName);
 
-    await docRef.set({
-      unlocked: false,
-      unlockedAt: admin.firestore.Timestamp.now(),
-    }, { merge: true });
+    await docRef.set(
+      {
+        unlocked: false,
+        unlockedAt: admin.firestore.Timestamp.now(),
+      },
+      { merge: true },
+    );
 
-    logger.info({ uid, agentName }, 'Agent locked');
+    logger.info({ uid, agentName }, "Agent locked");
   }
 
-  async getAgentStatus(uid: string, agentName: string): Promise<{ unlocked: boolean; unlockedAt?: admin.firestore.Timestamp } | null> {
+  async getAgentStatus(
+    uid: string,
+    agentName: string,
+  ): Promise<{
+    unlocked: boolean;
+    unlockedAt?: admin.firestore.Timestamp;
+  } | null> {
     const doc = await db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('agents')
+      .collection("agents")
       .doc(agentName)
       .get();
 
@@ -1262,14 +1585,24 @@ export class FirestoreAdapter {
     };
   }
 
-  async getAllUserAgents(uid: string): Promise<Record<string, { unlocked: boolean; unlockedAt?: admin.firestore.Timestamp }>> {
+  async getAllUserAgents(
+    uid: string,
+  ): Promise<
+    Record<
+      string,
+      { unlocked: boolean; unlockedAt?: admin.firestore.Timestamp }
+    >
+  > {
     const snapshot = await db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('agents')
+      .collection("agents")
       .get();
 
-    const agents: Record<string, { unlocked: boolean; unlockedAt?: admin.firestore.Timestamp }> = {};
+    const agents: Record<
+      string,
+      { unlocked: boolean; unlockedAt?: admin.firestore.Timestamp }
+    > = {};
     snapshot.docs.forEach((doc) => {
       const data = doc.data();
       agents[doc.id] = {
@@ -1282,8 +1615,10 @@ export class FirestoreAdapter {
   }
 
   // User Profile Management
-  async getUserProfile(uid: string): Promise<{ role?: string; email?: string;[key: string]: any } | null> {
-    const doc = await db().collection('users').doc(uid).get();
+  async getUserProfile(
+    uid: string,
+  ): Promise<{ role?: string; email?: string;[key: string]: any } | null> {
+    const doc = await db().collection("users").doc(uid).get();
     if (!doc.exists) return null;
 
     const data = doc.data();
@@ -1291,14 +1626,19 @@ export class FirestoreAdapter {
   }
 
   // --- NEW: User Statistics Management ---
-  async incrementUserStat(uid: string, statKey: string, amount: number = 1, metadata?: Record<string, any>): Promise<void> {
+  async incrementUserStat(
+    uid: string,
+    statKey: string,
+    amount: number = 1,
+    metadata?: Record<string, any>,
+  ): Promise<void> {
     try {
-      const userRef = db().collection('users').doc(uid);
+      const userRef = db().collection("users").doc(uid);
 
       // Use atomic increment
       const updateData: any = {
         [`stats.${statKey}`]: admin.firestore.FieldValue.increment(amount),
-        [`stats.lastUpdated`]: admin.firestore.FieldValue.serverTimestamp()
+        [`stats.lastUpdated`]: admin.firestore.FieldValue.serverTimestamp(),
       };
 
       if (metadata) {
@@ -1310,23 +1650,37 @@ export class FirestoreAdapter {
       }
 
       await userRef.update(updateData);
-      // logger.debug({ uid, statKey, amount }, 'User stat incremented'); 
+      // logger.debug({ uid, statKey, amount }, 'User stat incremented');
     } catch (err: any) {
-      if (err.code === 5 || err.message?.includes('NOT_FOUND')) {
+      if (err.code === 5 || err.message?.includes("NOT_FOUND")) {
         // If user doc doesn't exist or stats field issues, try set with merge
         try {
-          await db().collection('users').doc(uid).set({
-            stats: {
-              [statKey]: amount,
-              lastUpdated: admin.firestore.Timestamp.now(),
-              ...(metadata?.lastActivity ? { lastActivity: metadata.lastActivity } : {})
-            }
-          }, { merge: true });
+          await db()
+            .collection("users")
+            .doc(uid)
+            .set(
+              {
+                stats: {
+                  [statKey]: amount,
+                  lastUpdated: admin.firestore.Timestamp.now(),
+                  ...(metadata?.lastActivity
+                    ? { lastActivity: metadata.lastActivity }
+                    : {}),
+                },
+              },
+              { merge: true },
+            );
         } catch (retryErr: any) {
-          logger.error({ uid, statKey, error: retryErr.message }, 'Failed to initialize user stats');
+          logger.error(
+            { uid, statKey, error: retryErr.message },
+            "Failed to initialize user stats",
+          );
         }
       } else {
-        logger.error({ uid, statKey, error: err.message }, 'Failed to increment user stat');
+        logger.error(
+          { uid, statKey, error: err.message },
+          "Failed to increment user stat",
+        );
       }
     }
   }
@@ -1335,15 +1689,20 @@ export class FirestoreAdapter {
    * Get User Stats directly
    */
   async getUserStats(uid: string): Promise<any> {
-    const doc = await db().collection('users').doc(uid).get();
+    const doc = await db().collection("users").doc(uid).get();
     if (!doc.exists) return {};
     return doc.data()?.stats || {};
   }
 
-
-
-  async getAllUsers(): Promise<Array<{ uid: string; email?: string; role?: string; createdAt?: admin.firestore.Timestamp }>> {
-    const snapshot = await db().collection('users').get();
+  async getAllUsers(): Promise<
+    Array<{
+      uid: string;
+      email?: string;
+      role?: string;
+      createdAt?: admin.firestore.Timestamp;
+    }>
+  > {
+    const snapshot = await db().collection("users").get();
 
     return snapshot.docs.map((doc) => {
       const data = doc.data();
@@ -1359,7 +1718,7 @@ export class FirestoreAdapter {
 
   // ========== USERS COLLECTION METHODS ==========
   async createOrUpdateUser(uid: string, userData: any): Promise<void> {
-    const userRef = db().collection('users').doc(uid);
+    const userRef = db().collection("users").doc(uid);
     const existing = await userRef.get();
 
     // CRITICAL: Hard Isolation Rule - Strip sensitive fields from root document write
@@ -1390,7 +1749,10 @@ export class FirestoreAdapter {
     this.guardAgainstIllegalRootWrites(`users/${uid}`, updateData);
 
     await userRef.set(updateData, { merge: true });
-    logger.info({ uid }, 'User created/updated in users collection (root doc restricted)');
+    logger.info(
+      { uid },
+      "User created/updated in users collection (root doc restricted)",
+    );
   }
 
   /**
@@ -1403,43 +1765,53 @@ export class FirestoreAdapter {
    */
   private guardAgainstIllegalRootWrites(path: string, data: any): void {
     const forbiddenFields = [
-      'settings',
-      'notifications',
-      'notificationSettings',
-      'autoTrade',
-      'autoTradeConfig',
-      'backgroundResearch',
-      'tradingSettings',
-      'riskLimits',
-      'thresholds'
+      "settings",
+      "notifications",
+      "notificationSettings",
+      "autoTrade",
+      "autoTradeConfig",
+      "backgroundResearch",
+      "tradingSettings",
+      "riskLimits",
+      "thresholds",
     ];
 
     // If writing to root user document, ensure no forbidden fields are present
     if (path.match(/^users\/[^/]+$/)) {
       for (const field of forbiddenFields) {
         if (data[field] !== undefined) {
-          const error = new Error(`CRITICAL: Unauthorized write to forbidden field '${field}' on user root document! Path: ${path}`);
-          logger.error({
-            path,
-            field,
-            stack: error.stack,
-            data: JSON.stringify(data).substring(0, 500)
-          }, 'HARD_ISOLATION_VIOLATION');
+          const error = new Error(
+            `CRITICAL: Unauthorized write to forbidden field '${field}' on user root document! Path: ${path}`,
+          );
+          logger.error(
+            {
+              path,
+              field,
+              stack: error.stack,
+              data: JSON.stringify(data).substring(0, 500),
+            },
+            "HARD_ISOLATION_VIOLATION",
+          );
           throw error;
         }
       }
     }
 
     // Logic for provider/integration writes (if they try to write to restricted subcollections)
-    if (path.includes('/integrations/') || path.includes('/providers/')) {
+    if (path.includes("/integrations/") || path.includes("/providers/")) {
       for (const field of forbiddenFields) {
         if (data[field] !== undefined) {
-          const error = new Error(`CRITICAL: Provider logic attempted to write restricted field '${field}' to path: ${path}`);
-          logger.error({
-            path,
-            field,
-            stack: error.stack
-          }, 'PROVIDER_ISOLATION_VIOLATION');
+          const error = new Error(
+            `CRITICAL: Provider logic attempted to write restricted field '${field}' to path: ${path}`,
+          );
+          logger.error(
+            {
+              path,
+              field,
+              stack: error.stack,
+            },
+            "PROVIDER_ISOLATION_VIOLATION",
+          );
           throw error;
         }
       }
@@ -1447,63 +1819,111 @@ export class FirestoreAdapter {
   }
 
   async getUser(uid: string): Promise<any | null> {
-    const doc = await db().collection('users').doc(uid).get();
+    const doc = await db().collection("users").doc(uid).get();
     if (!doc.exists) return null;
     return { uid: doc.id, ...doc.data() };
   }
 
   // ========== AGENTS COLLECTION METHODS ==========
-  async getAllAgents(): Promise<Array<{ id: string; name: string; price: number; features: string[];[key: string]: any }>> {
-    const snapshot = await db().collection('agents').get();
+  async getAllAgents(): Promise<
+    Array<{
+      id: string;
+      name: string;
+      price: number;
+      features: string[];
+      [key: string]: any;
+    }>
+  > {
+    const snapshot = await db().collection("agents").get();
     return snapshot.docs
-      .filter((doc) => doc.id !== '_init' && !doc.id.startsWith('_'))
-      .map((doc) => ({ id: doc.id, ...doc.data() } as any));
+      .filter((doc) => doc.id !== "_init" && !doc.id.startsWith("_"))
+      .map((doc) => ({ id: doc.id, ...doc.data() }) as any);
   }
 
   async getAgent(agentId: string): Promise<any | null> {
-    const doc = await db().collection('agents').doc(agentId).get();
+    const doc = await db().collection("agents").doc(agentId).get();
     if (!doc.exists) return null;
     return { id: doc.id, ...doc.data() };
   }
 
   // ========== USER AGENTS METHODS ==========
-  async getUserAgents(uid: string): Promise<Array<{ id: string; name: string; price: number; features: string[];[key: string]: any }>> {
-    const snapshot = await db().collection('users').doc(uid).collection('agents').get();
+  async getUserAgents(uid: string): Promise<
+    Array<{
+      id: string;
+      name: string;
+      price: number;
+      features: string[];
+      [key: string]: any;
+    }>
+  > {
+    const snapshot = await db()
+      .collection("users")
+      .doc(uid)
+      .collection("agents")
+      .get();
     return snapshot.docs
-      .filter((doc) => doc.id !== '_init' && !doc.id.startsWith('_')) // Filter out _init and other system documents
-      .map((doc) => ({ id: doc.id, ...doc.data() } as any));
+      .filter((doc) => doc.id !== "_init" && !doc.id.startsWith("_")) // Filter out _init and other system documents
+      .map((doc) => ({ id: doc.id, ...doc.data() }) as any);
   }
 
   async getUserAgent(uid: string, agentId: string): Promise<any | null> {
-    const doc = await db().collection('users').doc(uid).collection('agents').doc(agentId).get();
+    const doc = await db()
+      .collection("users")
+      .doc(uid)
+      .collection("agents")
+      .doc(agentId)
+      .get();
     if (!doc.exists) return null;
     return { id: doc.id, ...doc.data() };
   }
 
   // ========== USER FEATURES METHODS ==========
-  async getUserFeatures(uid: string): Promise<Array<{ id: string; name: string; enabled: boolean;[key: string]: any }>> {
-    const snapshot = await db().collection('users').doc(uid).collection('features').get();
-    return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as any));
+  async getUserFeatures(
+    uid: string,
+  ): Promise<
+    Array<{ id: string; name: string; enabled: boolean;[key: string]: any }>
+  > {
+    const snapshot = await db()
+      .collection("users")
+      .doc(uid)
+      .collection("features")
+      .get();
+    return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }) as any);
   }
 
-  async enableUserFeature(uid: string, featureId: string, featureData: any): Promise<void> {
-    const featureRef = db().collection('users').doc(uid).collection('features').doc(featureId);
-    await featureRef.set({
-      id: featureId,
-      enabled: true,
-      enabledAt: admin.firestore.Timestamp.now(),
-      ...featureData,
-    }, { merge: true });
-    logger.info({ uid, featureId }, 'User feature enabled');
+  async enableUserFeature(
+    uid: string,
+    featureId: string,
+    featureData: any,
+  ): Promise<void> {
+    const featureRef = db()
+      .collection("users")
+      .doc(uid)
+      .collection("features")
+      .doc(featureId);
+    await featureRef.set(
+      {
+        id: featureId,
+        enabled: true,
+        enabledAt: admin.firestore.Timestamp.now(),
+        ...featureData,
+      },
+      { merge: true },
+    );
+    logger.info({ uid, featureId }, "User feature enabled");
   }
 
   async disableUserFeature(uid: string, featureId: string): Promise<void> {
-    const featureRef = db().collection('users').doc(uid).collection('features').doc(featureId);
+    const featureRef = db()
+      .collection("users")
+      .doc(uid)
+      .collection("features")
+      .doc(featureId);
     await featureRef.update({
       enabled: false,
       disabledAt: admin.firestore.Timestamp.now(),
     });
-    logger.info({ uid, featureId }, 'User feature disabled');
+    logger.info({ uid, featureId }, "User feature disabled");
   }
 
   // ========== AGENT PURCHASE REQUESTS METHODS ==========
@@ -1516,45 +1936,62 @@ export class FirestoreAdapter {
     phoneNumber: string;
     status?: string;
   }): Promise<string> {
-    const requestRef = db().collection('agentPurchaseRequests').doc();
+    const requestRef = db().collection("agentPurchaseRequests").doc();
     const data = {
       id: requestRef.id,
-      status: requestData.status || 'pending',
+      status: requestData.status || "pending",
       createdAt: admin.firestore.Timestamp.now(),
       ...requestData,
     };
     await requestRef.set(data);
-    logger.info({ uid: requestData.uid, agentId: requestData.agentId, requestId: requestRef.id }, 'Agent purchase request created');
+    logger.info(
+      {
+        uid: requestData.uid,
+        agentId: requestData.agentId,
+        requestId: requestRef.id,
+      },
+      "Agent purchase request created",
+    );
     return requestRef.id;
   }
 
   async getAgentPurchaseRequests(): Promise<any[]> {
-    const snapshot = await db().collection('agentPurchaseRequests').orderBy('createdAt', 'desc').get();
+    const snapshot = await db()
+      .collection("agentPurchaseRequests")
+      .orderBy("createdAt", "desc")
+      .get();
     return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
   }
 
-  async approveAgentPurchaseRequest(requestId: string, adminUid: string): Promise<void> {
-    const requestRef = db().collection('agentPurchaseRequests').doc(requestId);
+  async approveAgentPurchaseRequest(
+    requestId: string,
+    adminUid: string,
+  ): Promise<void> {
+    const requestRef = db().collection("agentPurchaseRequests").doc(requestId);
     const requestDoc = await requestRef.get();
 
     if (!requestDoc.exists) {
-      throw new Error('Purchase request not found');
+      throw new Error("Purchase request not found");
     }
 
     const requestData = requestDoc.data();
     if (!requestData) {
-      throw new Error('Invalid purchase request data');
+      throw new Error("Invalid purchase request data");
     }
 
     // Update request status
     await requestRef.update({
-      status: 'approved',
+      status: "approved",
       approvedAt: admin.firestore.Timestamp.now(),
       approvedBy: adminUid,
     });
 
     // Mark the agent as unlocked in the user's agents collection
-    const userAgentRef = db().collection('users').doc(requestData.uid).collection('agents').doc(requestData.agentId);
+    const userAgentRef = db()
+      .collection("users")
+      .doc(requestData.uid)
+      .collection("agents")
+      .doc(requestData.agentId);
     await userAgentRef.update({
       unlocked: true,
       unlockedAt: admin.firestore.Timestamp.now(),
@@ -1564,49 +2001,63 @@ export class FirestoreAdapter {
     // Enable the feature for the user (for sidebar)
     await this.enableUserFeature(requestData.uid, requestData.agentId, {
       name: requestData.agentName,
-      type: 'agent',
+      type: "agent",
       purchaseRequestId: requestId,
     });
 
-    logger.info({ requestId, uid: requestData.uid, agentId: requestData.agentId }, 'Agent purchase request approved, agent unlocked, and feature enabled');
+    logger.info(
+      { requestId, uid: requestData.uid, agentId: requestData.agentId },
+      "Agent purchase request approved, agent unlocked, and feature enabled",
+    );
   }
 
-  async rejectAgentPurchaseRequest(requestId: string, adminUid: string, reason?: string): Promise<void> {
-    const requestRef = db().collection('agentPurchaseRequests').doc(requestId);
+  async rejectAgentPurchaseRequest(
+    requestId: string,
+    adminUid: string,
+    reason?: string,
+  ): Promise<void> {
+    const requestRef = db().collection("agentPurchaseRequests").doc(requestId);
     await requestRef.update({
-      status: 'rejected',
+      status: "rejected",
       rejectedAt: admin.firestore.Timestamp.now(),
       rejectedBy: adminUid,
       rejectionReason: reason,
     });
-    logger.info({ requestId }, 'Agent purchase request rejected');
+    logger.info({ requestId }, "Agent purchase request rejected");
   }
 
   // ========== AGENT UNLOCKS COLLECTION METHODS ==========
-  async createAgentUnlock(uid: string, agentName: string, metadata?: any): Promise<void> {
-    const unlockRef = db().collection('agentUnlocks').doc();
+  async createAgentUnlock(
+    uid: string,
+    agentName: string,
+    metadata?: any,
+  ): Promise<void> {
+    const unlockRef = db().collection("agentUnlocks").doc();
     await unlockRef.set({
       uid,
       agentName,
       unlockedAt: admin.firestore.Timestamp.now(),
       ...metadata,
     });
-    logger.info({ uid, agentName }, 'Agent unlock recorded');
+    logger.info({ uid, agentName }, "Agent unlock recorded");
   }
 
   async getUserAgentUnlocks(uid: string): Promise<any[]> {
     try {
       const snapshot = await db()
-        .collection('agentUnlocks')
-        .where('uid', '==', uid)
-        .orderBy('unlockedAt', 'desc')
+        .collection("agentUnlocks")
+        .where("uid", "==", uid)
+        .orderBy("unlockedAt", "desc")
         .get();
       return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
     } catch (err: any) {
-      logger.warn({ err: err.message }, 'getUserAgentUnlocks fell back due to index; returning unordered');
+      logger.warn(
+        { err: err.message },
+        "getUserAgentUnlocks fell back due to index; returning unordered",
+      );
       const snapshot = await db()
-        .collection('agentUnlocks')
-        .where('uid', '==', uid)
+        .collection("agentUnlocks")
+        .where("uid", "==", uid)
         .get();
       return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
     }
@@ -1617,15 +2068,19 @@ export class FirestoreAdapter {
   async getUserUnlockedAgents(uid: string): Promise<string[]> {
     try {
       // PRIMARY: Fetch from users/{uid}/agents - same source as getUserAgents
-      const snapshot = await db().collection('users').doc(uid).collection('agents').get();
-      
+      const snapshot = await db()
+        .collection("users")
+        .doc(uid)
+        .collection("agents")
+        .get();
+
       const unlockedAgentIds: string[] = [];
       snapshot.docs.forEach((doc) => {
         // Skip system documents
-        if (doc.id === '_init' || doc.id.startsWith('_')) {
+        if (doc.id === "_init" || doc.id.startsWith("_")) {
           return;
         }
-        
+
         const data = doc.data();
         // Treat as unlocked by default unless explicitly locked
         // unlocked field can be: true (explicitly unlocked), false (explicitly locked), or undefined (default unlocked)
@@ -1636,44 +2091,17 @@ export class FirestoreAdapter {
 
       return unlockedAgentIds;
     } catch (err: any) {
-      logger.warn({ err: err.message, uid }, 'getUserUnlockedAgents failed, returning empty array');
+      logger.warn(
+        { err: err.message, uid },
+        "getUserUnlockedAgents failed, returning empty array",
+      );
       return [];
     }
   }
 
-  // ========== API KEYS COLLECTION METHODS (top-level) ==========
-  async saveApiKeyToCollection(uid: string, keyData: {
-    publicKey: string;
-    secretKey: string; // will be encrypted
-    exchange?: string;
-  }): Promise<string> {
-    const docRef = db().collection('apiKeys').doc();
-    const { encrypt } = await import('./keyManager');
-
-    await docRef.set({
-      uid,
-      publicKey: keyData.publicKey,
-      secretKeyEncrypted: encrypt(keyData.secretKey),
-      exchange: keyData.exchange || 'binance',
-      createdAt: admin.firestore.Timestamp.now(),
-    });
-
-    logger.info({ uid, keyId: docRef.id }, 'API key saved to apiKeys collection');
-    return docRef.id;
-  }
-
-  async getUserApiKeys(uid: string): Promise<any[]> {
-    const snapshot = await db()
-      .collection('apiKeys')
-      .where('uid', '==', uid)
-      .orderBy('createdAt', 'desc')
-      .get();
-    return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-  }
-
   // ========== ACTIVITY LOGS COLLECTION METHODS ==========
   async logActivity(uid: string, type: string, metadata?: any): Promise<void> {
-    const logRef = db().collection('activityLogs').doc();
+    const logRef = db().collection("activityLogs").doc();
     await logRef.set({
       uid,
       type,
@@ -1681,18 +2109,18 @@ export class FirestoreAdapter {
       metadata: metadata || {},
       timestamp: admin.firestore.Timestamp.now(),
     });
-    logger.debug({ uid, type }, 'Activity logged');
+    logger.debug({ uid, type }, "Activity logged");
   }
 
   async getActivityLogs(uid?: string, limit: number = 100): Promise<any[]> {
-    let query: admin.firestore.Query = db().collection('activityLogs');
+    let query: admin.firestore.Query = db().collection("activityLogs");
 
     if (uid) {
-      query = query.where('uid', '==', uid);
+      query = query.where("uid", "==", uid);
     }
 
     const snapshot = await query
-      .orderBy('timestamp', 'desc')
+      .orderBy("timestamp", "desc")
       .limit(limit)
       .get();
 
@@ -1704,12 +2132,15 @@ export class FirestoreAdapter {
   }
 
   // ========== ENGINE STATUS COLLECTION METHODS ==========
-  async saveEngineStatus(uid: string, status: {
-    active: boolean;
-    engineType?: 'auto' | 'hft';
-    symbol?: string;
-    config?: any;
-  }): Promise<void> {
+  async saveEngineStatus(
+    uid: string,
+    status: {
+      active: boolean;
+      engineType?: "auto" | "hft";
+      symbol?: string;
+      config?: any;
+    },
+  ): Promise<void> {
     const statusDoc = {
       uid,
       ...status,
@@ -1719,66 +2150,86 @@ export class FirestoreAdapter {
     // CRITICAL: Runtime Guard Check
     this.guardAgainstIllegalWrites(`engineStatus/${uid}`, statusDoc);
 
-    const statusRef = db().collection('engineStatus').doc(uid);
+    const statusRef = db().collection("engineStatus").doc(uid);
     await statusRef.set(statusDoc, { merge: true });
-    logger.debug({ uid, active: status.active }, 'Engine status saved');
+    logger.debug({ uid, active: status.active }, "Engine status saved");
   }
 
   async getEngineStatus(uid: string): Promise<any | null> {
-    const doc = await db().collection('engineStatus').doc(uid).get();
+    const doc = await db().collection("engineStatus").doc(uid).get();
     if (!doc.exists) return null;
     return { uid: doc.id, ...doc.data() };
   }
 
   // ========== BACKGROUND RESEARCH SETTINGS METHODS ==========
-  async saveBackgroundResearchSettings(uid: string, settings: {
-    backgroundResearchEnabled?: boolean;
-    telegramBackgroundResearchEnabled?: boolean; // Explicit flag for Telegram Background Research mode
-    telegramEnabled?: boolean;
-    telegramBotToken?: string;
-    telegramChatId?: string;
-    researchFrequencyMinutes?: number;
-    accuracyTrigger?: number | { min: number; max: number }; // Support both number and object formats
-    lastResearchRun?: admin.firestore.Timestamp | null;
-    lastRunAt?: admin.firestore.Timestamp | null;
-    nextRunAt?: admin.firestore.Timestamp | null;
-    lastAccuracy?: number;
-    selectedCoins?: string[];
-    lastAlertSent?: { [coin: string]: { timestamp: admin.firestore.Timestamp; accuracy: number } };
-    engineState?: 'RUNNING' | 'STOPPED'; // Engine state persistence
-    scheduled?: boolean; // User is registered in scheduler
-    lastScheduledAt?: admin.firestore.Timestamp; // When user was last scheduled
-    // CACHED FLAGS for control-plane routes (updated by background processes only)
-    exchangeConfigured?: boolean; // Cached: exchange keys exist and decryptable
-    providersConfigured?: boolean; // Cached: at least one research provider configured
-    lastExchangeValidationAt?: admin.firestore.Timestamp; // When exchange was last validated
-    lastProviderValidationAt?: admin.firestore.Timestamp; // When providers were last validated
-  }): Promise<void> {
+  async saveBackgroundResearchSettings(
+    uid: string,
+    settings: {
+      backgroundResearchEnabled?: boolean;
+      telegramBackgroundResearchEnabled?: boolean; // Explicit flag for Telegram Background Research mode
+      telegramEnabled?: boolean;
+      telegramBotToken?: string;
+      telegramChatId?: string;
+      researchFrequencyMinutes?: number;
+      accuracyTrigger?: number | { min: number; max: number }; // Support both number and object formats
+      lastResearchRun?: admin.firestore.Timestamp | null;
+      lastRunAt?: admin.firestore.Timestamp | null;
+      nextRunAt?: admin.firestore.Timestamp | null;
+      lastAccuracy?: number;
+      selectedCoins?: string[];
+      lastAlertSent?: {
+        [coin: string]: {
+          timestamp: admin.firestore.Timestamp;
+          accuracy: number;
+        };
+      };
+      engineState?: "RUNNING" | "STOPPED"; // Engine state persistence
+      scheduled?: boolean; // User is registered in scheduler
+      lastScheduledAt?: admin.firestore.Timestamp; // When user was last scheduled
+      // CACHED FLAGS for control-plane routes (updated by background processes only)
+      exchangeConfigured?: boolean; // Cached: exchange keys exist and decryptable
+      providersConfigured?: boolean; // Cached: at least one research provider configured
+      lastExchangeValidationAt?: admin.firestore.Timestamp; // When exchange was last validated
+      lastProviderValidationAt?: admin.firestore.Timestamp; // When providers were last validated
+    },
+  ): Promise<void> {
     try {
-      const docRef = db().collection('users').doc(uid).collection('settings').doc('backgroundResearch');
+      const docRef = db()
+        .collection("users")
+        .doc(uid)
+        .collection("settings")
+        .doc("backgroundResearch");
 
       // CRITICAL: Get existing document first to merge properly
       const existingDoc = await docRef.get();
-      const existingData = existingDoc.exists ? (existingDoc.data() || {}) : {};
+      const existingData = existingDoc.exists ? existingDoc.data() || {} : {};
 
       // CRITICAL: Preserve Telegram credentials if not explicitly provided in settings
       // Never clear Telegram credentials on decrypt failure or other errors
       // Only update if explicitly provided (not undefined)
-      const preservedTelegramBotToken = settings.telegramBotToken !== undefined 
-        ? settings.telegramBotToken 
-        : (existingData.telegramBotToken || undefined);
-      const preservedTelegramChatId = settings.telegramChatId !== undefined 
-        ? settings.telegramChatId 
-        : (existingData.telegramChatId || undefined);
+      const preservedTelegramBotToken =
+        settings.telegramBotToken !== undefined
+          ? settings.telegramBotToken
+          : existingData.telegramBotToken || undefined;
+      const preservedTelegramChatId =
+        settings.telegramChatId !== undefined
+          ? settings.telegramChatId
+          : existingData.telegramChatId || undefined;
 
       // CRITICAL: Preserve enabled state if not explicitly provided
       // Refresh should NOT reset enabled state
-      const preservedBackgroundResearchEnabled = settings.backgroundResearchEnabled !== undefined
-        ? settings.backgroundResearchEnabled
-        : (existingData.backgroundResearchEnabled !== undefined ? existingData.backgroundResearchEnabled : undefined);
-      const preservedTelegramBackgroundResearchEnabled = settings.telegramBackgroundResearchEnabled !== undefined
-        ? settings.telegramBackgroundResearchEnabled
-        : (existingData.telegramBackgroundResearchEnabled !== undefined ? existingData.telegramBackgroundResearchEnabled : undefined);
+      const preservedBackgroundResearchEnabled =
+        settings.backgroundResearchEnabled !== undefined
+          ? settings.backgroundResearchEnabled
+          : existingData.backgroundResearchEnabled !== undefined
+            ? existingData.backgroundResearchEnabled
+            : undefined;
+      const preservedTelegramBackgroundResearchEnabled =
+        settings.telegramBackgroundResearchEnabled !== undefined
+          ? settings.telegramBackgroundResearchEnabled
+          : existingData.telegramBackgroundResearchEnabled !== undefined
+            ? existingData.telegramBackgroundResearchEnabled
+            : undefined;
 
       // CRITICAL: Merge with existing, preserving Telegram credentials and enabled state
       // Only explicitly provided fields are updated
@@ -1790,19 +2241,26 @@ export class FirestoreAdapter {
         telegramChatId: preservedTelegramChatId,
         // CRITICAL: Preserve enabled state unless explicitly provided
         backgroundResearchEnabled: preservedBackgroundResearchEnabled,
-        telegramBackgroundResearchEnabled: preservedTelegramBackgroundResearchEnabled,
+        telegramBackgroundResearchEnabled:
+          preservedTelegramBackgroundResearchEnabled,
         updatedAt: admin.firestore.Timestamp.now(),
       };
 
       const sanitized = this.sanitizeForFirestore(merged);
 
       // CRITICAL: Runtime Guard Check
-      this.guardAgainstIllegalWrites(`users/${uid}/settings/backgroundResearch`, sanitized);
+      this.guardAgainstIllegalWrites(
+        `users/${uid}/settings/backgroundResearch`,
+        sanitized,
+      );
 
       await docRef.set(sanitized, { merge: true });
-      logger.info({ uid }, 'Background research settings saved to Firestore');
+      logger.info({ uid }, "Background research settings saved to Firestore");
     } catch (error: any) {
-      logger.error({ uid, error: error.message, stack: error.stack }, 'Failed to save background research settings to Firestore');
+      logger.error(
+        { uid, error: error.message, stack: error.stack },
+        "Failed to save background research settings to Firestore",
+      );
       // Re-throw to allow route handlers to return 500
       throw error;
     }
@@ -1810,49 +2268,52 @@ export class FirestoreAdapter {
 
   async getBackgroundResearchSettings(uid: string): Promise<any | null> {
     const doc = await db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('settings')
-      .doc('backgroundResearch')
+      .collection("settings")
+      .doc("backgroundResearch")
       .get();
     if (!doc.exists) return null;
     return doc.data();
   }
 
   async getAllEngineStatuses(): Promise<any[]> {
-    const snapshot = await db().collection('engineStatus').get();
+    const snapshot = await db().collection("engineStatus").get();
     return snapshot.docs.map((doc) => ({ uid: doc.id, ...doc.data() }));
   }
 
   // ========== HFT LOGS COLLECTION METHODS ==========
-  async saveHFTLog(uid: string, logData: {
-    symbol: string;
-    action: string;
-    orderId?: string;
-    price?: number;
-    quantity?: number;
-    side?: 'BUY' | 'SELL';
-    pnl?: number;
-    metadata?: any;
-  }): Promise<void> {
-    const logRef = db().collection('hftLogs').doc();
+  async saveHFTLog(
+    uid: string,
+    logData: {
+      symbol: string;
+      action: string;
+      orderId?: string;
+      price?: number;
+      quantity?: number;
+      side?: "BUY" | "SELL";
+      pnl?: number;
+      metadata?: any;
+    },
+  ): Promise<void> {
+    const logRef = db().collection("hftLogs").doc();
     await logRef.set({
       uid,
       ...logData,
       timestamp: admin.firestore.Timestamp.now(),
     });
-    logger.debug({ uid, action: logData.action }, 'HFT log saved');
+    logger.debug({ uid, action: logData.action }, "HFT log saved");
   }
 
   async getHFTLogs(uid?: string, limit: number = 100): Promise<any[]> {
-    let query: admin.firestore.Query = db().collection('hftLogs');
+    let query: admin.firestore.Query = db().collection("hftLogs");
 
     if (uid) {
-      query = query.where('uid', '==', uid);
+      query = query.where("uid", "==", uid);
     }
 
     const snapshot = await query
-      .orderBy('timestamp', 'desc')
+      .orderBy("timestamp", "desc")
       .limit(limit)
       .get();
 
@@ -1864,24 +2325,28 @@ export class FirestoreAdapter {
   }
 
   // ========== TRADES COLLECTION METHODS ==========
-  async saveTrade(uid: string, tradeData: {
-    symbol: string;
-    side: 'BUY' | 'SELL' | 'buy' | 'sell';
-    qty: number;
-    entryPrice: number;
-    exitPrice?: number;
-    pnl?: number;
-    timestamp?: admin.firestore.Timestamp;
-    engineType: 'AI' | 'HFT' | 'Manual' | 'auto';
-    orderId?: string;
-    metadata?: any;
-    exchange?: string;
-    signalAccuracy?: number;
-    status?: 'open' | 'closed';
-  }): Promise<string> {
-    const tradeRef = db().collection('trades').doc();
-    const side = tradeData.side.toLowerCase() as 'buy' | 'sell';
-    const status = tradeData.status || (tradeData.exitPrice ? 'closed' : 'open');
+  async saveTrade(
+    uid: string,
+    tradeData: {
+      symbol: string;
+      side: "BUY" | "SELL" | "buy" | "sell";
+      qty: number;
+      entryPrice: number;
+      exitPrice?: number;
+      pnl?: number;
+      timestamp?: admin.firestore.Timestamp;
+      engineType: "AI" | "HFT" | "Manual" | "auto";
+      orderId?: string;
+      metadata?: any;
+      exchange?: string;
+      signalAccuracy?: number;
+      status?: "open" | "closed";
+    },
+  ): Promise<string> {
+    const tradeRef = db().collection("trades").doc();
+    const side = tradeData.side.toLowerCase() as "buy" | "sell";
+    const status =
+      tradeData.status || (tradeData.exitPrice ? "closed" : "open");
     await tradeRef.set({
       uid,
       symbol: tradeData.symbol,
@@ -1898,19 +2363,28 @@ export class FirestoreAdapter {
       ...(tradeData.orderId && { orderId: tradeData.orderId }),
       ...(tradeData.metadata && { metadata: tradeData.metadata }),
     });
-    logger.info({ uid, symbol: tradeData.symbol, side, exchange: tradeData.exchange, status }, 'Trade saved');
+    logger.info(
+      {
+        uid,
+        symbol: tradeData.symbol,
+        side,
+        exchange: tradeData.exchange,
+        status,
+      },
+      "Trade saved",
+    );
     return tradeRef.id;
   }
 
   async getTrades(uid?: string, limit: number = 100): Promise<any[]> {
     const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 1000);
     try {
-      let query: admin.firestore.Query = db().collection('trades');
+      let query: admin.firestore.Query = db().collection("trades");
       if (uid) {
-        query = query.where('uid', '==', uid);
+        query = query.where("uid", "==", uid);
       }
       const snapshot = await query
-        .orderBy('timestamp', 'desc')
+        .orderBy("timestamp", "desc")
         .limit(safeLimit)
         .get();
 
@@ -1920,10 +2394,13 @@ export class FirestoreAdapter {
         timestamp: doc.data().timestamp?.toDate().toISOString(),
       }));
     } catch (err: any) {
-      logger.warn({ err: err.message }, 'getTrades fell back due to index; returning unordered limited set');
-      let query: admin.firestore.Query = db().collection('trades');
+      logger.warn(
+        { err: err.message },
+        "getTrades fell back due to index; returning unordered limited set",
+      );
+      let query: admin.firestore.Query = db().collection("trades");
       if (uid) {
-        query = query.where('uid', '==', uid);
+        query = query.where("uid", "==", uid);
       }
       const snapshot = await query.limit(limit).get();
       return snapshot.docs.map((doc) => ({
@@ -1935,28 +2412,31 @@ export class FirestoreAdapter {
   }
 
   // ========== NOTIFICATIONS COLLECTION METHODS ==========
-  async createNotification(uid: string, notification: {
-    title: string;
-    message: string;
-    type?: string;
-    metadata?: any;
-  }): Promise<string> {
-    const notifRef = db().collection('notifications').doc();
+  async createNotification(
+    uid: string,
+    notification: {
+      title: string;
+      message: string;
+      type?: string;
+      metadata?: any;
+    },
+  ): Promise<string> {
+    const notifRef = db().collection("notifications").doc();
     await notifRef.set({
       uid,
       ...notification,
       read: false,
       timestamp: admin.firestore.Timestamp.now(),
     });
-    logger.debug({ uid, title: notification.title }, 'Notification created');
+    logger.debug({ uid, title: notification.title }, "Notification created");
     return notifRef.id;
   }
 
   async getUserNotifications(uid: string, limit: number = 50): Promise<any[]> {
     const snapshot = await db()
-      .collection('notifications')
-      .where('uid', '==', uid)
-      .orderBy('timestamp', 'desc')
+      .collection("notifications")
+      .where("uid", "==", uid)
+      .orderBy("timestamp", "desc")
       .limit(limit)
       .get();
 
@@ -1968,43 +2448,50 @@ export class FirestoreAdapter {
   }
 
   // Optimized method for notifications subcollection structure used in routes
-  async getUserNotificationsFromSubcollection(uid: string, limit: number = 50): Promise<any[]> {
+  async getUserNotificationsFromSubcollection(
+    uid: string,
+    limit: number = 50,
+  ): Promise<any[]> {
     const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
     try {
       // Try new subcollection path first (notifications/{uid}/items)
       const snapshot = await db()
-        .collection('notifications')
+        .collection("notifications")
         .doc(uid)
-        .collection('items')
-        .orderBy('timestamp', 'desc')
+        .collection("items")
+        .orderBy("timestamp", "desc")
         .limit(safeLimit)
         .get();
 
       return snapshot.docs.map((doc) => ({
         id: doc.id,
         ...doc.data(),
-        timestamp: doc.data().timestamp?.toDate?.()?.toISOString() || new Date().toISOString(),
+        timestamp:
+          doc.data().timestamp?.toDate?.()?.toISOString() ||
+          new Date().toISOString(),
       }));
     } catch (err: any) {
       // Fallback to old path (users/{uid}/notifications)
       const snapshot = await db()
-        .collection('users')
+        .collection("users")
         .doc(uid)
-        .collection('notifications')
-        .orderBy('timestamp', 'desc')
+        .collection("notifications")
+        .orderBy("timestamp", "desc")
         .limit(limit)
         .get();
 
       return snapshot.docs.map((doc) => ({
         id: doc.id,
         ...doc.data(),
-        timestamp: doc.data().timestamp?.toDate?.()?.toISOString() || new Date().toISOString(),
+        timestamp:
+          doc.data().timestamp?.toDate?.()?.toISOString() ||
+          new Date().toISOString(),
       }));
     }
   }
 
   async markNotificationRead(notificationId: string): Promise<void> {
-    await db().collection('notifications').doc(notificationId).update({
+    await db().collection("notifications").doc(notificationId).update({
       read: true,
       readAt: admin.firestore.Timestamp.now(),
     });
@@ -2012,49 +2499,52 @@ export class FirestoreAdapter {
 
   async getUnreadNotificationCount(uid: string): Promise<number> {
     const snapshot = await db()
-      .collection('notifications')
-      .where('uid', '==', uid)
-      .where('read', '==', false)
+      .collection("notifications")
+      .where("uid", "==", uid)
+      .where("read", "==", false)
       .get();
     return snapshot.size;
   }
 
   // ========== ADMIN COLLECTION METHODS ==========
-  async createAdmin(uid: string, adminData: {
-    email: string;
-    permissions?: string[];
-    role?: string;
-  }): Promise<void> {
-    const adminRef = db().collection('admin').doc(uid);
+  async createAdmin(
+    uid: string,
+    adminData: {
+      email: string;
+      permissions?: string[];
+      role?: string;
+    },
+  ): Promise<void> {
+    const adminRef = db().collection("admin").doc(uid);
     await adminRef.set({
       uid,
       ...adminData,
       createdAt: admin.firestore.Timestamp.now(),
     });
-    logger.info({ uid, email: adminData.email }, 'Admin created');
+    logger.info({ uid, email: adminData.email }, "Admin created");
   }
 
   async getAdmin(uid: string): Promise<any | null> {
-    const doc = await db().collection('admin').doc(uid).get();
+    const doc = await db().collection("admin").doc(uid).get();
     if (!doc.exists) return null;
     return { uid: doc.id, ...doc.data() };
   }
 
   async isAdmin(uid: string): Promise<boolean> {
-    const userDoc = await db().collection('users').doc(uid).get();
+    const userDoc = await db().collection("users").doc(uid).get();
     if (!userDoc.exists) return false;
     const data: any = userDoc.data() || {};
-    return data.role === 'admin' || data.isAdmin === true;
+    return data.role === "admin" || data.isAdmin === true;
   }
 
   async getAllAdmins(): Promise<any[]> {
-    const snapshot = await db().collection('admin').get();
+    const snapshot = await db().collection("admin").get();
     return snapshot.docs.map((doc) => ({ uid: doc.id, ...doc.data() }));
   }
 
   // ========== SETTINGS COLLECTION METHODS (global) ==========
   async getGlobalSettings(): Promise<any | null> {
-    const doc = await db().collection('settings').doc('global').get();
+    const doc = await db().collection("settings").doc("global").get();
     if (!doc.exists) return null;
     return doc.data();
   }
@@ -2067,33 +2557,36 @@ export class FirestoreAdapter {
     uiThemeDefaults?: any;
     [key: string]: any;
   }): Promise<void> {
-    const settingsRef = db().collection('settings').doc('global');
-    await settingsRef.set({
-      ...settings,
-      updatedAt: admin.firestore.Timestamp.now(),
-    }, { merge: true });
-    logger.info('Global settings updated');
+    const settingsRef = db().collection("settings").doc("global");
+    await settingsRef.set(
+      {
+        ...settings,
+        updatedAt: admin.firestore.Timestamp.now(),
+      },
+      { merge: true },
+    );
+    logger.info("Global settings updated");
   }
 
   // ========== LOGS COLLECTION METHODS (system logs) ==========
   async saveSystemLog(logData: {
     type: string;
     message: string;
-    level?: 'info' | 'warn' | 'error';
+    level?: "info" | "warn" | "error";
     metadata?: any;
   }): Promise<void> {
-    const logRef = db().collection('logs').doc();
+    const logRef = db().collection("logs").doc();
     await logRef.set({
       ...logData,
       timestamp: admin.firestore.Timestamp.now(),
     });
-    logger.debug({ type: logData.type }, 'System log saved');
+    logger.debug({ type: logData.type }, "System log saved");
   }
 
   async getSystemLogs(limit: number = 100): Promise<any[]> {
     const snapshot = await db()
-      .collection('logs')
-      .orderBy('timestamp', 'desc')
+      .collection("logs")
+      .orderBy("timestamp", "desc")
       .limit(limit)
       .get();
 
@@ -2106,57 +2599,77 @@ export class FirestoreAdapter {
 
   // ========== UI PREFERENCES COLLECTION METHODS ==========
   async getUserUIPreferences(uid: string): Promise<any | null> {
-    const doc = await db().collection('uiPreferences').doc(uid).get();
+    const doc = await db().collection("uiPreferences").doc(uid).get();
     if (!doc.exists) return null;
     return { uid: doc.id, ...doc.data() };
   }
 
-  async updateUIPreferences(uid: string, preferences: {
-    dismissedAgents?: string[];
-    hideDashboardCard?: string[];
-    theme?: 'light' | 'dark';
-    sidebarPinned?: boolean;
-    [key: string]: any;
-  }): Promise<void> {
-    const prefsRef = db().collection('uiPreferences').doc(uid);
-    await prefsRef.set({
-      uid,
-      ...preferences,
-      updatedAt: admin.firestore.Timestamp.now(),
-    }, { merge: true });
-    logger.debug({ uid }, 'UI preferences updated');
+  async updateUIPreferences(
+    uid: string,
+    preferences: {
+      dismissedAgents?: string[];
+      hideDashboardCard?: string[];
+      theme?: "light" | "dark";
+      sidebarPinned?: boolean;
+      [key: string]: any;
+    },
+  ): Promise<void> {
+    const prefsRef = db().collection("uiPreferences").doc(uid);
+    await prefsRef.set(
+      {
+        uid,
+        ...preferences,
+        updatedAt: admin.firestore.Timestamp.now(),
+      },
+      { merge: true },
+    );
+    logger.debug({ uid }, "UI preferences updated");
   }
 
-  async updateIntegrationUsageStats(uid: string, providerId: string, stats: any): Promise<void> {
-    const docRef = db().collection('users').doc(uid).collection('integrations').doc(providerId);
-    await docRef.set({
-      usageStats: stats,
-      updatedAt: admin.firestore.Timestamp.now()
-    }, { merge: true });
+  async updateIntegrationUsageStats(
+    uid: string,
+    providerId: string,
+    stats: any,
+  ): Promise<void> {
+    const docRef = db()
+      .collection("users")
+      .doc(uid)
+      .collection("integrations")
+      .doc(providerId);
+    await docRef.set(
+      {
+        usageStats: stats,
+        updatedAt: admin.firestore.Timestamp.now(),
+      },
+      { merge: true },
+    );
   }
 
   // ========== API USAGE TRACKING METHODS ==========
   async getApiUsage(userId: string): Promise<any | null> {
     try {
-      const doc = await db().collection('apiUsage').doc(userId).get();
+      const doc = await db().collection("apiUsage").doc(userId).get();
       if (!doc.exists) return null;
       return { userId: doc.id, ...doc.data() };
     } catch (error: any) {
-      logger.error({ error: error.message, userId }, 'Failed to get API usage');
+      logger.error({ error: error.message, userId }, "Failed to get API usage");
       return null;
     }
   }
 
   async saveApiUsage(userId: string, usage: any): Promise<void> {
     try {
-      const usageRef = db().collection('apiUsage').doc(userId);
+      const usageRef = db().collection("apiUsage").doc(userId);
       await usageRef.set({
         ...usage,
         updatedAt: admin.firestore.Timestamp.now(),
       });
-      logger.debug({ userId }, 'API usage saved');
+      logger.debug({ userId }, "API usage saved");
     } catch (error: any) {
-      logger.error({ error: error.message, userId }, 'Failed to save API usage');
+      logger.error(
+        { error: error.message, userId },
+        "Failed to save API usage",
+      );
       throw error;
     }
   }
@@ -2164,7 +2677,7 @@ export class FirestoreAdapter {
   // ========== GLOBAL STATS COLLECTION METHODS ==========
   async getGlobalStats(): Promise<any | null> {
     // PART A: Use 'main' as doc ID
-    const doc = await db().collection('globalStats').doc('main').get();
+    const doc = await db().collection("globalStats").doc("main").get();
     if (!doc.exists) return null;
     return doc.data();
   }
@@ -2179,12 +2692,15 @@ export class FirestoreAdapter {
     [key: string]: any;
   }): Promise<void> {
     // PART A: Use 'main' as doc ID
-    const statsRef = db().collection('globalStats').doc('main');
-    await statsRef.set({
-      ...stats,
-      updatedAt: admin.firestore.Timestamp.now(),
-    }, { merge: true });
-    logger.debug('Global stats updated');
+    const statsRef = db().collection("globalStats").doc("main");
+    await statsRef.set(
+      {
+        ...stats,
+        updatedAt: admin.firestore.Timestamp.now(),
+      },
+      { merge: true },
+    );
+    logger.debug("Global stats updated");
   }
 
   // ========== AUTO-TRADE SPECIFIC METHODS ==========
@@ -2193,17 +2709,17 @@ export class FirestoreAdapter {
     // Use single where clause on uid and filter status in memory
     try {
       const snapshot = await db()
-        .collection('trades')
-        .where('uid', '==', uid)
-        .orderBy('timestamp', 'desc')
+        .collection("trades")
+        .where("uid", "==", uid)
+        .orderBy("timestamp", "desc")
         .limit(limit * 2) // Fetch more to account for filtering
         .get();
 
       // Filter for open status in memory (no composite index required)
       const activeTrades = snapshot.docs
-        .filter(doc => doc.data().status === 'open')
+        .filter((doc) => doc.data().status === "open")
         .slice(0, limit) // Apply limit after filtering
-        .map(doc => {
+        .map((doc) => {
           const data = doc.data();
           return {
             id: doc.id,
@@ -2217,14 +2733,16 @@ export class FirestoreAdapter {
             takeProfit: data.takeProfit,
             accuracyAtEntry: data.signalAccuracy,
             status: data.status,
-            entryTime: data.timestamp?.toDate?.()?.toISOString() || new Date(data.timestamp).toISOString(),
+            entryTime:
+              data.timestamp?.toDate?.()?.toISOString() ||
+              new Date(data.timestamp).toISOString(),
             ...data,
           };
         });
 
       return activeTrades;
 
-      return snapshot.docs.map(doc => {
+      return snapshot.docs.map((doc) => {
         const data = doc.data();
         return {
           id: doc.id,
@@ -2238,22 +2756,27 @@ export class FirestoreAdapter {
           takeProfit: data.takeProfit,
           accuracyAtEntry: data.signalAccuracy,
           status: data.status,
-          entryTime: data.timestamp?.toDate?.()?.toISOString() || new Date(data.timestamp).toISOString(),
+          entryTime:
+            data.timestamp?.toDate?.()?.toISOString() ||
+            new Date(data.timestamp).toISOString(),
           ...data,
         };
       });
     } catch (error: any) {
-      logger.warn({ uid, error: error.message }, 'Error fetching active trades from trades collection, falling back to autoTradeActiveTrades');
+      logger.warn(
+        { uid, error: error.message },
+        "Error fetching active trades from trades collection, falling back to autoTradeActiveTrades",
+      );
       // Fallback to old collection for backward compatibility
       const snapshot = await db()
-        .collection('users')
+        .collection("users")
         .doc(uid)
-        .collection('autoTradeActiveTrades')
-        .orderBy('createdAt', 'desc')
+        .collection("autoTradeActiveTrades")
+        .orderBy("createdAt", "desc")
         .limit(limit)
         .get();
 
-      return snapshot.docs.map(doc => ({
+      return snapshot.docs.map((doc) => ({
         id: doc.id,
         ...doc.data(),
       }));
@@ -2262,14 +2785,14 @@ export class FirestoreAdapter {
 
   async getAutoTradeActivity(uid: string, limit: number = 50): Promise<any[]> {
     const snapshot = await db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('autoTradeActivity')
-      .orderBy('timestamp', 'desc')
+      .collection("autoTradeActivity")
+      .orderBy("timestamp", "desc")
       .limit(limit)
       .get();
 
-    return snapshot.docs.map(doc => ({
+    return snapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
     }));
@@ -2278,28 +2801,31 @@ export class FirestoreAdapter {
   /**
    * Save pending trade for user confirmation
    */
-  async savePendingTrade(uid: string, tradeData: {
-    requestId: string;
-    symbol: string;
-    side: 'BUY' | 'SELL';
-    quantity: number;
-    entryPrice: number;
-    stopLoss: number;
-    takeProfit: number;
-    accuracy: number;
-    researchRequestId?: string;
-    createdAt: Date;
-    expiresAt: Date;
-  }): Promise<string> {
+  async savePendingTrade(
+    uid: string,
+    tradeData: {
+      requestId: string;
+      symbol: string;
+      side: "BUY" | "SELL";
+      quantity: number;
+      entryPrice: number;
+      stopLoss: number;
+      takeProfit: number;
+      accuracy: number;
+      researchRequestId?: string;
+      createdAt: Date;
+      expiresAt: Date;
+    },
+  ): Promise<string> {
     const docRef = db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('pendingTrades')
+      .collection("pendingTrades")
       .doc(tradeData.requestId);
 
     const payload = {
       ...tradeData,
-      status: 'PENDING',
+      status: "PENDING",
       createdAt: admin.firestore.Timestamp.fromDate(tradeData.createdAt),
       expiresAt: admin.firestore.Timestamp.fromDate(tradeData.expiresAt),
       updatedAt: admin.firestore.Timestamp.now(),
@@ -2308,7 +2834,10 @@ export class FirestoreAdapter {
 
     await docRef.set(sanitizedPayload);
 
-    logger.info({ uid, requestId: tradeData.requestId, symbol: tradeData.symbol }, 'Pending trade saved');
+    logger.info(
+      { uid, requestId: tradeData.requestId, symbol: tradeData.symbol },
+      "Pending trade saved",
+    );
     return docRef.id;
   }
 
@@ -2320,10 +2849,10 @@ export class FirestoreAdapter {
     try {
       const now = admin.firestore.Timestamp.now();
       const snapshot = await db()
-        .collection('users')
+        .collection("users")
         .doc(uid)
-        .collection('pendingTrades')
-        .where('status', '==', 'PENDING')
+        .collection("pendingTrades")
+        .where("status", "==", "PENDING")
         // .where('expiresAt', '>', now) // Removed to avoid composite index requirement (status + expiresAt)
         // .orderBy('expiresAt', 'asc')
         .get();
@@ -2331,14 +2860,14 @@ export class FirestoreAdapter {
       if (snapshot.empty) return [];
 
       const pendingTrades = snapshot.docs
-        .map(doc => ({
+        .map((doc) => ({
           id: doc.id,
           ...doc.data(),
           createdAt: doc.data().createdAt?.toDate?.()?.toISOString(),
           expiresAt: doc.data().expiresAt?.toDate?.()?.toISOString(),
-          _expiresAtTimestamp: doc.data().expiresAt // Internal use for sorting/filtering
+          _expiresAtTimestamp: doc.data().expiresAt, // Internal use for sorting/filtering
         }))
-        .filter(trade => {
+        .filter((trade) => {
           // Filter expired trades in memory
           if (!trade._expiresAtTimestamp) return true; // Keep if no expiry
           return trade._expiresAtTimestamp.toMillis() > now.toMillis();
@@ -2347,13 +2876,18 @@ export class FirestoreAdapter {
           // Sort by expiration ascending
           if (!a._expiresAtTimestamp) return 1;
           if (!b._expiresAtTimestamp) return -1;
-          return a._expiresAtTimestamp.toMillis() - b._expiresAtTimestamp.toMillis();
+          return (
+            a._expiresAtTimestamp.toMillis() - b._expiresAtTimestamp.toMillis()
+          );
         });
 
       // Remove internal field before returning
       return pendingTrades.map(({ _expiresAtTimestamp, ...trade }) => trade);
     } catch (error: any) {
-      logger.error({ uid, error: error.message }, 'Failed to fetch pending trades');
+      logger.error(
+        { uid, error: error.message },
+        "Failed to fetch pending trades",
+      );
       return [];
     }
   }
@@ -2361,11 +2895,15 @@ export class FirestoreAdapter {
   /**
    * Update pending trade status (APPROVED or REJECTED)
    */
-  async updatePendingTradeStatus(uid: string, requestId: string, status: 'APPROVED' | 'REJECTED'): Promise<void> {
+  async updatePendingTradeStatus(
+    uid: string,
+    requestId: string,
+    status: "APPROVED" | "REJECTED",
+  ): Promise<void> {
     const docRef = db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('pendingTrades')
+      .collection("pendingTrades")
       .doc(requestId);
 
     await docRef.update({
@@ -2374,18 +2912,18 @@ export class FirestoreAdapter {
       resolvedAt: admin.firestore.Timestamp.now(),
     });
 
-    logger.info({ uid, requestId, status }, 'Pending trade status updated');
+    logger.info({ uid, requestId, status }, "Pending trade status updated");
   }
 
   async getTradeProposals(uid: string): Promise<any[]> {
     const snapshot = await db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('autoTradeProposals')
-      .orderBy('createdAt', 'desc')
+      .collection("autoTradeProposals")
+      .orderBy("createdAt", "desc")
       .get();
 
-    return snapshot.docs.map(doc => ({
+    return snapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
     }));
@@ -2393,14 +2931,14 @@ export class FirestoreAdapter {
 
   async getAutoTradeLogs(uid: string, limit: number = 100): Promise<any[]> {
     const snapshot = await db()
-      .collection('users')
+      .collection("users")
       .doc(uid)
-      .collection('autoTradeLogs')
-      .orderBy('timestamp', 'desc')
+      .collection("autoTradeLogs")
+      .orderBy("timestamp", "desc")
       .limit(limit)
       .get();
 
-    return snapshot.docs.map(doc => ({
+    return snapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
     }));
@@ -2410,10 +2948,10 @@ export class FirestoreAdapter {
   async getTradingSettings(uid: string): Promise<any> {
     try {
       const doc = await db()
-        .collection('users')
+        .collection("users")
         .doc(uid)
-        .collection('settings')
-        .doc('trading')
+        .collection("settings")
+        .doc("trading")
         .get();
 
       if (!doc.exists) {
@@ -2426,7 +2964,10 @@ export class FirestoreAdapter {
         updatedAt: data?.updatedAt?.toDate().toISOString(),
       };
     } catch (error: any) {
-      logger.error({ error: error.message, uid }, 'Error getting trading settings');
+      logger.error(
+        { error: error.message, uid },
+        "Error getting trading settings",
+      );
       throw error;
     }
   }
@@ -2439,19 +2980,25 @@ export class FirestoreAdapter {
       };
 
       // CRITICAL: Runtime Guard Check
-      this.guardAgainstIllegalWrites(`users/${uid}/settings/trading`, settingsDoc);
+      this.guardAgainstIllegalWrites(
+        `users/${uid}/settings/trading`,
+        settingsDoc,
+      );
 
       await db()
-        .collection('users')
+        .collection("users")
         .doc(uid)
-        .collection('settings')
-        .doc('trading')
+        .collection("settings")
+        .doc("trading")
         .set(settingsDoc, { merge: true });
 
-      logger.info({ uid, settings }, 'Trading settings saved');
+      logger.info({ uid, settings }, "Trading settings saved");
       return settings;
     } catch (error: any) {
-      logger.error({ error: error.message, uid }, 'Error saving trading settings');
+      logger.error(
+        { error: error.message, uid },
+        "Error saving trading settings",
+      );
       throw error;
     }
   }
@@ -2461,17 +3008,27 @@ export class FirestoreAdapter {
    */
   async savePredictionMetrics(uid: string, snapshotData: any): Promise<void> {
     try {
-      const docRef = db().collection('users').doc(uid).collection('predictions').doc();
+      const docRef = db()
+        .collection("users")
+        .doc(uid)
+        .collection("predictions")
+        .doc();
       const payload = {
         ...snapshotData,
-        id: docRef.id
+        id: docRef.id,
       };
       const sanitizedPayload = sanitizeFirestorePayload(payload);
 
       await docRef.set(sanitizedPayload);
-      logger.debug({ uid, predictionId: docRef.id }, 'Prediction snapshot saved');
+      logger.debug(
+        { uid, predictionId: docRef.id },
+        "Prediction snapshot saved",
+      );
     } catch (error: any) {
-      logger.error({ error: error.message, uid }, 'Error saving prediction snapshot');
+      logger.error(
+        { error: error.message, uid },
+        "Error saving prediction snapshot",
+      );
       throw error;
     }
   }
@@ -2482,11 +3039,13 @@ export class FirestoreAdapter {
   async getPredictionSnapshot(requestId: string): Promise<any> {
     try {
       // Search across all users (simplified - in production you'd want better indexing)
-      const usersRef = db().collection('users');
+      const usersRef = db().collection("users");
       const usersSnapshot = await usersRef.listDocuments();
 
       for (const userRef of usersSnapshot) {
-        const predictionRef = userRef.collection('predictions').where('requestId', '==', requestId);
+        const predictionRef = userRef
+          .collection("predictions")
+          .where("requestId", "==", requestId);
         const predictionSnapshot = await predictionRef.get();
 
         if (!predictionSnapshot.empty) {
@@ -2497,7 +3056,10 @@ export class FirestoreAdapter {
 
       return null;
     } catch (error: any) {
-      logger.error({ error: error.message, requestId }, 'Error getting prediction snapshot');
+      logger.error(
+        { error: error.message, requestId },
+        "Error getting prediction snapshot",
+      );
       throw error;
     }
   }
@@ -2505,20 +3067,26 @@ export class FirestoreAdapter {
   /**
    * Update prediction outcome
    */
-  async updatePredictionOutcome(requestId: string, outcome: any): Promise<void> {
+  async updatePredictionOutcome(
+    requestId: string,
+    outcome: any,
+  ): Promise<void> {
     try {
       // Find and update the prediction document
       const snapshot = await this.getPredictionSnapshot(requestId);
       if (snapshot) {
-        const userRef = db().collection('users').doc(snapshot.userId);
-        await userRef.collection('predictions').doc(snapshot.id).update({
+        const userRef = db().collection("users").doc(snapshot.userId);
+        await userRef.collection("predictions").doc(snapshot.id).update({
           outcome,
-          completedAt: new Date()
+          completedAt: new Date(),
         });
       }
-      logger.debug({ requestId }, 'Prediction outcome updated');
+      logger.debug({ requestId }, "Prediction outcome updated");
     } catch (error: any) {
-      logger.error({ error: error.message, requestId }, 'Error updating prediction outcome');
+      logger.error(
+        { error: error.message, requestId },
+        "Error updating prediction outcome",
+      );
       throw error;
     }
   }
@@ -2526,11 +3094,21 @@ export class FirestoreAdapter {
   /**
    * Update accuracy calibration buckets
    */
-  async updateAccuracyCalibration(uid: string, bucketKey: number, win: boolean): Promise<void> {
+  async updateAccuracyCalibration(
+    uid: string,
+    bucketKey: number,
+    win: boolean,
+  ): Promise<void> {
     try {
-      const calibrationRef = db().collection('users').doc(uid).collection('calibration').doc('accuracy');
+      const calibrationRef = db()
+        .collection("users")
+        .doc(uid)
+        .collection("calibration")
+        .doc("accuracy");
       const calibrationDoc = await calibrationRef.get();
-      const currentData = calibrationDoc.exists ? calibrationDoc.data() || {} : {};
+      const currentData = calibrationDoc.exists
+        ? calibrationDoc.data() || {}
+        : {};
 
       // Initialize bucket if it doesn't exist
       if (!currentData[bucketKey]) {
@@ -2542,9 +3120,12 @@ export class FirestoreAdapter {
       if (win) currentData[bucketKey].wins += 1;
 
       await calibrationRef.set(currentData);
-      logger.debug({ uid, bucketKey, win }, 'Accuracy calibration updated');
+      logger.debug({ uid, bucketKey, win }, "Accuracy calibration updated");
     } catch (error: any) {
-      logger.error({ error: error.message, uid, bucketKey }, 'Error updating accuracy calibration');
+      logger.error(
+        { error: error.message, uid, bucketKey },
+        "Error updating accuracy calibration",
+      );
       throw error;
     }
   }
@@ -2552,42 +3133,65 @@ export class FirestoreAdapter {
   /**
    * Get accuracy history and calibration stats
    */
-  async getAccuracyHistory(uid: string, filters: { strategy?: string; symbol?: string; limit?: number }): Promise<any> {
+  async getAccuracyHistory(
+    uid: string,
+    filters: { strategy?: string; symbol?: string; limit?: number },
+  ): Promise<any> {
     try {
-      let query: any = db().collection('users').doc(uid).collection('predictions');
+      let query: any = db()
+        .collection("users")
+        .doc(uid)
+        .collection("predictions");
 
       if (filters.symbol) {
-        query = query.where('symbol', '==', filters.symbol);
+        query = query.where("symbol", "==", filters.symbol);
       }
 
       if (filters.strategy) {
-        query = query.where('strategy', '==', filters.strategy);
+        query = query.where("strategy", "==", filters.strategy);
       }
 
-      query = query.orderBy('timestamp', 'desc').limit(filters.limit || 100);
+      query = query.orderBy("timestamp", "desc").limit(filters.limit || 100);
 
       const snapshot = await query.get();
-      const predictions = snapshot.docs.map((doc: any) => ({ ...doc.data(), id: doc.id }));
+      const predictions = snapshot.docs.map((doc: any) => ({
+        ...doc.data(),
+        id: doc.id,
+      }));
 
       // Get calibration data
-      const calibrationRef = db().collection('users').doc(uid).collection('calibration').doc('accuracy');
+      const calibrationRef = db()
+        .collection("users")
+        .doc(uid)
+        .collection("calibration")
+        .doc("accuracy");
       const calibrationDoc = await calibrationRef.get();
-      const calibrationData = calibrationDoc.exists ? calibrationDoc.data() || {} : {};
+      const calibrationData = calibrationDoc.exists
+        ? calibrationDoc.data() || {}
+        : {};
 
       // Calculate rolling accuracy
       const totalPredictions = predictions.length;
-      const winningPredictions = predictions.filter((p: any) => p.outcome?.win).length;
-      const rollingAccuracy = totalPredictions > 0 ? (winningPredictions / totalPredictions) * 100 : 0;
+      const winningPredictions = predictions.filter(
+        (p: any) => p.outcome?.win,
+      ).length;
+      const rollingAccuracy =
+        totalPredictions > 0
+          ? (winningPredictions / totalPredictions) * 100
+          : 0;
 
       return {
         rollingAccuracy: Math.round(rollingAccuracy * 100) / 100,
         totalPredictions,
         winningPredictions,
         calibrationBuckets: calibrationData,
-        recentPredictions: predictions.slice(0, 20) // Return last 20 for display
+        recentPredictions: predictions.slice(0, 20), // Return last 20 for display
       };
     } catch (error: any) {
-      logger.error({ error: error.message, uid }, 'Error getting accuracy history');
+      logger.error(
+        { error: error.message, uid },
+        "Error getting accuracy history",
+      );
       throw error;
     }
   }
@@ -2597,13 +3201,21 @@ export class FirestoreAdapter {
    */
   async getUserProviderSettings(uid: string): Promise<any> {
     try {
-      const doc = await db().collection('users').doc(uid).collection('settings').doc('providers').get();
+      const doc = await db()
+        .collection("users")
+        .doc(uid)
+        .collection("settings")
+        .doc("providers")
+        .get();
       if (!doc.exists) {
         return null;
       }
       return doc.data();
     } catch (error: any) {
-      logger.error({ error: error.message, uid }, 'Error getting user provider settings');
+      logger.error(
+        { error: error.message, uid },
+        "Error getting user provider settings",
+      );
       throw error;
     }
   }
@@ -2613,12 +3225,23 @@ export class FirestoreAdapter {
    */
   async saveUserProviderSettings(uid: string, settings: any): Promise<void> {
     try {
-      await db().collection('users').doc(uid).collection('settings').doc('providers').set({
-        ...settings,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
+      await db()
+        .collection("users")
+        .doc(uid)
+        .collection("settings")
+        .doc("providers")
+        .set(
+          {
+            ...settings,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
     } catch (error: any) {
-      logger.error({ error: error.message, uid, settings }, 'Error saving user provider settings');
+      logger.error(
+        { error: error.message, uid, settings },
+        "Error saving user provider settings",
+      );
       throw error;
     }
   }
@@ -2628,13 +3251,38 @@ export class FirestoreAdapter {
    */
   async getExchangeConfig(uid: string): Promise<any> {
     try {
-      const doc = await db().collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+      const doc = await db()
+        .collection("users")
+        .doc(uid)
+        .collection("exchangeConfig")
+        .doc("current")
+        .get();
       if (!doc.exists) {
         return null;
       }
-      return doc.data();
+
+      const data = doc.data();
+
+      // CRITICAL: Filter out INVALID_KEYS from legacy data to prevent UI exposure
+      // This prevents INVALID_KEYS from leaking to frontend even if legacy data exists
+      if (data && data.exchangeStatus === 'INVALID_KEYS') {
+        logger.warn(
+          { uid },
+          "LEGACY_INVALID_KEYS_DETECTED: Filtering INVALID_KEYS from getExchangeConfig response"
+        );
+        const cleanData = { ...data };
+        delete cleanData.exchangeStatus;
+        delete cleanData.keysClearedAt;
+        delete cleanData.keysClearedReason;
+        return cleanData;
+      }
+
+      return data;
     } catch (error: any) {
-      logger.error({ error: error.message, uid }, 'Error getting exchange config');
+      logger.error(
+        { error: error.message, uid },
+        "Error getting exchange config",
+      );
       return null;
     }
   }
@@ -2644,13 +3292,19 @@ export class FirestoreAdapter {
    * Exchange credentials are now stored in users/{uid}/exchangeConfig/current
    * This method is disabled to prevent data corruption and inconsistencies
    */
-  async saveExchangeCredentials(uid: string, exchange: string, credentials: {
-    apiKey: string;
-    secret: string;
-    passphrase?: string;
-    testnet: boolean;
-  }): Promise<void> {
-    throw new Error(`DEPRECATED: saveExchangeCredentials() is no longer supported. Exchange credentials must be saved to users/${uid}/exchangeConfig/current only.`);
+  async saveExchangeCredentials(
+    uid: string,
+    exchange: string,
+    credentials: {
+      apiKey: string;
+      secret: string;
+      passphrase?: string;
+      testnet: boolean;
+    },
+  ): Promise<void> {
+    throw new Error(
+      `DEPRECATED: saveExchangeCredentials() is no longer supported. Exchange credentials must be saved to users/${uid}/exchangeConfig/current only.`,
+    );
   }
 
   /**
@@ -2660,7 +3314,12 @@ export class FirestoreAdapter {
    */
   async getExchangeCredentials(uid: string, exchange: string): Promise<any> {
     try {
-      const doc = await db().collection('users').doc(uid).collection('exchangeConfig').doc('current').get();
+      const doc = await db()
+        .collection("users")
+        .doc(uid)
+        .collection("exchangeConfig")
+        .doc("current")
+        .get();
       if (!doc.exists) {
         return null;
       }
@@ -2673,10 +3332,13 @@ export class FirestoreAdapter {
         apiKey: config.apiKeyEncrypted,
         secretKeyEncrypted: config.secretKeyEncrypted || config.secretEncrypted,
         passphrase: config.passphraseEncrypted,
-        testnet: config.testnet
+        testnet: config.testnet,
       };
     } catch (error: any) {
-      logger.error({ error: error.message, uid, exchange }, 'Error getting exchange credentials from new system');
+      logger.error(
+        { error: error.message, uid, exchange },
+        "Error getting exchange credentials from new system",
+      );
       throw error;
     }
   }
@@ -2686,28 +3348,42 @@ export class FirestoreAdapter {
    * Exchange credentials are now stored in users/{uid}/exchangeConfig/current
    * This method is disabled to prevent data corruption and inconsistencies
    */
-  async deleteExchangeCredentials(uid: string, exchange: string): Promise<void> {
-    throw new Error(`DEPRECATED: deleteExchangeCredentials() is no longer supported. Exchange credentials must be managed in users/${uid}/exchangeConfig/current only.`);
+  async deleteExchangeCredentials(
+    uid: string,
+    exchange: string,
+  ): Promise<void> {
+    throw new Error(
+      `DEPRECATED: deleteExchangeCredentials() is no longer supported. Exchange credentials must be managed in users/${uid}/exchangeConfig/current only.`,
+    );
   }
 
   /**
    * Store the latest successful research result for a user
    * Used to share research results between UI and Auto-Trade
    */
-  async storeLatestResearchResult(uid: string, researchResult: any): Promise<void> {
+  async storeLatestResearchResult(
+    uid: string,
+    researchResult: any,
+  ): Promise<void> {
     try {
       const db = getFirebaseAdmin().firestore();
-      const userRef = db.collection('users').doc(uid);
+      const userRef = db.collection("users").doc(uid);
 
-      await userRef.collection('researchCache').doc('latest').set({
+      await userRef.collection("researchCache").doc("latest").set({
         researchResult,
         timestamp: admin.firestore.Timestamp.now(),
-        source: 'ui_research'
+        source: "ui_research",
       });
 
-      logger.info({ uid, symbol: researchResult.symbol }, '✅ [RESEARCH_CACHE] Stored latest research result');
+      logger.info(
+        { uid, symbol: researchResult.symbol },
+        "✅ [RESEARCH_CACHE] Stored latest research result",
+      );
     } catch (error: any) {
-      logger.error({ uid, error: error.message }, '❌ [RESEARCH_CACHE] Failed to store latest research result');
+      logger.error(
+        { uid, error: error.message },
+        "❌ [RESEARCH_CACHE] Failed to store latest research result",
+      );
       // Don't throw - caching failure shouldn't break research
     }
   }
@@ -2719,8 +3395,11 @@ export class FirestoreAdapter {
   async getLatestResearchResult(uid: string): Promise<any | null> {
     try {
       const db = getFirebaseAdmin().firestore();
-      const userRef = db.collection('users').doc(uid);
-      const cacheDoc = await userRef.collection('researchCache').doc('latest').get();
+      const userRef = db.collection("users").doc(uid);
+      const cacheDoc = await userRef
+        .collection("researchCache")
+        .doc("latest")
+        .get();
 
       if (!cacheDoc.exists) {
         return null;
@@ -2737,14 +3416,23 @@ export class FirestoreAdapter {
 
       // Cache expires after 5 minutes
       if (ageMinutes > 5) {
-        logger.info({ uid, ageMinutes }, '📅 [RESEARCH_CACHE] Cached research result expired');
+        logger.info(
+          { uid, ageMinutes },
+          "📅 [RESEARCH_CACHE] Cached research result expired",
+        );
         return null;
       }
 
-      logger.info({ uid, ageMinutes: ageMinutes.toFixed(1) }, '✅ [RESEARCH_CACHE] Retrieved valid cached research result');
+      logger.info(
+        { uid, ageMinutes: ageMinutes.toFixed(1) },
+        "✅ [RESEARCH_CACHE] Retrieved valid cached research result",
+      );
       return cacheData.researchResult;
     } catch (error: any) {
-      logger.error({ uid, error: error.message }, '❌ [RESEARCH_CACHE] Failed to retrieve latest research result');
+      logger.error(
+        { uid, error: error.message },
+        "❌ [RESEARCH_CACHE] Failed to retrieve latest research result",
+      );
       return null;
     }
   }
@@ -2755,12 +3443,18 @@ export class FirestoreAdapter {
   async clearLatestResearchResult(uid: string): Promise<void> {
     try {
       const db = getFirebaseAdmin().firestore();
-      const userRef = db.collection('users').doc(uid);
+      const userRef = db.collection("users").doc(uid);
 
-      await userRef.collection('researchCache').doc('latest').delete();
-      logger.info({ uid }, '🗑️ [RESEARCH_CACHE] Cleared cached research result');
+      await userRef.collection("researchCache").doc("latest").delete();
+      logger.info(
+        { uid },
+        "🗑️ [RESEARCH_CACHE] Cleared cached research result",
+      );
     } catch (error: any) {
-      logger.error({ uid, error: error.message }, '❌ [RESEARCH_CACHE] Failed to clear cached research result');
+      logger.error(
+        { uid, error: error.message },
+        "❌ [RESEARCH_CACHE] Failed to clear cached research result",
+      );
       // Don't throw - clearing failure shouldn't break anything
     }
   }
@@ -2770,46 +3464,71 @@ export class FirestoreAdapter {
    */
   async storeResearchHistory(uid: string, historyEntry: any): Promise<void> {
     // HARD BLOCK: ERROR_CYCLE must NEVER be written for AUTO_TRADE source
-    if (historyEntry.symbol === 'ERROR_CYCLE' && historyEntry.source === 'AUTO_TRADE') {
-      logger.error({
-        uid,
-        symbol: historyEntry.symbol,
-        source: historyEntry.source,
-        entry: historyEntry
-      }, '🚫 [ARCHITECTURE_VIOLATION] ERROR_CYCLE BLOCKED for AUTO_TRADE source - this should NEVER happen');
-      throw new Error('ARCHITECTURE_VIOLATION: ERROR_CYCLE not allowed for AUTO_TRADE source');
+    if (
+      historyEntry.symbol === "ERROR_CYCLE" &&
+      historyEntry.source === "AUTO_TRADE"
+    ) {
+      logger.error(
+        {
+          uid,
+          symbol: historyEntry.symbol,
+          source: historyEntry.source,
+          entry: historyEntry,
+        },
+        "🚫 [ARCHITECTURE_VIOLATION] ERROR_CYCLE BLOCKED for AUTO_TRADE source - this should NEVER happen",
+      );
+      throw new Error(
+        "ARCHITECTURE_VIOLATION: ERROR_CYCLE not allowed for AUTO_TRADE source",
+      );
     }
 
     // DEBUG: Log ERROR_CYCLE writes to catch any remaining violations
-    if (historyEntry.symbol === 'ERROR_CYCLE') {
-      console.log('🔥 [FIRESTORE_DEBUG] ERROR_CYCLE being written:', {
+    if (historyEntry.symbol === "ERROR_CYCLE") {
+      console.log("🔥 [FIRESTORE_DEBUG] ERROR_CYCLE being written:", {
         uid,
         source: historyEntry.source,
         skipReason: historyEntry.skipReason,
-        error: historyEntry.error
+        error: historyEntry.error,
       });
     }
 
     // CRITICAL: Validate required fields before attempting Firestore write
     // AUTO_TRADE SKIPPED entries: Allow missing accuracy and symbol (they track research cycles)
     // TELEGRAM entries: Require accuracy for all entries, require symbol for non-SKIPPED
-    if (historyEntry.source === 'AUTO_TRADE' && historyEntry.status === 'SKIPPED') {
+    if (
+      historyEntry.source === "AUTO_TRADE" &&
+      historyEntry.status === "SKIPPED"
+    ) {
       // AUTO_TRADE SKIPPED: Allow missing accuracy and symbol - these are research cycle trackers
       // No validation needed, proceed with save
     } else {
       // TELEGRAM or AUTO_TRADE EXECUTED: Require accuracy
-      if (typeof historyEntry.accuracy !== 'number' || isNaN(historyEntry.accuracy)) {
-        logger.warn({ uid, symbol: historyEntry.symbol, source: historyEntry.source, status: historyEntry.status }, 'Skipping history save - accuracy is missing or invalid');
+      if (
+        typeof historyEntry.accuracy !== "number" ||
+        isNaN(historyEntry.accuracy)
+      ) {
+        logger.warn(
+          {
+            uid,
+            symbol: historyEntry.symbol,
+            source: historyEntry.source,
+            status: historyEntry.status,
+          },
+          "Skipping history save - accuracy is missing or invalid",
+        );
         return; // Skip save cleanly, do NOT throw
       }
 
       // Require symbol for non-SKIPPED entries
-      if (!historyEntry.symbol && historyEntry.status !== 'SKIPPED') {
-        logger.warn({ uid, source: historyEntry.source, status: historyEntry.status }, 'Skipping history save - symbol is missing and status is not SKIPPED');
+      if (!historyEntry.symbol && historyEntry.status !== "SKIPPED") {
+        logger.warn(
+          { uid, source: historyEntry.source, status: historyEntry.status },
+          "Skipping history save - symbol is missing and status is not SKIPPED",
+        );
         return; // Skip save cleanly for non-SKIPPED entries without symbol
       }
     }
-    
+
     // TEMPORARY DEBUG LOGGING: Log before saving history
     console.log("🔥 [HISTORY_DEBUG] BEFORE save", {
       uid,
@@ -2818,7 +3537,7 @@ export class FirestoreAdapter {
       accuracy: historyEntry.accuracy,
       status: historyEntry.status,
       skipReason: historyEntry.skipReason,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
 
     // 🔥 DIAGNOSTIC: PROVE HISTORY WRITE ATTEMPT
@@ -2827,21 +3546,22 @@ export class FirestoreAdapter {
       symbol: historyEntry.symbol,
       firestorePath: `users/${uid}/research_history`,
       entry: historyEntry,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
-    
+
     try {
       // CRITICAL: Sanitize entry to remove any undefined values before Firestore write
       const sanitizedEntry = this.sanitizeForFirestore(historyEntry);
-      
-      const result = await db().collection('users')
+
+      const result = await db()
+        .collection("users")
         .doc(uid)
-        .collection('research_history')
+        .collection("research_history")
         .add({
           ...sanitizedEntry,
-          timestamp: admin.firestore.FieldValue.serverTimestamp()
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
         });
-      
+
       // TEMPORARY DEBUG LOGGING: Log after successful save
       console.log("🔥 [HISTORY_DEBUG] AFTER save success", {
         uid,
@@ -2851,7 +3571,7 @@ export class FirestoreAdapter {
         status: historyEntry.status,
         skipReason: historyEntry.skipReason,
         docId: result.id,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       });
 
       // 🔥 DIAGNOSTIC: PROVE HISTORY WRITE SUCCESS
@@ -2859,10 +3579,13 @@ export class FirestoreAdapter {
         uid,
         symbol: historyEntry.symbol,
         docId: result.id,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       });
 
-      logger.info({ uid, symbol: historyEntry.symbol }, '✅ [FIRESTORE] Research history entry saved');
+      logger.info(
+        { uid, symbol: historyEntry.symbol },
+        "✅ [FIRESTORE] Research history entry saved",
+      );
     } catch (error: any) {
       // 🔥 DIAGNOSTIC: PROVE HISTORY WRITE FAILURE
       console.log("🔥 [FIRESTORE_HISTORY] AFTER write failure", {
@@ -2870,28 +3593,45 @@ export class FirestoreAdapter {
         symbol: historyEntry.symbol,
         error: error.message,
         stack: error.stack,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       });
-      logger.error({ uid, error: error.message }, '❌ [FIRESTORE] Failed to save research history');
+      logger.error(
+        { uid, error: error.message },
+        "❌ [FIRESTORE] Failed to save research history",
+      );
     }
   }
 
   /**
    * Update existing research history entry
    */
-  async updateResearchHistory(uid: string, historyId: string, updates: any): Promise<void> {
+  async updateResearchHistory(
+    uid: string,
+    historyId: string,
+    updates: any,
+  ): Promise<void> {
     try {
       const db = getFirebaseAdmin().firestore();
-      const historyRef = db.collection('users').doc(uid).collection('research_history').doc(historyId);
+      const historyRef = db
+        .collection("users")
+        .doc(uid)
+        .collection("research_history")
+        .doc(historyId);
 
       await historyRef.update({
         ...updates,
-        updatedAt: admin.firestore.Timestamp.now()
+        updatedAt: admin.firestore.Timestamp.now(),
       });
 
-      logger.debug({ uid, historyId }, '✅ [HISTORY_UPDATE] Research history entry updated');
+      logger.debug(
+        { uid, historyId },
+        "✅ [HISTORY_UPDATE] Research history entry updated",
+      );
     } catch (error: any) {
-      logger.error({ uid, historyId, error: error.message }, '❌ [HISTORY_UPDATE] Failed to update research history');
+      logger.error(
+        { uid, historyId, error: error.message },
+        "❌ [HISTORY_UPDATE] Failed to update research history",
+      );
       throw error;
     }
   }
@@ -2904,15 +3644,28 @@ export class FirestoreAdapter {
   async getResearchHistory(uid: string, limit: number = 50): Promise<any[]> {
     try {
       const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
-      const snapshot = await db().collection('users')
+      const snapshot = await db()
+        .collection("users")
         .doc(uid)
-        .collection('research_history')
-        .select('symbol', 'signal', 'accuracy', 'price', 'timestamp', 'source', 'status', 'decision', 'executionStatus', 'tradePlan', 'skipReason')
-        .orderBy('timestamp', 'desc')
+        .collection("research_history")
+        .select(
+          "symbol",
+          "signal",
+          "accuracy",
+          "price",
+          "timestamp",
+          "source",
+          "status",
+          "decision",
+          "executionStatus",
+          "tradePlan",
+          "skipReason",
+        )
+        .orderBy("timestamp", "desc")
         .limit(safeLimit)
         .get();
 
-      return snapshot.docs.map(doc => {
+      return snapshot.docs.map((doc) => {
         const data = doc.data();
 
         // CRITICAL OPTIMIZATION: Exclude heavy nested objects for list view performance
@@ -2921,44 +3674,56 @@ export class FirestoreAdapter {
 
         // Normalize status based on source
         let normalizedStatus;
-        if (data.source === 'AUTO_TRADE') {
+        if (data.source === "AUTO_TRADE") {
           // AUTO_TRADE: Use status field AS-IS, or force SKIPPED if skipReason exists
           if (data.status) {
             normalizedStatus = data.status;
           } else if (data.skipReason) {
-            normalizedStatus = 'SKIPPED';
+            normalizedStatus = "SKIPPED";
           } else {
-            normalizedStatus = 'UNKNOWN';
+            normalizedStatus = "UNKNOWN";
           }
         } else {
           // TELEGRAM: Use existing normalization logic
-          normalizedStatus = data.decision === 'EXECUTED' ? 'COMPLETED' :
-                 data.decision === 'SKIPPED' ? 'SKIPPED' :
-                 data.executionStatus === 'SUCCESS' ? 'COMPLETED' :
-                 data.executionStatus === 'FAILED' ? 'FAILED' :
-                 data.status || 'UNKNOWN';
+          normalizedStatus =
+            data.decision === "EXECUTED"
+              ? "COMPLETED"
+              : data.decision === "SKIPPED"
+                ? "SKIPPED"
+                : data.executionStatus === "SUCCESS"
+                  ? "COMPLETED"
+                  : data.executionStatus === "FAILED"
+                    ? "FAILED"
+                    : data.status || "UNKNOWN";
         }
 
         return {
           id: doc.id,
           ...lightweightData,
           // Convert Firestore Timestamp to ISO string
-          timestamp: data.timestamp?.toDate ? data.timestamp.toDate().toISOString() : new Date().toISOString(),
+          timestamp: data.timestamp?.toDate
+            ? data.timestamp.toDate().toISOString()
+            : new Date().toISOString(),
           // Use normalized status
           status: normalizedStatus,
           // Include minimal tradePlan info for display (exclude nested objects)
-          tradePlan: tradePlan ? {
-            entryPrice: tradePlan.entryPrice,
-            stopLoss: tradePlan.stopLoss,
-            takeProfit: tradePlan.takeProfit || tradePlan.takeProfit2,
-            takeProfit1: tradePlan.takeProfit1,
-            takeProfit2: tradePlan.takeProfit2,
-            takeProfit3: tradePlan.takeProfit3
-          } : null
+          tradePlan: tradePlan
+            ? {
+              entryPrice: tradePlan.entryPrice,
+              stopLoss: tradePlan.stopLoss,
+              takeProfit: tradePlan.takeProfit || tradePlan.takeProfit2,
+              takeProfit1: tradePlan.takeProfit1,
+              takeProfit2: tradePlan.takeProfit2,
+              takeProfit3: tradePlan.takeProfit3,
+            }
+            : null,
         };
       });
     } catch (error: any) {
-      logger.error({ uid, error: error.message }, '❌ [FIRESTORE] Failed to retrieve research history');
+      logger.error(
+        { uid, error: error.message },
+        "❌ [FIRESTORE] Failed to retrieve research history",
+      );
       return [];
     }
   }
@@ -2966,21 +3731,20 @@ export class FirestoreAdapter {
 
 export async function saveMarketSnapshot({
   topMovers,
-  source
+  source,
 }: {
   topMovers: any[];
   source: string;
 }) {
-  const docRef = db().collection('system').doc('marketSnapshots');
+  const docRef = db().collection("system").doc("marketSnapshots");
   await docRef.set(
     {
       topMovers,
       source,
       snapshotTimestamp: new Date().toISOString(),
     },
-    { merge: true }
+    { merge: true },
   );
 }
 
 export const firestoreAdapter = new FirestoreAdapter();
-

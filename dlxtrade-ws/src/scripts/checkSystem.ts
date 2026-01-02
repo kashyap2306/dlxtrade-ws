@@ -14,12 +14,11 @@ const WS_BASE = process.env.WS_BASE || 'ws://localhost:4000/ws';
 async function checkFirestore() {
   console.log('🔍 Checking Firestore collections...');
   const db = getFirebaseAdmin().firestore();
-  
+
   const requiredCollections = [
     'users',
     'agents',
     'agentUnlocks',
-    'apiKeys',
     'activityLogs',
     'engineStatus',
     'globalStats',
@@ -66,7 +65,7 @@ async function checkFirestore() {
 
 async function checkAPIs() {
   console.log('🔍 Checking API endpoints...');
-  
+
   // Note: These checks require the server to be running
   // This is optional - server might not be running during seed
   try {
@@ -82,7 +81,7 @@ async function checkAPIs() {
 async function main() {
   try {
     console.log('🔥 Starting system verification...\n');
-    
+
     // Initialize Firebase
     getFirebaseAdmin();
     console.log('✅ Firebase Admin initialized\n');

@@ -1153,18 +1153,34 @@ const Settings = () => {
         testnet: true,
       };
 
-      await settingsApi.saveExchangeConfig(user.uid, exchangeConfigPayload);
+      console.log('[EXCHANGE-SAVE-FRONTEND] Sending payload:', JSON.stringify(exchangeConfigPayload, null, 2));
+      console.log('[EXCHANGE-SAVE-FRONTEND] selectedExchange:', selectedExchange);
+      console.log('[EXCHANGE-SAVE-FRONTEND] exchangeData:', exchangeData);
 
-      // SUCCESS: Re-fetch exchange config from backend to get authoritative state
-      console.log('[EXCHANGE-SAVE] Save successful, re-fetching authoritative exchange config');
+      await exchangeService.connect(exchangeConfigPayload);
 
-      try {
-        await loadExchangeConfig(user.uid);
-        console.log('[EXCHANGE-SAVE] Successfully re-fetched authoritative exchange config');
-      } catch (refetchErr) {
+      // SUCCESS: Immediately update UI state for instant feedback
+      console.log('[EXCHANGE-SAVE] Save successful, updating UI state immediately');
+
+      // Optimistically update the exchange config state with the saved data
+      const optimisticExchangeConfig = {
+        exchange: selectedExchange,
+        apiKeyEncrypted: '[ENCRYPTED]', // Mock encrypted state for UI
+        secretKeyEncrypted: '[ENCRYPTED]',
+        secretEncrypted: exchangeData.fields.includes('passphrase') ? undefined : '[ENCRYPTED]',
+        passphraseEncrypted: exchangeData.fields.includes('passphrase') ? '[ENCRYPTED]' : undefined,
+        testnet: true,
+        updatedAt: new Date().toISOString(),
+      };
+
+      setExchangeConfig(optimisticExchangeConfig);
+      console.log('[EXCHANGE-SAVE] UI state updated optimistically:', optimisticExchangeConfig);
+
+      // Then re-fetch authoritative data in background (don't await to avoid blocking UI)
+      loadExchangeConfig(user.uid).catch((refetchErr) => {
         console.warn('[EXCHANGE-SAVE] Failed to re-fetch exchange config:', refetchErr);
-        // Continue with success - the save worked, just couldn't refresh local state
-      }
+        // Keep the optimistic update even if refetch fails
+      });
 
       showToast(`${exchangeData.name} credentials saved successfully!`, 'success');
       setExchangeForm({ apiKey: '', secretKey: '', passphrase: '' });
@@ -1253,8 +1269,14 @@ const Settings = () => {
       // Call backend disconnect route (preserves credentials)
       await api.disconnect('binance'); // Use actual exchange type if available
 
-      // Refresh exchangeConfig state
-      await loadExchangeConfig(user.uid);
+      // Immediately update UI state for instant feedback
+      setExchangeConfig({});
+      console.log('[EXCHANGE-DISCONNECT] UI state cleared immediately');
+
+      // Refresh from backend in background (don't await)
+      loadExchangeConfig(user.uid).catch((refetchErr) => {
+        console.warn('[EXCHANGE-DISCONNECT] Failed to re-fetch exchange config:', refetchErr);
+      });
 
       setExchangeTestResult(undefined);
       showToast('Exchange disconnected successfully. Your credentials are preserved for easy reconnection.', 'success');

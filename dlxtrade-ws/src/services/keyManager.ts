@@ -1,9 +1,9 @@
-import * as crypto from 'crypto';
-import { config } from '../config';
-import { query } from '../db';
-import { logger } from '../utils/logger';
-import type { ApiKey } from '../types';
-import { createHash } from 'crypto';
+import * as crypto from "crypto";
+import { config } from "../config";
+import { query } from "../db";
+import { logger } from "../utils/logger";
+import type { ApiKey } from "../types";
+import { createHash } from "crypto";
 
 /**
  * CRITICAL ENCRYPTION POLICY:
@@ -13,7 +13,7 @@ import { createHash } from 'crypto';
  * - No fallback secrets, no recovery mechanisms, no migrations
  */
 
-const ALGORITHM = 'aes-256-cbc';
+const ALGORITHM = "aes-256-cbc";
 const IV_LENGTH = 16;
 const KEY_LENGTH = 32;
 
@@ -30,34 +30,45 @@ let CACHED_KEY_HASH: string | null = null;
 export function initializeEncryptionKey(): void {
   if (CACHED_ENCRYPTION_KEY !== null) {
     // Already initialized - this should never happen in normal operation
-    logger.warn('initializeEncryptionKey() called multiple times - this should not happen');
+    logger.warn(
+      "initializeEncryptionKey() called multiple times - this should not happen",
+    );
     return;
   }
 
   const keyString = process.env.ENCRYPTION_SECRET;
   if (!keyString) {
-    throw new Error('ENCRYPTION_SECRET environment variable is not set - server cannot start without valid encryption key');
+    throw new Error(
+      "ENCRYPTION_SECRET environment variable is not set - server cannot start without valid encryption key",
+    );
   }
   if (keyString.length < KEY_LENGTH) {
-    throw new Error(`ENCRYPTION_SECRET must be at least ${KEY_LENGTH} characters long, got ${keyString.length}`);
+    throw new Error(
+      `ENCRYPTION_SECRET must be at least ${KEY_LENGTH} characters long, got ${keyString.length}`,
+    );
   }
 
   // Cache the key and secret for lifetime of process
   CACHED_ENCRYPTION_SECRET = keyString;
-  CACHED_ENCRYPTION_KEY = Buffer.from(keyString.slice(0, KEY_LENGTH), 'utf8');
-  CACHED_KEY_HASH = createHash('sha256').update(keyString).digest('hex');
+  CACHED_ENCRYPTION_KEY = Buffer.from(keyString.slice(0, KEY_LENGTH), "utf8");
+  CACHED_KEY_HASH = createHash("sha256").update(keyString).digest("hex");
 
-  logger.info({
-    keyLength: keyString.length,
-    keyHash: CACHED_KEY_HASH.slice(0, 8), // Log only first 8 chars of hash
-    source: 'ENCRYPTION_SECRET'
-  }, '🔐 ENCRYPTION KEY CACHED - Single source of truth established for process lifetime');
+  logger.info(
+    {
+      keyLength: keyString.length,
+      keyHash: CACHED_KEY_HASH.slice(0, 8), // Log only first 8 chars of hash
+      source: "ENCRYPTION_SECRET",
+    },
+    "🔐 ENCRYPTION KEY CACHED - Single source of truth established for process lifetime",
+  );
 }
 
 function getEncryptionKey(): Buffer {
   // CRITICAL: Must use cached key only - never re-read from process.env
   if (CACHED_ENCRYPTION_KEY === null) {
-    throw new Error('ENCRYPTION KEY NOT INITIALIZED - initializeEncryptionKey() must be called at server startup');
+    throw new Error(
+      "ENCRYPTION KEY NOT INITIALIZED - initializeEncryptionKey() must be called at server startup",
+    );
   }
   return CACHED_ENCRYPTION_KEY;
 }
@@ -67,24 +78,93 @@ function getIV(): Buffer {
 }
 
 export function encrypt(text: string): string {
-  if (!text) return '';
+  if (!text) return "";
   try {
     const key = getEncryptionKey();
     const iv = getIV();
     const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
 
-    let encrypted = cipher.update(text, 'utf8', 'base64');
-    encrypted += cipher.final('base64');
+    let encrypted = cipher.update(text, "utf8", "base64");
+    encrypted += cipher.final("base64");
 
-    const ivBase64 = iv.toString('base64');
+    const ivBase64 = iv.toString("base64");
     return `${ivBase64}:${encrypted}`;
   } catch (error) {
-    logger.error({ error: (error as Error).message }, 'Encryption failed');
-    throw new Error('Failed to encrypt data');
+    logger.error({ error: (error as Error).message }, "Encryption failed");
+    throw new Error("Failed to encrypt data");
   }
 }
 
-export function decrypt(cipherText: string): string | null {
+export function decrypt(cipherText: string, context: string): string | null {
+  // PHASE 1: CONTEXT LEAK TRACE - Find decrypt calls without proper context
+  const stack = new Error().stack;
+  const stackLines = stack.split('\n');
+
+  // Extract detailed caller information
+  const callerInfo = [];
+  for (let i = 1; i < Math.min(10, stackLines.length); i++) {
+    const line = stackLines[i]?.trim() || '';
+    if (line) {
+      callerInfo.push(line.replace(__dirname, '[PROJECT_ROOT]'));
+    }
+  }
+
+  const callerFile = stackLines[2]?.includes('(')
+    ? stackLines[2].split('(')[1]?.split(':')[0]?.replace(__dirname, '[PROJECT_ROOT]') || 'unknown'
+    : 'unknown';
+
+  const callerLine = stackLines[2]?.includes(':')
+    ? stackLines[2].split(':').slice(-2)[0] || 'unknown'
+    : 'unknown';
+
+  // LOG EVERY DECRYPT CALL - This will show us the exact source of context leaks
+  console.log(`🔍 [DECRYPT_CALL_TRACE] DECRYPT INVOCATION:`, {
+    context: context || 'UNDEFINED_CONTEXT',
+    contextType: typeof context,
+    contextIsUndefined: context === undefined,
+    contextIsNull: context === null,
+    contextIsEmpty: context === '',
+    cipherTextLength: cipherText?.length || 0,
+    cipherTextPrefix: cipherText?.substring(0, 20) + '...' || 'null',
+    callerFile,
+    callerLine,
+    callOrder: Date.now(),
+    stackDepth: stackLines.length,
+    callerChain: callerInfo.slice(0, 6),
+    timestamp: new Date().toISOString()
+  });
+
+  // CRITICAL VALIDATION: Context must be exactly "user_request" - NO EXCEPTIONS
+  if (context === undefined) {
+    console.error(`🚫 [CONTEXT_LEAK_DETECTED] decrypt() called with UNDEFINED context!`);
+    console.error(`   This is the source of "context: unknown" errors`);
+    console.error(`   Caller: ${callerFile}:${callerLine}`);
+    console.error(`   Stack:`, callerInfo.slice(0, 5));
+    throw new Error(`CONTEXT_LEAK: decrypt() called without context parameter - undefined not allowed`);
+  }
+
+  if (context === null) {
+    console.error(`🚫 [CONTEXT_LEAK_DETECTED] decrypt() called with NULL context!`);
+    console.error(`   Caller: ${callerFile}:${callerLine}`);
+    console.error(`   Stack:`, callerInfo.slice(0, 5));
+    throw new Error(`CONTEXT_LEAK: decrypt() called with null context`);
+  }
+
+  if (typeof context !== 'string') {
+    console.error(`🚫 [CONTEXT_LEAK_DETECTED] decrypt() called with non-string context!`);
+    console.error(`   Type: ${typeof context}, Value: ${context}`);
+    console.error(`   Caller: ${callerFile}:${callerLine}`);
+    console.error(`   Stack:`, callerInfo.slice(0, 5));
+    throw new Error(`CONTEXT_LEAK: decrypt() context must be string, got ${typeof context}`);
+  }
+
+  if (context !== "user_request") {
+    console.warn(`🟡 [DECRYPT_SKIPPED] decrypt() called in non-user_request context ("${context}") – skipping decryption, returning null. No Firestore write, no key clear, no status mutation.`);
+    return null;
+  }
+
+  console.log(`✅ [DECRYPT_CONTEXT_VALID] Context "${context}" verified for decryption`);
+
   // CRITICAL: If encrypted value is missing or empty, do NOT attempt decryption
   // Treat as unconfigured provider / invalidated keys
   if (!cipherText || cipherText.trim().length === 0) {
@@ -93,24 +173,27 @@ export function decrypt(cipherText: string): string | null {
 
   try {
     const key = getEncryptionKey();
-    const parts = cipherText.split(':');
+    const parts = cipherText.split(":");
 
     // STANDARD FORMAT: iv:encrypted
     if (parts.length === 2) {
       const [ivBase64, encryptedBase64] = parts;
-      const iv = Buffer.from(ivBase64, 'base64');
+      const iv = Buffer.from(ivBase64, "base64");
 
       if (iv.length === IV_LENGTH) {
         const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
-        let decrypted = decipher.update(encryptedBase64, 'base64', 'utf8');
-        decrypted += decipher.final('utf8');
+        let decrypted = decipher.update(encryptedBase64, "base64", "utf8");
+        decrypted += decipher.final("utf8");
 
         // CRITICAL: If decryption succeeded but result is empty, treat as corrupted
-        if (!decrypted || decrypted.trim() === '') {
-          logger.warn({
-            cipherTextLength: cipherText.length,
-            cipherTextPrefix: cipherText.substring(0, 20) + '...'
-          }, 'Decryption succeeded but returned empty string - treating as CORRUPTED');
+        if (!decrypted || decrypted.trim() === "") {
+          logger.warn(
+            {
+              cipherTextLength: cipherText.length,
+              cipherTextPrefix: cipherText.substring(0, 20) + "...",
+            },
+            "Decryption succeeded but returned empty string - treating as CORRUPTED",
+          );
           return null;
         }
 
@@ -119,17 +202,23 @@ export function decrypt(cipherText: string): string | null {
     }
 
     // Invalid format or corrupted value
-    logger.warn({
-      cipherTextLength: cipherText.length,
-      cipherTextFormat: parts.length === 2 ? 'iv:encrypted' : 'unknown'
-    }, 'Decryption failed - invalid format or wrong encryption secret - treating as CORRUPTED');
+    logger.warn(
+      {
+        cipherTextLength: cipherText.length,
+        cipherTextFormat: parts.length === 2 ? "iv:encrypted" : "unknown",
+      },
+      "Decryption failed - invalid format or wrong encryption secret - treating as CORRUPTED",
+    );
     return null;
   } catch (error) {
     // Expected failure when ENCRYPTION_SECRET mismatches old data
-    logger.warn({
-      error: (error as Error).message,
-      cipherTextLength: cipherText?.length || 0
-    }, 'Decryption failed - invalid ENCRYPTION_SECRET or corrupted data - treating as CORRUPTED');
+    logger.warn(
+      {
+        error: (error as Error).message,
+        cipherTextLength: cipherText?.length || 0,
+      },
+      "Decryption failed - invalid ENCRYPTION_SECRET or corrupted data - treating as CORRUPTED",
+    );
     return null;
   }
 }
@@ -138,24 +227,64 @@ export function decrypt(cipherText: string): string | null {
  * Decrypt with hard fail - throws error if decryption fails
  * Use this for exchange API keys where empty string means invalid credentials
  */
-export function decryptOrThrow(cipherText: string, fieldName: string = 'field'): string {
-  if (!cipherText) {
-    throw new Error(`EXCHANGE_KEY_DECRYPTION_FAILED: ${fieldName} is empty or missing`);
+export function decryptOrThrow(
+  cipherText: string,
+  fieldName: string = "field",
+  context: string,
+): string {
+  // PHASE 1: CONTEXT LEAK DETECTION - decryptOrThrow must have explicit context
+  console.log(`🔍 [DECRYPT_OR_THROW_TRACE] decryptOrThrow called:`, {
+    fieldName,
+    context: context || 'UNDEFINED_CONTEXT',
+    contextType: typeof context,
+    cipherTextLength: cipherText?.length || 0,
+    timestamp: new Date().toISOString()
+  });
+
+  // CRITICAL VALIDATION: Context must be exactly "user_request"
+  if (!context || typeof context !== 'string') {
+    console.error(`🚫 [DECRYPT_OR_THROW_CONTEXT_LEAK] decryptOrThrow called with invalid context!`);
+    console.error(`   Provided: ${context} (type: ${typeof context})`);
+    console.error(`   Field: ${fieldName}`);
+    console.error(`   This is the source of "context: unknown" errors`);
+    throw new Error(`decryptOrThrow: Context must be string "user_request", got ${typeof context}: ${context}`);
   }
 
-  const decrypted = decrypt(cipherText);
+  if (context !== "user_request") {
+    console.error(`🚫 [DECRYPT_OR_THROW_CONTEXT_LEAK] decryptOrThrow called with invalid context "${context}"`);
+    console.error(`   Allowed: "user_request" only`);
+    console.error(`   Field: ${fieldName}`);
+    throw new Error(`decryptOrThrow: Context "${context}" not permitted - only "user_request" allowed`);
+  }
+
+  console.log(`✅ [DECRYPT_OR_THROW_VALID] Context "${context}" verified for ${fieldName}`);
+
+  if (!cipherText) {
+    throw new Error(
+      `EXCHANGE_KEY_DECRYPTION_FAILED: ${fieldName} is empty or missing`,
+    );
+  }
+
+  const decrypted = decrypt(cipherText, context);
 
   if (decrypted === null) {
     const encryptionKeyHash = getEncryptionKeyHash(8);
-    logger.error({
-      fieldName,
-      encryptionKeyHash,
-      cipherTextLength: cipherText.length,
-      cipherTextPrefix: cipherText.substring(0, 20) + '...'
-    }, 'EXCHANGE_KEY_DECRYPTION_FAILED: Decryption returned null - CORRUPTED key');
+    logger.error(
+      {
+        fieldName,
+        encryptionKeyHash,
+        cipherTextLength: cipherText.length,
+        cipherTextPrefix: cipherText.substring(0, 20) + "...",
+      },
+      "EXCHANGE_KEY_DECRYPTION_FAILED: Decryption returned null - CORRUPTED key",
+    );
+
+    // CRITICAL INVARIANT: Decryption failure MUST NOT write INVALID_KEYS
+    // decryptOrThrow throws errors but NEVER writes to Firestore
+    // INVALID_KEYS can only be written by explicit user credential validation that succeeds
     throw new Error(
       `EXCHANGE_KEY_DECRYPTION_FAILED: Failed to decrypt ${fieldName} - invalid ENCRYPTION_SECRET or corrupted data. ` +
-      'Please re-enter your exchange API keys.'
+        "Please re-enter your exchange API keys.",
     );
   }
 
@@ -165,12 +294,16 @@ export function decryptOrThrow(cipherText: string, fieldName: string = 'field'):
 // CRITICAL: Hash MUST be derived from the SAME cached key used for encryption/decryption
 export function getEncryptionKeyHash(prefixLength: number = 8): string {
   if (CACHED_KEY_HASH === null) {
-    throw new Error('ENCRYPTION KEY NOT INITIALIZED - initializeEncryptionKey() must be called at server startup');
+    throw new Error(
+      "ENCRYPTION KEY NOT INITIALIZED - initializeEncryptionKey() must be called at server startup",
+    );
   }
   return CACHED_KEY_HASH.slice(0, prefixLength);
 }
 
-export async function listKeys(): Promise<Omit<ApiKey, 'apiKey' | 'apiSecret'>[]> {
+export async function listKeys(): Promise<
+  Omit<ApiKey, "apiKey" | "apiSecret">[]
+> {
   const rows = await query<any>(`
     SELECT id, exchange, name, testnet, created_at, updated_at
     FROM api_keys
@@ -187,21 +320,21 @@ export async function listKeys(): Promise<Omit<ApiKey, 'apiKey' | 'apiSecret'>[]
   }));
 }
 
-export async function getKey(id: number): Promise<ApiKey | null> {
-  const rows = await query<any>(
-    'SELECT * FROM api_keys WHERE id = $1',
-    [id]
-  );
+export async function getKey(id: number, context: string = "user_request"): Promise<ApiKey | null> {
+  const rows = await query<any>("SELECT * FROM api_keys WHERE id = $1", [id]);
 
   if (rows.length === 0) return null;
 
   const row = rows[0];
-  const apiKey = decrypt(row.api_key_encrypted);
-  const apiSecret = decrypt(row.api_secret_encrypted);
+  const apiKey = decrypt(row.api_key_encrypted, context);
+  const apiSecret = decrypt(row.api_secret_encrypted, context);
 
   // If decryption failed, return null to indicate corrupted keys
   if (apiKey === null || apiSecret === null) {
-    logger.warn({ id: row.id, exchange: row.exchange }, 'API key decryption returned null - CORRUPTED data');
+    logger.warn(
+      { id: row.id, exchange: row.exchange },
+      "API key decryption returned null - CORRUPTED data",
+    );
     return null;
   }
 
@@ -222,22 +355,27 @@ export async function createKey(
   name: string,
   apiKey: string,
   apiSecret: string,
-  testnet: boolean
+  testnet: boolean,
 ): Promise<number> {
   const rows = await query<any>(
     `INSERT INTO api_keys (exchange, name, api_key_encrypted, api_secret_encrypted, testnet)
      VALUES ($1, $2, $3, $4, $5)
      RETURNING id`,
-    [exchange, name, encrypt(apiKey), encrypt(apiSecret), testnet]
+    [exchange, name, encrypt(apiKey), encrypt(apiSecret), testnet],
   );
 
-  logger.info({ exchange, name, testnet }, 'API key created');
+  logger.info({ exchange, name, testnet }, "API key created");
   return rows[0].id;
 }
 
 export async function updateKey(
   id: number,
-  updates: Partial<{ name: string; apiKey: string; apiSecret: string; testnet: boolean }>
+  updates: Partial<{
+    name: string;
+    apiKey: string;
+    apiSecret: string;
+    testnet: boolean;
+  }>,
 ): Promise<void> {
   const fields: string[] = [];
   const values: any[] = [];
@@ -266,20 +404,20 @@ export async function updateKey(
   values.push(id);
 
   await query(
-    `UPDATE api_keys SET ${fields.join(', ')} WHERE id = $${paramCount}`,
-    values
+    `UPDATE api_keys SET ${fields.join(", ")} WHERE id = $${paramCount}`,
+    values,
   );
 
-  logger.info({ id }, 'API key updated');
+  logger.info({ id }, "API key updated");
 }
 
 export async function deleteKey(id: number): Promise<void> {
-  await query('DELETE FROM api_keys WHERE id = $1', [id]);
-  logger.info({ id }, 'API key deleted');
+  await query("DELETE FROM api_keys WHERE id = $1", [id]);
+  logger.info({ id }, "API key deleted");
 }
 
 export function maskKey(key: string): string {
-  if (!key || key.length <= 8) return '****';
+  if (!key || key.length <= 8) return "****";
   if (key.length > 20) {
     return `****${key.slice(-4)}`;
   }
@@ -292,15 +430,20 @@ export function maskKey(key: string): string {
  */
 export function verifyEncryptionKeyConsistency(context: string): void {
   if (CACHED_ENCRYPTION_KEY === null || CACHED_KEY_HASH === null) {
-    throw new Error(`ENCRYPTION_KEY_NOT_INITIALIZED in ${context} - initializeEncryptionKey() must be called at server startup`);
+    throw new Error(
+      `ENCRYPTION_KEY_NOT_INITIALIZED in ${context} - initializeEncryptionKey() must be called at server startup`,
+    );
   }
 
   const currentHash = getEncryptionKeyHash(8);
-  logger.debug({
-    context,
-    keyHash: currentHash,
-    cached: true
-  }, `ENCRYPTION_KEY_VERIFIED in ${context} - using cached key`);
+  logger.debug(
+    {
+      context,
+      keyHash: currentHash,
+      cached: true,
+    },
+    `ENCRYPTION_KEY_VERIFIED in ${context} - using cached key`,
+  );
 }
 
 /**
@@ -315,8 +458,8 @@ export function getEncryptionKeyStatus(): {
   return {
     initialized: CACHED_ENCRYPTION_KEY !== null,
     keyLength: CACHED_ENCRYPTION_SECRET?.length || 0,
-    keyHash: CACHED_KEY_HASH ? CACHED_KEY_HASH.slice(0, 8) : '',
-    cached: CACHED_ENCRYPTION_KEY !== null
+    keyHash: CACHED_KEY_HASH ? CACHED_KEY_HASH.slice(0, 8) : "",
+    cached: CACHED_ENCRYPTION_KEY !== null,
   };
 }
 
@@ -336,59 +479,97 @@ export async function testEncryptionConsistency(): Promise<{
   try {
     // Test 1: Verify key is cached
     const status = getEncryptionKeyStatus();
-    results.push({ test: 'key_cached', success: status.cached, details: status });
+    results.push({
+      test: "key_cached",
+      success: status.cached,
+      details: status,
+    });
 
     if (!status.cached) {
-      errors.push('Encryption key not cached - initializeEncryptionKey() not called');
-      return { success: false, keyHash: '', testResults: results, errors };
+      errors.push(
+        "Encryption key not cached - initializeEncryptionKey() not called",
+      );
+      return { success: false, keyHash: "", testResults: results, errors };
     }
 
     // Test 2: Verify hash consistency
     const hash1 = getEncryptionKeyHash(8);
     const hash2 = getEncryptionKeyHash(8);
     const hashConsistent = hash1 === hash2;
-    results.push({ test: 'hash_consistent', success: hashConsistent, details: { hash1, hash2 } });
+    results.push({
+      test: "hash_consistent",
+      success: hashConsistent,
+      details: { hash1, hash2 },
+    });
 
     if (!hashConsistent) {
-      errors.push('Encryption key hash inconsistent between calls');
+      errors.push("Encryption key hash inconsistent between calls");
     }
 
     // Test 3: Test encrypt/decrypt round trip
-    const testData = 'test_encryption_data_' + Date.now();
+    const testData = "test_encryption_data_" + Date.now();
     const encrypted = encrypt(testData);
-    const decrypted = decrypt(encrypted);
+    const decrypted = decrypt(encrypted, "user_request");
     const roundTripSuccess = decrypted === testData;
-    results.push({ test: 'round_trip', success: roundTripSuccess, details: { original: testData, encrypted: encrypted?.substring(0, 20) + '...', decrypted } });
+    results.push({
+      test: "round_trip",
+      success: roundTripSuccess,
+      details: {
+        original: testData,
+        encrypted: encrypted?.substring(0, 20) + "...",
+        decrypted,
+      },
+    });
 
     if (!roundTripSuccess) {
-      errors.push('Encrypt/decrypt round trip failed');
+      errors.push("Encrypt/decrypt round trip failed");
     }
 
     // Test 4: Test decryptOrThrow with valid data
     try {
-      const throwResult = decryptOrThrow(encrypted, 'test_field');
+      const throwResult = decryptOrThrow(encrypted, "test_field", "user_request");
       const throwSuccess = throwResult === testData;
-      results.push({ test: 'decrypt_or_throw', success: throwSuccess, details: { result: throwResult } });
+      results.push({
+        test: "decrypt_or_throw",
+        success: throwSuccess,
+        details: { result: throwResult },
+      });
 
       if (!throwSuccess) {
-        errors.push('decryptOrThrow returned wrong result');
+        errors.push("decryptOrThrow returned wrong result");
       }
     } catch (throwErr: any) {
       errors.push(`decryptOrThrow failed: ${throwErr.message}`);
-      results.push({ test: 'decrypt_or_throw', success: false, details: { error: throwErr.message } });
+      results.push({
+        test: "decrypt_or_throw",
+        success: false,
+        details: { error: throwErr.message },
+      });
     }
 
     // Test 5: Test decryptOrThrow with invalid data
     try {
-      decryptOrThrow('invalid_encrypted_data', 'test_field');
-      errors.push('decryptOrThrow should have thrown for invalid data');
-      results.push({ test: 'decrypt_or_throw_invalid', success: false, details: { error: 'Should have thrown' } });
+      decryptOrThrow("invalid_encrypted_data", "test_field", "user_request");
+      errors.push("decryptOrThrow should have thrown for invalid data");
+      results.push({
+        test: "decrypt_or_throw_invalid",
+        success: false,
+        details: { error: "Should have thrown" },
+      });
     } catch (throwErr: any) {
-      const expectedError = throwErr.message?.includes('EXCHANGE_KEY_DECRYPTION_FAILED');
-      results.push({ test: 'decrypt_or_throw_invalid', success: expectedError, details: { error: throwErr.message } });
+      const expectedError = throwErr.message?.includes(
+        "EXCHANGE_KEY_DECRYPTION_FAILED",
+      );
+      results.push({
+        test: "decrypt_or_throw_invalid",
+        success: expectedError,
+        details: { error: throwErr.message },
+      });
 
       if (!expectedError) {
-        errors.push(`decryptOrThrow threw unexpected error: ${throwErr.message}`);
+        errors.push(
+          `decryptOrThrow threw unexpected error: ${throwErr.message}`,
+        );
       }
     }
 
@@ -397,16 +578,15 @@ export async function testEncryptionConsistency(): Promise<{
       success,
       keyHash: hash1,
       testResults: results,
-      errors
+      errors,
     };
-
   } catch (err: any) {
     errors.push(`Test execution failed: ${err.message}`);
     return {
       success: false,
-      keyHash: '',
+      keyHash: "",
       testResults: results,
-      errors
+      errors,
     };
   }
 }
@@ -418,5 +598,5 @@ export const keyManager = {
   maskKey,
   verifyEncryptionKeyConsistency,
   getEncryptionKeyStatus,
-  testEncryptionConsistency
+  testEncryptionConsistency,
 };

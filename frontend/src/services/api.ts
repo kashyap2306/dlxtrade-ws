@@ -276,7 +276,6 @@ export const settingsApi = {
 
     return normalized;
   },
-  saveExchangeConfig: (uid: string, exchangeBody: any) => api.post(`/users/${uid}/exchange-config`, exchangeBody),
   loadExchangeConfig: (uid: string) => api.get(`/users/${uid}/exchangeConfig/current`, { timeout: 25000 }),
 };
 
@@ -493,15 +492,6 @@ export const exchangeApi = {
   // Legacy endpoints for backward compatibility
   saveConfig: (config: { exchange: string; apiKey: string; secret: string; passphrase?: string; testnet?: boolean }) =>
     api.post('/exchange/connect', config),
-  getConfig: (user: any) =>
-    api.get(`/users/${user?.uid || ''}/exchange-config`),
-  removeConfig: (user: any) =>
-    api.post(`/users/${user?.uid || ''}/exchange-config`, {
-      exchange: 'binance',
-      apiKey: '',
-      secret: '',
-      testnet: true
-    }),
   testConnection: (config: { exchange?: string; apiKey?: string; secret?: string; passphrase?: string; testnet?: boolean }) =>
     api.post('/exchange/test', config),
   testExchangeConnection: (config: { exchange: string; apiKey: string; secret: string; passphrase?: string }) =>

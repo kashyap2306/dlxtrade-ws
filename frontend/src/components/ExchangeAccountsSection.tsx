@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import api, { settingsApi } from '../services/api';
+import api, { settingsApi, exchangeApi } from '../services/api';
 import Toast from './Toast';
 import SuccessPopup from './SuccessPopup';
 import NotificationModal from './NotificationModal';
@@ -292,16 +292,15 @@ export default function ExchangeAccountsSection() {
 
     try {
       setLoading(true);
-      // Save via exchange-config endpoint
+      // Save via exchange/connect endpoint
       const exchangeBody = {
         exchange: selectedExchange,
-        type: selectedExchange,
         apiKey: credentials.apiKey,
         secret: credentials.secretKey,
         passphrase: exchangeInfo.requiresPassphrase ? credentials.passphrase : undefined,
         testnet: true,
       };
-      await settingsApi.saveExchangeConfig(user.uid, exchangeBody);
+      await exchangeApi.connect(exchangeBody);
 
       // Show success popup
       setSuccessMessage('Exchange API connected successfully');

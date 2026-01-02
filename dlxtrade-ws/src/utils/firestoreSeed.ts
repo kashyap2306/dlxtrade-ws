@@ -243,7 +243,7 @@ async function seedDemoUsers(db: admin.firestore.Firestore): Promise<void> {
         phone: i % 2 === 0 ? `+1234567890${i}` : null,
         createdAt: now,
         updatedAt: now,
-        apiConnected: i % 3 === 0,
+        apiConnected: false,
         engineRunning: i % 4 === 0,
         hftRunning: i % 5 === 0,
         totalTrades: Math.floor(Math.random() * 100),
@@ -333,17 +333,6 @@ async function seedDemoUsers(db: admin.firestore.Firestore): Promise<void> {
         totalPnl: totalPnL,
         riskLevel: i % 3 === 0 ? 'low' : i % 3 === 1 ? 'medium' : 'high',
         updatedAt: now,
-      });
-
-      // Create apiKeys (one per user)
-      await db.collection('apiKeys').doc(uid).set({
-        uid,
-        exchange: 'binance',
-        apiKeyEncrypted: encrypt(`demo_api_key_${uid}`),
-        apiSecretEncrypted: encrypt(`demo_secret_${uid}`),
-        createdAt: now,
-        updatedAt: now,
-        status: i % 3 === 0 ? 'connected' : 'pending',
       });
 
       // Create user settings

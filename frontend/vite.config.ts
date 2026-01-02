@@ -1,25 +1,25 @@
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-import path from 'path';
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import path from "path";
 
 export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src'),
+      "@": path.resolve(__dirname, "./src"),
     },
   },
-  envPrefix: 'VITE_',
-  base: process.env.VITE_BASE_PATH || '/',
-  appType: 'spa',
+  envPrefix: "VITE_",
+  base: process.env.VITE_BASE_PATH || "/",
+  appType: "spa",
   build: {
     rollupOptions: {
       output: {
         manualChunks: {
-          vendor: ['react', 'react-dom', 'react-router-dom'],
-          firebase: ['firebase/app', 'firebase/auth', 'firebase/firestore'],
-          ui: ['@headlessui/react', '@heroicons/react', 'recharts'],
-          utils: ['axios'],
+          vendor: ["react", "react-dom", "react-router-dom"],
+          firebase: ["firebase/app", "firebase/auth", "firebase/firestore"],
+          ui: ["@headlessui/react", "@heroicons/react", "recharts"],
+          utils: ["axios"],
         },
       },
     },
@@ -27,14 +27,21 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    historyApiFallback: true,
+    strictPort: false,
+    hmr: {
+      protocol: "ws",
+      host: "localhost",
+      port: 5173,
+      clientPort: 5173,
+      overlay: true,
+    },
     proxy: {
-      '/api': {
-        target: 'http://localhost:4000',
+      "/api": {
+        target: "http://localhost:4000",
         changeOrigin: true,
       },
-      '/ws': {
-        target: 'http://localhost:4000',
+      "/ws": {
+        target: "http://localhost:4000",
         ws: true,
         changeOrigin: true,
       },
@@ -42,7 +49,6 @@ export default defineConfig({
   },
   preview: {
     port: 4173,
-    historyApiFallback: true,
+    strictPort: false,
   },
 });
-

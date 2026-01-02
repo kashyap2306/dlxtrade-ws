@@ -1714,10 +1714,10 @@ export default function ResearchPanel() {
                           {/* Coin */}
                           <div className="col-span-3 flex items-center gap-4 mb-4 md:mb-0">
                             <div className="w-12 h-12 rounded-2xl bg-slate-900 border border-slate-700 flex items-center justify-center font-black text-white shadow-inner group-hover:border-violet-500/30 transition-colors">
-                              {typeof entry.symbol === 'string' && entry.symbol ? entry.symbol.substring(0, 1) : '—'}
+                              {entry.symbol?.substring(0, 1) || '—'}
                             </div>
                             <div>
-                              <div className="text-lg font-black text-white tracking-tight group-hover:text-violet-400 transition-colors">{typeof entry.symbol === 'string' && entry.symbol ? entry.symbol : 'N/A'}</div>
+                              <div className="text-lg font-black text-white tracking-tight group-hover:text-violet-400 transition-colors">{entry.symbol || '—'}</div>
                               <div className="text-[10px] text-slate-500 font-black uppercase tracking-widest mt-0.5">
                                 {entry.timestamp ? new Date(entry.timestamp).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'N/A'}
                               </div>
@@ -1728,7 +1728,7 @@ export default function ResearchPanel() {
                           <div className="col-span-2 mb-4 md:mb-0">
                             <div className="md:hidden text-[10px] text-slate-500 font-black uppercase tracking-widest mb-1">Market Price</div>
                             <div className="text-base font-mono font-bold text-slate-200">
-                              {entry.signal === 'FAILED' ? 'FAILED' : (typeof entry.price === 'number' ? `$${entry.price.toLocaleString()}` : '—')}
+                              {entry.signal === 'FAILED' ? 'FAILED' : entry.price ? `$${entry.price.toLocaleString()}` : '—'}
                             </div>
                           </div>
 
@@ -1748,16 +1748,16 @@ export default function ResearchPanel() {
                           <div className="col-span-2 mb-4 md:mb-0">
                             <div className="md:hidden text-[10px] text-slate-500 font-black uppercase tracking-widest mb-1">Logic Confidence</div>
                             <div className="flex flex-col gap-1.5">
-                              <div className={`text-base font-black ${entry.signal === 'BLOCKED' ? 'text-red-400' : (entry.accuracy ?? 0) >= 75 ? 'text-emerald-400' : (entry.accuracy ?? 0) >= 50 ? 'text-amber-400' : 'text-slate-400'}`}>
-                                {entry.signal === 'BLOCKED' ? 'Blocked – Exchange keys invalid' : (typeof entry.accuracy === 'number' && !isNaN(entry.accuracy) ? `${entry.accuracy.toFixed(1)}%` : '0.0%')}
+                              <div className={`text-base font-black ${entry.signal === 'BLOCKED' ? 'text-red-400' : entry.accuracy && entry.accuracy >= 75 ? 'text-emerald-400' : entry.accuracy && entry.accuracy >= 50 ? 'text-amber-400' : 'text-slate-400'}`}>
+                                {entry.signal === 'BLOCKED' ? 'Blocked – Exchange keys invalid' : entry.accuracy ? `${entry.accuracy.toFixed(1)}%` : '—'}
                               </div>
                               <div className="w-24 h-1.5 bg-slate-950/40 rounded-full overflow-hidden p-[1px] border border-slate-800">
                                 <div
-                                  className={`h-full rounded-full transition-all duration-1000 ${(entry.accuracy ?? 0) >= 75 ? 'bg-gradient-to-r from-emerald-600 to-teal-400' :
-                                    (entry.accuracy ?? 0) >= 50 ? 'bg-gradient-to-r from-amber-600 to-yellow-400' :
+                                  className={`h-full rounded-full transition-all duration-1000 ${entry.accuracy && entry.accuracy >= 75 ? 'bg-gradient-to-r from-emerald-600 to-teal-400' :
+                                    entry.accuracy && entry.accuracy >= 50 ? 'bg-gradient-to-r from-amber-600 to-yellow-400' :
                                       'bg-slate-600'
                                     }`}
-                                  style={{ width: `${typeof entry.accuracy === 'number' && !isNaN(entry.accuracy) ? Math.min(100, Math.max(0, entry.accuracy)) : 0}%` }}
+                                  style={{ width: `${entry.accuracy ? Math.min(100, Math.max(0, entry.accuracy)) : 0}%` }}
                                 />
                               </div>
                             </div>
@@ -1767,27 +1767,27 @@ export default function ResearchPanel() {
                           <div className="col-span-2 text-right">
                             <div className="md:hidden text-[10px] text-slate-500 font-black uppercase tracking-widest mb-1">Strategic Targets</div>
                             {/* CRITICAL: Show trade plan ONLY when signal is BUY/SELL AND accuracy >= 70% AND tradePlan exists */}
-                            {entry.signal !== 'HOLD' && entry.signal !== 'FAILED' && 
-                             (entry.accuracy ?? 0) >= 70 && 
-                             entry.tradePlan && 
-                             entry.tradePlan.entryPrice && 
+                            {entry.signal !== 'HOLD' && entry.signal !== 'FAILED' &&
+                             entry.accuracy && entry.accuracy >= 70 &&
+                             entry.tradePlan &&
+                             entry.tradePlan.entryPrice &&
                              entry.tradePlan.entryPrice > 0 ? (
                               <div className="flex flex-col items-end gap-1.5">
                                 <div className="flex gap-3 text-[10px] font-black uppercase tracking-widest text-slate-400 bg-slate-900/40 px-3 py-1 rounded-full border border-slate-800">
-                                  <span>ENTRY: <span className="text-white">${typeof entry.tradePlan?.entryPrice === 'number' && !isNaN(entry.tradePlan.entryPrice) ? entry.tradePlan.entryPrice.toFixed(2) : '—'}</span></span>
+                                  <span>ENTRY: <span className="text-white">${entry.tradePlan.entryPrice.toFixed(2)}</span></span>
                                   {entry.tradePlan.stopLoss && entry.tradePlan.stopLoss > 0 && (
-                                    <span className="text-rose-500">SL: ${typeof entry.tradePlan?.stopLoss === 'number' && !isNaN(entry.tradePlan.stopLoss) ? entry.tradePlan.stopLoss.toFixed(2) : '—'}</span>
+                                    <span className="text-rose-500">SL: ${entry.tradePlan.stopLoss.toFixed(2)}</span>
                                   )}
                                 </div>
                                 <div className="flex gap-2 text-[9px] font-black uppercase tracking-widest text-emerald-500/80">
                                   {entry.tradePlan.takeProfit1 && entry.tradePlan.takeProfit1 > 0 && (
-                                    <span>TP1: ${typeof entry.tradePlan?.takeProfit1 === 'number' && !isNaN(entry.tradePlan.takeProfit1) ? entry.tradePlan.takeProfit1.toFixed(2) : '—'}</span>
+                                    <span>TP1: ${entry.tradePlan.takeProfit1.toFixed(2)}</span>
                                   )}
                                   {entry.tradePlan.takeProfit2 && entry.tradePlan.takeProfit2 > 0 && (
-                                    <span>TP2: ${typeof entry.tradePlan?.takeProfit2 === 'number' && !isNaN(entry.tradePlan.takeProfit2) ? entry.tradePlan.takeProfit2.toFixed(2) : '—'}</span>
+                                    <span>TP2: ${entry.tradePlan.takeProfit2.toFixed(2)}</span>
                                   )}
                                   {entry.tradePlan.takeProfit3 && entry.tradePlan.takeProfit3 > 0 && (
-                                    <span>TP3: ${typeof entry.tradePlan?.takeProfit3 === 'number' && !isNaN(entry.tradePlan.takeProfit3) ? entry.tradePlan.takeProfit3.toFixed(2) : '—'}</span>
+                                    <span>TP3: ${entry.tradePlan.takeProfit3.toFixed(2)}</span>
                                   )}
                                 </div>
                               </div>

@@ -9,26 +9,13 @@ import { decrypt } from './keyManager';
  */
 function sanitizeFirestorePayload(payload: any): any {
   const sanitized: any = {};
-  let sanitizedCount = 0;
 
   for (const [key, value] of Object.entries(payload)) {
     if (value === undefined) {
       sanitized[key] = admin.firestore.FieldValue.delete();
-      console.log('🔥 [HARD_LOG] [PROVIDER_FIELD_SANITIZED]', {
-        field: key,
-        action: 'CONVERTED_UNDEFINED_TO_DELETE'
-      });
-      sanitizedCount++;
     } else {
       sanitized[key] = value;
     }
-  }
-
-  if (sanitizedCount > 0) {
-    console.log('🔥 [HARD_LOG] [PAYLOAD_SANITIZED]', {
-      sanitizedFields: sanitizedCount,
-      totalFields: Object.keys(payload).length
-    });
   }
 
   return sanitized;
@@ -46,7 +33,7 @@ async function canCreateAgentsInit(db: admin.firestore.Firestore, uid: string): 
   try {
     // Query users/{uid}/agents and count ONLY real agent documents (excluding _* documents)
     const userAgentsSnapshot = await db.collection('users').doc(uid).collection('agents').get();
-    const realAgentDocs = userAgentsSnapshot.docs.filter(doc => 
+    const realAgentDocs = userAgentsSnapshot.docs.filter(doc =>
       doc.id !== '_init' && !doc.id.startsWith('_')
     );
     const realAgentCount = realAgentDocs.length;
@@ -124,7 +111,8 @@ const ALL_PROVIDERS = [
 export async function seedProviderIntegrations(
   uid: string,
   db: admin.firestore.Firestore,
-  now: admin.firestore.Timestamp
+  now: admin.firestore.Timestamp,
+  context: 'user_request' | 'background_job' = 'background_job'
 ) {
   console.log(`[INTEGRATIONS_SEED_START] Starting provider integrations seeding for user: ${uid}`);
 
@@ -155,11 +143,11 @@ export async function seedProviderIntegrations(
     let apiKeyEncrypted = existing.apiKeyEncrypted || null;
     let secretKeyEncrypted = existing.secretKeyEncrypted || null;
 
-    // HARD ASSERTION: Test decryption of existing keys
-    if (apiKeyEncrypted && apiKeyEncrypted.trim().length > 0) {
+    // HARD ASSERTION: Test decryption of existing keys (only in user context)
+    if (context === 'user_request' && apiKeyEncrypted && apiKeyEncrypted.trim().length > 0) {
       try {
         // Test decrypt with current ENCRYPTION_SECRET
-        const testDecrypt = decrypt(apiKeyEncrypted);
+        const testDecrypt = decrypt(apiKeyEncrypted, context);
         if (!testDecrypt || testDecrypt.trim().length === 0) {
           throw new Error('Decryption returned empty result');
         }
@@ -177,10 +165,10 @@ export async function seedProviderIntegrations(
       }
     }
 
-    // Test secret key decryption if it exists
-    if (secretKeyEncrypted && secretKeyEncrypted.trim().length > 0) {
+    // Test secret key decryption if it exists (only in user context)
+    if (context === 'user_request' && secretKeyEncrypted && secretKeyEncrypted.trim().length > 0) {
       try {
-        const testDecrypt = decrypt(secretKeyEncrypted);
+        const testDecrypt = decrypt(secretKeyEncrypted, context);
         if (!testDecrypt || testDecrypt.trim().length === 0) {
           throw new Error('Secret decryption returned empty result');
         }
@@ -246,7 +234,7 @@ export async function seedProviderIntegrations(
  * ONE-TIME MIGRATION: Clean corrupted encrypted keys from existing provider documents
  * This runs once on backend startup to ensure no corrupted keys persist
  */
-export async function migrateCorruptedProviderKeys(db: admin.firestore.Firestore) {
+export async function migrateCorruptedProviderKeys(db: admin.firestore.Firestore, context: 'user_request' | 'background_job' = 'background_job') {
   console.log('[PROVIDER_MIGRATION] Starting one-time migration of corrupted provider keys');
 
   let totalScanned = 0;
@@ -280,10 +268,10 @@ export async function migrateCorruptedProviderKeys(db: admin.firestore.Firestore
           let needsUpdate = false;
           const updateData: any = {};
 
-          // Test API key decryption
-          if (apiKeyEncrypted && apiKeyEncrypted.trim().length > 0) {
+          // Test API key decryption (only in user context)
+          if (context === 'user_request' && apiKeyEncrypted && apiKeyEncrypted.trim().length > 0) {
             try {
-              const testDecrypt = decrypt(apiKeyEncrypted);
+              const testDecrypt = decrypt(apiKeyEncrypted, context);
               if (!testDecrypt || testDecrypt.trim().length === 0) {
                 console.log('🔥 [HARD_LOG] [PROVIDER_MIGRATION_CLEANUP]', {
                   uid,
@@ -314,10 +302,10 @@ export async function migrateCorruptedProviderKeys(db: admin.firestore.Firestore
             }
           }
 
-          // Test secret key decryption
-          if (secretKeyEncrypted && secretKeyEncrypted.trim().length > 0) {
+          // Test secret key decryption (only in user context)
+          if (context === 'user_request' && secretKeyEncrypted && secretKeyEncrypted.trim().length > 0) {
             try {
-              const testDecrypt = decrypt(secretKeyEncrypted);
+              const testDecrypt = decrypt(secretKeyEncrypted, context);
               if (!testDecrypt || testDecrypt.trim().length === 0) {
                 console.log('🔥 [HARD_LOG] [PROVIDER_MIGRATION_CLEANUP]', {
                   uid,
@@ -440,8 +428,49 @@ export async function ensureUser(
       };
     }
 
-    const db = firebaseApp.firestore();
+    const unsafeDb = firebaseApp.firestore();
     const now = admin.firestore.Timestamp.now();
+    // Runtime guard: prevent any writes to exchangeConfig during onboarding
+    // CRITICAL: Use a Recursive Proxy to intercept all chainable Firestore calls (collection -> doc -> collection)
+    const createSafeDb = (db: admin.firestore.Firestore): admin.firestore.Firestore => {
+      const handler: ProxyHandler<any> = {
+        get(target, prop, receiver) {
+          const value = Reflect.get(target, prop, receiver);
+          if (typeof value === 'function') {
+            return function (this: any, ...args: any[]) {
+              // Check for explicit blocked paths in collection() calls
+              if (prop === 'collection') {
+                const path = args[0] as string;
+                if (path && (path === 'exchangeConfig' || path.includes('/exchangeConfig') || path.includes('exchangeConfig/'))) {
+                  console.error(`🚫 [SAFETY_ASSERTION_FAILED] Blocked illegal access to ${path} from userOnboarding`);
+                  throw new Error(`ILLEGAL_EXCHANGE_CONFIG_WRITE_FROM_ONBOARDING: Access to ${path} blocked`);
+                }
+              }
+
+              // Proceed with the call
+              const result = value.apply(this, args);
+
+              // If the result is a Firestore object (CollectionReference, DocumentReference, etc.), proxy it too
+              if (result && typeof result === 'object' && (
+                result.constructor.name.includes('Reference') ||
+                result.constructor.name.includes('Query') ||
+                prop === 'collection' ||
+                prop === 'doc'
+              )) {
+                return new Proxy(result, handler);
+              }
+              return result;
+            };
+          }
+          return value;
+        }
+      };
+      return new Proxy(db, handler);
+    };
+
+    // Use the safe DB instance for all operations - Shadow with 'db' identifier
+    const db = createSafeDb(unsafeDb);
+
 
     logger.info({ uid, email: profileData?.email }, '🚀 Starting user onboarding (ensureUser) - creating all required Firestore documents');
 
@@ -591,7 +620,7 @@ export async function ensureUser(
     // User requests (WebSocket connections, API calls) should NOT trigger provider seeding
     if (context === 'background_job') {
       console.log(`🔥 [HARD_LOG] [PROVIDER_SEED_TRIGGERED] Background context detected - seeding provider integrations for uid: ${uid}`);
-      await seedProviderIntegrations(uid, db, now);
+      await seedProviderIntegrations(uid, db, now, context);
     } else {
       console.log(`🔥 [HARD_LOG] [PROVIDER_SEED_SKIPPED] User request context - skipping provider seeding for uid: ${uid}`);
     }
@@ -876,35 +905,7 @@ export async function ensureUser(
       }
     }
 
-    // users/{uid}/exchangeConfig/current - Create empty trading exchange config doc
-    const exchangeConfigRef = userDocRef.collection('exchangeConfig').doc('current');
-    const exchangeConfigDoc = await exchangeConfigRef.get();
-    if (!exchangeConfigDoc.exists) {
-      // Create empty trading exchange config - fields will be set when user configures an exchange
-      await exchangeConfigRef.set({
-        testnet: true,
-        createdAt: now,
-        updatedAt: now,
-      });
-      logger.info({ uid, path: `users/${uid}/exchangeConfig/current` }, `✅ Trading exchange config doc created: users/{uid}/exchangeConfig/current`);
-    } else {
-      // Ensure required fields exist
-      const existingData = exchangeConfigDoc.data() || {};
-      const updateData: any = {};
-      if (existingData.createdAt === undefined) {
-        updateData.createdAt = now;
-      }
-      if (existingData.updatedAt === undefined) {
-        updateData.updatedAt = now;
-      }
-      if (existingData.testnet === undefined) {
-        updateData.testnet = true;
-      }
-      if (Object.keys(updateData).length > 0) {
-        await exchangeConfigRef.update(updateData);
-        logger.info({ uid, updatedFields: Object.keys(updateData), path: `users/${uid}/exchangeConfig/current` }, 'Exchange config updated with missing fields');
-      }
-    }
+
 
     // users/{uid}/riskLimits/current
     const riskRef = userDocRef.collection('riskLimits').doc('current');
@@ -980,7 +981,7 @@ export async function ensureUser(
       // GLOBAL INVARIANT: Always query users/{uid}/agents and count ONLY real agent documents
       // Real agents = documents that do NOT start with '_'
       const userAgentsSnapshot = await userDocRef.collection('agents').get();
-      const realAgentDocs = userAgentsSnapshot.docs.filter(doc => 
+      const realAgentDocs = userAgentsSnapshot.docs.filter(doc =>
         doc.id !== '_init' && !doc.id.startsWith('_')
       );
       const realAgentCount = realAgentDocs.length;
@@ -1035,7 +1036,7 @@ export async function ensureUser(
         if (agentId === '_init' || agentId.startsWith('_')) {
           continue;
         }
-        
+
         const agentData = doc.data() || {};
         const userAgentRef = userDocRef.collection('agents').doc(agentId);
         const userAgentDoc = await userAgentRef.get();
@@ -1105,7 +1106,6 @@ export async function ensureUser(
     if (createdNew) {
       createdDocs.push(`users/${uid}`);
       createdDocs.push(`users/${uid}/integrations/* (33 DLXTRADE providers)`);
-      createdDocs.push(`users/${uid}/exchangeConfig/current`);
     }
 
     logger.info({
@@ -1117,10 +1117,9 @@ export async function ensureUser(
       createdDocs: createdDocs.length > 0 ? createdDocs : undefined,
       requiredDocs: [
         `users/${uid}`,
-        `users/${uid}/integrations/* (33 DLXTRADE providers)`,
-        `users/${uid}/exchangeConfig/current`
+        `users/${uid}/integrations/* (33 DLXTRADE providers)`
       ]
-    }, '✅ User onboarding completed successfully - all required Firestore documents created/verified');
+    }, '✅ User onboarding completed successfully - required core documents created (exchangeConfig optional). NOTE: exchangeConfig is created on first exchange connection.');
 
     return {
       success: true,

@@ -124,7 +124,7 @@ class UserEngineManager {
 
   async startHFT(uid: string): Promise<void> {
     // Validate Binance integration exists and is enabled
-    const integrations = await firestoreAdapter.getEnabledIntegrations(uid);
+    const integrations = await firestoreAdapter.getEnabledIntegrations(uid, "background_job");
     if (!integrations.binance || !integrations.binance.apiKey || !integrations.binance.secretKey) {
       throw new Error('Binance integration not configured or not enabled');
     }

@@ -1,14 +1,48 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Trading Agent</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
-</html>
+    <head>
+        <meta charset="UTF-8" />
+        <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <!-- Prevent browser extension interference -->
+        <meta name="google" content="notranslate" />
+        <meta http-equiv="Content-Language" content="en" />
+        <title>Trading Agent</title>
+        <script>
+            // Suppress browser extension errors
+            window.addEventListener(
+                "error",
+                function (e) {
+                    if (
+                        e.message &&
+                        (e.message.includes("translate-page") ||
+                            e.message.includes("save-page") ||
+                            e.message.includes("menu item"))
+                    ) {
+                        e.preventDefault();
+                        return true;
+                    }
+                },
+                true,
+            );
 
+            // Suppress unhandled promise rejections from extensions
+            window.addEventListener("unhandledrejection", function (e) {
+                if (
+                    e.reason &&
+                    e.reason.message &&
+                    (e.reason.message.includes("translate-page") ||
+                        e.reason.message.includes("save-page") ||
+                        e.reason.message.includes("menu item"))
+                ) {
+                    e.preventDefault();
+                    return true;
+                }
+            });
+        </script>
+    </head>
+    <body>
+        <div id="root"></div>
+        <script type="module" src="/src/main.tsx"></script>
+    </body>
+</html>

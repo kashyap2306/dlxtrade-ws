@@ -266,6 +266,12 @@ export const useAutoTradeConfig = (user: any) => {
       console.log("[ATC BLOCKED] Exchange keys invalid - stopping all polling");
       return;
     }
+
+    // CRITICAL: Stop polling if exchange is not connected (prevent 404/500 loops)
+    if (exchangeConfig && exchangeConfig.connected === false) {
+      console.log("[ATC BLOCKED] Exchange not connected - stopping status polling");
+      return;
+    }
     try {
       console.log("[AT_STATUS_POLL] Starting status fetch...");
       const response = await settingsApi.trading.autotrade.status();
@@ -654,7 +660,55 @@ export const useAutoTradeConfig = (user: any) => {
       // Load config and initial data in parallel with Promise.allSettled
       const authUid = user.uid;
 
-      console.log('[AUTO-TRADE] Starting Promise.allSettled with authUid:', authUid);
+      console.log('[AUTO-TRADE] Starting load sequence with authUid:', authUid);
+
+      // STEP 1: Fetch Exchange Config FIRST (Sequential Check)
+      // If this fails or returns unconnected, we MUST NOT proceed to auto-trade endpoints
+      // to prevent "TIMEOUT STORM" and infinite retries on unconfigured accounts
+      console.log("[ATC LOAD] Step 1: Checking exchange connection...");
+      let exchangeData: any = {};
+      let isConnected = false;
+
+      try {
+        const exchangeRes = await usersApi.getExchangeConfig(authUid);
+        exchangeData = exchangeRes.data || {};
+        const exchangeName = (exchangeData.exchange || exchangeData.exchangeName || exchangeData.providerName || '').toLowerCase();
+        const hasApiKey = !!exchangeData.apiKeyEncrypted;
+        // Check both legacy and new secret fields
+        const hasSecret = !!(exchangeData.secretKeyEncrypted || exchangeData.secretEncrypted);
+        const isBitget = exchangeName === 'bitget';
+        const hasPassphrase = isBitget ? !!exchangeData.passphraseEncrypted : true;
+
+        isConnected = !!exchangeName && hasApiKey && hasSecret && hasPassphrase;
+
+        if (isMountedRef.current) {
+          console.log("[ATC LOAD] Exchange status:", { exchangeName, connected: isConnected });
+          setExchangeConfig({
+            ...exchangeData,
+            connected: isConnected
+          });
+        }
+      } catch (err) {
+        console.warn("[ATC LOAD] Exchange config fetch failed:", err);
+        // Treat as not connected on error
+      }
+
+      if (!isConnected) {
+        console.log("[ATC BLOCKED] Exchange NOT CONNECTED - Aborting auto-trade data fetching");
+        // Set minimal state to allow UI to render "Not Connected" message
+        if (isMountedRef.current) {
+          setHasLoadedConfig(true);
+          setConfigsLoaded(true);
+          setPerformanceStats(null);
+          // Ensure config is safe default (disabled)
+          setConfig(prev => ({ ...prev, autoTradeEnabled: false }));
+        }
+        isLoadingAllDataRef.current = false;
+        return;
+      }
+
+      // STEP 2: Only if connected, proceed to fetch heavy Auto-Trade data
+      console.log("[ATC LOAD] Exchange Connected - Proceeding to fetch Auto-Trade data...");
 
       // Create promises with timeout handling
       const createTimeoutPromise = (fn: () => Promise<any>, timeoutMs: number, label: string) => {
@@ -669,22 +723,15 @@ export const useAutoTradeConfig = (user: any) => {
       const promises = [
         createTimeoutPromise(() => autoTradeApi.getConfig(), 10000, 'getConfig'),
         createTimeoutPromise(() => usersApi.getPerformanceStats(authUid), 10000, 'getPerformanceStats'),
-        createTimeoutPromise(async () => {
-          console.log("[TRACE] BEFORE exchange-config fetch - uid:", authUid);
-          const result = await usersApi.getExchangeConfig(authUid);
-          console.log("[TRACE] RAW exchange-config backend response:", JSON.stringify(result.data, null, 2));
-          return result;
-        }, 8000, 'getExchangeConfig'),
       ];
 
       console.log("[ATC DEBUG] Promises array created, about to call Promise.allSettled");
 
-      const [configRes, performanceRes, exchangeRes] = await Promise.allSettled(promises);
+      const [configRes, performanceRes] = await Promise.allSettled(promises);
 
       console.log('[AUTO-TRADE] Promise.allSettled completed:', {
         configRes: configRes.status,
-        performanceRes: performanceRes.status,
-        exchangeRes: exchangeRes.status
+        performanceRes: performanceRes.status
       });
 
       // Handle config result - always set a safe config
@@ -762,30 +809,6 @@ export const useAutoTradeConfig = (user: any) => {
           lastResearchAt: prev.lastResearchAt ?? null,
           nextResearchAt: prev.nextResearchAt ?? null,
         }));
-      }
-
-      // Handle exchange config immediately and explicitly with mapped flags
-      // INDEPENDENT PROCESSING: Runs even if configRes failed
-      if (exchangeRes.status === 'fulfilled' && isMountedRef.current) {
-        const exchangeData = exchangeRes.value.data || {};
-        console.log("[EXCHANGE_CONFIG_FETCH] Success:", exchangeData);
-        const exchangeName = (exchangeData.exchange || exchangeData.exchangeName || exchangeData.providerName || '').toLowerCase();
-        const hasApiKey = !!exchangeData.apiKeyEncrypted;
-        // Check both legacy and new secret fields
-        const hasSecret = !!(exchangeData.secretKeyEncrypted || exchangeData.secretEncrypted);
-        const isBitget = exchangeName === 'bitget';
-        const hasPassphrase = isBitget ? !!exchangeData.passphraseEncrypted : true;
-
-        const connected = !!exchangeName && hasApiKey && hasSecret && hasPassphrase;
-
-        setExchangeConfig(prev => ({
-          ...prev,
-          ...exchangeData,
-          connected
-        }));
-      } else {
-        console.warn("[EXCHANGE_CONFIG_FETCH] Failed:", exchangeRes.status === 'rejected' ? exchangeRes.reason : 'unknown');
-        // Don't overwrite with empty if if we fail, but if it's first load, it will remain {}
       }
 
       // Handle performance stats - null is safe

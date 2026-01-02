@@ -1003,6 +1003,140 @@ export async function adminRoutes(fastify: FastifyInstance) {
       });
     }
   });
+
+  // ========== LEGACY EXCHANGE STATE CLEANUP ==========
+  fastify.post(
+    "/cleanup-legacy-exchange-states",
+    {
+      preHandler: [fastify.authenticate, fastify.adminAuth],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        console.log("🔧 ===================================================");
+        console.log("🔧 LEGACY EXCHANGE STATE CLEANUP STARTED");
+        console.log("🔧 ===================================================");
+
+        const db = getFirebaseAdmin().firestore();
+        const usersRef = db.collection("users");
+        const usersSnapshot = await usersRef.get();
+
+        let scannedCount = 0;
+        let fixedCount = 0;
+        let skippedCount = 0;
+        let errorCount = 0;
+
+        console.log(
+          `📊 Scanning ${usersSnapshot.docs.length} users for legacy forbidden exchange fields...`,
+        );
+
+        for (const userDoc of usersSnapshot.docs) {
+          const uid = userDoc.id;
+          scannedCount++;
+
+          try {
+            const exchangeConfigRef = userDoc.ref.collection("exchangeConfig").doc("current");
+            const exchangeConfigDoc = await exchangeConfigRef.get();
+
+            if (!exchangeConfigDoc.exists) {
+              // No exchange config - skip
+              skippedCount++;
+              continue;
+            }
+
+            const exchangeConfig = exchangeConfigDoc.data();
+            const exchangeStatus = exchangeConfig?.exchangeStatus;
+
+            const hasLegacyForbiddenFields =
+              exchangeConfig?.exchangeStatus !== undefined ||
+              exchangeConfig?.keysClearedAt !== undefined ||
+              exchangeConfig?.keysClearedReason !== undefined;
+
+            if (!hasLegacyForbiddenFields) {
+              // No legacy forbidden fields - skip
+              skippedCount++;
+              continue;
+            }
+
+            // Check if encrypted keys are missing or exchange was never connected
+            const hasApiKey = !!(exchangeConfig?.apiKeyEncrypted && exchangeConfig.apiKeyEncrypted.trim().length > 0);
+            const hasSecretKey = !!(exchangeConfig?.secretKeyEncrypted && exchangeConfig.secretKeyEncrypted.trim().length > 0);
+            const hasSecret = !!(exchangeConfig?.secretEncrypted && exchangeConfig.secretEncrypted.trim().length > 0);
+            const hasPassphrase = !!(exchangeConfig?.passphraseEncrypted && exchangeConfig.passphraseEncrypted?.trim().length > 0);
+            const hasExchange = !!(exchangeConfig?.exchange && exchangeConfig.exchange.trim().length > 0);
+
+            const hasAnyEncryptedKeys = hasApiKey || hasSecretKey || hasSecret || hasPassphrase;
+
+            // LEGACY STATE: Forbidden exchange fields should not exist as persisted state.
+            // This route is intentionally read-only for exchangeConfig/current.
+            console.log(
+              `⚠️  [LEGACY_DETECTED] UID ${uid}: forbidden exchange fields detected in exchangeConfig/current (legacy/bad state). ` +
+                `EncryptedKeys=${hasAnyEncryptedKeys} ExchangeSet=${hasExchange}`,
+            );
+
+            // LEGACY STATE: Cannot write to exchangeConfig from admin - only exchange connect handler allowed
+            // Mark as requiring manual cleanup by user through proper exchange connect flow
+            console.log(
+              `🔧 [LEGACY_ADMIN_SKIP] UID ${uid}: legacy forbidden exchange fields require user to reconnect via /exchange/connect (no admin write)`,
+            );
+
+            logger.info(
+              {
+                uid,
+                adminUid: (request as any).user.uid,
+                operation: "LEGACY_STATE_REPAIR",
+                fromStatus: "LEGACY_FORBIDDEN_FIELDS_PRESENT",
+                toStatus: "USER_RECONNECT_REQUIRED",
+                hadEncryptedKeys: hasAnyEncryptedKeys,
+                hadExchange: hasExchange,
+              },
+              "LEGACY_STATE_REPAIR: Detected legacy forbidden exchange fields; user reconnect required"
+            );
+
+            skippedCount++;
+
+          } catch (userError: any) {
+            console.error(`💥 [LEGACY_ERROR] UID ${uid}: ${userError.message}`);
+            logger.error(
+              { uid, error: userError.message, operation: "LEGACY_STATE_REPAIR" },
+              "LEGACY_STATE_REPAIR: Error processing user"
+            );
+            errorCount++;
+          }
+        }
+
+        console.log("🔧 ===================================================");
+        console.log("🔧 LEGACY EXCHANGE STATE CLEANUP COMPLETE");
+        console.log("🔧 ===================================================");
+        console.log(`📊 Scanned: ${scannedCount} users`);
+        console.log(`🔧 Fixed: ${fixedCount} users`);
+        console.log(`⏭️  Skipped: ${skippedCount} users`);
+        console.log(`💥 Errors: ${errorCount} users`);
+        console.log("✅ Legacy forbidden exchange fields scan complete");
+        console.log("🔄 Users can now connect exchanges normally");
+        console.log("🔧 ===================================================");
+
+        return {
+          success: true,
+          operation: "LEGACY_STATE_REPAIR",
+          stats: {
+            scanned: scannedCount,
+            fixed: fixedCount,
+            skipped: skippedCount,
+            errors: errorCount,
+          },
+          message: `Scanned ${scannedCount} users for legacy forbidden exchange fields. Affected users must reconnect via /exchange/connect.`,
+        };
+
+      } catch (error: any) {
+        console.error("💥 CRITICAL ERROR during legacy state cleanup:", error.message);
+        logger.error({ error: error.message }, "LEGACY_STATE_REPAIR: Critical error");
+        return reply.code(500).send({
+          error: error.message || "Critical error during legacy state cleanup",
+          operation: "LEGACY_STATE_REPAIR_FAILED",
+        });
+      }
+    },
+  );
 }
 
 /**

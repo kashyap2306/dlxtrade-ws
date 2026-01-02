@@ -508,17 +508,16 @@ export default function Dashboard() {
         return;
       }
 
-      // Send the exact payload structure requested
+      // Send payload to new exchange/connect endpoint
       const exchangeConfigPayload = {
-        exchangeConfig: {
-          exchange: selectedExchange,
-          apiKey: exchangeForm.apiKey,
-          secretKey: exchangeForm.secretKey,
-          passphrase: exchangeForm.passphrase || null,
-        }
+        exchange: selectedExchange,
+        apiKey: exchangeForm.apiKey,
+        secret: exchangeForm.secretKey,
+        passphrase: exchangeForm.passphrase || undefined,
+        testnet: true,
       };
 
-      await settingsApi.saveExchangeConfig(user.uid, exchangeConfigPayload);
+      await exchangeApi.connect(exchangeConfigPayload);
 
       // Refresh exchangeConfig state
       await refreshExchangeConfig();

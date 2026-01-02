@@ -38,7 +38,7 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
         const encrypted = integrations?.[name]?.apiKeyEncrypted || '';
         if (!encrypted) return '';
         try {
-          return decrypt(encrypted) || '';
+          return decrypt(encrypted, "user_request") || '';
         } catch {
           return '';
         }
@@ -265,41 +265,41 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
 
         case 'exchange': {
           // Test exchange API (Binance/Bitget/BingX/Weex) - use provided credentials or fallback to stored
-          let exchangeName = (body.exchange || 'binance') as 'binance' | 'bitget' | 'bingx' | 'weex';
-          
-          // Validate exchange name
-          const validExchanges = ['binance', 'bitget', 'bingx', 'weex'];
-          if (!validExchanges.includes(exchangeName)) {
-            return reply.code(400).send({
-              error: `Invalid exchange: ${exchangeName}. Must be one of: ${validExchanges.join(', ')}`,
-            });
-          }
+          let exchangeName = (body.exchange as 'binance' | 'bitget' | 'bingx' | 'weex') || (undefined as any);
 
           let apiKey = body.apiKey;
           let secret = body.secretKey;
           let passphrase = body.passphrase;
           let testnet = true;
 
-          // If credentials not provided, try to get from stored config using unified resolver
-          if (!apiKey || !secret) {
+          // If credentials or exchange not provided, try to get from stored config using unified resolver
+          if (!apiKey || !secret || !exchangeName) {
             const { resolveExchangeConnector } = await import('../services/exchangeResolver');
-            const resolved = await resolveExchangeConnector(user.uid);
-            
+            const resolved = await resolveExchangeConnector(user.uid, "user_request");
+
             if (resolved) {
               apiKey = apiKey || resolved.credentials.apiKey;
               secret = secret || resolved.credentials.secret;
               passphrase = passphrase || resolved.credentials.passphrase;
               testnet = resolved.credentials.testnet;
               // Use resolved exchange if not provided
-              if (!body.exchange) {
+              if (!exchangeName) {
                 exchangeName = resolved.exchange;
               }
             }
           }
 
+          // Validate exchange name NOW
+          const validExchanges = ['binance', 'bitget', 'bingx', 'weex'];
+          if (!exchangeName || !validExchanges.includes(exchangeName)) {
+            return reply.code(400).send({
+              error: `Invalid or missing exchange: ${exchangeName}. Must be one of: ${validExchanges.join(', ')}`,
+            });
+          }
+
           try {
             const { ExchangeConnectorFactory } = await import('../services/exchangeConnector');
-            
+
             // Validate all required fields before creating adapter
             if (!apiKey || !secret) {
               return reply.code(400).send({
@@ -314,7 +314,7 @@ export async function diagnosticsRoutes(fastify: FastifyInstance) {
                 error: `Missing passphrase. ${exchangeName.charAt(0).toUpperCase() + exchangeName.slice(1)} requires a passphrase.`,
               });
             }
-            
+
             // Create connector
             let connector;
             try {

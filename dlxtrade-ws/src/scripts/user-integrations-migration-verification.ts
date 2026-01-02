@@ -132,7 +132,7 @@ class UserIntegrationsMigrationVerifier {
     // Verify encryption method matches keyManager implementation
     const testKey = 'test_encryption_123';
     const encrypted = encrypt(testKey);
-    const decrypted = decrypt(encrypted);
+    const decrypted = decrypt(encrypted, "user_request");
 
     if (decrypted !== testKey) {
       throw new Error('❌ ENCRYPTION METHOD MISMATCH - Current implementation failed round-trip test');
@@ -189,7 +189,7 @@ class UserIntegrationsMigrationVerifier {
     // Check if we have encrypted keys
     if (integration.apiKey) {
       try {
-        decryptedApiKey = decrypt(integration.apiKey);
+        decryptedApiKey = decrypt(integration.apiKey, "user_request");
         // If we got here, decryption worked (either with current or fallback key)
         // The keyManager automatically re-encrypts with current key during normal save operations
         // For migration, we need to check if this was decrypted with a fallback key
@@ -205,7 +205,7 @@ class UserIntegrationsMigrationVerifier {
     // Check secret key if it exists
     if (integration.secretKey) {
       try {
-        decryptedSecretKey = decrypt(integration.secretKey);
+        decryptedSecretKey = decrypt(integration.secretKey, "user_request");
         needsReEncryption = true;
       } catch (error: any) {
         console.log(`      ❌ ${provider} (secret): UNRECOVERABLE - ${error.message}`);

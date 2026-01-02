@@ -31,7 +31,6 @@ const REQUIRED_COLLECTIONS = [
   'trades',
   'notifications',
   'globalStats',
-  'apiKeys',
   'admin',
   'logs',
   'settings',
@@ -57,7 +56,7 @@ function initializeFirebase(): admin.firestore.Firestore {
   delete process.env.FIREBASE_PROJECT_ID;
 
   let app: admin.app.App;
-  
+
   try {
     // Try to get existing app
     app = admin.app('firestore-init');
@@ -75,7 +74,7 @@ function initializeFirebase(): admin.firestore.Firestore {
   const db = app.firestore();
   console.log('✅ Firebase Admin initialized');
   console.log('✅ Connected to project:', SERVICE_ACCOUNT.project_id);
-  
+
   return db;
 }
 
@@ -100,10 +99,10 @@ async function forceCreateAllCollections(): Promise<void> {
     REQUIRED_COLLECTIONS.map(async (collectionName) => {
       try {
         const docRef = db.collection(collectionName).doc(INIT_DOC_ID);
-        
+
         // Check if document already exists
         const doc = await docRef.get();
-        
+
         if (doc.exists) {
           console.log(`⏭️  Collection "${collectionName}" - SKIPPED (already exists)`);
           results.skipped.push(collectionName);
@@ -135,19 +134,19 @@ async function forceCreateAllCollections(): Promise<void> {
   console.log(`   ✅ Created: ${results.created.length}`);
   console.log(`   ⏭️  Skipped: ${results.skipped.length}`);
   console.log(`   ❌ Errors: ${results.errors.length}`);
-  
+
   if (results.created.length > 0) {
     console.log('');
     console.log('✅ Created collections:');
     results.created.forEach((name) => console.log(`   - ${name}`));
   }
-  
+
   if (results.skipped.length > 0) {
     console.log('');
     console.log('⏭️  Skipped collections (already exist):');
     results.skipped.forEach((name) => console.log(`   - ${name}`));
   }
-  
+
   if (results.errors.length > 0) {
     console.log('');
     console.error('❌ Errors:');

@@ -8,7 +8,7 @@ import { logger } from "./logger";
 const REQUIRED_COLLECTIONS = [
   "users",
   "agents",
-  "agentUnlocks", 
+  "agentUnlocks",
   "uiPreferences",
   "activityLogs",
   "hftLogs",
@@ -16,7 +16,6 @@ const REQUIRED_COLLECTIONS = [
   "trades",
   "notifications",
   "globalStats",
-  "apiKeys",
   "admin",
   "logs",
   "settings",
@@ -38,10 +37,10 @@ async function collectionExists(
   try {
     // Check if collection has any documents, skipping those starting with "__"
     const snapshot = await db.collection(collectionName).limit(100).get();
-    
+
     // Filter out documents starting with "__"
     const validDocs = snapshot.docs.filter(doc => !doc.id.startsWith("__"));
-    
+
     return validDocs.length > 0;
   } catch (error: any) {
     // If collection doesn\'t exist, Firestore may throw an error
@@ -73,18 +72,18 @@ async function initializeCollection(
 ): Promise<boolean> {
   try {
     console.log("Checking collection:", collectionName);
-    
+
     // Collections are created automatically when first document is added
     // We don\'t need to create any "__" prefixed documents
     // Just verify the collection exists (has at least one non-__ document)
     const exists = await collectionExists(db, collectionName);
-    
+
     if (exists) {
       logger.debug({ collectionName }, "Collection already exists");
       console.log(`Collection ${collectionName} already exists`);
       return false;
     }
-    
+
     // Collection doesn\'t exist yet, but it will be created when first real document is added
     // We don\'t create placeholder documents with "__" prefix
     logger.info({ collectionName }, "Collection will be created when first document is added");
@@ -127,12 +126,12 @@ export async function initializeFirestoreCollections(): Promise<void> {
         try {
           console.log(`Checking collection: ${collectionName}`);
           const exists = await collectionExists(db, collectionName);
-          
+
           if (!exists) {
             console.log(`Collection ${collectionName} does not exist - skipping creation in production-safe mode`);
             return { collectionName, initialized: false };
           }
-          
+
           console.log(`Collection ${collectionName} already exists`);
           return { collectionName, initialized: false };
         } catch (error: any) {
@@ -149,7 +148,7 @@ export async function initializeFirestoreCollections(): Promise<void> {
 
     results.forEach((result, index) => {
       const collectionName = REQUIRED_COLLECTIONS[index];
-      
+
       if (result.status === "fulfilled") {
         if (result.value.initialized) {
           initialized.push(collectionName);
