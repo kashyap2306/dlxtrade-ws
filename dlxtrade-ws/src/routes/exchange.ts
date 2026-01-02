@@ -105,7 +105,7 @@ export function sanitizeFirestorePayload(payload: any): any {
   detectInvalidKeysWrite(payload, "Firestore write via sanitizeFirestorePayload");
 
   // SECOND: PURE PASS-THROUGH SANITIZER - Remove ALL forbidden fields, never add them
-  const forbiddenFields = ['exchangeStatus', 'INVALID_KEYS', 'keysClearedAt', 'keysClearedReason'];
+  const forbiddenFields = ['exchangeStatus', 'keysClearedAt', 'keysClearedReason'];
   const sanitized = { ...payload };
 
   let removedFields = [];
@@ -1106,11 +1106,11 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
         }); // Safe merge - preserves exchange field
 
         // REMOVED: Legacy cleanup - violates invariant
-        // exchangeStatus may only be written by explicit disconnect handler
+        // Forbidden exchange-state fields must never be introduced by connect.
 
-          // CONNECT ROUTE FINAL ASSERTION: Verify connect did not introduce INVALID_KEYS
+          // CONNECT ROUTE FINAL ASSERTION: Verify connect did not introduce forbidden exchange-state fields
         try {
-          console.log("🔍 [CONNECT_FINAL_ASSERTION] Reading back document to verify no INVALID_KEYS introduced");
+          console.log("🔍 [CONNECT_FINAL_ASSERTION] Reading back document to verify no forbidden exchange-state fields introduced");
           const finalReadSnap = await docRef.get();
 
           if (!finalReadSnap.exists) {
@@ -1119,15 +1119,21 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
 
           const finalData = finalReadSnap.data();
 
-          // CRITICAL: Connect flow must NOT introduce INVALID_KEYS
-          if (finalData?.exchangeStatus === 'INVALID_KEYS') {
-            const errorMsg = `🚨 [CONNECT_ASSERTION_FAILED] INVALID_KEYS present after connect - BUG DETECTED`;
+          const forbiddenFields = ['exchangeStatus', 'keysClearedAt', 'keysClearedReason'] as const;
+          const presentForbidden = forbiddenFields.filter((k) => finalData?.[k] !== undefined);
+          if (presentForbidden.length > 0) {
+            const errorMsg = `🚨 [CONNECT_ASSERTION_FAILED] Forbidden exchange-state fields present after connect: ${presentForbidden.join(", ")}`;
             console.error(errorMsg);
-            console.error('   Connect flow must not write INVALID_KEYS');
+            console.error('   Connect flow must not introduce exchangeStatus/keysClearedAt/keysClearedReason');
+            console.error('   Present values:', {
+              exchangeStatus: finalData?.exchangeStatus,
+              keysClearedAt: finalData?.keysClearedAt,
+              keysClearedReason: finalData?.keysClearedReason,
+            });
             throw new Error(errorMsg);
           }
 
-          console.log("✅ [CONNECT_FINAL_ASSERTION] PASSED - No INVALID_KEYS introduced by connect");
+          console.log("✅ [CONNECT_FINAL_ASSERTION] PASSED - No forbidden exchange-state fields introduced by connect");
           console.log("   Encrypted keys successfully persisted");
 
         } catch (assertionError: any) {

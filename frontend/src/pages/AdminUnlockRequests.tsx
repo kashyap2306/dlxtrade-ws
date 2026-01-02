@@ -52,8 +52,8 @@ export default function AdminUnlockRequests() {
   const handleApprove = async (requestId: string) => {
     setProcessingId(requestId);
     try {
-      await adminApi.approveUnlockRequest(requestId);
-      showToast('Unlock request approved successfully', 'success');
+      await adminApi.approvePurchaseRequest(requestId);
+      showToast('Agent access request approved successfully', 'success');
       await loadRequests();
     } catch (err: any) {
       showToast(err.response?.data?.error || 'Error approving request', 'error');

@@ -86,6 +86,23 @@ async function seedAgents(db: admin.firestore.Firestore): Promise<void> {
         createdAt: admin.firestore.Timestamp.now(),
       },
       {
+        id: 'crowd_consensus_copy_trade',
+        name: 'Crowd Consensus Copy Trade Agent',
+        price: 600,
+        description: 'Follows crowd consensus across 10+ exchanges, trades when multiple exchanges agree on direction',
+        features: [
+          'Monitors 10+ exchanges for consensus signals',
+          'Detects crowd LONG/SHORT direction',
+          'Auto-trades on one exchange when consensus is strong',
+          'Risk management with SL/TP',
+          'No individual trader data accessed',
+        ],
+        icon: '👥',
+        category: 'Copy Trading',
+        badge: 'Advanced',
+        createdAt: admin.firestore.Timestamp.now(),
+      },
+      {
         id: 'liquidity_sniper_arbitrage',
         name: 'Liquidity Sniper & Arbitrage Agent',
         price: 500,

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { logger } from '../utils/logger';
 import { getFirebaseAdmin } from '../utils/firebase';
 import * as admin from 'firebase-admin';
+import { LaunchpadService } from '../services/launchpadService';
 
 // Support both number (legacy) and object (range) formats for accuracyTrigger
 const accuracyTriggerSchema = z.union([
@@ -714,6 +715,74 @@ export async function backgroundResearchRoutes(fastify: FastifyInstance) {
         success: false,
         error: 'Internal server error',
         message: 'An unexpected error occurred while starting Deep Research engine. Please try again.',
+      });
+    }
+  });
+
+  // ========== LAUNCHPAD HUNTER BACKGROUND ROUTES ==========
+
+  // POST /api/background-research/launchpad/generate-alerts - Generate launchpad alerts (admin only)
+  fastify.post("/launchpad/generate-alerts", {
+    preHandler: [fastify.authenticate, fastify.adminAuth]
+  }, async (req, reply) => {
+    try {
+      logger.info('Starting launchpad alert generation');
+
+      const startTime = Date.now();
+      await LaunchpadService.generateAlertsForUsers();
+
+      const duration = Date.now() - startTime;
+      logger.info({ duration }, 'Launchpad alert generation completed');
+
+      return reply.code(200).send({
+        success: true,
+        message: 'Launchpad alerts generated successfully',
+        duration,
+      });
+    } catch (error: any) {
+      logger.error({
+        error: error.message,
+        stack: error.stack,
+      }, 'Error generating launchpad alerts');
+
+      return reply.code(500).send({
+        success: false,
+        error: 'Internal server error',
+        message: 'Failed to generate launchpad alerts',
+      });
+    }
+  });
+
+  // GET /api/background-research/launchpad/test-fetch - Test PinkSale API fetch (admin only)
+  fastify.get("/launchpad/test-fetch", {
+    preHandler: [fastify.authenticate, fastify.adminAuth]
+  }, async (req, reply) => {
+    try {
+      logger.info('Testing PinkSale API fetch');
+
+      const startTime = Date.now();
+      const presales = await LaunchpadService.fetchPinkSalePresales();
+
+      const duration = Date.now() - startTime;
+      logger.info({ duration, count: presales.length }, 'PinkSale API test completed');
+
+      return reply.code(200).send({
+        success: true,
+        message: 'PinkSale API fetch successful',
+        duration,
+        presales: presales.slice(0, 5), // Return first 5 for testing
+        totalCount: presales.length,
+      });
+    } catch (error: any) {
+      logger.error({
+        error: error.message,
+        stack: error.stack,
+      }, 'Error testing PinkSale API');
+
+      return reply.code(500).send({
+        success: false,
+        error: 'PinkSale API test failed',
+        message: error.message,
       });
     }
   });

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { firestoreAdapter } from '../services/firestoreAdapter';
 import { logger } from '../utils/logger';
 import { ValidationError } from '../utils/errors';
+import { agentAccessMiddleware } from '../middleware/agentAuth';
 
 const unlockAgentSchema = z.object({
   agentName: z.string().min(1),
@@ -263,7 +264,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
   // PUT /api/agents/:agentId/settings - Update agent settings for user
   fastify.put('/:agentId/settings', {
-    preHandler: [fastify.authenticate],
+    preHandler: [fastify.authenticate, agentAccessMiddleware],
   }, async (request: FastifyRequest<{ Params: { agentId: string }; Body: any }>, reply: FastifyReply) => {
     try {
       const user = (request as any).user;

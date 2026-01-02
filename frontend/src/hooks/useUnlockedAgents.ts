@@ -69,35 +69,50 @@ export function useUnlockedAgents() {
     setError(null);
 
     try {
-      // Get unlocked agent IDs with safe fallback
-      const unlockedResponse = await agentsApi.getUnlocked();
-      const agentIds = unlockedResponse?.data?.unlocked || [];
+      // Get user's agents (this will include all approved agents)
+      const userAgentsResponse = await agentsApi.getUserAgents(user.uid);
+      const userAgents = userAgentsResponse?.data?.agents || [];
 
-      // Get full agent details for each unlocked agent with safe fallback
+      // Get full agent details for each user agent with safe fallback
       const allAgentsResponse = await agentsApi.getAll();
       const allAgents = allAgentsResponse?.data?.agents || [];
 
       consecutiveErrorsRef.current = 0; // Reset error counter on success
 
-      // Map agent IDs to full agent details with safe fallbacks
-      const agentsWithDetails = agentIds.map((agentId: string) => {
-        const agentDetails = allAgents.find((a: any) => a?.id === agentId || a?.name === agentId);
-        const unlockInfo = null; // Unlock details not available from current endpoints
+      // Filter to only approved agents and map to full details
+      const approvedAgents = userAgents.filter((ua: any) =>
+        ua.unlocked === true || ua.status === 'approved'
+      );
+
+      const agentsWithDetails = approvedAgents.map((userAgent: any) => {
+        const agentDetails = allAgents.find((a: any) => a?.id === userAgent.id);
 
         return {
-          agentId: agentId,
-          agentName: agentDetails?.name || agentId,
-          unlockedAt: new Date().toISOString(),
-          status: 'active',
-          settings: {},
-          agent: agentDetails || null,
+          agentId: userAgent.id,
+          agentName: agentDetails?.name || userAgent.name || userAgent.id,
+          unlockedAt: userAgent.unlockedAt || userAgent.createdAt || new Date().toISOString(),
+          status: userAgent.status || 'active',
+          settings: userAgent.settings || {},
+          agent: {
+            id: userAgent.id,
+            name: agentDetails?.name || userAgent.name || userAgent.id,
+            description: agentDetails?.description || userAgent.description || '',
+            icon: agentDetails?.icon || userAgent.icon,
+            imageUrl: agentDetails?.imageUrl || userAgent.imageUrl,
+            features: agentDetails?.features || userAgent.features || [],
+            category: agentDetails?.category || userAgent.category || 'Trading',
+            badge: agentDetails?.badge || userAgent.badge,
+            price: agentDetails?.price || userAgent.price || 0,
+            enabled: agentDetails?.enabled !== false,
+            ...agentDetails
+          },
         };
       });
 
       setUnlockedAgents(agentsWithDetails || []);
     } catch (err: any) {
       consecutiveErrorsRef.current++;
-      console.warn(`[Dashboard] API failed (${consecutiveErrorsRef.current}/${MAX_CONSECUTIVE_ERRORS}): agentsApi`, err);
+      console.warn(`[UnlockedAgents] API failed (${consecutiveErrorsRef.current}/${MAX_CONSECUTIVE_ERRORS}): agentsApi`, err);
       setError(err?.response?.data?.error || 'Failed to load unlocked agents');
       setUnlockedAgents([]);
     } finally {

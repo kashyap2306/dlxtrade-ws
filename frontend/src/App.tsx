@@ -57,6 +57,8 @@ const AgentDetails = React.lazy(() => import('./pages/AgentDetails'));
 const AgentControl = React.lazy(() => import('./pages/AgentControl'));
 const AgentDashboard = React.lazy(() => import('./pages/AgentDashboard'));
 const AgentFeature = React.lazy(() => import('./pages/AgentFeature'));
+const LaunchpadHunter = React.lazy(() => import('./pages/LaunchpadHunter'));
+const CrowdConsensus = React.lazy(() => import('./pages/CrowdConsensus'));
 const Onboarding = React.lazy(() => import('./pages/Onboarding'));
 const NotificationCenter = React.lazy(() => import('./pages/NotificationCenter'));
 
@@ -224,6 +226,8 @@ function App() {
                   <Route path="profile" element={<SafeRoute><Profile /></SafeRoute>} />
                   <Route path="agents" element={<SafeRoute><AgentsMarketplace /></SafeRoute>} />
                   <Route path="agents/:agentId" element={<SafeRoute><AgentDetails /></SafeRoute>} />
+                  <Route path="agents/launchpad-hunter" element={<SafeRoute><LaunchpadHunter /></SafeRoute>} />
+                  <Route path="agents/crowd-consensus" element={<SafeRoute><CrowdConsensus /></SafeRoute>} />
                   <Route path="agent/:agentId" element={<SafeRoute><AgentDashboard /></SafeRoute>} />
                   <Route path="agent/:agentId/control" element={<SafeRoute><AgentControl /></SafeRoute>} />
                   <Route path="hft/settings" element={<SafeRoute><HFTSettings /></SafeRoute>} />

@@ -180,12 +180,22 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
 
   const dynamicMenuItems: any[] = unlockedAgents
     .filter((agent) => agent.agent && agent.agentName)
-    .map((agent) => ({
-      path: `/agents/${agent.agentId || agent.agentName}`,
-      label: agent.agentName,
-      Icon: Icons.Agent,
-      icon: null,
-    }));
+    .map((agent) => {
+      // Special handling for different agent types
+      let path = `/agents/${agent.agentId || agent.agentName}`;
+      if (agent.agentId === 'ai_launchpad_hunter') {
+        path = '/agents/launchpad-hunter';
+      } else if (agent.agentId === 'crowd_consensus_copy_trade') {
+        path = '/agents/crowd-consensus';
+      }
+
+      return {
+        path,
+        label: agent.agentName,
+        Icon: Icons.Agent,
+        icon: null,
+      };
+    });
 
   const menuItems = [...staticMenuItems, ...dynamicMenuItems];
 

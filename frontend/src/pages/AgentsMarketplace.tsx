@@ -30,6 +30,7 @@ export default function AgentsMarketplace() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [unlockedAgents, setUnlockedAgents] = useState<Record<string, boolean>>({});
   const [agentRequests, setAgentRequests] = useState<Record<string, { status: string; requestedAt?: string }>>({});
+  const [agentDataMap, setAgentDataMap] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(false); // Never show global loading like Research page
   const [error, setError] = useState<any>(null);
   const [retryCount, setRetryCount] = useState(0);
@@ -82,14 +83,18 @@ export default function AgentsMarketplace() {
         agentsSnapshot.forEach((doc) => {
           const agentId = doc.id; // Document ID is the agent ID
           const agentData = doc.data(); // Document data contains agent properties
-          
+
           // Skip system documents
           if (agentId === '_init' || agentId.startsWith('_')) {
             return;
           }
 
-          const isUnlocked = agentData?.unlocked === true;
+          // Agent is unlocked if explicitly unlocked or approved
+          const isUnlocked = agentData?.unlocked === true || agentData?.status === 'approved';
           unlockedMap[agentId] = isUnlocked;
+
+          // Store agent data for later use
+          agentDataMap[agentId] = agentData;
 
           // Find matching metadata from global agents collection (optional enrichment)
           const metadata = allAgentsMetadata.find((a: any) => 
@@ -148,6 +153,7 @@ export default function AgentsMarketplace() {
 
         setAgents(combinedAgents);
         setUnlockedAgents(unlockedMap);
+        setAgentDataMap(agentDataMap);
         
         // TEMPORARY DEBUG: Log count after state update
         console.log('[AgentsMarketplace] Rendered agents count:', combinedAgents.length, 'Agent IDs:', combinedAgents.map(a => a.id));
@@ -356,8 +362,17 @@ export default function AgentsMarketplace() {
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
               {agents
                 .map((agent, index) => {
-                  const isUnlocked = agent.unlocked === true;
-                  const requestStatus = agentRequests[agent.id || agent.name]?.status;
+                  const isUnlocked = unlockedAgents[agent.id] === true;
+                  const agentData = agentDataMap[agent.id];
+                  let requestStatus: 'pending' | 'approved' | 'rejected' | undefined;
+
+                  if (isUnlocked) {
+                    requestStatus = 'approved';
+                  } else if (agentData?.status === 'pending') {
+                    requestStatus = 'pending';
+                  } else if (agentData?.status === 'rejected') {
+                    requestStatus = 'rejected';
+                  }
 
                   return (
                     <AgentCard

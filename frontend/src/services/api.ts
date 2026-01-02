@@ -382,7 +382,6 @@ export const agentsApi = {
   getUnlocked: () => api.get('/agents/unlocked'),
   submitUnlockRequest: (data: { agentId: string; agentName: string; fullName: string; phoneNumber: string; email: string }) =>
     api.post('/agents/submit-unlock-request', data),
-  updateAgentSettings: (agentId: string, settings: any) => api.put(`/agents/${agentId}/settings`, settings),
   // New endpoints for agent marketplace
   getUserAgents: (uid: string) => api.get(`/users/${uid}/agents`),
   createPurchaseRequest: (data: { agentId: string; agentName: string; userName: string; email: string; phoneNumber: string }) =>
@@ -390,6 +389,20 @@ export const agentsApi = {
   approvePurchaseRequest: (requestId: string) => api.post('/admin/agents/approve', { requestId }),
   getPurchaseRequests: (status?: string) => api.get('/admin/agents/purchase-requests', { params: status ? { status } : {} }),
   getUserFeatures: (uid: string) => api.get(`/users/${uid}/features`),
+  // Individual agent endpoints
+  getAgentDashboard: (agentId: string) => api.get(`/agent/${agentId}/dashboard`),
+  getAgentSettings: (agentId: string) => api.get(`/agent/${agentId}/settings`),
+  updateAgentSettings: (agentId: string, settings: any) => api.put(`/agent/${agentId}/settings`, settings),
+  startAgent: (agentId: string) => api.post(`/agent/${agentId}/start`),
+  stopAgent: (agentId: string) => api.post(`/agent/${agentId}/stop`),
+  // Launchpad Hunter specific endpoints
+  getLaunchpadDashboard: () => api.get('/agent/launchpad-hunter/dashboard'),
+  getLaunchpadAlerts: (limit?: number) => api.get('/agent/launchpad-hunter/alerts', { params: { limit } }),
+  updateLaunchpadSettings: (settings: any) => api.put('/agent/launchpad-hunter/settings', settings),
+  // Crowd Consensus Copy Trade endpoints
+  getCrowdConsensusDashboard: () => api.get('/agent/crowd-consensus/dashboard'),
+  getCrowdConsensusSignals: (limit?: number) => api.get('/agent/crowd-consensus/signals', { params: { limit } }),
+  updateCrowdConsensusSettings: (settings: any) => api.put('/agent/crowd-consensus/settings', settings),
 };
 
 // Activity Logs - routes include /api prefix from baseURL

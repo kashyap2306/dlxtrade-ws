@@ -474,7 +474,7 @@ function sanitizeFirestorePayload(payload: any): any {
   }
 
   // Remove forbidden fields
-  const forbiddenFields = ['exchangeStatus', 'INVALID_KEYS', 'keysClearedAt', 'keysClearedReason'];
+  const forbiddenFields = ['exchangeStatus', 'keysClearedAt', 'keysClearedReason'];
   const sanitized = { ...payload };
   let removedFields = [];
 

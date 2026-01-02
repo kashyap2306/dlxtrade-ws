@@ -1992,11 +1992,14 @@ export class FirestoreAdapter {
       .doc(requestData.uid)
       .collection("agents")
       .doc(requestData.agentId);
-    await userAgentRef.update({
+    await userAgentRef.set({
       unlocked: true,
+      status: 'approved',
       unlockedAt: admin.firestore.Timestamp.now(),
       purchaseRequestId: requestId,
-    });
+      approvedAt: admin.firestore.Timestamp.now(),
+      approvedBy: adminUid,
+    }, { merge: true });
 
     // Enable the feature for the user (for sidebar)
     await this.enableUserFeature(requestData.uid, requestData.agentId, {
@@ -2374,6 +2377,42 @@ export class FirestoreAdapter {
       "Trade saved",
     );
     return tradeRef.id;
+  }
+
+  async updateTradeDocDelta(
+    tradeDocId: string,
+    updates: Record<string, any>,
+  ): Promise<{ updated: boolean; reason?: string }> {
+    const tradeRef = db().collection("trades").doc(tradeDocId);
+    const snapshot = await tradeRef.get();
+    if (!snapshot.exists) {
+      return { updated: false, reason: "not_found" };
+    }
+
+    const existing = snapshot.data() || {};
+    const delta: Record<string, any> = {};
+    let changed = false;
+
+    for (const [key, value] of Object.entries(updates)) {
+      if (value === undefined) continue;
+      if ((existing as any)[key] !== value) {
+        (delta as any)[key] = value;
+        changed = true;
+      }
+    }
+
+    if (!changed) {
+      return { updated: false, reason: "no_change" };
+    }
+
+    await tradeRef.set(
+      {
+        ...delta,
+        updatedAt: admin.firestore.Timestamp.now(),
+      },
+      { merge: true },
+    );
+    return { updated: true };
   }
 
   async getTrades(uid?: string, limit: number = 100): Promise<any[]> {

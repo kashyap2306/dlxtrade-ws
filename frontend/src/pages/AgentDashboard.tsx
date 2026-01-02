@@ -2,16 +2,209 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { agentsApi } from '../services/api';
-import { db } from '../config/firebase';
-import { doc, getDoc } from 'firebase/firestore';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import Toast from '../components/Toast';
+
+// Agent-specific content components
+const ArbitrageAgentContent = ({ agent, dashboardData }: { agent: any, dashboardData: any }) => (
+  <div className="space-y-6">
+    {/* Status Overview */}
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-lg bg-green-500/20 flex items-center justify-center">
+            <svg className="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+            </svg>
+          </div>
+          <h3 className="text-lg font-semibold text-white">Opportunities Found</h3>
+        </div>
+        <div className="text-2xl font-bold text-green-400">0</div>
+        <p className="text-sm text-gray-400">Today</p>
+      </div>
+
+      <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-lg bg-blue-500/20 flex items-center justify-center">
+            <svg className="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+            </svg>
+          </div>
+          <h3 className="text-lg font-semibold text-white">Profit Generated</h3>
+        </div>
+        <div className="text-2xl font-bold text-blue-400">$0.00</div>
+        <p className="text-sm text-gray-400">This month</p>
+      </div>
+
+      <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-lg bg-purple-500/20 flex items-center justify-center">
+            <svg className="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <h3 className="text-lg font-semibold text-white">Execution Speed</h3>
+        </div>
+          <div className="text-2xl font-bold text-purple-400">&lt; 50ms</div>
+        <p className="text-sm text-gray-400">Average latency</p>
+      </div>
+    </div>
+
+    {/* How to Use */}
+    <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+      <h2 className="text-xl font-semibold text-white mb-4">How to Use Arbitrage Agent</h2>
+      <div className="prose prose-invert max-w-none">
+        <ol className="list-decimal list-inside space-y-2 text-gray-300">
+          <li>Configure your exchange API keys in Settings → Exchange Accounts</li>
+          <li>Enable the agent using the control panel below</li>
+          <li>The agent will automatically scan for arbitrage opportunities across DEX/CEX pairs</li>
+          <li>Profits are automatically captured when opportunities are detected</li>
+          <li>Monitor performance through the dashboard metrics</li>
+        </ol>
+      </div>
+    </div>
+
+    {/* Control Panel */}
+    <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+      <h2 className="text-xl font-semibold text-white mb-4">Agent Controls</h2>
+      <div className="flex gap-4">
+        <button className="btn btn-primary">
+          {agent.userSettings?.status === 'active' ? 'Stop Agent' : 'Start Agent'}
+        </button>
+        <button className="btn btn-secondary">
+          Configure Settings
+        </button>
+      </div>
+    </div>
+  </div>
+);
+
+const LaunchpadAgentContent = ({ agent, dashboardData }: { agent: any, dashboardData: any }) => (
+  <div className="space-y-6">
+    {/* Status Overview */}
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-lg bg-orange-500/20 flex items-center justify-center">
+            🚀
+          </div>
+          <h3 className="text-lg font-semibold text-white">Launchpads Tracked</h3>
+        </div>
+        <div className="text-2xl font-bold text-orange-400">25+</div>
+        <p className="text-sm text-gray-400">Active platforms</p>
+      </div>
+
+      <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-lg bg-green-500/20 flex items-center justify-center">
+            🎯
+          </div>
+          <h3 className="text-lg font-semibold text-white">Opportunities Found</h3>
+        </div>
+        <div className="text-2xl font-bold text-green-400">0</div>
+        <p className="text-sm text-gray-400">This week</p>
+      </div>
+
+      <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-lg bg-cyan-500/20 flex items-center justify-center">
+            💎
+          </div>
+          <h3 className="text-lg font-semibold text-white">Tokens Sniped</h3>
+        </div>
+        <div className="text-2xl font-bold text-cyan-400">0</div>
+        <p className="text-sm text-gray-400">Successful entries</p>
+      </div>
+    </div>
+
+    {/* How to Use */}
+    <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+      <h2 className="text-xl font-semibold text-white mb-4">How to Use Launchpad Hunter</h2>
+      <div className="prose prose-invert max-w-none">
+        <ol className="list-decimal list-inside space-y-2 text-gray-300">
+          <li>Configure your wallet connection and exchange API keys</li>
+          <li>Set your investment parameters and risk limits</li>
+          <li>Enable whitelist detection to get early access</li>
+          <li>The agent will automatically monitor upcoming launches</li>
+          <li>Get notified of presale opportunities and execute entries</li>
+        </ol>
+      </div>
+    </div>
+
+    {/* Control Panel */}
+    <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+      <h2 className="text-xl font-semibold text-white mb-4">Agent Controls</h2>
+      <div className="flex gap-4">
+        <button className="btn btn-primary">
+          {agent.userSettings?.status === 'active' ? 'Stop Agent' : 'Start Agent'}
+        </button>
+        <button className="btn btn-secondary">
+          Configure Settings
+        </button>
+      </div>
+    </div>
+  </div>
+);
+
+const DefaultAgentContent = ({ agent, dashboardData }: { agent: any, dashboardData: any }) => (
+  <div className="space-y-6">
+    {/* Status Overview */}
+    <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+      <h2 className="text-xl font-semibold text-white mb-4">Agent Overview</h2>
+      <p className="text-gray-300 mb-4">{agent.description || 'Advanced AI trading agent'}</p>
+
+      {agent.features && (
+        <div>
+          <h3 className="text-lg font-medium text-white mb-2">Features:</h3>
+          <ul className="list-disc list-inside space-y-1 text-gray-300">
+            {agent.features.map((feature: string, idx: number) => (
+              <li key={idx}>{feature}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+
+    {/* How to Use */}
+    <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+      <h2 className="text-xl font-semibold text-white mb-4">How to Use This Agent</h2>
+      <div className="prose prose-invert max-w-none">
+        <ol className="list-decimal list-inside space-y-2 text-gray-300">
+          <li>Configure your API keys and settings</li>
+          <li>Enable the agent using the control panel</li>
+          <li>Monitor performance through the dashboard</li>
+          <li>Adjust parameters as needed for optimal performance</li>
+        </ol>
+      </div>
+    </div>
+
+    {/* Control Panel */}
+    <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+      <h2 className="text-xl font-semibold text-white mb-4">Agent Controls</h2>
+      <div className="flex gap-4">
+        <button className="btn btn-primary">
+          {agent.userSettings?.status === 'active' ? 'Stop Agent' : 'Start Agent'}
+        </button>
+        <button className="btn btn-secondary">
+          Configure Settings
+        </button>
+      </div>
+    </div>
+  </div>
+);
+
+// Placeholder components for other agents
+const WhaleTrackerContent = DefaultAgentContent;
+const AlphaAgentContent = DefaultAgentContent;
+const CopyTradeAgentContent = DefaultAgentContent;
+const AirdropAgentContent = DefaultAgentContent;
 
 export default function AgentDashboard() {
   const { agentId } = useParams<{ agentId: string }>();
   const { user } = useAuth();
   const navigate = useNavigate();
   const [agent, setAgent] = useState<any>(null);
+  const [dashboardData, setDashboardData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
@@ -20,27 +213,20 @@ export default function AgentDashboard() {
 
     const loadAgent = async () => {
       try {
-        // Check if agent is unlocked
-        const agentDoc = await getDoc(doc(db, 'users', user.uid, 'agents', agentId));
-        const agentData = agentDoc.data();
+        // Load agent dashboard data from backend (this will validate access)
+        const response = await agentsApi.getAgentDashboard(agentId);
+        const data = response.data;
 
-        if (!agentData || !agentData.unlocked) {
-          // Agent not unlocked, redirect to agents page
-          navigate('/agents');
-          return;
-        }
-
-        // Load agent metadata
-        try {
-          const agentResponse = await agentsApi.get(agentId);
-          setAgent(agentResponse.data.agent || { name: agentId, id: agentId });
-        } catch (err) {
-          // If agent not found in global collection, use basic info
-          setAgent({ name: agentId, id: agentId });
-        }
+        setAgent(data.agent);
+        setDashboardData(data);
       } catch (err: any) {
         console.error('Error loading agent:', err);
-        setToast({ message: 'Failed to load agent', type: 'error' });
+        if (err.response?.status === 403) {
+          setToast({ message: 'Access denied: You do not have permission to access this agent', type: 'error' });
+          setTimeout(() => navigate('/agents'), 2000);
+        } else {
+          setToast({ message: 'Failed to load agent dashboard', type: 'error' });
+        }
       } finally {
         setLoading(false);
       }
@@ -61,112 +247,91 @@ export default function AgentDashboard() {
     return null;
   }
 
+  // Agent-specific content based on agent ID
+  const renderAgentContent = () => {
+    const agentIdLower = agentId?.toLowerCase() || '';
+
+    switch (agentIdLower) {
+      case 'arbitrage_agent':
+      case 'liquidity_sniper_arbitrage':
+        return (
+          <ArbitrageAgentContent agent={agent} dashboardData={dashboardData} />
+        );
+      case 'launchpad_agent':
+      case 'ai_launchpad_hunter':
+        // Redirect to dedicated launchpad hunter page
+        if (typeof window !== 'undefined') {
+          window.location.href = '/agents/launchpad-hunter';
+          return <div>Redirecting...</div>;
+        }
+        return (
+          <LaunchpadAgentContent agent={agent} dashboardData={dashboardData} />
+        );
+      case 'crowd_consensus_copy_trade':
+        // Redirect to dedicated crowd consensus page
+        if (typeof window !== 'undefined') {
+          window.location.href = '/agents/crowd-consensus';
+          return <div>Redirecting...</div>;
+        }
+        return (
+          <LaunchpadAgentContent agent={agent} dashboardData={dashboardData} />
+        );
+      case 'whale_movement_tracker':
+        return (
+          <WhaleTrackerContent agent={agent} dashboardData={dashboardData} />
+        );
+      case 'pre_market_ai_alpha':
+        return (
+          <AlphaAgentContent agent={agent} dashboardData={dashboardData} />
+        );
+      case 'whale_copy_trade':
+        return (
+          <CopyTradeAgentContent agent={agent} dashboardData={dashboardData} />
+        );
+      case 'airdrop_multiverse':
+        return (
+          <AirdropAgentContent agent={agent} dashboardData={dashboardData} />
+        );
+      default:
+        return (
+          <DefaultAgentContent agent={agent} dashboardData={dashboardData} />
+        );
+    }
+  };
+
   return (
     <ErrorBoundary>
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
         <div className="container mx-auto px-4 py-8">
           {/* Header */}
           <div className="mb-8">
-            <h1 className="text-3xl sm:text-4xl font-bold bg-gradient-to-r from-purple-300 via-pink-300 to-cyan-300 bg-clip-text text-transparent mb-2">
-              {agent.name || agentId}
-            </h1>
-            <p className="text-gray-400">Agent Dashboard - Coming Soon</p>
-          </div>
-
-          {/* Required API Setup Section */}
-          <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6 mb-6">
-            <h2 className="text-xl font-semibold text-white mb-4">Required API Setup</h2>
-            <div className="space-y-4">
-              <div className="bg-slate-900/50 rounded-lg p-4 border border-purple-500/10">
-                <div className="flex items-center gap-3 mb-2">
-                  <div className="w-8 h-8 rounded-lg bg-yellow-500/20 flex items-center justify-center">
-                    <svg className="w-4 h-4 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                    </svg>
-                  </div>
-                  <div className="text-sm font-medium text-white">API Configuration Required</div>
-                </div>
-                <p className="text-sm text-gray-400">
-                  This agent requires API keys to be configured before it can be used. Please set up your API keys in Settings.
-                </p>
+            <div className="flex items-center gap-4 mb-4">
+              <div className="w-16 h-16 rounded-xl bg-gradient-to-br from-purple-500/20 to-pink-500/20 flex items-center justify-center">
+                <span className="text-2xl">{agent.icon || '🤖'}</span>
               </div>
-            </div>
-          </div>
-
-          {/* Disabled Features Section */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-            {/* Auto Trade */}
-            <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6 opacity-50">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-lg bg-green-500/20 flex items-center justify-center">
-                  <svg className="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                  </svg>
-                </div>
-                <h3 className="text-lg font-semibold text-white">Auto Trade</h3>
-              </div>
-              <p className="text-sm text-gray-400 mb-4">Automated trading functionality</p>
-              <button
-                disabled
-                className="w-full px-4 py-2 text-sm font-medium text-gray-500 bg-slate-700/50 border border-slate-600/50 rounded-lg cursor-not-allowed"
-              >
-                Coming Soon
-              </button>
-            </div>
-
-            {/* Deep Research */}
-            <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6 opacity-50">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-lg bg-blue-500/20 flex items-center justify-center">
-                  <svg className="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                  </svg>
-                </div>
-                <h3 className="text-lg font-semibold text-white">Deep Research</h3>
-              </div>
-              <p className="text-sm text-gray-400 mb-4">Advanced research capabilities</p>
-              <button
-                disabled
-                className="w-full px-4 py-2 text-sm font-medium text-gray-500 bg-slate-700/50 border border-slate-600/50 rounded-lg cursor-not-allowed"
-              >
-                Coming Soon
-              </button>
-            </div>
-
-            {/* Manual Research */}
-            <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6 opacity-50">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-lg bg-orange-500/20 flex items-center justify-center">
-                  <svg className="w-5 h-5 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 100 4m0-4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 100 4m0-4v2m0-6V4" />
-                  </svg>
-                </div>
-                <h3 className="text-lg font-semibold text-white">Manual Research</h3>
-              </div>
-              <p className="text-sm text-gray-400 mb-4">Manual research tools</p>
-              <button
-                disabled
-                className="w-full px-4 py-2 text-sm font-medium text-gray-500 bg-slate-700/50 border border-slate-600/50 rounded-lg cursor-not-allowed"
-              >
-                Coming Soon
-              </button>
-            </div>
-          </div>
-
-          {/* Info Banner */}
-          <div className="bg-blue-900/20 border border-blue-500/30 rounded-xl p-4">
-            <div className="flex items-start gap-3">
-              <svg className="w-5 h-5 text-blue-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
               <div>
-                <h4 className="text-sm font-medium text-blue-300 mb-1">Feature Coming Soon</h4>
-                <p className="text-sm text-blue-200/80">
-                  This agent dashboard is currently under development. Trading and research features will be available soon.
-                </p>
+                <h1 className="text-3xl sm:text-4xl font-bold bg-gradient-to-r from-purple-300 via-pink-300 to-cyan-300 bg-clip-text text-transparent mb-2">
+                  {agent.name || agentId}
+                </h1>
+                <div className="flex items-center gap-4">
+                  <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                    agent.userSettings?.status === 'active'
+                      ? 'bg-green-500/20 text-green-300 border border-green-500/30'
+                      : 'bg-slate-500/20 text-slate-300 border border-slate-500/30'
+                  }`}>
+                    {agent.userSettings?.status === 'active' ? 'Active' : 'Inactive'}
+                  </span>
+                  <span className="text-gray-400 text-sm">
+                    Last updated: {new Date().toLocaleDateString()}
+                  </span>
+                </div>
               </div>
             </div>
+            <p className="text-gray-400 text-lg">{agent.description}</p>
           </div>
+
+          {/* Agent-specific content */}
+          {renderAgentContent()}
         </div>
       </div>
       {toast && <Toast message={toast.message} type={toast.type} />}

@@ -25,6 +25,7 @@ import { usersRoutes } from './routes/users';
 console.log("USERS ROUTES PATH:", __dirname);
 console.log("USERS ROUTES RESOLVE:", require.resolve("./routes/users"));
 import { agentsRoutes } from './routes/agents';
+import { agentRoutes } from './routes/agent';
 import { activityLogsRoutes } from './routes/activityLogs';
 import { tradesRoutes } from './routes/trades';
 import { notificationsRoutes } from './routes/notifications';
@@ -342,6 +343,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(executionRoutes, { prefix: '/api/execution' });
   await app.register(hftRoutes, { prefix: '/api/hft' });
   await app.register(agentsRoutes, { prefix: '/api/agents' });
+  await app.register(agentRoutes, { prefix: '/api/agent' });
   await app.register(activityLogsRoutes, { prefix: '/api/activity-logs' });
   await app.register(tradesRoutes, { prefix: '/api/trades' });
   await app.register(notificationsRoutes, { prefix: '/api/notifications' });

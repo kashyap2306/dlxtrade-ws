@@ -225,6 +225,7 @@ export interface TradeSignal {
 
 export interface TradeExecution {
   tradeId: string;
+  tradeDocId?: string;
   symbol: string;
   side: "BUY" | "SELL";
   quantity: number;
@@ -257,6 +258,11 @@ export interface TradeExecution {
   tp3Hit?: boolean;
   isScalping?: boolean; // Track if this is a scalping trade
   trailingStopLoss?: number; // Current trailing SL price
+
+  // Runtime-only monitoring fields (never persisted directly)
+  lastMonitorAt?: number;
+  monitorErrorCount?: number;
+  monitorCooldownUntil?: number;
 }
 const DEFAULT_CONFIG: AutoTradeConfig = {
   autoTradeEnabled: false,
@@ -2602,7 +2608,7 @@ export class AutoTradeEngine {
           : null;
         const exchangeName = exchangeConfig?.exchange || "unknown";
 
-        await firestoreAdapter.saveTrade(uid, {
+        const tradeDocId = await firestoreAdapter.saveTrade(uid, {
           symbol: signal.symbol,
           side: signal.signal,
           qty: quantity,
@@ -2622,6 +2628,8 @@ export class AutoTradeEngine {
             mode: "AUTO",
           },
         });
+
+        trade.tradeDocId = tradeDocId;
 
         await this.logTradeEvent(uid, "TRADE_EXECUTED", {
           trade,
@@ -3182,6 +3190,12 @@ export class AutoTradeEngine {
     try {
       const engine = await this.getUserEngine(uid);
 
+      // SINGLE-WATCHER GUARANTEE (per user): prevent concurrent monitor loops
+      if ((engine as any).__dlxTradeMonitorInProgress === true) {
+        return;
+      }
+      (engine as any).__dlxTradeMonitorInProgress = true;
+
       // We need an adapter to check status
       if (!engine.adapter && engine.activeTrades.size > 0) {
         await this.initializeAdapter(uid);
@@ -3196,9 +3210,30 @@ export class AutoTradeEngine {
 
       const tradesToRemove: string[] = [];
 
+      // POLLING SAFETY: hard minimum interval between polls per trade
+      const MIN_TRADE_POLL_INTERVAL_MS = 30_000;
+
       for (const [tradeId, trade] of engine.activeTrades.entries()) {
         // Only monitor filled trades that are currently considered OPEN in our system
         if (trade.status !== "FILLED") continue;
+
+        // POLLING SAFETY: per-trade cooldown/backoff
+        const nowMs = Date.now();
+        const cooldownUntilMs = trade.monitorCooldownUntil || 0;
+        const lastMonitorAtMs = trade.lastMonitorAt || 0;
+
+        if (nowMs < cooldownUntilMs) {
+          continue;
+        }
+        if (nowMs - lastMonitorAtMs < MIN_TRADE_POLL_INTERVAL_MS) {
+          continue;
+        }
+
+        trade.lastMonitorAt = nowMs;
+        console.log(
+          "🔥 [HARD_LOG] [TRADE_MONITOR_POLL_START]",
+          JSON.stringify({ uid, tradeId, symbol: trade.symbol, orderId: trade.orderId }),
+        );
 
         try {
           // Check TP/SL status
@@ -3491,6 +3526,24 @@ export class AutoTradeEngine {
             }
           }
 
+          // EDGE CASE: Manual close detection.
+          // If both TP and SL are present but both are inactive (canceled/rejected/expired), treat as terminal.
+          const inactiveStatuses = [
+            "CANCELED",
+            "CANCELLED",
+            "REJECTED",
+            "EXPIRED",
+          ];
+          const tpInactive =
+            trade.takeProfitOrderId && inactiveStatuses.includes(tpStatus);
+          const slInactive =
+            trade.stopLossOrderId && inactiveStatuses.includes(slStatus);
+
+          if (!isClosed && tpInactive && slInactive) {
+            isClosed = true;
+            closeReason = "MANUAL_CLOSE_DETECTED";
+          }
+
           // Update trade in memory after partial closes
           engine.activeTrades.set(tradeId, trade);
 
@@ -3500,6 +3553,41 @@ export class AutoTradeEngine {
               "Trade closed by exchange order",
             );
             tradesToRemove.push(tradeId);
+
+            console.log(
+              "🔥 [HARD_LOG] [TRADE_MONITOR_POLL_STOP_TERMINAL]",
+              JSON.stringify({ uid, tradeId, symbol: trade.symbol, reason: closeReason }),
+            );
+
+            // DELTA-ONLY FIRESTORE WRITE: update the trades collection ONLY if state changed
+            try {
+              if (trade.tradeDocId) {
+                let exitPrice: number | undefined = undefined;
+                if (closeReason.includes("TAKE_PROFIT")) {
+                  exitPrice = trade.takeProfit;
+                } else if (closeReason.includes("STOP_LOSS")) {
+                  exitPrice = trade.trailingStopLoss || trade.stopLoss;
+                }
+
+                const updateRes = await firestoreAdapter.updateTradeDocDelta(
+                  trade.tradeDocId,
+                  {
+                    status: "closed",
+                    exitPrice,
+                  },
+                );
+
+                console.log(
+                  "🔥 [HARD_LOG] [TRADE_MONITOR_FIRESTORE_DELTA]",
+                  JSON.stringify({ uid, tradeId, tradeDocId: trade.tradeDocId, updateRes }),
+                );
+              }
+            } catch (persistErr: any) {
+              logger.warn(
+                { uid, tradeId, error: persistErr.message },
+                "Failed to persist trade close state to Firestore",
+              );
+            }
 
             // P3-A: Loss Streak Tracking
             let consecutiveLosses = engine.config.consecutiveLosses || 0;
@@ -3616,6 +3704,14 @@ export class AutoTradeEngine {
             // Log only, do not auto-close in P1 significantly to avoid race conditions with manual user actions
           }
         } catch (error: any) {
+          // ERROR BACKOFF: do not allow exchange/API errors to create fast retry loops
+          trade.monitorErrorCount = (trade.monitorErrorCount || 0) + 1;
+          const backoffMs =
+            trade.monitorErrorCount >= 5
+              ? 5 * 60 * 1000
+              : 60 * 1000;
+          trade.monitorCooldownUntil = Date.now() + backoffMs;
+
           logger.error(
             { uid, tradeId, error: error.message },
             "Error monitoring trade",
@@ -3632,6 +3728,13 @@ export class AutoTradeEngine {
         { uid, error: error.message },
         "Fatal error in monitorActiveTrades",
       );
+    } finally {
+      try {
+        const engine = await this.getUserEngine(uid);
+        (engine as any).__dlxTradeMonitorInProgress = false;
+      } catch {
+        // ignore
+      }
     }
   }
 
