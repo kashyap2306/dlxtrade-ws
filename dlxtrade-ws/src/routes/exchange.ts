@@ -533,22 +533,19 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
         const user = (request as any).user;
         const query = request.query as { exchange?: string };
 
+        // CRITICAL: Use isExchangeUsable() as single source of truth
+        const { isExchangeUsable } = await import("../services/firestoreAdapter");
+        const exchangeUsability = await isExchangeUsable(user.uid, "user_request");
+
         if (query.exchange) {
           // Get status for specific exchange
-          const exchangeConfig = await firestoreAdapter.getExchangeConfig(
-            user.uid,
-          );
-          const userDoc = await firestoreAdapter.getUser(user.uid);
-
-          // PRIMARY: Use users document as source of truth for connected status
-          // CRITICAL: Status endpoint MUST NOT expose internal state or attempt validation
-          const isConnected =
-            userDoc?.apiConnected === true &&
-            userDoc?.connectedExchanges?.includes(query.exchange);
+          const isConnected = exchangeUsability.reason === "connected" && 
+                             exchangeUsability.exchange === query.exchange.toLowerCase();
 
           return {
             exchange: query.exchange,
-            connected: isConnected, // Only return connected status from users document
+            connected: isConnected,
+            reason: exchangeUsability.reason,
           };
         } else {
           // Get status for all exchanges
@@ -558,26 +555,22 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
             "weex",
             "bingx",
           ];
-          const exchangeConfig = await firestoreAdapter.getExchangeConfig(
-            user.uid,
-          );
-          const userDoc = await firestoreAdapter.getUser(user.uid);
 
-          const statusPromises = exchanges.map(async (exchange) => {
-            // PRIMARY: Use users document as source of truth for connected status
-            // CRITICAL: Status endpoint MUST NOT expose internal state or attempt validation
-            const isConnected =
-              userDoc?.apiConnected === true &&
-              userDoc?.connectedExchanges?.includes(exchange);
+          const statuses = exchanges.map((exchange) => {
+            const isConnected = exchangeUsability.reason === "connected" && 
+                               exchangeUsability.exchange === exchange;
 
             return {
               exchange,
-              connected: isConnected, // Only return connected status from users document
+              connected: isConnected,
             };
           });
 
-          const statuses = await Promise.all(statusPromises);
-          return { exchanges: statuses };
+          return { 
+            exchanges: statuses,
+            connectedExchange: exchangeUsability.exchange,
+            reason: exchangeUsability.reason,
+          };
         }
       } catch (err: any) {
         logger.error(
@@ -591,7 +584,7 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
     },
   );
 
-  // GET /exchange/connected - Get connected exchange status - DETAILED TIMING INSTRUMENTATION
+  // GET /exchange/connected - Get connected exchange status
   fastify.get(
     "/exchange/connected",
     {
@@ -601,27 +594,22 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
       const user = (request as any).user;
 
       try {
-        const connectedExchanges = [];
+        // CRITICAL: Use isExchangeUsable() as single source of truth
+        const { isExchangeUsable } = await import("../services/firestoreAdapter");
+        const exchangeUsability = await isExchangeUsable(user.uid, "user_request");
 
-        // Task 1: Check users/{uid}/exchangeConfig/current
-        const config = await firestoreAdapter.getExchangeConfig(user.uid);
-
-        if (config && config.disconnected !== true) {
-          const hasApiKey = !!config.apiKeyEncrypted;
-          const hasSecretKey = !!(config.secretKeyEncrypted || config.secretEncrypted);
-
-          if (hasApiKey && hasSecretKey) {
-            connectedExchanges.push({
-              exchange: config.exchange,
+        const connected = exchangeUsability.reason === "connected";
+        const connectedExchanges = connected && exchangeUsability.exchange
+          ? [{
+              exchange: exchangeUsability.exchange,
               connected: true,
-              testnet: !!config.testnet,
-            });
-          }
-        }
+            }]
+          : [];
 
         return {
-          connected: connectedExchanges.length > 0,
+          connected,
           exchanges: connectedExchanges,
+          reason: exchangeUsability.reason,
         };
       } catch (err: any) {
         logger.error(
@@ -1267,34 +1255,9 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
           "Exchange connected successfully",
         );
 
-        // CRITICAL: Update users/{uid} document with exchange connection status
-        // This ensures UI and engine read correct state instead of stale flags
-        // MUST succeed for operation to be considered successful
-        await db
-          .collection("users")
-          .doc(user.uid)
-          .set(
-            {
-              apiConnected: true,
-              isApiConnected: true,
-              apiStatus: "connected",
-              connectedExchanges: [resolvedExchange],
-              exchangeLastConnected: admin.firestore.Timestamp.now(),
-              updatedAt: admin.firestore.Timestamp.now(),
-            },
-            { merge: true },
-          );
-
-        console.log("🔥 [HARD_LOG] [EXCHANGE_CONNECT_USERS_DOC_SYNCED]", {
-          uid: user.uid,
-          exchange: resolvedExchange,
-          fieldsUpdated: [
-            "apiConnected",
-            "isApiConnected",
-            "apiStatus",
-            "connectedExchanges",
-          ],
-        });
+        // NOTE: Cached flags (apiConnected, connectedExchanges) removed
+        // Use isExchangeUsable() as single source of truth
+        // Legacy flags no longer written to avoid confusion
 
 
         // 🔥 HARD_LOG: SUCCESS_RETURN_PATH
@@ -1624,14 +1587,12 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
         }
 
         // CRITICAL: Update users/{uid} document to reflect disconnected state
-        // This ensures UI and engine read correct state instead of stale flags
+        // NOTE: Cached flags (apiConnected, connectedExchanges) removed
+        // Use isExchangeUsable() as single source of truth
+        // Legacy flags no longer written to avoid confusion
         try {
           await db.collection("users").doc(user.uid).set(
             {
-              apiConnected: false,
-              isApiConnected: false,
-              apiStatus: "disconnected",
-              connectedExchanges: [],
               exchangeLastDisconnected:
                 admin.firestore.FieldValue.serverTimestamp(),
               updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1642,10 +1603,8 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
           console.log("🔥 [HARD_LOG] [EXCHANGE_DISCONNECT_USERS_DOC_SYNCED]", {
             uid: user.uid,
             fieldsUpdated: [
-              "apiConnected",
-              "isApiConnected",
-              "apiStatus",
-              "connectedExchanges",
+              "exchangeLastDisconnected",
+              "updatedAt",
             ],
           });
         } catch (syncError: any) {

@@ -72,25 +72,43 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
           ]),
         ]);
 
-        // EXCHANGE CHECK: Use ONLY isExchangeUsable() for consistency with status route
-        let hasEncryptedKeys = false;
+        // EXCHANGE CHECK: Use ONLY isExchangeUsable() as SINGLE SOURCE OF TRUTH
+        // CRITICAL FIX: Removed aggressive 200ms timeout that caused false "not connected" errors
+        // Diagnostic is user-initiated - accuracy is more important than speed
+        let exchangeConnected = false;
         let exchangeUsabilityReason = "Exchange not configured";
         let exchangeConfigSource = "canonical";
+        let exchangeName: string | undefined;
+        let exchangeCheckError = false; // Track if check itself failed (vs exchange not connected)
         try {
           const { isExchangeUsable } =
             await import("../services/firestoreAdapter");
-          const exchangeUsability = await Promise.race([
-            isExchangeUsable(uid, "background_job"), // Read-only operation, treat like background job
-            new Promise<{ usable: boolean; reason: string }>((_, reject) =>
-              setTimeout(() => reject(new Error("TIMEOUT")), 200),
-            ),
-          ]);
-          hasEncryptedKeys = exchangeUsability.usable;
+          // CRITICAL: Call isExchangeUsable directly WITHOUT timeout racing
+          // This ensures we get accurate results instead of false negatives from timeouts
+          const exchangeUsability = await isExchangeUsable(uid, "user_request");
+          
+          // DIAGNOSTIC PASS/FAIL CONDITIONS:
+          // - PASS: reason === "connected" (exchange is connected and usable)
+          // - SOFT FAIL: reason === "not_connected" (exchange not configured)
+          // - HARD FAIL: reason === "disconnected" (exchange configured but unusable)
+          exchangeConnected = exchangeUsability.reason === "connected";
           exchangeUsabilityReason = exchangeUsability.reason;
+          exchangeName = exchangeUsability.exchange;
+          
+          console.log(`[DIAGNOSTIC_EXCHANGE_CHECK] UID:${uid} - isExchangeUsable result:`, {
+            usable: exchangeUsability.usable,
+            reason: exchangeUsability.reason,
+            exchange: exchangeUsability.exchange,
+            exchangeConnected,
+          });
         } catch (err: any) {
-          // On exchange check failure, keep defaults
-          hasEncryptedKeys = false;
-          exchangeUsabilityReason = "Exchange status check failed";
+          // CRITICAL: On isExchangeUsable error, do NOT misclassify as "not connected"
+          // Log the error clearly and mark as check error, not connection failure
+          console.error(`[DIAGNOSTIC_EXCHANGE_CHECK_ERROR] UID:${uid} - isExchangeUsable threw error:`, err.message);
+          exchangeCheckError = true;
+          // Do NOT set exchangeConnected = false here - we don't know the actual state
+          // Instead, set a distinct reason that indicates the check failed
+          exchangeUsabilityReason = `check_error: ${err.message}`;
         }
 
         // Simplified exchange status check (purely informational)
@@ -114,16 +132,20 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
         };
 
         // Exchange connected - purely informational check
+        // CRITICAL: Handle exchangeCheckError separately from actual connection status
         diagnostics.systemChecks.exchangeConnected = {
-          status: hasEncryptedKeys ? "PASS" : "FAIL",
-          message: hasEncryptedKeys
-            ? `Exchange configured with encrypted API keys (source: ${exchangeConfigSource})`
-            : `Exchange not configured (checked: ${exchangeConfigSource})`,
-          value: hasEncryptedKeys,
-          exchangeName: hasEncryptedKeys ? "Configured" : null,
-          exchangeStatus: hasEncryptedKeys ? "CONFIGURED" : "NOT_CONFIGURED",
+          status: exchangeCheckError ? "ERROR" : (exchangeConnected ? "PASS" : "FAIL"),
+          message: exchangeCheckError
+            ? `Exchange check failed: ${exchangeUsabilityReason}`
+            : exchangeConnected
+              ? `Exchange configured with encrypted API keys (source: ${exchangeConfigSource})`
+              : `Exchange not configured (checked: ${exchangeConfigSource})`,
+          value: exchangeCheckError ? null : exchangeConnected,
+          exchangeName: exchangeConnected ? "Configured" : null,
+          exchangeStatus: exchangeCheckError ? "CHECK_ERROR" : (exchangeConnected ? "CONFIGURED" : "NOT_CONFIGURED"),
           exchangeConfigSource, // EXPLICIT: Must be "canonical"
           exchangeUsabilityReason, // Include detailed reason
+          exchangeCheckError, // EXPLICIT: Track if check itself failed
         };
 
         // Simplified encryption check
@@ -137,8 +159,8 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
         };
 
         // Futures trading enabled (simplified - not checked in diagnostic)
-        const futuresEnabled = hasEncryptedKeys;
-        const apiPermissionsValid = hasEncryptedKeys;
+        const futuresEnabled = exchangeConnected;
+        const apiPermissionsValid = exchangeConnected;
 
         // NOTE: futuresTradingEnabled will be updated after wallet checks complete
         // to use runtime proof from futures balance fetch
@@ -163,8 +185,8 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
         // ============================================
         // Simplified wallet checks - balance not checked in diagnostic (purely informational)
         const minRequiredBalance = 10; // Minimum 10 USDT
-        const futuresWalletDetected = hasEncryptedKeys;
-        const futuresBalanceFetchSucceeded = hasEncryptedKeys;
+        const futuresWalletDetected = exchangeConnected;
+        const futuresBalanceFetchSucceeded = exchangeConnected;
         const freeBalance = futuresBalanceFetchSucceeded
           ? minRequiredBalance
           : 0;
@@ -666,15 +688,48 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
         // ============================================
         // FINAL VERDICT
         // ============================================
-        if (!autoTradeEnabled) {
-          diagnostics.finalVerdict = "AUTO-TRADE DISABLED";
-        } else if (!hasEncryptedKeys) {
+        // CRITICAL FIX: Exchange state checks MUST be evaluated as a contiguous block
+        // BEFORE any feature toggles (autoTradeEnabled) or other blocking reasons.
+        // INVARIANT: Exchange error ≠ Exchange not connected
+        // INVARIANT: Exchange disconnected always blocks regardless of autoTradeEnabled
+        // INVARIANT: Exchange connected must be evaluated before feature toggles
+        //
+        // REQUIRED PRIORITY ORDER (STRICT):
+        // 1. exchangeCheckError === true → DIAGNOSTIC ERROR (check failed, status unknown)
+        // 2. exchangeUsabilityReason === "disconnected" → HARD BLOCK (configured but unusable)
+        // 3. exchangeUsabilityReason === "not_connected" → SOFT BLOCK (not configured)
+        // 4. exchangeUsabilityReason === "connected" → Exchange checks PASS, continue
+        // 5. !autoTradeEnabled → DISABLED (only after exchange is confirmed connected)
+        // 6. blockingReasons.length > 0 → BLOCKED by other reason
+        // 7. All clear → READY
+        if (exchangeCheckError === true) {
+          // CRITICAL: Exchange check threw an error - do NOT treat as "not connected"
+          // This is a diagnostic error, not a connection failure
+          diagnostics.finalVerdict =
+            "AUTO-TRADE DIAGNOSTIC ERROR: Exchange status check failed";
+        } else if (exchangeUsabilityReason === "disconnected") {
+          // HARD BLOCK: Exchange is configured but unusable (e.g., invalid keys, API error)
+          diagnostics.finalVerdict =
+            "AUTO-TRADE BLOCKED: Exchange disconnected";
+        } else if (exchangeUsabilityReason === "not_connected") {
+          // SOFT BLOCK: Exchange not configured at all
           diagnostics.finalVerdict =
             "AUTO-TRADE BLOCKED: Exchange not connected";
-        } else if (blockingReasons.length > 0) {
-          diagnostics.finalVerdict = `AUTO-TRADE BLOCKED: ${blockingReasons[0]}`;
+        } else if (exchangeUsabilityReason === "connected") {
+          // Exchange checks PASS - now evaluate feature toggles and other blocking reasons
+          if (!autoTradeEnabled) {
+            // User has disabled auto-trade
+            diagnostics.finalVerdict = "AUTO-TRADE DISABLED";
+          } else if (blockingReasons.length > 0) {
+            diagnostics.finalVerdict = `AUTO-TRADE BLOCKED: ${blockingReasons[0]}`;
+          } else {
+            // All checks passed - auto-trade is ready
+            diagnostics.finalVerdict = "AUTO-TRADE READY";
+          }
         } else {
-          diagnostics.finalVerdict = "AUTO-TRADE READY";
+          // Unexpected exchange state - treat as error
+          diagnostics.finalVerdict =
+            "AUTO-TRADE DIAGNOSTIC ERROR: Exchange status check failed";
         }
 
         logger.info(

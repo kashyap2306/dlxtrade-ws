@@ -5,7 +5,6 @@ import { statusRoutes, initializeSchedulerReference } from './autoTrade.status';
 import { controllerRoutes } from './autoTrade.controller';
 import { executionRoutes } from './autoTrade.execution';
 import { routesRoutes } from './autoTrade.routes';
-import { adminAuthMiddleware } from '../middleware/adminAuth';
 import { backgroundResearchScheduler } from '../services/backgroundResearchScheduler';
 
 // Export schemas for use by other modules
@@ -55,8 +54,7 @@ export async function autoTradeRoutes(fastify: FastifyInstance) {
   // CRITICAL: Initialize synchronous scheduler reference for instant status checks
   initializeSchedulerReference(backgroundResearchScheduler);
 
-  // Register admin auth middleware
-  fastify.decorate('adminAuth', adminAuthMiddleware);
+  // adminAuth is now decorated globally in app.ts
 
   // Register all route modules
   await diagnosticCheckRoute(fastify);

@@ -3779,12 +3779,12 @@ export class AutoTradeEngine {
 
       // 3. CRITICAL: Sync root users/{uid} document with auto-trade state
       // UI reads from root document - must be in sync with autoTradeConfig/current
+      // NOTE: Cached flags (apiConnected, apiStatus) removed
+      // Use isExchangeUsable() as single source of truth
       await userRef.set(
         {
           autoTradeEnabled: true,
           autoTrade: { enabled: true },
-          apiConnected: true, // Exchange already validated - enforce connection state
-          apiStatus: "connected",
           updatedAt: admin.firestore.Timestamp.now(),
         },
         { merge: true },
@@ -3793,7 +3793,6 @@ export class AutoTradeEngine {
       console.log("🔥 [HARD_LOG] [AUTO_TRADE_USERS_DOC_SYNCED]", {
         uid,
         autoTradeEnabled: true,
-        apiConnected: true,
         source: "startAutoTradeLoop",
       });
 

@@ -5,7 +5,6 @@ import { firestoreAdapter } from '../services/firestoreAdapter';
 import { encrypt, decrypt, maskKey, getEncryptionKeyStatus, testEncryptionConsistency } from '../services/keyManager';
 import { userEngineManager } from '../services/userEngineManager';
 import { adminStatsService } from '../services/adminStatsService';
-import { adminAuthMiddleware } from '../middleware/adminAuth';
 import { logger } from '../utils/logger';
 import { ValidationError, NotFoundError } from '../utils/errors';
 import { getFirebaseAdmin } from '../utils/firebase';
@@ -26,8 +25,7 @@ const updateKeySchema = z.object({
 });
 
 export async function adminRoutes(fastify: FastifyInstance) {
-  // Decorate with admin auth middleware
-  fastify.decorate('adminAuth', adminAuthMiddleware);
+  // adminAuth is now decorated globally in app.ts
 
   // ========== ENCRYPTION DIAGNOSTICS ==========
   fastify.get('/encryption/status', {

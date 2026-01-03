@@ -478,6 +478,37 @@ export async function safeExchangeConfigWrite(
 // INVALID_KEYS is no longer a stored state - it's computed by isExchangeUsable()
 // This function is permanently removed to prevent any INVALID_KEYS writes
 
+/**
+ * CRITICAL SAFEGUARD: Prevent any attempt to write INVALID_KEYS to exchange config
+ * This function should be called before any Firestore write to exchangeConfig
+ */
+export function assertNoInvalidKeysWrite(data: any, operation: string): void {
+  if (!data || typeof data !== 'object') return;
+  
+  // Check for direct INVALID_KEYS assignment
+  for (const [key, value] of Object.entries(data)) {
+    if (value === 'INVALID_KEYS') {
+      const errorMsg = `🚨 [INVALID_KEYS_WRITE_ATTEMPT] ${operation} attempted to write INVALID_KEYS to field "${key}"`;
+      console.error(errorMsg);
+      console.error('   Payload:', JSON.stringify(data, null, 2));
+      console.error('   Stack trace:', new Error().stack);
+      throw new Error(errorMsg);
+    }
+  }
+  
+  // Check for forbidden field names
+  const forbiddenFields = ['exchangeStatus', 'keysClearedAt', 'keysClearedReason'];
+  for (const field of forbiddenFields) {
+    if (field in data) {
+      const errorMsg = `🚨 [FORBIDDEN_FIELD_WRITE] ${operation} attempted to write forbidden field "${field}"`;
+      console.error(errorMsg);
+      console.error('   Payload:', JSON.stringify(data, null, 2));
+      console.error('   Stack trace:', new Error().stack);
+      throw new Error(errorMsg);
+    }
+  }
+}
+
 
 export interface ApiKeyDocument {
   id?: string;

@@ -6,8 +6,8 @@ dotenv.config({
 });
 
 // CRITICAL: Instrument Firestore writes to find the "Unknown Writer"
-import { getFirebaseAdmin, installFirestoreWriteTrap } from './utils/firebase';
-installFirestoreWriteTrap();
+// NOTE: Trap installation is deferred until Firebase is initialized in getFirebaseAdmin()
+import { getFirebaseAdmin } from './utils/firebase';
 
 
 console.log("ENV CHECK project_id:", process.env.FIREBASE_PROJECT_ID);

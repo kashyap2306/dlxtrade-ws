@@ -29,6 +29,67 @@ export const firebaseConfig = {
   privateKey
 };
 
+/**
+ * CRITICAL: Global trap to prevent ANY direct Firestore writes to exchangeConfig
+ * This catches writes that bypass sanitizedSet/sanitizedUpdate
+ */
+let originalSet: Function;
+let originalUpdate: Function;
+
+function installGlobalFirestoreWriteTrap() {
+  if (originalSet || originalUpdate) {
+    return; // Already installed
+  }
+
+  const db = admin.firestore();
+  originalSet = (admin.firestore.DocumentReference as any).prototype.set;
+  originalUpdate = (admin.firestore.DocumentReference as any).prototype.update;
+
+  // Override set method
+  (admin.firestore.DocumentReference as any).prototype.set = function(data: any, options?: any) {
+    if (this.path.includes('/exchangeConfig/')) {
+      console.error('🚨 [GLOBAL_WRITE_TRAP] Direct set() to exchangeConfig detected:', {
+        path: this.path,
+        stack: new Error().stack,
+        dataKeys: Object.keys(data)
+      });
+      
+      // Check for forbidden content
+      if (data.exchangeStatus === 'INVALID_KEYS') {
+        const errorMsg = `🚨 [GLOBAL_INVALID_KEYS_TRAP] Direct set() attempted to write INVALID_KEYS to ${this.path}`;
+        console.error(errorMsg);
+        console.error('   Stack:', new Error().stack);
+        throw new Error(errorMsg);
+      }
+    }
+    
+    return originalSet.call(this, data, options);
+  };
+
+  // Override update method  
+  (admin.firestore.DocumentReference as any).prototype.update = function(data: any) {
+    if (this.path.includes('/exchangeConfig/')) {
+      console.error('🚨 [GLOBAL_WRITE_TRAP] Direct update() to exchangeConfig detected:', {
+        path: this.path,
+        stack: new Error().stack,
+        dataKeys: Object.keys(data)
+      });
+      
+      // Check for forbidden content
+      if (data.exchangeStatus === 'INVALID_KEYS') {
+        const errorMsg = `🚨 [GLOBAL_INVALID_KEYS_TRAP] Direct update() attempted to write INVALID_KEYS to ${this.path}`;
+        console.error(errorMsg);
+        console.error('   Stack:', new Error().stack);
+        throw new Error(errorMsg);
+      }
+    }
+    
+    return originalUpdate.call(this, data);
+  };
+
+  console.log('🛡️ [GLOBAL_FIRESTORE_TRAP] Installed global Firestore write trap for exchangeConfig');
+}
+
 let firebaseApp: admin.app.App | null = null;
 
 export function getFirebaseAdmin() {
@@ -157,6 +218,19 @@ export function getFirebaseAdmin() {
   }
 
   console.log("✅ [FIREBASE_PROJECT_VERIFIED] Connected to correct project:", firebaseApp.options.projectId);
+
+  // CRITICAL: Install Firestore write trap AFTER Firebase is initialized
+  if (!trapInstalled) {
+    try {
+      installFirestoreWriteTrap();
+      trapInstalled = true;
+      console.log("✅ [RUNTIME_TRAP_INSTALLED] Firestore write trap installed successfully after Firebase initialization");
+    } catch (error) {
+      console.error("❌ [RUNTIME_TRAP_FAILED] Failed to install Firestore write trap:", error);
+      // CRITICAL: If trap installation fails, we cannot safely run
+      throw new Error("CRITICAL: Firestore write trap installation failed - server cannot start safely");
+    }
+  }
 
   return firebaseApp;
 }
@@ -431,18 +505,49 @@ export function installFirestoreWriteTrap() {
   };
 
   console.log("✅ [RUNTIME_TRAP_ACTIVE] Firestore write trap installed - will catch INVALID_KEYS writes");
+  
+  // Install additional global trap for direct writes
+  installGlobalFirestoreWriteTrap();
 }
 
-// Install trap immediately when module loads
+// Track trap installation status
 let trapInstalled = false;
-try {
-  installFirestoreWriteTrap();
-  trapInstalled = true;
-  console.log("✅ [RUNTIME_TRAP_INSTALLED] Firestore write trap installed successfully");
-} catch (error) {
-  console.error("❌ [RUNTIME_TRAP_FAILED] Failed to install Firestore write trap:", error);
-  // CRITICAL: If trap installation fails, we cannot safely run
-  throw new Error("CRITICAL: Firestore write trap installation failed - server cannot start safely");
+
+/**
+ * CRITICAL SAFETY GUARD: Detect any attempt to write INVALID_KEYS
+ * This function throws if any code attempts invalid exchange status writes
+ */
+function detectInvalidKeysWrite(payload: any, operation: string): void {
+  const forbiddenValues = ['INVALID_KEYS'];
+  const forbiddenFields = ['exchangeStatus', 'keysClearedReason'];
+
+  // Check for direct INVALID_KEYS writes
+  for (const value of forbiddenValues) {
+    for (const [key, val] of Object.entries(payload)) {
+      if (val === value) {
+        const errorMsg = `🚨 [INVALID_KEYS_WRITE_DETECTED] Attempted to write "${value}" to field "${key}" during ${operation}`;
+        console.error(errorMsg);
+        console.error('   Payload:', JSON.stringify(payload, null, 2));
+        console.error('   This violates the INVALID_KEYS invariant');
+        console.error('   INVALID_KEYS can only be written during successful credential validation');
+        console.error('   HARD ERROR: Write protection invariant triggered by detectInvalidKeysWrite.');
+        throw new Error(errorMsg);
+      }
+    }
+  }
+
+  // Check for invalid keysClearedReason patterns
+  if (payload.keysClearedReason && typeof payload.keysClearedReason === 'string') {
+    if (payload.keysClearedReason.includes('Decryption failure') ||
+        payload.keysClearedReason.includes('ENCRYPTION_SECRET')) {
+      const errorMsg = `🚨 [INVALID_KEYS_WRITE_DETECTED] Attempted to write invalid keysClearedReason during ${operation}`;
+      console.error(errorMsg);
+      console.error('   Reason:', payload.keysClearedReason);
+      console.error('   Decryption failures must NOT write keysClearedReason');
+      console.error('   HARD ERROR: Write protection invariant triggered.');
+      throw new Error(errorMsg);
+    }
+  }
 }
 
 /**

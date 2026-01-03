@@ -9,6 +9,7 @@ import admin from "firebase-admin";
 import { config } from './config';
 import { logger } from './utils/logger';
 import { firebaseAuthMiddleware } from './middleware/firebaseAuth';
+import { adminAuthMiddleware } from './middleware/adminAuth';
 import { getFirebaseAdmin } from './utils/firebase';
 import { authRoutes } from './routes/auth';
 import { adminRoutes } from './routes/admin';
@@ -312,6 +313,9 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   // Firebase Authentication decorator
   app.decorate('authenticate', firebaseAuthMiddleware);
+  
+  // Admin Authentication decorator - MUST be before routes that use it
+  app.decorate('adminAuth', adminAuthMiddleware);
 
   // USERS ROUTES REGISTRATION - MOVED BEFORE WEBSOCKET PLUGIN
   console.log("[DEBUG] registering usersRoutes BEFORE websocket plugin");
