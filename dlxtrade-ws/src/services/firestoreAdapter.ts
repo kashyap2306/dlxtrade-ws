@@ -190,11 +190,25 @@ export async function isExchangeUsable(
       ? cleanConfig.exchange.toLowerCase().trim()
       : null;
 
-    // DO NOT decrypt, DO NOT validate - just return not_connected for background jobs
+    // For background jobs: Check if required encrypted fields exist (DO NOT decrypt)
+    // This allows us to determine if exchange is configured without expensive decryption
+    const hasApiKey = !!cleanConfig.apiKeyEncrypted;
+    const hasSecret = !!(cleanConfig.secretKeyEncrypted || cleanConfig.secretEncrypted);
+    const hasExchange = !!exchange;
+
+    if (!hasApiKey || !hasSecret || !hasExchange) {
+      return {
+        usable: false,
+        reason: "not_connected",
+        exchange: exchange || undefined,
+      };
+    }
+
+    // Exchange config exists with all required fields
     return {
-      usable: false,
-      reason: "not_connected",
-      exchange,
+      usable: true,
+      reason: "connected",
+      exchange: exchange || undefined,
     };
   }
 
