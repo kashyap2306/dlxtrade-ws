@@ -44,6 +44,10 @@ const updateUserSchema = z.object({
 });
 
 export async function coreUserRoutes(fastify: FastifyInstance) {
+  console.log("[DEBUG] coreUserRoutes function STARTED");
+
+  // Debug: Check if fastify instance has the get method
+  console.log("[DEBUG] fastify.get method exists:", typeof fastify.get);
   // POST /api/users/complete-signup - initialize blank provider integrations
   fastify.post('/complete-signup', {
     preHandler: [fastify.authenticate],
@@ -97,7 +101,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
   });
 
   // GET /api/users/:uid/features - Get user features
-  fastify.get('/:uid/features', {
+  fastify.get('/:uid([^/]+)/features', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
     const { uid: paramUid } = request.params;
@@ -134,6 +138,39 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
       return reply.send({});
     }
   });
+
+  // GET /api/users/:uid/agents - Get user's agents
+  console.log('[ROUTE_REGISTRATION] Registering GET /:uid/agents');
+  fastify.get('/:uid([^/]+)/agents', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
+    console.log('[ROUTE_HIT] GET /api/users/:uid/agents - params:', request.params, 'url:', request.url);
+    try {
+      const { uid: paramUid } = request.params;
+      const authUid = getAuthUid(request);
+
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
+
+      // Users can only view their own agents unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (paramUid !== authUid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      const targetUid = isAdmin ? paramUid : authUid;
+
+      // Get user's agents from firestore
+      const agents = await firestoreAdapter.getUserAgents(targetUid);
+
+      return reply.send({ agents: agents || [] });
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting user agents');
+      return reply.code(500).send({ error: err.message || 'Error fetching user agents' });
+    }
+  });
+
 
   // POST /api/users/:uid/request-delete - Request user account deletion
   fastify.post('/:uid/request-delete', {
@@ -234,57 +271,6 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // GET /api/users/:uid - Get specific user
-  fastify.get('/:uid', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
-    try {
-      const { uid: paramUid } = request.params;
-      const authUid = getAuthUid(request);
-      if (!authUid) {
-        return reply.code(401).send({ error: 'Authentication required' });
-      }
-
-      // Users can only view their own data unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(authUid);
-      if (paramUid !== authUid && !isAdmin) {
-        return reply.code(403).send({ error: 'Access denied' });
-      }
-
-      const targetUid = isAdmin ? paramUid : authUid;
-
-      const userData = await firestoreAdapter.getUser(targetUid);
-      if (!userData) {
-        throw new NotFoundError('User not found');
-      }
-
-      // Check if user has exchange API keys configured (read from exchangeConfig/current)
-      const { getFirebaseAdmin } = await import('../../utils/firebase');
-      const db = getFirebaseAdmin().firestore();
-      const exchangeConfigDoc = await db.collection('users').doc(targetUid).collection('exchangeConfig').doc('current').get();
-      const hasExchangeConfig = exchangeConfigDoc.exists && exchangeConfigDoc.data()?.apiKeyEncrypted && exchangeConfigDoc.data()?.secretEncrypted;
-
-      // Convert timestamps
-      const result: any = { ...userData };
-      if (result.createdAt) {
-        result.createdAt = result.createdAt.toDate().toISOString();
-      }
-      if (result.updatedAt) {
-        result.updatedAt = result.updatedAt.toDate().toISOString();
-      }
-
-      // Override apiConnected with computed value from exchangeConfig/current
-      result.apiConnected = hasExchangeConfig || false;
-
-      return result;
-    } catch (err: any) {
-      if (err instanceof NotFoundError) {
-        return reply.code(404).send({ error: err.message });
-      }
-      logger.error({ err }, 'Error getting user');
-      return reply.code(500).send({ error: err.message || 'Error fetching user' });
-    }
-  });
 
   // POST /api/users/create - Create user (called on sign-in)
   // PART 1: Creates ALL required Firestore documents
@@ -381,7 +367,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
   });
 
   // GET /api/users/:id/details - Get user details
-  fastify.get('/:id/details', {
+  fastify.get('/:id([^/]+)/details', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
     try {
@@ -404,11 +390,9 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
         throw new NotFoundError('User not found');
       }
 
-      // Check if user has exchange API keys configured (read from exchangeConfig/current)
-      const { getFirebaseAdmin } = await import('../../utils/firebase');
-      const db = getFirebaseAdmin().firestore();
-      const exchangeConfigDoc = await db.collection('users').doc(targetUid).collection('exchangeConfig').doc('current').get();
-      const hasExchangeConfig = exchangeConfigDoc.exists && exchangeConfigDoc.data()?.apiKeyEncrypted && exchangeConfigDoc.data()?.secretEncrypted;
+      // Check exchange connectivity using real validation
+      const { isExchangeUsable } = await import('../../services/firestoreAdapter');
+      const exchangeUsability = await isExchangeUsable(targetUid, "user_request");
 
       // Convert timestamps
       const result: any = { ...userData };
@@ -419,8 +403,8 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
         result.updatedAt = result.updatedAt.toDate().toISOString();
       }
 
-      // Override apiConnected with computed value from exchangeConfig/current
-      result.apiConnected = hasExchangeConfig || false;
+      // Override apiConnected with real exchange connectivity status
+      result.apiConnected = exchangeUsability.usable;
 
       return result;
     } catch (err: any) {
@@ -433,7 +417,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
   });
 
   // GET /api/users/:id/stats - Get user statistics
-  fastify.get('/:id/stats', {
+  fastify.get('/:id([^/]+)/stats', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
     try {
@@ -480,7 +464,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
   });
 
   // GET /api/users/:id/pnl - Get user PnL
-  fastify.get('/:id/pnl', {
+  fastify.get('/:id([^/]+)/pnl', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
     try {
@@ -564,7 +548,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
   });
 
   // GET /api/users/:id/trades - Get user trades
-  fastify.get('/:id/trades', {
+  fastify.get('/:id([^/]+)/trades', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { id: string }; Querystring: { limit?: number } }>, reply: FastifyReply) => {
     try {
@@ -600,7 +584,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
   });
 
   // GET /api/users/:id/logs - Get user activity logs
-  fastify.get('/:id/logs', {
+  fastify.get('/:id([^/]+)/logs', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { id: string }; Querystring: { limit?: number } }>, reply: FastifyReply) => {
     try {
@@ -635,7 +619,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
   });
 
   // GET /api/users/:id/sessions - Get user sessions
-  fastify.get('/:id/sessions', {
+  fastify.get('/:id([^/]+)/sessions', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
     try {
@@ -680,7 +664,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
   // GET /api/users/:uid/performance-stats - Get user performance statistics
   // CRITICAL: Must respond < 500ms - uses fail-fast guards
   // CRITICAL: Early-exit guard - return lightweight response if auto-trade is disabled
-  fastify.get('/:uid/performance-stats', {
+  fastify.get('/:uid([^/]+)/performance-stats', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
     const startTime = routeEntryLog('GET /performance-stats');
@@ -775,7 +759,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
   });
 
   // GET /api/users/:uid/active-trades - Get user's active trades
-  fastify.get('/:uid/active-trades', {
+  fastify.get('/:uid([^/]+)/active-trades', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
     try {
@@ -834,7 +818,7 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
   });
 
   // GET /api/users/:uid/usage-stats - Get user's usage statistics
-  fastify.get('/:uid/usage-stats', {
+  fastify.get('/:uid([^/]+)/usage-stats', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
     try {
@@ -932,10 +916,9 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
         return reply.code(404).send({ error: 'User not found' });
       }
 
-      // Check if user has exchange API keys configured
-      const db = admin.firestore(getFirebaseAdmin());
-      const exchangeConfigDoc = await db.collection('users').doc(authUid).collection('exchangeConfig').doc('current').get();
-      const hasExchangeConfig = exchangeConfigDoc.exists && exchangeConfigDoc.data()?.apiKeyEncrypted;
+      // Check exchange connectivity using real validation
+      const { isExchangeUsable } = await import('../../services/firestoreAdapter');
+      const exchangeUsability = await isExchangeUsable(authUid, "user_request");
 
       // Convert timestamps
       const result = { ...userData };
@@ -946,8 +929,8 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
         result.updatedAt = result.updatedAt.toDate().toISOString();
       }
 
-      // Override apiConnected with computed value
-      result.apiConnected = hasExchangeConfig || false;
+      // Override apiConnected with real exchange connectivity status
+      result.apiConnected = exchangeUsability.usable;
 
       return result;
     } catch (err: any) {
@@ -1051,4 +1034,57 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
       return reply.send({ ok: false });
     }
   });
+
+  // GET /api/users/:uid - Get specific user
+  // NOTE: This must be LAST - it catches all other :uid routes
+  fastify.get('/:uid([^/]+)', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
+    try {
+      const { uid: paramUid } = request.params;
+      const authUid = getAuthUid(request);
+      if (!authUid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
+
+      // Users can only view their own data unless they're admin
+      const isAdmin = await firestoreAdapter.isAdmin(authUid);
+      if (paramUid !== authUid && !isAdmin) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      const targetUid = isAdmin ? paramUid : authUid;
+
+      const userData = await firestoreAdapter.getUser(targetUid);
+      if (!userData) {
+        throw new NotFoundError('User not found');
+      }
+
+      // Check exchange connectivity using real validation
+      const { isExchangeUsable } = await import('../../services/firestoreAdapter');
+      const exchangeUsability = await isExchangeUsable(targetUid, "user_request");
+
+      // Convert timestamps
+      const result: any = { ...userData };
+      if (result.createdAt) {
+        result.createdAt = result.createdAt.toDate().toISOString();
+      }
+      if (result.updatedAt) {
+        result.updatedAt = result.updatedAt.toDate().toISOString();
+      }
+
+      // Override apiConnected with real exchange connectivity status
+      result.apiConnected = exchangeUsability.usable;
+
+      return result;
+    } catch (err: any) {
+      if (err instanceof NotFoundError) {
+        return reply.code(404).send({ error: err.message });
+      }
+      logger.error({ err }, 'Error getting user');
+      return reply.code(500).send({ error: err.message || 'Error fetching user' });
+    }
+  });
+
+  console.log("[DEBUG] coreUserRoutes function COMPLETED");
 }

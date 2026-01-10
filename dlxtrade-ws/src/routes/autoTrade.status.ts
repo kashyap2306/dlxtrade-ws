@@ -81,10 +81,6 @@ export async function statusRoutes(fastify: FastifyInstance) {
           "AUTO_TRADE_STATUS_UID_CONSISTENCY_CHECK",
         );
 
-        console.log(
-          "[AUTO_TRADE_STATUS] Reading current auto-trade configuration from Firestore",
-        );
-
         // STATUS ROUTE: Read actual configuration state from Firestore
         // Do not use optimizations that bypass real data sources
         const schedulerRunning = schedulerInstance?.isRunning || false;
@@ -122,23 +118,10 @@ export async function statusRoutes(fastify: FastifyInstance) {
         }
 
         // EXCHANGE STATUS: Check actual exchange usability
-        try {
-          const { isExchangeUsable } =
-            await import("../services/firestoreAdapter");
-          const exchangeUsability = await Promise.race([
-            isExchangeUsable(user.uid, "background_job"), // Read-only operation, use background_job context
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error("TIMEOUT")), 500),
-            ),
-          ]);
-          exchangeConnected = exchangeUsability.usable;
-          exchangeReason = exchangeUsability.reason;
-        } catch (err: any) {
-          // On exchange check failure, indicate unknown status rather than false
-          // This prevents false negatives when exchange might actually be configured
-          exchangeConnected = false;
-          exchangeReason = "Exchange status unknown - check timed out";
-        }
+        // CRITICAL: Use isExchangeUsable() as ONLY source of truth
+        const usability = await isExchangeUsable(user.uid, "user_request");
+        exchangeConnected = usability.usable;
+        exchangeReason = usability.reason;
 
         // SAFE DEFAULTS for other fields
         const frequencyMinutes = 5; // Safe default

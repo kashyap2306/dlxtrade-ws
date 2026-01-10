@@ -1360,40 +1360,24 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
         const config = doc.data()!;
         const exchangeName = (config.exchange || "unknown") as string;
 
-        // 2. Check Exchange Usability - Use unified logic
-        // CRITICAL: Use background_job context for read-only operations to prevent decryption
-        const exchangeUsability = await isExchangeUsable(
-          user.uid,
-          "background_job", // Read-only operation, treat like background job
-        );
-        const normalizedReason =
-          exchangeUsability.reason === "connected"
-            ? "connected"
-            : exchangeUsability.reason === "disconnected"
-              ? "disconnected"
-              : "not_connected";
-        // MANDATORY INVARIANT: Use reason-based check, not boolean
-        if (
-          normalizedReason === "disconnected" ||
-          normalizedReason === "not_connected"
-        ) {
+        // 2. Check Exchange Usability - ONLY source of truth
+        const usability = await isExchangeUsable(user.uid, "user_request");
+        
+        if (!usability.usable) {
           logger.info(
             {
               uid: user.uid,
               exchange: exchangeName,
-              reason: normalizedReason,
-              isSoftSkip: normalizedReason === "not_connected",
+              reason: usability.reason,
+              usable: usability.usable,
             },
-            `Exchange balance: ${normalizedReason}, skipping balance fetch`,
+            `Exchange balance: not usable (${usability.reason}), skipping balance fetch`,
           );
           return reply.code(200).send({
             success: false,
-            reason:
-              normalizedReason === "not_connected"
-                ? "EXCHANGE_NOT_CONNECTED"
-                : "EXCHANGE_" + normalizedReason.toUpperCase(),
+            reason: "not_connected",
             exchange: exchangeName,
-            message: { error: normalizedReason },
+            message: { error: usability.reason },
           });
         }
 

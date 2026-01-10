@@ -65,7 +65,10 @@ export async function buildApp(): Promise<FastifyInstance> {
     "https://dlx-trading.web.app", // Firebase Hosting (primary)
     "https://dlx-trading.firebaseapp.com", // Firebase Hosting (alternate)
     "http://localhost:5173", // Vite dev server
+    "http://localhost:5176", // Vite dev server (alternate port)
     "http://localhost:3000", // Alternative dev server
+    "http://127.0.0.1:5173", // Vite dev server (127.0.0.1)
+    "http://127.0.0.1:5176", // Vite dev server (127.0.0.1 alternate port)
   ];
 
   console.log("🌐 [CORS] Registering CORS middleware BEFORE all hooks and routes");
@@ -73,7 +76,7 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   await app.register(fastifyCors, {
     origin: (origin, callback) => {
-      // Allow requests with no origin (mobile apps, Postman, etc.)
+      // Allow requests with no origin (server-to-server, curl, health checks, mobile apps, Postman, etc.)
       if (!origin) {
         return callback(null, true);
       }
@@ -88,13 +91,14 @@ export async function buildApp(): Promise<FastifyInstance> {
         return callback(null, true);
       }
 
+      // CRITICAL: Return false instead of throwing - never throw in CORS origin function
       console.warn("[CORS] Rejected origin:", origin);
-      callback(new Error('Not allowed by CORS'), false);
+      return callback(null, false);
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Authorization", "Content-Type", "uid", "X-Requested-With"],
-    exposedHeaders: ["Content-Type", "Authorization", "uid"],
+    allowedHeaders: ["Authorization", "Content-Type"],
+    exposedHeaders: ["Content-Type", "Authorization"],
     strictPreflight: false,
     preflightContinue: true // Allow manual OPTIONS handling - CORS headers will still be added
   });
@@ -319,8 +323,13 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   // USERS ROUTES REGISTRATION - MOVED BEFORE WEBSOCKET PLUGIN
   console.log("[DEBUG] registering usersRoutes BEFORE websocket plugin");
-  await app.register(usersRoutes, { prefix: '/api/users' });
-  console.log("[DEBUG] usersRoutes registration completed");
+  try {
+    await app.register(usersRoutes, { prefix: '/api/users' });
+    console.log("[DEBUG] usersRoutes registration completed");
+  } catch (usersRoutesErr: any) {
+    console.error("[ERROR] Failed to register usersRoutes:", usersRoutesErr);
+    throw usersRoutesErr;
+  }
 
   // WebSocket
   await app.register(fastifyWebsocket);

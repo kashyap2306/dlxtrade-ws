@@ -122,12 +122,9 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
           setIsAdmin(false);
         }
       } catch (error: any) {
-        console.error('Error checking admin role:', error);
-        if (import.meta.env.MODE === 'development') {
-          setIsAdmin(true);
-        } else {
-          setIsAdmin(false);
-        }
+        // Expected for non-admin users - Firestore permission denied
+        // Don't log the error as it's expected behavior
+        setIsAdmin(false);
       }
     };
 

@@ -297,27 +297,6 @@ export async function agentsRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // GET /api/users/:uid/agents - Get specific user's agents (admin endpoint)
-  fastify.get('/users/:uid/agents', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Params: { uid: string } }>, reply: FastifyReply) => {
-    try {
-      const { uid } = request.params;
-      const user = (request as any).user;
-
-      // Users can only view their own agents unless they're admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (uid !== user.uid && !isAdmin) {
-        return reply.code(403).send({ error: 'Access denied' });
-      }
-
-      const agents = await firestoreAdapter.getUserAgents(uid);
-      return { agents };
-    } catch (err: any) {
-      logger.error({ err }, 'Error getting user agents');
-      return reply.code(500).send({ error: err.message || 'Error fetching user agents' });
-    }
-  });
 
   // POST /api/agents/purchase-request - Create agent purchase request
   fastify.post('/purchase-request', {

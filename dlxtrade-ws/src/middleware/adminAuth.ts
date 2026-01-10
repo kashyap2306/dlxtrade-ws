@@ -23,22 +23,24 @@ export async function adminAuthMiddleware(
     const roleRoot = userData.role;
     const isAdminRoot = userData.isAdmin === true;
 
-    const hasAdmin = roleRoot === 'admin' || isAdminRoot;
+        const hasAdmin = roleRoot === 'admin' || isAdminRoot;
 
-    if (!hasAdmin) {
-      logger.warn({ uid: user.uid, roleRoot, isAdminRoot }, 'Non-admin user attempted to access admin route');
-      throw new AuthorizationError('Access Denied');
-    }
+        if (!hasAdmin) {
+            logger.warn({ uid: user.uid, roleRoot, isAdminRoot }, 'Non-admin user attempted to access admin route');
+            throw new AuthorizationError('Access Denied');
+        }
 
     logger.debug({ uid: user.uid }, 'Admin access granted');
   } catch (error: any) {
     if (error instanceof AuthorizationError) {
-      reply.code(403).send({ error: error.message });
+      logger.warn({ error: error.message }, 'Admin authorization failed');
+      reply.code(403).send({ error: 'admin_access_denied' });
+      return;
     } else {
       logger.error({ error }, 'Error in admin auth middleware');
-      reply.code(403).send({ error: 'Admin authorization failed' });
+      reply.code(403).send({ error: 'admin_access_denied' });
+      return;
     }
-    throw error;
   }
 }
 

@@ -3993,7 +3993,8 @@ export class AutoTradeEngine {
     }
 
     // CRITICAL: Check exchange usability once at cycle start and reuse result
-    const exchangeUsability = await isExchangeUsable(uid, "background_job");
+    // Use user_request context for actual trading operations that need credential validation
+    const exchangeUsability = await isExchangeUsable(uid, "user_request");
 
     const normalizedExchangeReason =
       exchangeUsability.reason === "connected"
@@ -4525,7 +4526,8 @@ export class AutoTradeEngine {
     }
 
     // CRITICAL: Check exchange usability once at cycle start and reuse result
-    const exchangeUsability = await isExchangeUsable(uid, "background_job");
+    // Use user_request context for actual trading operations that need credential validation
+    const exchangeUsability = await isExchangeUsable(uid, "user_request");
 
     const normalizedExchangeReason =
       exchangeUsability.reason === "connected"
