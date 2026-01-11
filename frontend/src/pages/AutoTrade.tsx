@@ -408,6 +408,45 @@ export default function AutoTrade() {
   // Load research history ONLY when tab/section is opened (not on interval polling)
   // Removed continuous polling to prevent over-polling
 
+  // Calculate filtered entries for research history
+  const getFilteredHistoryEntries = () => {
+    // First, check if we have any valid entries
+    const hasValidEntries = autoTradeHistory.some(entry =>
+      entry.symbol &&
+      entry.symbol !== "NO_RESEARCH" &&
+      entry.accuracy > 0 &&
+      (entry.signal === 'BUY' || entry.signal === 'SELL' || entry.signal === 'HOLD')
+    );
+
+    let entriesToShow = autoTradeHistory;
+    let showHelperText = false;
+
+    if (hasValidEntries) {
+      // Apply filtering ONLY IF at least one valid entry exists
+      entriesToShow = autoTradeHistory.filter(entry => {
+        // STRICTLY hide / ignore entries when ALL are true:
+        // - symbol === "NO_RESEARCH"
+        // - accuracy === 0
+        // - skipReason indicates no market data (not weak research)
+        if (entry.symbol === "NO_RESEARCH" &&
+            entry.accuracy === 0 &&
+            (entry.skipReason === "No market data available" ||
+             entry.skipReason?.includes("No suitable coin"))) {
+          return false; // Hide these entries
+        }
+        return true; // Show all other entries
+      });
+    } else if (autoTradeHistory.length > 0) {
+      // If ALL entries are filtered out, show the MOST RECENT entry even if NO_RESEARCH
+      entriesToShow = autoTradeHistory.slice(0, 1);
+      showHelperText = true;
+    }
+
+    return { entriesToShow, showHelperText };
+  };
+
+  const { entriesToShow, showHelperText } = getFilteredHistoryEntries();
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -811,19 +850,20 @@ export default function AutoTrade() {
                   <p className="text-sm text-gray-500 mt-2">Research history will appear here once Auto-Trade executes research cycles.</p>
                 </div>
               ) : (
-                <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-blue-700 scrollbar-track-blue-900">
-                  <table className="min-w-[900px] w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-blue-500/20">
-                        <th className="text-left text-blue-100/60 py-2">SR</th>
-                        <th className="text-left text-blue-100/60 py-2">Coin</th>
-                        <th className="text-left text-blue-100/60 py-2">Accuracy</th>
-                        <th className="text-left text-blue-100/60 py-2">Result / Trigger Status</th>
-                        <th className="text-left text-blue-100/60 py-2">Time</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {autoTradeHistory.map((entry, index) => {
+                <>
+                  <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-blue-700 scrollbar-track-blue-900">
+                    <table className="min-w-[900px] w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-blue-500/20">
+                          <th className="text-left text-blue-100/60 py-2">SR</th>
+                          <th className="text-left text-blue-100/60 py-2">Coin</th>
+                          <th className="text-left text-blue-100/60 py-2">Accuracy</th>
+                          <th className="text-left text-blue-100/60 py-2">Result / Trigger Status</th>
+                          <th className="text-left text-blue-100/60 py-2">Time</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {entriesToShow.map((entry, index) => {
                         // TIME DISPLAY: Use timestamp from backend
                         const timestamp = entry.timestamp ? new Date(entry.timestamp) : null;
                         const timeAgo = timestamp
@@ -840,77 +880,47 @@ export default function AutoTrade() {
                           : '--';
                         const absoluteTime = timestamp ? timestamp.toLocaleString() : '--';
 
-                        // COIN (SYMBOL) DISPLAY RULES - Handle AUTO_TRADE records correctly
-                        let coinDisplay = '--';
-                        if (entry.source === 'AUTO_TRADE') {
-                          // For AUTO_TRADE records: show symbol if non-empty, otherwise "Auto-Trade Cycle"
-                          if (entry.symbol && typeof entry.symbol === 'string' && entry.symbol.trim().length > 0) {
-                            coinDisplay = entry.symbol;
-                          } else {
-                            coinDisplay = 'Auto-Trade Cycle'; // Show descriptive label for cycle tracking
-                          }
-                        } else {
-                          // TELEGRAM logic (unchanged)
-                          if (entry.symbol && entry.symbol.trim().length > 0) {
-                            coinDisplay = entry.symbol;
-                          }
+                        // COIN (SYMBOL) DISPLAY - Always render symbol directly from API response
+                        // NEVER hide coin name when research ran (even for HOLD/weak signals)
+                        let coinDisplay = entry.symbol || '--';
+                        // Only show placeholder for true NO_RESEARCH cases
+                        if (entry.symbol === 'NO_RESEARCH' || entry.symbol === 'AUTO_TRADE_CYCLE') {
+                          coinDisplay = '--';
                         }
 
-                        // ACCURACY DISPLAY RULES - Handle AUTO_TRADE records correctly
+                        // ACCURACY DISPLAY - Always render accuracy directly from API response
+                        // NEVER hide accuracy when research ran (even for HOLD/weak signals)
                         let accuracyDisplay = '--';
                         const rawAccuracy = typeof entry.accuracy === 'number' ? entry.accuracy : null;
-                        if (entry.source === 'AUTO_TRADE') {
-                          // For AUTO_TRADE records, show accuracy whenever it's a valid number
-                          if (rawAccuracy !== null) {
-                            const normalizedAccuracy = rawAccuracy > 1 ? rawAccuracy : rawAccuracy * 100;
-                            accuracyDisplay = `${normalizedAccuracy.toFixed(1)}%`;
-                          } else {
-                            accuracyDisplay = '--';
-                          }
-                        } else {
-                          // TELEGRAM logic (unchanged)
-                          if (rawAccuracy !== null && rawAccuracy > 0) {
-                            const normalizedAccuracy = rawAccuracy > 1 ? rawAccuracy : rawAccuracy * 100;
-                            accuracyDisplay = `${normalizedAccuracy.toFixed(1)}%`;
-                          } else if (rawAccuracy === 0 && entry.decision === 'SKIPPED') {
-                            accuracyDisplay = 'Not Calculated';
-                          } else if (rawAccuracy === 0 && entry.executionStatus === 'FAILED') {
-                            accuracyDisplay = '0%';
-                          }
+                        if (rawAccuracy !== null && rawAccuracy > 0) {
+                          const normalizedAccuracy = rawAccuracy > 1 ? rawAccuracy : rawAccuracy * 100;
+                          accuracyDisplay = `${normalizedAccuracy.toFixed(1)}%`;
                         }
 
                         // RESULT / STATUS COLUMN - Handle AUTO_TRADE vs TELEGRAM records correctly
                         let resultStatus = 'Completed'; // Default for entries without specific status
 
                         if (entry.source === 'AUTO_TRADE') {
-                          // AUTO_TRADE logic: Use ONLY status and skipReason fields
+                          // AUTO_TRADE logic: Show skipReason text directly if present
                           if (entry.status === 'EXECUTED') {
                             resultStatus = 'Executed';
-                          } else if (entry.status === 'SKIPPED') {
-                            // Use skipReason to derive status for SKIPPED AUTO_TRADE records
-                            const skipReason = entry.skipReason || 'Unknown';
-                            switch (skipReason) {
-                              case 'BACKGROUND_TASKS_PAUSED':
-                                resultStatus = 'Skipped (System Paused)';
-                                break;
-                              case 'NO_RESEARCH_RESULT':
-                                resultStatus = 'Skipped (No Research Found)';
-                                break;
-                              case 'EXCHANGE_NOT_USABLE':
-                                resultStatus = 'Skipped (Exchange Not Connected)';
-                                break;
-                              case 'TRADE_CRITERIA_NOT_MET':
-                                resultStatus = 'Skipped (Low Accuracy)';
-                                break;
-                              case 'SYSTEM_ERROR':
-                                resultStatus = 'Skipped (System Error)';
-                                break;
-                              case 'INVALID_RESEARCH_RESULT':
-                                resultStatus = 'Skipped (Invalid Research)';
-                                break;
-                              default:
-                                resultStatus = `Skipped (${skipReason.replace(/_/g, ' ').toLowerCase()})`;
+                          } else if (entry.status === 'SKIPPED' && entry.skipReason) {
+                            // Show skipReason text directly (e.g. "Below accuracy threshold")
+                            // For weak signals (HOLD with low accuracy), show descriptive status
+                            const isWeakSignal = entry.accuracy && entry.accuracy > 0 && entry.accuracy < 50;
+                            const isBelowThreshold = entry.skipReason === 'Below accuracy threshold' ||
+                                                   entry.skipReason?.includes('Deep research failed') ||
+                                                   entry.skipReason?.includes('Research error');
+
+                            if (isWeakSignal && (isBelowThreshold || !entry.signal || entry.signal === 'HOLD')) {
+                              resultStatus = 'Weak signal (HOLD)';
+                            } else {
+                              resultStatus = entry.skipReason;
                             }
+                          } else if (entry.status === 'SKIPPED') {
+                            resultStatus = 'Skipped';
+                          } else {
+                            resultStatus = entry.status || 'Unknown';
                           }
                         } else {
                           // TELEGRAM logic (unchanged)
@@ -1016,10 +1026,21 @@ export default function AutoTrade() {
                             <td className="py-1 text-blue-100" title={absoluteTime}>{timeAgo}</td>
                           </tr>
                         );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                        })}
+                      </tbody>
+                    </table>
+                    {showHelperText && (
+                      <div className="mt-4 p-3 bg-blue-900/20 border border-blue-500/30 rounded-lg">
+                        <p className="text-blue-200 text-sm">
+                          Waiting for first valid research result…
+                        </p>
+                        <p className="text-blue-300/70 text-xs mt-1">
+                          Auto-Trade research is running but hasn't produced actionable signals yet. Results will appear here once research completes.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </>
               )}
 
               <div className="mt-6 flex justify-end">

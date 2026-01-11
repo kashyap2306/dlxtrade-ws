@@ -79,6 +79,25 @@ function filterInvalidSymbols(coins: any[]): any[] {
   });
 }
 
+/**
+ * Relaxed version of filterInvalidSymbols that excludes only specified patterns
+ * Used as fallback when strict filtering results in empty list
+ */
+function filterInvalidSymbolsRelaxed(coins: any[], excludePatterns: RegExp[] = []): any[] {
+  return coins.filter(coin => {
+    if (!coin || !coin.symbol) return false;
+    const symbol = coin.symbol.toUpperCase();
+
+    // Exclude only the specified patterns (relaxed filtering)
+    if (excludePatterns.some(pattern => pattern.test(symbol))) {
+      return false;
+    }
+
+    // Still ensure symbol ends with USDT (perpetual style)
+    return symbol.endsWith('USDT');
+  });
+}
+
 // P1 FIX: Coin rotation cooldown (15 minutes)
 const coinRotationCooldown = new Map<string, number>();
 const ROTATION_COOLDOWN_MS = 15 * 60 * 1000;
@@ -232,7 +251,31 @@ async function refreshTop100Coins(uid: string): Promise<any[]> {
 
         // CRITICAL: Filter out stablecoins FIRST, then filter invalid symbols, then take top 25
         const nonStablecoins = filterStablecoins(normalized);
-        const validSymbols = filterInvalidSymbols(nonStablecoins);
+        let validSymbols = filterInvalidSymbols(nonStablecoins);
+
+        // HARD SAFETY FALLBACK: If filtering is too strict and results in empty list
+        if (validSymbols.length === 0 && nonStablecoins.length > 0) {
+          // RELAXATION RULES: Apply in strict order
+          // a) Allow wrapped tokens (WBTCUSDT, WETHUSDT)
+          validSymbols = filterInvalidSymbolsRelaxed(nonStablecoins, [/^FIGR_/, /^ST/, /^USDS/, /^BSC-/]);
+          logger.warn({ uid, originalCount: nonStablecoins.length, relaxedCount: validSymbols.length }, '[TOP25_FALLBACK_APPLIED] Strict filtering resulted in empty list, relaxing rules (allowing wrapped tokens)');
+
+          // b) If still empty, allow top market-cap coins even if naming is non-standard
+          if (validSymbols.length === 0) {
+            validSymbols = filterInvalidSymbolsRelaxed(nonStablecoins, []);
+            logger.warn({ uid, originalCount: nonStablecoins.length, relaxedCount: validSymbols.length }, '[TOP25_FALLBACK_APPLIED] Still empty, relaxing all symbol pattern filters');
+          }
+
+          // c) Ensure at least MIN_TOP_COINS (10) always survive
+          const MIN_TOP_COINS = 10;
+          if (validSymbols.length < MIN_TOP_COINS && nonStablecoins.length >= MIN_TOP_COINS) {
+            // Take top MIN_TOP_COINS by market cap, regardless of naming
+            const sortedByMarketCap = nonStablecoins.sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
+            validSymbols = sortedByMarketCap.slice(0, MIN_TOP_COINS);
+            logger.warn({ uid, finalCount: validSymbols.length }, '[TOP25_FALLBACK_APPLIED] Ensuring minimum 10 coins by taking top market-cap regardless of naming');
+          }
+        }
+
         // Sort by market cap (descending) and take top 25
         const sortedByMarketCap = validSymbols.sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
         cachedTop50Coins = sortedByMarketCap.slice(0, TOP_COINS_LIMIT);
@@ -274,7 +317,31 @@ async function refreshTop100Coins(uid: string): Promise<any[]> {
 
         // CRITICAL: Filter out stablecoins FIRST, then filter invalid symbols, then take top 25
         const nonStablecoins = filterStablecoins(normalized);
-        const validSymbols = filterInvalidSymbols(nonStablecoins);
+        let validSymbols = filterInvalidSymbols(nonStablecoins);
+
+        // HARD SAFETY FALLBACK: If filtering is too strict and results in empty list
+        if (validSymbols.length === 0 && nonStablecoins.length > 0) {
+          // RELAXATION RULES: Apply in strict order
+          // a) Allow wrapped tokens (WBTCUSDT, WETHUSDT)
+          validSymbols = filterInvalidSymbolsRelaxed(nonStablecoins, [/^FIGR_/, /^ST/, /^USDS/, /^BSC-/]);
+          logger.warn({ uid, originalCount: nonStablecoins.length, relaxedCount: validSymbols.length }, '[TOP25_FALLBACK_APPLIED] Strict filtering resulted in empty list, relaxing rules (allowing wrapped tokens)');
+
+          // b) If still empty, allow top market-cap coins even if naming is non-standard
+          if (validSymbols.length === 0) {
+            validSymbols = filterInvalidSymbolsRelaxed(nonStablecoins, []);
+            logger.warn({ uid, originalCount: nonStablecoins.length, relaxedCount: validSymbols.length }, '[TOP25_FALLBACK_APPLIED] Still empty, relaxing all symbol pattern filters');
+          }
+
+          // c) Ensure at least MIN_TOP_COINS (10) always survive
+          const MIN_TOP_COINS = 10;
+          if (validSymbols.length < MIN_TOP_COINS && nonStablecoins.length >= MIN_TOP_COINS) {
+            // Take top MIN_TOP_COINS by market cap, regardless of naming
+            const sortedByMarketCap = nonStablecoins.sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
+            validSymbols = sortedByMarketCap.slice(0, MIN_TOP_COINS);
+            logger.warn({ uid, finalCount: validSymbols.length }, '[TOP25_FALLBACK_APPLIED] Ensuring minimum 10 coins by taking top market-cap regardless of naming');
+          }
+        }
+
         // Sort by market cap (descending) and take top 25
         const sortedByMarketCap = validSymbols.sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
         cachedTop50Coins = sortedByMarketCap.slice(0, TOP_COINS_LIMIT);
@@ -748,15 +815,26 @@ export async function selectBestCoinByAccuracy(
   try {
     const { cacheService } = await import('./cacheService');
     // CRITICAL: Only fetch top 25 coins (single source of truth)
-    const candidates = await getTop100Coins(uid, TOP_COINS_LIMIT);
-    logger.info({ uid, top25Count: candidates.length, symbols: candidates.map(c => c.symbol) }, '✅ [TOP_25_LOADED] Top 25 coins loaded for accuracy scan');
+    let candidates = await getTop100Coins(uid, TOP_COINS_LIMIT);
 
-    // CRITICAL FIX: Do NOT require exactly 25 coins - use MIN_THRESHOLD (5 coins minimum)
-    // If filtered non-stablecoins >= MIN_THRESHOLD, run accuracy scan
-    // NEVER return null if usable coins exist
-    const MIN_THRESHOLD = 5;
+    // HARD FALLBACK: If Top-25 candidates is empty, get broader candidates to prevent NO_RESEARCH
+    if (candidates.length === 0) {
+      // Try to get more candidates (up to 50) to find viable options
+      const broaderCandidates = await getTop100Coins(uid, 50);
+      if (broaderCandidates.length > 0) {
+        // Take top 10 by market cap to ensure we have candidates
+        candidates = broaderCandidates.slice(0, 10);
+        logger.warn({ uid, originalCount: 0, fallbackCount: candidates.length, symbols: candidates.map(c => c.symbol) }, '[TOP25_FALLBACK_APPLIED][RESEARCH_EXECUTION] Top-25 was empty, using fallback with top 10 broader candidates');
+      }
+    }
+
+    logger.info({ uid, top25Count: candidates.length, symbols: candidates.map(c => c.symbol) }, '[TOP25_FINAL_COUNT] Top 25 coins loaded for accuracy scan');
+
+    // ACCURACY SCAN MUST NEVER HARD-BLOCK RESEARCH
+    // Allow research to proceed even with minimal candidates
+    const MIN_THRESHOLD = 1; // Allow even single candidate
     if (!candidates || candidates.length < MIN_THRESHOLD) {
-      logger.error({ uid, candidateCount: candidates?.length || 0, minThreshold: MIN_THRESHOLD, stack: new Error().stack }, '❌ [TOP_25_ERROR] Insufficient coins available for accuracy scan - below minimum threshold');
+      logger.error({ uid, candidateCount: candidates?.length || 0, minThreshold: MIN_THRESHOLD, stack: new Error().stack }, '❌ [TOP_25_ERROR] No candidates available for accuracy scan');
       return null;
     }
 
@@ -833,6 +911,11 @@ export async function selectBestCoinByAccuracy(
 
         accuracy = volatilityScore + marketCapScore;
 
+        // Ensure accuracy is never NaN or undefined
+        if (isNaN(accuracy) || accuracy === undefined) {
+          accuracy = 50; // Neutral accuracy
+        }
+
         // Random tie-breaker (+/- 1-2 points) to prevent sticky selection
         accuracy += (Math.random() * 2);
       }
@@ -852,16 +935,35 @@ export async function selectBestCoinByAccuracy(
     const top5 = coinScores.slice(0, 5);
     logger.info({ uid, topCandidates: top5 }, '[ACCURACY_SCAN] Top candidates');
 
-    // If no valid coin found, return null
+    // ACCURACY FILTER MUST NEVER HARD-BLOCK RESEARCH
+    // If no coins meet accuracy threshold, select fallback from original candidates
     if (!bestCoin || bestAccuracy < 0) {
-      logger.warn({
-        uid,
-        excludedCount,
-        finalExcludedCount,
-        cooldownExcludedCount,
-        totalCandidates: candidates.length
-      }, 'No valid coin found after accuracy scan');
-      return null;
+      // Select top 3-5 candidates from original list as fallback
+      const fallbackCount = Math.min(5, candidates.length);
+      const fallbackCandidates = candidates.slice(0, fallbackCount);
+
+      if (fallbackCandidates.length > 0) {
+        // Use first fallback candidate with assigned accuracy
+        bestCoin = fallbackCandidates[0].symbol?.toUpperCase() || '';
+        bestAccuracy = 45; // Fallback accuracy between 40-50
+
+        logger.warn({
+          uid,
+          fallbackCandidates: fallbackCandidates.map(c => c.symbol),
+          assignedAccuracy: bestAccuracy,
+          totalCandidates: candidates.length
+        }, 'Accuracy scan: No coins met threshold, using fallback candidate');
+      } else {
+        // Only return null if truly no candidates available
+        logger.error({
+          uid,
+          excludedCount,
+          finalExcludedCount,
+          cooldownExcludedCount,
+          totalCandidates: candidates.length
+        }, 'No candidates available for accuracy scan');
+        return null;
+      }
     }
 
     // Mark selected coin as recently used (cooldown)

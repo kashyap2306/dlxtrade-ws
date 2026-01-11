@@ -190,15 +190,15 @@ export const AutoTradeTrades: React.FC<AutoTradeTradesProps> = ({
                     // SKIPPED entries must remain visible to show when/why auto-trade cycles didn't execute
                     .slice(0, 5)
                     .map((entry, index) => {
-                      // SAFE: Handle null/undefined fields gracefully - SKIPPED entries may have missing data
+                      // Always render accuracy directly from API response
                       const isExecuted = entry.decision === 'EXECUTED';
                       const isSkipped = entry.decision === 'SKIPPED';
-                      const accuracy = entry.accuracy || 0;
+                      const accuracy = typeof entry.accuracy === 'number' ? entry.accuracy : 0;
 
                       return (
                         <tr key={entry.id} className={`border-b border-blue-500/10 ${index % 2 === 0 ? 'bg-[#0d1421]' : 'bg-[#0b0f18]'} hover:bg-blue-900/20`}>
                           <td className="py-3 text-blue-100">{index + 1}</td>
-                          <td className="py-3 text-blue-100 font-medium">{entry.symbol || 'N/A'}</td>
+                          <td className="py-3 text-blue-100 font-medium">{entry.symbol}</td>
                           <td className="py-3 text-blue-100">
                             <span className={`px-2 py-1 rounded text-xs font-medium ${
                               entry.signal === 'BUY' ? 'bg-green-600/20 text-green-300' :

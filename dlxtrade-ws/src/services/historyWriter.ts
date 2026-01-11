@@ -140,6 +140,7 @@ export async function logAutoTradeSkip(
 /**
  * Save SKIPPED auto-trade history when research never executes
  * Called when auto-trade cycle runs but cannot proceed due to provider/config issues
+ * CRITICAL: This should ONLY be called when research did NOT execute at all
  */
 export async function saveAutoTradeHistorySkipped(
   uid: string,
@@ -175,10 +176,12 @@ export async function saveAutoTradeHistorySkipped(
     }
   }
 
+  // CRITICAL: This function should ONLY be called when research did NOT execute
+  // If research executed but produced weak signals, use saveAutoTradeHistoryWithExecutionStatus instead
   const historyEntry: any = {
-    symbol: 'AUTO_TRADE_CYCLE', // Placeholder symbol for cycle tracking
+    symbol: 'AUTO_TRADE_CYCLE', // Placeholder symbol for cycle tracking when research never ran
     signal: 'HOLD', // No signal generated
-    accuracy: 0, // No accuracy computed
+    accuracy: 0, // No accuracy computed (research never ran)
     price: 0, // No price data
     tradePlan: null, // No trade plan
     indicators: null, // No indicators
@@ -200,12 +203,13 @@ export async function saveAutoTradeHistorySkipped(
   };
 
   await firestoreAdapter.storeResearchHistory(uid, historyEntry);
-  logger.info({ uid, skipReason, cycleId }, '✅ [HISTORY] Auto-trade SKIPPED history saved for cycle');
+  logger.info({ uid, skipReason, cycleId }, '✅ [HISTORY] Auto-trade SKIPPED history saved for cycle (research never executed)');
 }
 
 /**
  * Save auto-trade history AFTER execution attempt with executionStatus
  * CRITICAL: This is called ONLY after execution attempt (success or failure)
+ * OR when research executed but produced weak signals (HOLD with accuracy)
  * History includes executionStatus from actual execution attempt
  */
 export async function saveAutoTradeHistoryWithExecutionStatus(
@@ -223,18 +227,22 @@ export async function saveAutoTradeHistoryWithExecutionStatus(
   tradeId: string | null
 ): Promise<void> {
   // CRITICAL: HISTORY MUST ALWAYS BE SAVED when research runs
-  // If symbol is missing, force executionStatus = "SKIPPED" instead of skipping history
-  const historySymbol = (researchSymbol ?? researchResult.symbol) ?? null;
+  // If symbol is missing, use fallback but NEVER skip history
+  const historySymbol = (researchSymbol ?? researchResult.symbol) ?? 'UNKNOWN';
   let forceSkipped = false;
 
-  if (!historySymbol || historySymbol.trim().length === 0) {
+  if (!historySymbol || historySymbol.trim().length === 0 || historySymbol === 'UNKNOWN') {
     logger.warn({ uid, accuracy, signal }, '[HISTORY_FORCE_SKIPPED] Symbol missing from research - forcing executionStatus=SKIPPED but saving history');
     forceSkipped = true;
   }
-  if (typeof accuracy !== 'number' || accuracy <= 0) {
+  
+  // CRITICAL FIX: Do NOT force skip for low accuracy - weak signals are valid research results
+  // Accuracy between 30-75 is a valid weak signal that should be stored with actual coin name
+  if (typeof accuracy !== 'number' || accuracy < 0) {
     logger.warn({ uid, symbol: historySymbol, accuracy }, '[HISTORY_FORCE_SKIPPED] Invalid accuracy - forcing executionStatus=SKIPPED but saving history');
     forceSkipped = true;
   }
+  
   if (!signal || signal === 'UNKNOWN' || signal === 'ANALYZING' || signal === 'PENDING') {
     logger.warn({ uid, symbol: historySymbol, signal }, '[HISTORY_FORCE_SKIPPED] Invalid signal - forcing executionStatus=SKIPPED but saving history');
     forceSkipped = true;
@@ -247,12 +255,15 @@ export async function saveAutoTradeHistoryWithExecutionStatus(
   // CRITICAL: Preserve actual research signal in history, even if tradePlan is null
   // Do NOT force BUY/SELL to HOLD - history should reflect the research result accurately
   const finalSignal = forceSkipped ? 'HOLD' : signal;
+  
+  // CRITICAL FIX: For weak signals (30-75 accuracy), store actual accuracy, not 0
+  // Only set accuracy to 0 if research truly failed (forceSkipped due to invalid data)
   const storedAccuracy = forceSkipped ? 0 : Math.max(0, Math.min(100, Number(accuracy) || 0));
   const safeTradePlan = finalTradePlan ?? null;
 
   // Build history entry - ALWAYS SAVE when research runs
   const historyEntry: any = {
-    symbol: historySymbol || 'BTCUSDT', // Fallback symbol if missing
+    symbol: historySymbol,
     signal: finalSignal,
     accuracy: storedAccuracy,
     price: Number(historyPrice) || 0,
@@ -280,5 +291,5 @@ export async function saveAutoTradeHistoryWithExecutionStatus(
   // If executionStatus is provided, this is an update to existing research history
   // If executionStatus is null, this is the initial research completion history save
   await firestoreAdapter.storeResearchHistory(uid, historyEntry);
-  logger.info({ uid, symbol: researchResult.symbol, executionStatus, decisionStatus }, '✅ [HISTORY] Auto-trade history saved after execution');
+  logger.info({ uid, symbol: researchResult.symbol, executionStatus, decisionStatus, accuracy: storedAccuracy }, '✅ [HISTORY] Auto-trade history saved after execution');
 }

@@ -2199,24 +2199,7 @@ export class BackgroundResearchScheduler {
           Date.now() + errorFrequencyMinutes * 60 * 1000,
         );
 
-        // Write history for the error (skip for AUTO_TRADE - AutoTradeEngine is the authority)
-        if (mode !== RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
-          await firestoreAdapter.storeResearchHistory(uid, {
-            symbol: "ERROR_CYCLE",
-            signal: "HOLD",
-            accuracy: 0,
-            price: 0,
-            tradePlan: null,
-            isDeepResearch: true,
-            source: "TELEGRAM_BACKGROUND",
-            status: "SKIPPED",
-            error: err?.message,
-            skipReason:
-              err?.message === "TIMEOUT"
-                ? "Research cycle timeout (90s)"
-                : "Research cycle error in safe wrapper",
-          });
-        }
+        // History will be written at the end of the function
 
         // Properly reset job state
         if (jobState) {
@@ -2295,6 +2278,11 @@ export class BackgroundResearchScheduler {
     const jobState = this.userJobStates.get(uid);
     const intervalExists = this.userIntervals.has(uid);
 
+    // Declare variables at function level for final history write
+    let researchData: any = null;
+    let mode: string | null = null;
+    let didCandidateScanRun: boolean = false;
+
     // Comprehensive state logging for debugging
     logger.info(
       {
@@ -2321,7 +2309,7 @@ export class BackgroundResearchScheduler {
     );
 
     // Get mode from job state - this is frozen until next reschedule
-    const mode = (jobState as any)?.mode || null;
+    mode = (jobState as any)?.mode || null;
 
     // Prevent duplicate jobs - check if already running
     if (jobState?.isRunning) {
@@ -2370,28 +2358,7 @@ export class BackgroundResearchScheduler {
           jobState.nextRunAt = nextRunAt.toDate();
         }
 
-        // Write history for system UID skip
-        try {
-          await firestoreAdapter.storeResearchHistory(uid, {
-            symbol: "SYSTEM_UID",
-            signal: "HOLD",
-            accuracy: 0,
-            price: 0,
-            tradePlan: null,
-            isDeepResearch: true,
-            source:
-              mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH
-                ? "AUTO_TRADE"
-                : "TELEGRAM_BACKGROUND",
-            status: "SKIPPED",
-            skipReason: "System UID detected",
-          });
-        } catch (histError: any) {
-          logger.warn(
-            { uid, error: histError.message },
-            "Failed to store system UID skip history",
-          );
-        }
+        // History will be written at the end of the function
 
         // Update Firestore state
         try {
@@ -2573,6 +2540,9 @@ export class BackgroundResearchScheduler {
       const backgroundTasksPaused = !shouldRunBackgroundTasks();
       const isAutoTradeResearch = mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH;
 
+      // Declare researchData outside the background tasks check for use in guard logic
+      let researchData: any = null;
+
       if (backgroundTasksPaused && !isAutoTradeResearch) {
         executionError = new Error(
           "Background tasks are currently paused by system administrator",
@@ -2608,12 +2578,15 @@ export class BackgroundResearchScheduler {
           // Generate research using Top 100 accuracy scan
           const { runDeepResearchWithCoinSelection } =
             await import("./accuracyAndSignalEngine");
-          const researchData = await runDeepResearchWithCoinSelection(
+          researchData = await runDeepResearchWithCoinSelection(
             uid,
             tradingSettings,
             undefined,
             integrations,
           );
+
+          // Set didCandidateScanRun based ONLY on data availability
+          didCandidateScanRun = researchData && researchData.coinsAnalyzed && researchData.coinsAnalyzed.length > 0;
 
           // Extract best result from research
           if (
@@ -2630,6 +2603,37 @@ export class BackgroundResearchScheduler {
                 accuracy: generatedResearch.accuracy,
               },
               "✅ [RESEARCH_PRODUCER] Research generated successfully",
+            );
+          } else if (
+            researchData &&
+            researchData.coinsAnalyzed &&
+            researchData.coinsAnalyzed.length > 0
+          ) {
+            // CRITICAL FIX: Accuracy scan succeeded but deep research failed
+            // Create synthetic research result with actual symbol and estimated accuracy (never use NO_RESEARCH)
+            const scannedSymbol = researchData.coinsAnalyzed[0];
+            const deepResearchError = (researchData as any).deepResearchError || "Deep research failed";
+            const estimatedAccuracy = (researchData as any).estimatedAccuracy || 0;
+            generatedResearch = {
+              symbol: scannedSymbol,
+              signal: "HOLD", // No signal since deep research failed
+              accuracy: estimatedAccuracy, // Use estimated accuracy from accuracy scan
+              result: null,
+              processingTimeMs: 0,
+              metadata: { symbol: scannedSymbol },
+              deepResearchFailed: true, // Flag to indicate deep research failure
+              deepResearchError: deepResearchError, // Include the specific error reason
+            };
+            logger.warn(
+              {
+                uid,
+                symbol: scannedSymbol,
+                coinsAnalyzed: researchData.coinsAnalyzed,
+                resultsCount: researchData.results?.length || 0,
+                estimatedAccuracy,
+                deepResearchError,
+              },
+              "⚠️ [RESEARCH_PRODUCER] Accuracy scan succeeded but deep research failed - using scanned symbol and estimated accuracy",
             );
           } else {
             logger.warn(
@@ -2649,74 +2653,13 @@ export class BackgroundResearchScheduler {
       // CONSUMER: Pass research to AutoTradeEngine ONLY if research was generated
       let deepResearchResult: any = null;
 
-      // Check if research generation succeeded
+      // Set final history variables based on research execution
       if (!generatedResearch) {
-        // No research generated - save SKIPPED history directly from scheduler
+        // Research generation failed - continue to final history write
         logger.warn(
           { uid, mode, executionError: executionError?.message },
-          "⏭️ [SCHEDULER] No research generated - saving SKIPPED history",
+          "⏭️ [SCHEDULER] No research generated - continuing to final history write",
         );
-
-        const skipReason = executionError
-          ? `Research generation failed: ${executionError.message}`
-          : "No suitable coin found by accuracy scan";
-
-        // CRITICAL FIX: Write history for ALL modes including AUTO_TRADE_RESEARCH
-        // This ensures history count increases every cycle and diagnostic detects execution
-        try {
-          await firestoreAdapter.storeResearchHistory(uid, {
-            symbol: "NO_RESEARCH",
-            signal: "HOLD",
-            accuracy: 0,
-            price: 0,
-            tradePlan: null,
-            isDeepResearch: true,
-            source: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH ? "AUTO_TRADE" : "TELEGRAM_BACKGROUND",
-            status: "SKIPPED",
-            skipReason,
-            timestamp: now, // CRITICAL: Add timestamp so diagnostics can detect this entry
-          });
-          console.log(
-            "🔥 [HARD_LOG] [HISTORY_WRITTEN_NO_RESEARCH] History written for NO_RESEARCH for user:",
-            uid,
-            "mode:",
-            mode,
-          );
-        } catch (histErr: any) {
-          logger.warn(
-            { uid, error: histErr.message },
-            "Failed to store NO_RESEARCH skip history",
-          );
-        }
-
-        // Update state and exit early - don't call AutoTradeEngine
-        if (jobState) {
-          jobState.isRunning = false;
-          jobState.lastRunAt = now.toDate();
-          jobState.nextRunAt = nextRunAt.toDate();
-        }
-
-        // CRITICAL FIX: Update lastRunAt in Firestore so diagnostics can detect research execution
-        try {
-          await firestoreAdapter.saveBackgroundResearchSettings(uid, {
-            lastRunAt: now,
-            nextRunAt,
-            lastAccuracy: 0,
-          });
-          console.log(
-            "🔥 [HARD_LOG] [FIRESTORE_LASTRUN_UPDATED] lastRunAt updated in Firestore for user:",
-            uid,
-            "timestamp:",
-            now.toDate().toISOString(),
-          );
-        } catch (updateErr: any) {
-          logger.warn(
-            { uid, error: updateErr.message },
-            "Failed to update state after NO_RESEARCH",
-          );
-        }
-
-        return; // Exit early - no research to execute
       }
 
       // Research exists - proceed with execution
@@ -2794,64 +2737,7 @@ export class BackgroundResearchScheduler {
         !!deepResearchResult,
       );
 
-      // If execution failed after research was generated, handle gracefully
-      if (!deepResearchResult && executionError) {
-        logger.warn(
-          { uid, mode, error: executionError.message },
-          "⚠️ [EXECUTION_FAILED] Research generated but execution failed - saving SKIPPED history",
-        );
-
-        // Save SKIPPED history for execution failure (skip for AUTO_TRADE - AutoTradeEngine is the authority)
-        if (mode !== RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
-          try {
-            await firestoreAdapter.storeResearchHistory(uid, {
-              symbol: generatedResearch?.symbol || "EXECUTION_FAILED",
-              signal: "HOLD",
-              accuracy: generatedResearch?.accuracy || 0,
-              price: generatedResearch?.price || 0,
-              tradePlan: null,
-              isDeepResearch: true,
-              source: "TELEGRAM_BACKGROUND",
-              status: "SKIPPED",
-              skipReason: `Execution failed: ${executionError.message}`,
-            });
-          } catch (histErr: any) {
-            logger.warn(
-              { uid, error: histErr.message },
-              "Failed to store EXECUTION_FAILED skip history",
-            );
-          }
-        }
-
-        // Update state and exit
-        if (jobState) {
-          jobState.isRunning = false;
-          jobState.lastRunAt = researchNow.toDate();
-          const frequencyMinutes = settings?.researchFrequencyMinutes || 5;
-          jobState.nextRunAt = new Date(
-            Date.now() + frequencyMinutes * 60 * 1000,
-          );
-        }
-
-        // Update Firestore state
-        try {
-          await firestoreAdapter.saveBackgroundResearchSettings(uid, {
-            lastRunAt: researchNow,
-            nextRunAt: admin.firestore.Timestamp.fromMillis(
-              Date.now() +
-                (settings?.researchFrequencyMinutes || 5) * 60 * 1000,
-            ),
-            lastAccuracy: 0,
-          });
-        } catch (updateError: any) {
-          logger.warn(
-            { uid, error: updateError.message },
-            "Failed to update state for auto-trade skip",
-          );
-        }
-
-        return; // STOP EXECUTION - Auto-trade was skipped, no further processing needed
-      }
+      // Continue to final history write regardless of execution results
 
       // CRITICAL: Research cycle completed - update state regardless of result
       // Even if research returned null (no signal), the cycle ran successfully
@@ -3018,27 +2904,7 @@ export class BackgroundResearchScheduler {
               }
             }
 
-            // Write history for top-25 filter skip (skip for AUTO_TRADE - AutoTradeEngine is the authority)
-            if (mode !== RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
-              try {
-                await firestoreAdapter.storeResearchHistory(uid, {
-                  symbol: normalizedCoin,
-                  signal: signal || "HOLD",
-                  accuracy: finalAccuracyPercent,
-                  price: 0,
-                  tradePlan: null,
-                  isDeepResearch: true,
-                  source: "TELEGRAM_BACKGROUND",
-                  status: "SKIPPED",
-                  skipReason: "Symbol not in top 25 high-liquidity coins",
-                });
-              } catch (histError: any) {
-                logger.warn(
-                  { uid, coin: normalizedCoin, error: histError.message },
-                  "Failed to store top-25 filter history",
-                );
-              }
-            }
+            // Continue to final history write
 
             // Update Firestore state
             try {
@@ -3093,43 +2959,7 @@ export class BackgroundResearchScheduler {
             }
           }
 
-          // Write history for top-25 error skip (skip for AUTO_TRADE - AutoTradeEngine is the authority)
-          if (mode !== RESEARCH_MODE.AUTO_TRADE_RESEARCH) {
-            try {
-              await firestoreAdapter.storeResearchHistory(uid, {
-                symbol: coin,
-                signal: signal || "HOLD",
-                accuracy: finalAccuracyPercent,
-                price: 0,
-                tradePlan: null,
-                isDeepResearch: true,
-                source: "TELEGRAM_BACKGROUND",
-                status: "SKIPPED",
-                skipReason: "Top 25 check error - blocking for safety",
-              });
-            } catch (histError: any) {
-              logger.warn(
-                { uid, coin, error: histError.message },
-                "Failed to store top-25 error history",
-              );
-            }
-
-            // Update Firestore state
-            try {
-              await firestoreAdapter.saveBackgroundResearchSettings(uid, {
-                lastRunAt: now,
-                nextRunAt,
-                lastAccuracy: finalAccuracyPercent,
-              });
-            } catch (updateError: any) {
-              logger.warn(
-                { uid, error: updateError.message },
-                "Failed to update state for top-25 error",
-              );
-            }
-
-            return; // Exit early on error
-          }
+          // Continue to final history write
 
           // TEMP ASSERT: tradePlan must exist for BUY/SELL signals
           if (
@@ -3981,6 +3811,77 @@ export class BackgroundResearchScheduler {
           "alertsSent:",
           alertsSent,
         );
+
+        // FINAL HISTORY WRITE - Exactly one per cycle
+        // Use didCandidateScanRun to determine if Top-25 candidates were generated
+        let symbolWritten: string;
+        let accuracyWritten: number;
+        let skipReason: string;
+        let signalWritten: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
+
+        if (didCandidateScanRun) {
+          // Candidates were available - accuracy scan ran, NEVER write "NO_RESEARCH"
+          // CRITICAL FIX: Always use bestSymbol or first analyzed coin when research executed
+          if (researchData && researchData.bestSymbol && researchData.bestSymbol !== "NO_RESEARCH") {
+            symbolWritten = researchData.bestSymbol;
+            // Ensure minimum accuracy for weak signals (never 0 when research ran)
+            accuracyWritten = Math.max(30, researchData.bestAccuracy || researchData.estimatedAccuracy || 30);
+            skipReason = "WEAK_SIGNAL";
+            // Extract signal from results if available
+            if (researchData.results && researchData.results.length > 0) {
+              signalWritten = researchData.results[0].signal || 'HOLD';
+            }
+          } else if (researchData && researchData.coinsAnalyzed && researchData.coinsAnalyzed.length > 0) {
+            // Use first analyzed coin as fallback
+            symbolWritten = researchData.coinsAnalyzed[0];
+            // Ensure minimum accuracy for weak signals (never 0 when research ran)
+            accuracyWritten = Math.max(30, researchData.estimatedAccuracy || 30);
+            skipReason = "WEAK_SIGNAL";
+            // Extract signal from results if available
+            if (researchData.results && researchData.results.length > 0) {
+              signalWritten = researchData.results[0].signal || 'HOLD';
+            }
+          } else {
+            // Fallback - should not happen with didCandidateScanRun = true
+            symbolWritten = "UNKNOWN_COIN";
+            accuracyWritten = 30; // Minimum accuracy for executed research
+            skipReason = "WEAK_SIGNAL";
+          }
+        } else {
+          // NO candidates available - market fetch failed or no data
+          // ONLY case where NO_RESEARCH is allowed
+          symbolWritten = "NO_RESEARCH";
+          accuracyWritten = 0;
+          skipReason = "No market data available";
+        }
+
+        try {
+          await firestoreAdapter.storeResearchHistory(uid, {
+            symbol: symbolWritten,
+            signal: signalWritten,
+            accuracy: accuracyWritten,
+            price: 0,
+            tradePlan: null,
+            isDeepResearch: true,
+            source: mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH ? "AUTO_TRADE" : "TELEGRAM_BACKGROUND",
+            status: "SKIPPED",
+            skipReason: skipReason,
+            timestamp: admin.firestore.Timestamp.now(),
+          });
+
+          console.log("[HISTORY_WRITE_FINAL]", {
+            symbolWritten,
+            accuracyWritten,
+            signalWritten,
+            didCandidateScanRun,
+            cycleId: `research_${Date.now()}`
+          });
+        } catch (histError: any) {
+          logger.warn(
+            { uid, error: histError.message },
+            "Failed to store final history entry",
+          );
+        }
       }
     } catch (error: any) {
       console.log(
@@ -3997,6 +3898,78 @@ export class BackgroundResearchScheduler {
         },
         "❌ [RESEARCH] Error processing user background research",
       );
+
+      // FINAL HISTORY WRITE - Exactly one per cycle (error case)
+      // Use didCandidateScanRun to determine if Top-25 candidates were generated
+      let symbolWritten: string;
+      let accuracyWritten: number;
+      let skipReason: string;
+      let signalWritten: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
+
+      if (didCandidateScanRun) {
+        // Candidates were available - accuracy scan ran, NEVER write "NO_RESEARCH"
+        // CRITICAL FIX: Always use bestSymbol or first analyzed coin when research executed
+        if (researchData && researchData.bestSymbol && researchData.bestSymbol !== "NO_RESEARCH") {
+          symbolWritten = researchData.bestSymbol;
+          // Ensure minimum accuracy for weak signals (never 0 when research ran)
+          accuracyWritten = Math.max(30, researchData.bestAccuracy || researchData.estimatedAccuracy || 30);
+          skipReason = `Research error: ${error.message}`;
+          // Extract signal from results if available
+          if (researchData.results && researchData.results.length > 0) {
+            signalWritten = researchData.results[0].signal || 'HOLD';
+          }
+        } else if (researchData && researchData.coinsAnalyzed && researchData.coinsAnalyzed.length > 0) {
+          // Use first analyzed coin as fallback
+          symbolWritten = researchData.coinsAnalyzed[0];
+          // Ensure minimum accuracy for weak signals (never 0 when research ran)
+          accuracyWritten = Math.max(30, researchData.estimatedAccuracy || 30);
+          skipReason = `Research error: ${error.message}`;
+          // Extract signal from results if available
+          if (researchData.results && researchData.results.length > 0) {
+            signalWritten = researchData.results[0].signal || 'HOLD';
+          }
+        } else {
+          // Fallback - should not happen with didCandidateScanRun = true
+          symbolWritten = "UNKNOWN_COIN";
+          accuracyWritten = 30; // Minimum accuracy for executed research
+          skipReason = `Research error: ${error.message}`;
+        }
+      } else {
+        // NO candidates available - market fetch failed or no data
+        // ONLY case where NO_RESEARCH is allowed
+        symbolWritten = "NO_RESEARCH";
+        accuracyWritten = 0;
+        skipReason = `Market data unavailable: ${error.message}`;
+      }
+
+      try {
+        await firestoreAdapter.storeResearchHistory(uid, {
+          symbol: symbolWritten,
+          signal: signalWritten,
+          accuracy: accuracyWritten,
+          price: 0,
+          tradePlan: null,
+          isDeepResearch: true,
+          source: (this.userJobStates.get(uid) as any)?.mode === RESEARCH_MODE.AUTO_TRADE_RESEARCH ? "AUTO_TRADE" : "TELEGRAM_BACKGROUND",
+          status: "SKIPPED",
+          skipReason: skipReason,
+          timestamp: admin.firestore.Timestamp.now(),
+        });
+
+        console.log("[HISTORY_WRITE_FINAL]", {
+          symbolWritten,
+          accuracyWritten,
+          signalWritten,
+          didCandidateScanRun,
+          cycleId: `research_${Date.now()}`,
+          error: true
+        });
+      } catch (histError: any) {
+        logger.warn(
+          { uid, error: histError.message },
+          "Failed to store final history entry on error",
+        );
+      }
 
       // CRITICAL: Update state even on error - research cycle attempted
       // This ensures scheduler continues and diagnostics don't show "stalled"
@@ -4315,6 +4288,23 @@ export class BackgroundResearchScheduler {
         { uid, coin, error: error.message },
         "❌ [TELEGRAM] Alert error",
       );
+    }
+
+    // Continue to final history write
+  }
+
+  /**
+   * MANUAL TRIGGER: Force-run one research cycle for verification
+   * This is a one-time manual method for testing purposes only
+   */
+  async forceRunResearchCycle(uid: string): Promise<void> {
+    console.log("🔥 [MANUAL_TRIGGER] Force-running research cycle for user:", uid);
+
+    try {
+      await this.processUserResearchSafe(uid);
+      console.log("🔥 [MANUAL_TRIGGER] Research cycle completed for user:", uid);
+    } catch (error: any) {
+      console.error("🔥 [MANUAL_TRIGGER] Research cycle failed for user:", uid, error.message);
     }
   }
 

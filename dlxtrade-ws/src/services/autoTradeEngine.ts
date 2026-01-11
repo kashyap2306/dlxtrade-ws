@@ -4076,7 +4076,12 @@ export class AutoTradeEngine {
     const hasValidAccuracy = researchResult.accuracy >= 0.7;
     const hasTradePlan = !!researchResult.tradePlan;
 
-    if (!hasValidSignal || !hasValidAccuracy || !hasTradePlan) {
+    // CRITICAL FIX: Handle deep research failure case
+    // If deep research failed but accuracy scan succeeded, use specific skip reason
+    const deepResearchFailed = (researchResult as any).deepResearchFailed === true;
+    const deepResearchError = (researchResult as any).deepResearchError;
+
+    if (!hasValidSignal || !hasValidAccuracy || !hasTradePlan || deepResearchFailed) {
       logger.info(
         {
           uid,
@@ -4085,18 +4090,39 @@ export class AutoTradeEngine {
           signal: researchResult.signal,
           accuracy: researchResult.accuracy,
           hasTradePlan,
+          deepResearchFailed,
+          deepResearchError,
         },
         "🚫 [AUTO_TRADE_CONSUMER] Research result does not meet trade criteria - skipping",
       );
 
-      // CRITICAL FIX: ALWAYS save history, even when criteria not met
-      // This ensures history count increases and diagnostic shows real execution
-      await saveAutoTradeHistorySkipped(
-        uid,
-        "TRADE_CRITERIA_NOT_MET",
-        `Signal: ${researchResult.signal}, Accuracy: ${researchResult.accuracy}, TradePlan: ${hasTradePlan}`,
-        cycleId,
-      );
+      // CRITICAL FIX: Save actual symbol and accuracy when criteria not met
+      // Instead of generic 'AUTO_TRADE_CYCLE' and 0, save the real research data
+      let skipReason = "";
+      if (deepResearchFailed) {
+        skipReason = deepResearchError || "Deep research failed"; // Use specific error reason
+      } else if (!hasValidSignal) {
+        skipReason = "Invalid signal";
+      } else if (!hasValidAccuracy) {
+        skipReason = "Below accuracy threshold";
+      } else if (!hasTradePlan) {
+        skipReason = "Missing trade plan";
+      }
+
+      await firestoreAdapter.storeResearchHistory(uid, {
+        symbol: researchResult.symbol,
+        signal: researchResult.signal || "HOLD",
+        accuracy: researchResult.accuracy || 0,
+        price: researchResult.price || 0,
+        tradePlan: researchResult.tradePlan || null,
+        indicators: researchResult.indicators || null,
+        isDeepResearch: true,
+        source: "AUTO_TRADE",
+        status: "SKIPPED",
+        skipReason: skipReason,
+        cycleId: cycleId,
+        timestamp: admin.firestore.Timestamp.now(),
+      });
 
       return null;
     }
