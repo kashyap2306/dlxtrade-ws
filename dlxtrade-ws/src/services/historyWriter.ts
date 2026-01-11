@@ -138,16 +138,111 @@ export async function logAutoTradeSkip(
 }
 
 /**
+ * Validate and auto-correct history entry before write (LAST LINE OF DEFENSE)
+ * ABSOLUTE INVARIANTS (NON-NEGOTIABLE):
+ * 1. IF researchExecuted === true THEN symbol !== "NO_RESEARCH" AND accuracy > 0
+ * 2. IF symbol !== "NO_RESEARCH" THEN accuracy > 0
+ * 3. IF accuracy <= 0 THEN force accuracy = 35 (fallback)
+ * 4. Weak/HOLD signals MUST be written (never downgrade to NO_RESEARCH)
+ */
+function validateAndCorrectHistoryEntry(
+  entry: any,
+  researchExecuted: boolean
+): any {
+  const correctedEntry = { ...entry };
+  let violations: string[] = [];
+
+  // INVARIANT 1: If research executed, symbol must be real coin
+  if (researchExecuted && (!correctedEntry.symbol || correctedEntry.symbol === 'NO_RESEARCH' || correctedEntry.symbol === 'AUTO_TRADE_CYCLE')) {
+    violations.push(`Research executed but symbol is invalid: ${correctedEntry.symbol}`);
+    // CRITICAL: Cannot auto-correct this - log critical error
+    logger.error({
+      symbol: correctedEntry.symbol,
+      accuracy: correctedEntry.accuracy,
+      signal: correctedEntry.signal,
+      researchExecuted
+    }, '🚨 [INVARIANT_VIOLATION] Research executed but symbol is NO_RESEARCH/AUTO_TRADE_CYCLE - THIS SHOULD NEVER HAPPEN');
+    // Force to UNKNOWN to make violation visible
+    correctedEntry.symbol = 'UNKNOWN_VIOLATION';
+  }
+
+  // INVARIANT 2: If symbol is real coin, accuracy must be > 0
+  if (correctedEntry.symbol && 
+      correctedEntry.symbol !== 'NO_RESEARCH' && 
+      correctedEntry.symbol !== 'AUTO_TRADE_CYCLE' &&
+      correctedEntry.symbol !== 'ERROR_CYCLE' &&
+      correctedEntry.symbol !== 'UNKNOWN_VIOLATION') {
+    if (typeof correctedEntry.accuracy !== 'number' || correctedEntry.accuracy <= 0) {
+      violations.push(`Real coin ${correctedEntry.symbol} has invalid accuracy: ${correctedEntry.accuracy}`);
+      // AUTO-CORRECT: Force fallback accuracy
+      correctedEntry.accuracy = 35;
+      logger.error({
+        symbol: correctedEntry.symbol,
+        originalAccuracy: entry.accuracy,
+        correctedAccuracy: 35
+      }, '🚨 [INVARIANT_AUTO_CORRECT] Real coin had accuracy <= 0, forced to fallback 35');
+    }
+  }
+
+  // INVARIANT 3: Accuracy must be valid number
+  if (typeof correctedEntry.accuracy !== 'number' || isNaN(correctedEntry.accuracy)) {
+    violations.push(`Invalid accuracy type: ${typeof correctedEntry.accuracy}`);
+    correctedEntry.accuracy = 0;
+  }
+
+  // INVARIANT 4: Ensure accuracy is in valid range [0, 100]
+  if (correctedEntry.accuracy < 0) {
+    violations.push(`Negative accuracy: ${correctedEntry.accuracy}`);
+    correctedEntry.accuracy = 0;
+  }
+  if (correctedEntry.accuracy > 100) {
+    violations.push(`Accuracy > 100: ${correctedEntry.accuracy}`);
+    correctedEntry.accuracy = 100;
+  }
+
+  // INVARIANT 5: Signal must exist
+  if (!correctedEntry.signal) {
+    violations.push('Missing signal');
+    correctedEntry.signal = 'HOLD';
+  }
+
+  // Log all violations
+  if (violations.length > 0) {
+    logger.error({
+      violations,
+      originalEntry: entry,
+      correctedEntry,
+      researchExecuted
+    }, '🚨 [HISTORY_INVARIANT_VIOLATIONS] History entry had invariant violations - auto-corrected');
+  }
+
+  return correctedEntry;
+}
+
+/**
  * Save SKIPPED auto-trade history when research never executes
  * Called when auto-trade cycle runs but cannot proceed due to provider/config issues
  * CRITICAL: This should ONLY be called when research did NOT execute at all
+ * HARD GUARD: If researchExecuted === true, this function MUST NOT be called
  */
 export async function saveAutoTradeHistorySkipped(
   uid: string,
   skipReason: string,
   skipDetails: string,
-  cycleId?: string
+  cycleId?: string,
+  researchExecuted?: boolean
 ): Promise<void> {
+  // HARD GUARD: Block if research executed
+  if (researchExecuted === true) {
+    logger.error({
+      uid,
+      skipReason,
+      researchExecuted,
+      stack: new Error().stack
+    }, '🚨 [INVARIANT_VIOLATION] saveAutoTradeHistorySkipped called but researchExecuted=true - BLOCKING WRITE');
+    throw new Error('INVARIANT VIOLATION: Cannot call saveAutoTradeHistorySkipped when research executed');
+  }
+
   // ENFORCE: ONE CYCLE = ONE HISTORY ENTRY
   if (cycleId) {
     try {
@@ -202,7 +297,10 @@ export async function saveAutoTradeHistorySkipped(
     takeProfit3: 0
   };
 
-  await firestoreAdapter.storeResearchHistory(uid, historyEntry);
+  // Validate before write (researchExecuted = false)
+  const validatedEntry = validateAndCorrectHistoryEntry(historyEntry, false);
+
+  await firestoreAdapter.storeResearchHistory(uid, validatedEntry);
   logger.info({ uid, skipReason, cycleId }, '✅ [HISTORY] Auto-trade SKIPPED history saved for cycle (research never executed)');
 }
 
@@ -287,9 +385,12 @@ export async function saveAutoTradeHistoryWithExecutionStatus(
     historyEntry.tradeId = tradeId;
   }
 
+  // CRITICAL: Validate and auto-correct before write (researchExecuted = true)
+  const validatedEntry = validateAndCorrectHistoryEntry(historyEntry, true);
+
   // CRITICAL: For AUTO_TRADE_RESEARCH, ensure exactly ONE history entry per cycle
   // If executionStatus is provided, this is an update to existing research history
   // If executionStatus is null, this is the initial research completion history save
-  await firestoreAdapter.storeResearchHistory(uid, historyEntry);
+  await firestoreAdapter.storeResearchHistory(uid, validatedEntry);
   logger.info({ uid, symbol: researchResult.symbol, executionStatus, decisionStatus, accuracy: storedAccuracy }, '✅ [HISTORY] Auto-trade history saved after execution');
 }

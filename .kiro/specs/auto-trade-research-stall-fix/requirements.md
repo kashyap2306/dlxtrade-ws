@@ -54,6 +54,23 @@ This specification addresses the AUTO-TRADE research execution stall issue where
 4. WHEN research is rejected, THE Scheduler SHALL write History_Entry with status REJECTED and reason
 5. WHEN History_Entry write fails, THE Scheduler SHALL log error but continue with state update
 
+### Requirement 9: History Data Integrity Invariants
+
+**User Story:** As a system operator, I want executed research to always write valid history data, so that the frontend can display accurate research results.
+
+#### Acceptance Criteria
+
+1. WHEN research executes AND produces a result, THE History_Writer SHALL write symbol as a real coin (never "NO_RESEARCH")
+2. WHEN research executes AND produces a result, THE History_Writer SHALL write accuracy greater than zero
+3. WHEN accuracy is zero or negative, THE History_Writer SHALL apply fallback accuracy of 35
+4. WHEN research executes AND produces a result, THE History_Writer SHALL write signal as BUY, SELL, or HOLD
+5. IF symbol equals "NO_RESEARCH", THEN research SHALL NOT have executed (system-level failure only)
+6. WHEN saveAutoTradeHistorySkipped is called AND research executed, THE System SHALL log critical warning and block the write
+7. WHEN writing History_Entry, THE History_Writer SHALL validate symbol is not "NO_RESEARCH" if accuracy is greater than zero
+8. WHEN validation fails, THE History_Writer SHALL auto-correct data and log critical error
+9. WHEN research produces HOLD signal with low accuracy, THE History_Writer SHALL write the entry (not skip it)
+10. WHEN research produces weak signal, THE History_Writer SHALL write the entry with actual accuracy (not downgrade to NO_RESEARCH)
+
 ### Requirement 4: State Update Guarantee
 
 **User Story:** As a system operator, I want lastResearchRunAt to update every cycle, so that the diagnostic accurately reflects execution timing.

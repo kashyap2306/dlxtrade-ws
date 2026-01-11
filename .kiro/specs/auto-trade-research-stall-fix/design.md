@@ -84,12 +84,12 @@ interface ExecutionResult {
 
 ### 2. History Writer
 
-**Purpose**: Writes history entries for all execution outcomes
+**Purpose**: Writes history entries for all execution outcomes with strict data integrity invariants
 
 **Interface**:
 ```typescript
 interface HistoryWriter {
-  // Write history with guaranteed execution
+  // Write history with guaranteed execution and validation
   writeHistoryGuaranteed(
     uid: string,
     entry: HistoryEntry
@@ -99,6 +99,12 @@ interface HistoryWriter {
   createHistoryEntry(
     result: ExecutionResult,
     mode: ResearchMode
+  ): HistoryEntry;
+  
+  // Validate history entry before write (LAST LINE OF DEFENSE)
+  validateAndCorrectHistoryEntry(
+    entry: HistoryEntry,
+    researchExecuted: boolean
   ): HistoryEntry;
 }
 
@@ -116,11 +122,33 @@ interface HistoryEntry {
 }
 ```
 
+**ABSOLUTE INVARIANTS (NON-NEGOTIABLE)**:
+1. **IF** `researchExecuted === true` **THEN**:
+   - `symbol !== "NO_RESEARCH"` (must be real coin)
+   - `accuracy > 0` (force fallback to 35 if needed)
+   - `signal` exists (BUY/SELL/HOLD)
+   - `timestamp` is written
+
+2. **IF** `symbol !== "NO_RESEARCH"` **THEN**:
+   - `accuracy > 0` (never allow zero accuracy for real coins)
+
+3. **IF** `accuracy === 0` **THEN**:
+   - Auto-correct to `accuracy = 35` (fallback)
+   - Log critical error
+
+4. **Weak/HOLD signals**:
+   - MUST be written (never downgrade to NO_RESEARCH)
+   - Low accuracy is acceptable (as long as > 0)
+
 **Implementation Strategy**:
 - Extract history writing logic into dedicated function
 - Call from finally block with execution result
+- **Add validation layer before write** (last line of defense)
+- Validate invariants and auto-correct if violated
 - Handle write failures gracefully (log but don't throw)
 - Always write history, even for errors
+- Block `saveAutoTradeHistorySkipped` if research executed
+- Log critical warnings if invariants are violated
 
 ### 3. Provider Validator
 
@@ -307,6 +335,38 @@ interface ExecutionContext {
 
 **Test Strategy**: Pause background tasks and verify AUTO_TRADE research continues while TELEGRAM research is blocked.
 
+### Property 11: History Symbol Invariant
+
+*For any* executed research cycle that produces a result, the history entry symbol must be a real coin (never "NO_RESEARCH").
+
+**Validates: Requirements 9.1, 9.5**
+
+**Test Strategy**: Generate random research results and verify symbol is never "NO_RESEARCH" when research executed.
+
+### Property 12: History Accuracy Invariant
+
+*For any* history entry with a real coin symbol (not "NO_RESEARCH"), the accuracy must be greater than zero.
+
+**Validates: Requirements 9.2, 9.3**
+
+**Test Strategy**: Generate random history entries and verify accuracy > 0 for all real coins, with fallback to 35 if needed.
+
+### Property 13: Weak Signal Preservation
+
+*For any* research execution that produces a HOLD signal with low accuracy, the history entry must be written with the actual values (not downgraded to NO_RESEARCH).
+
+**Validates: Requirements 9.9, 9.10**
+
+**Test Strategy**: Generate research results with weak HOLD signals and verify they are written to history.
+
+### Property 14: History Validation Auto-Correction
+
+*For any* history entry that violates invariants (symbol="NO_RESEARCH" with accuracy>0, or accuracy=0 with real symbol), the validation layer must auto-correct the data before write.
+
+**Validates: Requirements 9.7, 9.8**
+
+**Test Strategy**: Inject invalid history entries and verify they are auto-corrected before write.
+
 ## Error Handling
 
 ### Error Categories
@@ -432,6 +492,27 @@ Each property test should run minimum 100 iterations with randomized inputs.
     - Generate random pause scenarios
     - Verify AUTO_TRADE continues
     - Tag: `Feature: auto-trade-research-stall-fix, Property 10: AUTO_TRADE Bypass During Pause`
+
+11. **Property 11: History Symbol Invariant**
+    - Generate random research results
+    - Verify symbol is never "NO_RESEARCH" when research executed
+    - Tag: `Feature: auto-trade-research-stall-fix, Property 11: History Symbol Invariant`
+
+12. **Property 12: History Accuracy Invariant**
+    - Generate random history entries
+    - Verify accuracy > 0 for all real coins
+    - Verify fallback to 35 when accuracy <= 0
+    - Tag: `Feature: auto-trade-research-stall-fix, Property 12: History Accuracy Invariant`
+
+13. **Property 13: Weak Signal Preservation**
+    - Generate research results with weak HOLD signals
+    - Verify they are written to history (not skipped)
+    - Tag: `Feature: auto-trade-research-stall-fix, Property 13: Weak Signal Preservation`
+
+14. **Property 14: History Validation Auto-Correction**
+    - Inject invalid history entries
+    - Verify they are auto-corrected before write
+    - Tag: `Feature: auto-trade-research-stall-fix, Property 14: History Validation Auto-Correction`
 
 ### Integration Tests
 

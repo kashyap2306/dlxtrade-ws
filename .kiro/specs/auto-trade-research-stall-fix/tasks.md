@@ -34,7 +34,7 @@ This implementation plan addresses the AUTO-TRADE research stall issue by implem
   - Verify history is written with correct status for each outcome
   - Use fast-check with 100 iterations minimum
 
-- [ ] 3. Refactor processUserResearch with try-finally pattern
+- [x] 3. Refactor processUserResearch with try-finally pattern
   - Wrap existing execution logic in try block
   - Add finally block that calls `updateStateGuaranteed()`
   - Capture `executionStartTime` before try block
@@ -187,6 +187,67 @@ This implementation plan addresses the AUTO-TRADE research stall issue by implem
     - _Requirements: 7.1, 7.2, 7.5_
 
 - [ ] 13. Final checkpoint - Ensure all tests pass
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [ ] 14. Implement History Data Integrity Invariants
+  - Add `validateAndCorrectHistoryEntry()` function to history writer
+  - Implement validation: IF symbol !== "NO_RESEARCH" THEN accuracy > 0
+  - Implement validation: IF researchExecuted === true THEN symbol !== "NO_RESEARCH"
+  - Implement auto-correction: IF accuracy <= 0 THEN accuracy = 35
+  - Add critical error logging when invariants are violated
+  - Call validation before every history write (last line of defense)
+  - _Requirements: 9.1, 9.2, 9.3, 9.7, 9.8_
+
+- [ ] 14.1 Write property test for History Symbol Invariant
+  - **Property 11: History Symbol Invariant**
+  - **Validates: Requirements 9.1, 9.5**
+  - Generate random research results
+  - Verify symbol is never "NO_RESEARCH" when research executed
+  - Use fast-check with 100 iterations minimum
+
+- [ ] 14.2 Write property test for History Accuracy Invariant
+  - **Property 12: History Accuracy Invariant**
+  - **Validates: Requirements 9.2, 9.3**
+  - Generate random history entries
+  - Verify accuracy > 0 for all real coins
+  - Verify fallback to 35 when accuracy <= 0
+  - Use fast-check with 100 iterations minimum
+
+- [ ] 15. Implement Weak Signal Preservation
+  - Ensure HOLD signals with low accuracy are written to history
+  - Remove any logic that downgrades weak signals to NO_RESEARCH
+  - Verify weak signals are never skipped
+  - Add logging for weak signal writes
+  - _Requirements: 9.9, 9.10_
+
+- [ ] 15.1 Write property test for Weak Signal Preservation
+  - **Property 13: Weak Signal Preservation**
+  - **Validates: Requirements 9.9, 9.10**
+  - Generate research results with weak HOLD signals
+  - Verify they are written to history (not skipped)
+  - Use fast-check with 100 iterations minimum
+
+- [ ] 16. Add Invariant Guards to saveAutoTradeHistorySkipped
+  - Add assertion: IF researchExecuted === true THEN block write
+  - Log critical warning if misuse detected
+  - Prevent NO_RESEARCH writes after execution
+  - _Requirements: 9.6_
+
+- [ ] 16.1 Write property test for History Validation Auto-Correction
+  - **Property 14: History Validation Auto-Correction**
+  - **Validates: Requirements 9.7, 9.8**
+  - Inject invalid history entries
+  - Verify they are auto-corrected before write
+  - Use fast-check with 100 iterations minimum
+
+- [ ] 17. Update Scheduler to Track Research Execution State
+  - Add `researchExecuted` flag to execution context
+  - Set flag to true when research produces result
+  - Pass flag to history writer for validation
+  - Use flag to prevent misuse of skip functions
+  - _Requirements: 9.1, 9.5, 9.6_
+
+- [ ] 18. Final checkpoint - Ensure all invariant tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes
