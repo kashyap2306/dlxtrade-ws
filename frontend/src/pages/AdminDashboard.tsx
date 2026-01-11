@@ -69,7 +69,7 @@ export default function AdminDashboard() {
         showToast('Admin access required', 'error');
         navigate('/admin-login');
       } else {
-        showToast(err.response?.data?.error || 'Error loading stats', 'error');
+        showToast(err.response?.data?.error || 'Error loading stat', 'error');
       }
     } finally {
       setLoading(false);
