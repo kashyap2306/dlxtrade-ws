@@ -12,7 +12,7 @@ import { logger } from './logger';
 
 // Configuration
 const MAX_ITERATION_TIME_MS = 1000; // Max 1 second per iteration
-const EVENT_LOOP_LAG_THRESHOLD_MS = 100; // Pause if lag > 100ms
+const EVENT_LOOP_LAG_THRESHOLD_MS = 5000; // Pause if lag > 5000ms (increased to prevent false positives during long research jobs)
 const EVENT_LOOP_CHECK_INTERVAL_MS = 1000; // Check lag every 1 second
 const TASK_TIMEOUT_MS = 30000; // Hard timeout for any background task
 

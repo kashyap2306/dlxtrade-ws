@@ -50,6 +50,35 @@ export function filterStablecoins(coins: any[]): any[] {
   return coins.filter(coin => !isStablecoin(coin));
 }
 
+/**
+ * Filter out invalid symbols that are not clean USDT perpetuals
+ * Excludes wrapped, synthetic, alias, or spot-only symbols
+ */
+function filterInvalidSymbols(coins: any[]): any[] {
+  return coins.filter(coin => {
+    if (!coin || !coin.symbol) return false;
+    const symbol = coin.symbol.toUpperCase();
+
+    // Exclude invalid symbol patterns
+    const invalidPatterns = [
+      /^FIGR_/,  // FIGR_ prefixed symbols
+      /^W/,      // W prefixed symbols (wrapped)
+      /^WB/,     // WB prefixed symbols (Binance wrapped)
+      /^ST/,     // ST prefixed symbols (synthetic)
+      /^USDS/,   // USDS prefixed symbols
+      /^BSC-/,   // BSC- prefixed symbols
+    ];
+
+    // Check if symbol matches any invalid pattern
+    if (invalidPatterns.some(pattern => pattern.test(symbol))) {
+      return false;
+    }
+
+    // Ensure symbol ends with USDT (perpetual style)
+    return symbol.endsWith('USDT');
+  });
+}
+
 // P1 FIX: Coin rotation cooldown (15 minutes)
 const coinRotationCooldown = new Map<string, number>();
 const ROTATION_COOLDOWN_MS = 15 * 60 * 1000;
@@ -201,15 +230,16 @@ async function refreshTop100Coins(uid: string): Promise<any[]> {
             thumbnail: coin.logo || `https://assets.coingecko.com/coins/images/${coin.id}/small/${coin.symbol.toLowerCase()}.png`
           }));
 
-          // CRITICAL: Filter out stablecoins FIRST, then take top 25
-          const nonStablecoins = filterStablecoins(normalized);
-          // Sort by market cap (descending) and take top 25
-          const sortedByMarketCap = nonStablecoins.sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
-          cachedTop50Coins = sortedByMarketCap.slice(0, TOP_COINS_LIMIT);
-          lastFetchTime = Date.now();
+        // CRITICAL: Filter out stablecoins FIRST, then filter invalid symbols, then take top 25
+        const nonStablecoins = filterStablecoins(normalized);
+        const validSymbols = filterInvalidSymbols(nonStablecoins);
+        // Sort by market cap (descending) and take top 25
+        const sortedByMarketCap = validSymbols.sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
+        cachedTop50Coins = sortedByMarketCap.slice(0, TOP_COINS_LIMIT);
+        lastFetchTime = Date.now();
 
-          logger.info({ uid, totalFetched: normalized.length, stablecoinsFiltered: normalized.length - nonStablecoins.length, top25Count: cachedTop50Coins.length }, '✅ [TOP_25_CACHED] Top 25 non-stablecoins cached (CMC)');
-          return cachedTop50Coins;
+        logger.info({ uid, totalFetched: normalized.length, stablecoinsFiltered: normalized.length - nonStablecoins.length, invalidSymbolsFiltered: nonStablecoins.length - validSymbols.length, top25Count: cachedTop50Coins.length }, '✅ [TOP_25_CACHED] Top 25 valid non-stablecoins cached (CMC)');
+        return cachedTop50Coins;
         }
       }
     } catch (error) {
@@ -242,14 +272,15 @@ async function refreshTop100Coins(uid: string): Promise<any[]> {
           thumbnail: coin.image
         }));
 
-        // CRITICAL: Filter out stablecoins FIRST, then take top 25
+        // CRITICAL: Filter out stablecoins FIRST, then filter invalid symbols, then take top 25
         const nonStablecoins = filterStablecoins(normalized);
+        const validSymbols = filterInvalidSymbols(nonStablecoins);
         // Sort by market cap (descending) and take top 25
-        const sortedByMarketCap = nonStablecoins.sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
+        const sortedByMarketCap = validSymbols.sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
         cachedTop50Coins = sortedByMarketCap.slice(0, TOP_COINS_LIMIT);
         lastFetchTime = Date.now();
 
-        logger.info({ uid, totalFetched: normalized.length, stablecoinsFiltered: normalized.length - nonStablecoins.length, top25Count: cachedTop50Coins.length }, '✅ [TOP_25_CACHED] Top 25 non-stablecoins cached (CoinGecko)');
+        logger.info({ uid, totalFetched: normalized.length, stablecoinsFiltered: normalized.length - nonStablecoins.length, invalidSymbolsFiltered: nonStablecoins.length - validSymbols.length, top25Count: cachedTop50Coins.length }, '✅ [TOP_25_CACHED] Top 25 valid non-stablecoins cached (CoinGecko)');
         return cachedTop50Coins;
       }
     } catch (error) {

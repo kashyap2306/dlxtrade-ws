@@ -337,14 +337,55 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
         };
 
         // Check research API keys
-        // LIGHTWEIGHT: Use cached provider configuration flag
-        const hasResearchKeys = bgSettingsDoc?.providersConfigured ?? false;
+        // CRITICAL: Actually check if providers are configured AND enabled
+        let hasResearchKeys = false;
+        let enabledProviders: string[] = [];
+        try {
+          const { getUserIntegrationsByUid } = await import("../routes/users/providerConfig");
+          const integrations = await getUserIntegrationsByUid(uid, "background_job");
+          
+          // CRITICAL FIX: Check if at least ONE provider is ENABLED (not just present)
+          // A provider is enabled if: provider.enabled === true
+          const enabledMarketData = integrations?.marketData 
+            ? Object.entries(integrations.marketData).filter(([_, p]: [string, any]) => p.enabled === true)
+            : [];
+          const enabledNews = integrations?.news 
+            ? Object.entries(integrations.news).filter(([_, p]: [string, any]) => p.enabled === true)
+            : [];
+          const enabledMetadata = integrations?.metadata 
+            ? Object.entries(integrations.metadata).filter(([_, p]: [string, any]) => p.enabled === true)
+            : [];
+          
+          hasResearchKeys = enabledMarketData.length > 0 || enabledNews.length > 0 || enabledMetadata.length > 0;
+          enabledProviders = [
+            ...enabledMarketData.map(([name]) => name),
+            ...enabledNews.map(([name]) => name),
+            ...enabledMetadata.map(([name]) => name)
+          ];
+          
+          console.log("[DIAGNOSTIC_PROVIDER_CHECK]", {
+            uid,
+            hasMarketData: enabledMarketData.length > 0,
+            hasNews: enabledNews.length > 0,
+            hasMetadata: enabledMetadata.length > 0,
+            hasResearchKeys,
+            enabledMarketDataProviders: enabledMarketData.map(([name]) => name),
+            enabledNewsProviders: enabledNews.map(([name]) => name),
+            enabledMetadataProviders: enabledMetadata.map(([name]) => name),
+            totalEnabledProviders: enabledProviders.length
+          });
+        } catch (err: any) {
+          logger.warn({ uid, error: err.message }, "Error checking provider configuration");
+          hasResearchKeys = false;
+        }
+        
         diagnostics.systemChecks.researchKeysConfigured = {
           status: hasResearchKeys ? "PASS" : "FAIL",
           message: hasResearchKeys
-            ? "Research API keys are configured"
+            ? `Research API keys configured (${enabledProviders.length} enabled: ${enabledProviders.join(', ')})`
             : "No research API keys configured",
           value: hasResearchKeys,
+          enabledProviders: enabledProviders,
         };
 
         // ============================================
@@ -450,8 +491,16 @@ export async function diagnosticCheckRoute(fastify: FastifyInstance) {
           researchAgeMinutes = Math.floor(
             (Date.now() - new Date(lastResearchTime).getTime()) / 60000,
           );
+        } else if (bgResearchSettings?.lastRunAt) {
+          // CRITICAL FIX: Check Firestore lastRunAt FIRST (updated by interval callback)
+          // This is the most reliable source as it's updated on every interval tick
+          const lastRunAtTimestamp = bgResearchSettings.lastRunAt as any;
+          const lastRunAtDate = lastRunAtTimestamp?.toDate ? lastRunAtTimestamp.toDate() : new Date(lastRunAtTimestamp);
+          researchAgeMinutes = Math.floor(
+            (Date.now() - lastRunAtDate.getTime()) / 60000,
+          );
         } else if (userJobState?.lastRunAt) {
-          // Fallback to scheduler state if no research history
+          // Fallback to scheduler in-memory state if Firestore not available
           researchAgeMinutes = lastResearchRunAge;
         }
 

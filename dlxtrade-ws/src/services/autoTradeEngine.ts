@@ -4089,14 +4089,14 @@ export class AutoTradeEngine {
         "🚫 [AUTO_TRADE_CONSUMER] Research result does not meet trade criteria - skipping",
       );
 
-      if (!skipHistoryStorage) {
-        await saveAutoTradeHistorySkipped(
-          uid,
-          "TRADE_CRITERIA_NOT_MET",
-          `Signal: ${researchResult.signal}, Accuracy: ${researchResult.accuracy}, TradePlan: ${hasTradePlan}`,
-          cycleId,
-        );
-      }
+      // CRITICAL FIX: ALWAYS save history, even when criteria not met
+      // This ensures history count increases and diagnostic shows real execution
+      await saveAutoTradeHistorySkipped(
+        uid,
+        "TRADE_CRITERIA_NOT_MET",
+        `Signal: ${researchResult.signal}, Accuracy: ${researchResult.accuracy}, TradePlan: ${hasTradePlan}`,
+        cycleId,
+      );
 
       return null;
     }

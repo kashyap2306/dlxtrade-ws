@@ -398,11 +398,28 @@ async function start() {
           try {
             console.log('[AUTO-TRADE LOOP] Starting background research scheduler...');
             const { backgroundResearchScheduler } = await import('./services/backgroundResearchScheduler');
+            
+            // CRITICAL: Start scheduler synchronously to ensure it's running before server continues
             backgroundResearchScheduler.start();
+            
+            // VERIFICATION: Log scheduler state immediately after start
             console.log('[AUTO-TRADE LOOP] ✅ Background research scheduler started successfully');
+            console.log('[AUTO-TRADE LOOP]    - Scheduler running:', (backgroundResearchScheduler as any).isRunning);
+            console.log('[AUTO-TRADE LOOP]    - Interval created:', !!(backgroundResearchScheduler as any).intervalId);
             console.log('[AUTO-TRADE LOOP]    - Uses safe intervals with timeout protection');
             console.log('[AUTO-TRADE LOOP]    - Auto-pauses if event loop lag > 100ms');
             console.log('[AUTO-TRADE LOOP]    - DISABLE_AUTOTRADE env:', process.env.DISABLE_AUTOTRADE || 'not set');
+            
+            // FORCE: Trigger immediate check to bootstrap users
+            console.log('[AUTO-TRADE LOOP] 🔥 Triggering immediate user check...');
+            setTimeout(async () => {
+              try {
+                await (backgroundResearchScheduler as any).checkAndScheduleUserResearchSafe();
+                console.log('[AUTO-TRADE LOOP] ✅ Initial user check completed');
+              } catch (checkErr: any) {
+                console.error('[AUTO-TRADE LOOP] ⚠️ Initial user check failed:', checkErr.message);
+              }
+            }, 5000); // Wait 5 seconds for Firebase to be ready
           } catch (bgResearchErr: any) {
             console.error('⚠️ Background research scheduler failed to start:', bgResearchErr.message);
             logger.error({ error: bgResearchErr.message, stack: bgResearchErr.stack }, 'Background research scheduler failed to start');
