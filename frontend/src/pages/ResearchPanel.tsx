@@ -95,8 +95,19 @@ export default function ResearchPanel() {
     setHistoryLoading(true);
     try {
       const res = await researchApi.deepResearch.getHistory();
+      // LOG RAW RESPONSE BEFORE ANY FILTERING
+      console.log('[RESEARCH_HISTORY_RAW_RESPONSE]', JSON.stringify(res.data, null, 2));
       if (res.data?.success) {
-        setResearchHistory(res.data.data || []);
+        const rawHistory = res.data.data || [];
+        console.log('[RESEARCH_HISTORY_RAW_ENTRIES_COUNT]', rawHistory.length);
+        console.log('[RESEARCH_HISTORY_RAW_ENTRIES]', rawHistory.map(entry => ({
+          symbol: entry.symbol,
+          signal: entry.signal,
+          accuracy: entry.accuracy,
+          status: entry.status,
+          source: entry.source
+        })));
+        setResearchHistory(rawHistory);
       }
     } catch (err) {
       console.error("Failed to fetch research history", err);
@@ -1679,9 +1690,9 @@ export default function ResearchPanel() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
                     </svg>
                   </div>
-                  <h3 className="text-2xl font-black text-white mb-2 uppercase tracking-wide">Empty Research Vault</h3>
+                  <h3 className="text-2xl font-black text-white mb-2 uppercase tracking-wide">No Research History Found</h3>
                   <p className="text-slate-400 text-base max-w-sm font-medium leading-relaxed">
-                    Automatic logs will populate here once you enable 🧠 <span className="text-violet-400">Background Research</span> in your settings and research activities begin.
+                    No research entries were found in the database. This appears when no background research or manual research has been performed yet.
                   </p>
                 </div>
               ) : (
@@ -1714,10 +1725,12 @@ export default function ResearchPanel() {
                           {/* Coin */}
                           <div className="col-span-3 flex items-center gap-4 mb-4 md:mb-0">
                             <div className="w-12 h-12 rounded-2xl bg-slate-900 border border-slate-700 flex items-center justify-center font-black text-white shadow-inner group-hover:border-violet-500/30 transition-colors">
-                              {entry.symbol?.substring(0, 1) || '—'}
+                              {entry.symbol?.substring(0, 1) || '?'}
                             </div>
                             <div>
-                              <div className="text-lg font-black text-white tracking-tight group-hover:text-violet-400 transition-colors">{entry.symbol || '—'}</div>
+                              <div className="text-lg font-black text-white tracking-tight group-hover:text-violet-400 transition-colors">
+                                {entry.symbol || (entry.symbol === null ? 'NO_SYMBOL' : 'UNKNOWN')}
+                              </div>
                               <div className="text-[10px] text-slate-500 font-black uppercase tracking-widest mt-0.5">
                                 {entry.timestamp ? new Date(entry.timestamp).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'N/A'}
                               </div>
@@ -1737,10 +1750,13 @@ export default function ResearchPanel() {
                             <div className="md:hidden text-[10px] text-slate-500 font-black uppercase tracking-widest mb-1">Execution Signal</div>
                             <span className={`inline-flex px-3 py-1.5 rounded-xl text-[11px] font-black tracking-[0.15em] border-2 shadow-lg ${entry.signal === 'BUY' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 shadow-emerald-500/5' :
                               entry.signal === 'SELL' ? 'bg-rose-500/10 text-rose-400 border-rose-500/20 shadow-rose-500/5' :
-                                entry.signal === 'FAILED' ? 'bg-rose-500/20 text-rose-500 border-rose-500/30' :
-                                  'bg-slate-700/20 text-slate-400 border-slate-700/50 shadow-slate-900/40'
+                                entry.signal === 'HOLD' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20 shadow-amber-500/5' :
+                                  entry.signal === 'FAILED' ? 'bg-rose-500/20 text-rose-500 border-rose-500/30' :
+                                    entry.signal === 'BLOCKED' ? 'bg-red-500/10 text-red-400 border-red-500/20 shadow-red-500/5' :
+                                      entry.signal === 'SKIPPED' ? 'bg-slate-500/10 text-slate-400 border-slate-500/20 shadow-slate-500/5' :
+                                        'bg-slate-700/20 text-slate-400 border-slate-700/50 shadow-slate-900/40'
                               }`}>
-{entry.signal === 'BLOCKED' ? 'BLOCKED' : (entry.signal ? (['BUY', 'SELL', 'FAILED', 'HOLD'].includes(entry.signal) ? entry.signal : 'NO SIGNAL') : 'NO SIGNAL')}
+                              {entry.signal || 'NO_SIGNAL'}
                               </span>
                           </div>
 
@@ -1748,16 +1764,20 @@ export default function ResearchPanel() {
                           <div className="col-span-2 mb-4 md:mb-0">
                             <div className="md:hidden text-[10px] text-slate-500 font-black uppercase tracking-widest mb-1">Logic Confidence</div>
                             <div className="flex flex-col gap-1.5">
-                              <div className={`text-base font-black ${entry.signal === 'BLOCKED' ? 'text-red-400' : entry.accuracy && entry.accuracy >= 75 ? 'text-emerald-400' : entry.accuracy && entry.accuracy >= 50 ? 'text-amber-400' : 'text-slate-400'}`}>
-                                {entry.signal === 'BLOCKED' ? 'Blocked – Exchange keys invalid' : entry.accuracy ? `${entry.accuracy.toFixed(1)}%` : '—'}
+                              <div className={`text-base font-black ${entry.accuracyPercent ? (entry.accuracyPercent >= 75 ? 'text-emerald-400' : entry.accuracyPercent >= 50 ? 'text-amber-400' : 'text-slate-400') :
+                                entry.accuracy ? (entry.accuracy >= 75 ? 'text-emerald-400' : entry.accuracy >= 50 ? 'text-amber-400' : 'text-slate-400') :
+                                  'text-slate-400'}`}>
+                                {entry.accuracyPercent ? `${entry.accuracyPercent.toFixed(1)}%` :
+                                 entry.accuracy ? `${entry.accuracy.toFixed(1)}%` :
+                                 entry.accuracy === 0 ? '0.0%' : 'NO_ACCURACY'}
                               </div>
                               <div className="w-24 h-1.5 bg-slate-950/40 rounded-full overflow-hidden p-[1px] border border-slate-800">
                                 <div
-                                  className={`h-full rounded-full transition-all duration-1000 ${entry.accuracy && entry.accuracy >= 75 ? 'bg-gradient-to-r from-emerald-600 to-teal-400' :
-                                    entry.accuracy && entry.accuracy >= 50 ? 'bg-gradient-to-r from-amber-600 to-yellow-400' :
+                                  className={`h-full rounded-full transition-all duration-1000 ${(entry.accuracyPercent || entry.accuracy || 0) >= 75 ? 'bg-gradient-to-r from-emerald-600 to-teal-400' :
+                                    (entry.accuracyPercent || entry.accuracy || 0) >= 50 ? 'bg-gradient-to-r from-amber-600 to-yellow-400' :
                                       'bg-slate-600'
                                     }`}
-                                  style={{ width: `${entry.accuracy ? Math.min(100, Math.max(0, entry.accuracy)) : 0}%` }}
+                                  style={{ width: `${Math.min(100, Math.max(0, entry.accuracyPercent || entry.accuracy || 0))}%` }}
                                 />
                               </div>
                             </div>
@@ -1766,10 +1786,8 @@ export default function ResearchPanel() {
                           {/* Strategic Targets */}
                           <div className="col-span-2 text-right">
                             <div className="md:hidden text-[10px] text-slate-500 font-black uppercase tracking-widest mb-1">Strategic Targets</div>
-                            {/* CRITICAL: Show trade plan ONLY when signal is BUY/SELL AND accuracy >= 70% AND tradePlan exists */}
-                            {entry.signal !== 'HOLD' && entry.signal !== 'FAILED' &&
-                             entry.accuracy && entry.accuracy >= 70 &&
-                             entry.tradePlan &&
+                            {/* ALWAYS show available trade plan data - no filtering based on signal or accuracy */}
+                            {entry.tradePlan &&
                              entry.tradePlan.entryPrice &&
                              entry.tradePlan.entryPrice > 0 ? (
                               <div className="flex flex-col items-end gap-1.5">
@@ -1791,17 +1809,31 @@ export default function ResearchPanel() {
                                   )}
                                 </div>
                               </div>
+                            ) : entry.status === 'SKIPPED' || entry.signal === 'SKIPPED' ? (
+                              <div className="flex flex-col items-end gap-1">
+                                <span className="text-[10px] font-bold text-amber-400 uppercase italic px-3 py-1 bg-amber-500/10 rounded-lg border border-amber-500/20">
+                                  SKIPPED
+                                </span>
+                                <span className="text-[8px] text-slate-700 font-black uppercase tracking-tighter">
+                                  {entry.skipReason || entry.status || 'Analysis completed'}
+                                </span>
+                              </div>
+                            ) : entry.signal === 'HOLD' ? (
+                              <div className="flex flex-col items-end gap-1">
+                                <span className="text-[10px] font-bold text-amber-400 uppercase italic px-3 py-1 bg-amber-500/10 rounded-lg border border-amber-500/20">
+                                  HOLD SIGNAL
+                                </span>
+                                <span className="text-[8px] text-slate-700 font-black uppercase tracking-tighter">
+                                  Monitor for changes
+                                </span>
+                              </div>
                             ) : (
                               <div className="flex flex-col items-end gap-1">
                                 <span className="text-[10px] font-bold text-slate-600 uppercase italic px-3 py-1 bg-slate-900/20 rounded-lg border border-slate-800/50">
-                                  {entry.signal === 'HOLD' || entry.signal === 'FAILED' ? 
-                                   (entry.signal === 'HOLD' ? 'HOLD Signal' : 'FAILED') : 
-                                   'LOW CONFIDENCE'}
+                                  {entry.status === 'EXECUTED' ? 'EXECUTED' : 'NO TRADE PLAN'}
                                 </span>
                                 <span className="text-[8px] text-slate-700 font-black uppercase tracking-tighter">
-                                  {entry.signal === 'HOLD' || (entry.accuracy ?? 0) < 60 ? 
-                                   `Accuracy: ${typeof entry.accuracy === 'number' ? entry.accuracy.toFixed(1) : '0.0'}%` : 
-                                   'Trade Plan Unavailable'}
+                                  {entry.status === 'EXECUTED' ? 'Trade executed' : 'Analysis only'}
                                 </span>
                               </div>
                             )}

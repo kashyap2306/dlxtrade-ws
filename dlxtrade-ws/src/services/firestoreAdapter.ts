@@ -83,6 +83,176 @@ export function assertExchangeConfigWritePath(
   );
 }
 
+
+
+// ===== HARDENING METHODS =====
+
+
+
+
+
+export async function getDailySafetyCounters(agentId: string): Promise<{
+  consecutiveLosses: number;
+  dailyPnL: number;
+  tradesToday: number;
+  lastResetDate: Date;
+}> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const doc = await db
+        .collection('tradingAgents')
+        .doc(agentId)
+        .collection('dailyCounters')
+        .doc('current')
+        .get();
+
+      if (!doc.exists) {
+        return {
+          consecutiveLosses: 0,
+          dailyPnL: 0,
+          tradesToday: 0,
+          lastResetDate: new Date()
+        };
+      }
+
+      const data = doc.data();
+      const lastResetDate = data?.lastResetDate ? data.lastResetDate.toDate() : new Date();
+
+      // Check if we need to reset counters (UTC day change)
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const lastReset = new Date(lastResetDate.getFullYear(), lastResetDate.getMonth(), lastResetDate.getDate());
+
+      if (today > lastReset) {
+        // Reset counters for new day
+        await resetDailySafetyCounters(agentId);
+        return {
+          consecutiveLosses: 0,
+          dailyPnL: 0,
+          tradesToday: 0,
+          lastResetDate: now
+        };
+      }
+
+      return {
+        consecutiveLosses: data?.consecutiveLosses || 0,
+        dailyPnL: data?.dailyPnL || 0,
+        tradesToday: data?.tradesToday || 0,
+        lastResetDate
+      };
+    } catch (error: any) {
+      logger.error({ error: error.message, agentId }, 'Failed to get daily safety counters');
+      // Return safe defaults
+      return {
+        consecutiveLosses: 0,
+        dailyPnL: 0,
+        tradesToday: 0,
+        lastResetDate: new Date()
+      };
+    }
+  }
+
+export async function updateDailySafetyCounters(
+  agentId: string,
+  updates: {
+    consecutiveLosses?: number;
+    dailyPnL?: number;
+    tradesToday?: number;
+    }
+  ): Promise<void> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const now = new Date();
+
+      await db
+        .collection('tradingAgents')
+        .doc(agentId)
+        .collection('dailyCounters')
+        .doc('current')
+        .set({
+          ...updates,
+          lastResetDate: admin.firestore.Timestamp.fromDate(now),
+          updatedAt: admin.firestore.Timestamp.now()
+        }, { merge: true });
+
+      logger.debug({ agentId, updates }, 'Daily safety counters updated');
+    } catch (error: any) {
+      logger.error({ error: error.message, agentId }, 'Failed to update daily safety counters');
+      throw error;
+    }
+  }
+
+export async function resetDailySafetyCounters(agentId: string): Promise<void> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const now = new Date();
+
+      await db
+        .collection('tradingAgents')
+        .doc(agentId)
+        .collection('dailyCounters')
+        .doc('current')
+        .set({
+          consecutiveLosses: 0,
+          dailyPnL: 0,
+          tradesToday: 0,
+          lastResetDate: admin.firestore.Timestamp.fromDate(now),
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+
+      logger.info({ agentId }, 'Daily safety counters reset');
+    } catch (error: any) {
+      logger.error({ error: error.message, agentId }, 'Failed to reset daily safety counters');
+      throw error;
+    }
+  }
+
+  /**
+   * Get per-pair cooldown timestamp
+   */
+export async function getPairCooldown(agentId: string, tradingPair: string): Promise<Date | null> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const doc = await db
+        .collection('tradingAgents')
+        .doc(agentId)
+        .collection('cooldowns')
+        .doc(tradingPair)
+        .get();
+
+      if (!doc.exists) return null;
+
+      const data = doc.data();
+      return data?.cooldownUntil ? data.cooldownUntil.toDate() : null;
+    } catch (error: any) {
+      logger.error({ error: error.message, agentId, tradingPair }, 'Failed to get pair cooldown');
+      return null;
+    }
+  }
+
+  /**
+   * Set per-pair cooldown timestamp
+   */
+export async function setPairCooldown(agentId: string, tradingPair: string, cooldownUntil: Date): Promise<void> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      await db
+        .collection('tradingAgents')
+        .doc(agentId)
+        .collection('cooldowns')
+        .doc(tradingPair)
+        .set({
+          cooldownUntil: admin.firestore.Timestamp.fromDate(cooldownUntil),
+          setAt: admin.firestore.Timestamp.now()
+        });
+
+      logger.debug({ agentId, tradingPair, cooldownUntil: cooldownUntil.toISOString() }, 'Pair cooldown set');
+    } catch (error: any) {
+      logger.error({ error: error.message, agentId, tradingPair }, 'Failed to set pair cooldown');
+      throw error;
+    }
+  }
+
 // SHARED exchange usability guard for all major code paths
 /**
  * Update cached flags for control-plane routes
@@ -129,6 +299,93 @@ export async function updateCachedFlags(uid: string): Promise<void> {
       "FAILED_TO_UPDATE_CACHED_FLAGS",
     );
   }
+}
+
+// Trading Agent Methods (standalone exported functions)
+export async function getLastProcessedCandle(agentId: string, tradingPair: string): Promise<Date | null> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const doc = await db
+        .collection('tradingAgents')
+        .doc(agentId)
+        .collection('executionState')
+        .doc(`candle_${tradingPair}`)
+        .get();
+
+      if (!doc.exists) return null;
+
+      const data = doc.data();
+      return data?.lastProcessedCandle ? new Date(data.lastProcessedCandle.toDate()) : null;
+    } catch (error: any) {
+      logger.error({ error: error.message, agentId, tradingPair }, 'Failed to get last processed candle');
+      return null;
+    }
+}
+
+export async function updateLastProcessedCandle(agentId: string, tradingPair: string, candleTimestamp: Date): Promise<void> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      await db
+        .collection('tradingAgents')
+        .doc(agentId)
+        .collection('executionState')
+        .doc(`candle_${tradingPair}`)
+        .set({
+          lastProcessedCandle: admin.firestore.Timestamp.fromDate(candleTimestamp),
+          updatedAt: admin.firestore.Timestamp.now(),
+        }, { merge: true });
+
+      logger.debug({ agentId, tradingPair, candleTimestamp: candleTimestamp.toISOString() }, 'Last processed candle updated');
+    } catch (error: any) {
+      logger.error({ error: error.message, agentId, tradingPair }, 'Failed to update last processed candle');
+      throw error;
+    }
+}
+
+export async function isSignalExecuted(agentId: string, signalId: string): Promise<boolean> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const signalDoc = await db
+        .collection('agentTrades')
+        .where('agentId', '==', agentId)
+        .where('signalId', '==', signalId)
+        .limit(1)
+        .get();
+
+      return !signalDoc.empty;
+    } catch (error: any) {
+      logger.error({ error: error.message, agentId, signalId }, 'Failed to check signal execution');
+      return false;
+    }
+}
+
+export async function getCurrentPositionCount(agentId: string): Promise<{ pairPositions: number; totalPositions: number }> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const openTradesSnapshot = await db
+        .collection('agentTrades')
+        .where('agentId', '==', agentId)
+        .where('status', '==', 'OPEN')
+        .get();
+
+      let totalPositions = 0;
+      const pairPositions: { [pair: string]: number } = {};
+
+      openTradesSnapshot.forEach(doc => {
+        const trade = doc.data();
+        totalPositions++;
+        const pair = trade.tradingPair || 'UNKNOWN';
+        pairPositions[pair] = (pairPositions[pair] || 0) + 1;
+      });
+
+      return {
+        pairPositions: Object.keys(pairPositions).length,
+        totalPositions,
+      };
+    } catch (error: any) {
+      logger.error({ error: error.message, agentId }, 'Failed to get current position count');
+      return { pairPositions: 0, totalPositions: 0 };
+    }
 }
 
 export async function isExchangeUsable(
@@ -715,6 +972,332 @@ export interface HFTExecutionLogDocument {
 }
 
 export class FirestoreAdapter {
+  // ===== TRADING AGENT METHODS =====
+
+  /**
+   * Create a new trading agent request
+   */
+  async createTradingAgentRequest(agentData: {
+    userId: string;
+    name: string;
+    tradingPair: 'BTC/USDT' | 'ETH/USDT';
+    marketType: 'spot' | 'futures';
+  }): Promise<string> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const agentId = `agent_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+      const agentRef = db.collection('tradingAgents').doc(agentId);
+      await agentRef.set({
+        id: agentId,
+        ...agentData,
+        status: 'PENDING_APPROVAL',
+        riskPerTrade: 1.0, // 1% default
+        maxConcurrentTrades: 1,
+        maxTradesPerDay: 6,
+        createdAt: admin.firestore.Timestamp.now(),
+        dailyTrades: 0,
+        consecutiveLosses: 0,
+        dailyPnL: 0,
+        totalPnL: 0,
+        winRate: 0,
+        totalTrades: 0,
+        winningTrades: 0,
+        losingTrades: 0,
+        drawdown: 0
+      });
+
+      logger.info({ agentId, userId: agentData.userId }, 'Trading agent request created');
+      return agentId;
+    } catch (error: any) {
+      logger.error({ error: error.message, userId: agentData.userId }, 'Failed to create trading agent request');
+      throw error;
+    }
+  }
+
+  /**
+   * Approve a trading agent request
+   */
+  async approveTradingAgentRequest(agentId: string, adminId: string): Promise<void> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const agentRef = db.collection('tradingAgents').doc(agentId);
+
+      await agentRef.update({
+        status: 'ACTIVE',
+        approvedAt: admin.firestore.Timestamp.now(),
+        approvedBy: adminId
+      });
+
+      logger.info({ agentId, adminId }, 'Trading agent request approved');
+    } catch (error: any) {
+      logger.error({ error: error.message, agentId }, 'Failed to approve trading agent request');
+      throw error;
+    }
+  }
+
+  /**
+   * Reject a trading agent request
+   */
+  async rejectTradingAgentRequest(agentId: string, adminId: string): Promise<void> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const agentRef = db.collection('tradingAgents').doc(agentId);
+
+      await agentRef.update({
+        status: 'REJECTED',
+        rejectedAt: admin.firestore.Timestamp.now(),
+        rejectedBy: adminId
+      });
+
+      logger.info({ agentId, adminId }, 'Trading agent request rejected');
+    } catch (error: any) {
+      logger.error({ error: error.message, agentId }, 'Failed to reject trading agent request');
+      throw error;
+    }
+  }
+
+  /**
+   * Get all active trading agents
+   */
+  async getActiveTradingAgents(): Promise<any[]> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const agentsSnapshot = await db
+        .collection('tradingAgents')
+        .where('status', '==', 'ACTIVE')
+        .get();
+
+      const agents: any[] = [];
+      agentsSnapshot.forEach(doc => {
+        agents.push(doc.data());
+      });
+
+      return agents;
+    } catch (error: any) {
+      logger.error({ error: error.message }, 'Failed to get active trading agents');
+      return [];
+    }
+  }
+
+  /**
+   * Get trading agent configuration
+   */
+  async getTradingAgentConfig(agentId: string): Promise<any | null> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const agentDoc = await db.collection('tradingAgents').doc(agentId).get();
+
+      if (!agentDoc.exists) {
+        return null;
+      }
+
+      return agentDoc.data();
+    } catch (error: any) {
+      logger.error({ error: error.message, agentId }, 'Failed to get trading agent config');
+      return null;
+    }
+  }
+
+  /**
+   * Update trading agent status
+   */
+  async updateAgentStatus(agentId: string, status: 'ACTIVE' | 'PAUSED' | 'STOPPED'): Promise<void> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const agentRef = db.collection('tradingAgents').doc(agentId);
+
+      await agentRef.update({
+        status,
+        updatedAt: admin.firestore.Timestamp.now()
+      });
+
+      logger.info({ agentId, status }, 'Trading agent status updated');
+    } catch (error: any) {
+      logger.error({ error: error.message, agentId, status }, 'Failed to update agent status');
+      throw error;
+    }
+  }
+
+  /**
+   * Update trading agent configuration
+   */
+  async updateAgentConfig(agentId: string, updates: any): Promise<void> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const agentRef = db.collection('tradingAgents').doc(agentId);
+
+      await agentRef.update({
+        ...updates,
+        updatedAt: admin.firestore.Timestamp.now()
+      });
+
+      logger.info({ agentId }, 'Trading agent config updated');
+    } catch (error: any) {
+      logger.error({ error: error.message, agentId }, 'Failed to update agent config');
+      throw error;
+    }
+  }
+
+  /**
+   * Save agent trade record
+   */
+  async saveAgentTrade(trade: any): Promise<void> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const tradeRef = db.collection('agentTrades').doc(trade.id);
+
+      await tradeRef.set({
+        ...trade,
+        createdAt: admin.firestore.Timestamp.now()
+      });
+
+      logger.info({ tradeId: trade.id, agentId: trade.agentId }, 'Agent trade saved');
+    } catch (error: any) {
+      logger.error({ error: error.message, tradeId: trade.id }, 'Failed to save agent trade');
+      throw error;
+    }
+  }
+
+  /**
+   * Update agent trade status
+   */
+  async updateTradeStatus(tradeId: string, status: string): Promise<void> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const tradeRef = db.collection('agentTrades').doc(tradeId);
+
+      await tradeRef.update({
+        status,
+        updatedAt: admin.firestore.Timestamp.now(),
+      });
+    } catch (error: any) {
+      logger.error({ error: error.message, tradeId, status }, 'Failed to update agent trade status');
+      throw error;
+    }
+  }
+
+  /**
+   * Get agent trades
+   */
+  async getAgentTrades(agentId: string, limit: number = 50): Promise<any[]> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const tradesSnapshot = await db
+        .collection('agentTrades')
+        .where('agentId', '==', agentId)
+        .orderBy('entryTime', 'desc')
+        .limit(limit)
+        .get();
+
+      const trades: any[] = [];
+      tradesSnapshot.forEach(doc => {
+        trades.push(doc.data());
+      });
+
+      return trades;
+    } catch (error: any) {
+      logger.error({ error: error.message, agentId }, 'Failed to get agent trades');
+      return [];
+    }
+  }
+
+  async getDailySafetyCounters(agentId: string): Promise<{
+    consecutiveLosses: number;
+    dailyPnL: number;
+    tradesToday: number;
+    lastResetDate: Date;
+  }> {
+    return getDailySafetyCounters(agentId);
+  }
+
+  async updateDailySafetyCounters(
+    agentId: string,
+    updates: {
+      consecutiveLosses?: number;
+      dailyPnL?: number;
+      tradesToday?: number;
+    },
+  ): Promise<void> {
+    return updateDailySafetyCounters(agentId, updates);
+  }
+
+  async resetDailySafetyCounters(agentId: string): Promise<void> {
+    return resetDailySafetyCounters(agentId);
+  }
+
+  async getPairCooldown(agentId: string, tradingPair: string): Promise<Date | null> {
+    return getPairCooldown(agentId, tradingPair);
+  }
+
+  async setPairCooldown(agentId: string, tradingPair: string, cooldownUntil: Date): Promise<void> {
+    return setPairCooldown(agentId, tradingPair, cooldownUntil);
+  }
+
+  async getLastProcessedCandle(agentId: string, tradingPair: string): Promise<Date | null> {
+    return getLastProcessedCandle(agentId, tradingPair);
+  }
+
+  async updateLastProcessedCandle(agentId: string, tradingPair: string, candleTimestamp: Date): Promise<void> {
+    return updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
+  }
+
+  async isSignalExecuted(agentId: string, signalId: string): Promise<boolean> {
+    return isSignalExecuted(agentId, signalId);
+  }
+
+  async getCurrentPositionCount(agentId: string): Promise<{ pairPositions: number; totalPositions: number }> {
+    return getCurrentPositionCount(agentId);
+  }
+
+  /**
+   * Get user's trading agents
+   */
+  async getUserTradingAgents(userId: string): Promise<any[]> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const agentsSnapshot = await db
+        .collection('tradingAgents')
+        .where('userId', '==', userId)
+        .orderBy('createdAt', 'desc')
+        .get();
+
+      const agents: any[] = [];
+      agentsSnapshot.forEach(doc => {
+        agents.push(doc.data());
+      });
+
+      return agents;
+    } catch (error: any) {
+      logger.error({ error: error.message, userId }, 'Failed to get user trading agents');
+      return [];
+    }
+  }
+
+  /**
+   * Get pending trading agent requests (for admin)
+   */
+  async getPendingTradingAgentRequests(): Promise<any[]> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const requestsSnapshot = await db
+        .collection('tradingAgents')
+        .where('status', '==', 'PENDING_APPROVAL')
+        .orderBy('createdAt', 'desc')
+        .get();
+
+      const requests: any[] = [];
+      requestsSnapshot.forEach(doc => {
+        requests.push(doc.data());
+      });
+
+      return requests;
+    } catch (error: any) {
+      logger.error({ error: error.message }, 'Failed to get pending trading agent requests');
+      return [];
+    }
+  }
+
   // Warm start function to pre-load Firestore cache at startup
   async warmStart(): Promise<void> {
     try {
@@ -3749,7 +4332,10 @@ export class FirestoreAdapter {
         .limit(safeLimit)
         .get();
 
-      return snapshot.docs.map((doc) => {
+      // AUTO_TRADE OBSERVABILITY FIX: Filter out legacy placeholder entries
+      const AUTO_TRADE_OBSERVABILITY_FIX_TIMESTAMP = new Date('2026-01-11T00:00:00Z');
+
+      const entries: any[] = snapshot.docs.map((doc) => {
         const data = doc.data();
 
         // CRITICAL OPTIMIZATION: Exclude heavy nested objects for list view performance
@@ -3803,6 +4389,32 @@ export class FirestoreAdapter {
             : null,
         };
       });
+
+      // Filter out legacy AUTO_TRADE entries with placeholder data
+      const filteredEntries = entries.filter((entry: any) => {
+        // Skip filtering if not AUTO_TRADE source
+        if (entry.source !== "AUTO_TRADE") {
+          return true;
+        }
+
+        // Check if this is a legacy placeholder entry
+        const isLegacyPlaceholder =
+          (entry.symbol === "NO_RESEARCH" || entry.symbol === "AUTO_TRADE_CYCLE") &&
+          entry.accuracy === 0;
+
+        if (!isLegacyPlaceholder) {
+          return true; // Keep valid entries
+        }
+
+        // Check timestamp - only filter if created before observability fix
+        const entryTimestamp = entry.timestamp ? new Date(entry.timestamp) : new Date();
+        const isBeforeFix = entryTimestamp < AUTO_TRADE_OBSERVABILITY_FIX_TIMESTAMP;
+
+        // Keep entry if it's NOT a legacy placeholder OR was created after the fix
+        return !isBeforeFix;
+      });
+
+      return filteredEntries;
     } catch (error: any) {
       logger.error(
         { uid, error: error.message },

@@ -355,7 +355,9 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(researchRoutes, { prefix: '/api/research' });
   await app.register(executionRoutes, { prefix: '/api/execution' });
   await app.register(hftRoutes, { prefix: '/api/hft' });
+  console.log('[APP] Registering agents routes...');
   await app.register(agentsRoutes, { prefix: '/api/agents' });
+  console.log('[APP] Agents routes registered successfully');
   await app.register(agentRoutes, { prefix: '/api/agent' });
   await app.register(activityLogsRoutes, { prefix: '/api/activity-logs' });
   await app.register(tradesRoutes, { prefix: '/api/trades' });

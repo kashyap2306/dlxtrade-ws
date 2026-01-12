@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
+import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
 import { agentsApi } from '../services/api';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import Toast from '../components/Toast';
@@ -203,39 +204,44 @@ export default function AgentDashboard() {
   const { agentId } = useParams<{ agentId: string }>();
   const { user } = useAuth();
   const navigate = useNavigate();
+  const { unlockedAgents, loading: unlockedLoading } = useUnlockedAgents();
   const [agent, setAgent] = useState<any>(null);
   const [dashboardData, setDashboardData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   useEffect(() => {
-    if (!user || !agentId) return;
+    if (user && agentId && !unlockedLoading) {
+      // Check if user has access to this agent
+      const hasAccess = unlockedAgents.some(agent => agent.agentId === agentId);
 
-    const loadAgent = async () => {
-      try {
-        // Load agent dashboard data from backend (this will validate access)
-        const response = await agentsApi.getAgentDashboard(agentId);
-        const data = response.data;
-
-        setAgent(data.agent);
-        setDashboardData(data);
-      } catch (err: any) {
-        console.error('Error loading agent:', err);
-        if (err.response?.status === 403) {
-          setToast({ message: 'Access denied: You do not have permission to access this agent', type: 'error' });
-          setTimeout(() => navigate('/agents'), 2000);
-        } else {
-          setToast({ message: 'Failed to load agent dashboard', type: 'error' });
-        }
-      } finally {
-        setLoading(false);
+      // If user doesn't have access, redirect to marketplace
+      if (!hasAccess) {
+        navigate('/agents', { replace: true });
+        return;
       }
-    };
 
-    loadAgent();
-  }, [user, agentId, navigate]);
+      const loadAgent = async () => {
+        try {
+          // Load agent dashboard data from backend
+          const response = await agentsApi.getAgentDashboard(agentId);
+          const data = response.data;
 
-  if (loading) {
+          setAgent(data.agent);
+          setDashboardData(data);
+        } catch (err: any) {
+          console.error('Error loading agent:', err);
+          setToast({ message: 'Failed to load agent dashboard', type: 'error' });
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      loadAgent();
+    }
+  }, [unlockedLoading]); // Only depend on unlockedLoading to avoid race conditions
+
+  if (loading || unlockedLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500"></div>

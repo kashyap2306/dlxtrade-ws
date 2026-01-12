@@ -43,9 +43,8 @@ export default function AdminLogin() {
       }
 
       const userData = userDoc.data();
-      const profile = userData?.profile || {};
-      
-      if (profile.role !== 'admin') {
+
+      if (userData?.role !== 'admin') {
         setBlocked(true);
         setLoading(false);
         // Sign out if not admin

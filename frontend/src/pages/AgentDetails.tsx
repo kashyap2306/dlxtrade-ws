@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import Toast from '../components/Toast';
 import UnlockFormModal from '../components/UnlockFormModal';
 import { useAuth } from '../hooks/useAuth';
+import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
 import { agentsApi } from '../services/api';
 import { AgentCardData } from '../components/AgentCard';
 
@@ -10,6 +11,7 @@ export default function AgentDetails() {
   const { agentId } = useParams<{ agentId: string }>();
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const { unlockedAgents, loading: unlockedLoading } = useUnlockedAgents();
   const [agent, setAgent] = useState<AgentCardData & { longDescription?: string } | null>(null);
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -17,11 +19,28 @@ export default function AgentDetails() {
   const [, setMenuOpen] = useState(false);
   const [showUnlockModal, setShowUnlockModal] = useState(false);
 
+  // Effect to handle access control - runs when unlocked agents finish loading
   useEffect(() => {
-    if (user && agentId) {
+    if (user && agentId && !unlockedLoading) {
+      // Check if user has access to this agent
+      const hasAccess = unlockedAgents.some(agent => agent.agentId === agentId);
+
+      // Special handling for TRADING_AGENT - redirect to control page
+      if (agentId === 'TRADING_AGENT' && hasAccess) {
+        navigate('/agents/trading-agent/TRADING_AGENT', { replace: true });
+        return;
+      }
+
+      // If user doesn't have access, redirect to marketplace
+      if (!hasAccess) {
+        navigate('/agents', { replace: true });
+        return;
+      }
+
+      // User has access, load the agent data
       loadAgent();
     }
-  }, [user, agentId]);
+  }, [unlockedLoading]); // Only depend on unlockedLoading to avoid race conditions
 
   const loadAgent = async () => {
     if (!agentId) return;
@@ -30,8 +49,8 @@ export default function AgentDetails() {
       // Load all agents and find the one matching agentId
       const agentsResponse = await agentsApi.getAll();
       const agents = agentsResponse.data.agents || [];
-      const foundAgent = agents.find((a: any) => 
-        (a.id === agentId) || 
+      const foundAgent = agents.find((a: any) =>
+        (a.id === agentId) ||
         (a.name?.toLowerCase().replace(/\s+/g, '_') === agentId) ||
         (a.id === decodeURIComponent(agentId))
       );
@@ -51,10 +70,8 @@ export default function AgentDetails() {
         };
         setAgent(mappedAgent);
 
-        // Check if unlocked
-        const unlockedResponse = await agentsApi.getUnlocked();
-        const unlocked = unlockedResponse.data.unlocked || [];
-        const isUnlocked = unlocked.some((agentIdOrName: string) => agentIdOrName === foundAgent.id || agentIdOrName === foundAgent.name);
+        // Check if unlocked using the unlockedAgents hook
+        const isUnlocked = unlockedAgents.some(agent => agent.agentId === agentId);
         setIsUnlocked(isUnlocked);
       } else {
         showToast('Agent not found', 'error');
@@ -80,7 +97,7 @@ export default function AgentDetails() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  if (loading) {
+  if (loading || unlockedLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
         <div className="text-lg text-gray-300">Loading agent details...</div>

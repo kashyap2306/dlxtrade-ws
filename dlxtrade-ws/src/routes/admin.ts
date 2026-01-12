@@ -848,6 +848,112 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // POST /api/admin/agents/assign - Assign agent to user by email
+  fastify.post('/agents/assign', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: { userEmail: string; agentId: string } }>, reply: FastifyReply) => {
+    try {
+      const adminUid = (request as any).user.uid;
+      const { userEmail, agentId } = request.body;
+
+      if (!userEmail || !agentId) {
+        return reply.code(400).send({ error: 'userEmail and agentId are required' });
+      }
+
+      const db = getFirebaseAdmin().firestore();
+
+      // Find user by email
+      const usersSnapshot = await db
+        .collection('users')
+        .where('email', '==', userEmail)
+        .limit(1)
+        .get();
+
+      if (usersSnapshot.empty) {
+        return reply.code(404).send({ error: 'User not found with this email' });
+      }
+
+      const userDoc = usersSnapshot.docs[0];
+      const userId = userDoc.id;
+      const userData = userDoc.data();
+
+      // Check if agent exists (either regular agent or trading agent)
+      let agentName = agentId;
+      let agentData: any = null;
+
+      // First check if it's a regular agent
+      try {
+        const agentDoc = await db.collection('agents').doc(agentId).get();
+        if (agentDoc.exists) {
+          agentData = agentDoc.data();
+          agentName = agentData?.name || agentId;
+        }
+      } catch (err) {
+        // Continue to check trading agents
+      }
+
+      // If not a regular agent, check if it's a trading agent
+      if (!agentData) {
+        try {
+          const tradingAgentDoc = await db.collection('tradingAgents').doc(agentId).get();
+          if (tradingAgentDoc.exists) {
+            agentData = tradingAgentDoc.data();
+            agentName = agentData?.name || agentId;
+          }
+        } catch (err) {
+          // Continue
+        }
+      }
+
+      if (!agentData) {
+        return reply.code(404).send({ error: 'Agent not found' });
+      }
+
+      // Check if agent is active (for trading agents)
+      if (agentData.status && agentData.status !== 'ACTIVE') {
+        return reply.code(400).send({ error: 'Agent is not active' });
+      }
+
+      // Assign agent to user using the same method as agent unlocks
+      await firestoreAdapter.unlockAgent(userId, agentName);
+
+      // Update user's unlocked agents array
+      const currentUnlocked = userData?.unlockedAgents || [];
+      if (!currentUnlocked.includes(agentName)) {
+        await db.collection('users').doc(userId).update({
+          unlockedAgents: [...currentUnlocked, agentName],
+        });
+      }
+
+      // Log the assignment
+      await firestoreAdapter.logActivity(userId, 'AGENT_ASSIGNED_BY_ADMIN', {
+        agentId,
+        agentName,
+        assignedBy: adminUid,
+        assignmentMethod: 'admin_direct_assignment'
+      });
+
+      logger.info({
+        userId,
+        userEmail,
+        agentId,
+        agentName,
+        adminUid
+      }, 'Agent assigned to user by admin');
+
+      return {
+        success: true,
+        message: `Agent "${agentName}" assigned to ${userEmail} successfully`,
+        userId,
+        agentId,
+        agentName
+      };
+    } catch (err: any) {
+      logger.error({ err, userEmail: request.body.userEmail, agentId: request.body.agentId }, 'Error assigning agent to user');
+      return reply.code(500).send({ error: err.message || 'Error assigning agent' });
+    }
+  });
+
   // System health endpoint
   fastify.get('/system-health', {
     preHandler: [fastify.authenticate, fastify.adminAuth],

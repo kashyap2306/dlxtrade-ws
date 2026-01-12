@@ -50,12 +50,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   };
 
   const adminItems = [
-    { path: '/admin', label: 'Dashboard', icon: '📊' },
+    { path: '/admin', label: 'Admin Dashboard', icon: '📊' },
     { path: '/admin/users', label: 'Users', icon: '👥' },
-    { path: '/admin/agents', label: 'Agents', icon: '🤖' },
+    { path: '/admin/agent-access', label: 'Agent Access', icon: '🤖' },
     { path: '/admin/unlock-requests', label: 'Unlock Requests', icon: '🔔' },
-    { path: '/admin/broadcast-popup', label: 'Broadcast Popup', icon: '📢' },
-    { path: '/admin/settings', label: 'Settings', icon: '⚙️' },
     { path: '/admin/logs', label: 'Logs', icon: '📋' },
   ];
 

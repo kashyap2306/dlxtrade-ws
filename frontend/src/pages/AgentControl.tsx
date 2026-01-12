@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import Toast from '../components/Toast';
 import { useAuth } from '../hooks/useAuth';
+import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
 import { agentsApi } from '../services/api';
 
 interface LaunchpadProject {
@@ -30,6 +31,7 @@ export default function AgentControl() {
   const { agentId } = useParams<{ agentId: string }>();
   const { user } = useAuth();
   const navigate = useNavigate();
+  const { unlockedAgents, loading: unlockedLoading } = useUnlockedAgents();
   const [agent, setAgent] = useState<any>(null);
   const [feature, setFeature] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -48,10 +50,19 @@ export default function AgentControl() {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   useEffect(() => {
-    if (user && agentId) {
+    if (user && agentId && !unlockedLoading) {
+      // Check if user has access to this agent
+      const hasAccess = unlockedAgents.some(agent => agent.agentId === agentId);
+
+      // If user doesn't have access, redirect to marketplace
+      if (!hasAccess) {
+        navigate('/agents', { replace: true });
+        return;
+      }
+
       loadAgentAndFeature();
     }
-  }, [user, agentId]);
+  }, [unlockedLoading]); // Only depend on unlockedLoading to avoid race conditions
 
   const loadAgentAndFeature = async () => {
     if (!agentId || !user) return;
@@ -70,16 +81,10 @@ export default function AgentControl() {
         setAgent(foundAgent);
       }
 
-      // Load user features to check if this agent is enabled
+      // Load user features for this agent (no access control here since it's already checked above)
       const featuresResponse = await agentsApi.getUserFeatures(user.uid);
       const features = featuresResponse.data.features || [];
-      const agentFeature = features.find((f: any) => f.id === agentId && f.enabled);
-
-      if (!agentFeature) {
-        // User doesn't have access to this agent
-        navigate('/agents');
-        return;
-      }
+      const agentFeature = features.find((f: any) => f.id === agentId);
 
       setFeature(agentFeature);
 
@@ -208,7 +213,7 @@ export default function AgentControl() {
     }
   };
 
-  if (loading) {
+  if (loading || unlockedLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-purple-500"></div>

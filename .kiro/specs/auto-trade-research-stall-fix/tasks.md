@@ -196,6 +196,8 @@ This implementation plan addresses the AUTO-TRADE research stall issue by implem
   - Implement auto-correction: IF accuracy <= 0 THEN accuracy = 35
   - Add critical error logging when invariants are violated
   - Call validation before every history write (last line of defense)
+  - **STRICT RULE**: NO_RESEARCH only allowed when Top-25 scan did NOT run OR no coin selected
+  - **STRICT RULE**: Block any history write with symbol="NO_RESEARCH" AFTER coin selection
   - _Requirements: 9.1, 9.2, 9.3, 9.7, 9.8_
 
 - [ ] 14.1 Write property test for History Symbol Invariant
@@ -241,9 +243,14 @@ This implementation plan addresses the AUTO-TRADE research stall issue by implem
   - Use fast-check with 100 iterations minimum
 
 - [ ] 17. Update Scheduler to Track Research Execution State
-  - Add `researchExecuted` flag to execution context
-  - Set flag to true when research produces result
-  - Pass flag to history writer for validation
+  - Add `researchAttempted` boolean flag at VERY START of Top-25 accuracy scan
+  - Set `researchAttempted = true` immediately when accuracy scan begins
+  - Add `bestCandidateResult` object to store: symbol, accuracy, selectionSource="TOP_25_SCAN"
+  - Populate `bestCandidateResult` immediately after Top-25 scan selects best symbol
+  - REMOVE all early `return null` paths after coin selection
+  - If deep research blocked (e.g., NO_USABLE_NEWS_PROVIDERS), return structured result with HOLD signal
+  - In FINALLY block: IF researchAttempted === true THEN write history with bestCandidateResult
+  - Pass `researchAttempted` flag to history writer for validation
   - Use flag to prevent misuse of skip functions
   - _Requirements: 9.1, 9.5, 9.6_
 

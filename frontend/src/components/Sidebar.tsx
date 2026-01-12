@@ -184,6 +184,9 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
         path = '/agents/launchpad-hunter';
       } else if (agent.agentId === 'crowd_consensus_copy_trade') {
         path = '/agents/crowd-consensus';
+      } else if (agent.agent?.tradingAgent) {
+        // Trading agents route to their control page
+        path = `/agents/trading-agent/${agent.agentId}`;
       }
 
       return {
@@ -220,6 +223,9 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
   console.log('[Sidebar] Render state:', { authReady, authLoading, hasUser: !!user });
   if (!authReady || authLoading) return null;
   if (!user) return null;
+
+  // Don't render sidebar on admin routes
+  if (location.pathname.startsWith('/admin')) return null;
 
   return (
     <>

@@ -334,62 +334,32 @@ export default function AutoTrade() {
   // Load Auto-Trade research history
   const loadAutoTradeHistory = useCallback(async () => {
     if (!user) return;
-    
+
     setLoadingAutoTradeHistory(true);
     try {
       const response = await researchApi.deepResearch.getHistory(100);
+      // LOG RAW RESPONSE BEFORE ANY FILTERING
+      console.log('[AUTO_TRADE_HISTORY_RAW_RESPONSE]', JSON.stringify(response.data, null, 2));
       const allHistory = response.data?.data || response.data || [];
+      console.log('[AUTO_TRADE_HISTORY_RAW_ENTRIES_COUNT]', allHistory.length);
+      console.log('[AUTO_TRADE_HISTORY_RAW_ENTRIES]', allHistory.map(entry => ({
+        symbol: entry.symbol,
+        signal: entry.signal,
+        accuracy: entry.accuracy,
+        status: entry.status,
+        source: entry.source
+      })));
       
-      // Filter for AUTO_TRADE source only - include all entries (executed trades may have symbols, skipped cycles have null symbols)
-      const autoTradeOnly = allHistory.filter((entry: any) =>
-        entry.source === 'AUTO_TRADE'
-      );
-
-      // Sort by timestamp DESC (latest first) - no grouping
-      const sortedHistory = autoTradeOnly.sort((a: any, b: any) => {
+      // Use ALL entries from research history - Auto-Trade research is written with BACKGROUND_RESEARCH/SYSTEM/undefined sources
+      // Sort by timestamp DESC (latest first) - no filtering
+      const sortedHistory = allHistory.sort((a: any, b: any) => {
         const timeA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
         const timeB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
         return timeB - timeA;
       });
 
       setAutoTradeHistory(sortedHistory);
-
-      // Check for new skipped trades that should show popup (use grouped history)
-      if (config.autoTradeEnabled) {
-        // Use default accuracy trigger (simplified)
-        const accuracyTrigger = 75;
-        
-        for (const entry of sortedHistory) {
-          // Only show popup for SKIPPED entries with accuracy >= trigger
-          // Normalize accuracy to 0-100 range
-          const normalizedAccuracy = typeof entry.accuracy === 'number' 
-            ? (entry.accuracy > 1 ? entry.accuracy : entry.accuracy * 100)
-            : 0;
-          
-          if (entry.decision === 'SKIPPED' && 
-              normalizedAccuracy >= accuracyTrigger && 
-              entry.skipReason &&
-              entry.id &&
-              !shownSkipHistoryIdsRef.current.has(entry.id)) {
-            
-            // Parse skip reasons (can be string or array)
-            const skipReasons = entry.skipReasons || (entry.skipReason ? [entry.skipReason] : []);
-            
-            setSkipPopupData({
-              isOpen: true,
-              symbol: entry.symbol || 'UNKNOWN',
-              accuracy: normalizedAccuracy,
-              accuracyTrigger: 75, // Use default
-              skipReasons: Array.isArray(skipReasons) ? skipReasons : [skipReasons],
-              timestamp: entry.timestamp || new Date().toISOString()
-            });
-            
-            // Mark as shown to prevent duplicate popups
-            shownSkipHistoryIdsRef.current.add(entry.id);
-            break; // Only show one popup at a time
-          }
-        }
-      }
+      console.log('[AUTO_TRADE_HISTORY_BOUND]', sortedHistory.length);
     } catch (err: any) {
       console.warn('[AUTO_TRADE_HISTORY] Failed to load history:', err?.message);
       setAutoTradeHistory([]);
@@ -408,39 +378,48 @@ export default function AutoTrade() {
   // Load research history ONLY when tab/section is opened (not on interval polling)
   // Removed continuous polling to prevent over-polling
 
-  // Calculate filtered entries for research history
-  const getFilteredHistoryEntries = () => {
-    // First, check if we have any valid entries
-    const hasValidEntries = autoTradeHistory.some(entry =>
-      entry.symbol &&
-      entry.symbol !== "NO_RESEARCH" &&
-      entry.accuracy > 0 &&
-      (entry.signal === 'BUY' || entry.signal === 'SELL' || entry.signal === 'HOLD')
-    );
+  // Show ALL history entries exactly as returned by API - NO filtering
 
-    let entriesToShow = autoTradeHistory;
-    let showHelperText = false;
+  // Monitor activity logs for Trade Skip events and show popup with hard deduplication
+  useEffect(() => {
+    if (!activityLogs || activityLogs.length === 0) return;
 
-    if (hasValidEntries) {
-      // Apply filtering ONLY IF at least one valid entry exists
-      entriesToShow = autoTradeHistory.filter(entry => {
-        // STRICTLY hide / ignore entries when ALL are true:
-        // - symbol === "NO_RESEARCH"
-        // - accuracy === 0
-        // - skipReason indicates no market data (not weak research)
-        if (entry.symbol === "NO_RESEARCH" &&
-            entry.accuracy === 0 &&
-            (entry.skipReason === "No market data available" ||
-             entry.skipReason?.includes("No suitable coin"))) {
-          return false; // Hide these entries
+    // Process activity logs for skip events
+    activityLogs.forEach((log) => {
+      // Look for skip events in activity logs
+      if (log.type === 'AUTO_TRADE_SKIP' && log.meta) {
+        const { symbol, accuracy, accuracyTrigger, skipReasons, timestamp, entryId, cycleId, skipReason } = log.meta;
+
+        // Create stable deduplication key using ONLY stable identifiers
+        // DO NOT include accuracy/timestamp as they change between polls
+        const skipKey = `${entryId || cycleId || skipReason || symbol}`;
+
+        // Check if we've already shown this skip popup
+        if (shownSkipHistoryIdsRef.current.has(skipKey)) {
+          return; // Already shown, skip
         }
-        return true; // Show all other entries
-      });
-    } else if (autoTradeHistory.length > 0) {
-      // If ALL entries are filtered out, show the MOST RECENT entry even if NO_RESEARCH
-      entriesToShow = autoTradeHistory.slice(0, 1);
-      showHelperText = true;
-    }
+
+        // Show popup once and mark as shown
+        if (symbol && typeof accuracy === 'number' && accuracyTrigger && skipReasons && timestamp) {
+          setSkipPopupData({
+            isOpen: true,
+            symbol,
+            accuracy,
+            accuracyTrigger,
+            skipReasons: Array.isArray(skipReasons) ? skipReasons : [skipReasons],
+            timestamp
+          });
+
+          // Mark this skip event as shown
+          shownSkipHistoryIdsRef.current.add(skipKey);
+        }
+      }
+    });
+  }, [activityLogs]);
+  const getFilteredHistoryEntries = () => {
+    // Render EXACTLY what backend returns - no filtering applied
+    const entriesToShow = autoTradeHistory;
+    const showHelperText = false;
 
     return { entriesToShow, showHelperText };
   };
@@ -601,19 +580,17 @@ export default function AutoTrade() {
               </h1>
 
               <div className="flex items-center gap-3">
-                {/* Auto-Trade Research History Icon - Only visible when autoTradeEnabled === true */}
-                {config.autoTradeEnabled && (
-                  <button
-                    onClick={() => setShowAutoTradeHistoryModal(true)}
-                    className="flex items-center gap-2 px-3 py-2 bg-green-600/20 hover:bg-green-600/30 border border-green-500/50 rounded-lg transition-colors text-green-200 font-medium"
-                    title="View Auto-Trade research history"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                    </svg>
-                    <span className="text-sm">Research History</span>
-                  </button>
-                )}
+                {/* Auto-Trade Research History Icon - Always visible, independent of auto-trade state */}
+                <button
+                  onClick={() => setShowAutoTradeHistoryModal(true)}
+                  className="flex items-center gap-2 px-3 py-2 bg-green-600/20 hover:bg-green-600/30 border border-green-500/50 rounded-lg transition-colors text-green-200 font-medium"
+                  title="View Auto-Trade research history"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                  </svg>
+                  <span className="text-sm">Research History</span>
+                </button>
 
                 <button
                   onClick={async () => {
@@ -881,26 +858,47 @@ export default function AutoTrade() {
                         const absoluteTime = timestamp ? timestamp.toLocaleString() : '--';
 
                         // COIN (SYMBOL) DISPLAY - Always render symbol directly from API response
-                        // NEVER hide coin name when research ran (even for HOLD/weak signals)
-                        let coinDisplay = entry.symbol || '--';
-                        // Only show placeholder for true NO_RESEARCH cases
-                        if (entry.symbol === 'NO_RESEARCH' || entry.symbol === 'AUTO_TRADE_CYCLE') {
-                          coinDisplay = '--';
+                        // Backend contract: symbol === "NO_RESEARCH" means no displayable coin exists
+                        let coinDisplay = '--'; // Default for non-Auto-Trade entries
+                        if (entry.symbol === 'NEWS_UNAVAILABLE') {
+                          // NEWS_UNAVAILABLE case: show the status message
+                          coinDisplay = 'NEWS_UNAVAILABLE';
+                        } else if (entry.symbol === 'NO_RESEARCH') {
+                          // NO-RESEARCH case: show dash
+                          coinDisplay = '—';
+                        } else if (entry.symbol) {
+                          // Symbol exists: show actual symbol
+                          coinDisplay = entry.symbol;
+                        } else {
+                          // No symbol: show AUTO_TRADE placeholder
+                          coinDisplay = 'AUTO_TRADE';
                         }
 
                         // ACCURACY DISPLAY - Always render accuracy directly from API response
-                        // NEVER hide accuracy when research ran (even for HOLD/weak signals)
-                        let accuracyDisplay = '--';
-                        const rawAccuracy = typeof entry.accuracy === 'number' ? entry.accuracy : null;
-                        if (rawAccuracy !== null && rawAccuracy > 0) {
-                          const normalizedAccuracy = rawAccuracy > 1 ? rawAccuracy : rawAccuracy * 100;
+                        // Show accuracy ONLY when entry.accuracy > 0
+                        let accuracyDisplay = '--'; // Default for undefined/null
+                        if (entry.symbol === 'NEWS_UNAVAILABLE') {
+                          // NEWS_UNAVAILABLE case: show 0.0% since accuracy is 0
+                          accuracyDisplay = '0.0%';
+                        } else if (entry.symbol === 'NO_RESEARCH') {
+                          // NO-RESEARCH case: show dash
+                          accuracyDisplay = '—';
+                        } else if (typeof entry.accuracy === 'number' && entry.accuracy > 0) {
+                          // Accuracy exists and > 0: normalize and display actual accuracy
+                          const normalizedAccuracy = entry.accuracy > 1 ? entry.accuracy : entry.accuracy * 100;
                           accuracyDisplay = `${normalizedAccuracy.toFixed(1)}%`;
+                        } else {
+                          // No accuracy or accuracy <= 0: show 0.0% placeholder
+                          accuracyDisplay = '0.0%';
                         }
 
                         // RESULT / STATUS COLUMN - Handle AUTO_TRADE vs TELEGRAM records correctly
                         let resultStatus = 'Completed'; // Default for entries without specific status
 
-                        if (entry.source === 'AUTO_TRADE') {
+                        if (entry.symbol === 'NEWS_UNAVAILABLE') {
+                          // NEWS_UNAVAILABLE case: Show skipReason directly
+                          resultStatus = entry.skipReason || 'News provider unavailable';
+                        } else if (entry.executionStatus == null) {
                           // AUTO_TRADE logic: Show skipReason text directly if present
                           if (entry.status === 'EXECUTED') {
                             resultStatus = 'Executed';

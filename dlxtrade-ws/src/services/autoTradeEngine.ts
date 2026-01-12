@@ -106,6 +106,7 @@ export interface ResearchDataResult {
   symbol: string;
   signal: "BUY" | "SELL" | "HOLD";
   accuracy: number;
+  price?: number;
   result: FreeModeDeepResearchResult;
   processingTimeMs: number;
   metadata?: {
@@ -4109,20 +4110,28 @@ export class AutoTradeEngine {
         skipReason = "Missing trade plan";
       }
 
-      await firestoreAdapter.storeResearchHistory(uid, {
-        symbol: researchResult.symbol,
-        signal: researchResult.signal || "HOLD",
-        accuracy: researchResult.accuracy || 0,
-        price: researchResult.price || 0,
-        tradePlan: researchResult.tradePlan || null,
-        indicators: researchResult.indicators || null,
-        isDeepResearch: true,
-        source: "AUTO_TRADE",
-        status: "SKIPPED",
-        skipReason: skipReason,
-        cycleId: cycleId,
-        timestamp: admin.firestore.Timestamp.now(),
-      });
+      const researchData = {
+        results: [researchResult],
+        coinsAnalyzed: [researchResult.symbol],
+      };
+      const researchSymbol = researchResult.symbol;
+      const finalResult = researchResult.result || researchResult;
+      const finalTradePlan = researchResult.tradePlan;
+
+      await saveAutoTradeHistoryWithExecutionStatus(
+        uid,
+        researchResult,
+        researchData,
+        researchSymbol,
+        finalResult,
+        finalTradePlan,
+        researchResult.accuracy || 0,
+        researchResult.signal || "HOLD",
+        researchResult.price || 0,
+        "SKIPPED",
+        null,
+        null,
+      );
 
       return null;
     }
@@ -4627,6 +4636,7 @@ export class AutoTradeEngine {
     let executionBlocked = false;
     let executionBlockReason = "";
     let researchExecuted = false;
+    let researchAttempted = false;
     let useCachedResults = false;
     let researchResult: ResearchDataResult | null = null;
     let researchData: any = null;
@@ -4910,12 +4920,6 @@ export class AutoTradeEngine {
                 "No research API keys configured. Please add keys to enable auto-trading.",
             },
           });
-          await firestoreAdapter.logActivity(uid, "TRADE_SKIPPED", {
-            reason,
-            details:
-              "No research API keys configured. Please add keys to enable auto-trading.",
-            timestamp: new Date().toISOString(),
-          });
           // Return null instead of throwing - this is a configuration issue, not a system error
 
           // CRITICAL: Do NOT save history when research did NOT run (no research keys)
@@ -4995,12 +4999,12 @@ export class AutoTradeEngine {
 
         if (executionBlocked) {
           // Log activity but CONTINUE to research
-          await firestoreAdapter.logActivity(uid, "TRADE_SKIPPED", {
-            reason: AUTO_TRADE_REASONS.SKIPPED_EXCHANGE_UNAVAILABLE,
-            details:
-              "Exchange API key decryption failed. Execution blocked, but research will continue.",
-            error: exchangeUsability.reason,
-            timestamp: new Date().toISOString(),
+          await logAutoTradeSkip(uid, AUTO_TRADE_REASONS.SKIPPED_EXCHANGE_UNAVAILABLE, {
+            exchangeStatus: "unavailable",
+            additionalDetails: {
+              details: "Exchange API key decryption failed. Execution blocked, but research will continue.",
+              error: exchangeUsability.reason,
+            },
           });
 
           // DO NOT RETURN NULL - Proceed to research
@@ -5026,6 +5030,7 @@ export class AutoTradeEngine {
         // CRITICAL: Store selected symbol BEFORE research to avoid BTC fallback on error
         let selectedSymbolForHistory: string | null = null;
 
+        researchAttempted = true;
         try {
           researchData = await runDeepResearchWithCoinSelection(
             uid,
@@ -5041,15 +5046,66 @@ export class AutoTradeEngine {
                 uid,
                 reason: "NO_USABLE_PROVIDERS",
               },
-              "Auto-trade cycle: No usable providers - saving SKIPPED history",
+              "Auto-trade cycle: No usable providers - saving NEWS_UNAVAILABLE history entry",
             );
 
-            // Save SKIPPED history entry for this cycle
-            await saveAutoTradeHistorySkipped(
-              uid,
-              "NO_USABLE_PROVIDERS",
-              "No usable market data providers configured. Please enable and configure market data and news providers in Settings.",
-            );
+            // Save visible history entry for news provider unavailable
+            // This ensures history is always visible even when providers are down
+            if (!skipHistoryStorage) {
+              // Create placeholder research data for history entry
+              const placeholderResearchResult: ResearchDataResult = {
+                symbol: "NEWS_UNAVAILABLE",
+                signal: "HOLD",
+                accuracy: 0,
+                result: {
+                  signal: "HOLD",
+                  accuracy: 0,
+                  price: 0,
+                  snapshotAccuracy: 0,
+                  accuracyBreakdown: { indicatorScore: 0, marketStructureScore: 0, momentumScore: 0, volumeScore: 0, newsScore: 0, riskPenalty: 0 },
+                  accuracyWeightsUsed: {},
+                  indicators: { rsi: null, ma50: null, ma200: null, ema20: null, ema50: null, macd: null, volume: null, vwap: null, atr: null, pattern: null, momentum: null },
+                  metadata: {},
+                  news: { articles: [] },
+                  raw: { marketData: null, cryptocompare: null, metadata: null, news: null },
+                  providers: { marketData: null, metadata: null, news: null },
+                },
+                processingTimeMs: 0,
+                metadata: { symbol: "NEWS_UNAVAILABLE" },
+              };
+
+              const placeholderResearchData: ResearchData = {
+                results: [],
+                coinsAnalyzed: [],
+              };
+
+              const placeholderFinalResult = {
+                signal: "HOLD",
+                accuracy: 0,
+                price: 0,
+                analysis: {},
+                indicators: {},
+                metadata: {},
+                news: { articles: [] },
+                raw: {},
+                providers: {},
+              };
+
+              await saveAutoTradeHistoryWithExecutionStatus(
+                uid,
+                placeholderResearchResult,
+                placeholderResearchData,
+                "NEWS_UNAVAILABLE",
+                placeholderFinalResult,
+                null, // finalTradePlan
+                0, // accuracy
+                "HOLD", // signal
+                0, // historyPrice
+                "SKIPPED", // decisionStatus
+                null, // executionStatus
+                null, // tradeId
+              );
+            }
 
             logger.info(
               {
@@ -5060,7 +5116,7 @@ export class AutoTradeEngine {
                 reason: "NO_USABLE_PROVIDERS",
                 historySaved: true,
               },
-              "⏭️ [AUTO_TRADE_CYCLE] Cycle COMPLETED (SKIPPED)",
+              "⏭️ [AUTO_TRADE_CYCLE] Cycle COMPLETED (SKIPPED) - NEWS_UNAVAILABLE history written",
             );
 
             return null; // Cycle completed with SKIPPED history
@@ -5194,10 +5250,6 @@ export class AutoTradeEngine {
             additionalDetails: {
               resultsCount: researchData.results?.length || 0,
             },
-          });
-          await firestoreAdapter.logActivity(uid, "TRADE_SKIPPED", {
-            reason: skipReason,
-            timestamp: new Date().toISOString(),
           });
 
           return null; // Cycle completed with SKIPPED history
@@ -5540,19 +5592,22 @@ export class AutoTradeEngine {
           signal,
           exchangeStatus: "available",
         });
-        await firestoreAdapter.logActivity(uid, "TRADE_SKIPPED", {
-          symbol: researchResult?.symbol || "UNKNOWN",
-          reason: skipReason,
-          accuracy,
-          timestamp: new Date().toISOString(),
-        });
         // CRITICAL: Save SKIPPED history for system risk failure
         // Every execution path must save history before returning
         if (!skipHistoryStorage && researchExecuted) {
-          await saveAutoTradeHistorySkipped(
+          await saveAutoTradeHistoryWithExecutionStatus(
             uid,
-            "SYSTEM_RISK_FAILURE",
-            skipReason,
+            researchResult,
+            researchData,
+            researchSymbol,
+            finalResult,
+            finalTradePlan,
+            accuracy,
+            signal,
+            researchResult.price || 0,
+            decisionStatus,
+            null, // executionStatus
+            null, // tradeId
           );
         }
         return researchResult;
@@ -5601,18 +5656,21 @@ export class AutoTradeEngine {
           signal,
           exchangeStatus: "available",
         });
-        await firestoreAdapter.logActivity(uid, "TRADE_SKIPPED", {
-          symbol: researchResult?.symbol || "UNKNOWN",
-          reason: skipReason,
-          accuracy,
-          timestamp: new Date().toISOString(),
-        });
         // CRITICAL: Save SKIPPED history for accuracy validation failure
         if (!skipHistoryStorage && researchExecuted) {
-          await saveAutoTradeHistorySkipped(
+          await saveAutoTradeHistoryWithExecutionStatus(
             uid,
-            "ACCURACY_BELOW_THRESHOLD",
-            skipReason,
+            researchResult,
+            researchData,
+            researchSymbol,
+            finalResult,
+            finalTradePlan,
+            accuracy,
+            signal,
+            researchResult.price || 0,
+            decisionStatus,
+            null, // executionStatus
+            null, // tradeId
           );
         }
         return researchResult;
@@ -5631,18 +5689,21 @@ export class AutoTradeEngine {
           signal,
           exchangeStatus: "available",
         });
-        await firestoreAdapter.logActivity(uid, "TRADE_SKIPPED", {
-          symbol: researchResult?.symbol || "UNKNOWN",
-          reason: skipReason,
-          accuracy,
-          timestamp: new Date().toISOString(),
-        });
         // CRITICAL: Save SKIPPED history for signal validation failure
         if (!skipHistoryStorage && researchExecuted) {
-          await saveAutoTradeHistorySkipped(
+          await saveAutoTradeHistoryWithExecutionStatus(
             uid,
-            signalValidation.reason || "INVALID_SIGNAL",
-            skipReason,
+            researchResult,
+            researchData,
+            researchSymbol,
+            finalResult,
+            finalTradePlan,
+            accuracy,
+            signal,
+            researchResult.price || 0,
+            decisionStatus,
+            null, // executionStatus
+            null, // tradeId
           );
         }
         return researchResult;
@@ -5679,20 +5740,22 @@ export class AutoTradeEngine {
             newsScore,
           },
         });
-        await firestoreAdapter.logActivity(uid, "TRADE_SKIPPED", {
-          symbol: researchResult?.symbol || "UNKNOWN",
-          reason: skipReason,
-          accuracy,
-          volatility: volClassification,
-          timestamp: new Date().toISOString(),
-        });
         // CRITICAL: Save SKIPPED history for dynamic params failure
         // Every execution path must save history before returning
         if (!skipHistoryStorage && researchExecuted) {
-          await saveAutoTradeHistorySkipped(
+          await saveAutoTradeHistoryWithExecutionStatus(
             uid,
-            "DYNAMIC_PARAMS_SKIP",
-            skipReason,
+            researchResult,
+            researchData,
+            researchSymbol,
+            finalResult,
+            finalTradePlan,
+            accuracy,
+            signal,
+            researchResult.price || 0,
+            decisionStatus,
+            null, // executionStatus
+            null, // tradeId
           );
         }
         return researchResult;
@@ -5818,20 +5881,22 @@ export class AutoTradeEngine {
           },
         });
 
-        await firestoreAdapter.logActivity(uid, "TRADE_SKIPPED", {
-          symbol: researchResult.symbol,
-          reason: executionBlockReason,
-          accuracy,
-          timestamp: new Date().toISOString(),
-        });
-
         // CRITICAL: Save SKIPPED history for execution blocked
         // Every execution path must save history before returning
         if (!skipHistoryStorage && researchExecuted) {
-          await saveAutoTradeHistorySkipped(
+          await saveAutoTradeHistoryWithExecutionStatus(
             uid,
-            "EXECUTION_BLOCKED",
-            executionBlockReason || "Execution blocked due to exchange issues",
+            researchResult,
+            researchData,
+            researchSymbol,
+            finalResult,
+            finalTradePlan,
+            accuracy,
+            signal,
+            researchResult.price || 0,
+            decisionStatus,
+            null, // executionStatus
+            null, // tradeId
           );
         }
         return researchResult;
@@ -5872,19 +5937,21 @@ export class AutoTradeEngine {
           },
         );
 
-        await firestoreAdapter.logActivity(uid, "TRADE_SKIPPED", {
-          symbol: researchResult.symbol,
-          reason: modeCheck.reason,
-          accuracy,
-          timestamp: new Date().toISOString(),
-        });
-
         // CRITICAL: Save SKIPPED history for mode validation failure
         if (!skipHistoryStorage && researchExecuted) {
-          await saveAutoTradeHistorySkipped(
+          await saveAutoTradeHistoryWithExecutionStatus(
             uid,
-            modeCheck.reason || "MODE_VALIDATION_FAILED",
-            `Mode validation failed: ${modeCheck.reason}`,
+            researchResult,
+            researchData,
+            researchSymbol,
+            finalResult,
+            finalTradePlan,
+            accuracy,
+            signal,
+            researchResult.price || 0,
+            decisionStatus,
+            null, // executionStatus
+            null, // tradeId
           );
         }
         return researchResult;
