@@ -510,7 +510,6 @@ export async function ensureUser(
         experienceLevel: '',
         interestedAgents: [],
         portfolioSize: '',
-        unlockedAgents: [],
         seenPopups: [],
 
         preferences: {
@@ -614,6 +613,14 @@ export async function ensureUser(
       }
 
       logger.info({ uid, createdNew: false, path: `users/${uid}` }, '✅ Main user document exists: users/{uid}');
+    }
+
+    const currentUserDoc = createdNew ? await userRef.get() : existingUser;
+    const currentUserData = currentUserDoc.data() || {};
+    // CRITICAL: unlockedAgents can ONLY be initialized if undefined
+    // Never overwrite existing unlockedAgents arrays (add-only principle)
+    if (currentUserData.unlockedAgents === undefined) {
+      await userRef.update({ unlockedAgents: [] });
     }
 
     // CRITICAL: Only seed provider integrations in background contexts to avoid blocking user requests

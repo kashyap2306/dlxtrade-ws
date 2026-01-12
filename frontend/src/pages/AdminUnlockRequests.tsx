@@ -4,6 +4,7 @@ import Toast from '../components/Toast';
 import { useAuth } from '../hooks/useAuth';
 import { collection, query, where, getDocs, doc, updateDoc, getDoc, arrayUnion } from 'firebase/firestore';
 import { db } from '../config/firebase-config';
+import { adminApi, agentsApi } from '../services/api';
 
 interface AgentRequest {
   id: string;
@@ -14,6 +15,7 @@ interface AgentRequest {
   createdAt: any;
   approvedBy?: string;
   approvedAt?: any;
+  tradingAgentId?: string | null;
 }
 
 // Agent details for display
@@ -96,6 +98,14 @@ export default function AdminUnlockRequests() {
         approvedBy: user.uid,
         approvedAt: new Date()
       });
+
+      if (request.agentId === 'TRADING_AGENT' && request.tradingAgentId) {
+        await agentsApi.approveTradingAgentRequest(request.tradingAgentId);
+      }
+
+      if (request.agentId === 'COPY_TRADING_AGENT') {
+        await adminApi.unlockAgent(request.requestedBy, 'crowd_consensus_copy_trade');
+      }
 
       // Add agent to user's unlockedAgents array (avoid duplicates)
       const userRef = doc(db, 'users', request.requestedBy);

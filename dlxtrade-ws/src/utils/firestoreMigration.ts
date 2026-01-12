@@ -42,6 +42,32 @@ export async function migrateFirestoreDocuments(): Promise<void> {
       }
     }
 
+    // Backfill TRADING_AGENT unlock for users who already have any ACTIVE tradingAgents
+    // (Idempotent via arrayUnion; does not overwrite unlockedAgents)
+    const activeTradingAgentsSnapshot = await db
+      .collection('tradingAgents')
+      .where('status', '==', 'ACTIVE')
+      .get();
+
+    const uidsToBackfill = new Set<string>();
+    for (const doc of activeTradingAgentsSnapshot.docs) {
+      const data = doc.data() as any;
+      const uid = data?.userId || data?.requestedBy || data?.requestedByUid;
+      if (typeof uid === 'string' && uid.length > 0 && !uid.startsWith('__')) {
+        uidsToBackfill.add(uid);
+      }
+    }
+
+    for (const uid of uidsToBackfill) {
+      await db.collection('users').doc(uid).set(
+        {
+          unlockedAgents: admin.firestore.FieldValue.arrayUnion('TRADING_AGENT'),
+        },
+        { merge: true },
+      );
+      migrationCount++;
+    }
+
     // Migrate engineStatus collection - skip documents starting with "__"
     const engineStatusSnapshot = await db.collection('engineStatus').get();
     for (const doc of engineStatusSnapshot.docs) {

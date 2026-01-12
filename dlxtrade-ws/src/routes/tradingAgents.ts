@@ -162,44 +162,18 @@ export async function tradingAgentsRoutes(fastify: FastifyInstance) {
       const user = (request as any).user;
       const { agentId } = request.params;
 
+      // Get user data to check unlocked agents
+      const userData = await firestoreAdapter.getUser(user.uid);
+      if (!userData?.unlockedAgents?.includes(agentId)) {
+        return reply.code(403).send({ error: 'Agent not unlocked', message: 'Agent not unlocked' });
+      }
+
       // Get agent config
-      const agent = await firestoreAdapter.getTradingAgentConfig(agentId);
-      if (!agent) {
-        return reply.code(404).send({ error: 'Trading agent not found' });
-      }
-
-      // Verify ownership
-      if (agent.userId !== user.uid) {
-        return reply.code(403).send({ error: 'Unauthorized' });
-      }
-
-      // Get recent trades
-      const trades = await firestoreAdapter.getAgentTrades(agentId, 20);
-
-      // Get performance data
-      const totalTrades = agent.totalTrades || 0;
-      const winningTrades = agent.winningTrades || 0;
-      const losingTrades = agent.losingTrades || 0;
-      const winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0;
-
+      const config = await firestoreAdapter.getTradingAgentConfig(agentId);
       return {
-        agent,
-        control: {
-          status: agent.status,
-          lastTradeAt: agent.lastTradeAt,
-          dailyTrades: agent.dailyTrades || 0,
-          consecutiveLosses: agent.consecutiveLosses || 0,
-          dailyPnL: agent.dailyPnL || 0
-        },
-        performance: {
-          totalTrades,
-          winningTrades,
-          losingTrades,
-          winRate,
-          totalPnL: agent.totalPnL || 0,
-          drawdown: agent.drawdown || 0
-        },
-        trades
+        agentId,
+        status: config?.status || 'UNKNOWN',
+        config: config || null,
       };
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error getting trading agent control');

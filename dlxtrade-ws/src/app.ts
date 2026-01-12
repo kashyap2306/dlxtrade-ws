@@ -45,6 +45,7 @@ import { marketRoutes } from './routes/market';
 import { telegramRoutes } from './routes/telegram';
 import { backgroundResearchRoutes } from './routes/backgroundResearch';
 import { broadcastPopupRoutes } from './routes/broadcastPopup';
+import { riskRoutes } from './routes/risk';
 
 // Environment checks
 console.log("CHECK ENV:", !!process.env.FIREBASE_PROJECT_ID && !!process.env.FIREBASE_CLIENT_EMAIL && !!process.env.FIREBASE_PRIVATE_KEY);
@@ -355,9 +356,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(researchRoutes, { prefix: '/api/research' });
   await app.register(executionRoutes, { prefix: '/api/execution' });
   await app.register(hftRoutes, { prefix: '/api/hft' });
-  console.log('[APP] Registering agents routes...');
   await app.register(agentsRoutes, { prefix: '/api/agents' });
-  console.log('[APP] Agents routes registered successfully');
   await app.register(agentRoutes, { prefix: '/api/agent' });
   await app.register(activityLogsRoutes, { prefix: '/api/activity-logs' });
   await app.register(tradesRoutes, { prefix: '/api/trades' });
@@ -384,6 +383,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(marketRoutes);
   await app.register(telegramRoutes, { prefix: '/api/telegram' });
   await app.register(backgroundResearchRoutes, { prefix: '/api/background-research' });
+  await app.register(riskRoutes, { prefix: '/api/risk' });
 
   console.log('✅ All routes registered:');
   console.log('  - /api/auth/*');

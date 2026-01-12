@@ -300,11 +300,10 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
       }
 
       // Update additional fields if provided
-      if (body.plan || body.profilePicture || body.unlockedAgents) {
+      if (body.plan || body.profilePicture) {
         await firestoreAdapter.createOrUpdateUser(authUid, {
           plan: body.plan,
           profilePicture: body.profilePicture,
-          unlockedAgents: body.unlockedAgents,
         });
       }
 
@@ -345,7 +344,8 @@ export async function coreUserRoutes(fastify: FastifyInstance) {
       }
       const body = updateUserSchema.parse(request.body);
 
-      await firestoreAdapter.createOrUpdateUser(authUid, body);
+      const { unlockedAgents, ...safeBody } = body;
+      await firestoreAdapter.createOrUpdateUser(authUid, safeBody);
 
       // Log activity
       const changedFields = Object.keys(body);

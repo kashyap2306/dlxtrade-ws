@@ -1023,10 +1023,27 @@ export class FirestoreAdapter {
       const db = getFirebaseAdmin().firestore();
       const agentRef = db.collection('tradingAgents').doc(agentId);
 
-      await agentRef.update({
-        status: 'ACTIVE',
-        approvedAt: admin.firestore.Timestamp.now(),
-        approvedBy: adminId
+      await db.runTransaction(async (transaction) => {
+        const agentDoc = await transaction.get(agentRef);
+        const agentData: any = agentDoc.data() || {};
+        const requestedByUid = agentData.userId || agentData.requestedBy || agentData.requestedByUid;
+
+        transaction.update(agentRef, {
+          status: 'ACTIVE',
+          approvedAt: admin.firestore.Timestamp.now(),
+          approvedBy: adminId,
+        });
+
+        if (requestedByUid) {
+          const userRef = db.collection('users').doc(requestedByUid);
+          transaction.set(
+            userRef,
+            {
+              unlockedAgents: admin.firestore.FieldValue.arrayUnion('TRADING_AGENT'),
+            },
+            { merge: true },
+          );
+        }
       });
 
       logger.info({ agentId, adminId }, 'Trading agent request approved');
@@ -2363,10 +2380,16 @@ export class FirestoreAdapter {
       ...safeUserData
     } = userData;
 
+    const { unlockedAgents, ...safeUserDataWithoutUnlockedAgents } = safeUserData as any;
+
     const updateData: any = {
-      ...safeUserData,
+      ...safeUserDataWithoutUnlockedAgents,
       updatedAt: admin.firestore.Timestamp.now(),
     };
+
+    if (Array.isArray(unlockedAgents) && unlockedAgents.length > 0) {
+      updateData.unlockedAgents = admin.firestore.FieldValue.arrayUnion(...unlockedAgents);
+    }
 
     if (!existing.exists) {
       updateData.uid = uid;
@@ -4441,6 +4464,50 @@ export async function saveMarketSnapshot({
     },
     { merge: true },
   );
+}
+
+// ===== RISK BOT CONFIGURATION =====
+
+/**
+ * READ-ONLY: Get risk bot configuration for an agent
+ * Returns default values if fields don't exist
+ */
+export async function getAgentRiskBotConfig(agentId: string): Promise<{
+  enabled: boolean;
+  bots: string[];
+}> {
+  try {
+    const doc = await db().collection("agents").doc(agentId).get();
+
+    if (!doc.exists) {
+      // Return default disabled configuration for non-existent agents
+      return {
+        enabled: false,
+        bots: []
+      };
+    }
+
+    const data = doc.data();
+
+    // Risk bot configuration with defaults
+    // Fields: riskBotEnabled (boolean), enabledRiskBots (array of strings)
+    return {
+      enabled: data?.riskBotEnabled ?? false,
+      bots: data?.enabledRiskBots ?? []
+    };
+
+  } catch (error: any) {
+    logger.error(
+      { agentId, error: error.message },
+      "Failed to get agent risk bot configuration"
+    );
+
+    // On error, default to disabled for safety
+    return {
+      enabled: false,
+      bots: []
+    };
+  }
 }
 
 export const firestoreAdapter = new FirestoreAdapter();

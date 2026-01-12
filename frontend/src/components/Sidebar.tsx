@@ -184,6 +184,8 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
         path = '/agents/launchpad-hunter';
       } else if (agent.agentId === 'crowd_consensus_copy_trade') {
         path = '/agents/crowd-consensus';
+      } else if (agent.agentId === 'TRADING_AGENT') {
+        path = '/agents/trading-agent';
       } else if (agent.agent?.tradingAgent) {
         // Trading agents route to their control page
         path = `/agents/trading-agent/${agent.agentId}`;
@@ -224,7 +226,7 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
   if (!authReady || authLoading) return null;
   if (!user) return null;
 
-  // Don't render sidebar on admin routes
+  // Don't render sidebar on admin routes (strict)
   if (location.pathname.startsWith('/admin')) return null;
 
   return (
@@ -349,7 +351,9 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
                   </div>
                 </div>
                 {unlockedAgents.map((unlockedAgent) => {
-                  const agentPath = `/agent/${encodeURIComponent(unlockedAgent.agentId)}`;
+                  const agentPath = unlockedAgent.agentId === 'TRADING_AGENT'
+                    ? '/agents/trading-agent'
+                    : `/agent/${encodeURIComponent(unlockedAgent.agentId)}`;
                   const active = isActive(agentPath);
                   return (
                     <Link
@@ -534,7 +538,9 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
                   </div>
                 </div>
                 {unlockedAgents.map((unlockedAgent) => {
-                  const agentPath = `/agent/${encodeURIComponent(unlockedAgent.agentId)}`;
+                  const agentPath = unlockedAgent.agentId === 'TRADING_AGENT'
+                    ? '/agents/trading-agent'
+                    : `/agent/${encodeURIComponent(unlockedAgent.agentId)}`;
                   const active = isActive(agentPath);
                   return (
                     <Link

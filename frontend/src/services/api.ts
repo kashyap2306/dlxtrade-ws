@@ -48,73 +48,19 @@ export const authApi = {
 
 // Admin API
 export const adminApi = {
-  listKeys: () => api.get('/admin/keys'),
-  getKey: (id: string) => api.get(`/admin/keys/${id}`),
-  createKey: (data: any) => api.post('/admin/keys', data),
-  updateKey: (id: string, data: any) => api.put(`/admin/keys/${id}`, data),
-  deleteKey: (id: string) => api.delete(`/admin/keys/${id}`),
-  toggleTestnet: () => api.post('/admin/toggle-testnet'),
-  // New admin endpoints
   getUsers: () => api.get('/admin/users'),
   getUser: (uid: string) => api.get(`/admin/user/${uid}`),
-  getUserLogs: (uid: string, limit?: number) => api.get(`/admin/user/${uid}/logs`, { params: { limit } }),
-  getUserHFTLogs: (uid: string, limit?: number) => api.get(`/admin/user/${uid}/hft/logs`, { params: { limit } }),
   stopEngine: (uid: string) => api.post(`/admin/user/${uid}/stop-engine`),
   stopHFT: (uid: string) => api.post(`/admin/user/${uid}/stop-hft`),
-  resetRisk: (uid: string) => api.post(`/admin/user/${uid}/reset-risk`),
-  reloadKeys: (uid: string) => api.post(`/admin/user/${uid}/reload-keys`),
   unlockAgent: (uid: string, agentName: string) => api.post(`/admin/user/${uid}/unlock-agent`, { agentName }),
   lockAgent: (uid: string, agentName: string) => api.post(`/admin/user/${uid}/lock-agent`, { agentName }),
   giveFullAccess: (uid: string) => api.post(`/admin/user/${uid}/give-full-access`),
-  getGlobalStats: () => api.get('/admin/global-stats'),
-  reloadAllEngines: () => api.post('/admin/reload-all-engines'),
-  getAgentStats: () => api.get('/admin/agents/stats'),
-  getAgentUsers: (agentName: string) => api.get(`/admin/agents/${encodeURIComponent(agentName)}/users`),
-  updateAgent: (agentId: string, data: any) => api.put(`/admin/agents/${agentId}`, data),
-  createAgent: (data: any) => api.post('/admin/agents', data),
-  deleteAgent: (agentId: string) => api.delete(`/admin/agents/${agentId}`),
-  toggleAgent: (agentId: string) => api.post(`/admin/agents/${agentId}/toggle`),
-  assignAgentToUser: (userEmail: string, agentId: string) => api.post('/admin/agents/assign', { userEmail, agentId }),
   getUnlockRequests: () => api.get('/admin/unlock-requests'),
   approveUnlockRequest: (requestId: string) => api.post(`/admin/unlock-requests/${requestId}/approve`),
   denyUnlockRequest: (requestId: string, reason?: string) => api.post(`/admin/unlock-requests/${requestId}/deny`, { reason }),
-  updateUserAgentSettings: (uid: string, agentName: string, settings: any) => api.put(`/admin/user/${uid}/agent/${encodeURIComponent(agentName)}/settings`, settings),
-  getGlobalSettings: () => api.get('/admin/global-settings'),
-  updateGlobalSettings: (settings: any) => api.post('/admin/global-settings', settings),
-  getMarketData: () => timeoutApi.get('/market/top-coins', 8000),
   deleteUser: (uid: string) => api.delete(`/admin/users/${uid}`),
-  // Agent purchases
-  getPurchases: (params?: { status?: string; limit?: number }) => api.get('/admin/agents/purchases', { params }),
-  approvePurchase: (purchaseId: string) => api.post(`/admin/agents/purchases/${purchaseId}/approve`),
-
-  // Background Research
-  backgroundResearch: {
-    getSettings: () => api.get('/background-research/settings/get'),
-    saveSettings: (data: {
-      backgroundResearchEnabled: boolean;
-      telegramBotToken?: string;
-      telegramChatId?: string;
-      researchFrequencyMinutes: number;
-      accuracyTrigger: number;
-    }) => api.post('/background-research/settings/save', data),
-    test: (data: { botToken: string; chatId: string }) => api.post('/background-research/settings/test', data),
-    getDiagnostic: () => api.get('/background-research/diagnostic'),
-  },
-
-  // Telegram
-  telegram: {
-    test: (data: { botToken: string; chatId: string }) => api.post('/telegram/test', data),
-  },
-  rejectPurchase: (purchaseId: string, reason?: string) => api.post(`/admin/agents/purchases/${purchaseId}/reject`, { reason }),
-  // Broadcast Popup
-  broadcastPopup: (data: any) => api.post('/admin/popup-broadcast', data),
-  // Admin promotion
-  promote: (email: string) => api.post('/admin/promote', { email }, {
-    headers: {
-      'x-admin-setup': 'SUPER-SECRET-998877'
-    }
-  }),
 };
+
 
 // Orders - routes include /api prefix from baseURL
 export const ordersApi = {
@@ -393,9 +339,9 @@ export const agentsApi = {
   // Trading agent endpoints
   createTradingAgentRequest: (data: { userId: string; name: string; tradingPair: 'BTC/USDT' | 'ETH/USDT'; marketType: 'spot' | 'futures' }) =>
     api.post('/agents/trading-agent-request', data),
-  getTradingAgentRequests: () => api.get('/admin/agents/trading-agent-requests'),
-  approveTradingAgentRequest: (agentId: string) => api.post('/admin/agents/approve-trading-agent', { agentId }),
-  rejectTradingAgentRequest: (agentId: string) => api.post('/admin/agents/reject-trading-agent', { agentId }),
+  getTradingAgentRequests: () => api.get('/agents/admin/trading-agent-requests'),
+  approveTradingAgentRequest: (agentId: string) => api.post('/agents/admin/approve-trading-agent', { agentId }),
+  rejectTradingAgentRequest: (agentId: string) => api.post('/agents/admin/reject-trading-agent', { agentId }),
   getUserTradingAgents: () => api.get('/agents/trading-agents'),
   getTradingAgentControl: (agentId: string) => api.get(`/agents/trading-agent/${agentId}/control`),
   updateTradingAgentSettings: (agentId: string, settings: any) => api.put(`/agents/trading-agent/${agentId}/settings`, settings),

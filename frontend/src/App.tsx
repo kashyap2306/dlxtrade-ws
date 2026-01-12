@@ -6,6 +6,7 @@ console.log("🔥", FRONTEND_BUILD_MARKER, "@", new Date().toISOString());
 import { Routes, Route, Navigate, BrowserRouter, Outlet } from 'react-router-dom';
 import TopNavigation from './components/TopNavigation';
 import Sidebar from './components/Sidebar';
+import AdminLayout from './components/AdminLayout';
 import UserRoute from './components/UserRoute';
 import { ErrorProvider } from './contexts/ErrorContext';
 import { NotificationProvider } from './contexts/NotificationContext';
@@ -229,7 +230,10 @@ function App() {
                   <Route path="agents/:agentId" element={<SafeRoute><AgentDetails /></SafeRoute>} />
                   <Route path="agents/launchpad-hunter" element={<SafeRoute><LaunchpadHunter /></SafeRoute>} />
                   <Route path="agents/crowd-consensus" element={<SafeRoute><CrowdConsensus /></SafeRoute>} />
+                  <Route path="agents/trading-agent" element={<SafeRoute><TradingAgentControl /></SafeRoute>} />
                   <Route path="agents/trading-agent/:agentId" element={<SafeRoute><TradingAgentControl /></SafeRoute>} />
+                  <Route path="agent/TRADING_AGENT" element={<Navigate to="/agents/trading-agent" replace />} />
+                  <Route path="agent/TRADING_AGENT/control" element={<Navigate to="/agents/trading-agent" replace />} />
                   <Route path="agent/:agentId" element={<SafeRoute><AgentDashboard /></SafeRoute>} />
                   <Route path="agent/:agentId/control" element={<SafeRoute><AgentControl /></SafeRoute>} />
                   <Route path="hft/settings" element={<SafeRoute><HFTSettings /></SafeRoute>} />
@@ -242,7 +246,9 @@ function App() {
                   path="/admin"
                   element={
                     <AdminRoute>
-                      <Layout />
+                      <AdminLayout>
+                        <Outlet />
+                      </AdminLayout>
                     </AdminRoute>
                   }
                 >
@@ -251,7 +257,6 @@ function App() {
                   <Route path="user/:uid" element={<SafeRoute><AdminUserDetail /></SafeRoute>} />
                   <Route path="agent-access" element={<SafeRoute><AdminAgentsManager /></SafeRoute>} />
                   <Route path="unlock-requests" element={<SafeRoute><AdminUnlockRequests /></SafeRoute>} />
-                  <Route path="logs" element={<SafeRoute><AdminDashboard /></SafeRoute>} />
                 </Route>
 
                 {/* Special Admin Token Route */}

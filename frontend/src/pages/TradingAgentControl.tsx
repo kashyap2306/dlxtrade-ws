@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import Toast from '../components/Toast';
 import { useAuth } from '../hooks/useAuth';
-import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
 import { agentsApi } from '../services/api';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 
@@ -10,15 +9,15 @@ export default function TradingAgentControl() {
   const { agentId } = useParams<{ agentId: string }>();
   const { user } = useAuth();
   const navigate = useNavigate();
-  const { unlockedAgents, loading: unlockedLoading } = useUnlockedAgents();
   const [loading, setLoading] = useState(true);
   const [agent, setAgent] = useState<any>(null);
-  const [control, setControl] = useState<any>(null);
-  const [performance, setPerformance] = useState<any>(null);
   const [trades, setTrades] = useState<any[]>([]);
+  const [resolvedAgentId, setResolvedAgentId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'settings' | 'trades'>('dashboard');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [updatingSettings, setUpdatingSettings] = useState(false);
+  const [accessDenied, setAccessDenied] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [settings, setSettings] = useState({
     riskPerTrade: 1.0,
     maxConcurrentTrades: 1,
@@ -28,45 +27,103 @@ export default function TradingAgentControl() {
   });
 
   useEffect(() => {
-    if (user && agentId && !unlockedLoading) {
-      // Check if user has access to TRADING_AGENT
-      const hasAccess = unlockedAgents.some(agent => agent.agentId === 'TRADING_AGENT');
+    if (!user) return;
 
-      // If user doesn't have access, redirect to marketplace
-      if (!hasAccess) {
-        navigate('/agents', { replace: true });
+    const resolveTradingAgentId = async () => {
+      // If a concrete agentId is already provided (and it's not the constant), use it.
+      if (agentId && agentId !== 'TRADING_AGENT') {
+        setResolvedAgentId(agentId);
         return;
       }
 
-      loadAgentData();
-    }
-  }, [unlockedLoading]); // Only depend on unlockedLoading to avoid race conditions
+      try {
+        const resp = await agentsApi.getUserTradingAgents();
+        const agents = resp.data?.agents;
+        const list = Array.isArray(agents) ? agents : [];
 
-  const loadAgentData = async () => {
-    if (!agentId || !user) return;
+        // Prefer the most recently created agent (backend sorts by createdAt desc)
+        const realId =
+          (list[0] && (list[0].id || list[0].agentId)) ||
+          null;
+
+        if (!realId) {
+          setResolvedAgentId(null);
+          setLoadError('No trading agent found for your account');
+          setLoading(false);
+          return;
+        }
+
+        setResolvedAgentId(realId);
+
+        // If user landed on /agents/trading-agent or legacy /.../TRADING_AGENT, normalize URL.
+        if (!agentId || agentId === 'TRADING_AGENT') {
+          navigate(`/agents/trading-agent/${encodeURIComponent(realId)}`, { replace: true });
+        }
+      } catch (err) {
+        setResolvedAgentId(null);
+        setLoadError('Failed to load trading agent');
+        setLoading(false);
+      }
+    };
+
+    resolveTradingAgentId();
+  }, [user, agentId, navigate]);
+
+  useEffect(() => {
+    if (user && resolvedAgentId) {
+      loadAgentData(resolvedAgentId);
+    }
+  }, [user, resolvedAgentId]);
+
+  const loadAgentData = async (effectiveAgentId: string) => {
+    if (!effectiveAgentId || !user) return;
 
     setLoading(true);
+    setAccessDenied(false);
+    setLoadError(null);
     try {
-      const response = await agentsApi.getTradingAgentControl(agentId);
-      const data = response.data;
+      const response = await agentsApi.getTradingAgentControl(effectiveAgentId);
+      const data = response.data || {};
 
-      setAgent(data.agent);
-      setControl(data.control);
-      setPerformance(data.performance);
-      setTrades(data.trades || []);
+      const config = data.config || null;
+      const normalizedAgent = config
+        ? {
+            ...config,
+            id: data.agentId || effectiveAgentId,
+            status: data.status || config.status || 'UNKNOWN',
+          }
+        : {
+            id: data.agentId || effectiveAgentId,
+            status: data.status || 'UNKNOWN',
+          };
 
-      // Set settings from agent data
+      setAgent(normalizedAgent);
+
       setSettings({
-        riskPerTrade: data.agent.riskPerTrade || 1.0,
-        maxConcurrentTrades: data.agent.maxConcurrentTrades || 1,
-        maxTradesPerDay: data.agent.maxTradesPerDay || 6,
-        apiKey: data.agent.apiKey || '',
-        apiSecret: data.agent.apiSecret || ''
+        riskPerTrade: normalizedAgent.riskPerTrade || 1.0,
+        maxConcurrentTrades: normalizedAgent.maxConcurrentTrades || 1,
+        maxTradesPerDay: normalizedAgent.maxTradesPerDay || 6,
+        apiKey: normalizedAgent.apiKey || '',
+        apiSecret: normalizedAgent.apiSecret || ''
       });
+
+      try {
+        const tradesResp = await agentsApi.getTradingAgentTrades(effectiveAgentId, 20);
+        setTrades(tradesResp.data?.trades || []);
+      } catch (tradesErr: any) {
+        setTrades([]);
+      }
     } catch (err: any) {
       console.error('Error loading agent data:', err);
+
+      if (err?.response?.status === 403) {
+        setAccessDenied(true);
+        setAgent({ id: effectiveAgentId, status: 'UNKNOWN' });
+        return;
+      }
+
+      setLoadError(err?.response?.data?.error || 'Failed to load agent data');
       showToast('Failed to load agent data', 'error');
-      navigate('/agents');
     } finally {
       setLoading(false);
     }
@@ -78,13 +135,13 @@ export default function TradingAgentControl() {
   };
 
   const handleUpdateSettings = async () => {
-    if (!agentId) return;
+    if (!resolvedAgentId) return;
 
     setUpdatingSettings(true);
     try {
-      await agentsApi.updateTradingAgentSettings(agentId, settings);
+      await agentsApi.updateTradingAgentSettings(resolvedAgentId, settings);
       showToast('Settings updated successfully', 'success');
-      await loadAgentData(); // Reload to get updated data
+      await loadAgentData(resolvedAgentId); // Reload to get updated data
     } catch (err: any) {
       showToast(err.response?.data?.error || 'Failed to update settings', 'error');
     } finally {
@@ -93,28 +150,28 @@ export default function TradingAgentControl() {
   };
 
   const handleAgentAction = async (action: 'start' | 'stop' | 'pause' | 'resume') => {
-    if (!agentId) return;
+    if (!resolvedAgentId) return;
 
     try {
       switch (action) {
         case 'start':
-          await agentsApi.startTradingAgent(agentId);
+          await agentsApi.startTradingAgent(resolvedAgentId);
           showToast('Trading agent started successfully', 'success');
           break;
         case 'stop':
-          await agentsApi.stopTradingAgent(agentId);
+          await agentsApi.stopTradingAgent(resolvedAgentId);
           showToast('Trading agent stopped successfully', 'success');
           break;
         case 'pause':
-          await agentsApi.pauseTradingAgent(agentId);
+          await agentsApi.pauseTradingAgent(resolvedAgentId);
           showToast('Trading agent paused successfully', 'success');
           break;
         case 'resume':
-          await agentsApi.resumeTradingAgent(agentId);
+          await agentsApi.resumeTradingAgent(resolvedAgentId);
           showToast('Trading agent resumed successfully', 'success');
           break;
       }
-      await loadAgentData(); // Reload to get updated status
+      await loadAgentData(resolvedAgentId); // Reload to get updated status
     } catch (err: any) {
       showToast(err.response?.data?.error || `Failed to ${action} agent`, 'error');
     }
@@ -139,7 +196,7 @@ export default function TradingAgentControl() {
     return colors[status as keyof typeof colors] || 'bg-gray-600/20 text-gray-400 border-gray-500/30';
   };
 
-  if (loading || unlockedLoading) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
         <div className="text-center">
@@ -150,12 +207,29 @@ export default function TradingAgentControl() {
     );
   }
 
+  if (accessDenied) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
+        <div className="text-center">
+          <h2 className="text-2xl font-bold text-white mb-4">Agent access not granted yet</h2>
+          <p className="text-gray-400 mb-6">Agent access not granted yet</p>
+          <button
+            onClick={() => navigate('/agents')}
+            className="btn btn-primary"
+          >
+            Back to Agents
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (!agent) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
         <div className="text-center">
-          <h2 className="text-2xl font-bold text-white mb-4">Agent Not Found</h2>
-          <p className="text-gray-400 mb-6">The requested trading agent doesn't exist or you don't have access.</p>
+          <h2 className="text-2xl font-bold text-white mb-4">Unable to load agent</h2>
+          <p className="text-gray-400 mb-6">{loadError || 'Failed to load agent data'}</p>
           <button
             onClick={() => navigate('/agents')}
             className="btn btn-primary"
@@ -186,7 +260,7 @@ export default function TradingAgentControl() {
               ← Back to Agents
             </button>
             <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent mb-2">
-              📈 {agent.name}
+              ⚡ AlphaTrade Pro
             </h1>
             <div className="flex items-center space-x-4 text-gray-400">
               <span>{agent.tradingPair} • {agent.marketType}</span>
@@ -279,7 +353,7 @@ export default function TradingAgentControl() {
                   <div className="flex items-center justify-between">
                     <div>
                       <h3 className="text-lg font-semibold text-white mb-1">Daily Trades</h3>
-                      <p className="text-blue-400 font-medium">{control?.dailyTrades || 0}/{agent.maxTradesPerDay}</p>
+                      <p className="text-blue-400 font-medium">{agent.dailyTrades || 0}/{agent.maxTradesPerDay}</p>
                     </div>
                   </div>
                 </div>
@@ -288,7 +362,7 @@ export default function TradingAgentControl() {
                   <div className="flex items-center justify-between">
                     <div>
                       <h3 className="text-lg font-semibold text-white mb-1">Win Rate</h3>
-                      <p className="text-green-400 font-medium">{performance?.winRate?.toFixed(1) || 0}%</p>
+                      <p className="text-green-400 font-medium">{typeof agent.winRate === 'number' && !isNaN(agent.winRate) ? agent.winRate.toFixed(1) : '0.0'}%</p>
                     </div>
                   </div>
                 </div>
@@ -296,9 +370,9 @@ export default function TradingAgentControl() {
                 <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-xl p-6">
                   <div className="flex items-center justify-between">
                     <div>
-                      <h3 className="text-lg font-semibold text-white mb-1">Total P&L</h3>
-                      <p className={`font-medium ${performance?.totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        ${performance?.totalPnL?.toFixed(2) || '0.00'}
+                      <h3 className="text-lg font-semibold text-white mb-1">Total P&amp;L</h3>
+                      <p className={`font-medium ${(typeof agent.totalPnL === 'number' && agent.totalPnL >= 0) ? 'text-green-400' : 'text-red-400'}`}>
+                        ${typeof agent.totalPnL === 'number' && !isNaN(agent.totalPnL) ? agent.totalPnL.toFixed(2) : '0.00'}
                       </p>
                     </div>
                   </div>

@@ -918,12 +918,9 @@ export async function adminRoutes(fastify: FastifyInstance) {
       await firestoreAdapter.unlockAgent(userId, agentName);
 
       // Update user's unlocked agents array
-      const currentUnlocked = userData?.unlockedAgents || [];
-      if (!currentUnlocked.includes(agentName)) {
-        await db.collection('users').doc(userId).update({
-          unlockedAgents: [...currentUnlocked, agentName],
-        });
-      }
+      await firestoreAdapter.createOrUpdateUser(userId, {
+        unlockedAgents: [agentName],
+      });
 
       // Log the assignment
       await firestoreAdapter.logActivity(userId, 'AGENT_ASSIGNED_BY_ADMIN', {

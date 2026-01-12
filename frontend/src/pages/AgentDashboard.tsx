@@ -212,6 +212,16 @@ export default function AgentDashboard() {
 
   useEffect(() => {
     if (user && agentId && !unlockedLoading) {
+      if (agentId === 'TRADING_AGENT') {
+        navigate('/agents/trading-agent', { replace: true });
+        return;
+      }
+
+      if (agentId === 'COPY_TRADING_AGENT') {
+        navigate('/agents/crowd-consensus', { replace: true });
+        return;
+      }
+
       // Check if user has access to this agent
       const hasAccess = unlockedAgents.some(agent => agent.agentId === agentId);
 
@@ -232,6 +242,7 @@ export default function AgentDashboard() {
         } catch (err: any) {
           console.error('Error loading agent:', err);
           setToast({ message: 'Failed to load agent dashboard', type: 'error' });
+          setAgent(null);
         } finally {
           setLoading(false);
         }
@@ -250,7 +261,20 @@ export default function AgentDashboard() {
   }
 
   if (!agent) {
-    return null;
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center">
+        <div className="text-center">
+          <h2 className="text-2xl font-bold text-white mb-4">Unable to load agent</h2>
+          <p className="text-gray-400 mb-6">This agent page could not be loaded.</p>
+          <button
+            onClick={() => navigate('/agents')}
+            className="btn btn-primary"
+          >
+            Back to Agents
+          </button>
+        </div>
+      </div>
+    );
   }
 
   // Agent-specific content based on agent ID

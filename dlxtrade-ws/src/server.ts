@@ -279,14 +279,15 @@ async function start() {
         //   logger.error({ error: initError.message, stack: initError.stack }, 'Firestore collection initialization failed');
         // }
 
-        // Auto-migration DISABLED - no longer running on startup
-        // Migration should be run manually via scripts if needed
-        // try {
-        //   await migrateFirestoreDocuments();
-        // } catch (migrationError: any) {
-        //   console.error('❌ INIT ERROR (Migration):', migrationError.message);
-        //   logger.error({ error: migrationError.message }, 'Firestore migration failed');
-        // }
+        // Auto-migration ENABLED - runs on server startup
+        // Migration patches missing fields and backfills TRADING_AGENT unlocks
+        try {
+          await migrateFirestoreDocuments();
+        } catch (migrationError: any) {
+          console.error('❌ INIT ERROR (Migration):', migrationError.message);
+          logger.error({ error: migrationError.message }, 'Firestore migration failed');
+          // DO NOT throw - allow server to continue even if migration fails
+        }
 
         // Seed Firestore with default data
         try {

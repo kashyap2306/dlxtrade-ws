@@ -69,12 +69,25 @@ export default function AgentsMarketplace() {
 
     setSubmitting(agent.id);
     try {
+      let tradingAgentId: string | null = null;
+
+      if (agent.id === 'TRADING_AGENT') {
+        const resp = await agentsApi.createTradingAgentRequest({
+          userId: user.uid,
+          name: 'Rule-Based Trading Agent',
+          tradingPair: 'BTC/USDT',
+          marketType: 'spot',
+        });
+        tradingAgentId = resp.data?.agentId || null;
+      }
+
       // Create agent request document in Firestore
       await addDoc(collection(db, 'agentRequests'), {
         agentId: agent.id,
         agentType: agent.id === 'TRADING_AGENT' ? 'TRADING' : 'COPY',
         requestedBy: user.uid,
         status: 'PENDING_APPROVAL',
+        tradingAgentId,
         createdAt: serverTimestamp()
       });
 

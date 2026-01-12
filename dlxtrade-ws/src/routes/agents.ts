@@ -109,13 +109,9 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       });
 
       // Update user's unlockedAgents array
-      const userData = await firestoreAdapter.getUser(user.uid);
-      const currentUnlocked = userData?.unlockedAgents || [];
-      if (!currentUnlocked.includes(body.agentName)) {
-        await firestoreAdapter.createOrUpdateUser(user.uid, {
-          unlockedAgents: [...currentUnlocked, body.agentName],
-        });
-      }
+      await firestoreAdapter.createOrUpdateUser(user.uid, {
+        unlockedAgents: [body.agentName],
+      });
 
       // Log activity
       await firestoreAdapter.logActivity(user.uid, 'AGENT_UNLOCKED', { agentName: body.agentName });
@@ -446,7 +442,6 @@ export async function agentsRoutes(fastify: FastifyInstance) {
   console.log("[ROUTE READY] POST /api/admin/agents/approve-trading-agent");
   console.log("[ROUTE READY] POST /api/admin/agents/reject-trading-agent");
   console.log("[ROUTE READY] GET /api/agents/trading-agents");
-  console.log("[ROUTE READY] GET /api/agents/trading-agent/:agentId/control");
   console.log("[ROUTE READY] PUT /api/agents/trading-agent/:agentId/settings");
   console.log("[ROUTE READY] POST /api/agents/trading-agent/:agentId/start");
   console.log("[ROUTE READY] POST /api/agents/trading-agent/:agentId/stop");
@@ -609,46 +604,33 @@ export async function agentsRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest<{ Params: { agentId: string } }>, reply: FastifyReply) => {
     try {
       const user = (request as any).user;
+      const uid = user?.uid;
       const { agentId } = request.params;
 
-      // Get agent config
-      const agent = await firestoreAdapter.getTradingAgentConfig(agentId);
-      if (!agent) {
-        return reply.code(404).send({ error: 'Trading agent not found' });
+      if (!uid) {
+        return reply.code(403).send({ error: 'Agent access not granted yet' });
       }
 
-      // Verify ownership
-      if (agent.userId !== user.uid) {
-        return reply.code(403).send({ error: 'Unauthorized' });
+      // Firestore is the source of truth for authorization
+      const userData = await firestoreAdapter.getUser(uid);
+      if (!userData) {
+        return reply.code(403).send({ error: 'Agent access not granted yet' });
       }
 
-      // Get recent trades
-      const trades = await firestoreAdapter.getAgentTrades(agentId, 20);
+      const unlockedAgents = userData.unlockedAgents;
+      if (
+        !Array.isArray(unlockedAgents) ||
+        !unlockedAgents.some(a => typeof a === 'string' && a.startsWith('TRADING_AGENT'))
+      ) {
+        return reply.code(403).send({ error: 'Agent access not granted yet' });
+      }
 
-      // Get performance data
-      const totalTrades = agent.totalTrades || 0;
-      const winningTrades = agent.winningTrades || 0;
-      const losingTrades = agent.losingTrades || 0;
-      const winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0;
-
+      // Fetch agent config
+      const config = await firestoreAdapter.getTradingAgentConfig(agentId);
       return {
-        agent,
-        control: {
-          status: agent.status,
-          lastTradeAt: agent.lastTradeAt,
-          dailyTrades: agent.dailyTrades || 0,
-          consecutiveLosses: agent.consecutiveLosses || 0,
-          dailyPnL: agent.dailyPnL || 0
-        },
-        performance: {
-          totalTrades,
-          winningTrades,
-          losingTrades,
-          winRate,
-          totalPnL: agent.totalPnL || 0,
-          drawdown: agent.drawdown || 0
-        },
-        trades
+        agentId,
+        status: config?.status || 'UNKNOWN',
+        config: config || null,
       };
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error getting trading agent control');

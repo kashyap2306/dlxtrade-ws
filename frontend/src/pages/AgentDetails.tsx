@@ -27,7 +27,13 @@ export default function AgentDetails() {
 
       // Special handling for TRADING_AGENT - redirect to control page
       if (agentId === 'TRADING_AGENT' && hasAccess) {
-        navigate('/agents/trading-agent/TRADING_AGENT', { replace: true });
+        navigate('/agents/trading-agent', { replace: true });
+        return;
+      }
+
+      // Special handling for COPY_TRADING_AGENT - redirect to crowd consensus page
+      if (agentId === 'COPY_TRADING_AGENT' && hasAccess) {
+        navigate('/agents/crowd-consensus', { replace: true });
         return;
       }
 

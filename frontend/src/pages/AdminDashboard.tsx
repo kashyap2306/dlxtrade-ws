@@ -109,12 +109,6 @@ export default function AdminDashboard() {
           >
             🔔 Unlock Requests
           </button>
-          <button
-            onClick={() => navigate('/admin/logs')}
-            className="btn btn-secondary"
-          >
-            📋 Logs
-          </button>
         </div>
       </div>
       {toast && <Toast message={toast.message} type={toast.type} />}
