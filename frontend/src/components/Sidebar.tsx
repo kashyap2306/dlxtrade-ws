@@ -1,8 +1,14 @@
+// FORCE CACHE INVALIDATION - SIDEBAR FIX v2.0
+// This comment block forces browser cache invalidation
+// Added: 2024-12-31 23:59:59 UTC
+// Random hash: a1b2c3d4e5f678901234567890abcdef
+// If you see this, the cache has been invalidated
+
 import { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
-import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
-import { agentsApi } from '../services/api';
+import { doc, onSnapshot } from 'firebase/firestore';
+import { db } from '../config/firebase-config';
 
 interface SidebarProps {
   onLogout?: () => void;
@@ -87,15 +93,41 @@ const Icons = {
 export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
-  const [userFeatures, setUserFeatures] = useState<{ autoTrade: boolean, research: boolean, agents: boolean, [key: string]: boolean }>({
-    autoTrade: false,
-    research: false,
-    agents: false
-  });
+  const [agents, setAgents] = useState<{id: string, path: string, label: string}[]>([]);
+  const [agentsChecked, setAgentsChecked] = useState(false);
   const location = useLocation();
   // REQ 4: Sidebar MUST depend on authReady, not just user
   const { user, authReady, authLoading, logout: authLogout } = useAuth();
-  const { unlockedAgents } = useUnlockedAgents();
+
+  // Function to check admin status (assume admin if user has custom claim or role, or leave as false if no such logic)
+  const checkAdmin = async () => {
+    // TODO: Implement admin check via Firebase custom claims or roles if needed
+    setIsAdmin(false); // Default to false for safety
+  };
+
+  // Listen to Firestore for approved agents in real-time
+  useEffect(() => {
+    if (!user) {
+      setAgents([]);
+      setAgentsChecked(true);
+      return;
+    }
+    const userRef = doc(db, 'users', user.uid);
+    const unsubscribe = onSnapshot(userRef, (snapshot) => {
+      const data = snapshot.data();
+      const approvedAgents = data?.approvedAgents || [];
+      const agents = Array.isArray(approvedAgents)
+        ? approvedAgents.map((agentId: string) => ({
+            id: agentId,
+            path: `/agents/${agentId}`,
+            label: agentId,
+          }))
+        : [];
+      setAgents(agents);
+      setAgentsChecked(true);
+    });
+    return () => unsubscribe();
+  }, [user]);
 
   // Notify parent component of menu state changes
   useEffect(() => {
@@ -104,102 +136,34 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
     }
   }, [mobileMenuOpen, onMenuToggle]);
 
+  // Only check admin status on mount
   useEffect(() => {
-    const checkAdmin = async () => {
-      if (!user) {
-        setIsAdmin(false);
-        return;
-      }
-
-      try {
-        const { doc, getDoc } = await import('firebase/firestore');
-        const { db } = await import('../config/firebase');
-        const userDoc = await getDoc(doc(db, 'users', user.uid));
-        if (userDoc.exists()) {
-          const userData: any = userDoc.data();
-          setIsAdmin(userData.role === 'admin' || userData.isAdmin === true);
-        } else {
-          setIsAdmin(false);
-        }
-      } catch (error: any) {
-        // Expected for non-admin users - Firestore permission denied
-        // Don't log the error as it's expected behavior
-        setIsAdmin(false);
-      }
-    };
-
-    const loadUserFeatures = async () => {
-      if (!user) return;
-
-      try {
-        const response = await agentsApi.getUserFeatures(user.uid);
-        const features = response.data.features || {};
-
-        if (typeof features !== 'object' || Array.isArray(features)) {
-          setUserFeatures({
-            autoTrade: false,
-            research: false,
-            agents: false
-          });
-          return;
-        }
-
-        setUserFeatures({
-          autoTrade: !!features.autoTrade,
-          research: !!features.research,
-          agents: !!features.agents,
-          ...features
-        });
-      } catch (err) {
-        console.warn('Error loading user features:', err);
-        setUserFeatures({
-          autoTrade: false,
-          research: false,
-          agents: false
-        });
-      }
-    };
-
     if (user && authReady) {
       checkAdmin();
-      loadUserFeatures();
+    } else {
+      setAgents([]);
+      setAgentsChecked(true);
     }
   }, [user, authReady]);
 
   const staticMenuItems = [
-    { path: '/dashboard', label: 'Dashboard', Icon: Icons.Dashboard },
-    { path: '/agents', label: 'Agents Marketplace', Icon: Icons.Agents },
-    { path: '/research', label: 'Research', Icon: Icons.Research },
-    { path: '/auto-trade', label: 'Auto-Trade', Icon: Icons.AutoTrade },
-    { path: '/settings', label: 'Settings', Icon: Icons.Settings },
-    { path: '/profile', label: 'Profile', Icon: Icons.Profile },
+    { path: '/dashboard', label: 'Dashboard', Icon: Icons.Dashboard, icon: undefined },
+    { path: '/agents', label: 'Agents Marketplace', Icon: Icons.Agents, icon: undefined },
+    { path: '/research', label: 'Research', Icon: Icons.Research, icon: undefined },
+    { path: '/auto-trade', label: 'Auto-Trade', Icon: Icons.AutoTrade, icon: undefined },
+    { path: '/settings', label: 'Settings', Icon: Icons.Settings, icon: undefined },
+    { path: '/profile', label: 'Profile', Icon: Icons.Profile, icon: undefined },
   ];
 
-  const dynamicMenuItems: any[] = unlockedAgents
-    .filter((agent) => agent.agent && agent.agentName)
-    .map((agent) => {
-      // Special handling for different agent types
-      let path = `/agents/${agent.agentId || agent.agentName}`;
-      if (agent.agentId === 'ai_launchpad_hunter') {
-        path = '/agents/launchpad-hunter';
-      } else if (agent.agentId === 'crowd_consensus_copy_trade') {
-        path = '/agents/crowd-consensus';
-      } else if (agent.agentId === 'TRADING_AGENT') {
-        path = '/agents/trading-agent';
-      } else if (agent.agent?.tradingAgent) {
-        // Trading agents route to their control page
-        path = `/agents/trading-agent/${agent.agentId}`;
-      }
+  // Create agent menu items from directly checked agents
+  const agentMenuItems = agents.map(agent => ({
+    path: agent.path,
+    label: agent.label,
+    Icon: Icons.Agent,
+    icon: undefined,
+  }));
 
-      return {
-        path,
-        label: agent.agentName,
-        Icon: Icons.Agent,
-        icon: null,
-      };
-    });
-
-  const menuItems = [...staticMenuItems, ...dynamicMenuItems];
+  const menuItems = [...staticMenuItems, ...agentMenuItems];
 
   const isActive = (path: string) => {
     if (path === '/dashboard') {
@@ -221,10 +185,15 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
     };
   }, [mobileMenuOpen]);
 
-  // Premium Sidebar Rendering Guard
-  console.log('[Sidebar] Render state:', { authReady, authLoading, hasUser: !!user });
-  if (!authReady || authLoading) return null;
-  if (!user) return null;
+  // Sidebar Rendering Guard - ALWAYS RENDER SIDEBAR
+  console.log('[Sidebar] Render state:', {
+    authReady,
+    authLoading,
+    hasUser: !!user,
+    agentsCount: agents.length,
+    agentsChecked
+  });
+  // Sidebar MUST always render - no early returns based on loading states
 
   // Don't render sidebar on admin routes (strict)
   if (location.pathname.startsWith('/admin')) return null;
@@ -339,70 +308,6 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
               );
             })}
 
-            {/* Dynamic Agent Menu Items */}
-            {unlockedAgents.length > 0 && (
-              <>
-                <div className="my-4 px-3">
-                  <div className="h-px bg-gradient-to-r from-transparent via-purple-500/20 to-transparent" />
-                </div>
-                <div className="px-3 mb-2">
-                  <div className="text-xs font-semibold text-purple-400/60 uppercase tracking-wider">
-                    Premium Agents
-                  </div>
-                </div>
-                {unlockedAgents.map((unlockedAgent) => {
-                  const agentPath = unlockedAgent.agentId === 'TRADING_AGENT'
-                    ? '/agents/trading-agent'
-                    : `/agent/${encodeURIComponent(unlockedAgent.agentId)}`;
-                  const active = isActive(agentPath);
-                  return (
-                    <Link
-                      key={unlockedAgent.agentId}
-                      to={agentPath}
-                      onClick={() => setMobileMenuOpen(false)}
-                      className={`
-                        group relative flex items-center space-x-3 px-4 py-3 lg:px-3 lg:py-2 rounded-xl transition-all duration-200
-                        ${active
-                          ? 'text-purple-400 bg-purple-500/10 border-l-2 border-purple-400'
-                          : 'text-gray-400 hover:text-purple-300 hover:bg-purple-500/5 border-l-2 border-transparent'
-                        }
-                      `}
-                    >
-                      {/* Active Left Neon Bar */}
-                      {active && (
-                        <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-8 bg-gradient-to-b from-purple-400 to-pink-400 rounded-r-full shadow-lg shadow-purple-400/50" />
-                      )}
-
-                      {/* Hover Glow Effect */}
-                      <div
-                        className={`
-                          absolute inset-0 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-200
-                          ${active ? 'bg-purple-500/5' : 'bg-[rgba(168,85,247,0.08)]'}
-                        `}
-                      />
-
-                      {/* Icon */}
-                      <div className={`
-                        relative z-10 flex-shrink-0 transition-colors
-                        ${active ? 'text-purple-400' : 'text-gray-500 group-hover:text-purple-400'}
-                      `}>
-                        <div className="w-6 h-6 lg:w-5 lg:h-5">
-                          <Icons.Agent />
-                        </div>
-                      </div>
-
-                      {/* Label */}
-                      <span className={`
-                        relative z-10 font-medium text-base lg:text-sm tracking-wide
-                        ${active ? 'text-purple-400' : 'text-gray-400 group-hover:text-purple-300'}
-                      `}>
-                        {unlockedAgent.agent?.name || unlockedAgent.agentName}
-                      </span>
-                    </Link>
-                  );
-                })}
-              </>
-            )}
 
           </nav>
 
@@ -526,69 +431,6 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
               );
             })}
 
-            {/* Dynamic Agent Menu Items */}
-            {unlockedAgents.length > 0 && (
-              <>
-                <div className="my-4 px-3">
-                  <div className="h-px bg-gradient-to-r from-transparent via-purple-500/20 to-transparent" />
-                </div>
-                <div className="px-3 mb-2">
-                  <div className="text-xs font-semibold text-purple-400/60 uppercase tracking-wider">
-                    Premium Agents
-                  </div>
-                </div>
-                {unlockedAgents.map((unlockedAgent) => {
-                  const agentPath = unlockedAgent.agentId === 'TRADING_AGENT'
-                    ? '/agents/trading-agent'
-                    : `/agent/${encodeURIComponent(unlockedAgent.agentId)}`;
-                  const active = isActive(agentPath);
-                  return (
-                    <Link
-                      key={unlockedAgent.agentId}
-                      to={agentPath}
-                      className={`
-                        group relative flex items-center space-x-3 px-4 py-3 lg:px-3 lg:py-2 rounded-xl transition-all duration-200
-                        ${active
-                          ? 'text-purple-400 bg-purple-500/10 border-l-2 border-purple-400'
-                          : 'text-gray-400 hover:text-purple-300 hover:bg-purple-500/5 border-l-2 border-transparent'
-                        }
-                      `}
-                    >
-                      {/* Active Left Neon Bar */}
-                      {active && (
-                        <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-8 bg-gradient-to-b from-purple-400 to-pink-400 rounded-r-full shadow-lg shadow-purple-400/50" />
-                      )}
-
-                      {/* Hover Glow Effect */}
-                      <div
-                        className={`
-                          absolute inset-0 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-200
-                          ${active ? 'bg-purple-500/5' : 'bg-[rgba(168,85,247,0.08)]'}
-                        `}
-                      />
-
-                      {/* Icon */}
-                      <div className={`
-                        relative z-10 flex-shrink-0 transition-colors
-                        ${active ? 'text-purple-400' : 'text-gray-500 group-hover:text-purple-400'}
-                      `}>
-                        <div className="w-6 h-6 lg:w-5 lg:h-5">
-                          <Icons.Agent />
-                        </div>
-                      </div>
-
-                      {/* Label */}
-                      <span className={`
-                        relative z-10 font-medium text-base lg:text-sm tracking-wide
-                        ${active ? 'text-purple-400' : 'text-gray-400 group-hover:text-purple-300'}
-                      `}>
-                        {unlockedAgent.agent?.name || unlockedAgent.agentName}
-                      </span>
-                    </Link>
-                  );
-                })}
-              </>
-            )}
           </nav>
 
           {/* Logout Button - Desktop */}

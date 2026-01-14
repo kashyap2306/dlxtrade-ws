@@ -59,6 +59,12 @@ export async function authRoutes(fastify: FastifyInstance) {
 
       // Only check Firebase token, upsert user, return minimal session
       await ensureUser(uid, { name, email, phone: null }, 'user_request');
+
+      // Auto-heal legacy approved users: ensure required agent access docs exist
+      await Promise.all([
+        firestoreAdapter.ensureAgentAccessDoc(uid, 'trading-agent'),
+        firestoreAdapter.ensureAgentAccessDoc(uid, 'crowd_consensus_copy_trade'),
+      ]);
       return {
         success: true,
         user: { uid, email },

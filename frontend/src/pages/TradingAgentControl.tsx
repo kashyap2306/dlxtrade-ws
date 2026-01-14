@@ -2,128 +2,134 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import Toast from '../components/Toast';
 import { useAuth } from '../hooks/useAuth';
-import { agentsApi } from '../services/api';
+import { agentsApi, usersApi, settingsApi } from '../services/api';
 import { ErrorBoundary } from '../components/ErrorBoundary';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '../config/firebase-config';
 
 export default function TradingAgentControl() {
-  const { agentId } = useParams<{ agentId: string }>();
-  const { user } = useAuth();
+  const { user, authReady } = useAuth();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
-  const [agent, setAgent] = useState<any>(null);
   const [trades, setTrades] = useState<any[]>([]);
-  const [resolvedAgentId, setResolvedAgentId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'settings' | 'trades'>('dashboard');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-  const [updatingSettings, setUpdatingSettings] = useState(false);
-  const [accessDenied, setAccessDenied] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [settings, setSettings] = useState({
-    riskPerTrade: 1.0,
-    maxConcurrentTrades: 1,
-    maxTradesPerDay: 6,
-    apiKey: '',
-    apiSecret: ''
-  });
+  const [agentAccessChecked, setAgentAccessChecked] = useState(false);
+  const [hasAgentAccess, setHasAgentAccess] = useState(false);
+  const [resolvedAgentId, setResolvedAgentId] = useState<string | null>(null);
 
+  const [exchangeConfig, setExchangeConfig] = useState<any | null>(null);
+  const [autoTradeEnabled, setAutoTradeEnabled] = useState(false);
+  const [togglingAutoTrade, setTogglingAutoTrade] = useState(false);
+  const [skippedTrades, setSkippedTrades] = useState<any[]>([]);
+  const [agentConfig, setAgentConfig] = useState<any | null>(null);
+
+  // Check user-agent linkage document directly and resolve agent ID
   useEffect(() => {
-    if (!user) return;
-
-    const resolveTradingAgentId = async () => {
-      // If a concrete agentId is already provided (and it's not the constant), use it.
-      if (agentId && agentId !== 'TRADING_AGENT') {
-        setResolvedAgentId(agentId);
-        return;
-      }
+    const checkAgentAccess = async () => {
+      if (!user) return;
 
       try {
-        const resp = await agentsApi.getUserTradingAgents();
-        const agents = resp.data?.agents;
-        const list = Array.isArray(agents) ? agents : [];
+        const userAgentRef = doc(db, 'users', user.uid, 'agents', 'trading-agent');
+        const userAgentDoc = await getDoc(userAgentRef);
 
-        // Prefer the most recently created agent (backend sorts by createdAt desc)
-        const realId =
-          (list[0] && (list[0].id || list[0].agentId)) ||
-          null;
+        const hasAccess = userAgentDoc.exists();
+        setHasAgentAccess(hasAccess);
 
-        if (!realId) {
-          setResolvedAgentId(null);
-          setLoadError('No trading agent found for your account');
-          setLoading(false);
-          return;
+        if (hasAccess) {
+          // Resolve the actual agent ID by fetching user's trading agents
+          const userAgentsResp = await agentsApi.getUserTradingAgents();
+          const agents = userAgentsResp.data?.agents || [];
+
+          // Find trading agent automatically (don't require ACTIVE status)
+          let tradingAgent = null;
+
+          // First try to find an ACTIVE trading agent
+          tradingAgent = agents.find((agent: any) => agent.status === 'ACTIVE');
+
+          // If no active agent, find any trading agent (they should have been created)
+          if (!tradingAgent) {
+            // Look for agents with trading-related properties or the first available agent
+            tradingAgent = agents.find((agent: any) =>
+              agent.name?.toLowerCase().includes('trading') ||
+              agent.type === 'TRADING_AGENT' ||
+              agent.tradingPair // Has trading configuration
+            ) || agents[0]; // Fallback to first agent if available
+          }
+
+          // Clean agentId by removing "agent_" prefix if present
+          const cleanAgentId = tradingAgent?.id?.replace(/^agent_/, '') || null;
+          console.log('[TRADING_AGENT] Resolved agent:', cleanAgentId, tradingAgent?.status);
+          setResolvedAgentId(cleanAgentId);
         }
 
-        setResolvedAgentId(realId);
-
-        // If user landed on /agents/trading-agent or legacy /.../TRADING_AGENT, normalize URL.
-        if (!agentId || agentId === 'TRADING_AGENT') {
-          navigate(`/agents/trading-agent/${encodeURIComponent(realId)}`, { replace: true });
-        }
-      } catch (err) {
-        setResolvedAgentId(null);
-        setLoadError('Failed to load trading agent');
-        setLoading(false);
+        setAgentAccessChecked(true);
+      } catch (error) {
+        console.error('Error checking agent access:', error);
+        setHasAgentAccess(false);
+        setAgentAccessChecked(true);
       }
     };
 
-    resolveTradingAgentId();
-  }, [user, agentId, navigate]);
+    checkAgentAccess();
+  }, [user]);
 
+  // Load exchange config independently of agent status
   useEffect(() => {
-    if (user && resolvedAgentId) {
-      loadAgentData(resolvedAgentId);
-    }
-  }, [user, resolvedAgentId]);
+    if (!user) return;
 
-  const loadAgentData = async (effectiveAgentId: string) => {
-    if (!effectiveAgentId || !user) return;
+    const loadExchangeConfig = async () => {
+      try {
+        const exchangeResp = await settingsApi.loadExchangeConfig(user.uid);
+        console.log('[TRADING_AGENT] Exchange config loaded:', exchangeResp.data);
+        setExchangeConfig(exchangeResp.data || {});
+      } catch (err) {
+        console.warn('[TRADING_AGENT] Failed to load exchange config:', err);
+        setExchangeConfig({});
+      }
+    };
+
+    loadExchangeConfig();
+  }, [user]);
+
+  // Clear loading state when agent access check is complete but no agent is resolved
+  useEffect(() => {
+    if (agentAccessChecked && !resolvedAgentId) {
+      setLoading(false);
+    }
+  }, [agentAccessChecked, resolvedAgentId]);
+
+  // Load data when access is confirmed and agent ID is resolved
+  useEffect(() => {
+    if (!user || !hasAgentAccess || !resolvedAgentId) return;
+
+    loadData();
+  }, [user, hasAgentAccess, resolvedAgentId]);
+
+  const loadData = async () => {
+    if (!user || !resolvedAgentId) {
+      console.warn('loadData: Skipping API calls - agentId not resolved yet');
+      setLoading(false); // Always clear loading state
+      return;
+    }
 
     setLoading(true);
-    setAccessDenied(false);
-    setLoadError(null);
     try {
-      const response = await agentsApi.getTradingAgentControl(effectiveAgentId);
-      const data = response.data || {};
+      // Load agent status and config
+      const agentResp = await agentsApi.getTradingAgentControl(resolvedAgentId);
+      setAutoTradeEnabled(agentResp.data?.status === 'ACTIVE');
+      setAgentConfig(agentResp.data?.config || null);
 
-      const config = data.config || null;
-      const normalizedAgent = config
-        ? {
-            ...config,
-            id: data.agentId || effectiveAgentId,
-            status: data.status || config.status || 'UNKNOWN',
-          }
-        : {
-            id: data.agentId || effectiveAgentId,
-            status: data.status || 'UNKNOWN',
-          };
+      // Load trades from the trading agent
+      const tradesResp = await agentsApi.getTradingAgentTrades(resolvedAgentId, 20);
+      setTrades(tradesResp.data?.trades || []);
 
-      setAgent(normalizedAgent);
+      // Load diagnostics/skipped trades
+      const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(resolvedAgentId, 20);
+      setSkippedTrades(diagnosticsResp.data?.diagnostics || []);
 
-      setSettings({
-        riskPerTrade: normalizedAgent.riskPerTrade || 1.0,
-        maxConcurrentTrades: normalizedAgent.maxConcurrentTrades || 1,
-        maxTradesPerDay: normalizedAgent.maxTradesPerDay || 6,
-        apiKey: normalizedAgent.apiKey || '',
-        apiSecret: normalizedAgent.apiSecret || ''
-      });
-
-      try {
-        const tradesResp = await agentsApi.getTradingAgentTrades(effectiveAgentId, 20);
-        setTrades(tradesResp.data?.trades || []);
-      } catch (tradesErr: any) {
-        setTrades([]);
-      }
     } catch (err: any) {
-      console.error('Error loading agent data:', err);
-
-      if (err?.response?.status === 403) {
-        setAccessDenied(true);
-        setAgent({ id: effectiveAgentId, status: 'UNKNOWN' });
-        return;
-      }
-
-      setLoadError(err?.response?.data?.error || 'Failed to load agent data');
-      showToast('Failed to load agent data', 'error');
+      console.error('Error loading data:', err);
+      showToast('Failed to load data', 'error');
     } finally {
       setLoading(false);
     }
@@ -134,67 +140,90 @@ export default function TradingAgentControl() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  const handleUpdateSettings = async () => {
-    if (!resolvedAgentId) return;
-
-    setUpdatingSettings(true);
-    try {
-      await agentsApi.updateTradingAgentSettings(resolvedAgentId, settings);
-      showToast('Settings updated successfully', 'success');
-      await loadAgentData(resolvedAgentId); // Reload to get updated data
-    } catch (err: any) {
-      showToast(err.response?.data?.error || 'Failed to update settings', 'error');
-    } finally {
-      setUpdatingSettings(false);
-    }
+  const isExchangeConnected = (cfg: any): { connected: boolean; exchange?: string } => {
+    // Use the same simple exchange connection check as Settings and Dashboard
+    const connected = Boolean(cfg && cfg.exchange);
+    const exchange = cfg?.exchange || undefined;
+    return { connected, exchange };
   };
 
-  const handleAgentAction = async (action: 'start' | 'stop' | 'pause' | 'resume') => {
-    if (!resolvedAgentId) return;
+  const handleToggleAutoTrade = async (nextEnabled: boolean) => {
+    if (!resolvedAgentId) {
+      console.warn('handleToggleAutoTrade: Skipping API call - agentId not resolved yet');
+      showToast('Agent not ready yet', 'error');
+      return;
+    }
 
-    try {
-      switch (action) {
-        case 'start':
-          await agentsApi.startTradingAgent(resolvedAgentId);
-          showToast('Trading agent started successfully', 'success');
-          break;
-        case 'stop':
-          await agentsApi.stopTradingAgent(resolvedAgentId);
-          showToast('Trading agent stopped successfully', 'success');
-          break;
-        case 'pause':
-          await agentsApi.pauseTradingAgent(resolvedAgentId);
-          showToast('Trading agent paused successfully', 'success');
-          break;
-        case 'resume':
-          await agentsApi.resumeTradingAgent(resolvedAgentId);
-          showToast('Trading agent resumed successfully', 'success');
-          break;
+    // Validate exchange connection before starting trading
+    if (nextEnabled) {
+      const exchangeStatus = isExchangeConnected(exchangeConfig);
+      if (!exchangeStatus.connected) {
+        showToast('Exchange not connected. Please connect your exchange in Settings first.', 'error');
+        return;
       }
-      await loadAgentData(resolvedAgentId); // Reload to get updated status
+    }
+
+    setTogglingAutoTrade(true);
+    try {
+      if (nextEnabled) {
+        await agentsApi.startTradingAgent(resolvedAgentId);
+        setAutoTradeEnabled(true);
+        showToast('Auto trading started', 'success');
+      } else {
+        await agentsApi.stopTradingAgent(resolvedAgentId);
+        setAutoTradeEnabled(false);
+        showToast('Auto trading stopped', 'success');
+      }
     } catch (err: any) {
-      showToast(err.response?.data?.error || `Failed to ${action} agent`, 'error');
+      showToast(err.response?.data?.error || 'Failed to update auto trade', 'error');
+      // Don't change the state if the API call failed
+    } finally {
+      setTogglingAutoTrade(false);
     }
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'ACTIVE': return 'text-green-400';
-      case 'PAUSED': return 'text-yellow-400';
-      case 'STOPPED': return 'text-red-400';
-      default: return 'text-gray-400';
-    }
-  };
+  // Strict render guards: Wait for auth and agent access check
+  if (!authReady || !agentAccessChecked) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
+          <p className="text-blue-200">Loading...</p>
+        </div>
+      </div>
+    );
+  }
 
-  const getStatusBadge = (status: string) => {
-    const colors = {
-      ACTIVE: 'bg-green-600/20 text-green-400 border-green-500/30',
-      PAUSED: 'bg-yellow-600/20 text-yellow-400 border-yellow-500/30',
-      STOPPED: 'bg-red-600/20 text-red-400 border-red-500/30',
-      PENDING_APPROVAL: 'bg-blue-600/20 text-blue-400 border-blue-500/30'
-    };
-    return colors[status as keyof typeof colors] || 'bg-gray-600/20 text-gray-400 border-gray-500/30';
-  };
+  // Check user-agent linkage document directly
+  if (!hasAgentAccess) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
+        <div className="text-center">
+          <div className="text-red-400 text-lg mb-4">Access Denied</div>
+          <div className="text-gray-400">You don't have access to Trading Agent</div>
+        </div>
+      </div>
+    );
+  }
+
+  // Check if user has access to trading agent (document exists)
+  if (agentAccessChecked && !hasAgentAccess) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
+        <div className="text-center">
+          <h2 className="text-2xl font-bold text-white mb-4">Agent access not granted yet</h2>
+          <p className="text-gray-400 mb-6">Trading Agent access not granted yet</p>
+          <button
+            onClick={() => navigate('/agents')}
+            className="btn btn-primary"
+          >
+            Back to Agents
+          </button>
+        </div>
+      </div>
+    );
+  }
+
 
   if (loading) {
     return (
@@ -207,408 +236,167 @@ export default function TradingAgentControl() {
     );
   }
 
-  if (accessDenied) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
-        <div className="text-center">
-          <h2 className="text-2xl font-bold text-white mb-4">Agent access not granted yet</h2>
-          <p className="text-gray-400 mb-6">Agent access not granted yet</p>
-          <button
-            onClick={() => navigate('/agents')}
-            className="btn btn-primary"
-          >
-            Back to Agents
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (!agent) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
-        <div className="text-center">
-          <h2 className="text-2xl font-bold text-white mb-4">Unable to load agent</h2>
-          <p className="text-gray-400 mb-6">{loadError || 'Failed to load agent data'}</p>
-          <button
-            onClick={() => navigate('/agents')}
-            className="btn btn-primary"
-          >
-            Back to Agents
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <ErrorBoundary>
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
-        {/* Animated background elements */}
-        <div className="fixed inset-0 overflow-hidden pointer-events-none z-0">
-          <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob"></div>
-          <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-blue-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-2000"></div>
-        </div>
+        <div className="p-6 max-w-5xl mx-auto space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-2xl font-semibold text-white">Trading Agent</h1>
+              <div className="text-sm text-gray-400">
+                BTC/USDT • ETH/USDT • RSI + Bollinger Bands Strategy
+              </div>
+            </div>
+            <button onClick={() => navigate('/agents')} className="btn btn-secondary">Back</button>
+          </div>
 
-        <div className="relative z-10 p-6 max-w-7xl mx-auto">
-          {/* Header */}
-          <div className="mb-8">
-            <button
-              onClick={() => navigate('/agents')}
-              className="text-purple-400 hover:text-purple-300 mb-4 inline-flex items-center"
-            >
-              ← Back to Agents
-            </button>
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent mb-2">
-              ⚡ AlphaTrade Pro
-            </h1>
-            <div className="flex items-center space-x-4 text-gray-400">
-              <span>{agent.tradingPair} • {agent.marketType}</span>
-              <span className={`px-3 py-1 rounded-full text-sm font-medium border ${getStatusBadge(agent.status)}`}>
-                {agent.status}
-              </span>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="bg-slate-800/40 border border-purple-500/20 rounded-xl p-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm text-gray-400">Exchange Connection</div>
+                  {(() => {
+                    const s = isExchangeConnected(exchangeConfig);
+                    return (
+                      <div className="text-white font-medium mt-1">
+                        {s.connected ? `Connected${s.exchange ? ` • ${s.exchange}` : ''}` : 'Not Connected'}
+                      </div>
+                    );
+                  })()}
+                </div>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => navigate('/settings#exchange-connection')}
+                >
+                  Manage
+                </button>
+              </div>
+              <div className="text-xs text-gray-500 mt-2">Uses Settings → Exchange. You can’t connect a second exchange here.</div>
+            </div>
+
+            <div className="bg-slate-800/40 border border-purple-500/20 rounded-xl p-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm text-gray-400">Auto Trade</div>
+                  <div className="text-white font-medium mt-1">
+                    {resolvedAgentId ? (autoTradeEnabled ? 'Running' : 'Stopped') : 'Agent Not Ready'}
+                  </div>
+                  {agentConfig?.dryRun && (
+                    <div className="text-yellow-400 text-xs mt-1 font-medium">
+                      DRY RUN MODE - No real trades
+                    </div>
+                  )}
+                </div>
+                <button
+                  className="btn btn-primary"
+                  disabled={togglingAutoTrade || !resolvedAgentId || !isExchangeConnected(exchangeConfig).connected}
+                  onClick={() => handleToggleAutoTrade(!autoTradeEnabled)}
+                >
+                  {togglingAutoTrade ? 'Updating…' : autoTradeEnabled ? 'Stop Trading' : 'Start Trading'}
+                </button>
+              </div>
             </div>
           </div>
 
-          {/* Tab Navigation */}
-          <div className="flex space-x-1 mb-8 bg-slate-800/50 p-1 rounded-lg backdrop-blur-sm">
-            {[
-              { id: 'dashboard', label: 'Dashboard', icon: '📊' },
-              { id: 'settings', label: 'Settings', icon: '⚙️' },
-              { id: 'trades', label: 'Trade History', icon: '📋' },
-            ].map((tab) => (
+          <div className="bg-slate-800/40 border border-purple-500/20 rounded-xl p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-white">Trades History</h2>
               <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
-                className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-all ${
-                  activeTab === tab.id
-                    ? 'bg-purple-600 text-white shadow-lg'
-                    : 'text-gray-400 hover:text-white hover:bg-slate-700/50'
-                }`}
+                className="btn btn-secondary"
+                onClick={() => loadData()}
+                disabled={loading}
               >
-                {tab.icon} {tab.label}
+                {loading ? 'Loading...' : 'Refresh'}
               </button>
-            ))}
+            </div>
+
+            {trades.length === 0 ? (
+              <div className="text-sm text-gray-400">No trades yet</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="text-gray-400 border-b border-purple-500/20">
+                      <th className="text-left py-2 pr-4 font-medium">Pair</th>
+                      <th className="text-left py-2 pr-4 font-medium">Side</th>
+                      <th className="text-left py-2 pr-4 font-medium">Entry Price</th>
+                      <th className="text-left py-2 pr-4 font-medium">SL</th>
+                      <th className="text-left py-2 pr-4 font-medium">TP</th>
+                      <th className="text-left py-2 pr-4 font-medium">Result</th>
+                      <th className="text-left py-2 pr-4 font-medium">Timestamp</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {trades.map((trade) => (
+                      <tr key={trade.id} className="border-b border-purple-500/10">
+                        <td className="py-2 pr-4 text-gray-300">{trade.symbol || 'BTC/USDT'}</td>
+                        <td className={`py-2 pr-4 ${trade.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>{trade.direction || 'BUY'}</td>
+                        <td className="py-2 pr-4 text-gray-300">{typeof trade.entryPrice === 'number' ? `$${trade.entryPrice.toFixed(2)}` : '-'}</td>
+                        <td className="py-2 pr-4 text-gray-300">{typeof trade.stopLoss === 'number' ? `$${trade.stopLoss.toFixed(2)}` : '-'}</td>
+                        <td className="py-2 pr-4 text-gray-300">{typeof trade.takeProfit === 'number' ? `$${trade.takeProfit.toFixed(2)}` : '-'}</td>
+                        <td className={`py-2 pr-4 ${trade.result === 'WIN' ? 'text-green-400' : trade.result === 'LOSS' ? 'text-red-400' : 'text-gray-400'}`}>
+                          {trade.result || (trade.status === 'OPEN' ? 'OPEN' : 'CLOSED')}
+                        </td>
+                        <td className="py-2 pr-4 text-gray-300">{trade.entryTime ? new Date(trade.entryTime).toLocaleString() : '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
-          {/* Dashboard Tab */}
-          {activeTab === 'dashboard' && (
-            <>
-              {/* Agent Status & Controls */}
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-                <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-xl p-6">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="text-lg font-semibold text-white mb-1">Status</h3>
-                      <p className={`font-medium ${getStatusColor(agent.status)}`}>
-                        {agent.status}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="mt-4 space-y-2">
-                    {agent.status === 'STOPPED' && (
-                      <button
-                        onClick={() => handleAgentAction('start')}
-                        className="w-full btn btn-primary text-sm"
-                      >
-                        ▶️ Start Agent
-                      </button>
-                    )}
-                    {agent.status === 'ACTIVE' && (
-                      <>
-                        <button
-                          onClick={() => handleAgentAction('pause')}
-                          className="w-full btn btn-secondary text-sm mb-2"
-                        >
-                          ⏸️ Pause Agent
-                        </button>
-                        <button
-                          onClick={() => handleAgentAction('stop')}
-                          className="w-full btn btn-danger text-sm"
-                        >
-                          ⏹️ Stop Agent
-                        </button>
-                      </>
-                    )}
-                    {agent.status === 'PAUSED' && (
-                      <>
-                        <button
-                          onClick={() => handleAgentAction('resume')}
-                          className="w-full btn btn-primary text-sm mb-2"
-                        >
-                          ▶️ Resume Agent
-                        </button>
-                        <button
-                          onClick={() => handleAgentAction('stop')}
-                          className="w-full btn btn-danger text-sm"
-                        >
-                          ⏹️ Stop Agent
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
+          {/* Diagnostics / Skipped Trades */}
+          <div className="bg-slate-800/40 border border-purple-500/20 rounded-xl p-5">
+            <h2 className="text-lg font-semibold text-white mb-4">Diagnostics / Skipped Trades</h2>
 
-                <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-xl p-6">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="text-lg font-semibold text-white mb-1">Daily Trades</h3>
-                      <p className="text-blue-400 font-medium">{agent.dailyTrades || 0}/{agent.maxTradesPerDay}</p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-xl p-6">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="text-lg font-semibold text-white mb-1">Win Rate</h3>
-                      <p className="text-green-400 font-medium">{typeof agent.winRate === 'number' && !isNaN(agent.winRate) ? agent.winRate.toFixed(1) : '0.0'}%</p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-xl p-6">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="text-lg font-semibold text-white mb-1">Total P&amp;L</h3>
-                      <p className={`font-medium ${(typeof agent.totalPnL === 'number' && agent.totalPnL >= 0) ? 'text-green-400' : 'text-red-400'}`}>
-                        ${typeof agent.totalPnL === 'number' && !isNaN(agent.totalPnL) ? agent.totalPnL.toFixed(2) : '0.00'}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Strategy Overview */}
-              <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-xl p-6 mb-8">
-                <h2 className="text-xl font-bold text-white mb-6">Strategy Overview</h2>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <h3 className="text-lg font-semibold text-white mb-4">Entry Conditions</h3>
-                    <div className="space-y-2 text-gray-300">
-                      <div className="flex items-center">
-                        <span className="w-2 h-2 bg-green-500 rounded-full mr-3"></span>
-                        Price &gt; EMA 50 (trend filter)
-                      </div>
-                      <div className="flex items-center">
-                        <span className="w-2 h-2 bg-green-500 rounded-full mr-3"></span>
-                        RSI (14) &lt; 30 (oversold)
-                      </div>
-                      <div className="flex items-center">
-                        <span className="w-2 h-2 bg-green-500 rounded-full mr-3"></span>
-                        Price below Lower Bollinger Band
-                      </div>
-                    </div>
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-semibold text-white mb-4">Risk Management</h3>
-                    <div className="space-y-2 text-gray-300">
-                      <div className="flex items-center">
-                        <span className="w-2 h-2 bg-blue-500 rounded-full mr-3"></span>
-                        Stop Loss: 1 × ATR from entry
-                      </div>
-                      <div className="flex items-center">
-                        <span className="w-2 h-2 bg-blue-500 rounded-full mr-3"></span>
-                        Take Profit: 0.8 × ATR from entry
-                      </div>
-                      <div className="flex items-center">
-                        <span className="w-2 h-2 bg-blue-500 rounded-full mr-3"></span>
-                        {agent.riskPerTrade}% risk per trade
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Recent Trades */}
-              <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-xl p-6">
-                <h2 className="text-xl font-bold text-white mb-6">Recent Trades</h2>
-                {trades.length === 0 ? (
-                  <div className="text-center py-8">
-                    <p className="text-gray-400">No trades yet</p>
-                  </div>
-                ) : (
-                  <div className="space-y-4">
-                    {trades.slice(0, 5).map((trade) => (
-                      <div key={trade.id} className="flex items-center justify-between p-4 bg-slate-700/30 rounded-lg">
-                        <div>
-                          <div className="flex items-center space-x-3 mb-2">
-                            <span className={`px-2 py-1 rounded text-xs font-medium ${
-                              trade.direction === 'LONG' ? 'bg-green-600/20 text-green-400' : 'bg-red-600/20 text-red-400'
-                            }`}>
-                              {trade.direction}
-                            </span>
-                            <span className="text-white font-medium">${trade.entryPrice}</span>
-                            <span className={`text-sm ${trade.status === 'CLOSED' ? 'text-green-400' : 'text-yellow-400'}`}>
-                              {trade.status}
-                            </span>
-                          </div>
-                          <p className="text-gray-400 text-sm">
-                            {new Date(trade.entryTime).toLocaleString()}
-                          </p>
-                        </div>
-                        {trade.pnl && (
-                          <div className={`text-right ${trade.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            <p className="font-medium">${trade.pnl.toFixed(2)}</p>
-                          </div>
-                        )}
-                      </div>
+            {skippedTrades.length === 0 ? (
+              <div className="text-sm text-gray-400">No skipped trades</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="text-gray-400 border-b border-purple-500/20">
+                      <th className="text-left py-2 pr-4 font-medium">Pair</th>
+                      <th className="text-left py-2 pr-4 font-medium">Direction</th>
+                      <th className="text-left py-2 pr-4 font-medium">Reason</th>
+                      <th className="text-left py-2 pr-4 font-medium">Timestamp</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {skippedTrades.map((skipped, index) => (
+                      <tr key={index} className="border-b border-purple-500/10">
+                        <td className="py-2 pr-4 text-white font-medium">
+                          {skipped.tradingPair || skipped.pair || 'BTC/USDT'}
+                        </td>
+                        <td className={`py-2 pr-4 font-medium ${
+                          skipped.signal?.direction === 'LONG' || skipped.direction === 'LONG'
+                            ? 'text-green-400'
+                            : 'text-red-400'
+                        }`}>
+                          {skipped.signal?.direction || skipped.direction || 'LONG'}
+                        </td>
+                        <td className="py-2 pr-4">
+                          <span className={`px-2 py-1 rounded text-xs ${
+                            skipped.decision?.reason?.includes('SR') ? 'bg-purple-500/20 text-purple-400' :
+                            skipped.decision?.reason?.includes('RR') ? 'bg-orange-500/20 text-orange-400' :
+                            skipped.decision?.reason?.includes('session') ? 'bg-blue-500/20 text-blue-400' :
+                            skipped.decision?.reason?.includes('candle') ? 'bg-yellow-500/20 text-yellow-400' :
+                            'bg-gray-500/20 text-gray-400'
+                          }`}>
+                            {skipped.decision?.reason || skipped.reason || 'NO_SIGNAL'}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-4 text-gray-300">
+                          {skipped.timestamp ? new Date(skipped.timestamp).toLocaleString() : '-'}
+                        </td>
+                      </tr>
                     ))}
-                  </div>
-                )}
+                  </tbody>
+                </table>
               </div>
-            </>
-          )}
-
-          {/* Settings Tab */}
-          {activeTab === 'settings' && (
-            <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-xl p-6">
-              <h2 className="text-xl font-bold text-white mb-6">Agent Settings</h2>
-              <div className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-2">
-                      Risk per Trade (%)
-                    </label>
-                    <input
-                      type="number"
-                      value={settings.riskPerTrade}
-                      onChange={(e) => setSettings({ ...settings, riskPerTrade: parseFloat(e.target.value) || 1.0 })}
-                      className="input w-full"
-                      min="0.1"
-                      max="5"
-                      step="0.1"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-2">
-                      Max Concurrent Trades
-                    </label>
-                    <input
-                      type="number"
-                      value={settings.maxConcurrentTrades}
-                      onChange={(e) => setSettings({ ...settings, maxConcurrentTrades: parseInt(e.target.value) || 1 })}
-                      className="input w-full"
-                      min="1"
-                      max="2"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-2">
-                      Max Trades per Day
-                    </label>
-                    <input
-                      type="number"
-                      value={settings.maxTradesPerDay}
-                      onChange={(e) => setSettings({ ...settings, maxTradesPerDay: parseInt(e.target.value) || 6 })}
-                      className="input w-full"
-                      min="1"
-                      max="10"
-                    />
-                  </div>
-                </div>
-
-                <div className="border-t border-purple-500/20 pt-6">
-                  <h3 className="text-lg font-semibold text-white mb-4">Exchange API Credentials</h3>
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-300 mb-2">
-                        API Key
-                      </label>
-                      <input
-                        type="password"
-                        value={settings.apiKey}
-                        onChange={(e) => setSettings({ ...settings, apiKey: e.target.value })}
-                        className="input w-full"
-                        placeholder="Enter your exchange API key"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-300 mb-2">
-                        API Secret
-                      </label>
-                      <input
-                        type="password"
-                        value={settings.apiSecret}
-                        onChange={(e) => setSettings({ ...settings, apiSecret: e.target.value })}
-                        className="input w-full"
-                        placeholder="Enter your exchange API secret"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="pt-4">
-                  <button
-                    onClick={handleUpdateSettings}
-                    disabled={updatingSettings}
-                    className="btn btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {updatingSettings ? 'Updating...' : '💾 Save Settings'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Trades Tab */}
-          {activeTab === 'trades' && (
-            <div className="space-y-6">
-              <h2 className="text-2xl font-bold text-white">Trade History</h2>
-              {trades.length === 0 ? (
-                <div className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-xl p-8 text-center">
-                  <p className="text-gray-400">No trades yet</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {trades.map((trade) => (
-                    <div key={trade.id} className="bg-gradient-to-br from-slate-800/70 via-slate-800/50 to-slate-900/70 backdrop-blur-sm border border-purple-500/30 rounded-xl p-6">
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <div className="flex items-center space-x-3 mb-2">
-                            <span className={`px-2 py-1 rounded text-xs font-medium ${
-                              trade.direction === 'LONG' ? 'bg-green-600/20 text-green-400' : 'bg-red-600/20 text-red-400'
-                            }`}>
-                              {trade.direction}
-                            </span>
-                            <span className="text-white font-medium">${trade.entryPrice}</span>
-                            <span className={`text-sm ${trade.status === 'CLOSED' ? 'text-green-400' : 'text-yellow-400'}`}>
-                              {trade.status}
-                            </span>
-                          </div>
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm text-gray-400 mt-4">
-                            <div>
-                              <span className="block text-gray-500">Entry Time</span>
-                              <span className="text-white">{new Date(trade.entryTime).toLocaleString()}</span>
-                            </div>
-                            <div>
-                              <span className="block text-gray-500">Stop Loss</span>
-                              <span className="text-white">${trade.stopLoss}</span>
-                            </div>
-                            <div>
-                              <span className="block text-gray-500">Take Profit</span>
-                              <span className="text-white">${trade.takeProfit}</span>
-                            </div>
-                            <div>
-                              <span className="block text-gray-500">Quantity</span>
-                              <span className="text-white">{trade.quantity}</span>
-                            </div>
-                          </div>
-                          {trade.pnl && (
-                            <div className="mt-4 pt-4 border-t border-purple-500/20">
-                              <div className={`text-lg font-medium ${trade.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                P&L: ${trade.pnl.toFixed(2)}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
         {toast && <Toast message={toast.message} type={toast.type} />}

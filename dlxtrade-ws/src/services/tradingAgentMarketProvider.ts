@@ -22,8 +22,13 @@ export class TradingAgentMarketProvider implements MarketDataProvider {
       // Map timeframe to exchange format
       const exchangeTimeframe = this.mapTimeframe(timeframe);
 
-      // Get klines from exchange
-      const klines = await this.exchangeConnector.getKlines(symbol, exchangeTimeframe, limit);
+      // For Bitget COIN-M Futures, use dedicated method
+      let klines: any[];
+      if (this.exchange === 'bitget') {
+        klines = await (this.exchangeConnector as any).getCoinMKlines(symbol, exchangeTimeframe, limit);
+      } else {
+        klines = await this.exchangeConnector.getKlines(symbol, exchangeTimeframe, limit);
+      }
 
       // Convert to our CandleData format
       return klines.map((kline: any) => ({
@@ -50,6 +55,15 @@ export class TradingAgentMarketProvider implements MarketDataProvider {
    */
   async getAccountBalance(): Promise<{ equity: number; available: number }> {
     try {
+      // For Bitget COIN-M Futures, use dedicated COIN-M balance method
+      if (this.exchange === 'bitget' && (this.exchangeConnector as any).getCoinMBalance) {
+        const coinMBalance = await (this.exchangeConnector as any).getCoinMBalance();
+        return {
+          equity: coinMBalance.totalBalance,
+          available: coinMBalance.availableBalance
+        };
+      }
+
       // Try futures balance first for perpetual futures
       if (this.exchangeConnector.getFuturesBalance) {
         const futuresBalance = await this.exchangeConnector.getFuturesBalance();

@@ -322,20 +322,20 @@ export const usersApi = {
 
 // Agents - routes already include /api prefix from baseURL
 export const agentsApi = {
-  getAll: () => api.get('/agents'),
-  get: (id: string) => api.get(`/agents/${id}`),
-  unlock: (agentName: string) => api.post('/agents/unlock', { agentName }),
-  getUnlocks: () => api.get('/agents/unlocks'),
-  getUnlocked: () => api.get('/agents/unlocked'),
-  submitUnlockRequest: (data: { agentId: string; agentName: string; fullName: string; phoneNumber: string; email: string }) =>
-    api.post('/agents/submit-unlock-request', data),
-  // New endpoints for agent marketplace
-  getUserAgents: (uid: string) => api.get(`/users/${uid}/agents`),
-  createPurchaseRequest: (data: { agentId: string; agentName: string; userName: string; email: string; phoneNumber: string }) =>
-    api.post('/agents/purchase-request', data),
-  approvePurchaseRequest: (requestId: string) => api.post('/admin/agents/approve', { requestId }),
-  getPurchaseRequests: (status?: string) => api.get('/admin/agents/purchase-requests', { params: status ? { status } : {} }),
-  getUserFeatures: (uid: string) => api.get(`/users/${uid}/features`),
+  // ===== NEW POSTGRESQL-BASED AGENT APPROVAL SYSTEM =====
+  // Agent marketplace
+  getAvailableAgents: () => api.get('/agents/available'),
+  // requestAgent: (agentId: string) => api.post('/agents/request', { agent_id: agentId }),
+  // getMyRequests: () => api.get('/agents/my-requests'),
+  // getMyApprovedAgents: () => api.get('/agents/my-approved'),
+
+  // Admin endpoints (DISABLED: Use Firebase/Firestore only for agent approval)
+  // getAdminAgentRequests: () => api.get('/admin/agents/requests'),
+  // approveAgentRequest: (requestId: number) => api.post('/admin/agents/approve', { request_id: requestId }),
+  // rejectAgentRequest: (requestId: number, reason?: string) => api.post('/admin/agents/reject', { request_id: requestId, reason }),
+  // assignAgentToUser: (email: string, agentId: string) => api.post('/admin/agents/assign', { email, agent_id: agentId }),
+  // revokeAgentAccess: (userId: string, agentId: string) => api.delete('/admin/agents/revoke', { data: { user_id: userId, agent_id: agentId } }),
+  // getAgentStats: () => api.get('/admin/agents/stats'),
   // Trading agent endpoints
   createTradingAgentRequest: (data: { userId: string; name: string; tradingPair: 'BTC/USDT' | 'ETH/USDT'; marketType: 'spot' | 'futures' }) =>
     api.post('/agents/trading-agent-request', data),
@@ -343,14 +343,15 @@ export const agentsApi = {
   approveTradingAgentRequest: (agentId: string) => api.post('/agents/admin/approve-trading-agent', { agentId }),
   rejectTradingAgentRequest: (agentId: string) => api.post('/agents/admin/reject-trading-agent', { agentId }),
   getUserTradingAgents: () => api.get('/agents/trading-agents'),
-  getTradingAgentControl: (agentId: string) => api.get(`/agents/trading-agent/${agentId}/control`),
-  updateTradingAgentSettings: (agentId: string, settings: any) => api.put(`/agents/trading-agent/${agentId}/settings`, settings),
-  startTradingAgent: (agentId: string) => api.post(`/agents/trading-agent/${agentId}/start`),
-  stopTradingAgent: (agentId: string) => api.post(`/agents/trading-agent/${agentId}/stop`),
-  pauseTradingAgent: (agentId: string) => api.post(`/agents/trading-agent/${agentId}/pause`),
-  resumeTradingAgent: (agentId: string) => api.post(`/agents/trading-agent/${agentId}/resume`),
-  getTradingAgentTrades: (agentId: string, limit?: number) => api.get(`/agents/trading-agent/${agentId}/trades`, { params: { limit } }),
-  getTradingAgentPerformance: (agentId: string) => api.get(`/agents/trading-agent/${agentId}/performance`),
+  getTradingAgentControl: (agentId: string) => api.get(`/agents/${agentId}/control`),
+  updateTradingAgentSettings: (agentId: string, settings: any) => api.put(`/agents/${agentId}/settings`, settings),
+  startTradingAgent: (agentId: string) => api.post(`/agents/${agentId}/start`),
+  stopTradingAgent: (agentId: string) => api.post(`/agents/${agentId}/stop`),
+  pauseTradingAgent: (agentId: string) => api.post(`/agents/${agentId}/pause`),
+  resumeTradingAgent: (agentId: string) => api.post(`/agents/${agentId}/resume`),
+  getTradingAgentTrades: (agentId: string, limit?: number) => api.get(`/agents/${agentId}/trades`, { params: { limit } }),
+  getTradingAgentPerformance: (agentId: string) => api.get(`/agents/${agentId}/performance`),
+  getTradingAgentDiagnostics: (agentId: string, limit?: number) => api.get(`/agents/trading-agent/diagnostics`, { params: { limit, agentId } }),
   // Individual agent endpoints
   getAgentDashboard: (agentId: string) => api.get(`/agent/${agentId}/dashboard`),
   getAgentSettings: (agentId: string) => api.get(`/agent/${agentId}/settings`),
@@ -364,7 +365,14 @@ export const agentsApi = {
   // Crowd Consensus Copy Trade endpoints
   getCrowdConsensusDashboard: () => api.get('/agent/crowd-consensus/dashboard'),
   getCrowdConsensusSignals: (limit?: number) => api.get('/agent/crowd-consensus/signals', { params: { limit } }),
+  getCrowdConsensusTrades: (limit?: number) => api.get('/agent/crowd-consensus/trades', { params: { limit } }),
+  getCrowdConsensusSettings: () => api.get('/agent/crowd-consensus/settings'),
   updateCrowdConsensusSettings: (settings: any) => api.put('/agent/crowd-consensus/settings', settings),
+  getCrowdConsensusStatus: () => api.get('/agent/crowd-consensus/status'),
+  startCrowdConsensusAutoTrade: () => api.post('/agent/crowd-consensus/start'),
+  stopCrowdConsensusAutoTrade: () => api.post('/agent/crowd-consensus/stop'),
+  getCrowdConsensusSkippedTrades: (limit?: number) => api.get('/agent/crowd-consensus/skipped-trades', { params: { limit } }),
+  getCrowdConsensusExchangeStatus: () => api.get('/agent/crowd-consensus/exchange-status'),
 };
 
 // Activity Logs - routes include /api prefix from baseURL

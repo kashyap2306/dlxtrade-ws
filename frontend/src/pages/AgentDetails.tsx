@@ -25,18 +25,6 @@ export default function AgentDetails() {
       // Check if user has access to this agent
       const hasAccess = unlockedAgents.some(agent => agent.agentId === agentId);
 
-      // Special handling for TRADING_AGENT - redirect to control page
-      if (agentId === 'TRADING_AGENT' && hasAccess) {
-        navigate('/agents/trading-agent', { replace: true });
-        return;
-      }
-
-      // Special handling for COPY_TRADING_AGENT - redirect to crowd consensus page
-      if (agentId === 'COPY_TRADING_AGENT' && hasAccess) {
-        navigate('/agents/crowd-consensus', { replace: true });
-        return;
-      }
-
       // If user doesn't have access, redirect to marketplace
       if (!hasAccess) {
         navigate('/agents', { replace: true });
@@ -52,27 +40,22 @@ export default function AgentDetails() {
     if (!agentId) return;
     setLoading(true);
     try {
-      // Load all agents and find the one matching agentId
-      const agentsResponse = await agentsApi.getAll();
-      const agents = agentsResponse.data.agents || [];
-      const foundAgent = agents.find((a: any) =>
-        (a.id === agentId) ||
-        (a.name?.toLowerCase().replace(/\s+/g, '_') === agentId) ||
-        (a.id === decodeURIComponent(agentId))
-      );
+      const agentsResponse = await agentsApi.getAvailableAgents();
+      const agents = agentsResponse.data?.agents || [];
+      const foundAgent = agents.find((a: any) => a?.agent_id === agentId);
 
       if (foundAgent) {
         const mappedAgent = {
-          id: foundAgent.id || foundAgent.name?.toLowerCase().replace(/\s+/g, '_') || '',
+          id: foundAgent.agent_id || '',
           name: foundAgent.name || '',
           description: foundAgent.description || '',
-          longDescription: foundAgent.longDescription || foundAgent.description || '',
+          longDescription: foundAgent.description || '',
           features: foundAgent.features || [],
           price: foundAgent.price || 0,
           category: foundAgent.category || 'Trading',
           badge: foundAgent.badge,
-          imageUrl: foundAgent.imageUrl,
-          enabled: foundAgent.enabled !== false,
+          imageUrl: undefined,
+          enabled: foundAgent.is_active !== false,
         };
         setAgent(mappedAgent);
 

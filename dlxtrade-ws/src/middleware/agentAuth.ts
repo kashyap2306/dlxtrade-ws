@@ -1,5 +1,5 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
-import { firestoreAdapter } from '../services/firestoreAdapter';
+import { AgentApprovalService } from '../services/agentApprovalService';
 import { logger } from '../utils/logger';
 
 export async function agentAccessMiddleware(
@@ -16,9 +16,7 @@ export async function agentAccessMiddleware(
   }
 
   try {
-    // Check if user has access to this agent
-    const userAgents = await firestoreAdapter.getUserAgents(user.uid);
-    const hasAccess = userAgents.some((agent: any) => agent.id === agentId);
+    const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, agentId);
 
     if (!hasAccess) {
       logger.warn({ uid: user.uid, agentId }, 'Agent access denied: user does not have access to this agent');

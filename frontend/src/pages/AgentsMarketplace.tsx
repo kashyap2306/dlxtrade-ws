@@ -22,7 +22,7 @@ export default function AgentsMarketplace() {
   const [submitting, setSubmitting] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
-  // Hardcoded agents as per requirements - only these 2
+  // Hardcoded agents as per requirements - exactly 4 agents
   const availableAgents: Agent[] = [
     {
       id: 'TRADING_AGENT',
@@ -56,6 +56,40 @@ export default function AgentsMarketplace() {
       icon: '👥',
       category: 'Copy Trading',
       badge: 'Advanced'
+    },
+    {
+      id: 'VWAP_STRATEGY',
+      name: 'VWAP Strategy',
+      description: 'Institutional-grade VWAP mean reversion scalping strategy with session filters and volatility-based risk management.',
+      price: 750,
+      features: [
+        'VWAP Mean Reversion signals',
+        'EMA 200 Trend Filter',
+        'ATR Volatility Stops',
+        'BTC/USDT & ETH/USDT pairs',
+        'London/NY Session Trading',
+        'Admin approval required'
+      ],
+      icon: '📈',
+      category: 'Scalping Strategy',
+      badge: 'Institutional'
+    },
+    {
+      id: 'LIQUIDITY_SWEEP_AGENT',
+      name: 'Liquidity Sweep Session Scalping Agent',
+      description: 'Advanced scalping agent with institutional-grade liquidity detection and session-based risk management.',
+      price: 800,
+      features: [
+        'Liquidity Sweep Detection',
+        'Session-Based Trading',
+        'BTC/USDT & ETH/USDT pairs',
+        'Perpetual Futures markets',
+        'Advanced risk management',
+        'Admin approval required'
+      ],
+      icon: '💰',
+      category: 'Scalping Strategy',
+      badge: 'Advanced'
     }
   ];
 
@@ -69,26 +103,46 @@ export default function AgentsMarketplace() {
 
     setSubmitting(agent.id);
     try {
-      let tradingAgentId: string | null = null;
+      // Use Firebase-only agent request system
+      const { collection, addDoc, serverTimestamp, query, where, getDocs, doc, getDoc } = await import('firebase/firestore');
+      const { db } = await import('../config/firebase-config');
 
-      if (agent.id === 'TRADING_AGENT') {
-        const resp = await agentsApi.createTradingAgentRequest({
-          userId: user.uid,
-          name: 'Rule-Based Trading Agent',
-          tradingPair: 'BTC/USDT',
-          marketType: 'spot',
+      // Check if user already has access
+      const userDoc = await getDoc(doc(db, 'users', user.uid));
+      const userData = userDoc.data();
+      const approvedAgents = userData?.approvedAgents || [];
+
+      if (approvedAgents.includes(agent.id)) {
+        setToast({
+          message: `You already have access to ${agent.name}!`,
+          type: 'success'
         });
-        tradingAgentId = resp.data?.agentId || null;
+        return;
       }
 
-      // Create agent request document in Firestore
-      await addDoc(collection(db, 'agentRequests'), {
-        agentId: agent.id,
-        agentType: agent.id === 'TRADING_AGENT' ? 'TRADING' : 'COPY',
-        requestedBy: user.uid,
-        status: 'PENDING_APPROVAL',
-        tradingAgentId,
-        createdAt: serverTimestamp()
+      // Check if user already has a pending request
+      const q = query(
+        collection(db, 'agent_requests'),
+        where('userId', '==', user.uid),
+        where('agentType', '==', agent.id),
+        where('status', '==', 'PENDING')
+      );
+      const existingRequests = await getDocs(q);
+
+      if (!existingRequests.empty) {
+        setToast({
+          message: `You already have a pending request for ${agent.name}. Please wait for admin approval.`,
+          type: 'info'
+        });
+        return;
+      }
+
+      // Create the agent request
+      await addDoc(collection(db, 'agent_requests'), {
+        userId: user.uid,
+        agentType: agent.id,
+        status: 'PENDING',
+        requestedAt: serverTimestamp()
       });
 
       setToast({
@@ -97,8 +151,10 @@ export default function AgentsMarketplace() {
       });
     } catch (err: any) {
       console.error('Error requesting agent:', err);
+
+      let errorMessage = 'Failed to submit request. Please try again.';
       setToast({
-        message: 'Failed to submit request. Please try again.',
+        message: errorMessage,
         type: 'error'
       });
     } finally {

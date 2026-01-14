@@ -61,6 +61,7 @@ const AgentFeature = React.lazy(() => import('./pages/AgentFeature'));
 const LaunchpadHunter = React.lazy(() => import('./pages/LaunchpadHunter'));
 const CrowdConsensus = React.lazy(() => import('./pages/CrowdConsensus'));
 const TradingAgentControl = React.lazy(() => import('./pages/TradingAgentControl'));
+const VWAPStrategy = React.lazy(() => import('./pages/VWAPStrategy'));
 const Onboarding = React.lazy(() => import('./pages/Onboarding'));
 const NotificationCenter = React.lazy(() => import('./pages/NotificationCenter'));
 
@@ -232,6 +233,7 @@ function App() {
                   <Route path="agents/crowd-consensus" element={<SafeRoute><CrowdConsensus /></SafeRoute>} />
                   <Route path="agents/trading-agent" element={<SafeRoute><TradingAgentControl /></SafeRoute>} />
                   <Route path="agents/trading-agent/:agentId" element={<SafeRoute><TradingAgentControl /></SafeRoute>} />
+                  <Route path="agents/vwap-strategy" element={<SafeRoute><VWAPStrategy /></SafeRoute>} />
                   <Route path="agent/TRADING_AGENT" element={<Navigate to="/agents/trading-agent" replace />} />
                   <Route path="agent/TRADING_AGENT/control" element={<Navigate to="/agents/trading-agent" replace />} />
                   <Route path="agent/:agentId" element={<SafeRoute><AgentDashboard /></SafeRoute>} />

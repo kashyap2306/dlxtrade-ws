@@ -394,4 +394,251 @@ export class BitgetAdapter implements ExchangeConnector {
       // Don't throw to avoid blocking trade if already correct
     }
   }
+
+  /**
+   * Get COIN-M Futures contract information
+   */
+  async getCoinMContractInfo(symbol: string): Promise<{
+    contractSize: number;
+    minOrderQty: number;
+    tickSize: number;
+    pricePrecision: number;
+    qtyPrecision: number;
+  }> {
+    try {
+      const response = await this.request('GET', '/api/v2/mix/market/contracts', {
+        productType: 'COIN-FUTURES'
+      });
+
+      if (response.code !== '00000') {
+        throw new ExchangeError(`Failed to get contract info: ${response.msg}`, 400);
+      }
+
+      const contract = response.data.find((c: any) => c.symbol === symbol.toUpperCase());
+      if (!contract) {
+        throw new ExchangeError(`Contract not found: ${symbol}`, 404);
+      }
+
+      return {
+        contractSize: parseFloat(contract.contractSize || '1'),
+        minOrderQty: parseFloat(contract.minOrderQty || '0.001'),
+        tickSize: parseFloat(contract.tickSize || '0.01'),
+        pricePrecision: parseInt(contract.pricePrecision || '2'),
+        qtyPrecision: parseInt(contract.qtyPrecision || '3')
+      };
+    } catch (error: any) {
+      logger.error({ error, symbol }, 'Error getting COIN-M contract info');
+      throw error;
+    }
+  }
+
+  /**
+   * Get COIN-M Futures klines
+   */
+  async getCoinMKlines(symbol: string, interval: string = '5m', limit: number = 100): Promise<any[]> {
+    try {
+      const response = await this.request('GET', '/api/v2/mix/market/candles', {
+        symbol: symbol.toUpperCase(),
+        granularity: interval,
+        productType: 'COIN-FUTURES',
+        limit: limit.toString(),
+      });
+
+      if (response.code !== '00000') {
+        throw new ExchangeError(`Failed to get klines: ${response.msg}`, 400);
+      }
+
+      return response.data || [];
+    } catch (error: any) {
+      logger.error({ error, symbol, interval }, 'Error getting COIN-M klines');
+      return [];
+    }
+  }
+
+  /**
+   * Place COIN-M Futures bracket order (entry + SL + TP atomic)
+   */
+  async placeCoinMBracketOrder(params: {
+    symbol: string;
+    side: 'BUY' | 'SELL';
+    quantity: number;
+    entryPrice: number;
+    stopLoss: number;
+    takeProfit: number;
+    leverage: number;
+  }): Promise<{
+    orderId: string;
+    status: string;
+    details: any;
+  }> {
+    try {
+      // Set leverage for the symbol
+      await this.setCoinMLeverage(params.symbol, params.leverage);
+
+      // Get contract info for validation
+      const contractInfo = await this.getCoinMContractInfo(params.symbol);
+
+      // Validate quantity
+      if (params.quantity < contractInfo.minOrderQty) {
+        throw new ExchangeError(`Quantity ${params.quantity} below minimum ${contractInfo.minOrderQty}`, 400);
+      }
+
+      // Round prices to tick size
+      const roundToTick = (price: number) => {
+        return Math.round(price / contractInfo.tickSize) * contractInfo.tickSize;
+      };
+
+      const entryPrice = roundToTick(params.entryPrice);
+      const stopLoss = roundToTick(params.stopLoss);
+      const takeProfit = roundToTick(params.takeProfit);
+
+      // Validate SL/TP distances
+      if (params.side === 'BUY') {
+        if (entryPrice <= stopLoss) {
+          throw new ExchangeError('BUY order SL must be below entry price', 400);
+        }
+        if (takeProfit <= entryPrice) {
+          throw new ExchangeError('BUY order TP must be above entry price', 400);
+        }
+      } else {
+        if (entryPrice >= stopLoss) {
+          throw new ExchangeError('SELL order SL must be above entry price', 400);
+        }
+        if (takeProfit >= entryPrice) {
+          throw new ExchangeError('SELL order TP must be below entry price', 400);
+        }
+      }
+
+      // Place bracket order using Bitget's plan order with preset SL/TP
+      const orderParams = {
+        symbol: params.symbol.toUpperCase(),
+        productType: 'COIN-FUTURES',
+        marginCoin: 'BTC',
+        size: params.quantity.toString(),
+        side: params.side.toLowerCase(),
+        orderType: 'limit',
+        price: entryPrice.toString(),
+        presetStopLossPrice: stopLoss.toString(),
+        presetTakeProfitPrice: takeProfit.toString(),
+      };
+
+      const response = await this.request('POST', '/api/v2/mix/order/place-plan-order', orderParams, true);
+
+      if (response.code !== '00000') {
+        throw new ExchangeError(`Order placement failed: ${response.msg}`, 400);
+      }
+
+      logger.info({
+        symbol: params.symbol,
+        side: params.side,
+        quantity: params.quantity,
+        entryPrice,
+        stopLoss,
+        takeProfit,
+        orderId: response.data?.orderId
+      }, 'COIN-M bracket order placed successfully');
+
+      return {
+        orderId: response.data?.orderId,
+        status: 'PLACED',
+        details: response.data
+      };
+    } catch (error: any) {
+      logger.error({
+        error,
+        symbol: params.symbol,
+        side: params.side,
+        quantity: params.quantity
+      }, 'Error placing COIN-M bracket order');
+      throw error;
+    }
+  }
+
+  /**
+   * Set leverage for COIN-M Futures
+   */
+  async setCoinMLeverage(symbol: string, leverage: number): Promise<void> {
+    try {
+      const response = await this.request('POST', '/api/v2/mix/account/set-leverage', {
+        symbol: symbol.toUpperCase(),
+        productType: 'COIN-FUTURES',
+        marginCoin: 'BTC',
+        leverage: Math.min(leverage, 20).toString(), // Cap at 20x for safety
+      }, true);
+
+      if (response.code !== '00000') {
+        throw new ExchangeError(`Failed to set leverage: ${response.msg}`, 400);
+      }
+
+      logger.info({ symbol, leverage }, 'COIN-M leverage set successfully');
+    } catch (error: any) {
+      logger.error({ error, symbol, leverage }, 'Error setting COIN-M leverage');
+      throw error;
+    }
+  }
+
+  /**
+   * Get COIN-M position information
+   */
+  async getCoinMPositions(symbol?: string): Promise<any[]> {
+    try {
+      const params: any = { productType: 'COIN-FUTURES' };
+      if (symbol) {
+        params.symbol = symbol.toUpperCase();
+      }
+
+      const response = await this.request('GET', '/api/v2/mix/position/all-position', params, true);
+
+      if (response.code !== '00000') {
+        throw new ExchangeError(`Failed to get positions: ${response.msg}`, 400);
+      }
+
+      return response.data || [];
+    } catch (error: any) {
+      logger.error({ error, symbol }, 'Error getting COIN-M positions');
+      return [];
+    }
+  }
+
+  /**
+   * Check if position exists for symbol
+   */
+  async hasCoinMPosition(symbol: string): Promise<boolean> {
+    const positions = await this.getCoinMPositions(symbol);
+    return positions.some((pos: any) => pos.symbol === symbol.toUpperCase() && parseFloat(pos.total) > 0);
+  }
+
+  /**
+   * Get COIN-M account balance
+   */
+  async getCoinMBalance(): Promise<{
+    availableBalance: number;
+    totalBalance: number;
+    currency: string;
+  }> {
+    try {
+      const response = await this.request('GET', '/api/v2/mix/account/accounts', {
+        productType: 'COIN-FUTURES'
+      }, true);
+
+      if (response.code !== '00000') {
+        throw new ExchangeError(`Failed to get balance: ${response.msg}`, 400);
+      }
+
+      // COIN-M uses BTC as margin coin
+      const btcAccount = response.data.find((acc: any) => acc.marginCoin === 'BTC');
+      if (!btcAccount) {
+        throw new ExchangeError('BTC account not found in COIN-M', 404);
+      }
+
+      return {
+        availableBalance: parseFloat(btcAccount.available || '0'),
+        totalBalance: parseFloat(btcAccount.equity || '0'),
+        currency: 'BTC'
+      };
+    } catch (error: any) {
+      logger.error({ error }, 'Error getting COIN-M balance');
+      throw error;
+    }
+  }
 }

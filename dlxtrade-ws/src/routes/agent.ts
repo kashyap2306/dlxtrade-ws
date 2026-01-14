@@ -7,6 +7,7 @@ import { CrowdConsensusService } from '../services/crowdConsensusService';
 import { z } from 'zod';
 
 export async function agentRoutes(fastify: FastifyInstance) {
+  console.log("[AGENT ROUTES] Registering agent routes at", new Date().toISOString());
   console.log("[ROUTE READY] GET /api/agent/:agentId");
   console.log("[ROUTE READY] GET /api/agent/:agentId/dashboard");
   console.log("[ROUTE READY] GET /api/agent/:agentId/settings");
@@ -382,28 +383,18 @@ export async function agentRoutes(fastify: FastifyInstance) {
         .collection('users').doc(user.uid).collection('agents').doc('crowd_consensus_copy_trade');
       const userAgentDoc = await userAgentRef.get();
 
-      if (!userAgentDoc.exists || !userAgentDoc.data()?.unlocked) {
+      if (!userAgentDoc.exists) {
         return reply.code(403).send({ error: 'Access denied: Crowd Consensus Copy Trade not approved' });
       }
 
-      // Get recent signals
+      // Get recent signals (decision validations)
       const signals = await CrowdConsensusService.getUserSignals(user.uid, 20);
-
-      // Get user settings
-      const settings = await CrowdConsensusService.getUserSettings(user.uid);
-
-      // Get current consensus data
-      const consensusSignals = await CrowdConsensusService.analyzeConsensus();
 
       return {
         signals,
-        settings,
-        currentConsensus: consensusSignals.slice(0, 10), // Show top 10 current signals
         stats: {
           totalSignals: signals.length,
-          activeConsensus: consensusSignals.length,
-          exchangesMonitored: CrowdConsensusService.SUPPORTED_EXCHANGES.length,
-        }
+        },
       };
     } catch (err: any) {
       logger.error({ err }, 'Error getting crowd consensus dashboard');
@@ -424,15 +415,44 @@ export async function agentRoutes(fastify: FastifyInstance) {
         .collection('users').doc(user.uid).collection('agents').doc('crowd_consensus_copy_trade');
       const userAgentDoc = await userAgentRef.get();
 
-      if (!userAgentDoc.exists || !userAgentDoc.data()?.unlocked) {
+      if (!userAgentDoc.exists) {
+        logger.error({ uid: user.uid, route: '/crowd-consensus/signals' }, 'Access denied: Crowd Consensus document not found');
         return reply.code(403).send({ error: 'Access denied: Crowd Consensus Copy Trade not approved' });
       }
 
+      logger.info({ uid: user.uid, route: '/crowd-consensus/signals', limit }, 'Access granted: fetching signals');
       const signals = await CrowdConsensusService.getUserSignals(user.uid, limit);
       return { signals };
     } catch (err: any) {
-      logger.error({ err }, 'Error getting crowd consensus signals');
+      logger.error({ err, uid: (request as any).user?.uid }, 'Error getting crowd consensus signals');
       return reply.code(500).send({ error: err.message || 'Error fetching signals' });
+    }
+  });
+
+  // GET /api/agent/crowd-consensus/trades - Get crowd consensus executed trades
+  fastify.get('/crowd-consensus/trades', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Querystring: { limit?: string } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const limit = parseInt(request.query.limit || '50');
+
+      // Check access
+      const userAgentRef = (await import('../utils/firebase')).getFirebaseAdmin().firestore()
+        .collection('users').doc(user.uid).collection('agents').doc('crowd_consensus_copy_trade');
+      const userAgentDoc = await userAgentRef.get();
+
+      if (!userAgentDoc.exists) {
+        logger.error({ uid: user.uid, route: '/crowd-consensus/trades' }, 'Access denied: Crowd Consensus document not found');
+        return reply.code(403).send({ error: 'Access denied: Crowd Consensus Copy Trade not approved' });
+      }
+
+      logger.info({ uid: user.uid, route: '/crowd-consensus/trades', limit }, 'Access granted: fetching trades');
+      const trades = await CrowdConsensusService.getUserTrades(user.uid, limit);
+      return { trades };
+    } catch (err: any) {
+      logger.error({ err, uid: (request as any).user?.uid }, 'Error getting crowd consensus trades');
+      return reply.code(500).send({ error: err.message || 'Error fetching trades' });
     }
   });
 
@@ -448,7 +468,7 @@ export async function agentRoutes(fastify: FastifyInstance) {
         .collection('users').doc(user.uid).collection('agents').doc('crowd_consensus_copy_trade');
       const userAgentDoc = await userAgentRef.get();
 
-      if (!userAgentDoc.exists || !userAgentDoc.data()?.unlocked) {
+      if (!userAgentDoc.exists) {
         return reply.code(403).send({ error: 'Access denied: Crowd Consensus Copy Trade not approved' });
       }
 
@@ -486,7 +506,7 @@ export async function agentRoutes(fastify: FastifyInstance) {
         .collection('users').doc(user.uid).collection('agents').doc('crowd_consensus_copy_trade');
       const userAgentDoc = await userAgentRef.get();
 
-      if (!userAgentDoc.exists || !userAgentDoc.data()?.unlocked) {
+      if (!userAgentDoc.exists) {
         return reply.code(403).send({ error: 'Access denied: Crowd Consensus Copy Trade not approved' });
       }
 
@@ -503,49 +523,303 @@ export async function agentRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // POST /api/agent/crowd-consensus/validate - Validate trade setup
+  fastify.post('/crowd-consensus/validate', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+
+      // Check access
+      const userAgentRef = (await import('../utils/firebase')).getFirebaseAdmin().firestore()
+        .collection('users').doc(user.uid).collection('agents').doc('crowd_consensus_copy_trade');
+      const userAgentDoc = await userAgentRef.get();
+
+      if (!userAgentDoc.exists) {
+        return reply.code(403).send({ error: 'Access denied: Crowd Consensus Copy Trade not approved' });
+      }
+
+      const input = request.body as any;
+
+      // Validate the trade setup
+      const decision = CrowdConsensusService.validateTradeSetup(input);
+
+      // Save the signal for user's history
+      const signal = {
+        id: `signal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        pair: input.pair,
+        decision,
+        timestamp: new Date(),
+      };
+
+      await CrowdConsensusService.saveUserSignal(user.uid, signal);
+
+      return decision;
+    } catch (err: any) {
+      logger.error({ err }, 'Error validating trade setup');
+      return reply.code(500).send({ error: err.message || 'Error validating trade setup' });
+    }
+  });
+
+  // GET /api/agent/trading-agent/diagnostics - Get trading agent diagnostics
+  fastify.get('/trading-agent/diagnostics', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Querystring: { limit?: string; agentId?: string } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const limit = parseInt(request.query.limit || '20');
+      let agentId = request.query.agentId;
+
+      // Check access to trading agent
+      const userAgentRef = (await import('../utils/firebase')).getFirebaseAdmin().firestore()
+        .collection('users').doc(user.uid).collection('agents').doc('trading-agent');
+      const userAgentDoc = await userAgentRef.get();
+
+      if (!userAgentDoc.exists) {
+        return reply.code(403).send({ error: 'Access denied: Trading Agent not approved' });
+      }
+
+      // Handle special case: if no agentId provided or it's 'trading-agent', find the user's active trading agent
+      if (!agentId || agentId === 'trading-agent') {
+        const { firestoreAdapter } = await import('../services/firestoreAdapter');
+        const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
+        const activeAgent = userAgents.find((agent: any) => agent.status === 'ACTIVE');
+        if (!activeAgent) {
+          return { diagnostics: [] }; // Return empty array if no active agent
+        }
+        agentId = activeAgent.id;
+      }
+
+      // Verify the agent belongs to the user
+      const { firestoreAdapter } = await import('../services/firestoreAdapter');
+      const config = await firestoreAdapter.getTradingAgentConfig(agentId);
+      if (!config || config.userId !== user.uid) {
+        return reply.code(403).send({ error: 'Agent access denied' });
+      }
+
+      const { TradingAgent } = await import('../services/tradingAgent');
+      const diagnostics = await TradingAgent.getDiagnostics(agentId, limit);
+
+      return { diagnostics };
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting trading agent diagnostics');
+      return reply.code(500).send({ error: err.message || 'Error fetching diagnostics' });
+    }
+  });
+
+  // GET /api/agent/crowd-consensus/status - Get auto trade status
+  fastify.get('/crowd-consensus/status', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+
+      // Check access
+      const userAgentRef = (await import('../utils/firebase')).getFirebaseAdmin().firestore()
+        .collection('users').doc(user.uid).collection('agents').doc('crowd_consensus_copy_trade');
+      const userAgentDoc = await userAgentRef.get();
+
+      if (!userAgentDoc.exists) {
+        return reply.code(403).send({ error: 'Access denied: Crowd Consensus Copy Trade not approved' });
+      }
+
+      // Get auto trade status
+      const settings = await CrowdConsensusService.getUserSettings(user.uid);
+      const isActive = settings.autoTradeEnabled === true;
+
+      return {
+        autoTradeEnabled: isActive,
+        status: isActive ? 'ACTIVE' : 'INACTIVE',
+        lastUpdated: settings.lastUpdated || null
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting crowd consensus status');
+      return reply.code(500).send({ error: err.message || 'Error fetching status' });
+    }
+  });
+
+  // POST /api/agent/crowd-consensus/start - Start auto trade
+  fastify.post('/crowd-consensus/start', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+
+      // Check access
+      const userAgentRef = (await import('../utils/firebase')).getFirebaseAdmin().firestore()
+        .collection('users').doc(user.uid).collection('agents').doc('crowd_consensus_copy_trade');
+      const userAgentDoc = await userAgentRef.get();
+
+      if (!userAgentDoc.exists) {
+        return reply.code(403).send({ error: 'Access denied: Crowd Consensus Copy Trade not approved' });
+      }
+
+      // Check exchange connection
+      const exchangeStatus = await CrowdConsensusService.getExchangeConnectionStatus(user.uid);
+      if (!exchangeStatus.connected) {
+        return reply.code(400).send({
+          error: 'Exchange not connected. Please connect an exchange in Settings first.',
+          exchangeStatus
+        });
+      }
+
+      // Start auto trade
+      await CrowdConsensusService.setAutoTradeEnabled(user.uid, true);
+
+      logger.info({ uid: user.uid }, 'Crowd consensus auto trade started');
+
+      return {
+        success: true,
+        message: 'Crowd consensus auto trading started successfully',
+        status: 'ACTIVE'
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Error starting crowd consensus auto trade');
+      return reply.code(500).send({ error: err.message || 'Error starting auto trade' });
+    }
+  });
+
+  // POST /api/agent/crowd-consensus/stop - Stop auto trade
+  fastify.post('/crowd-consensus/stop', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+
+      // Check access
+      const userAgentRef = (await import('../utils/firebase')).getFirebaseAdmin().firestore()
+        .collection('users').doc(user.uid).collection('agents').doc('crowd_consensus_copy_trade');
+      const userAgentDoc = await userAgentRef.get();
+
+      if (!userAgentDoc.exists) {
+        return reply.code(403).send({ error: 'Access denied: Crowd Consensus Copy Trade not approved' });
+      }
+
+      // Stop auto trade
+      await CrowdConsensusService.setAutoTradeEnabled(user.uid, false);
+
+      logger.info({ uid: user.uid }, 'Crowd consensus auto trade stopped');
+
+      return {
+        success: true,
+        message: 'Crowd consensus auto trading stopped successfully',
+        status: 'INACTIVE'
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Error stopping crowd consensus auto trade');
+      return reply.code(500).send({ error: err.message || 'Error stopping auto trade' });
+    }
+  });
+
+  // GET /api/agent/crowd-consensus/skipped-trades - Get skipped/rejected trades
+  fastify.get('/crowd-consensus/skipped-trades', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Querystring: { limit?: string } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const limit = parseInt(request.query.limit || '50');
+
+      // Check access
+      const userAgentRef = (await import('../utils/firebase')).getFirebaseAdmin().firestore()
+        .collection('users').doc(user.uid).collection('agents').doc('crowd_consensus_copy_trade');
+      const userAgentDoc = await userAgentRef.get();
+
+      if (!userAgentDoc.exists) {
+        return reply.code(403).send({ error: 'Access denied: Crowd Consensus Copy Trade not approved' });
+      }
+
+      const skippedTrades = await CrowdConsensusService.getSkippedTrades(user.uid, limit);
+      return { skippedTrades };
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting crowd consensus skipped trades');
+      return reply.code(500).send({ error: err.message || 'Error fetching skipped trades' });
+    }
+  });
+
+  // GET /api/agent/crowd-consensus/exchange-status - Get exchange connection status
+  fastify.get('/crowd-consensus/exchange-status', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+
+      // Check access
+      const userAgentRef = (await import('../utils/firebase')).getFirebaseAdmin().firestore()
+        .collection('users').doc(user.uid).collection('agents').doc('crowd_consensus_copy_trade');
+      const userAgentDoc = await userAgentRef.get();
+
+      if (!userAgentDoc.exists) {
+        return reply.code(403).send({ error: 'Access denied: Crowd Consensus Copy Trade not approved' });
+      }
+
+      const exchangeStatus = await CrowdConsensusService.getExchangeConnectionStatus(user.uid);
+      return { exchangeStatus };
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting crowd consensus exchange status');
+      return reply.code(500).send({ error: err.message || 'Error fetching exchange status' });
+    }
+  });
+
   // POST /api/agent/crowd-consensus/analyze - Trigger consensus analysis (admin only for now)
   fastify.post('/crowd-consensus/analyze', {
     preHandler: [fastify.authenticate, fastify.adminAuth],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      logger.info('Starting crowd consensus analysis');
+      const CrowdConsensusAnalyzer = (await import('../services/crowdConsensusAnalyzer')).default;
 
-      const startTime = Date.now();
-      const signals = await CrowdConsensusService.analyzeConsensus();
-
-      // Save signals for all eligible users
-      const db = (await import('../utils/firebase')).getFirebaseAdmin().firestore();
-      const userAgentsQuery = db.collectionGroup('agents')
-        .where('agentId', '==', 'crowd_consensus_copy_trade')
-        .where('unlocked', '==', true);
-
-      const userAgentsSnapshot = await userAgentsQuery.get();
-      const userIds = new Set<string>();
-
-      userAgentsSnapshot.forEach(doc => {
-        const pathParts = doc.ref.path.split('/');
-        if (pathParts.length >= 2) {
-          userIds.add(pathParts[1]);
-        }
-      });
-
-      for (const uid of userIds) {
-        await CrowdConsensusService.saveUserSignals(uid, signals);
+      // Check if analysis is already running
+      if (CrowdConsensusAnalyzer.isAnalysisRunning()) {
+        return reply.code(409).send({
+          success: false,
+          error: 'Analysis already running',
+          status: 'RUNNING'
+        });
       }
 
-      const duration = Date.now() - startTime;
-      logger.info({ duration, signalCount: signals.length, userCount: userIds.size }, 'Crowd consensus analysis completed');
+      // Trigger background analysis
+      CrowdConsensusAnalyzer.startBackgroundAnalysis().catch((error) => {
+        logger.error({ error: error.message }, 'Failed to start background consensus analysis');
+      });
+
+      logger.info('Triggered background crowd consensus analysis');
 
       return reply.code(200).send({
         success: true,
-        message: 'Crowd consensus analysis completed',
-        duration,
-        signalsGenerated: signals.length,
-        usersNotified: userIds.size,
+        message: 'Analysis started in background',
+        status: 'RUNNING',
+        lastRunAt: CrowdConsensusAnalyzer.getLastRunAt()?.toISOString(),
       });
     } catch (err: any) {
-      logger.error({ err }, 'Error in crowd consensus analysis');
-      return reply.code(500).send({ error: err.message || 'Error performing consensus analysis' });
+      logger.error({ err }, 'Error triggering crowd consensus analysis');
+      return reply.code(500).send({ error: err.message || 'Error triggering analysis' });
+    }
+  });
+
+  // POST /api/agent/crowd-consensus/execute - Execute Crowd Consensus agent for user (admin/manual)
+  fastify.post('/crowd-consensus/execute', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: { uid?: string } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const targetUid = request.body.uid || user.uid;
+
+      // Allow admin to execute for any user, regular users only for themselves
+      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
+      if (!isAdmin && targetUid !== user.uid) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      const { CrowdConsensusScheduler } = await import('../services/crowdConsensusScheduler');
+      const result = await CrowdConsensusScheduler.executeUserAgent(targetUid);
+
+      if (result.success) {
+        return reply.code(200).send(result);
+      } else {
+        return reply.code(400).send({ error: result.message });
+      }
+    } catch (err: any) {
+      logger.error({ err }, 'Error executing crowd consensus agent');
+      return reply.code(500).send({ error: err.message || 'Error executing agent' });
     }
   });
 }

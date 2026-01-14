@@ -2,20 +2,17 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Toast from '../components/Toast';
 import { useAuth } from '../hooks/useAuth';
-import { collection, query, where, getDocs, doc, updateDoc, getDoc, arrayUnion } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, updateDoc, getDoc, arrayUnion, onSnapshot, orderBy, serverTimestamp } from 'firebase/firestore';
 import { db } from '../config/firebase-config';
-import { adminApi, agentsApi } from '../services/api';
 
 interface AgentRequest {
   id: string;
-  agentId: string;
-  agentType: 'TRADING' | 'COPY';
-  requestedBy: string;
-  status: 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
-  createdAt: any;
+  userId: string;
+  agentType: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  requestedAt: any;
   approvedBy?: string;
   approvedAt?: any;
-  tradingAgentId?: string | null;
 }
 
 // Agent details for display
@@ -27,6 +24,14 @@ const AGENT_DETAILS: Record<string, { name: string; description: string }> = {
   'COPY_TRADING_AGENT': {
     name: 'Crowd Consensus Copy Trade Agent',
     description: 'Follows crowd consensus across 10+ exchanges'
+  },
+  'VWAP_STRATEGY': {
+    name: 'VWAP Strategy',
+    description: 'Institutional-grade VWAP mean reversion scalping strategy'
+  },
+  'LIQUIDITY_SWEEP_AGENT': {
+    name: 'Liquidity Sweep Session Scalping Agent',
+    description: 'Advanced liquidity sweep detection with session-based scalping'
   }
 };
 
@@ -40,90 +45,87 @@ export default function AdminUnlockRequests() {
   const [userEmails, setUserEmails] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    loadRequests();
-    const interval = setInterval(loadRequests, 10000); // Refresh every 10 seconds
-    return () => clearInterval(interval);
-  }, []);
+    // Set up realtime listener for agent requests
+    const q = query(
+      collection(db, 'agent_requests'),
+      where('status', '==', 'PENDING'),
+      orderBy('requestedAt', 'asc')
+    );
 
-  const loadRequests = async () => {
-    try {
-      // Get pending agent requests
-      const q = query(collection(db, 'agentRequests'), where('status', '==', 'PENDING_APPROVAL'));
-      const querySnapshot = await getDocs(q);
+    const unsubscribe = onSnapshot(q, async (snapshot) => {
+      try {
+        const requestsData: AgentRequest[] = [];
+        const userIds = new Set<string>();
 
-      const pendingRequests: AgentRequest[] = [];
-      const userIds = new Set<string>();
+        snapshot.forEach((doc) => {
+          const data = doc.data();
+          requestsData.push({
+            id: doc.id,
+            userId: data.userId,
+            agentType: data.agentType,
+            status: data.status,
+            requestedAt: data.requestedAt?.toDate() || new Date(),
+            approvedBy: data.approvedBy,
+            approvedAt: data.approvedAt?.toDate()
+          });
+          userIds.add(data.userId);
+        });
 
-      querySnapshot.forEach((doc) => {
-        const data = doc.data() as Omit<AgentRequest, 'id'>;
-        pendingRequests.push({ id: doc.id, ...data });
-        userIds.add(data.requestedBy);
-      });
-
-      // Get user emails for display
-      const emailMap: Record<string, string> = {};
-      for (const userId of userIds) {
-        try {
-          const userDoc = await getDoc(doc(db, 'users', userId));
-          if (userDoc.exists()) {
-            const userData = userDoc.data();
-            emailMap[userId] = userData?.email || 'Unknown';
+        // Get user emails for display
+        const emailMap: Record<string, string> = {};
+        for (const userId of userIds) {
+          try {
+            const userDoc = await getDoc(doc(db, 'users', userId));
+            if (userDoc.exists()) {
+              const userData = userDoc.data();
+              emailMap[userId] = userData?.email || 'Unknown';
+            }
+          } catch (error) {
+            console.warn('Failed to load user data for', userId);
           }
-        } catch (error) {
-          console.warn('Failed to load user data for', userId);
         }
-      }
 
-      setRequests(pendingRequests);
-      setUserEmails(emailMap);
-    } catch (err: any) {
-      console.error('Error loading requests:', err);
-      showToast('Error loading unlock requests', 'error');
-    } finally {
-      setLoading(false);
-    }
-  };
+        setRequests(requestsData);
+        setUserEmails(emailMap);
+        setLoading(false);
+      } catch (err: any) {
+        console.error('Error in realtime listener:', err);
+        showToast('Error loading unlock requests', 'error');
+        setLoading(false);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   const handleApprove = async (requestId: string) => {
     if (!user) return;
 
     setProcessingId(requestId);
     try {
+      // Find the request to get userId and agentType
       const request = requests.find(r => r.id === requestId);
-      if (!request) return;
+      if (!request) {
+        showToast('Request not found', 'error');
+        return;
+      }
 
-      // Update the request status
-      await updateDoc(doc(db, 'agentRequests', requestId), {
+      // Update the agent request
+      await updateDoc(doc(db, 'agent_requests', requestId), {
         status: 'APPROVED',
-        approvedBy: user.uid,
-        approvedAt: new Date()
+        approvedAt: serverTimestamp(),
+        approvedBy: user.uid
       });
 
-      if (request.agentId === 'TRADING_AGENT' && request.tradingAgentId) {
-        await agentsApi.approveTradingAgentRequest(request.tradingAgentId);
-      }
-
-      if (request.agentId === 'COPY_TRADING_AGENT') {
-        await adminApi.unlockAgent(request.requestedBy, 'crowd_consensus_copy_trade');
-      }
-
-      // Add agent to user's unlockedAgents array (avoid duplicates)
-      const userRef = doc(db, 'users', request.requestedBy);
-      const userDoc = await getDoc(userRef);
-
-      if (userDoc.exists()) {
-        const userData = userDoc.data();
-        const currentAgents: string[] = userData?.unlockedAgents || [];
-
-        if (!currentAgents.includes(request.agentId)) {
-          await updateDoc(userRef, {
-            unlockedAgents: arrayUnion(request.agentId)
-          });
-        }
-      }
+      // Update user's approved agents
+      const userRef = doc(db, 'users', request.userId);
+      await updateDoc(userRef, {
+        hasAgentAccess: true,
+        approvedAgents: arrayUnion(request.agentType)
+      });
 
       showToast('Agent access request approved successfully', 'success');
-      await loadRequests();
+      // UI will update automatically via realtime listener
     } catch (err: any) {
       console.error('Error approving request:', err);
       showToast('Error approving request', 'error');
@@ -137,14 +139,13 @@ export default function AdminUnlockRequests() {
 
     setProcessingId(requestId);
     try {
-      await updateDoc(doc(db, 'agentRequests', requestId), {
-        status: 'REJECTED',
-        approvedBy: user.uid,
-        approvedAt: new Date()
+      // Update the agent request status to rejected
+      await updateDoc(doc(db, 'agent_requests', requestId), {
+        status: 'REJECTED'
       });
 
       showToast('Agent request denied', 'success');
-      await loadRequests();
+      // UI will update automatically via realtime listener
     } catch (err: any) {
       console.error('Error denying request:', err);
       showToast('Error denying request', 'error');

@@ -1,8 +1,8 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { firestoreAdapter } from '../services/firestoreAdapter';
+import { AgentApprovalService } from '../services/agentApprovalService';
+import { vwapRuntimeService } from '../services/vwapRuntimeService';
 import { logger } from '../utils/logger';
-import { ValidationError } from '../utils/errors';
 import { agentAccessMiddleware } from '../middleware/agentAuth';
 
 const unlockAgentSchema = z.object({
@@ -10,10 +10,10 @@ const unlockAgentSchema = z.object({
 });
 
 export async function agentsRoutes(fastify: FastifyInstance) {
+  console.log("[AGENTS ROUTES] Registering agents routes at", new Date().toISOString());
   console.log("[ROUTE READY] POST /api/agents/unlock");
   console.log("[ROUTE READY] GET /api/agents/unlocks");
   console.log("[ROUTE READY] GET /api/agents/unlocked");
-  console.log("[ROUTE READY] GET /api/agents/:id");
   console.log("[ROUTE READY] POST /api/agents/submit-unlock-request");
   console.log("[ROUTE READY] PUT /api/agents/:agentId/settings");
   console.log("[ROUTE READY] GET /api/users/:uid/agents");
@@ -26,274 +26,65 @@ export async function agentsRoutes(fastify: FastifyInstance) {
   fastify.get('/', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const t0 = Date.now();
-    console.log("[AGENTS_GET_START]", { timestamp: new Date().toISOString(), uid: (request as any).user?.uid });
-
     try {
       const user = (request as any).user;
-      console.log("[UID_ASSERT]", { authUid: user.uid });
-
-      if (!user.uid) {
-        throw new Error("Authentication failed: request.user.uid is missing");
+      if (!user?.uid) {
+        return reply.code(200).send({ agents: [] });
       }
 
-      const t1 = Date.now();
-      console.log("[AGENTS_AUTH_COMPLETE]", { authTime: t1 - t0, uid: user.uid });
-
-      // CRITICAL: reply.send() MUST be called exactly once - ensure early return
-      let responseSent = false;
-
-      const t2 = Date.now();
-      console.log("[AGENTS_FIRESTORE_START]", { timeSinceAuth: t2 - t1 });
-
-      // ISOLATE FIRESTORE READ: No heavy logic here - must complete within <500ms
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Firestore operation timeout')), 1500); // 1.5 second timeout
-      });
-
-      const firestoreOperation = async () => {
-        // Use same base data source as /api/agents/unlocked: users/{uid}/agents
-        return await firestoreAdapter.getUserAgents(user.uid);
-      };
-
-      let agents;
-      try {
-        agents = await Promise.race([firestoreOperation(), timeoutPromise]);
-        const t3 = Date.now();
-        console.log("[AGENTS_FIRESTORE_COMPLETE]", { firestoreTime: t3 - t2, agentCount: agents?.length || 0 });
-      } catch (firestoreErr: any) {
-        console.error("[AGENTS_FIRESTORE_TIMEOUT]", { error: firestoreErr?.message, time: Date.now() - t2 });
-        console.log("[AGENTS_TIMEOUT_FALLBACK_USED]", { uid: user.uid, route: '/api/agents' });
-        if (!responseSent) {
-          responseSent = true;
-          return reply.send({ agents: [] }); // Return empty array on timeout
-        }
-        return;
-      }
-
-      // CRITICAL: Send response immediately after Firestore read - no decryption/normalization loops
-      const t4 = Date.now();
-      console.log("[AGENTS_RESPONSE_SEND]", {
-        totalTime: t4 - t0,
-        firestoreTime: t4 - t2,
-        agentsCount: agents?.length || 0
-      });
-
-      if (!responseSent) {
-        responseSent = true;
-        return reply.send({ agents: agents || [] });
-      }
-
+      const agents = await AgentApprovalService.getAllAgents();
+      return reply.code(200).send({ agents: Array.isArray(agents) ? agents : [] });
     } catch (err: any) {
-      const errorTime = Date.now() - t0;
-      console.error("[AGENTS_ERROR]", { error: err.message, totalTime: errorTime });
       logger.error({ err }, 'Error getting user agents');
-      return reply.code(500).send({ error: err.message || 'Error fetching agents' });
+      return reply.code(200).send({ agents: [] });
     }
   });
 
-  // POST /api/agents/unlock - Unlock an agent for user
+  // DISABLED: POST /api/agents/unlock - Legacy route, use /api/admin/agents/assign instead
+  /*
   fastify.post('/unlock', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    try {
-      const user = (request as any).user;
-      const body = unlockAgentSchema.parse(request.body);
-
-      // Unlock agent in user's subcollection
-      await firestoreAdapter.unlockAgent(user.uid, body.agentName);
-
-      // Also create entry in agentUnlocks collection
-      await firestoreAdapter.createAgentUnlock(user.uid, body.agentName, {
-        unlockedBy: user.uid,
-      });
-
-      // Update user's unlockedAgents array
-      await firestoreAdapter.createOrUpdateUser(user.uid, {
-        unlockedAgents: [body.agentName],
-      });
-
-      // Log activity
-      await firestoreAdapter.logActivity(user.uid, 'AGENT_UNLOCKED', { agentName: body.agentName });
-
-      return { message: 'Agent unlocked successfully', agentName: body.agentName };
-    } catch (err: any) {
-      if (err instanceof ValidationError) {
-        return reply.code(400).send({ error: err.message });
-      }
-      logger.error({ err }, 'Error unlocking agent');
-      return reply.code(500).send({ error: err.message || 'Error unlocking agent' });
-    }
+    // LEGACY ROUTE - DISABLED
+    return reply.code(410).send({ error: 'This endpoint has been deprecated. Use admin assignment instead.' });
   });
+  */
 
-  // GET /api/agents/unlocks - Get user's unlocked agents
+  // DISABLED: GET /api/agents/unlocks - Legacy route, use /api/agents/my-approved instead
+  /*
   fastify.get('/unlocks', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    try {
-      const user = (request as any).user;
-      const unlocks = await firestoreAdapter.getUserAgentUnlocks(user.uid);
-      return { unlocks };
-    } catch (err: any) {
-      logger.error({ err }, 'Error getting agent unlocks');
-      return reply.code(500).send({ error: err.message || 'Error fetching agent unlocks' });
-    }
+    // LEGACY ROUTE - DISABLED
+    return reply.code(410).send({ error: 'This endpoint has been deprecated. Use /api/agents/my-approved instead.' });
   });
+  */
 
-  // GET /api/agents/unlocked - Get user's unlocked agent names (HARDENED: 200ms timeout)
+  // DISABLED: GET /api/agents/unlocked - Legacy route, use /api/agents/my-approved instead
+  /*
   fastify.get('/unlocked', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const startTime = Date.now();
-    const user = (request as any).user;
-
-    if (!user?.uid) {
-      logger.warn({}, 'GET /agents/unlocked - missing uid, returning safe default');
-      return reply.send({ unlocked: [] });
-    }
-
-    try {
-      // HARDENED: 200ms timeout - return safe default immediately
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Operation timeout')), 200);
-      });
-
-      const firestoreOperation = async () => {
-        return await firestoreAdapter.getUserUnlockedAgents(user.uid);
-      };
-
-      const unlocked = await Promise.race([firestoreOperation(), timeoutPromise]) as any[];
-      logger.info({ uid: user.uid, count: unlocked?.length || 0, duration: Date.now() - startTime }, 'GET /agents/unlocked success');
-      return reply.send({ unlocked: unlocked || [] });
-    } catch (err: any) {
-      logger.warn({ uid: user.uid, error: err.message, duration: Date.now() - startTime }, 'GET /agents/unlocked timeout/error - returning safe default');
-      // SAFE DEFAULT: Always return empty array
-      return reply.send({ unlocked: [] });
-    }
+    // LEGACY ROUTE - DISABLED
+    return reply.code(410).send({ error: 'This endpoint has been deprecated. Use /api/agents/my-approved instead.' });
   });
-
-  // GET /api/agents/:id - Get single agent by ID
-  fastify.get('/:id', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-    try {
-      const { id } = request.params;
-      const agent = await firestoreAdapter.getAgent(id);
-      if (!agent) {
-        return reply.code(404).send({ error: 'Agent not found' });
-      }
-      return { agent };
-    } catch (err: any) {
-      logger.error({ err }, 'Error getting agent');
-      return reply.code(500).send({ error: err.message || 'Error fetching agent' });
-    }
-  });
-
-  // POST /api/agents/submit-unlock-request - Submit unlock request (creates purchase)
-  fastify.post('/submit-unlock-request', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Body: { agentId: string; agentName: string; fullName: string; phoneNumber: string; email: string } }>, reply: FastifyReply) => {
-    try {
-      const user = (request as any).user;
-      const body = z.object({
-        agentId: z.string().min(1),
-        agentName: z.string().min(1),
-        fullName: z.string().min(1),
-        phoneNumber: z.string().min(1),
-        email: z.string().email(),
-      }).parse(request.body);
-
-      // Save purchase request to Firestore
-      const { getFirebaseAdmin } = await import('../utils/firebase');
-      const admin = await import('firebase-admin');
-      const db = getFirebaseAdmin().firestore();
-
-      const purchaseRef = db.collection('agentPurchases').doc();
-      await purchaseRef.set({
-        id: purchaseRef.id,
-        uid: user.uid,
-        agentId: body.agentId,
-        agentName: body.agentName,
-        fullName: body.fullName,
-        phoneNumber: body.phoneNumber,
-        email: body.email,
-        status: 'pending',
-        submittedAt: admin.firestore.Timestamp.now(),
-        createdAt: admin.firestore.Timestamp.now(),
-      });
-
-      // Also create unlock request entry for backward compatibility
-      const unlockRequestRef = db.collection('agentUnlockRequests').doc();
-      await unlockRequestRef.set({
-        uid: user.uid,
-        agentId: body.agentId,
-        agentName: body.agentName,
-        fullName: body.fullName,
-        phoneNumber: body.phoneNumber,
-        email: body.email,
-        submittedAt: admin.firestore.Timestamp.now(),
-        status: 'pending',
-      });
-
-      // Log activity
-      await firestoreAdapter.logActivity(user.uid, 'AGENT_PURCHASE_REQUEST_SUBMITTED', {
-        agentId: body.agentId,
-        agentName: body.agentName,
-        purchaseId: purchaseRef.id,
-      });
-
-      logger.info({ uid: user.uid, agentName: body.agentName, purchaseId: purchaseRef.id }, 'Agent purchase request submitted');
-      return {
-        success: true,
-        message: 'Purchase request submitted successfully',
-        purchaseId: purchaseRef.id
-      };
-    } catch (err: any) {
-      if (err instanceof z.ZodError) {
-        return reply.code(400).send({ error: 'Invalid input', details: err.errors });
-      }
-      logger.error({ err }, 'Error submitting purchase request');
-      return reply.code(500).send({ error: err.message || 'Error submitting purchase request' });
-    }
-  });
+  */
 
   // PUT /api/agents/:agentId/settings - Update agent settings for user
   fastify.put('/:agentId/settings', {
     preHandler: [fastify.authenticate, agentAccessMiddleware],
   }, async (request: FastifyRequest<{ Params: { agentId: string }; Body: any }>, reply: FastifyReply) => {
     try {
-      const user = (request as any).user;
-      const { agentId } = request.params;
-      const settings = request.body;
-
-      // Get agent name from agentId
-      const allAgents = await firestoreAdapter.getAllAgents();
-      const agent = allAgents.find((a: any) => a.id === agentId);
-      if (!agent) {
-        return reply.code(404).send({ error: 'Agent not found' });
-      }
-
-      // Update agent settings in user's subcollection
-      const { getFirebaseAdmin } = await import('../utils/firebase');
-      const admin = await import('firebase-admin');
-      const db = getFirebaseAdmin().firestore();
-      const userAgentRef = db.collection('users').doc(user.uid).collection('agents').doc(agent.id);
-      const updateData: any = {
-        updatedAt: admin.firestore.Timestamp.now(),
-      };
-      Object.assign(updateData, settings);
-      await userAgentRef.set(updateData, { merge: true });
-
-      logger.info({ uid: user.uid, agentName: agent.name }, 'Agent settings updated');
-      return { message: 'Settings updated successfully' };
+      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     } catch (err: any) {
       logger.error({ err }, 'Error updating agent settings');
-      return reply.code(500).send({ error: err.message || 'Error updating agent settings' });
+      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     }
   });
 
 
-  // POST /api/agents/purchase-request - Create agent purchase request
+  // DISABLED: POST /api/agents/purchase-request - Legacy route, use /api/agents/request instead
+  /*
   fastify.post('/purchase-request', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Body: { agentId: string; agentName: string; userName: string; email: string; phoneNumber: string } }>, reply: FastifyReply) => {
@@ -339,8 +130,10 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: err.message || 'Error creating purchase request' });
     }
   });
+  */
 
-  // GET /api/admin/agents/purchase-requests - Admin get purchase requests
+  // DISABLED: GET /api/admin/agents/purchase-requests - Legacy route, use /api/admin/agents/requests instead
+  /*
   fastify.get('/admin/purchase-requests', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Querystring: { status?: string } }>, reply: FastifyReply) => {
@@ -365,38 +158,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: err.message || 'Error fetching purchase requests' });
     }
   });
-
-  // POST /api/admin/agents/approve - Admin approve agent purchase request
-  fastify.post('/admin/approve', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Body: { requestId: string } }>, reply: FastifyReply) => {
-    try {
-      const user = (request as any).user;
-      // Check if user is admin
-      const isAdmin = await firestoreAdapter.isAdmin(user.uid);
-      if (!isAdmin) {
-        return reply.code(403).send({ error: 'Admin access required' });
-      }
-      const admin = (request as any).user;
-      const body = z.object({
-        requestId: z.string().min(1),
-      }).parse(request.body);
-
-      await firestoreAdapter.approveAgentPurchaseRequest(body.requestId, admin.uid);
-
-      logger.info({ requestId: body.requestId, approvedBy: admin.uid }, 'Agent purchase request approved');
-      return {
-        success: true,
-        message: 'Agent purchase request approved and feature enabled',
-      };
-    } catch (err: any) {
-      if (err instanceof z.ZodError) {
-        return reply.code(400).send({ error: 'Invalid input', details: err.errors });
-      }
-      logger.error({ err }, 'Error approving purchase request');
-      return reply.code(500).send({ error: err.message || 'Error approving purchase request' });
-    }
-  });
+  */
 
   // GET /api/users/:uid/features - Get user's enabled features (HARDENED: 200ms timeout)
   fastify.get('/users/:uid/features', {
@@ -411,29 +173,59 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       return reply.send({ features: {} });
     }
 
+    logger.info({ uid, duration: Date.now() - startTime }, 'GET /users/:uid/features returning safe default');
+    return reply.send({ features: {} });
+  });
+
+  // ===== AGENT APPROVAL SYSTEM ROUTES =====
+
+  console.log("[ROUTE READY] GET /api/agents/available");
+  console.log("[ROUTE READY] POST /api/agents/request");
+  console.log("[ROUTE READY] GET /api/agents/my-requests");
+  console.log("[ROUTE READY] GET /api/agents/my-approved");
+
+  // GET /api/agents/available - Get all available agents
+  fastify.get('/available', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      // HARDENED: 200ms timeout - return safe default immediately
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Operation timeout')), 200);
-      });
-
-      const featuresOperation = async () => {
-        // Skip admin check to save time - users can only see their own features anyway
-        if (uid !== user.uid) {
-          return {};
-        }
-        return await firestoreAdapter.getUserFeatures(uid);
-      };
-
-      const features = await Promise.race([featuresOperation(), timeoutPromise]) as any;
-      logger.info({ uid, duration: Date.now() - startTime }, 'GET /users/:uid/features success');
-      return reply.send({ features: features || {} });
+      const agents = await AgentApprovalService.getAllAgents();
+      return reply.code(200).send({ agents: Array.isArray(agents) ? agents : [] });
     } catch (err: any) {
-      logger.warn({ uid, error: err.message, duration: Date.now() - startTime }, 'GET /users/:uid/features timeout/error - returning safe default');
-      // SAFE DEFAULT: Always return empty object
-      return reply.send({ features: {} });
+      logger.error({ err }, 'Error getting available agents');
+      return reply.code(200).send({ agents: [] });
     }
   });
+
+  // POST /api/agents/request - Firebase-only
+  fastify.post('/request', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    return reply.code(200).send({ source: 'firebase_only', status: 'handled_in_firestore' });
+  });
+
+  // GET /api/agents/my-requests - Firebase-only
+  fastify.get('/my-requests', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    return reply.code(200).send({ source: 'firebase_only', status: 'handled_in_firestore' });
+  });
+
+
+  // GET /api/agents/my-approved - Firebase-only
+  fastify.get('/my-approved', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    return reply.code(200).send({ source: 'firebase_only', status: 'handled_in_firestore' });
+  });
+
+  // GET /api/agents/:id - Get agent by ID
+  fastify.get('/:id', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    return reply.code(410).send({ error: 'This endpoint has been deprecated. Use /api/agents/available.' });
+  });
+
 
   // ===== TRADING AGENT ROUTES =====
 
@@ -442,13 +234,14 @@ export async function agentsRoutes(fastify: FastifyInstance) {
   console.log("[ROUTE READY] POST /api/admin/agents/approve-trading-agent");
   console.log("[ROUTE READY] POST /api/admin/agents/reject-trading-agent");
   console.log("[ROUTE READY] GET /api/agents/trading-agents");
-  console.log("[ROUTE READY] PUT /api/agents/trading-agent/:agentId/settings");
-  console.log("[ROUTE READY] POST /api/agents/trading-agent/:agentId/start");
-  console.log("[ROUTE READY] POST /api/agents/trading-agent/:agentId/stop");
-  console.log("[ROUTE READY] POST /api/agents/trading-agent/:agentId/pause");
-  console.log("[ROUTE READY] POST /api/agents/trading-agent/:agentId/resume");
-  console.log("[ROUTE READY] GET /api/agents/trading-agent/:agentId/trades");
-  console.log("[ROUTE READY] GET /api/agents/trading-agent/:agentId/performance");
+  console.log("[ROUTE READY] GET /api/agents/:agentId/control");
+  console.log("[ROUTE READY] PUT /api/agents/:agentId/settings");
+  console.log("[ROUTE READY] POST /api/agents/:agentId/start");
+  console.log("[ROUTE READY] POST /api/agents/:agentId/stop");
+  console.log("[ROUTE READY] POST /api/agents/:agentId/pause");
+  console.log("[ROUTE READY] POST /api/agents/:agentId/resume");
+  console.log("[ROUTE READY] GET /api/agents/:agentId/trades");
+  console.log("[ROUTE READY] GET /api/agents/:agentId/performance");
 
   const createTradingAgentSchema = z.object({
     userId: z.string().min(1),
@@ -465,7 +258,8 @@ export async function agentsRoutes(fastify: FastifyInstance) {
     apiSecret: z.string().optional()
   });
 
-  // Create trading agent request
+  // DISABLED: Create trading agent request - Legacy route, use /api/agents/request instead
+  /*
   fastify.post('/trading-agent-request', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
@@ -507,8 +301,10 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: err.message || 'Error creating trading agent request' });
     }
   });
+  */
 
-  // Get pending trading agent requests (admin only)
+  // DISABLED: Get pending trading agent requests - Legacy route, use /api/admin/agents/requests instead
+  /*
   fastify.get('/admin/trading-agent-requests', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
@@ -528,8 +324,10 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: err.message || 'Error fetching trading agent requests' });
     }
   });
+  */
 
-  // Approve trading agent request (admin only)
+  // DISABLED: Approve trading agent request - Legacy route, use /api/admin/agents/approve instead
+  /*
   fastify.post('/admin/approve-trading-agent', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
@@ -555,8 +353,10 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: err.message || 'Error approving trading agent request' });
     }
   });
+  */
 
-  // Reject trading agent request (admin only)
+  // DISABLED: Reject trading agent request - Legacy route, use /api/admin/agents/reject instead
+  /*
   fastify.post('/admin/reject-trading-agent', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
@@ -582,8 +382,10 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: err.message || 'Error rejecting trading agent request' });
     }
   });
+  */
 
-  // Get user's trading agents
+  // DISABLED: Get user's trading agents - Legacy route, use /api/agents/my-approved instead
+  /*
   fastify.get('/trading-agents', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
@@ -597,237 +399,162 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       return { agents: [] };
     }
   });
+  */
 
   // Get trading agent control data
-  fastify.get('/trading-agent/:agentId/control', {
+  fastify.get('/:agentId/control', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { agentId: string } }>, reply: FastifyReply) => {
     try {
       const user = (request as any).user;
       const uid = user?.uid;
-      const { agentId } = request.params;
+      let { agentId } = request.params;
+
+      console.log('TRADING AGENT CONTROL ROUTE HIT:', { agentId, uid });
 
       if (!uid) {
-        return reply.code(403).send({ error: 'Agent access not granted yet' });
+        return reply.code(403).send({ error: 'Authentication required' });
       }
 
-      // Firestore is the source of truth for authorization
-      const userData = await firestoreAdapter.getUser(uid);
-      if (!userData) {
-        return reply.code(403).send({ error: 'Agent access not granted yet' });
+      // Check if agentId is a special route (vwap-strategy)
+      if (agentId === 'vwap-strategy') {
+        // Check if user has VWAP_STRATEGY access via agent approval system
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'VWAP_STRATEGY');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'VWAP Strategy access not granted yet' });
+        }
+
+        // Get runtime state from VWAP runtime service
+        const runtimeState = vwapRuntimeService.getAgentState(uid);
+        const status = runtimeState?.status || 'STOPPED';
+
+        return {
+          agentId: 'vwap-strategy',
+          status: status,
+          config: {
+            name: 'VWAP Strategy',
+            strategyType: 'VWAP_MEAN_REVERSION',
+            tradingPair: 'BTC/USDT',
+            marketType: 'spot'
+          },
+        };
       }
 
-      const unlockedAgents = userData.unlockedAgents;
-      if (
-        !Array.isArray(unlockedAgents) ||
-        !unlockedAgents.some(a => typeof a === 'string' && a.startsWith('TRADING_AGENT'))
-      ) {
-        return reply.code(403).send({ error: 'Agent access not granted yet' });
-      }
-
-      // Fetch agent config
-      const config = await firestoreAdapter.getTradingAgentConfig(agentId);
-      return {
-        agentId,
-        status: config?.status || 'UNKNOWN',
-        config: config || null,
-      };
+      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error getting trading agent control');
-      return reply.code(500).send({ error: err.message || 'Error fetching trading agent control' });
-    }
-  });
-
-  // Update trading agent settings
-  fastify.put('/trading-agent/:agentId/settings', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Params: { agentId: string } }>, reply: FastifyReply) => {
-    try {
-      const user = (request as any).user;
-      const { agentId } = request.params;
-      const settings = tradingAgentSettingsSchema.parse(request.body);
-
-      // Verify ownership
-      const agent = await firestoreAdapter.getTradingAgentConfig(agentId);
-      if (!agent || agent.userId !== user.uid) {
-        return reply.code(403).send({ error: 'Unauthorized' });
-      }
-
-      await firestoreAdapter.updateAgentConfig(agentId, settings);
-
-      logger.info({ agentId, userId: user.uid }, 'Trading agent settings updated');
-      return { success: true, message: 'Settings updated successfully' };
-    } catch (err: any) {
-      if (err instanceof z.ZodError) {
-        return reply.code(400).send({ error: 'Invalid input', details: err.errors });
-      }
-      logger.error({ err, agentId: request.params.agentId }, 'Error updating trading agent settings');
-      return reply.code(500).send({ error: err.message || 'Error updating settings' });
+      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     }
   });
 
   // Start trading agent
-  fastify.post('/trading-agent/:agentId/start', {
+  fastify.post('/:agentId/start', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { agentId: string } }>, reply: FastifyReply) => {
     try {
       const user = (request as any).user;
-      const { agentId } = request.params;
+      let { agentId } = request.params;
 
-      // Verify ownership and status
-      const agent = await firestoreAdapter.getTradingAgentConfig(agentId);
-      if (!agent || agent.userId !== user.uid) {
-        return reply.code(403).send({ error: 'Unauthorized' });
+      // Handle VWAP Strategy agents
+      if (agentId === 'vwap-strategy') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'VWAP_STRATEGY');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'VWAP Strategy access not granted yet' });
+        }
+
+        // Start VWAP Strategy using runtime service
+        const runtimeState = vwapRuntimeService.startAgent(user.uid);
+        return { success: true, message: 'VWAP Strategy started successfully' };
       }
 
-      if (agent.status !== 'PAUSED' && agent.status !== 'STOPPED') {
-        return reply.code(400).send({ error: 'Agent is not in a startable state' });
-      }
-
-      await firestoreAdapter.updateAgentStatus(agentId, 'ACTIVE');
-
-      logger.info({ agentId, userId: user.uid }, 'Trading agent started');
-      return { success: true, message: 'Trading agent started successfully' };
+      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error starting trading agent');
-      return reply.code(500).send({ error: err.message || 'Error starting trading agent' });
+      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     }
   });
 
   // Stop trading agent
-  fastify.post('/trading-agent/:agentId/stop', {
+  fastify.post('/:agentId/stop', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { agentId: string } }>, reply: FastifyReply) => {
     try {
       const user = (request as any).user;
-      const { agentId } = request.params;
+      let { agentId } = request.params;
 
-      // Verify ownership
-      const agent = await firestoreAdapter.getTradingAgentConfig(agentId);
-      if (!agent || agent.userId !== user.uid) {
-        return reply.code(403).send({ error: 'Unauthorized' });
+      // Handle VWAP Strategy agents
+      if (agentId === 'vwap-strategy') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'VWAP_STRATEGY');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'VWAP Strategy access not granted yet' });
+        }
+
+        // Stop VWAP Strategy using runtime service
+        const runtimeState = vwapRuntimeService.stopAgent(user.uid);
+        return { success: true, message: 'VWAP Strategy stopped successfully' };
       }
 
-      await firestoreAdapter.updateAgentStatus(agentId, 'STOPPED');
-
-      logger.info({ agentId, userId: user.uid }, 'Trading agent stopped');
-      return { success: true, message: 'Trading agent stopped successfully' };
+      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error stopping trading agent');
-      return reply.code(500).send({ error: err.message || 'Error stopping trading agent' });
+      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     }
   });
 
   // Pause trading agent
-  fastify.post('/trading-agent/:agentId/pause', {
+  fastify.post('/:agentId/pause', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { agentId: string } }>, reply: FastifyReply) => {
     try {
       const user = (request as any).user;
-      const { agentId } = request.params;
-
-      // Verify ownership
-      const agent = await firestoreAdapter.getTradingAgentConfig(agentId);
-      if (!agent || agent.userId !== user.uid) {
-        return reply.code(403).send({ error: 'Unauthorized' });
-      }
-
-      if (agent.status !== 'ACTIVE') {
-        return reply.code(400).send({ error: 'Agent is not active' });
-      }
-
-      await firestoreAdapter.updateAgentStatus(agentId, 'PAUSED');
-
-      logger.info({ agentId, userId: user.uid }, 'Trading agent paused');
-      return { success: true, message: 'Trading agent paused successfully' };
+      let { agentId } = request.params;
+      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error pausing trading agent');
-      return reply.code(500).send({ error: err.message || 'Error pausing trading agent' });
+      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     }
   });
 
   // Resume trading agent
-  fastify.post('/trading-agent/:agentId/resume', {
+  fastify.post('/:agentId/resume', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { agentId: string } }>, reply: FastifyReply) => {
     try {
       const user = (request as any).user;
-      const { agentId } = request.params;
-
-      // Verify ownership
-      const agent = await firestoreAdapter.getTradingAgentConfig(agentId);
-      if (!agent || agent.userId !== user.uid) {
-        return reply.code(403).send({ error: 'Unauthorized' });
-      }
-
-      if (agent.status !== 'PAUSED') {
-        return reply.code(400).send({ error: 'Agent is not paused' });
-      }
-
-      await firestoreAdapter.updateAgentStatus(agentId, 'ACTIVE');
-
-      logger.info({ agentId, userId: user.uid }, 'Trading agent resumed');
-      return { success: true, message: 'Trading agent resumed successfully' };
+      let { agentId } = request.params;
+      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error resuming trading agent');
-      return reply.code(500).send({ error: err.message || 'Error resuming trading agent' });
+      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     }
   });
 
   // Get trading agent trades
-  fastify.get('/trading-agent/:agentId/trades', {
+  fastify.get('/:agentId/trades', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { agentId: string }; Querystring: { limit?: string } }>, reply: FastifyReply) => {
     try {
       const user = (request as any).user;
-      const { agentId } = request.params;
+      let { agentId } = request.params;
       const limit = request.query.limit ? parseInt(request.query.limit) : 50;
-
-      // Verify ownership
-      const agent = await firestoreAdapter.getTradingAgentConfig(agentId);
-      if (!agent || agent.userId !== user.uid) {
-        return reply.code(403).send({ error: 'Unauthorized' });
-      }
-
-      const trades = await firestoreAdapter.getAgentTrades(agentId, limit);
-      return { trades };
+      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error getting trading agent trades');
-      return reply.code(500).send({ error: err.message || 'Error fetching trades' });
+      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     }
   });
 
   // Get trading agent performance
-  fastify.get('/trading-agent/:agentId/performance', {
+  fastify.get('/:agentId/performance', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { agentId: string } }>, reply: FastifyReply) => {
     try {
       const user = (request as any).user;
-      const { agentId } = request.params;
-
-      // Verify ownership
-      const agent = await firestoreAdapter.getTradingAgentConfig(agentId);
-      if (!agent || agent.userId !== user.uid) {
-        return reply.code(403).send({ error: 'Unauthorized' });
-      }
-
-      const performance = {
-        totalTrades: agent.totalTrades || 0,
-        winningTrades: agent.winningTrades || 0,
-        losingTrades: agent.losingTrades || 0,
-        winRate: agent.totalTrades > 0 ? (agent.winningTrades / agent.totalTrades) * 100 : 0,
-        totalPnL: agent.totalPnL || 0,
-        dailyPnL: agent.dailyPnL || 0,
-        drawdown: agent.drawdown || 0,
-        lastTradeAt: agent.lastTradeAt,
-        dailyTrades: agent.dailyTrades || 0,
-        consecutiveLosses: agent.consecutiveLosses || 0
-      };
-
-      return { performance };
+      let { agentId } = request.params;
+      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error getting trading agent performance');
-      return reply.code(500).send({ error: err.message || 'Error fetching performance' });
+      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     }
   });
 

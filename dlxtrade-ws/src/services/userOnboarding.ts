@@ -3,6 +3,7 @@ import { getFirebaseAdmin } from '../utils/firebase';
 import { firestoreAdapter } from './firestoreAdapter';
 import { logger } from '../utils/logger';
 import { decrypt } from './keyManager';
+import { query } from '../db';
 
 /**
  * Sanitize Firestore payload by removing undefined values and converting them to FieldValue.delete()
@@ -536,6 +537,19 @@ export async function ensureUser(
         throw new Error('Base user document creation failed - document does not exist after set()');
       }
       logger.info({ uid }, '✅ Base user document creation verified');
+
+      // Create PostgreSQL user record for agent approval system
+      try {
+        await query(`
+          INSERT INTO users (firebase_uid, email, name, phone, role, is_admin)
+          VALUES ($1, $2, $3, $4, 'user', false)
+          ON CONFLICT (firebase_uid) DO NOTHING
+        `, [uid, profileData?.email || '', profileData?.name || '', profileData?.phone || null]);
+        logger.info({ uid }, '✅ PostgreSQL user record created for agent approval system');
+      } catch (pgError: any) {
+        logger.error({ uid, error: pgError.message }, '❌ Failed to create PostgreSQL user record');
+        // Don't fail the entire onboarding if PostgreSQL fails
+      }
     } else {
       // Update only missing fields (do not overwrite existing user-provided fields)
       const existingData = existingUser.data() || {};

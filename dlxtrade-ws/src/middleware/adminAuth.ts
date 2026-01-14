@@ -2,6 +2,7 @@ import { FastifyRequest, FastifyReply } from 'fastify';
 import { getFirebaseAdmin } from '../utils/firebase';
 import { AuthorizationError } from '../utils/errors';
 import { logger } from '../utils/logger';
+import { query } from '../db';
 
 export async function adminAuthMiddleware(
   request: FastifyRequest,
@@ -13,22 +14,38 @@ export async function adminAuthMiddleware(
       throw new AuthorizationError('User not authenticated');
     }
 
-    // Check admin via Firestore root-only flags
+    // Check admin via Firestore root-only flags (primary check)
     const db = getFirebaseAdmin().firestore();
     const snapshot = await db.collection('users').doc(user.uid).get();
-    if (!snapshot.exists) {
-      throw new AuthorizationError('User doc missing');
+    let hasAdmin = false;
+
+    if (snapshot.exists) {
+      const userData: any = snapshot.data() || {};
+      const roleRoot = userData.role;
+      const isAdminRoot = userData.isAdmin === true;
+      hasAdmin = roleRoot === 'admin' || isAdminRoot;
     }
-    const userData: any = snapshot.data() || {};
-    const roleRoot = userData.role;
-    const isAdminRoot = userData.isAdmin === true;
 
-        const hasAdmin = roleRoot === 'admin' || isAdminRoot;
+    // Fallback: Check PostgreSQL users table if Firestore check failed
+    if (!hasAdmin) {
+      try {
+        const pgUsers = await query(`
+          SELECT role, is_admin FROM users WHERE firebase_uid = $1
+        `, [user.uid]);
 
-        if (!hasAdmin) {
-            logger.warn({ uid: user.uid, roleRoot, isAdminRoot }, 'Non-admin user attempted to access admin route');
-            throw new AuthorizationError('Access Denied');
+        if (Array.isArray(pgUsers) && pgUsers.length > 0) {
+          const pgUser = pgUsers[0];
+          hasAdmin = pgUser.role === 'admin' || pgUser.is_admin === true;
         }
+      } catch (pgError: any) {
+        logger.warn({ uid: user.uid, error: pgError.message }, 'PostgreSQL admin check failed, using Firestore only');
+      }
+    }
+
+    if (!hasAdmin) {
+        logger.warn({ uid: user.uid }, 'Non-admin user attempted to access admin route');
+        throw new AuthorizationError('Access Denied');
+    }
 
     logger.debug({ uid: user.uid }, 'Admin access granted');
   } catch (error: any) {

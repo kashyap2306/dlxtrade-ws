@@ -1043,6 +1043,20 @@ export class FirestoreAdapter {
             },
             { merge: true },
           );
+
+          // Also create the specific user-agent linkage document
+          const userAgentRef = db.collection('users').doc(requestedByUid).collection('agents').doc('trading-agent');
+          transaction.set(
+            userAgentRef,
+            {
+              agentId: 'trading-agent',
+              status: 'ACTIVE',
+              createdAt: admin.firestore.Timestamp.now(),
+              unlocked: true,
+              unlockedAt: admin.firestore.Timestamp.now(),
+            },
+            { merge: true },
+          );
         }
       });
 
@@ -2504,6 +2518,8 @@ export class FirestoreAdapter {
       name: string;
       price: number;
       features: string[];
+      unlocked: boolean;
+      unlockedAt?: any;
       [key: string]: any;
     }>
   > {
@@ -2513,8 +2529,36 @@ export class FirestoreAdapter {
       .collection("agents")
       .get();
     return snapshot.docs
-      .filter((doc) => doc.id !== "_init" && !doc.id.startsWith("_")) // Filter out _init and other system documents
+      .filter((doc) => {
+        const data = doc.data();
+        return doc.id !== "_init" && !doc.id.startsWith("_") && data.unlocked === true;
+      }) // Filter out system documents and locked agents
       .map((doc) => ({ id: doc.id, ...doc.data() }) as any);
+  }
+
+  /**
+   * Ensure agent access document exists in Firestore
+   */
+  async ensureAgentAccessDoc(uid: string, agentId: string): Promise<void> {
+    try {
+      const agentRef = db()
+        .collection("users")
+        .doc(uid)
+        .collection("agents")
+        .doc(agentId);
+
+      const doc = await agentRef.get();
+      if (!doc.exists) {
+        await agentRef.set({
+          unlocked: false,
+          unlockedAt: null,
+          createdAt: new Date(),
+        });
+      }
+    } catch (error) {
+      logger.error({ error, uid, agentId }, 'Error ensuring agent access doc');
+      throw error;
+    }
   }
 
   async getUserAgent(uid: string, agentId: string): Promise<any | null> {

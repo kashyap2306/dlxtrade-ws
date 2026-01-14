@@ -1,3 +1,6 @@
+// DISABLED: Entire tradingAgents.ts file is legacy duplicate system
+// Use PostgreSQL-based agent approval system in agents.ts instead
+/*
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { firestoreAdapter } from '../services/firestoreAdapter';
@@ -25,14 +28,14 @@ export async function tradingAgentsRoutes(fastify: FastifyInstance) {
   console.log("[ROUTE READY] POST /api/admin/agents/approve-trading-agent");
   console.log("[ROUTE READY] POST /api/admin/agents/reject-trading-agent");
   console.log("[ROUTE READY] GET /api/agents/trading-agents");
-  console.log("[ROUTE READY] GET /api/agents/trading-agent/:agentId/control");
-  console.log("[ROUTE READY] PUT /api/agents/trading-agent/:agentId/settings");
-  console.log("[ROUTE READY] POST /api/agents/trading-agent/:agentId/start");
-  console.log("[ROUTE READY] POST /api/agents/trading-agent/:agentId/stop");
-  console.log("[ROUTE READY] POST /api/agents/trading-agent/:agentId/pause");
-  console.log("[ROUTE READY] POST /api/agents/trading-agent/:agentId/resume");
-  console.log("[ROUTE READY] GET /api/agents/trading-agent/:agentId/trades");
-  console.log("[ROUTE READY] GET /api/agents/trading-agent/:agentId/performance");
+  console.log("[ROUTE READY] GET /api/agents/:agentId/control");
+  console.log("[ROUTE READY] PUT /api/agents/:agentId/settings");
+  console.log("[ROUTE READY] POST /api/agents/:agentId/start");
+  console.log("[ROUTE READY] POST /api/agents/:agentId/stop");
+  console.log("[ROUTE READY] POST /api/agents/:agentId/pause");
+  console.log("[ROUTE READY] POST /api/agents/:agentId/resume");
+  console.log("[ROUTE READY] GET /api/agents/:agentId/trades");
+  console.log("[ROUTE READY] GET /api/agents/:agentId/performance");
 
   // Create trading agent request
   fastify.post('/trading-agent-request', {
@@ -155,21 +158,23 @@ export async function tradingAgentsRoutes(fastify: FastifyInstance) {
   });
 
   // Get trading agent control data
-  fastify.get('/trading-agent/:agentId/control', {
+  fastify.get('/:agentId/control', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { agentId: string } }>, reply: FastifyReply) => {
     try {
       const user = (request as any).user;
       const { agentId } = request.params;
 
-      // Get user data to check unlocked agents
-      const userData = await firestoreAdapter.getUser(user.uid);
-      if (!userData?.unlockedAgents?.includes(agentId)) {
-        return reply.code(403).send({ error: 'Agent not unlocked', message: 'Agent not unlocked' });
+      const accessDoc = await firestoreAdapter.getUserAgent(user.uid, 'trading-agent');
+      if (!accessDoc) {
+        return reply.code(403).send({ error: 'Agent access not granted yet' });
       }
 
       // Get agent config
       const config = await firestoreAdapter.getTradingAgentConfig(agentId);
+      if (!config) {
+        return reply.code(404).send({ error: 'Agent not found' });
+      }
       return {
         agentId,
         status: config?.status || 'UNKNOWN',
@@ -182,7 +187,7 @@ export async function tradingAgentsRoutes(fastify: FastifyInstance) {
   });
 
   // Update trading agent settings
-  fastify.put('/trading-agent/:agentId/settings', {
+  fastify.put('/:agentId/settings', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { agentId: string } }>, reply: FastifyReply) => {
     try {
@@ -190,10 +195,9 @@ export async function tradingAgentsRoutes(fastify: FastifyInstance) {
       const { agentId } = request.params;
       const settings = tradingAgentSettingsSchema.parse(request.body);
 
-      // Verify ownership
-      const agent = await firestoreAdapter.getTradingAgentConfig(agentId);
-      if (!agent || agent.userId !== user.uid) {
-        return reply.code(403).send({ error: 'Unauthorized' });
+      const accessDoc = await firestoreAdapter.getUserAgent(user.uid, 'trading-agent');
+      if (!accessDoc) {
+        return reply.code(403).send({ error: 'Agent access not granted yet' });
       }
 
       await firestoreAdapter.updateAgentConfig(agentId, settings);
@@ -210,21 +214,16 @@ export async function tradingAgentsRoutes(fastify: FastifyInstance) {
   });
 
   // Start trading agent
-  fastify.post('/trading-agent/:agentId/start', {
+  fastify.post('/:agentId/start', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { agentId: string } }>, reply: FastifyReply) => {
     try {
       const user = (request as any).user;
       const { agentId } = request.params;
 
-      // Verify ownership and status
-      const agent = await firestoreAdapter.getTradingAgentConfig(agentId);
-      if (!agent || agent.userId !== user.uid) {
-        return reply.code(403).send({ error: 'Unauthorized' });
-      }
-
-      if (agent.status !== 'PAUSED' && agent.status !== 'STOPPED') {
-        return reply.code(400).send({ error: 'Agent is not in a pausable state' });
+      const accessDoc = await firestoreAdapter.getUserAgent(user.uid, 'trading-agent');
+      if (!accessDoc) {
+        return reply.code(403).send({ error: 'Agent access not granted yet' });
       }
 
       await firestoreAdapter.updateAgentStatus(agentId, 'ACTIVE');
@@ -238,17 +237,16 @@ export async function tradingAgentsRoutes(fastify: FastifyInstance) {
   });
 
   // Stop trading agent
-  fastify.post('/trading-agent/:agentId/stop', {
+  fastify.post('/:agentId/stop', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { agentId: string } }>, reply: FastifyReply) => {
     try {
       const user = (request as any).user;
       const { agentId } = request.params;
 
-      // Verify ownership
-      const agent = await firestoreAdapter.getTradingAgentConfig(agentId);
-      if (!agent || agent.userId !== user.uid) {
-        return reply.code(403).send({ error: 'Unauthorized' });
+      const accessDoc = await firestoreAdapter.getUserAgent(user.uid, 'trading-agent');
+      if (!accessDoc) {
+        return reply.code(403).send({ error: 'Agent access not granted yet' });
       }
 
       await firestoreAdapter.updateAgentStatus(agentId, 'STOPPED');
@@ -262,21 +260,16 @@ export async function tradingAgentsRoutes(fastify: FastifyInstance) {
   });
 
   // Pause trading agent
-  fastify.post('/trading-agent/:agentId/pause', {
+  fastify.post('/:agentId/pause', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { agentId: string } }>, reply: FastifyReply) => {
     try {
       const user = (request as any).user;
       const { agentId } = request.params;
 
-      // Verify ownership
-      const agent = await firestoreAdapter.getTradingAgentConfig(agentId);
-      if (!agent || agent.userId !== user.uid) {
-        return reply.code(403).send({ error: 'Unauthorized' });
-      }
-
-      if (agent.status !== 'ACTIVE') {
-        return reply.code(400).send({ error: 'Agent is not active' });
+      const accessDoc = await firestoreAdapter.getUserAgent(user.uid, 'trading-agent');
+      if (!accessDoc) {
+        return reply.code(403).send({ error: 'Agent access not granted yet' });
       }
 
       await firestoreAdapter.updateAgentStatus(agentId, 'PAUSED');
@@ -290,21 +283,16 @@ export async function tradingAgentsRoutes(fastify: FastifyInstance) {
   });
 
   // Resume trading agent
-  fastify.post('/trading-agent/:agentId/resume', {
+  fastify.post('/:agentId/resume', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { agentId: string } }>, reply: FastifyReply) => {
     try {
       const user = (request as any).user;
       const { agentId } = request.params;
 
-      // Verify ownership
-      const agent = await firestoreAdapter.getTradingAgentConfig(agentId);
-      if (!agent || agent.userId !== user.uid) {
-        return reply.code(403).send({ error: 'Unauthorized' });
-      }
-
-      if (agent.status !== 'PAUSED') {
-        return reply.code(400).send({ error: 'Agent is not paused' });
+      const accessDoc = await firestoreAdapter.getUserAgent(user.uid, 'trading-agent');
+      if (!accessDoc) {
+        return reply.code(403).send({ error: 'Agent access not granted yet' });
       }
 
       await firestoreAdapter.updateAgentStatus(agentId, 'ACTIVE');
@@ -318,7 +306,7 @@ export async function tradingAgentsRoutes(fastify: FastifyInstance) {
   });
 
   // Get trading agent trades
-  fastify.get('/trading-agent/:agentId/trades', {
+  fastify.get('/:agentId/trades', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { agentId: string }; Querystring: { limit?: string } }>, reply: FastifyReply) => {
     try {
@@ -326,10 +314,9 @@ export async function tradingAgentsRoutes(fastify: FastifyInstance) {
       const { agentId } = request.params;
       const limit = request.query.limit ? parseInt(request.query.limit) : 50;
 
-      // Verify ownership
-      const agent = await firestoreAdapter.getTradingAgentConfig(agentId);
-      if (!agent || agent.userId !== user.uid) {
-        return reply.code(403).send({ error: 'Unauthorized' });
+      const accessDoc = await firestoreAdapter.getUserAgent(user.uid, 'trading-agent');
+      if (!accessDoc) {
+        return reply.code(403).send({ error: 'Agent access not granted yet' });
       }
 
       const trades = await firestoreAdapter.getAgentTrades(agentId, limit);
@@ -341,17 +328,21 @@ export async function tradingAgentsRoutes(fastify: FastifyInstance) {
   });
 
   // Get trading agent performance
-  fastify.get('/trading-agent/:agentId/performance', {
+  fastify.get('/:agentId/performance', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { agentId: string } }>, reply: FastifyReply) => {
     try {
       const user = (request as any).user;
       const { agentId } = request.params;
 
-      // Verify ownership
+      const accessDoc = await firestoreAdapter.getUserAgent(user.uid, 'trading-agent');
+      if (!accessDoc) {
+        return reply.code(403).send({ error: 'Agent access not granted yet' });
+      }
+
       const agent = await firestoreAdapter.getTradingAgentConfig(agentId);
-      if (!agent || agent.userId !== user.uid) {
-        return reply.code(403).send({ error: 'Unauthorized' });
+      if (!agent) {
+        return reply.code(404).send({ error: 'Agent not found' });
       }
 
       const performance = {
@@ -374,3 +365,4 @@ export async function tradingAgentsRoutes(fastify: FastifyInstance) {
     }
   });
 }
+*/

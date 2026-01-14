@@ -46,6 +46,8 @@ import { telegramRoutes } from './routes/telegram';
 import { backgroundResearchRoutes } from './routes/backgroundResearch';
 import { broadcastPopupRoutes } from './routes/broadcastPopup';
 import { riskRoutes } from './routes/risk';
+// DISABLED: Legacy trading agents system - use PostgreSQL agent approval instead
+// import { tradingAgentsRoutes } from './routes/tradingAgents';
 
 // Environment checks
 console.log("CHECK ENV:", !!process.env.FIREBASE_PROJECT_ID && !!process.env.FIREBASE_CLIENT_EMAIL && !!process.env.FIREBASE_PRIVATE_KEY);

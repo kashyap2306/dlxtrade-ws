@@ -69,24 +69,15 @@ export default function AgentControl() {
     setLoading(true);
 
     try {
-      // Load agent data
-      const agentsResponse = await agentsApi.getAll();
-      const agents = agentsResponse.data.agents || [];
-      const foundAgent = agents.find((a: any) =>
-        a.id === agentId ||
-        a.name?.toLowerCase().replace(/\s+/g, '_') === agentId
-      );
+      const agentsResponse = await agentsApi.getAvailableAgents();
+      const agents = agentsResponse.data?.agents || [];
+      const foundAgent = agents.find((a: any) => a?.agent_id === agentId);
 
       if (foundAgent) {
         setAgent(foundAgent);
       }
 
-      // Load user features for this agent (no access control here since it's already checked above)
-      const featuresResponse = await agentsApi.getUserFeatures(user.uid);
-      const features = featuresResponse.data.features || [];
-      const agentFeature = features.find((f: any) => f.id === agentId);
-
-      setFeature(agentFeature);
+      setFeature(null);
 
       // Load mock data for AI Launchpad Hunter
       if (agentId === 'ai_launchpad_hunter') {

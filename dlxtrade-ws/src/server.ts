@@ -427,6 +427,43 @@ async function start() {
             // Don't throw - allow server to continue
           }
 
+          // Start Crowd Consensus scheduler (separate from Trading Agent)
+          try {
+            console.log('[CROWD_CONSENSUS] Starting Crowd Consensus scheduler...');
+            const { CrowdConsensusScheduler } = await import('./services/crowdConsensusScheduler');
+
+            // Start scheduler synchronously
+            await CrowdConsensusScheduler.start();
+
+            console.log('[CROWD_CONSENSUS] ✅ Crowd Consensus scheduler started successfully');
+            console.log('[CROWD_CONSENSUS]    - Executes every 5 minutes for active users');
+            console.log('[CROWD_CONSENSUS]    - Monitors 10+ exchanges for consensus signals');
+            console.log('[CROWD_CONSENSUS]    - Independent from Trading Agent scheduler');
+          } catch (ccErr: any) {
+            console.error('⚠️ Crowd Consensus scheduler failed to start:', ccErr.message);
+            logger.error({ error: ccErr.message, stack: ccErr.stack }, 'Crowd Consensus scheduler failed to start');
+            // Don't throw - allow server to continue
+          }
+
+          // Start Trading Agent scheduler (separate from Crowd Consensus)
+          try {
+            console.log('[TRADING_AGENT] Starting Trading Agent scheduler...');
+            const { TradingAgentScheduler } = await import('./services/tradingAgentScheduler');
+            const tradingAgentScheduler = new TradingAgentScheduler();
+
+            // Start scheduler synchronously
+            await tradingAgentScheduler.start();
+
+            console.log('[TRADING_AGENT] ✅ Trading Agent scheduler started successfully');
+            console.log('[TRADING_AGENT]    - Executes every 5 minutes for active agents');
+            console.log('[TRADING_AGENT]    - Uses indicator-based strategy (RSI, BB, EMA, ATR)');
+            console.log('[TRADING_AGENT]    - Independent from Crowd Consensus scheduler');
+          } catch (taErr: any) {
+            console.error('⚠️ Trading Agent scheduler failed to start:', taErr.message);
+            logger.error({ error: taErr.message, stack: taErr.stack }, 'Trading Agent scheduler failed to start');
+            // Don't throw - allow server to continue
+          }
+
           // Run ONE-TIME provider key migration
           try {
             console.log('[PROVIDER_MIGRATION] Running one-time corrupted key cleanup...');

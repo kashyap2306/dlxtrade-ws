@@ -9,16 +9,10 @@ export class TradingAgentScheduler {
   private isRunning = false;
 
   constructor() {
-    // Create a basic market provider - this will be replaced with agent-specific providers
-    const defaultCredentials: ExchangeCredentials = {
-      apiKey: '',
-      secret: '',
-      testnet: true
-    };
-    const marketProvider = new TradingAgentMarketProvider(defaultCredentials);
-
-    this.executionService = new AgentExecutionService(marketProvider);
+    // Initialize with null - will be set per agent
+    this.executionService = null as any;
   }
+
 
   /**
    * Start the trading agent scheduler
@@ -36,6 +30,7 @@ export class TradingAgentScheduler {
       // Schedule execution every 5 minutes
       this.intervalId = setInterval(async () => {
         try {
+          // Execute regular trading agents only
           await this.executeAllAgents();
         } catch (error) {
           logger.error({
