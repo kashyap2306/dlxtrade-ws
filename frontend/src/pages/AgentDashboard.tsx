@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { agentKeyToSlug } from '../utils/agentKeyToSlug';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { useUnlockedAgents } from '../hooks/useUnlockedAgents';

@@ -416,6 +416,31 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         return reply.code(403).send({ error: 'Authentication required' });
       }
 
+      if (agentId === 'trading-agent') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'trading-agent');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'Trading Agent access not granted yet' });
+        }
+
+        const { firestoreAdapter } = await import('../services/firestoreAdapter');
+        const userAgents = await firestoreAdapter.getUserTradingAgents(uid);
+        const activeAgent = userAgents.find((agent: any) => agent.status === 'ACTIVE') || userAgents[0];
+
+        if (!activeAgent) {
+          return {
+            agentId: 'trading-agent',
+            status: 'STOPPED',
+            config: null,
+          };
+        }
+
+        return {
+          agentId: 'trading-agent',
+          status: activeAgent.status || 'STOPPED',
+          config: activeAgent || null,
+        };
+      }
+
       // Check if agentId is a special route (vwap-strategy)
       if (agentId === 'vwap-strategy') {
         // Check if user has VWAP_STRATEGY access via agent approval system
@@ -455,6 +480,24 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       const user = (request as any).user;
       let { agentId } = request.params;
 
+      if (agentId === 'trading-agent') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'trading-agent');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'Trading Agent access not granted yet' });
+        }
+
+        const { firestoreAdapter } = await import('../services/firestoreAdapter');
+        const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
+        const activeAgent = userAgents.find((a: any) => a.status === 'ACTIVE');
+        const targetAgent = activeAgent || userAgents[0];
+        if (!targetAgent?.id) {
+          return reply.code(400).send({ error: 'No Trading Agent configured for this user' });
+        }
+
+        await firestoreAdapter.updateAgentStatus(targetAgent.id, 'ACTIVE');
+        return { success: true, message: 'Trading Agent started successfully' };
+      }
+
       // Handle VWAP Strategy agents
       if (agentId === 'vwap-strategy') {
         const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'VWAP_STRATEGY');
@@ -482,6 +525,24 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       const user = (request as any).user;
       let { agentId } = request.params;
 
+      if (agentId === 'trading-agent') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'trading-agent');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'Trading Agent access not granted yet' });
+        }
+
+        const { firestoreAdapter } = await import('../services/firestoreAdapter');
+        const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
+        const activeAgent = userAgents.find((a: any) => a.status === 'ACTIVE');
+        const targetAgent = activeAgent || userAgents[0];
+        if (!targetAgent?.id) {
+          return reply.code(400).send({ error: 'No Trading Agent configured for this user' });
+        }
+
+        await firestoreAdapter.updateAgentStatus(targetAgent.id, 'STOPPED');
+        return { success: true, message: 'Trading Agent stopped successfully' };
+      }
+
       // Handle VWAP Strategy agents
       if (agentId === 'vwap-strategy') {
         const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'VWAP_STRATEGY');
@@ -508,6 +569,24 @@ export async function agentsRoutes(fastify: FastifyInstance) {
     try {
       const user = (request as any).user;
       let { agentId } = request.params;
+
+      if (agentId === 'trading-agent') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'trading-agent');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'Trading Agent access not granted yet' });
+        }
+
+        const { firestoreAdapter } = await import('../services/firestoreAdapter');
+        const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
+        const activeAgent = userAgents.find((a: any) => a.status === 'ACTIVE');
+        const targetAgent = activeAgent || userAgents[0];
+        if (!targetAgent?.id) {
+          return reply.code(400).send({ error: 'No Trading Agent configured for this user' });
+        }
+
+        await firestoreAdapter.updateAgentStatus(targetAgent.id, 'PAUSED');
+        return { success: true, message: 'Trading Agent paused successfully' };
+      }
       return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error pausing trading agent');
@@ -522,6 +601,24 @@ export async function agentsRoutes(fastify: FastifyInstance) {
     try {
       const user = (request as any).user;
       let { agentId } = request.params;
+
+      if (agentId === 'trading-agent') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'trading-agent');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'Trading Agent access not granted yet' });
+        }
+
+        const { firestoreAdapter } = await import('../services/firestoreAdapter');
+        const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
+        const activeAgent = userAgents.find((a: any) => a.status === 'PAUSED');
+        const targetAgent = activeAgent || userAgents[0];
+        if (!targetAgent?.id) {
+          return reply.code(400).send({ error: 'No Trading Agent configured for this user' });
+        }
+
+        await firestoreAdapter.updateAgentStatus(targetAgent.id, 'ACTIVE');
+        return { success: true, message: 'Trading Agent resumed successfully' };
+      }
       return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error resuming trading agent');
@@ -537,6 +634,24 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       const user = (request as any).user;
       let { agentId } = request.params;
       const limit = request.query.limit ? parseInt(request.query.limit) : 50;
+
+      if (agentId === 'trading-agent') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'trading-agent');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'Trading Agent access not granted yet' });
+        }
+
+        const { firestoreAdapter } = await import('../services/firestoreAdapter');
+        const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
+        const activeAgent = userAgents.find((a: any) => a.status === 'ACTIVE');
+        const targetAgent = activeAgent || userAgents[0];
+        if (!targetAgent?.id) {
+          return { trades: [] };
+        }
+
+        const trades = await firestoreAdapter.getAgentTrades(targetAgent.id, limit);
+        return { trades };
+      }
       return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error getting trading agent trades');
@@ -551,6 +666,38 @@ export async function agentsRoutes(fastify: FastifyInstance) {
     try {
       const user = (request as any).user;
       let { agentId } = request.params;
+
+      if (agentId === 'trading-agent') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'trading-agent');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'Trading Agent access not granted yet' });
+        }
+
+        const { firestoreAdapter } = await import('../services/firestoreAdapter');
+        const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
+        const activeAgent = userAgents.find((a: any) => a.status === 'ACTIVE');
+        const targetAgent = activeAgent || userAgents[0];
+        if (!targetAgent) {
+          return { performance: { totalTrades: 0, winningTrades: 0, losingTrades: 0, winRate: 0, totalPnL: 0, dailyPnL: 0, drawdown: 0, lastTradeAt: null, dailyTrades: 0, consecutiveLosses: 0 } };
+        }
+
+        const totalTrades = targetAgent.totalTrades || 0;
+        const winningTrades = targetAgent.winningTrades || 0;
+        const losingTrades = targetAgent.losingTrades || 0;
+        const performance = {
+          totalTrades,
+          winningTrades,
+          losingTrades,
+          winRate: totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0,
+          totalPnL: targetAgent.totalPnL || 0,
+          dailyPnL: targetAgent.dailyPnL || 0,
+          drawdown: targetAgent.drawdown || 0,
+          lastTradeAt: targetAgent.lastTradeAt || null,
+          dailyTrades: targetAgent.dailyTrades || 0,
+          consecutiveLosses: targetAgent.consecutiveLosses || 0,
+        };
+        return { performance };
+      }
       return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error getting trading agent performance');

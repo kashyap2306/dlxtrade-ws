@@ -235,8 +235,52 @@ export class AgentApprovalService {
    */
   // Firebase-only flow — PostgreSQL disabled intentionally
   static async userHasAgentAccess(userId: string, agentId: string): Promise<boolean> {
-    // Disabled
-    return false;
+    try {
+      if (!userId || typeof userId !== 'string' || !agentId || typeof agentId !== 'string') {
+        return false;
+      }
+
+      const normalizedApprovalKey = (() => {
+        const a = agentId.trim();
+        const lower = a.toLowerCase();
+        switch (lower) {
+          case 'trading-agent':
+            return 'TRADING_AGENT';
+          case 'vwap-strategy':
+            return 'VWAP_STRATEGY';
+          case 'crowd-consensus':
+            return 'COPY_TRADING_AGENT';
+          case 'liquidity_sniper_arbitrage':
+            return 'LIQUIDITY_SWEEP_AGENT';
+          default:
+            return a;
+        }
+      })();
+
+      const { getFirebaseAdmin } = await import('../utils/firebase');
+      const db = getFirebaseAdmin().firestore();
+      const userDoc = await db.collection('users').doc(userId.trim()).get();
+      if (!userDoc.exists) {
+        return false;
+      }
+
+      const approvedAgents: unknown = userDoc.data()?.approvedAgents;
+      if (!Array.isArray(approvedAgents)) {
+        return false;
+      }
+
+      return approvedAgents.includes(normalizedApprovalKey);
+    } catch (error: any) {
+      logger.warn(
+        {
+          uid: userId ? '***MASKED***' : 'null',
+          agentId,
+          error: error?.message || 'unknown',
+        },
+        'userHasAgentAccess: returning false due to error',
+      );
+      return false;
+    }
   }
 
   /**

@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import Toast from '../components/Toast';
 import { useAuth } from '../hooks/useAuth';
 import { agentsApi, usersApi, settingsApi } from '../services/api';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase-config';
+import { agentKeyToSlug } from '../utils/agentKeyToSlug';
 
 export default function TradingAgentControl() {
   const { user, authReady } = useAuth();

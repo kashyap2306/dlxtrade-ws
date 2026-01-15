@@ -5,6 +5,7 @@
 // If you see this, the cache has been invalidated
 
 import { useState, useEffect } from 'react';
+import { agentKeyToSlug } from '../utils/agentKeyToSlug';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { doc, onSnapshot } from 'firebase/firestore';
@@ -165,23 +166,24 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
     agentKey?: string;
   };
 
-  function getAgentControlRoute(agentKey: string): string | null {
-    switch (agentKey) {
-      case 'TRADING_AGENT':
+  function getSidebarAgentRoute(agentKey: string) {
+    const slug = agentKeyToSlug(agentKey);
+    switch (slug) {
+      case 'trading-agent':
         return '/agents/trading-agent';
-      case 'VWAP_STRATEGY':
+      case 'vwap-strategy':
         return '/agents/vwap-strategy';
-      case 'COPY_TRADING_AGENT':
+      case 'crowd-consensus':
         return '/agents/crowd-consensus';
-      case 'LIQUIDITY_SWEEP_AGENT':
+      case 'liquidity_sniper_arbitrage':
         return '/agent/liquidity_sniper_arbitrage';
       default:
-        return null;
+        return `/agent/${slug}`;
     }
   }
 
   const agentMenuItems: MenuItem[] = agents.map(agent => ({
-    path: `/agents/${agent.id}`,
+    path: getSidebarAgentRoute(agent.id),
     label: agent.label,
     Icon: Icons.Agent,
     icon: undefined,
@@ -288,15 +290,13 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
                   to={item.path}
                   onClick={(e) => {
                     if (item.agentKey) {
-                      const specialRoute = getAgentControlRoute(item.agentKey);
-                      const routeChosen = specialRoute ?? `/agent/${item.agentKey}`;
-                      console.debug({ from: 'sidebar', agentKey: item.agentKey, routeChosen });
+                      const slug = agentKeyToSlug(item.agentKey);
+                      const route = getSidebarAgentRoute(item.agentKey);
                       e.preventDefault();
                       setMobileMenuOpen(false);
-                      navigate(routeChosen);
+                      navigate(route);
                       return;
                     }
-
                     setMobileMenuOpen(false);
                   }}
                   className={`

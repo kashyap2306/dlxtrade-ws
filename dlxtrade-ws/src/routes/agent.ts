@@ -4,6 +4,7 @@ import { logger } from '../utils/logger';
 import { agentAccessMiddleware } from '../middleware/agentAuth';
 import { LaunchpadService } from '../services/launchpadService';
 import { CrowdConsensusService } from '../services/crowdConsensusService';
+import { AgentApprovalService } from '../services/agentApprovalService';
 import { z } from 'zod';
 
 export async function agentRoutes(fastify: FastifyInstance) {
@@ -570,12 +571,8 @@ export async function agentRoutes(fastify: FastifyInstance) {
       const limit = parseInt(request.query.limit || '20');
       let agentId = request.query.agentId;
 
-      // Check access to trading agent
-      const userAgentRef = (await import('../utils/firebase')).getFirebaseAdmin().firestore()
-        .collection('users').doc(user.uid).collection('agents').doc('trading-agent');
-      const userAgentDoc = await userAgentRef.get();
-
-      if (!userAgentDoc.exists) {
+      const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'trading-agent');
+      if (!hasAccess) {
         return reply.code(403).send({ error: 'Access denied: Trading Agent not approved' });
       }
 
@@ -614,12 +611,8 @@ export async function agentRoutes(fastify: FastifyInstance) {
     try {
       const user = (request as any).user;
 
-      // Check access
-      const userAgentRef = (await import('../utils/firebase')).getFirebaseAdmin().firestore()
-        .collection('users').doc(user.uid).collection('agents').doc('crowd_consensus_copy_trade');
-      const userAgentDoc = await userAgentRef.get();
-
-      if (!userAgentDoc.exists) {
+      const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'crowd-consensus');
+      if (!hasAccess) {
         return reply.code(403).send({ error: 'Access denied: Crowd Consensus Copy Trade not approved' });
       }
 
@@ -645,12 +638,8 @@ export async function agentRoutes(fastify: FastifyInstance) {
     try {
       const user = (request as any).user;
 
-      // Check access
-      const userAgentRef = (await import('../utils/firebase')).getFirebaseAdmin().firestore()
-        .collection('users').doc(user.uid).collection('agents').doc('crowd_consensus_copy_trade');
-      const userAgentDoc = await userAgentRef.get();
-
-      if (!userAgentDoc.exists) {
+      const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'crowd-consensus');
+      if (!hasAccess) {
         return reply.code(403).send({ error: 'Access denied: Crowd Consensus Copy Trade not approved' });
       }
 
@@ -686,12 +675,8 @@ export async function agentRoutes(fastify: FastifyInstance) {
     try {
       const user = (request as any).user;
 
-      // Check access
-      const userAgentRef = (await import('../utils/firebase')).getFirebaseAdmin().firestore()
-        .collection('users').doc(user.uid).collection('agents').doc('crowd_consensus_copy_trade');
-      const userAgentDoc = await userAgentRef.get();
-
-      if (!userAgentDoc.exists) {
+      const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'crowd-consensus');
+      if (!hasAccess) {
         return reply.code(403).send({ error: 'Access denied: Crowd Consensus Copy Trade not approved' });
       }
 

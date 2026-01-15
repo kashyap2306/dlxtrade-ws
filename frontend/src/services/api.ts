@@ -350,7 +350,7 @@ export const agentsApi = {
   resumeTradingAgent: (agentId: string) => api.post(`/agents/${agentId}/resume`),
   getTradingAgentTrades: (agentId: string, limit?: number) => api.get(`/agents/${agentId}/trades`, { params: { limit } }),
   getTradingAgentPerformance: (agentId: string) => api.get(`/agents/${agentId}/performance`),
-  getTradingAgentDiagnostics: (agentId: string, limit?: number) => api.get(`/agents/trading-agent/diagnostics`, { params: { limit, agentId } }),
+  getTradingAgentDiagnostics: (agentId: string, limit?: number) => api.get('/agent/trading-agent/diagnostics', { params: { limit, agentId } }),
   // Individual agent endpoints
   getAgentDashboard: (agentId: string) => api.get(`/agent/${agentId}/dashboard`),
   getAgentSettings: (agentId: string) => api.get(`/agent/${agentId}/settings`),
