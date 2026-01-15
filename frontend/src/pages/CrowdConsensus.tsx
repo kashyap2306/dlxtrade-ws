@@ -52,16 +52,16 @@ export default function CrowdConsensus() {
   const [agentAccessChecked, setAgentAccessChecked] = useState(false);
   const [hasAgentAccess, setHasAgentAccess] = useState(false);
 
-  // Check user-agent linkage document directly
+  // Check Firestore approval (users/{uid}.approvedAgents)
   useEffect(() => {
     const checkAgentAccess = async () => {
       if (!user) return;
 
       try {
-        const userAgentRef = doc(db, 'users', user.uid, 'agents', 'crowd_consensus_copy_trade');
-        const userAgentDoc = await getDoc(userAgentRef);
-
-        const hasAccess = userAgentDoc.exists();
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        const approvedAgents: string[] = (userDoc.data() as any)?.approvedAgents || [];
+        const hasAccess = Array.isArray(approvedAgents) && approvedAgents.includes('COPY_TRADING_AGENT');
+        console.debug({ from: 'CrowdConsensus', agentKey: 'COPY_TRADING_AGENT', hasAccess });
         setHasAgentAccess(hasAccess);
         setAgentAccessChecked(true);
       } catch (error) {

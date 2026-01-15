@@ -23,43 +23,21 @@ export default function TradingAgentControl() {
   const [skippedTrades, setSkippedTrades] = useState<any[]>([]);
   const [agentConfig, setAgentConfig] = useState<any | null>(null);
 
-  // Check user-agent linkage document directly and resolve agent ID
+  // Check Firestore approval (users/{uid}.approvedAgents) and resolve agent ID
   useEffect(() => {
     const checkAgentAccess = async () => {
       if (!user) return;
 
       try {
-        const userAgentRef = doc(db, 'users', user.uid, 'agents', 'trading-agent');
-        const userAgentDoc = await getDoc(userAgentRef);
-
-        const hasAccess = userAgentDoc.exists();
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        const approvedAgents: string[] = (userDoc.data() as any)?.approvedAgents || [];
+        const hasAccess = Array.isArray(approvedAgents) && approvedAgents.includes('TRADING_AGENT');
+        console.debug({ from: 'TradingAgentControl', agentKey: 'TRADING_AGENT', hasAccess });
         setHasAgentAccess(hasAccess);
 
         if (hasAccess) {
-          // Resolve the actual agent ID by fetching user's trading agents
-          const userAgentsResp = await agentsApi.getUserTradingAgents();
-          const agents = userAgentsResp.data?.agents || [];
-
-          // Find trading agent automatically (don't require ACTIVE status)
-          let tradingAgent = null;
-
-          // First try to find an ACTIVE trading agent
-          tradingAgent = agents.find((agent: any) => agent.status === 'ACTIVE');
-
-          // If no active agent, find any trading agent (they should have been created)
-          if (!tradingAgent) {
-            // Look for agents with trading-related properties or the first available agent
-            tradingAgent = agents.find((agent: any) =>
-              agent.name?.toLowerCase().includes('trading') ||
-              agent.type === 'TRADING_AGENT' ||
-              agent.tradingPair // Has trading configuration
-            ) || agents[0]; // Fallback to first agent if available
-          }
-
-          // Clean agentId by removing "agent_" prefix if present
-          const cleanAgentId = tradingAgent?.id?.replace(/^agent_/, '') || null;
-          console.log('[TRADING_AGENT] Resolved agent:', cleanAgentId, tradingAgent?.status);
-          setResolvedAgentId(cleanAgentId);
+          // Use canonical slug for Trading Agent
+          setResolvedAgentId('trading-agent');
         }
 
         setAgentAccessChecked(true);
@@ -111,20 +89,20 @@ export default function TradingAgentControl() {
       setLoading(false); // Always clear loading state
       return;
     }
-
+    const slug = agentKeyToSlug('TRADING_AGENT');
     setLoading(true);
     try {
       // Load agent status and config
-      const agentResp = await agentsApi.getTradingAgentControl(resolvedAgentId);
+      const agentResp = await agentsApi.getTradingAgentControl(slug);
       setAutoTradeEnabled(agentResp.data?.status === 'ACTIVE');
       setAgentConfig(agentResp.data?.config || null);
 
       // Load trades from the trading agent
-      const tradesResp = await agentsApi.getTradingAgentTrades(resolvedAgentId, 20);
+      const tradesResp = await agentsApi.getTradingAgentTrades(slug, 20);
       setTrades(tradesResp.data?.trades || []);
 
       // Load diagnostics/skipped trades
-      const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(resolvedAgentId, 20);
+      const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 20);
       setSkippedTrades(diagnosticsResp.data?.diagnostics || []);
 
     } catch (err: any) {
@@ -153,7 +131,7 @@ export default function TradingAgentControl() {
       showToast('Agent not ready yet', 'error');
       return;
     }
-
+    const slug = agentKeyToSlug('TRADING_AGENT');
     // Validate exchange connection before starting trading
     if (nextEnabled) {
       const exchangeStatus = isExchangeConnected(exchangeConfig);
@@ -166,11 +144,11 @@ export default function TradingAgentControl() {
     setTogglingAutoTrade(true);
     try {
       if (nextEnabled) {
-        await agentsApi.startTradingAgent(resolvedAgentId);
+        await agentsApi.startTradingAgent(slug);
         setAutoTradeEnabled(true);
         showToast('Auto trading started', 'success');
       } else {
-        await agentsApi.stopTradingAgent(resolvedAgentId);
+        await agentsApi.stopTradingAgent(slug);
         setAutoTradeEnabled(false);
         showToast('Auto trading stopped', 'success');
       }

@@ -5,7 +5,7 @@
 // If you see this, the cache has been invalidated
 
 import { useState, useEffect } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '../config/firebase-config';
@@ -96,6 +96,7 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
   const [agents, setAgents] = useState<{id: string, path: string, label: string}[]>([]);
   const [agentsChecked, setAgentsChecked] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
   // REQ 4: Sidebar MUST depend on authReady, not just user
   const { user, authReady, authLoading, logout: authLogout } = useAuth();
 
@@ -156,14 +157,38 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
   ];
 
   // Create agent menu items from directly checked agents
-  const agentMenuItems = agents.map(agent => ({
-    path: agent.path,
+  type MenuItem = {
+    path: string;
+    label: string;
+    Icon: any;
+    icon?: any;
+    agentKey?: string;
+  };
+
+  function getAgentControlRoute(agentKey: string): string | null {
+    switch (agentKey) {
+      case 'TRADING_AGENT':
+        return '/agents/trading-agent';
+      case 'VWAP_STRATEGY':
+        return '/agents/vwap-strategy';
+      case 'COPY_TRADING_AGENT':
+        return '/agents/crowd-consensus';
+      case 'LIQUIDITY_SWEEP_AGENT':
+        return '/agent/liquidity_sniper_arbitrage';
+      default:
+        return null;
+    }
+  }
+
+  const agentMenuItems: MenuItem[] = agents.map(agent => ({
+    path: `/agents/${agent.id}`,
     label: agent.label,
     Icon: Icons.Agent,
     icon: undefined,
+    agentKey: agent.id,
   }));
 
-  const menuItems = [...staticMenuItems, ...agentMenuItems];
+  const menuItems: MenuItem[] = [...staticMenuItems, ...agentMenuItems];
 
   const isActive = (path: string) => {
     if (path === '/dashboard') {
@@ -261,7 +286,19 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
                 <Link
                   key={item.path}
                   to={item.path}
-                  onClick={() => setMobileMenuOpen(false)}
+                  onClick={(e) => {
+                    if (item.agentKey) {
+                      const specialRoute = getAgentControlRoute(item.agentKey);
+                      const routeChosen = specialRoute ?? `/agent/${item.agentKey}`;
+                      console.debug({ from: 'sidebar', agentKey: item.agentKey, routeChosen });
+                      e.preventDefault();
+                      setMobileMenuOpen(false);
+                      navigate(routeChosen);
+                      return;
+                    }
+
+                    setMobileMenuOpen(false);
+                  }}
                   className={`
                     group relative flex items-center space-x-3 px-4 py-3 lg:px-3 lg:py-2 rounded-xl transition-all duration-200
                     ${active
@@ -385,6 +422,16 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
                 <Link
                   key={item.path}
                   to={item.path}
+                  onClick={(e) => {
+                    if (item.agentKey) {
+                      const specialRoute = getAgentControlRoute(item.agentKey);
+                      const routeChosen = specialRoute ?? `/agent/${item.agentKey}`;
+                      console.debug({ from: 'sidebar', agentKey: item.agentKey, routeChosen });
+                      e.preventDefault();
+                      navigate(routeChosen);
+                      return;
+                    }
+                  }}
                   className={`
                     group relative flex items-center space-x-3 px-4 py-3 lg:px-3 lg:py-2 rounded-xl transition-all duration-200
                     ${active

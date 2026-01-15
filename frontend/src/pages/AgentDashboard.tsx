@@ -201,71 +201,75 @@ const CopyTradeAgentContent = DefaultAgentContent;
 const AirdropAgentContent = DefaultAgentContent;
 
 export default function AgentDashboard() {
-  const { agentId } = useParams<{ agentId: string }>();
+  const { agentKey } = useParams<{ agentKey: string }>();
   const { user } = useAuth();
   const navigate = useNavigate();
   const { unlockedAgents, loading: unlockedLoading } = useUnlockedAgents();
-  const [agent, setAgent] = useState<any>(null);
+  const [agent, setAgent] = useState<any | null | undefined>(undefined);
   const [dashboardData, setDashboardData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   useEffect(() => {
-    if (user && agentId && !unlockedLoading) {
-      if (agentId === 'TRADING_AGENT') {
-        navigate('/agents/trading-agent', { replace: true });
-        return;
+    if (!agentKey || unlockedLoading) return;
+    let isMounted = true;
+    setAgent(undefined); // start resolving
+    const fetchAgent = async () => {
+      try {
+        const resolved = await resolveAgentDoc(agentKey);
+        const foundAgent = resolved ? { ...resolved.data, agent_id: resolved.id } : null;
+        if (isMounted) setAgent(foundAgent);
+      } catch (err) {
+        if (isMounted) setAgent(null);
       }
+    };
+    fetchAgent();
+    return () => { isMounted = false; };
+  }, [agentKey, unlockedLoading]);
 
-      if (agentId === 'COPY_TRADING_AGENT') {
-        navigate('/agents/crowd-consensus', { replace: true });
-        return;
-      }
-
-      // Check if user has access to this agent
-      const hasAccess = unlockedAgents.some(agent => agent.agentId === agentId);
-
-      // If user doesn't have access, redirect to marketplace
-      if (!hasAccess) {
-        navigate('/agents', { replace: true });
-        return;
-      }
-
-      const loadAgent = async () => {
-        try {
-          // Load agent dashboard data from backend
-          const response = await agentsApi.getAgentDashboard(agentId);
-          const data = response.data;
-
-          setAgent(data.agent);
-          setDashboardData(data);
-        } catch (err: any) {
-          console.error('Error loading agent:', err);
-          setToast({ message: 'Failed to load agent dashboard', type: 'error' });
-          setAgent(null);
-        } finally {
-          setLoading(false);
-        }
-      };
-
-      loadAgent();
+  const resolvedApprovalKey = (() => {
+    const k = (agentKey || '').toLowerCase();
+    switch (k) {
+      case 'liquidity_sniper_arbitrage':
+        return 'LIQUIDITY_SWEEP_AGENT';
+      default:
+        return agentKey || '';
     }
-  }, [unlockedLoading]); // Only depend on unlockedLoading to avoid race conditions
+  })();
 
-  if (loading || unlockedLoading) {
+  const isUnlocked = unlockedAgents.some(a => a.agentId === resolvedApprovalKey);
+
+
+
+  const isResolvingAgent = agent === undefined;
+
+  if (isResolvingAgent || unlockedLoading) {
+    return null; // or a loading spinner if desired
+  }
+
+  if (agent === null) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500"></div>
+        <div className="text-center">
+          <h2 className="text-2xl font-bold text-white mb-4">Agent not found</h2>
+          <p className="text-gray-400 mb-6">This agent does not exist.</p>
+          <button
+            onClick={() => navigate('/agents')}
+            className="btn btn-primary"
+          >
+            Back to Agents
+          </button>
+        </div>
       </div>
     );
   }
 
-  if (!agent) {
+  if (!isUnlocked) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center">
         <div className="text-center">
-          <h2 className="text-2xl font-bold text-white mb-4">Unable to load agent</h2>
-          <p className="text-gray-400 mb-6">This agent page could not be loaded.</p>
+          <h2 className="text-2xl font-bold text-white mb-4">Access Required</h2>
+          <p className="text-gray-400 mb-6">You do not have access to this agent. Request access to unlock.</p>
           <button
             onClick={() => navigate('/agents')}
             className="btn btn-primary"
@@ -279,9 +283,9 @@ export default function AgentDashboard() {
 
   // Agent-specific content based on agent ID
   const renderAgentContent = () => {
-    const agentIdLower = agentId?.toLowerCase() || '';
+    const agentKeyLower = agentKey?.toLowerCase() || '';
 
-    switch (agentIdLower) {
+    switch (agentKeyLower) {
       case 'arbitrage_agent':
       case 'liquidity_sniper_arbitrage':
         return (
@@ -341,7 +345,7 @@ export default function AgentDashboard() {
               </div>
               <div>
                 <h1 className="text-3xl sm:text-4xl font-bold bg-gradient-to-r from-purple-300 via-pink-300 to-cyan-300 bg-clip-text text-transparent mb-2">
-                  {agent.name || agentId}
+                  {agent.name || agentKey}
                 </h1>
                 <div className="flex items-center gap-4">
                   <span className={`px-3 py-1 rounded-full text-sm font-medium ${

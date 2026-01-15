@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react';
+import { agentKeyToSlug } from '../utils/agentKeyToSlug';
 import { useAuth } from '../hooks/useAuth';
 import { agentsApi } from '../services/api';
 import Toast from '../components/Toast';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '../config/firebase-config';
 
 export default function VWAPStrategy() {
   const { user } = useAuth();
@@ -9,6 +12,8 @@ export default function VWAPStrategy() {
   const [agentStatus, setAgentStatus] = useState<'STOPPED' | 'RUNNING'>('STOPPED');
   const [loading, setLoading] = useState(false);
   const [agentConfig, setAgentConfig] = useState<any | null>(null);
+  const [agentAccessChecked, setAgentAccessChecked] = useState(false);
+  const [hasAgentAccess, setHasAgentAccess] = useState(false);
 
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
@@ -21,7 +26,22 @@ export default function VWAPStrategy() {
       if (!user) return;
 
       try {
-        const response = await agentsApi.getTradingAgentControl('vwap-strategy');
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        const approvedAgents: string[] = (userDoc.data() as any)?.approvedAgents || [];
+        const hasAccess = Array.isArray(approvedAgents) && approvedAgents.includes('VWAP_STRATEGY');
+        console.debug({ from: 'VWAPStrategy', agentKey: 'VWAP_STRATEGY', hasAccess });
+        setHasAgentAccess(hasAccess);
+        setAgentAccessChecked(true);
+        if (!hasAccess) return;
+      } catch (error) {
+        setHasAgentAccess(false);
+        setAgentAccessChecked(true);
+        return;
+      }
+
+      try {
+        const slug = agentKeyToSlug('VWAP_STRATEGY');
+        const response = await agentsApi.getTradingAgentControl(slug);
         setAgentStatus(response.data.status || 'STOPPED');
         setAgentConfig(response.data.config || null);
       } catch (error) {
@@ -33,10 +53,30 @@ export default function VWAPStrategy() {
     loadAgentControl();
   }, [user]);
 
+  if (user && !agentAccessChecked) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500"></div>
+      </div>
+    );
+  }
+
+  if (user && agentAccessChecked && !hasAgentAccess) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
+        <div className="text-center">
+          <div className="text-red-400 text-lg mb-4">Access Denied</div>
+          <div className="text-gray-400">You don't have access to VWAP Strategy</div>
+        </div>
+      </div>
+    );
+  }
+
   const handleStartTrading = async () => {
     setLoading(true);
     try {
-      await agentsApi.startTradingAgent('vwap-strategy');
+      const slug = agentKeyToSlug('VWAP_STRATEGY');
+      await agentsApi.startTradingAgent(slug);
       setAgentStatus('RUNNING');
       showToast('VWAP Strategy started successfully', 'success');
     } catch (error: any) {
@@ -50,7 +90,8 @@ export default function VWAPStrategy() {
   const handleStopTrading = async () => {
     setLoading(true);
     try {
-      await agentsApi.stopTradingAgent('vwap-strategy');
+      const slug = agentKeyToSlug('VWAP_STRATEGY');
+      await agentsApi.stopTradingAgent(slug);
       setAgentStatus('STOPPED');
       showToast('VWAP Strategy stopped successfully', 'success');
     } catch (error: any) {

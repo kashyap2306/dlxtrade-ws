@@ -40,8 +40,14 @@ export default function AdminAgentsManager() {
 
   const loadAgents = async () => {
     try {
-      const response = await agentsApi.getAvailableAgents();
-      setAgents(response.data.agents || []);
+      // Firestore: fetch agents where isActive === true
+      const { collection, getDocs } = await import('firebase/firestore');
+      const { db } = await import('../config/firebase-config');
+      const agentsSnapshot = await getDocs(collection(db, 'agents'));
+      const agents = agentsSnapshot.docs
+        .map(doc => ({ ...doc.data(), agent_id: doc.id }))
+        .filter((a: any) => a?.is_active !== false && a?.isActive !== false);
+      setAgents(agents);
     } catch (error) {
       console.error('Error loading agents:', error);
     }

@@ -342,7 +342,6 @@ export const agentsApi = {
   getTradingAgentRequests: () => api.get('/agents/admin/trading-agent-requests'),
   approveTradingAgentRequest: (agentId: string) => api.post('/agents/admin/approve-trading-agent', { agentId }),
   rejectTradingAgentRequest: (agentId: string) => api.post('/agents/admin/reject-trading-agent', { agentId }),
-  getUserTradingAgents: () => api.get('/agents/trading-agents'),
   getTradingAgentControl: (agentId: string) => api.get(`/agents/${agentId}/control`),
   updateTradingAgentSettings: (agentId: string, settings: any) => api.put(`/agents/${agentId}/settings`, settings),
   startTradingAgent: (agentId: string) => api.post(`/agents/${agentId}/start`),

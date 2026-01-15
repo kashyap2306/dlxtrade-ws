@@ -12,7 +12,6 @@ interface AgentFeaturePageProps {
 export default function AgentFeaturePage({ children }: AgentFeaturePageProps) {
   const { agentId } = useParams<{ agentId: string }>();
   const { user, logout } = useAuth();
-  const { unlockedAgents, refresh } = useUnlockedAgents();
   const navigate = useNavigate();
   const [agent, setAgent] = useState<any>(null);
   const [agentSettings, setAgentSettings] = useState<any>({});
@@ -22,36 +21,27 @@ export default function AgentFeaturePage({ children }: AgentFeaturePageProps) {
   const [status, setStatus] = useState<'active' | 'inactive'>('inactive');
 
   useEffect(() => {
-    if (user && agentId) {
-      loadAgentData();
-    }
-  }, [user, agentId, unlockedAgents]);
-
-  const loadAgentData = async () => {
     if (!agentId) return;
+    let cancelled = false;
     setLoading(true);
-    try {
-      // Find unlocked agent
-      const unlockedAgent = unlockedAgents.find(
-        (ua) => ua.agentId === agentId || ua.agent?.id === agentId
-      );
-
-      if (!unlockedAgent) {
-        showToast('Agent not unlocked or not found', 'error');
-        setTimeout(() => navigate('/agents'), 2000);
-        return;
+    import('../config/firebase-utils').then(async ({ resolveAgentDoc }) => {
+      const resolved = await resolveAgentDoc(agentId);
+      if (cancelled) return;
+      if (!resolved || resolved.data?.is_active === false || resolved.data?.isActive === false) {
+        setAgent(null);
+        setStatus('inactive');
+      } else {
+        setAgent({ ...resolved.data, agent_id: resolved.id });
+        setAgentSettings(resolved.data.settings || {});
+        setStatus(resolved.data.status === 'active' ? 'active' : 'inactive');
       }
-
-      setAgent(unlockedAgent.agent || { name: unlockedAgent.agentName });
-      setAgentSettings(unlockedAgent.settings || {});
-      setStatus(unlockedAgent.status === 'active' ? 'active' : 'inactive');
-    } catch (err: any) {
-      console.error('Error loading agent data:', err);
-      showToast(err.response?.data?.error || 'Failed to load agent', 'error');
-    } finally {
       setLoading(false);
-    }
-  };
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
+
 
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
@@ -67,19 +57,7 @@ export default function AgentFeaturePage({ children }: AgentFeaturePageProps) {
   }
 
   if (!agent) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
-        <div className="text-center">
-          <p className="text-lg text-gray-300 mb-4">Agent not found or not unlocked</p>
-          <button
-            onClick={() => navigate('/agents')}
-            className="btn btn-primary"
-          >
-            Back to Marketplace
-          </button>
-        </div>
-      </div>
-    );
+    return <div>AGENT_ROUTE_REACHED</div>;
   }
 
   const imageUrl = agent.imageUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(agent.name)}&background=6366f1&color=fff&size=400`;

@@ -185,6 +185,7 @@ export class AgentApprovalService {
    */
   // Firebase-only flow — PostgreSQL disabled intentionally
   static async createAgentRequest(requestData: AgentRequest): Promise<{ success: boolean; request_id?: number; status: string; message: string }> {
+    // Disabled
     return { success: true, source: 'firebase_only' } as any;
   }
 
@@ -194,6 +195,7 @@ export class AgentApprovalService {
    */
   // Firebase-only flow — PostgreSQL disabled intentionally
   static async getPendingRequests(): Promise<(AgentRequest & { agent_name: string; user_email?: string })[]> {
+    // Disabled
     return [];
   }
 
@@ -202,6 +204,7 @@ export class AgentApprovalService {
    */
   // Firebase-only flow — PostgreSQL disabled intentionally
   static async approveAgentRequest(requestId: number, approvedBy: string): Promise<any> {
+    // Disabled
     return { success: true };
   }
 
@@ -210,6 +213,7 @@ export class AgentApprovalService {
    */
   // Firebase-only flow — PostgreSQL disabled intentionally
   static async rejectAgentRequest(requestId: number, rejectedBy: string, reason?: string): Promise<any> {
+    // Disabled
     return { success: true };
   }
 
@@ -221,224 +225,28 @@ export class AgentApprovalService {
    */
   // Firebase-only flow — PostgreSQL disabled intentionally
   static async getUserApprovedAgents(userId: string): Promise<UserAgent[]> {
+    // Disabled
     return [];
-
-      console.log('[Service] getUserApprovedAgents called with userId:', userId);
-
-      // Execute query with full error handling
-      const userAgents = await query(`
-        SELECT ua.id, ua.agent_id, ua.granted_at, ua.granted_by,
-               COALESCE(a.name, 'Unknown Agent') as name,
-               COALESCE(a.description, 'Agent details not available') as description,
-               COALESCE(a.category, 'Unknown') as category,
-               COALESCE(a.icon, '🤖') as icon,
-               COALESCE(a.badge, 'Unknown') as badge
-        FROM user_agents ua
-        LEFT JOIN agents a ON ua.agent_id = a.agent_id AND a.is_active = true
-        WHERE ua.user_id = $1 AND ua.is_active = true
-        ORDER BY ua.granted_at DESC
-      `, [userId.trim()]);
-
-      // Guard against query returning null/undefined
-      if (!userAgents) {
-        console.log('[Service] getUserApprovedAgents: Query returned null/undefined, returning empty array');
-        return [];
-      }
-
-      // Guard against non-array result
-      if (!Array.isArray(userAgents)) {
-        console.log('[Service] getUserApprovedAgents: Query returned non-array, returning empty array');
-        return [];
-      }
-
-      console.log('[Service] getUserApprovedAgents: PostgreSQL query completed, found agents:', userAgents.length);
-
-      // Safe mapping with defensive checks
-      const safeAgents = userAgents.map((agent: any) => {
-        try {
-          // Guard against null agent
-          if (!agent) return null;
-
-          return {
-            id: agent?.id || undefined,
-            user_id: userId.trim(),
-            agent_id: agent?.agent_id || 'unknown',
-            granted_at: agent?.granted_at ? new Date(agent.granted_at) : new Date(),
-            granted_by: agent?.granted_by || null,
-            is_active: true,
-            name: agent?.name || 'Unknown Agent',
-            description: agent?.description || 'Agent details not available',
-            category: agent?.category || 'Unknown',
-            icon: agent?.icon || '🤖',
-            badge: agent?.badge || 'Unknown',
-          };
-        } catch (mapError) {
-          console.error('[Service] getUserApprovedAgents: Error mapping agent:', mapError);
-          // Return minimal safe agent object on mapping error
-          return {
-            id: undefined,
-            user_id: userId.trim(),
-            agent_id: 'unknown',
-            granted_at: new Date(),
-            granted_by: null,
-            is_active: true,
-            name: 'Unknown Agent',
-            description: 'Agent details not available',
-            category: 'Unknown',
-            icon: '🤖',
-            badge: 'Unknown',
-          };
-        }
-      }).filter(Boolean); // Remove any null entries from mapping errors
-
-      console.log('[Service] getUserApprovedAgents: Returning', safeAgents.length, 'safe agents');
-      return safeAgents;
-
-    } catch (error: any) {
-      // CRITICAL: Log error internally but NEVER throw
-      console.error('[Service] CRITICAL ERROR in getUserApprovedAgents:', {
-        error: error?.message || 'Unknown error',
-        userId: userId ? '***' : 'null/undefined', // Mask userId in logs for privacy
-        stack: error?.stack ? '***STACK***' : 'no stack' // Don't log full stack traces
-      });
-
-      logger.error({
-        error: error?.message || 'Unknown error in getUserApprovedAgents',
-        userId: '***MASKED***', // Never log actual user IDs
-        operation: 'getUserApprovedAgents'
-      }, 'Error fetching user approved agents - returning safe empty array');
-
-      // CRASH-PROOF: Always return empty array, never throw
-      return [];
-    }
   }
 
   /**
    * Check if user has access to a specific agent
    * CRASH-PROOF: Never throws, returns false on any error
    */
+  // Firebase-only flow — PostgreSQL disabled intentionally
   static async userHasAgentAccess(userId: string, agentId: string): Promise<boolean> {
-    try {
-      // Input validation
-      if (!userId || !agentId || typeof userId !== 'string' || typeof agentId !== 'string') {
-        return false;
-      }
-
-      const result = await query(`
-        SELECT COUNT(*) as count FROM user_agents
-        WHERE user_id = $1 AND agent_id = $2 AND is_active = true
-      `, [userId.trim(), agentId.trim()]);
-
-      // Guard against query returning null/undefined
-      if (!result) {
-        return false;
-      }
-
-      // Guard against non-array result
-      if (!Array.isArray(result) || result.length === 0) {
-        return false;
-      }
-
-      const count = (result[0] as any)?.count;
-      if (typeof count === 'number') {
-        return count > 0;
-      }
-
-      // Safe string to number conversion
-      const parsedCount = parseInt(String(count), 10);
-      return !isNaN(parsedCount) && parsedCount > 0;
-
-    } catch (error: any) {
-      // CRITICAL: Log error internally but NEVER throw
-      logger.error({
-        error: error?.message || 'Unknown error in userHasAgentAccess',
-        userId: userId ? '***MASKED***' : 'null',
-        agentId: agentId || 'null',
-        operation: 'userHasAgentAccess'
-      }, 'Error checking agent access - returning false');
-
-      // CRASH-PROOF: Always return false on error, never throw
-      return false;
-    }
+    // Disabled
+    return false;
   }
 
   /**
    * Get user's agent requests
    * CRASH-PROOF: Never throws, handles all operations safely
    */
+  // Firebase-only flow — PostgreSQL disabled intentionally
   static async getUserAgentRequests(userId: string): Promise<AgentRequest[]> {
-    try {
-      // Input validation
-      if (!userId || typeof userId !== 'string' || userId.trim().length === 0) {
-        console.log('[Service] getUserAgentRequests: Invalid userId');
-        return [];
-      }
-
-      const requests = await query(`
-        SELECT ar.*, COALESCE(a.name, 'Unknown Agent') as agent_name
-        FROM agent_requests ar
-        LEFT JOIN agents a ON ar.agent_id = a.agent_id AND a.is_active = true
-        WHERE ar.user_id = $1
-        ORDER BY ar.requested_at DESC
-      `, [userId.trim()]);
-
-      // Guard against query returning null/undefined
-      if (!requests) {
-        console.log('[Service] getUserAgentRequests: Query returned null/undefined');
-        return [];
-      }
-
-      // Guard against non-array result
-      if (!Array.isArray(requests)) {
-        console.log('[Service] getUserAgentRequests: Query returned non-array');
-        return [];
-      }
-
-      // Safe mapping with defensive checks
-      const safeRequests = requests.map((request: any) => {
-        try {
-          // Guard against null request
-          if (!request) return null;
-
-          return {
-            id: request?.id || undefined,
-            user_id: request?.user_id || userId.trim(),
-            agent_id: request?.agent_id || 'unknown',
-            status: (request?.status as AgentRequest['status']) || 'PENDING_APPROVAL',
-            requested_at: request?.requested_at ? new Date(request.requested_at) : new Date(),
-            approved_at: request?.approved_at ? new Date(request.approved_at) : undefined,
-            approved_by: request?.approved_by || undefined,
-            rejected_at: request?.rejected_at ? new Date(request.rejected_at) : undefined,
-            rejected_by: request?.rejected_by || undefined,
-            rejection_reason: request?.rejection_reason || undefined,
-            agent_name: request?.agent_name || 'Unknown Agent'
-          };
-        } catch (mapError) {
-          console.error('[Service] getUserAgentRequests: Error mapping request:', mapError);
-          return null;
-        }
-      }).filter(Boolean); // Remove null entries
-
-      console.log('[Service] getUserAgentRequests: Returning', safeRequests.length, 'requests');
-      return safeRequests;
-
-    } catch (error: any) {
-      // CRITICAL: Log error internally but NEVER throw
-      console.error('[Service] CRITICAL ERROR in getUserAgentRequests:', {
-        error: error?.message || 'Unknown error',
-        userId: userId ? '***MASKED***' : 'null',
-        stack: error?.stack ? '***STACK***' : 'no stack'
-      });
-
-      logger.error({
-        error: error?.message || 'Unknown error in getUserAgentRequests',
-        userId: '***MASKED***',
-        operation: 'getUserAgentRequests'
-      }, 'Error fetching user agent requests - returning safe empty array');
-
-      // CRASH-PROOF: Always return empty array, never throw
-      return [];
-    }
+    // Disabled
+    return [];
   }
 
   /**

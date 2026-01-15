@@ -4,6 +4,7 @@ import Toast from '../components/Toast';
 import { useAuth } from '../hooks/useAuth';
 import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
 import { agentsApi } from '../services/api';
+import { resolveAgentDoc } from '../config/firebase-utils';
 
 interface LaunchpadProject {
   id: string;
@@ -28,11 +29,11 @@ interface HuntResult {
 }
 
 export default function AgentControl() {
-  const { agentId } = useParams<{ agentId: string }>();
+  const { agentKey } = useParams<{ agentKey: string }>();
   const { user } = useAuth();
   const navigate = useNavigate();
   const { unlockedAgents, loading: unlockedLoading } = useUnlockedAgents();
-  const [agent, setAgent] = useState<any>(null);
+  const [agent, setAgent] = useState<any | null | undefined>(undefined);
   const [feature, setFeature] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [settings, setSettings] = useState({
@@ -50,42 +51,38 @@ export default function AgentControl() {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   useEffect(() => {
-    if (user && agentId && !unlockedLoading) {
-      // Check if user has access to this agent
-      const hasAccess = unlockedAgents.some(agent => agent.agentId === agentId);
-
-      // If user doesn't have access, redirect to marketplace
-      if (!hasAccess) {
-        navigate('/agents', { replace: true });
-        return;
-      }
-
+    if (agentKey && !unlockedLoading) {
+      setAgent(undefined); // start resolving
       loadAgentAndFeature();
     }
-  }, [unlockedLoading]); // Only depend on unlockedLoading to avoid race conditions
+  }, [agentKey, unlockedLoading]);
 
   const loadAgentAndFeature = async () => {
-    if (!agentId || !user) return;
+    if (!agentKey) return;
     setLoading(true);
 
     try {
-      const agentsResponse = await agentsApi.getAvailableAgents();
-      const agents = agentsResponse.data?.agents || [];
-      const foundAgent = agents.find((a: any) => a?.agent_id === agentId);
+      const resolved = await resolveAgentDoc(agentKey);
+      const foundAgent = resolved
+        ? ({ ...resolved.data, agent_id: resolved.id } as any)
+        : null;
 
-      if (foundAgent) {
+      if (foundAgent && foundAgent?.is_active !== false && foundAgent?.isActive !== false) {
         setAgent(foundAgent);
+      } else {
+        setAgent(null);
       }
 
       setFeature(null);
 
       // Load mock data for AI Launchpad Hunter
-      if (agentId === 'ai_launchpad_hunter') {
+      if (agentKey === 'ai_launchpad_hunter') {
         loadMockLaunchpadData();
       }
 
     } catch (err: any) {
       console.error('Error loading agent:', err);
+      setAgent(null);
       showToast('Error loading agent', 'error');
     } finally {
       setLoading(false);
@@ -204,20 +201,18 @@ export default function AgentControl() {
     }
   };
 
-  if (loading || unlockedLoading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-purple-500"></div>
-      </div>
-    );
+  const isResolvingAgent = agent === undefined;
+
+  if (isResolvingAgent || unlockedLoading) {
+    return null; // or a loading spinner if desired
   }
 
-  if (!agent || !feature) {
+  if (agent === null) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
         <div className="text-center">
-          <h2 className="text-2xl font-bold text-white mb-4">Agent Not Found</h2>
-          <p className="text-gray-400 mb-6">You don't have access to this agent or it doesn't exist.</p>
+          <h2 className="text-2xl font-bold text-white mb-4">Agent not found</h2>
+          <p className="text-gray-400 mb-6">This agent does not exist.</p>
           <button
             onClick={() => navigate('/agents')}
             className="btn btn-primary"

@@ -228,7 +228,7 @@ function App() {
                   <Route path="settings" element={<SafeRoute><Settings /></SafeRoute>} />
                   <Route path="profile" element={<SafeRoute><Profile /></SafeRoute>} />
                   <Route path="agents" element={<SafeRoute><AgentsMarketplace /></SafeRoute>} />
-                  <Route path="agents/:agentId" element={<SafeRoute><AgentDetails /></SafeRoute>} />
+                  <Route path="agents/:agentKey" element={<SafeRoute><AgentDetails /></SafeRoute>} />
                   <Route path="agents/launchpad-hunter" element={<SafeRoute><LaunchpadHunter /></SafeRoute>} />
                   <Route path="agents/crowd-consensus" element={<SafeRoute><CrowdConsensus /></SafeRoute>} />
                   <Route path="agents/trading-agent" element={<SafeRoute><TradingAgentControl /></SafeRoute>} />
@@ -236,8 +236,8 @@ function App() {
                   <Route path="agents/vwap-strategy" element={<SafeRoute><VWAPStrategy /></SafeRoute>} />
                   <Route path="agent/TRADING_AGENT" element={<Navigate to="/agents/trading-agent" replace />} />
                   <Route path="agent/TRADING_AGENT/control" element={<Navigate to="/agents/trading-agent" replace />} />
-                  <Route path="agent/:agentId" element={<SafeRoute><AgentDashboard /></SafeRoute>} />
-                  <Route path="agent/:agentId/control" element={<SafeRoute><AgentControl /></SafeRoute>} />
+                  <Route path="agent/:agentKey" element={<SafeRoute><AgentDashboard /></SafeRoute>} />
+                  <Route path="agent/:agentKey/control" element={<SafeRoute><AgentControl /></SafeRoute>} />
                   <Route path="hft/settings" element={<SafeRoute><HFTSettings /></SafeRoute>} />
                   <Route path="hft/logs" element={<SafeRoute><HFTLogs /></SafeRoute>} />
                   <Route path="notifications" element={<SafeRoute><NotificationCenter /></SafeRoute>} />

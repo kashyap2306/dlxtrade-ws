@@ -6,13 +6,14 @@ import { useAuth } from '../hooks/useAuth';
 import { useUnlockedAgents } from '../hooks/useUnlockedAgents';
 import { agentsApi } from '../services/api';
 import { AgentCardData } from '../components/AgentCard';
+import { resolveAgentDoc } from '../config/firebase-utils';
 
 export default function AgentDetails() {
-  const { agentId } = useParams<{ agentId: string }>();
+  const { agentKey } = useParams<{ agentKey: string }>();
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const { unlockedAgents, loading: unlockedLoading } = useUnlockedAgents();
-  const [agent, setAgent] = useState<AgentCardData & { longDescription?: string } | null>(null);
+  const [agent, setAgent] = useState<AgentCardData & { longDescription?: string } | null | undefined>(undefined);
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -21,30 +22,22 @@ export default function AgentDetails() {
 
   // Effect to handle access control - runs when unlocked agents finish loading
   useEffect(() => {
-    if (user && agentId && !unlockedLoading) {
-      // Check if user has access to this agent
-      const hasAccess = unlockedAgents.some(agent => agent.agentId === agentId);
-
-      // If user doesn't have access, redirect to marketplace
-      if (!hasAccess) {
-        navigate('/agents', { replace: true });
-        return;
-      }
-
-      // User has access, load the agent data
+    if (agentKey && !unlockedLoading) {
+      setAgent(undefined); // start resolving
       loadAgent();
     }
-  }, [unlockedLoading]); // Only depend on unlockedLoading to avoid race conditions
+  }, [agentKey, unlockedLoading]);
 
   const loadAgent = async () => {
-    if (!agentId) return;
+    if (!agentKey) return;
     setLoading(true);
     try {
-      const agentsResponse = await agentsApi.getAvailableAgents();
-      const agents = agentsResponse.data?.agents || [];
-      const foundAgent = agents.find((a: any) => a?.agent_id === agentId);
+      const resolved = await resolveAgentDoc(agentKey);
+      const foundAgent = resolved
+        ? ({ ...resolved.data, agent_id: resolved.id } as any)
+        : null;
 
-      if (foundAgent) {
+      if (foundAgent && foundAgent?.is_active !== false && foundAgent?.isActive !== false) {
         const mappedAgent = {
           id: foundAgent.agent_id || '',
           name: foundAgent.name || '',
@@ -58,22 +51,19 @@ export default function AgentDetails() {
           enabled: foundAgent.is_active !== false,
         };
         setAgent(mappedAgent);
-
-        // Check if unlocked using the unlockedAgents hook
-        const isUnlocked = unlockedAgents.some(agent => agent.agentId === agentId);
-        setIsUnlocked(isUnlocked);
+        setIsUnlocked(unlockedAgents.some(a => a.agentId === agentKey));
       } else {
-        showToast('Agent not found', 'error');
-        setTimeout(() => navigate('/agents'), 2000);
+        setAgent(null);
       }
     } catch (err: any) {
       console.error('Error loading agent:', err);
+      setAgent(null);
       showToast(err.response?.data?.error || 'Failed to load agent', 'error');
-      setTimeout(() => navigate('/agents'), 2000);
     } finally {
       setLoading(false);
     }
   };
+
 
   const handleUnlockClick = () => {
     if (agent) {
@@ -86,19 +76,34 @@ export default function AgentDetails() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  if (loading || unlockedLoading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
-        <div className="text-lg text-gray-300">Loading agent details...</div>
-      </div>
-    );
+  const isResolvingAgent = agent === undefined;
+
+  if (isResolvingAgent || unlockedLoading) {
+    return null; // or a loading spinner if desired
   }
 
-  if (!agent) {
+  if (agent === null) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
         <div className="text-center">
           <p className="text-lg text-gray-300 mb-4">Agent not found</p>
+          <button
+            onClick={() => navigate('/agents')}
+            className="btn btn-primary"
+          >
+            Back to Marketplace
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (agent && !isUnlocked) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-lg text-gray-300 mb-4">Access Required</p>
+          <p className="text-gray-400 mb-6">You do not have access to this agent. Request access to unlock.</p>
           <button
             onClick={() => navigate('/agents')}
             className="btn btn-primary"
