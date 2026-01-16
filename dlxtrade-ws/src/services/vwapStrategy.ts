@@ -8,7 +8,7 @@ export interface VWAPStrategyConfig {
   tradingPair: 'BTC/USDT' | 'ETH/USDT';
   marketType: 'spot' | 'futures';
   exchange: 'bitget' | 'binance' | 'bybit';
-  riskPerTrade: number; // 0.5-1% per trade
+  riskPerTrade: number; // fraction of equity (e.g. 0.02 = 2%)
   apiKey: string;
   apiSecret: string;
   passphrase?: string;
@@ -38,6 +38,7 @@ export interface VWAPStrategyDiagnostics {
     entryPrice: number;
     stopLoss: number;
     takeProfit: number;
+    rrRatio?: number;
     meetsConditions: boolean;
     reason?: string;
   };
@@ -107,12 +108,14 @@ export class VWAPStrategy {
       tradingPair: this.config.tradingPair,
       sessionCheck: { isValidSession: false, currentTime: '' },
       marketData: { currentPrice: 0, vwap: 0, ema200: 0, atr: 0, deviation: 0, deviationPercent: 0 },
-      signal: { direction: null, entryPrice: 0, stopLoss: 0, takeProfit: 0, meetsConditions: false },
+      signal: { direction: null, entryPrice: 0, stopLoss: 0, takeProfit: 0, rrRatio: 0, meetsConditions: false },
       riskAnalysis: { accountBalance: 0, riskAmount: 0, positionSize: 0, maxPositionSize: 0 },
       decision: { action: 'SKIP', reason: 'Execution started' }
     };
 
     try {
+      const symbol = this.config.tradingPair.replace('/', '').toUpperCase();
+
       // Check trading session
       const sessionCheck = this.checkTradingSession();
       diagnostics.sessionCheck = sessionCheck;
@@ -123,7 +126,7 @@ export class VWAPStrategy {
       }
 
       // Get market data
-      const candles = await marketDataProvider.getCandles(this.config.tradingPair, '5m', 50);
+      const candles = await marketDataProvider.getCandles(symbol, '5m', 50);
       if (!candles || candles.length < 20) {
         diagnostics.decision = { action: 'SKIP', reason: 'Insufficient market data' };
         return diagnostics;
@@ -156,7 +159,22 @@ export class VWAPStrategy {
       // Risk analysis
       const accountBalance = await marketDataProvider.getAccountBalance();
       const riskAmount = accountBalance.equity * this.config.riskPerTrade;
-      const positionSize = riskAmount / (atr * 1.2); // Stop distance = 1.2 * ATR
+      const stopDistance = atr * 1.2;
+      const positionSize = stopDistance > 0 ? (riskAmount / stopDistance) : 0;
+
+      // Validate RR (hard gate)
+      const entryPrice = Number(signal.entryPrice) || 0;
+      const stopLoss = Number(signal.stopLoss) || 0;
+      const takeProfit = Number(signal.takeProfit) || 0;
+      const riskPerUnit = Math.abs(entryPrice - stopLoss);
+      const rewardPerUnit = Math.abs(takeProfit - entryPrice);
+      const rrRatio = riskPerUnit > 0 ? rewardPerUnit / riskPerUnit : 0;
+      diagnostics.signal.rrRatio = rrRatio;
+
+      if (!isFinite(rrRatio) || rrRatio < 1.3) {
+        diagnostics.decision = { action: 'SKIP', reason: `RR_TOO_LOW_${rrRatio.toFixed(2)}` };
+        return diagnostics;
+      }
 
       diagnostics.riskAnalysis = {
         accountBalance: accountBalance.equity,
@@ -166,15 +184,24 @@ export class VWAPStrategy {
       };
 
       // Validate position size
-      if (positionSize <= 0 || positionSize > diagnostics.riskAnalysis.maxPositionSize) {
-        diagnostics.decision = { action: 'SKIP', reason: 'Invalid position size' };
+      if (!isFinite(positionSize) || positionSize <= 0) {
+        diagnostics.decision = { action: 'SKIP', reason: 'INVALID_POSITION_SIZE' };
+        return diagnostics;
+      }
+
+      // Futures margin sanity check (5x leverage): notional/lev must be <= available USDT
+      const leverage = 5;
+      const notionalUsd = entryPrice > 0 ? positionSize * entryPrice : 0;
+      const marginRequired = leverage > 0 ? notionalUsd / leverage : notionalUsd;
+      if (!isFinite(marginRequired) || marginRequired <= 0 || marginRequired > accountBalance.available) {
+        diagnostics.decision = { action: 'SKIP', reason: 'INSUFFICIENT_MARGIN' };
         return diagnostics;
       }
 
       // Execute trade if not in dry run mode
       if (!this.config.dryRun) {
         const orderResult = await marketDataProvider.placeOrder({
-          symbol: this.config.tradingPair,
+          symbol: symbol,
           side: signal.direction === 'LONG' ? 'BUY' : 'SELL',
           type: 'MARKET',
           quantity: positionSize,

@@ -176,7 +176,7 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
       case 'crowd-consensus':
         return '/agents/crowd-consensus';
       case 'liquidity_sniper_arbitrage':
-        return '/agent/liquidity_sniper_arbitrage';
+        return '/agents/liquidity_sniper_arbitrage';
       default:
         return `/agent/${slug}`;
     }
@@ -424,8 +424,7 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
                   to={item.path}
                   onClick={(e) => {
                     if (item.agentKey) {
-                      const specialRoute = getAgentControlRoute(item.agentKey);
-                      const routeChosen = specialRoute ?? `/agent/${item.agentKey}`;
+                      const routeChosen = getSidebarAgentRoute(item.agentKey);
                       console.debug({ from: 'sidebar', agentKey: item.agentKey, routeChosen });
                       e.preventDefault();
                       navigate(routeChosen);

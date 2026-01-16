@@ -1,346 +1,373 @@
-import { useState, useEffect } from 'react';
-import { agentKeyToSlug } from '../utils/agentKeyToSlug';
+import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { agentsApi } from '../services/api';
+import { agentsApi, usersApi } from '../services/api';
 import Toast from '../components/Toast';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase-config';
 
+type AgentStatus = 'STOPPED' | 'RUNNING';
+
 export default function VWAPStrategy() {
   const { user } = useAuth();
+  const agentId = 'vwap-strategy';
+
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-  const [agentStatus, setAgentStatus] = useState<'STOPPED' | 'RUNNING'>('STOPPED');
-  const [loading, setLoading] = useState(false);
-  const [agentConfig, setAgentConfig] = useState<any | null>(null);
   const [agentAccessChecked, setAgentAccessChecked] = useState(false);
   const [hasAgentAccess, setHasAgentAccess] = useState(false);
+
+  const [loading, setLoading] = useState(false);
+  const [exchange, setExchange] = useState<string | null>(null);
+  const [exchangeConnected, setExchangeConnected] = useState<boolean>(false);
+
+  const [status, setStatus] = useState<AgentStatus>('STOPPED');
+  const [stoppedReason, setStoppedReason] = useState<string | null>(null);
+  const [trades, setTrades] = useState<any[]>([]);
+  const [diagnostics, setDiagnostics] = useState<any[]>([]);
+  const [scheduler, setScheduler] = useState<any | null>(null);
+  const [runtime, setRuntime] = useState<any | null>(null);
+
+  const toValidDate = (value: any): Date | null => {
+    if (!value) return null;
+    if (value instanceof Date) {
+      return Number.isFinite(value.getTime()) ? value : null;
+    }
+
+    if (typeof value === 'number' || typeof value === 'string') {
+      const d = new Date(value);
+      return Number.isFinite(d.getTime()) ? d : null;
+    }
+
+    if (typeof value?.toDate === 'function') {
+      const d = value.toDate();
+      return d instanceof Date && Number.isFinite(d.getTime()) ? d : null;
+    }
+
+    const seconds = value?.seconds ?? value?._seconds;
+    if (typeof seconds === 'number') {
+      const d = new Date(seconds * 1000);
+      return Number.isFinite(d.getTime()) ? d : null;
+    }
+
+    return null;
+  };
+
+  const formatRelative = (target: Date | null, mode: 'past' | 'future') => {
+    if (!target) return '—';
+    const now = Date.now();
+    const deltaMs = target.getTime() - now;
+    const absMs = Math.abs(deltaMs);
+    const mins = Math.round(absMs / 60000);
+
+    if (mins < 1) {
+      return mode === 'past' ? 'just now' : 'in <1 min';
+    }
+    if (mins < 60) {
+      return mode === 'past' ? `${mins} min ago` : `in ~${mins} min`;
+    }
+    const hrs = Math.round(mins / 60);
+    return mode === 'past' ? `${hrs} hr ago` : `in ~${hrs} hr`;
+  };
 
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 5000);
   };
 
-  // Load agent control data on component mount
+  const todayStats = useMemo(() => {
+    const todayTrades = Array.isArray(trades) ? trades : [];
+    const realizedPnL = todayTrades
+      .filter((t: any) => (t?.status || '').toLowerCase() === 'closed')
+      .reduce((sum: number, t: any) => sum + (Number(t?.pnl) || 0), 0);
+
+    return {
+      tradeCount: todayTrades.length,
+      realizedPnL,
+    };
+  }, [trades]);
+
+  const refreshAll = async () => {
+    if (!user) return;
+
+    try {
+      const exRes = await usersApi.getExchangeConfig(user.uid);
+      setExchange(exRes.data?.exchange || null);
+      setExchangeConnected(!!exRes.data?.connected);
+    } catch {
+      setExchange(null);
+      setExchangeConnected(false);
+    }
+
+    try {
+      const sRes = await agentsApi.getAgentStatus(agentId);
+      setStatus((sRes.data?.status as AgentStatus) || 'STOPPED');
+      setStoppedReason(sRes.data?.stoppedReason || null);
+    } catch {
+      setStatus('STOPPED');
+      setStoppedReason(null);
+    }
+
+    try {
+      const tRes = await agentsApi.getTradingAgentTrades(agentId, 200);
+      setTrades(Array.isArray(tRes.data?.trades) ? tRes.data.trades : []);
+    } catch {
+      setTrades([]);
+    }
+
+    try {
+      const dRes = await agentsApi.getTradingAgentDiagnostics(agentId, 50);
+      setDiagnostics(Array.isArray(dRes.data?.diagnostics) ? dRes.data.diagnostics : []);
+      setScheduler(dRes.data?.scheduler || null);
+      setRuntime(dRes.data?.runtime || null);
+    } catch {
+      setDiagnostics([]);
+      setScheduler(null);
+      setRuntime(null);
+    }
+  };
+
   useEffect(() => {
-    const loadAgentControl = async () => {
+    const checkAccessAndLoad = async () => {
       if (!user) return;
 
       try {
         const userDoc = await getDoc(doc(db, 'users', user.uid));
         const approvedAgents: string[] = (userDoc.data() as any)?.approvedAgents || [];
         const hasAccess = Array.isArray(approvedAgents) && approvedAgents.includes('VWAP_STRATEGY');
-        console.debug({ from: 'VWAPStrategy', agentKey: 'VWAP_STRATEGY', hasAccess });
         setHasAgentAccess(hasAccess);
         setAgentAccessChecked(true);
         if (!hasAccess) return;
-      } catch (error) {
+      } catch {
         setHasAgentAccess(false);
         setAgentAccessChecked(true);
         return;
       }
 
-      try {
-        const slug = agentKeyToSlug('VWAP_STRATEGY');
-        const response = await agentsApi.getTradingAgentControl(slug);
-        setAgentStatus(response.data.status || 'STOPPED');
-        setAgentConfig(response.data.config || null);
-      } catch (error) {
-        console.error('Error loading VWAP Strategy control:', error);
-        setAgentStatus('STOPPED');
-      }
+      await refreshAll();
     };
 
-    loadAgentControl();
+    checkAccessAndLoad();
   }, [user]);
+
+  const toggleAutoTrade = async () => {
+    if (!user) return;
+    setLoading(true);
+    try {
+      if (status === 'RUNNING') {
+        await agentsApi.stopTradingAgent(agentId);
+      } else {
+        await agentsApi.startTradingAgent(agentId);
+      }
+      await refreshAll();
+    } catch (error: any) {
+      const msg = error?.response?.data?.error || error?.response?.data?.message || 'Action failed';
+      showToast(msg, 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   if (user && !agentAccessChecked) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500"></div>
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="text-slate-400">Loading…</div>
       </div>
     );
   }
 
   if (user && agentAccessChecked && !hasAgentAccess) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
-        <div className="text-center">
-          <div className="text-red-400 text-lg mb-4">Access Denied</div>
-          <div className="text-gray-400">You don't have access to VWAP Strategy</div>
-        </div>
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="text-slate-300">Access denied</div>
       </div>
     );
   }
 
-  const handleStartTrading = async () => {
-    setLoading(true);
-    try {
-      const slug = agentKeyToSlug('VWAP_STRATEGY');
-      await agentsApi.startTradingAgent(slug);
-      setAgentStatus('RUNNING');
-      showToast('VWAP Strategy started successfully', 'success');
-    } catch (error: any) {
-      console.error('Error starting VWAP Strategy:', error);
-      showToast(error.response?.data?.message || 'Failed to start VWAP Strategy', 'error');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleStopTrading = async () => {
-    setLoading(true);
-    try {
-      const slug = agentKeyToSlug('VWAP_STRATEGY');
-      await agentsApi.stopTradingAgent(slug);
-      setAgentStatus('STOPPED');
-      showToast('VWAP Strategy stopped successfully', 'success');
-    } catch (error: any) {
-      console.error('Error stopping VWAP Strategy:', error);
-      showToast(error.response?.data?.message || 'Failed to stop VWAP Strategy', 'error');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
-      <div className="p-4 sm:p-6 lg:p-8">
-        <div className="max-w-6xl mx-auto">
-          {/* Header */}
-          <div className="mb-8">
-            <div className="flex items-center mb-4">
-              <span className="text-4xl mr-4">📈</span>
-              <div>
-                <h1 className="text-3xl sm:text-4xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
-                  VWAP Strategy
-                </h1>
-                <p className="text-gray-400 text-lg mt-1">
-                  Institutional-grade VWAP mean reversion scalping strategy
-                </p>
-              </div>
-            </div>
-            <div className="h-1 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full"></div>
-          </div>
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      <div className="max-w-4xl mx-auto p-4">
+        <div className="flex items-center justify-between">
+          <div className="text-xl font-semibold">VWAP Strategy</div>
+          <button
+            onClick={refreshAll}
+            disabled={loading}
+            className="px-3 py-2 text-sm rounded bg-slate-800 disabled:opacity-50"
+          >
+            Refresh
+          </button>
+        </div>
 
-          {/* Strategy Overview */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-            <div className="card">
-              <h2 className="text-2xl font-bold text-white mb-4">Strategy Overview</h2>
-              <div className="space-y-4 text-gray-300">
-                <p>
-                  This institutional-grade VWAP mean reversion scalping strategy identifies
-                  price deviations from the Volume Weighted Average Price (VWAP) and executes
-                  trades based on mean reversion principles.
-                </p>
-                <div className="grid grid-cols-2 gap-4 mt-6">
-                  <div className="bg-slate-800/50 p-4 rounded-lg">
-                    <div className="text-2xl font-bold text-green-400">BTC/USDT</div>
-                    <div className="text-sm text-gray-400">Primary Pair</div>
-                  </div>
-                  <div className="bg-slate-800/50 p-4 rounded-lg">
-                    <div className="text-2xl font-bold text-blue-400">ETH/USDT</div>
-                    <div className="text-sm text-gray-400">Secondary Pair</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="card">
-              <h2 className="text-2xl font-bold text-white mb-4">Key Features</h2>
-              <ul className="space-y-3 text-gray-300">
-                <li className="flex items-center">
-                  <span className="text-green-400 mr-3">✓</span>
-                  VWAP Mean Reversion Signals
-                </li>
-                <li className="flex items-center">
-                  <span className="text-green-400 mr-3">✓</span>
-                  EMA 200 Trend Filter
-                </li>
-                <li className="flex items-center">
-                  <span className="text-green-400 mr-3">✓</span>
-                  ATR Volatility-Based Stops
-                </li>
-                <li className="flex items-center">
-                  <span className="text-green-400 mr-3">✓</span>
-                  Session-Based Trading (London/NY)
-                </li>
-                <li className="flex items-center">
-                  <span className="text-green-400 mr-3">✓</span>
-                  Risk Management (1% per trade)
-                </li>
-                <li className="flex items-center">
-                  <span className="text-green-400 mr-3">✓</span>
-                  QuantConnect Integration Ready
-                </li>
-              </ul>
-            </div>
-          </div>
-
-          {/* Technical Details */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-            <div className="card">
-              <h3 className="text-xl font-bold text-white mb-3">Indicators</h3>
-              <div className="space-y-2 text-gray-300">
-                <div className="flex justify-between">
-                  <span>VWAP</span>
-                  <span className="text-purple-400">14-period</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>EMA</span>
-                  <span className="text-purple-400">200-period</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>ATR</span>
-                  <span className="text-purple-400">14-period</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="card">
-              <h3 className="text-xl font-bold text-white mb-3">Risk Parameters</h3>
-              <div className="space-y-2 text-gray-300">
-                <div className="flex justify-between">
-                  <span>Risk per Trade</span>
-                  <span className="text-red-400">0.5-1%</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Stop Distance</span>
-                  <span className="text-red-400">1.2 × ATR</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Max Daily Trades</span>
-                  <span className="text-red-400">3</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="card">
-              <h3 className="text-xl font-bold text-white mb-3">Trading Sessions</h3>
-              <div className="space-y-2 text-gray-300">
-                <div className="flex justify-between">
-                  <span>London</span>
-                  <span className="text-blue-400">8:00-16:59 UTC</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>New York</span>
-                  <span className="text-blue-400">14:30-21:29 UTC</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Timeframe</span>
-                  <span className="text-blue-400">5-minute</span>
-                </div>
+        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="p-3 rounded bg-slate-900">
+            <div className="text-xs text-slate-400">Exchange</div>
+            <div className="mt-1 flex items-center justify-between">
+              <div className="text-sm">{exchange || 'Not set'}</div>
+              <div className={`text-sm ${exchangeConnected ? 'text-green-400' : 'text-red-400'}`}>
+                {exchangeConnected ? 'Connected' : 'Disconnected'}
               </div>
             </div>
           </div>
 
-          {/* Entry/Exit Rules */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-            <div className="card">
-              <h3 className="text-xl font-bold text-green-400 mb-4">Long Entry Rules</h3>
-              <div className="space-y-3 text-gray-300">
-                <div className="flex items-start">
-                  <span className="text-green-400 mr-3 mt-1">1.</span>
-                  <span>Price above EMA 200 (bullish bias)</span>
-                </div>
-                <div className="flex items-start">
-                  <span className="text-green-400 mr-3 mt-1">2.</span>
-                  <span>Price below VWAP (reversion opportunity)</span>
-                </div>
-                <div className="flex items-start">
-                  <span className="text-green-400 mr-3 mt-1">3.</span>
-                  <span>Deviation ≥ 0.6% (BTC) / 0.8% (ETH)</span>
-                </div>
-                <div className="flex items-start">
-                  <span className="text-green-400 mr-3 mt-1">4.</span>
-                  <span>Bullish rejection candle confirmation</span>
-                </div>
-                <div className="flex items-start">
-                  <span className="text-green-400 mr-3 mt-1">5.</span>
-                  <span>Entry at candle close</span>
-                </div>
+          <div className="p-3 rounded bg-slate-900">
+            <div className="text-xs text-slate-400">Live Status</div>
+            <div className="mt-1 flex items-center justify-between">
+              <div className={`text-sm ${status === 'RUNNING' ? 'text-green-400' : 'text-slate-300'}`}>
+                {status}
               </div>
-            </div>
-
-            <div className="card">
-              <h3 className="text-xl font-bold text-red-400 mb-4">Exit Rules</h3>
-              <div className="space-y-3 text-gray-300">
-                <div className="flex items-start">
-                  <span className="text-red-400 mr-3 mt-1">•</span>
-                  <span>Primary: Take profit at VWAP level</span>
-                </div>
-                <div className="flex items-start">
-                  <span className="text-red-400 mr-3 mt-1">•</span>
-                  <span>Stop Loss: 1.2 × ATR from entry</span>
-                </div>
-                <div className="flex items-start">
-                  <span className="text-red-400 mr-3 mt-1">•</span>
-                  <span>Optional: Trail remaining position</span>
-                </div>
-                <div className="flex items-start">
-                  <span className="text-red-400 mr-3 mt-1">•</span>
-                  <span>No averaging, no martingale</span>
-                </div>
-              </div>
+              <div className="text-xs text-slate-400">{stoppedReason || ''}</div>
             </div>
           </div>
 
-          {/* Strategy Status & Controls */}
-          <div className="card">
-            <h3 className="text-xl font-bold text-white mb-4">Strategy Status & Controls</h3>
-            <div className="bg-slate-800/50 p-6 rounded-lg">
-              <div className="flex items-center justify-between mb-4">
-                <span className="text-gray-300">Current Status:</span>
-                <span className={`px-3 py-1 rounded-full text-sm ${
-                  agentStatus === 'RUNNING'
-                    ? 'bg-green-500/20 text-green-400'
-                    : 'bg-red-500/20 text-red-400'
-                }`}>
-                  {agentStatus === 'RUNNING' ? 'RUNNING' : 'STOPPED'}
-                </span>
-              </div>
-
-              <div className="flex gap-3 mb-4">
-                <button
-                  onClick={handleStartTrading}
-                  disabled={agentStatus === 'RUNNING' || loading}
-                  className="btn btn-primary flex-1 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {loading ? 'Starting...' : 'Start Auto Trading'}
-                </button>
-                <button
-                  onClick={handleStopTrading}
-                  disabled={agentStatus === 'STOPPED' || loading}
-                  className="btn btn-danger flex-1 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {loading ? 'Stopping...' : 'Stop Auto Trading'}
-                </button>
-              </div>
-
-              <p className="text-gray-400 text-sm">
-                This VWAP Mean Reversion strategy is fully integrated with the trading execution engine.
-                When started, it will continuously monitor market conditions and execute trades according
-                to the VWAP strategy rules with proper risk management.
-              </p>
+          <div className="p-3 rounded bg-slate-900">
+            <div className="text-xs text-slate-400">Auto Trade</div>
+            <div className="mt-2">
+              <button
+                onClick={toggleAutoTrade}
+                disabled={loading || !exchangeConnected}
+                className={`w-full px-3 py-2 rounded text-sm disabled:opacity-50 ${
+                  status === 'RUNNING' ? 'bg-red-600' : 'bg-green-600'
+                }`}
+              >
+                {loading ? 'Working…' : status === 'RUNNING' ? 'Turn OFF' : 'Turn ON'}
+              </button>
             </div>
           </div>
 
-          {/* QuantConnect Code Preview */}
-          <div className="card mt-8">
-            <h3 className="text-xl font-bold text-white mb-4">QuantConnect Algorithm Preview</h3>
-            <div className="bg-slate-900 p-4 rounded-lg overflow-x-auto">
-              <pre className="text-green-400 text-sm">
-{`class VWAPMeanReversionScalper(QCAlgorithm):
-    def Initialize(self):
-        # VWAP(14), EMA(200), ATR(14) strategy
-        # Session filters: London 8:00-16:59 UTC, NY 14:30-21:29 UTC
-        # Risk: 0.5-1% per trade, 1.2 ATR stops
-        # Assets: BTC/USDT, ETH/USDT`}
-              </pre>
+          <div className="p-3 rounded bg-slate-900">
+            <div className="text-xs text-slate-400">Today</div>
+            <div className="mt-1 flex items-center justify-between">
+              <div className="text-sm">Trades: {todayStats.tradeCount}</div>
+              <div className={`text-sm ${todayStats.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                PnL: {todayStats.realizedPnL.toFixed(4)}
+              </div>
             </div>
-            <p className="text-gray-400 text-sm mt-4">
-              Complete QuantConnect algorithm code is available for deployment.
-              Includes backtesting-ready implementation with all safety measures.
-            </p>
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <div className="text-sm text-slate-300">Today Trades</div>
+          <div className="mt-2 overflow-x-auto rounded bg-slate-900">
+            <table className="min-w-full text-sm">
+              <thead className="text-slate-400">
+                <tr>
+                  <th className="text-left p-2">Time</th>
+                  <th className="text-left p-2">Side</th>
+                  <th className="text-left p-2">Qty</th>
+                  <th className="text-left p-2">Entry</th>
+                  <th className="text-left p-2">Exit</th>
+                  <th className="text-left p-2">PnL</th>
+                  <th className="text-left p-2">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trades.length === 0 ? (
+                  <tr>
+                    <td className="p-2 text-slate-500" colSpan={7}>
+                      No trades today
+                    </td>
+                  </tr>
+                ) : (
+                  trades.map((t: any) => (
+                    <tr key={t.id} className="border-t border-slate-800">
+                      <td className="p-2 text-slate-300">
+                        {(() => {
+                          const ts = toValidDate(t?.timestamp);
+                          return ts ? ts.toLocaleTimeString() : '';
+                        })()}
+                      </td>
+                      <td className="p-2 text-slate-300">{String(t.side || '').toUpperCase()}</td>
+                      <td className="p-2 text-slate-300">{Number(t.qty || 0).toFixed(6)}</td>
+                      <td className="p-2 text-slate-300">{Number(t.entryPrice || 0).toFixed(2)}</td>
+                      <td className="p-2 text-slate-300">{t.exitPrice ? Number(t.exitPrice).toFixed(2) : ''}</td>
+                      <td className={`p-2 ${(Number(t.pnl) || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {t.pnl !== undefined && t.pnl !== null ? Number(t.pnl || 0).toFixed(4) : ''}
+                      </td>
+                      <td className="p-2 text-slate-300">{t.status}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <div className="text-sm text-slate-300">Diagnostics</div>
+          <div className="mt-2 rounded bg-slate-900 p-3">
+            <div className="flex items-center justify-between">
+              <div className="text-xs text-slate-400">Scheduler</div>
+              <div className={`text-xs ${scheduler?.isRunning ? 'text-green-400' : 'text-red-400'}`}>
+                {scheduler?.isRunning ? 'RUNNING' : 'NOT RUNNING'}
+              </div>
+            </div>
+
+            <div className="mt-1 text-xs text-slate-400">
+              Last scan: {formatRelative(toValidDate(scheduler?.lastExecutionAt), 'past')}
+            </div>
+            <div className="text-xs text-slate-400">
+              Next scan: {formatRelative(toValidDate(scheduler?.nextExecutionAt), 'future')}
+            </div>
+            {scheduler?.lastExecutionError ? (
+              <div className="mt-1 text-xs text-red-400">Last error: {String(scheduler.lastExecutionError)}</div>
+            ) : null}
+
+            <div className="mt-3 flex items-center justify-between">
+              <div className="text-xs text-slate-400">Runtime</div>
+              <div className={`text-xs ${runtime?.status === 'RUNNING' ? 'text-green-400' : 'text-slate-300'}`}>
+                {runtime?.status || status}
+              </div>
+            </div>
+            {runtime?.stoppedReason ? <div className="text-xs text-slate-400">{String(runtime.stoppedReason)}</div> : null}
+
+            <div className="mt-3 overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="text-slate-400">
+                  <tr>
+                    <th className="text-left p-2">Time</th>
+                    <th className="text-left p-2">Result</th>
+                    <th className="text-left p-2">Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {diagnostics.length === 0 ? (
+                    <tr>
+                      <td className="p-2 text-slate-500" colSpan={3}>
+                        No diagnostics yet
+                      </td>
+                    </tr>
+                  ) : (
+                    diagnostics.map((d: any, idx: number) => {
+                      const rawTs = d?.timestamp || d?.createdAt || d?.time || d?.date;
+                      const ts = toValidDate(rawTs);
+                      const action = String(d?.decision?.action || '').toUpperCase();
+                      const reason = d?.decision?.reason ? String(d.decision.reason) : '';
+                      const isStopForDay = reason.startsWith('STOPPED_FOR_DAY');
+                      const executed = action === 'TRADE' && !!d?.execution?.success;
+                      const result = executed ? 'EXECUTED' : isStopForDay ? 'STOPPED_FOR_DAY' : 'SKIPPED';
+
+                      return (
+                        <tr key={d?.id || `${idx}`} className="border-t border-slate-800">
+                          <td className="p-2 text-slate-300">{ts ? ts.toLocaleTimeString() : ''}</td>
+                          <td
+                            className={`p-2 ${
+                              result === 'EXECUTED'
+                                ? 'text-green-400'
+                                : result === 'STOPPED_FOR_DAY'
+                                  ? 'text-amber-400'
+                                  : 'text-slate-300'
+                            }`}
+                          >
+                            {result}
+                          </td>
+                          <td className="p-2 text-slate-300">
+                            {reason || (executed ? '' : action || '')}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>

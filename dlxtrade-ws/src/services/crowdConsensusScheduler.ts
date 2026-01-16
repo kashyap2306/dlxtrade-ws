@@ -6,6 +6,10 @@ import { getFirebaseAdmin } from '../utils/firebase';
 export class CrowdConsensusScheduler {
   private static intervalId: NodeJS.Timeout | null = null;
   private static isRunning = false;
+  private static readonly intervalMs = 5 * 60 * 1000;
+  private static lastExecutionAt: Date | null = null;
+  private static nextExecutionAt: Date | null = null;
+  private static lastExecutionError: string | null = null;
 
   /**
    * Start the Crowd Consensus scheduler
@@ -19,20 +23,27 @@ export class CrowdConsensusScheduler {
     try {
       this.intervalId = setInterval(async () => {
         try {
+          this.lastExecutionAt = new Date();
           await this.executeAllActiveAgents();
+          this.lastExecutionError = null;
         } catch (error) {
+          this.lastExecutionError = error instanceof Error ? error.message : 'Unknown error';
           logger.error({
             error: error instanceof Error ? error.message : 'Unknown error'
           }, 'Error in Crowd Consensus scheduled execution');
+        } finally {
+          this.nextExecutionAt = new Date(Date.now() + this.intervalMs);
         }
-      }, 5 * 60 * 1000); // 5 minutes
+      }, this.intervalMs); // 5 minutes
 
       this.isRunning = true;
+      this.nextExecutionAt = new Date(Date.now() + this.intervalMs);
       logger.info('Crowd Consensus scheduler started - executing every 5 minutes');
     } catch (error) {
       logger.error({
         error: error instanceof Error ? error.message : 'Unknown error'
       }, 'Failed to start Crowd Consensus scheduler');
+
       throw error;
     }
   }
@@ -46,7 +57,18 @@ export class CrowdConsensusScheduler {
       this.intervalId = null;
     }
     this.isRunning = false;
+    this.nextExecutionAt = null;
     logger.info('Crowd Consensus scheduler stopped');
+  }
+
+  static getStatus() {
+    return {
+      isRunning: this.isRunning,
+      intervalMs: this.intervalMs,
+      lastExecutionAt: this.lastExecutionAt,
+      nextExecutionAt: this.nextExecutionAt,
+      lastExecutionError: this.lastExecutionError,
+    };
   }
 
   /**

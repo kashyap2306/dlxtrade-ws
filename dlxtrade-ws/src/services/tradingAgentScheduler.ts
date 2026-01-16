@@ -7,12 +7,18 @@ export class TradingAgentScheduler {
   private executionService: AgentExecutionService;
   private intervalId: NodeJS.Timeout | null = null;
   private isRunning = false;
+  private readonly intervalMs = 5 * 60 * 1000;
+  private lastExecutionAt: Date | null = null;
+  private nextExecutionAt: Date | null = null;
+  private lastExecutionError: string | null = null;
 
   constructor() {
-    // Initialize with null - will be set per agent
-    this.executionService = null as any;
+    this.executionService = new AgentExecutionService({
+      getCandles: async () => [],
+      getAccountBalance: async () => ({ equity: 0, available: 0 }),
+      placeOrder: async () => 'NOOP'
+    } as any);
   }
-
 
   /**
    * Start the trading agent scheduler
@@ -30,21 +36,28 @@ export class TradingAgentScheduler {
       // Schedule execution every 5 minutes
       this.intervalId = setInterval(async () => {
         try {
+          this.lastExecutionAt = new Date();
           // Execute regular trading agents only
           await this.executeAllAgents();
+          this.lastExecutionError = null;
         } catch (error) {
+          this.lastExecutionError = error instanceof Error ? error.message : 'Unknown error';
           logger.error({
             error: error instanceof Error ? error.message : 'Unknown error'
           }, 'Error in scheduled agent execution');
+        } finally {
+          this.nextExecutionAt = new Date(Date.now() + this.intervalMs);
         }
-      }, 5 * 60 * 1000); // 5 minutes
+      }, this.intervalMs); // 5 minutes
 
       this.isRunning = true;
+      this.nextExecutionAt = new Date(Date.now() + this.intervalMs);
       logger.info('Trading agent scheduler started - executing every 5 minutes');
     } catch (error) {
       logger.error({
         error: error instanceof Error ? error.message : 'Unknown error'
       }, 'Failed to start trading agent scheduler');
+
       throw error;
     }
   }
@@ -58,6 +71,7 @@ export class TradingAgentScheduler {
       this.intervalId = null;
     }
     this.isRunning = false;
+    this.nextExecutionAt = null;
     logger.info('Trading agent scheduler stopped');
   }
 
@@ -103,7 +117,10 @@ export class TradingAgentScheduler {
       isRunning: this.isRunning,
       activeAgents: this.executionService.getAllActiveAgents().length,
       executionStats: this.executionService.getExecutionStats(),
-      nextExecution: this.isRunning ? new Date(Date.now() + 5 * 60 * 1000) : null
+      intervalMs: this.intervalMs,
+      lastExecutionAt: this.lastExecutionAt,
+      nextExecutionAt: this.nextExecutionAt,
+      lastExecutionError: this.lastExecutionError,
     };
   }
 

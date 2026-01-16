@@ -18,6 +18,11 @@ export class BinanceAdapter implements ExchangeConnector {
   private userStreamWs: WebSocket | null = null;
   private listenKey: string | null = null;
 
+  private getFuturesBaseUrl(): string {
+    const isTestnet = this.baseUrl.includes('testnet');
+    return isTestnet ? 'https://testnet.binancefuture.com' : 'https://fapi.binance.com';
+  }
+
   constructor(apiKey: string, apiSecret: string, testnet: boolean = true) {
     this.apiKey = apiKey;
     this.apiSecret = apiSecret;
@@ -143,6 +148,76 @@ export class BinanceAdapter implements ExchangeConnector {
       createdAt: new Date(data.transactTime || Date.now()),
       updatedAt: new Date(data.updateTime || Date.now()),
     };
+  }
+
+  async getFuturesKlines(symbol: string, interval: string = '5m', limit: number = 100): Promise<any[]> {
+    const futuresBaseUrl = this.getFuturesBaseUrl();
+    const publicClient = axios.create({
+      baseURL: futuresBaseUrl,
+      timeout: 10000,
+    });
+
+    const response = await publicClient.get('/fapi/v1/klines', {
+      params: {
+        symbol: symbol.toUpperCase(),
+        interval,
+        limit,
+      }
+    });
+
+    return response.data || [];
+  }
+
+  async placeFuturesOrder(params: {
+    symbol: string;
+    side: "BUY" | "SELL";
+    type?: "MARKET" | "LIMIT";
+    quantity: number;
+    price?: number;
+  }): Promise<any> {
+    const futuresBaseUrl = this.getFuturesBaseUrl();
+    const { symbol, side, type = 'MARKET', quantity, price } = params;
+
+    const orderParams: Record<string, any> = {
+      symbol: symbol.toUpperCase(),
+      side,
+      type,
+      quantity: quantity.toString(),
+      timestamp: Date.now(),
+    };
+    if (type === 'LIMIT') {
+      if (!price) throw new Error('Price required for LIMIT orders');
+      orderParams.price = price.toString();
+      orderParams.timeInForce = 'GTC';
+    }
+    orderParams.signature = this.sign(orderParams);
+
+    const response = await axios.post(`${futuresBaseUrl}/fapi/v1/order`, null, {
+      headers: { 'X-MBX-APIKEY': this.apiKey },
+      params: orderParams,
+      timeout: 10000,
+    });
+
+    return response.data;
+  }
+
+  async getFuturesOrderStatus(symbol: string, orderId?: string, clientOrderId?: string): Promise<any> {
+    const futuresBaseUrl = this.getFuturesBaseUrl();
+    const params: Record<string, any> = {
+      symbol: symbol.toUpperCase(),
+      timestamp: Date.now(),
+    };
+    if (orderId) params.orderId = orderId;
+    if (clientOrderId) params.origClientOrderId = clientOrderId;
+    params.signature = this.sign(params);
+
+    const response = await axios.get(`${futuresBaseUrl}/fapi/v1/order`, {
+      headers: { 'X-MBX-APIKEY': this.apiKey },
+      params,
+      timeout: 10000,
+    });
+
+    return response.data;
   }
 
   /**

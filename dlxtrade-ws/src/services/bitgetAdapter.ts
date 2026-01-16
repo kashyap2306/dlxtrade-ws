@@ -11,6 +11,7 @@ export class BitgetAdapter implements ExchangeConnector {
   private passphrase: string;
   private baseUrl: string;
   private httpClient: AxiosInstance;
+  private contractInfoCache: Map<string, { expiresAt: number; value: { minOrderQty: number; tickSize: number; pricePrecision: number; qtyPrecision: number } }> = new Map();
 
   constructor(apiKey: string, apiSecret: string, passphrase: string, testnet: boolean = false) {
     this.apiKey = apiKey;
@@ -23,7 +24,6 @@ export class BitgetAdapter implements ExchangeConnector {
     if (this.baseUrl.includes('demo')) {
       throw new Error('[BITGET_LIVE_GUARD] Demo/Testnet URL detected! Bitget must ALWAYS use api.bitget.com');
     }
-
     console.log('[BITGET_LIVE_CONFIRMED] BitgetAdapter initialized with production endpoint:', this.baseUrl);
 
     this.httpClient = axios.create({
@@ -40,6 +40,41 @@ export class BitgetAdapter implements ExchangeConnector {
 
     if (testnet) {
       logger.warn('[BITGET_SAFE_GUARD] Testnet was requested but forced to FALSE for production safety');
+    }
+  }
+
+  private async getUsdtMContractInfo(symbol: string): Promise<{ minOrderQty: number; tickSize: number; pricePrecision: number; qtyPrecision: number }> {
+    const key = `USDT-FUTURES:${symbol.toUpperCase()}`;
+    const cached = this.contractInfoCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.value;
+    }
+
+    const fallback = { minOrderQty: 0, tickSize: 0, pricePrecision: 2, qtyPrecision: 6 };
+    try {
+      const response = await this.request('GET', '/api/v2/mix/market/contracts', {
+        productType: 'USDT-FUTURES'
+      });
+
+      const list = Array.isArray(response?.data) ? response.data : [];
+      const contract = list.find((c: any) => String(c?.symbol || '').toUpperCase() === symbol.toUpperCase());
+      if (!contract) {
+        this.contractInfoCache.set(key, { expiresAt: Date.now() + 5 * 60 * 1000, value: fallback });
+        return fallback;
+      }
+
+      const value = {
+        minOrderQty: parseFloat(contract.minOrderQty || '0') || 0,
+        tickSize: parseFloat(contract.tickSize || '0') || 0,
+        pricePrecision: parseInt(contract.pricePrecision || '2') || 2,
+        qtyPrecision: parseInt(contract.qtyPrecision || '6') || 6,
+      };
+
+      this.contractInfoCache.set(key, { expiresAt: Date.now() + 5 * 60 * 1000, value });
+      return value;
+    } catch {
+      this.contractInfoCache.set(key, { expiresAt: Date.now() + 60 * 1000, value: fallback });
+      return fallback;
     }
   }
 
@@ -161,6 +196,26 @@ export class BitgetAdapter implements ExchangeConnector {
       return data.data || [];
     } catch (error: any) {
       logger.error({ error, symbol, interval }, 'Error getting Bitget klines');
+      return [];
+    }
+  }
+
+  async getFuturesKlines(symbol: string, interval: string = '5m', limit: number = 100): Promise<any[]> {
+    try {
+      const response = await this.request('GET', '/api/v2/mix/market/candles', {
+        symbol: symbol.toUpperCase(),
+        granularity: interval,
+        productType: 'USDT-FUTURES',
+        limit: limit.toString(),
+      });
+
+      if (response.code !== '00000') {
+        throw new ExchangeError(`Failed to get futures klines: ${response.msg}`, 400);
+      }
+
+      return response.data || [];
+    } catch (error: any) {
+      logger.error({ error, symbol, interval }, 'Error getting Bitget futures klines');
       return [];
     }
   }
@@ -297,6 +352,26 @@ export class BitgetAdapter implements ExchangeConnector {
     try {
       const { symbol, side, type = 'MARKET', quantity, price } = params;
 
+      const contractInfo = await this.getUsdtMContractInfo(symbol);
+      const qtyPrecisionPow = Math.pow(10, Math.max(0, contractInfo.qtyPrecision || 0));
+      const roundedQty = qtyPrecisionPow > 0 ? Math.floor(Number(quantity || 0) * qtyPrecisionPow) / qtyPrecisionPow : Number(quantity || 0);
+      if (!isFinite(roundedQty) || roundedQty <= 0) {
+        throw new ExchangeError('INVALID_ORDER_SIZE', 400);
+      }
+      if (contractInfo.minOrderQty > 0 && roundedQty < contractInfo.minOrderQty) {
+        throw new ExchangeError(`ORDER_SIZE_BELOW_MIN: ${roundedQty} < ${contractInfo.minOrderQty}`, 400);
+      }
+
+      const roundPrice = (p: number) => {
+        if (!isFinite(p) || p <= 0) return p;
+        if (contractInfo.tickSize > 0) {
+          return Math.round(p / contractInfo.tickSize) * contractInfo.tickSize;
+        }
+        const pp = Math.pow(10, Math.max(0, contractInfo.pricePrecision || 0));
+        return pp > 0 ? Math.round(p * pp) / pp : p;
+      };
+      const roundedPrice = typeof price === 'number' ? roundPrice(price) : price;
+
       // CRITICAL: Aligned with AutoTradeEngine which sets ISOLATED margin mode
       // Must match the account mode set via setMarginType
       const orderParams: any = {
@@ -306,11 +381,11 @@ export class BitgetAdapter implements ExchangeConnector {
         orderType: type.toLowerCase(), // 'market' or 'limit'
         marginMode: 'isolated', // FIXED: Was 'crossed', causing mismatch with engine intent
         marginCoin: 'USDT',
-        size: quantity.toString(),
+        size: roundedQty.toString(),
       };
 
-      if (type === 'LIMIT' && price) {
-        orderParams.price = price.toString();
+      if (type === 'LIMIT' && roundedPrice) {
+        orderParams.price = roundedPrice.toString();
         orderParams.priceProtect = 'off';
         // force: 'gtc' ? Bitget might default to GTC
         orderParams.force = 'gtc';
@@ -328,8 +403,8 @@ export class BitgetAdapter implements ExchangeConnector {
         symbol,
         side,
         type,
-        quantity,
-        price: price || 0,
+        quantity: roundedQty,
+        price: roundedPrice || 0,
         status: 'NEW',
         exchangeOrderId: response.data?.orderId?.toString() || '',
       };
@@ -337,6 +412,70 @@ export class BitgetAdapter implements ExchangeConnector {
       logger.error({ error: error.message, params }, 'Error placing Bitget Futures order');
       throw error;
     }
+  }
+
+  async placeFuturesOrder(params: {
+    symbol: string;
+    side: 'BUY' | 'SELL';
+    type: 'MARKET' | 'LIMIT';
+    quantity: number;
+    price?: number;
+    stopLoss?: number;
+    takeProfit?: number;
+  }): Promise<any> {
+    const { symbol, side, type, quantity, price, stopLoss, takeProfit } = params;
+    const holdSide = side === 'BUY' ? 'long' : 'short';
+
+    const contractInfo = await this.getUsdtMContractInfo(symbol);
+    const roundPrice = (p: number | undefined) => {
+      const n = Number(p);
+      if (!isFinite(n) || n <= 0) return undefined;
+      if (contractInfo.tickSize > 0) {
+        return Math.round(n / contractInfo.tickSize) * contractInfo.tickSize;
+      }
+      const pp = Math.pow(10, Math.max(0, contractInfo.pricePrecision || 0));
+      return pp > 0 ? Math.round(n * pp) / pp : n;
+    };
+    const roundedStopLoss = roundPrice(stopLoss);
+    const roundedTakeProfit = roundPrice(takeProfit);
+
+    const entry = await this.placeOrder({
+      symbol,
+      side,
+      type,
+      quantity,
+      price,
+    });
+
+    if (isFinite(Number(roundedStopLoss)) || isFinite(Number(roundedTakeProfit))) {
+      try {
+        const tpslParams: any = {
+          marginCoin: 'USDT',
+          productType: 'USDT-FUTURES',
+          symbol: symbol.toUpperCase(),
+          holdSide,
+        };
+
+        if (isFinite(Number(roundedTakeProfit))) {
+          tpslParams.takeProfitPrice = String(roundedTakeProfit);
+        }
+        if (isFinite(Number(roundedStopLoss))) {
+          tpslParams.stopLossPrice = String(roundedStopLoss);
+        }
+
+        const tpslResponse = await this.request('POST', '/api/v2/mix/order/place-pos-tpsl', tpslParams, true);
+        if (tpslResponse.code !== '00000') {
+          throw new Error(tpslResponse.msg || 'TPSL placement failed');
+        }
+
+        logger.info({ symbol, holdSide, hasSL: !!stopLoss, hasTP: !!takeProfit }, 'Bitget position TPSL attached');
+      } catch (e: any) {
+        logger.error({ symbol, side, error: e?.message }, 'Failed to attach Bitget position TPSL (SL/TP)');
+        throw e;
+      }
+    }
+
+    return entry;
   }
 
   /**

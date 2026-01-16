@@ -16,6 +16,14 @@ export async function agentRoutes(fastify: FastifyInstance) {
   console.log("[ROUTE READY] POST /api/agent/:agentId/start");
   console.log("[ROUTE READY] POST /api/agent/:agentId/stop");
 
+  // HARD DEPRECATION: trading/vwap/liquidity-sweep agents must ONLY use /api/agents/:agentSlug/*
+  const deprecatedAgentIds = new Set([
+    'trading-agent',
+    'vwap-strategy',
+    'liquidity_sniper_arbitrage',
+    'LIQUIDITY_SWEEP_AGENT',
+  ]);
+
   // Launchpad Hunter specific routes
   console.log("[ROUTE READY] GET /api/agent/launchpad-hunter/dashboard");
   console.log("[ROUTE READY] GET /api/agent/launchpad-hunter/alerts");
@@ -29,6 +37,10 @@ export async function agentRoutes(fastify: FastifyInstance) {
     try {
       const user = (request as any).user;
       const { agentId } = request.params;
+
+      if (deprecatedAgentIds.has(agentId)) {
+        return reply.code(410).send({ error: 'This endpoint has been deprecated. Use /api/agents/:agentSlug/control.' });
+      }
 
       // Get agent data from global agents collection
       const agent = await firestoreAdapter.getAgent(agentId);
@@ -61,6 +73,10 @@ export async function agentRoutes(fastify: FastifyInstance) {
     try {
       const user = (request as any).user;
       const { agentId } = request.params;
+
+      if (deprecatedAgentIds.has(agentId)) {
+        return reply.code(410).send({ error: 'This endpoint has been deprecated. Use /api/agents/:agentSlug/control.' });
+      }
 
       // Get agent data from global agents collection
       const agent = await firestoreAdapter.getAgent(agentId);
@@ -109,6 +125,10 @@ export async function agentRoutes(fastify: FastifyInstance) {
       const user = (request as any).user;
       const { agentId } = request.params;
 
+      if (deprecatedAgentIds.has(agentId)) {
+        return reply.code(410).send({ error: 'This endpoint has been deprecated. Use /api/agents/:agentSlug/control.' });
+      }
+
       // Get user's agent settings
       const userAgents = await firestoreAdapter.getUserAgents(user.uid);
       const userAgent = userAgents.find((ua: any) => ua.id === agentId);
@@ -132,6 +152,10 @@ export async function agentRoutes(fastify: FastifyInstance) {
       const user = (request as any).user;
       const { agentId } = request.params;
       const settings = request.body;
+
+      if (deprecatedAgentIds.has(agentId)) {
+        return reply.code(410).send({ error: 'This endpoint has been deprecated. Use /api/agents/:agentSlug/settings.' });
+      }
 
       // Update agent settings in user's subcollection
       const { getFirebaseAdmin } = await import('../utils/firebase');
@@ -160,6 +184,10 @@ export async function agentRoutes(fastify: FastifyInstance) {
       const user = (request as any).user;
       const { agentId } = request.params;
 
+      if (deprecatedAgentIds.has(agentId)) {
+        return reply.code(410).send({ error: 'This endpoint has been deprecated. Use /api/agents/:agentSlug/start.' });
+      }
+
       // Update agent status to active
       const { getFirebaseAdmin } = await import('../utils/firebase');
       const admin = await import('firebase-admin');
@@ -185,6 +213,10 @@ export async function agentRoutes(fastify: FastifyInstance) {
     try {
       const user = (request as any).user;
       const { agentId } = request.params;
+
+      if (deprecatedAgentIds.has(agentId)) {
+        return reply.code(410).send({ error: 'This endpoint has been deprecated. Use /api/agents/:agentSlug/stop.' });
+      }
 
       // Update agent status to inactive
       const { getFirebaseAdmin } = await import('../utils/firebase');

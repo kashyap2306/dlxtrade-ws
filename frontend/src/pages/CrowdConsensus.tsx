@@ -128,7 +128,8 @@ export default function CrowdConsensus() {
 
       // Also load settings to get dryRun status
       const settingsResponse = await agentsApi.getCrowdConsensusSettings();
-      const settings = settingsResponse.data || {};
+      const settingsPayload = settingsResponse.data || {};
+      const settings = (settingsPayload as any)?.settings || settingsPayload || {};
 
       setAutoTradeStatus({
         ...data,

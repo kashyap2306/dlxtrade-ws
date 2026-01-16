@@ -5,8 +5,20 @@ interface VWAPRuntimeState {
   userId: string;
   status: 'STOPPED' | 'RUNNING';
   strategyType: 'VWAP_MEAN_REVERSION';
+  exchange?: string;
+  credentials?: {
+    apiKey: string;
+    secret: string;
+    passphrase?: string;
+    testnet?: boolean;
+  };
   startedAt?: Date;
   lastHeartbeat?: Date;
+  stoppedAt?: Date;
+  stoppedReason?: string;
+  stoppedForDayKey?: string;
+  dayKey?: string;
+  dayStartEquity?: number;
 }
 
 /**
@@ -29,17 +41,26 @@ export class VWAPRuntimeService {
   /**
    * Start a VWAP strategy agent
    */
-  startAgent(userId: string): VWAPRuntimeState {
+  startAgent(userId: string, wipeStopForDayFields: boolean = false): VWAPRuntimeState {
     const agentId = `vwap_${userId}`;
 
-    const state: VWAPRuntimeState = {
+    const existing = this.runtimeStates.get(agentId);
+    const state: VWAPRuntimeState = existing || {
       agentId,
       userId,
-      status: 'RUNNING',
+      status: 'STOPPED',
       strategyType: 'VWAP_MEAN_REVERSION',
-      startedAt: new Date(),
-      lastHeartbeat: new Date()
     };
+
+    state.status = 'RUNNING';
+    state.startedAt = new Date();
+    state.lastHeartbeat = new Date();
+
+    if (wipeStopForDayFields) {
+      delete state.stoppedForDayKey;
+      delete state.stoppedReason;
+      delete state.stoppedAt;
+    }
 
     this.runtimeStates.set(agentId, state);
 
@@ -49,6 +70,22 @@ export class VWAPRuntimeService {
       strategyType: 'VWAP_MEAN_REVERSION'
     }, 'VWAP Strategy runtime started');
 
+    return state;
+  }
+
+  setAgentCredentials(userId: string, exchange: string, credentials: { apiKey: string; secret: string; passphrase?: string; testnet?: boolean }): VWAPRuntimeState {
+    const agentId = `vwap_${userId}`;
+    const existing = this.runtimeStates.get(agentId);
+    const state: VWAPRuntimeState = existing || {
+      agentId,
+      userId,
+      status: 'STOPPED',
+      strategyType: 'VWAP_MEAN_REVERSION'
+    };
+
+    state.exchange = exchange;
+    state.credentials = credentials;
+    this.runtimeStates.set(agentId, state);
     return state;
   }
 
@@ -73,12 +110,47 @@ export class VWAPRuntimeService {
     return state || null;
   }
 
+  stopAgentForDay(userId: string, reason: string, dayKey: string): VWAPRuntimeState {
+    const agentId = `vwap_${userId}`;
+    const existing = this.runtimeStates.get(agentId);
+    const state: VWAPRuntimeState = existing || {
+      agentId,
+      userId,
+      status: 'STOPPED',
+      strategyType: 'VWAP_MEAN_REVERSION'
+    };
+
+    state.status = 'STOPPED';
+    state.stoppedAt = new Date();
+    state.stoppedReason = reason;
+    state.stoppedForDayKey = dayKey;
+    state.lastHeartbeat = new Date();
+    this.runtimeStates.set(agentId, state);
+    return state;
+  }
+
   /**
    * Get runtime state for a VWAP strategy agent
    */
   getAgentState(userId: string): VWAPRuntimeState | null {
     const agentId = `vwap_${userId}`;
-    return this.runtimeStates.get(agentId) || null;
+    const state = this.runtimeStates.get(agentId) || null;
+    if (state?.stoppedForDayKey) {
+      const todayKey = new Date().toISOString().slice(0, 10);
+      if (state.stoppedForDayKey !== todayKey) {
+        delete state.stoppedForDayKey;
+        delete state.stoppedReason;
+        delete state.stoppedAt;
+      }
+    }
+    if (state?.dayKey) {
+      const todayKey = new Date().toISOString().slice(0, 10);
+      if (state.dayKey !== todayKey) {
+        delete state.dayKey;
+        delete state.dayStartEquity;
+      }
+    }
+    return state;
   }
 
   /**

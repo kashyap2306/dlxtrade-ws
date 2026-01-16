@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import Toast from '../components/Toast';
 import { useAuth } from '../hooks/useAuth';
-import { agentsApi, usersApi, settingsApi } from '../services/api';
+import { agentsApi, settingsApi } from '../services/api';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase-config';
@@ -11,6 +11,16 @@ import { agentKeyToSlug } from '../utils/agentKeyToSlug';
 export default function TradingAgentControl() {
   const { user, authReady } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  const isLiquiditySweepAgent = (location.pathname || '').includes('liquidity_sniper_arbitrage');
+  const approvalKey = isLiquiditySweepAgent ? 'LIQUIDITY_SWEEP_AGENT' : 'TRADING_AGENT';
+  const slug = agentKeyToSlug(approvalKey);
+  const pageTitle = isLiquiditySweepAgent ? 'Liquidity Sweep Agent' : 'Trading Agent';
+  const pageSubtitle = isLiquiditySweepAgent
+    ? 'Liquidity Sweep • Unified Execution'
+    : 'BTC/USDT • ETH/USDT • RSI + Bollinger Bands Strategy';
+
   const [loading, setLoading] = useState(true);
   const [trades, setTrades] = useState<any[]>([]);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -32,13 +42,12 @@ export default function TradingAgentControl() {
       try {
         const userDoc = await getDoc(doc(db, 'users', user.uid));
         const approvedAgents: string[] = (userDoc.data() as any)?.approvedAgents || [];
-        const hasAccess = Array.isArray(approvedAgents) && approvedAgents.includes('TRADING_AGENT');
-        console.debug({ from: 'TradingAgentControl', agentKey: 'TRADING_AGENT', hasAccess });
+        const hasAccess = Array.isArray(approvedAgents) && approvedAgents.includes(approvalKey);
+        console.debug({ from: 'TradingAgentControl', agentKey: approvalKey, hasAccess });
         setHasAgentAccess(hasAccess);
 
         if (hasAccess) {
-          // Use canonical slug for Trading Agent
-          setResolvedAgentId('trading-agent');
+          setResolvedAgentId(slug);
         }
 
         setAgentAccessChecked(true);
@@ -50,7 +59,7 @@ export default function TradingAgentControl() {
     };
 
     checkAgentAccess();
-  }, [user]);
+  }, [user, approvalKey, slug]);
 
   // Load exchange config independently of agent status
   useEffect(() => {
@@ -59,10 +68,10 @@ export default function TradingAgentControl() {
     const loadExchangeConfig = async () => {
       try {
         const exchangeResp = await settingsApi.loadExchangeConfig(user.uid);
-        console.log('[TRADING_AGENT] Exchange config loaded:', exchangeResp.data);
+        console.log(`[${slug}] Exchange config loaded:`, exchangeResp.data);
         setExchangeConfig(exchangeResp.data || {});
       } catch (err) {
-        console.warn('[TRADING_AGENT] Failed to load exchange config:', err);
+        console.warn(`[${slug}] Failed to load exchange config:`, err);
         setExchangeConfig({});
       }
     };
@@ -82,7 +91,7 @@ export default function TradingAgentControl() {
     if (!user || !hasAgentAccess || !resolvedAgentId) return;
 
     loadData();
-  }, [user, hasAgentAccess, resolvedAgentId]);
+  }, [user, hasAgentAccess, resolvedAgentId, slug]);
 
   const loadData = async () => {
     if (!user || !resolvedAgentId) {
@@ -90,7 +99,6 @@ export default function TradingAgentControl() {
       setLoading(false); // Always clear loading state
       return;
     }
-    const slug = agentKeyToSlug('TRADING_AGENT');
     setLoading(true);
     try {
       // Load agent status and config
@@ -132,7 +140,6 @@ export default function TradingAgentControl() {
       showToast('Agent not ready yet', 'error');
       return;
     }
-    const slug = agentKeyToSlug('TRADING_AGENT');
     // Validate exchange connection before starting trading
     if (nextEnabled) {
       const exchangeStatus = isExchangeConnected(exchangeConfig);
@@ -179,7 +186,7 @@ export default function TradingAgentControl() {
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
         <div className="text-center">
           <div className="text-red-400 text-lg mb-4">Access Denied</div>
-          <div className="text-gray-400">You don't have access to Trading Agent</div>
+          <div className="text-gray-400">You don't have access to {pageTitle}</div>
         </div>
       </div>
     );
@@ -191,7 +198,7 @@ export default function TradingAgentControl() {
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
         <div className="text-center">
           <h2 className="text-2xl font-bold text-white mb-4">Agent access not granted yet</h2>
-          <p className="text-gray-400 mb-6">Trading Agent access not granted yet</p>
+          <p className="text-gray-400 mb-6">{pageTitle} access not granted yet</p>
           <button
             onClick={() => navigate('/agents')}
             className="btn btn-primary"
@@ -209,7 +216,7 @@ export default function TradingAgentControl() {
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
-          <p className="text-blue-200">Loading trading agent...</p>
+          <p className="text-blue-200">Loading...</p>
         </div>
       </div>
     );
@@ -221,9 +228,9 @@ export default function TradingAgentControl() {
         <div className="p-6 max-w-5xl mx-auto space-y-6">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-2xl font-semibold text-white">Trading Agent</h1>
+              <h1 className="text-2xl font-semibold text-white">{pageTitle}</h1>
               <div className="text-sm text-gray-400">
-                BTC/USDT • ETH/USDT • RSI + Bollinger Bands Strategy
+                {pageSubtitle}
               </div>
             </div>
             <button onClick={() => navigate('/agents')} className="btn btn-secondary">Back</button>

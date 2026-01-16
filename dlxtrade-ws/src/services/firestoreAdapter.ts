@@ -3039,6 +3039,8 @@ export class FirestoreAdapter {
       exchange?: string;
       signalAccuracy?: number;
       status?: "open" | "closed";
+      leverage?: number;
+      riskPercent?: number;
     },
   ): Promise<string> {
     const tradeRef = db().collection("trades").doc();
@@ -3058,6 +3060,8 @@ export class FirestoreAdapter {
       exchange: tradeData.exchange,
       signalAccuracy: tradeData.signalAccuracy,
       status,
+      leverage: tradeData.leverage,
+      riskPercent: tradeData.riskPercent,
       ...(tradeData.orderId && { orderId: tradeData.orderId }),
       ...(tradeData.metadata && { metadata: tradeData.metadata }),
     });

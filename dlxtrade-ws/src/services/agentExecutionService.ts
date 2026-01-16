@@ -8,6 +8,8 @@ import { ExchangeCredentials } from './exchangeConnector';
 import { CrowdConsensusService } from './crowdConsensusService';
 import { AgentApprovalService } from './agentApprovalService';
 import { vwapRuntimeService } from './vwapRuntimeService';
+import { getFirebaseAdmin } from '../utils/firebase';
+import { decrypt } from './keyManager';
 
 export type { CandleData } from './technicalIndicators';
 
@@ -72,8 +74,13 @@ export class AgentExecutionService {
    */
   async loadActiveVWAPStrategies(): Promise<void> {
     try {
-      // Get all users with VWAP_STRATEGY access
-      const usersWithVWAPAccess = await AgentApprovalService.getUsersWithAgentAccess('VWAP_STRATEGY');
+      const db = getFirebaseAdmin().firestore();
+      const usersSnapshot = await db
+        .collection('users')
+        .where('approvedAgents', 'array-contains', 'VWAP_STRATEGY')
+        .get();
+
+      const usersWithVWAPAccess = usersSnapshot.docs.map((d) => d.id);
 
       this.activeVWAPStrategies.clear();
 
@@ -84,12 +91,12 @@ export class AgentExecutionService {
           userId,
           agentId: `vwap_${userId}`,
           tradingPair: 'BTC/USDT', // Default, could be configurable
-          marketType: 'spot',
-          exchange: 'binance', // Default, could be configurable
-          riskPerTrade: 0.01, // 1%
+          marketType: 'futures',
+          exchange: 'binance', // Actual exchange comes from runtime credentials
+          riskPerTrade: 0.02, // 2%
           apiKey: '', // Would need to get from user's exchange settings
           apiSecret: '',
-          dryRun: true // Safe default
+          dryRun: false
         };
 
         // Only create if user has exchange credentials
@@ -173,15 +180,34 @@ export class AgentExecutionService {
     };
 
     try {
-      // Create agent-specific market provider with exchange credentials
+      // Create agent-specific market provider using canonical exchange config
+      const exchangeConfig = await firestoreAdapter.getExchangeConfig(agentConfig.userId);
+      if (!exchangeConfig?.exchange) {
+        logger.warn({ agentId, uid: agentConfig.userId }, 'Execution blocked: no exchange connected');
+        return;
+      }
+
+      const encryptedApiKey = exchangeConfig.apiKeyEncrypted;
+      const encryptedSecret = exchangeConfig.secretKeyEncrypted || exchangeConfig.secretEncrypted;
+      const encryptedPassphrase = exchangeConfig.passphraseEncrypted;
+
+      const apiKey = encryptedApiKey ? decrypt(encryptedApiKey, 'background_job') : null;
+      const secret = encryptedSecret ? decrypt(encryptedSecret, 'background_job') : null;
+      const passphrase = encryptedPassphrase ? decrypt(encryptedPassphrase, 'background_job') : undefined;
+
+      if (!apiKey || !secret) {
+        logger.warn({ agentId, uid: agentConfig.userId, exchange: exchangeConfig.exchange }, 'Execution blocked: exchange key decryption failed');
+        return;
+      }
+
       const exchangeCredentials: ExchangeCredentials = {
-        apiKey: agentConfig.apiKey,
-        secret: agentConfig.apiSecret,
-        passphrase: agentConfig.passphrase,
-        testnet: false // Always production for live trading
+        apiKey,
+        secret,
+        passphrase,
+        testnet: exchangeConfig.testnet ?? false,
       };
 
-      const marketProvider = new TradingAgentMarketProvider(exchangeCredentials, agentConfig.exchange);
+      const marketProvider = new TradingAgentMarketProvider(exchangeCredentials, String(exchangeConfig.exchange || agentConfig.exchange) as any, 'futures');
 
       // ===== SESSION-BASED TRADING (EXCHANGE SERVER TIME) =====
       // Only trade during London (8:00-16:59 UTC) or New York (14:30-21:29 UTC) sessions
@@ -234,6 +260,10 @@ export class AgentExecutionService {
         return;
       }
 
+      // IMPORTANT: Our indicator library expects candles in "most recent first" order.
+      // Many exchanges return klines oldest->newest.
+      candles.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
       // Get latest candle (most recent)
       const latestCandle = candles[0];
       const candleTimestamp = new Date(latestCandle.timestamp);
@@ -244,6 +274,68 @@ export class AgentExecutionService {
         candleTimestamp,
         price: latestCandle.close
       };
+
+      // ===== OPEN TRADE MANAGEMENT (SL/TP) =====
+      // If there's an open position for this agent+pair, manage exits first.
+      try {
+        const recentAgentTrades = await firestoreAdapter.getAgentTrades(agentId, 25);
+        const openTradesForPair = (recentAgentTrades || []).filter((t: any) => {
+          return t?.status === 'OPEN' && String(t?.tradingPair || '').toUpperCase() === String(tradingPair).toUpperCase();
+        });
+
+        if (openTradesForPair.length > 0) {
+          const openTrade = openTradesForPair[0];
+          const currentPrice = Number(latestCandle.close) || 0;
+          const entryPrice = Number(openTrade.entryPrice) || 0;
+          const qty = Number(openTrade.quantity) || 0;
+          const sl = Number(openTrade.stopLoss);
+          const tp = Number(openTrade.takeProfit);
+
+          if (currentPrice > 0 && entryPrice > 0 && qty > 0 && isFinite(sl) && isFinite(tp)) {
+            const isLong = openTrade.direction === 'LONG';
+            const hitSL = isLong ? currentPrice <= sl : currentPrice >= sl;
+            const hitTP = isLong ? currentPrice >= tp : currentPrice <= tp;
+
+            if (hitSL || hitTP) {
+              const closeSide: 'BUY' | 'SELL' = isLong ? 'SELL' : 'BUY';
+              await marketProvider.placeOrder({
+                symbol,
+                side: closeSide,
+                type: 'MARKET',
+                quantity: qty,
+              });
+
+              const pnl = isLong ? (currentPrice - entryPrice) * qty : (entryPrice - currentPrice) * qty;
+              await firestoreAdapter.updateTradeStatus(openTrade.id, 'CLOSED');
+
+              if (openTrade.tradeDocId) {
+                await firestoreAdapter.updateTradeDocDelta(openTrade.tradeDocId, {
+                  status: 'closed',
+                  exitPrice: currentPrice,
+                  pnl,
+                });
+              }
+
+              // Update daily counters: consecutive losses stop at 2
+              const counters = await firestoreAdapter.getDailySafetyCounters(agentId);
+              const nextDailyPnL = (Number(counters.dailyPnL) || 0) + pnl;
+              const nextConsecutiveLosses = pnl < 0 ? (Number(counters.consecutiveLosses) || 0) + 1 : 0;
+              await firestoreAdapter.updateDailySafetyCounters(agentId, {
+                dailyPnL: nextDailyPnL,
+                consecutiveLosses: nextConsecutiveLosses,
+              });
+
+              logger.info({ agentId, tradingPair, openTradeId: openTrade.id, pnl }, 'Closed open trade by SL/TP');
+            }
+          }
+
+          // Do not open a new trade while one is open/managed
+          await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
+          return;
+        }
+      } catch (error) {
+        // Non-fatal - continue with normal flow
+      }
 
       // ===== CLOSED-CANDLE DETERMINISM =====
       // Check if this candle was already processed
@@ -317,14 +409,16 @@ export class AgentExecutionService {
       // ===== DAILY SAFETY RULE ENFORCEMENT =====
       const dailyCounters = await firestoreAdapter.getDailySafetyCounters(agentId);
 
+      const maxTradesPerDay = Math.min(Number(agentConfig.maxTradesPerDay) || 5, 5);
+
       // Check daily trade limit
-      if (dailyCounters.tradesToday >= agentConfig.maxTradesPerDay) {
-        diagnostics.decision = { action: 'SKIP', reason: `Daily trade limit reached: ${dailyCounters.tradesToday}/${agentConfig.maxTradesPerDay}` };
+      if (dailyCounters.tradesToday >= maxTradesPerDay) {
+        diagnostics.decision = { action: 'SKIP', reason: `Daily trade limit reached: ${dailyCounters.tradesToday}/${maxTradesPerDay}` };
         await agent.storeDiagnostics(diagnostics);
         logger.info({
           agentId,
           tradesToday: dailyCounters.tradesToday,
-          maxTrades: agentConfig.maxTradesPerDay,
+          maxTrades: maxTradesPerDay,
           reason: 'DAILY_TRADE_LIMIT'
         }, 'Execution blocked: daily trade limit reached');
         await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
@@ -332,8 +426,8 @@ export class AgentExecutionService {
       }
 
       // Check consecutive losses limit
-      if (dailyCounters.consecutiveLosses >= 3) {
-        diagnostics.decision = { action: 'SKIP', reason: `Consecutive losses limit: ${dailyCounters.consecutiveLosses}/3` };
+      if (dailyCounters.consecutiveLosses >= 2) {
+        diagnostics.decision = { action: 'SKIP', reason: `Consecutive losses limit: ${dailyCounters.consecutiveLosses}/2` };
         await agent.storeDiagnostics(diagnostics);
         logger.info({
           agentId,
@@ -373,7 +467,13 @@ export class AgentExecutionService {
 
       // ===== MAX POSITION RACE PROTECTION =====
       // Check position limits with current counts
-      const positionCounts = await firestoreAdapter.getCurrentPositionCount(agentId);
+      const positionTrades = await firestoreAdapter.getAgentTrades(agentId, 50);
+      const openTrades = (positionTrades || []).filter((t: any) => t?.status === 'OPEN');
+      const pairOpenTrades = openTrades.filter((t: any) => String(t?.tradingPair || '').toUpperCase() === String(tradingPair).toUpperCase());
+      const positionCounts = {
+        pairPositions: pairOpenTrades.length,
+        totalPositions: openTrades.length,
+      };
 
       // Max 1 open trade per pair
       if (positionCounts.pairPositions >= 1) {
@@ -410,42 +510,78 @@ export class AgentExecutionService {
         availableMargin: true
       };
 
-      // Execute trade with hardened validation
-      const trade = await agent.executeTrade(signal, balance.equity, dailyCounters);
+      // Position sizing (validation-only)
+      const positionCalc = agent.calculatePositionSize(
+        balance.equity,
+        signal.entryPrice,
+        signal.stopLoss,
+        agentConfig.leverage || 8,
+      );
 
-      if (trade) {
-        // Update diagnostics with risk analysis
-        diagnostics.riskAnalysis.positionSize = trade.quantity;
-        diagnostics.riskAnalysis.maxPositionSize = Math.floor((balance.equity * agentConfig.riskPerTrade / 100) / (trade.entryPrice / agentConfig.leverage));
+      if (!positionCalc.isSafe || !isFinite(positionCalc.positionSize) || positionCalc.positionSize <= 0) {
+        diagnostics.decision = {
+          action: 'SKIP',
+          reason: `Position sizing rejected: ${positionCalc.reason || 'UNKNOWN'}`
+        };
+        await agent.storeDiagnostics(diagnostics);
+        await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
+        return;
+      }
 
-        // Place actual order on exchange with atomic SL/TP
-        const orderSuccess = await this.placeOrderFromTradeAtomic(trade, agentConfig, marketProvider, diagnostics, agent);
+      const tradeRecord: any = {
+        id: `trade_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+        signalId: signal.signalId,
+        agentId: agentId,
+        tradingPair: agentConfig.tradingPair,
+        symbol: symbol,
+        direction: signal.direction,
+        entryPrice: signal.entryPrice,
+        stopLoss: signal.stopLoss,
+        takeProfit: signal.takeProfit,
+        quantity: positionCalc.positionSize,
+        status: 'OPEN',
+        entryTime: signal.timestamp,
+        candleTimestamp: signal.candleTimestamp,
+        indicators: signal.indicators,
+      };
 
-        if (orderSuccess) {
-          // Update daily counters
-          await firestoreAdapter.updateDailySafetyCounters(agentId, {
-            tradesToday: dailyCounters.tradesToday + 1
-          });
+      // Update diagnostics with risk analysis
+      diagnostics.riskAnalysis.positionSize = tradeRecord.quantity;
 
-          // Set pair cooldown (30 minutes from trade execution)
-          const cooldownUntil = new Date(Date.now() + 30 * 60 * 1000);
-          await firestoreAdapter.setPairCooldown(agentId, tradingPair, cooldownUntil);
+      // Place actual order on exchange (MARKET entry) and persist to trades collection
+      const orderSuccess = await this.placeOrderFromTradeAtomic(tradeRecord, agentConfig, marketProvider, diagnostics, agent);
 
-          logger.info({
-            agentId,
-            tradeId: trade.id,
-            signalId: trade.signalId,
-            direction: trade.direction,
-            entryPrice: trade.entryPrice,
-            quantity: trade.quantity
-          }, 'Trade executed successfully with all safety checks');
-        } else {
-          logger.error({
-            agentId,
-            tradeId: trade.id,
-            signalId: trade.signalId
-          }, 'Order placement failed, trade marked as failed');
-        }
+      if (orderSuccess) {
+        // Also persist to agentTrades for idempotency / position count enforcement
+        await firestoreAdapter.saveAgentTrade(tradeRecord);
+
+        // Update daily counters
+        await firestoreAdapter.updateDailySafetyCounters(agentId, {
+          tradesToday: dailyCounters.tradesToday + 1
+        });
+
+        // Set pair cooldown (30 minutes from trade execution)
+        const cooldownUntil = new Date(Date.now() + 30 * 60 * 1000);
+        await firestoreAdapter.setPairCooldown(agentId, tradingPair, cooldownUntil);
+
+        logger.info({
+          agentId,
+          tradeId: tradeRecord.id,
+          signalId: tradeRecord.signalId,
+          direction: tradeRecord.direction,
+          entryPrice: tradeRecord.entryPrice,
+          quantity: tradeRecord.quantity
+        }, 'Trade executed successfully with all safety checks');
+      } else {
+        tradeRecord.status = 'FAILED';
+        tradeRecord.error = diagnostics?.execution?.error || 'ORDER_PLACEMENT_FAILED';
+        await firestoreAdapter.saveAgentTrade(tradeRecord);
+
+        logger.error({
+          agentId,
+          tradeId: tradeRecord.id,
+          signalId: tradeRecord.signalId
+        }, 'Order placement failed, trade marked as failed');
       }
 
       // Update last processed candle
@@ -627,7 +763,94 @@ export class AgentExecutionService {
   */
 
   private async placeOrderFromTradeAtomic(trade: any, agentConfig: TradingAgentConfig, marketProvider: TradingAgentMarketProvider, diagnostics: any, agent: TradingAgent): Promise<boolean> {
-    return false;
+    try {
+      const uid = agentConfig.userId;
+      const agentName = String(agentConfig.name || '');
+      const agentSlug = agentName.toLowerCase().includes('liquidity sweep')
+        ? 'liquidity_sniper_arbitrage'
+        : 'trading-agent';
+
+      const side: 'BUY' | 'SELL' = trade.direction === 'LONG' ? 'BUY' : 'SELL';
+      const symbol = (trade.symbol || agentConfig.tradingPair.replace('/', '')).toUpperCase();
+      const quantity = Number(trade.quantity) || 0;
+
+      if (!uid) {
+        diagnostics.execution = { success: false, error: 'MISSING_USER_ID' };
+        await agent.storeDiagnostics(diagnostics);
+        return false;
+      }
+
+      if (!symbol || !isFinite(quantity) || quantity <= 0) {
+        diagnostics.execution = { success: false, error: 'INVALID_ORDER_PARAMS' };
+        await agent.storeDiagnostics(diagnostics);
+        return false;
+      }
+
+      // Place entry order (MARKET). SL/TP are stored and managed by our engine.
+      const orderId = await marketProvider.placeOrder({
+        symbol,
+        side,
+        type: 'MARKET',
+        quantity,
+      });
+
+      diagnostics.execution = {
+        success: true,
+        orderId,
+      };
+      await agent.storeDiagnostics(diagnostics);
+
+      // Persist to canonical trades collection for UI history
+      const tradeDocId = await firestoreAdapter.saveTrade(uid, {
+        symbol: agentConfig.tradingPair,
+        side,
+        qty: quantity,
+        entryPrice: Number(trade.entryPrice) || 0,
+        engineType: 'auto',
+        orderId,
+        exchange: agentConfig.exchange,
+        leverage: agentConfig.leverage,
+        riskPercent: agentConfig.riskPerTrade,
+        status: 'open',
+        metadata: {
+          agentId: agentSlug,
+          signalId: trade.signalId,
+          tradeId: trade.id,
+          direction: trade.direction,
+          stopLoss: trade.stopLoss,
+          takeProfit: trade.takeProfit,
+        },
+      });
+
+      (trade as any).tradeDocId = tradeDocId;
+
+      logger.info({
+        uid,
+        agentId: agentConfig.id,
+        agentSlug,
+        orderId,
+        symbol,
+        side,
+        quantity,
+      }, 'Trade entry order placed and persisted');
+
+      return true;
+    } catch (error) {
+      diagnostics.execution = {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+      try {
+        await agent.storeDiagnostics(diagnostics);
+      } catch { }
+
+      logger.error({
+        agentId: agentConfig.id,
+        tradeId: trade?.id,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      }, 'Failed to place trade entry order');
+      return false;
+    }
   }
 
   /**
@@ -758,11 +981,259 @@ export class AgentExecutionService {
     const userId = strategy.config?.userId || 'unknown';
 
     try {
-      // Execute VWAP strategy logic
-      const diagnostics = await strategy.execute(this.marketDataProvider);
+      const todayKey = new Date().toISOString().slice(0, 10);
+      const runtimeState = vwapRuntimeService.getAgentState(userId);
+      if (!runtimeState) {
+        return;
+      }
+
+      if (runtimeState.stoppedForDayKey === todayKey) {
+        return;
+      }
+
+      const storeVWAPDiagnostics = async (diagnostics: any) => {
+        try {
+          const { TradingAgent } = await import('./tradingAgent');
+          const agent = new TradingAgent({
+            id: `vwap_${userId}`,
+            userId,
+            name: 'VWAP Strategy',
+            tradingPair: (strategy.config?.tradingPair || 'BTC/USDT') as any,
+            marketType: 'futures',
+            exchange: (runtimeState.exchange || 'bitget') as any,
+            leverage: 5,
+            riskPerTrade: 2,
+            maxConcurrentTrades: 1,
+            maxTradesPerDay: 5,
+            apiKey: '',
+            apiSecret: '',
+            passphrase: runtimeState.credentials?.passphrase,
+            dryRun: false,
+            status: 'ACTIVE',
+            createdAt: new Date(),
+            dailyTrades: 0,
+            consecutiveLosses: 0,
+            dailyPnL: 0,
+            totalPnL: 0,
+            winRate: 0,
+            totalTrades: 0,
+            winningTrades: 0,
+            losingTrades: 0,
+            drawdown: 0,
+          } as any);
+          await agent.storeDiagnostics(diagnostics);
+        } catch (e) {
+        }
+      };
+
+      if (!runtimeState.exchange || !runtimeState.credentials?.apiKey || !runtimeState.credentials?.secret) {
+        runtimeState.status = 'STOPPED';
+        runtimeState.stoppedReason = 'EXCHANGE_NOT_CONNECTED';
+        await storeVWAPDiagnostics({
+          timestamp: new Date(),
+          agentId: `vwap_${userId}`,
+          tradingPair: strategy.config?.tradingPair || 'BTC/USDT',
+          sessionCheck: { isValidSession: true, currentIST: '', reason: 'EXCHANGE_NOT_CONNECTED' },
+          candleCheck: {},
+          indicators: {},
+          supportResistance: { calculated: false },
+          signal: { direction: null, entryPrice: 0, stopLoss: 0, takeProfit: 0, rrRatio: 0, meetsConditions: false },
+          riskAnalysis: {},
+          srValidation: {},
+          decision: { action: 'SKIP', reason: 'EXCHANGE_NOT_CONNECTED' },
+        });
+        return;
+      }
+
+      const exchangeCredentials: ExchangeCredentials = {
+        apiKey: runtimeState.credentials.apiKey,
+        secret: runtimeState.credentials.secret,
+        passphrase: runtimeState.credentials.passphrase,
+        testnet: runtimeState.credentials.testnet ?? false,
+      };
+
+      const tradingPair = strategy.config?.tradingPair || 'BTC/USDT';
+      const symbol = tradingPair.replace('/', '').toUpperCase();
+
+      const marketProvider = new TradingAgentMarketProvider(exchangeCredentials, runtimeState.exchange, 'futures');
+
+      try {
+        await marketProvider.setMarginType(symbol, 'ISOLATED');
+      } catch (e) {
+        logger.warn({ agentId, userId, error: (e as any)?.message }, 'VWAP: setMarginType failed (continuing)');
+      }
+      try {
+        await marketProvider.setLeverage(symbol, 5);
+      } catch (e) {
+        logger.warn({ agentId, userId, error: (e as any)?.message }, 'VWAP: setLeverage failed (continuing)');
+      }
+
+      const recentTrades = await firestoreAdapter.getTrades(userId, 200);
+      const todayTrades = (recentTrades || []).filter((t: any) => {
+        const ts = t?.timestamp ? new Date(t.timestamp) : null;
+        const tsKey = ts && !isNaN(ts.getTime()) ? ts.toISOString().slice(0, 10) : null;
+        const metaAgentId = t?.metadata?.agentId;
+        return tsKey === todayKey && metaAgentId === 'vwap-strategy';
+      });
+
+      const openTrades = todayTrades.filter((t: any) => (t?.status || '').toLowerCase() === 'open');
+      const closedTrades = todayTrades.filter((t: any) => (t?.status || '').toLowerCase() === 'closed');
+
+      if (!runtimeState.dayKey || runtimeState.dayKey !== todayKey || typeof runtimeState.dayStartEquity !== 'number') {
+        try {
+          const bal = await marketProvider.getAccountBalance();
+          runtimeState.dayKey = todayKey;
+          runtimeState.dayStartEquity = bal.equity;
+        } catch (e) {
+        }
+      }
+
+      const realizedPnL = closedTrades.reduce((sum: number, t: any) => sum + (Number(t?.pnl) || 0), 0);
+      const tradesToday = todayTrades.length;
+      const dayStartEquity = typeof runtimeState.dayStartEquity === 'number' ? runtimeState.dayStartEquity : 0;
+
+      const consecutiveLosses = (() => {
+        const sorted = [...closedTrades].sort((a: any, b: any) => {
+          const at = a?.timestamp ? new Date(a.timestamp).getTime() : 0;
+          const bt = b?.timestamp ? new Date(b.timestamp).getTime() : 0;
+          return bt - at;
+        });
+        let n = 0;
+        for (const t of sorted) {
+          const pnl = Number(t?.pnl);
+          if (!isFinite(pnl)) continue;
+          if (pnl < 0) n++;
+          else break;
+        }
+        return n;
+      })();
+
+      if (tradesToday >= 5) {
+        vwapRuntimeService.stopAgentForDay(userId, 'MAX_TRADES_PER_DAY', todayKey);
+        await storeVWAPDiagnostics({
+          timestamp: new Date(),
+          agentId: `vwap_${userId}`,
+          tradingPair: strategy.config?.tradingPair || 'BTC/USDT',
+          decision: { action: 'SKIP', reason: 'STOPPED_FOR_DAY_MAX_TRADES' },
+        });
+        return;
+      }
+
+      if (dayStartEquity > 0) {
+        const dailyLossPct = (realizedPnL / dayStartEquity) * 100;
+        if (dailyLossPct <= -4) {
+          vwapRuntimeService.stopAgentForDay(userId, 'DAILY_MAX_LOSS', todayKey);
+          await storeVWAPDiagnostics({
+            timestamp: new Date(),
+            agentId: `vwap_${userId}`,
+            tradingPair: strategy.config?.tradingPair || 'BTC/USDT',
+            decision: { action: 'SKIP', reason: 'STOPPED_FOR_DAY_DAILY_MAX_LOSS' },
+          });
+          return;
+        }
+      }
+
+      if (consecutiveLosses >= 2) {
+        vwapRuntimeService.stopAgentForDay(userId, 'CONSECUTIVE_LOSSES', todayKey);
+        await storeVWAPDiagnostics({
+          timestamp: new Date(),
+          agentId: `vwap_${userId}`,
+          tradingPair: strategy.config?.tradingPair || 'BTC/USDT',
+          decision: { action: 'SKIP', reason: 'STOPPED_FOR_DAY_CONSECUTIVE_LOSSES' },
+        });
+        return;
+      }
+
+      if (openTrades.length > 0) {
+        const trade = openTrades[0];
+        const stopLoss = Number(trade?.metadata?.stopLoss);
+        const takeProfit = Number(trade?.metadata?.takeProfit);
+        const entryPrice = Number(trade?.entryPrice);
+        const qty = Number(trade?.qty);
+        const side = (trade?.side || '').toLowerCase();
+
+        if (isFinite(stopLoss) && isFinite(takeProfit) && isFinite(entryPrice) && isFinite(qty) && qty > 0) {
+          const candles = await marketProvider.getCandles(symbol, '5m', 2);
+          const last = candles?.length ? candles[candles.length - 1] : null;
+          const lastHigh = Number(last?.high) || 0;
+          const lastLow = Number(last?.low) || 0;
+          const currentPrice = Number(last?.close) || 0;
+
+          let shouldClose = false;
+          if (side === 'buy') {
+            if (lastHigh >= takeProfit || lastLow <= stopLoss) shouldClose = true;
+          } else {
+            if (lastLow <= takeProfit || lastHigh >= stopLoss) shouldClose = true;
+          }
+
+          if (shouldClose && trade?.id) {
+            const pnl = side === 'buy' ? (currentPrice - entryPrice) * qty : (entryPrice - currentPrice) * qty;
+            await firestoreAdapter.updateTradeDocDelta(trade.id, {
+              status: 'closed',
+              exitPrice: currentPrice,
+              pnl,
+            });
+          }
+        }
+
+        vwapRuntimeService.updateHeartbeat(userId);
+        return;
+      }
+
+      const diagnostics = await strategy.execute(marketProvider);
+
+      // Persist diagnostics so UI can show RUNNING / SKIPPED / EXECUTED
+      await storeVWAPDiagnostics({
+        agentId: `vwap_${userId}`,
+        tradingPair: diagnostics?.tradingPair || strategy.config?.tradingPair || 'BTC/USDT',
+        timestamp: diagnostics?.timestamp || new Date(),
+        sessionCheck: diagnostics?.sessionCheck,
+        candleCheck: diagnostics?.candleCheck || {},
+        indicators: diagnostics?.indicators || {},
+        supportResistance: diagnostics?.supportResistance || { calculated: false },
+        signal: {
+          direction: diagnostics?.signal?.direction || null,
+          entryPrice: diagnostics?.signal?.entryPrice || 0,
+          stopLoss: diagnostics?.signal?.stopLoss || 0,
+          takeProfit: diagnostics?.signal?.takeProfit || 0,
+          rrRatio: diagnostics?.signal?.rrRatio || 0,
+          meetsConditions: diagnostics?.signal?.meetsConditions || false,
+        },
+        riskAnalysis: diagnostics?.riskAnalysis || {},
+        srValidation: diagnostics?.srValidation || {},
+        decision: diagnostics?.decision || { action: 'SKIP', reason: 'UNKNOWN' },
+        execution: diagnostics?.execution,
+      });
+
+      if (diagnostics?.decision?.action === 'TRADE' && diagnostics?.execution?.success && diagnostics?.execution?.orderId) {
+        const direction = diagnostics?.signal?.direction;
+        const side: 'BUY' | 'SELL' = direction === 'LONG' ? 'BUY' : 'SELL';
+        const qty = Number(diagnostics?.riskAnalysis?.positionSize) || 0;
+        const entryPrice = Number(diagnostics?.signal?.entryPrice) || 0;
+
+        if (qty > 0 && entryPrice > 0) {
+          await firestoreAdapter.saveTrade(userId, {
+            symbol,
+            side,
+            qty,
+            entryPrice,
+            engineType: 'auto',
+            orderId: diagnostics.execution.orderId,
+            exchange: runtimeState.exchange,
+            leverage: 5,
+            riskPercent: 2,
+            status: 'open',
+            metadata: {
+              agentId: 'vwap-strategy',
+              stopLoss: diagnostics?.signal?.stopLoss,
+              takeProfit: diagnostics?.signal?.takeProfit,
+              direction,
+            },
+          });
+        }
+      }
 
       // Update runtime heartbeat
-      const { vwapRuntimeService } = await import('./vwapRuntimeService');
       vwapRuntimeService.updateHeartbeat(userId);
 
       logger.info({

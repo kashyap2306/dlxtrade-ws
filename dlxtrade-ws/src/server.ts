@@ -448,8 +448,7 @@ async function start() {
           // Start Trading Agent scheduler (separate from Crowd Consensus)
           try {
             console.log('[TRADING_AGENT] Starting Trading Agent scheduler...');
-            const { TradingAgentScheduler } = await import('./services/tradingAgentScheduler');
-            const tradingAgentScheduler = new TradingAgentScheduler();
+            const { tradingAgentScheduler } = await import('./services/tradingAgentScheduler');
 
             // Start scheduler synchronously
             await tradingAgentScheduler.start();

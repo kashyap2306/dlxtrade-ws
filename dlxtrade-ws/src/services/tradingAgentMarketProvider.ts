@@ -5,9 +5,11 @@ import { logger } from '../utils/logger';
 export class TradingAgentMarketProvider implements MarketDataProvider {
   private exchangeConnector: ExchangeConnector;
   private exchange: string;
+  private marketType: 'spot' | 'futures';
 
-  constructor(exchangeCredentials: ExchangeCredentials, exchange: string = 'binance') {
+  constructor(exchangeCredentials: ExchangeCredentials, exchange: string = 'binance', marketType: 'spot' | 'futures' = 'spot') {
     this.exchange = exchange;
+    this.marketType = marketType;
     this.exchangeConnector = ExchangeConnectorFactory.create(
       exchange as any,
       exchangeCredentials
@@ -22,10 +24,15 @@ export class TradingAgentMarketProvider implements MarketDataProvider {
       // Map timeframe to exchange format
       const exchangeTimeframe = this.mapTimeframe(timeframe);
 
-      // For Bitget COIN-M Futures, use dedicated method
+      // For Bitget Futures, prefer USDT-M futures klines (VWAP strategy uses USDT-M)
       let klines: any[];
-      if (this.exchange === 'bitget') {
+      if (this.exchange === 'bitget' && this.marketType === 'futures' && (this.exchangeConnector as any).getFuturesKlines) {
+        klines = await (this.exchangeConnector as any).getFuturesKlines(symbol, exchangeTimeframe, limit);
+      } else if (this.exchange === 'bitget' && this.marketType === 'futures' && (this.exchangeConnector as any).getCoinMKlines) {
+        // Back-compat fallback
         klines = await (this.exchangeConnector as any).getCoinMKlines(symbol, exchangeTimeframe, limit);
+      } else if (this.marketType === 'futures' && (this.exchangeConnector as any).getFuturesKlines) {
+        klines = await (this.exchangeConnector as any).getFuturesKlines(symbol, exchangeTimeframe, limit);
       } else {
         klines = await this.exchangeConnector.getKlines(symbol, exchangeTimeframe, limit);
       }
@@ -55,21 +62,21 @@ export class TradingAgentMarketProvider implements MarketDataProvider {
    */
   async getAccountBalance(): Promise<{ equity: number; available: number }> {
     try {
-      // For Bitget COIN-M Futures, use dedicated COIN-M balance method
-      if (this.exchange === 'bitget' && (this.exchangeConnector as any).getCoinMBalance) {
-        const coinMBalance = await (this.exchangeConnector as any).getCoinMBalance();
-        return {
-          equity: coinMBalance.totalBalance,
-          available: coinMBalance.availableBalance
-        };
-      }
-
       // Try futures balance first for perpetual futures
       if (this.exchangeConnector.getFuturesBalance) {
         const futuresBalance = await this.exchangeConnector.getFuturesBalance();
         return {
           equity: futuresBalance.totalBalance,
           available: futuresBalance.availableBalance
+        };
+      }
+
+      // Back-compat: Bitget COIN-M balance fallback
+      if (this.exchange === 'bitget' && (this.exchangeConnector as any).getCoinMBalance) {
+        const coinMBalance = await (this.exchangeConnector as any).getCoinMBalance();
+        return {
+          equity: coinMBalance.totalBalance,
+          available: coinMBalance.availableBalance
         };
       }
 
@@ -107,6 +114,41 @@ export class TradingAgentMarketProvider implements MarketDataProvider {
     takeProfit?: number;
   }): Promise<string> {
     try {
+      // Bitget Futures: support preset SL/TP on the exchange when available
+      if (this.exchange === 'bitget' && this.marketType === 'futures' && (this.exchangeConnector as any).placeFuturesOrder) {
+        const orderResult = await (this.exchangeConnector as any).placeFuturesOrder({
+          symbol: order.symbol,
+          side: order.side as 'BUY' | 'SELL',
+          type: order.type as 'MARKET' | 'LIMIT',
+          quantity: order.quantity,
+          price: order.price,
+          stopLoss: order.stopLoss,
+          takeProfit: order.takeProfit,
+        });
+
+        const orderId = orderResult.orderId || orderResult.id || orderResult.clientOrderId;
+        if (!orderId) {
+          throw new Error('Order placed but no order ID returned');
+        }
+        return orderId.toString();
+      }
+
+      if (this.marketType === 'futures' && (this.exchangeConnector as any).placeFuturesOrder) {
+        const orderResult = await (this.exchangeConnector as any).placeFuturesOrder({
+          symbol: order.symbol,
+          side: order.side as 'BUY' | 'SELL',
+          type: order.type as 'MARKET' | 'LIMIT',
+          quantity: order.quantity,
+          price: order.price,
+        });
+
+        const orderId = orderResult.orderId || orderResult.id || orderResult.clientOrderId;
+        if (!orderId) {
+          throw new Error('Order placed but no order ID returned');
+        }
+        return orderId.toString();
+      }
+
       if (!this.exchangeConnector.placeOrder) {
         throw new Error('Order placement not supported by this exchange connector');
       }
@@ -146,6 +188,53 @@ export class TradingAgentMarketProvider implements MarketDataProvider {
       }, 'Failed to place order for trading agent');
       throw error;
     }
+  }
+
+  async setLeverage(symbol: string, leverage: number): Promise<void> {
+    if (this.exchangeConnector.setLeverage) {
+      await this.exchangeConnector.setLeverage(symbol, leverage);
+    }
+  }
+
+  async setMarginType(symbol: string, marginType: 'ISOLATED' | 'CROSSED'): Promise<void> {
+    if (this.exchangeConnector.setMarginType) {
+      await this.exchangeConnector.setMarginType(symbol, marginType);
+    }
+  }
+
+  async placeFuturesOrder(params: {
+    symbol: string;
+    side: 'BUY' | 'SELL';
+    type: string;
+    quantity?: number;
+    price?: number;
+    stopPrice?: number;
+    reduceOnly?: boolean;
+    closePosition?: boolean;
+  }): Promise<any> {
+    if ((this.exchangeConnector as any).placeFuturesOrder) {
+      return await (this.exchangeConnector as any).placeFuturesOrder(params);
+    }
+    if (this.exchangeConnector.placeOrder && params.quantity) {
+      return await this.exchangeConnector.placeOrder({
+        symbol: params.symbol,
+        side: params.side,
+        type: (params.type as any) || 'MARKET',
+        quantity: params.quantity,
+        price: params.price,
+      });
+    }
+    throw new Error('Futures order placement not supported by this exchange connector');
+  }
+
+  async getOrderStatus(symbol: string, orderId?: string, clientOrderId?: string): Promise<any> {
+    if (this.marketType === 'futures' && (this.exchangeConnector as any).getFuturesOrderStatus) {
+      return await (this.exchangeConnector as any).getFuturesOrderStatus(symbol, orderId, clientOrderId);
+    }
+    if ((this.exchangeConnector as any).getOrderStatus) {
+      return await (this.exchangeConnector as any).getOrderStatus(symbol, orderId, clientOrderId);
+    }
+    throw new Error('Order status not supported by this exchange connector');
   }
 
   /**
