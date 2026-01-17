@@ -8,16 +8,18 @@ import { db } from '../config/firebase-config';
 type AgentStatus = 'STOPPED' | 'RUNNING';
 
 export default function VWAPStrategy() {
-  const { user } = useAuth();
+  const { user, authReady } = useAuth();
   const agentId = 'vwap-strategy';
 
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [agentAccessChecked, setAgentAccessChecked] = useState(false);
   const [hasAgentAccess, setHasAgentAccess] = useState(false);
 
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [exchange, setExchange] = useState<string | null>(null);
   const [exchangeConnected, setExchangeConnected] = useState<boolean>(false);
+  const [exchangeConfigLoaded, setExchangeConfigLoaded] = useState(false);
+  const [agentStatusLoaded, setAgentStatusLoaded] = useState(false);
 
   const [status, setStatus] = useState<AgentStatus>('STOPPED');
   const [stoppedReason, setStoppedReason] = useState<string | null>(null);
@@ -85,25 +87,62 @@ export default function VWAPStrategy() {
     };
   }, [trades]);
 
-  const refreshAll = async () => {
+  // Load exchange config first (independent of agent access)
+  useEffect(() => {
     if (!user) return;
 
-    try {
-      const exRes = await usersApi.getExchangeConfig(user.uid);
-      setExchange(exRes.data?.exchange || null);
-      setExchangeConnected(!!exRes.data?.connected);
-    } catch {
-      setExchange(null);
-      setExchangeConnected(false);
-    }
+    const loadExchangeConfig = async () => {
+      try {
+        const exRes = await usersApi.getExchangeConfig(user.uid);
+        setExchange(exRes.data?.exchange || null);
+        setExchangeConnected(!!exRes.data?.connected);
+      } catch {
+        setExchange(null);
+        setExchangeConnected(false);
+      } finally {
+        setExchangeConfigLoaded(true);
+      }
+    };
 
+    loadExchangeConfig();
+  }, [user]);
+
+  // Check agent access
+  useEffect(() => {
+    if (!user) return;
+
+    const checkAgentAccess = async () => {
+      try {
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        const approvedAgents: string[] = (userDoc.data() as any)?.approvedAgents || [];
+        const hasAccess = Array.isArray(approvedAgents) && approvedAgents.includes('VWAP_STRATEGY');
+        setHasAgentAccess(hasAccess);
+      } catch {
+        setHasAgentAccess(false);
+      } finally {
+        setAgentAccessChecked(true);
+      }
+    };
+
+    checkAgentAccess();
+  }, [user]);
+
+  // Only load agent data when ALL prerequisites are met
+  const canMakeAgentCalls = hasAgentAccess && exchangeConfigLoaded && agentAccessChecked;
+
+  const refreshAll = async () => {
+    if (!user || !canMakeAgentCalls) return;
+
+    setLoading(true);
     try {
       const sRes = await agentsApi.getAgentStatus(agentId);
       setStatus((sRes.data?.status as AgentStatus) || 'STOPPED');
       setStoppedReason(sRes.data?.stoppedReason || null);
+      setAgentStatusLoaded(true);
     } catch {
       setStatus('STOPPED');
       setStoppedReason(null);
+      setAgentStatusLoaded(true);
     }
 
     try {
@@ -122,34 +161,29 @@ export default function VWAPStrategy() {
       setDiagnostics([]);
       setScheduler(null);
       setRuntime(null);
+    } finally {
+      setLoading(false);
     }
   };
 
+  // Load agent data only when prerequisites are met
   useEffect(() => {
-    const checkAccessAndLoad = async () => {
-      if (!user) return;
-
-      try {
-        const userDoc = await getDoc(doc(db, 'users', user.uid));
-        const approvedAgents: string[] = (userDoc.data() as any)?.approvedAgents || [];
-        const hasAccess = Array.isArray(approvedAgents) && approvedAgents.includes('VWAP_STRATEGY');
-        setHasAgentAccess(hasAccess);
-        setAgentAccessChecked(true);
-        if (!hasAccess) return;
-      } catch {
-        setHasAgentAccess(false);
-        setAgentAccessChecked(true);
-        return;
+    if (!canMakeAgentCalls) {
+      if (agentAccessChecked && !hasAgentAccess) {
+        setLoading(false);
       }
+      return;
+    }
 
-      await refreshAll();
-    };
-
-    checkAccessAndLoad();
-  }, [user]);
+    refreshAll();
+  }, [canMakeAgentCalls]);
 
   const toggleAutoTrade = async () => {
-    if (!user) return;
+    // HARD BLOCK: Do not call API until all prerequisites are met
+    if (!user || !canMakeAgentCalls || !agentStatusLoaded || !exchangeConnected) {
+      showToast('Agent not ready yet', 'error');
+      return;
+    }
     setLoading(true);
     try {
       if (status === 'RUNNING') {
@@ -166,7 +200,8 @@ export default function VWAPStrategy() {
     }
   };
 
-  if (user && !agentAccessChecked) {
+  // Strict render guards: Wait for auth and agent access check
+  if (!authReady || !agentAccessChecked) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center">
         <div className="text-slate-400">Loading…</div>
@@ -174,10 +209,18 @@ export default function VWAPStrategy() {
     );
   }
 
-  if (user && agentAccessChecked && !hasAgentAccess) {
+  if (agentAccessChecked && !hasAgentAccess) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center">
         <div className="text-slate-300">Access denied</div>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="text-slate-400">Loading…</div>
       </div>
     );
   }
@@ -222,12 +265,12 @@ export default function VWAPStrategy() {
             <div className="mt-2">
               <button
                 onClick={toggleAutoTrade}
-                disabled={loading || !exchangeConnected}
+                disabled={loading || !exchangeConnected || !canMakeAgentCalls || !agentStatusLoaded}
                 className={`w-full px-3 py-2 rounded text-sm disabled:opacity-50 ${
                   status === 'RUNNING' ? 'bg-red-600' : 'bg-green-600'
                 }`}
               >
-                {loading ? 'Working…' : status === 'RUNNING' ? 'Turn OFF' : 'Turn ON'}
+                {loading ? 'Working…' : !agentStatusLoaded ? 'Loading…' : status === 'RUNNING' ? 'Turn OFF' : 'Turn ON'}
               </button>
             </div>
           </div>

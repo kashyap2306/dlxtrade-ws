@@ -195,12 +195,12 @@ export default function Profile() {
 
         // All Agents
         agentsApi.getAll().then(res => {
-          if (isMountedRef.current && userUidRef.current === currentUid) setAllAgents(Array.isArray(res.data) ? res.data : []);
+          if (isMountedRef.current && userUidRef.current === currentUid) setAllAgents(Array.isArray(res.data?.agents) ? res.data.agents : Array.isArray(res.data) ? res.data : []);
         }).catch(err => console.warn('[Profile] Agents fail:', err.message)),
 
         // Unlocked Agents
         agentsApi.getUnlocked().then(res => {
-          if (isMountedRef.current && userUidRef.current === currentUid) setUnlockedAgents(Array.isArray(res.data) ? res.data : []);
+          if (isMountedRef.current && userUidRef.current === currentUid) setUnlockedAgents(Array.isArray(res.data?.unlocked) ? res.data.unlocked : Array.isArray(res.data) ? res.data : []);
         }).catch(err => console.warn('[Profile] Unlocked fail:', err.message)),
 
         // Provider Config

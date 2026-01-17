@@ -33,6 +33,7 @@ export default function TradingAgentControl() {
   const [togglingAutoTrade, setTogglingAutoTrade] = useState(false);
   const [skippedTrades, setSkippedTrades] = useState<any[]>([]);
   const [agentConfig, setAgentConfig] = useState<any | null>(null);
+  const [scheduler, setScheduler] = useState<any | null>(null);
 
   // Check Firestore approval (users/{uid}.approvedAgents) and resolve agent ID
   useEffect(() => {
@@ -113,6 +114,7 @@ export default function TradingAgentControl() {
       // Load diagnostics/skipped trades
       const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 20);
       setSkippedTrades(diagnosticsResp.data?.diagnostics || []);
+      setScheduler(diagnosticsResp.data?.scheduler || null);
 
     } catch (err: any) {
       console.error('Error loading data:', err);
@@ -334,10 +336,31 @@ export default function TradingAgentControl() {
 
           {/* Diagnostics / Skipped Trades */}
           <div className="bg-slate-800/40 border border-purple-500/20 rounded-xl p-5">
-            <h2 className="text-lg font-semibold text-white mb-4">Diagnostics / Skipped Trades</h2>
+            <h2 className="text-lg font-semibold text-white mb-4">Diagnostics</h2>
+
+            {/* Scheduler Status */}
+            <div className="mb-4 p-3 bg-slate-900/50 rounded-lg">
+              <div className="flex items-center justify-between">
+                <div className="text-sm text-gray-400">Scheduler</div>
+                <div className={`text-sm font-medium ${scheduler?.isRunning ? 'text-green-400' : 'text-red-400'}`}>
+                  {scheduler?.isRunning ? 'RUNNING' : 'NOT RUNNING'}
+                </div>
+              </div>
+              <div className="mt-2 text-xs text-gray-500">
+                Last scan: {scheduler?.lastExecutionAt ? new Date(scheduler.lastExecutionAt).toLocaleString() : '—'}
+              </div>
+              <div className="text-xs text-gray-500">
+                Next scan: {scheduler?.nextExecutionAt ? new Date(scheduler.nextExecutionAt).toLocaleString() : '—'}
+              </div>
+              {scheduler?.lastExecutionError && (
+                <div className="mt-1 text-xs text-red-400">Last error: {scheduler.lastExecutionError}</div>
+              )}
+            </div>
+
+            <h3 className="text-md font-medium text-white mb-3">Recent Cycle Results</h3>
 
             {skippedTrades.length === 0 ? (
-              <div className="text-sm text-gray-400">No skipped trades</div>
+              <div className="text-sm text-gray-400">No diagnostics yet</div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="min-w-full text-sm">

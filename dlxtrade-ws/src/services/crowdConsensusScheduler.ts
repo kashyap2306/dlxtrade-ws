@@ -111,12 +111,23 @@ export class CrowdConsensusScheduler {
    * Execute Crowd Consensus agent for a specific user
    */
   static async executeAgentForUser(uid: string): Promise<void> {
+    const agentId = `crowd_consensus_${uid}`;
+    
     try {
       logger.info({ uid }, 'Starting Crowd Consensus execution for user');
 
       // Check if user has Crowd Consensus enabled
       const settings = await CrowdConsensusService.getUserSettings(uid);
       if (!settings.autoTradeEnabled) {
+        // Store diagnostic for disabled auto-trade
+        await firestoreAdapter.saveAgentDiagnostic(agentId, {
+          agentType: 'COPY_TRADING_AGENT',
+          decision: {
+            action: 'SKIP',
+            reason: 'AUTO_TRADE_DISABLED',
+          },
+          runtimeState: { autoTradeEnabled: false },
+        });
         logger.info({ uid }, 'Crowd Consensus auto trade disabled for user');
         return;
       }
@@ -124,6 +135,15 @@ export class CrowdConsensusScheduler {
       // Check exchange connection
       const exchangeStatus = await CrowdConsensusService.getExchangeConnectionStatus(uid);
       if (!exchangeStatus.connected) {
+        // Store diagnostic for exchange not connected
+        await firestoreAdapter.saveAgentDiagnostic(agentId, {
+          agentType: 'COPY_TRADING_AGENT',
+          decision: {
+            action: 'SKIP',
+            reason: 'EXCHANGE_NOT_CONNECTED',
+          },
+          runtimeState: { exchangeStatus },
+        });
         await CrowdConsensusService.saveSkippedTrade(uid, {
           pair: 'BTCUSDT', // Default pair for logging
           direction: 'LONG', // Default direction for logging
@@ -138,6 +158,15 @@ export class CrowdConsensusScheduler {
       // Check daily trade limit
       const dailyTradeCount = await CrowdConsensusService.getDailyTradeCount(uid);
       if (dailyTradeCount >= 6) {
+        // Store diagnostic for daily limit reached
+        await firestoreAdapter.saveAgentDiagnostic(agentId, {
+          agentType: 'COPY_TRADING_AGENT',
+          decision: {
+            action: 'STOPPED_FOR_DAY',
+            reason: 'DAILY_LIMIT_REACHED',
+          },
+          runtimeState: { dailyTradeCount, dailyLimit: 6 },
+        });
         await CrowdConsensusService.saveSkippedTrade(uid, {
           pair: 'BTCUSDT',
           direction: 'LONG',
@@ -155,6 +184,18 @@ export class CrowdConsensusScheduler {
       logger.info({ uid }, 'Completed Crowd Consensus execution for user');
 
     } catch (error) {
+      // Store diagnostic for execution error
+      await firestoreAdapter.saveAgentDiagnostic(agentId, {
+        agentType: 'COPY_TRADING_AGENT',
+        decision: {
+          action: 'SKIP',
+          reason: 'EXECUTION_ERROR',
+        },
+        execution: {
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+      });
       logger.error({
         uid,
         error: error instanceof Error ? error.message : 'Unknown error'
@@ -201,11 +242,30 @@ export class CrowdConsensusScheduler {
    * Process a single consensus signal for a user
    */
   static async processConsensusSignal(uid: string, signal: any): Promise<void> {
+    const agentId = `crowd_consensus_${uid}`;
+    
     try {
       // Validate trade setup (S/R, RR ratio, etc.)
       const validation = await CrowdConsensusService.validateTradeSetup(signal);
 
       if (!validation.valid) {
+        // Store diagnostic for validation failure
+        await firestoreAdapter.saveAgentDiagnostic(agentId, {
+          agentType: 'COPY_TRADING_AGENT',
+          tradingPair: signal.pair,
+          decision: {
+            action: 'SKIP',
+            reason: validation.reason || 'VALIDATION_FAILED',
+          },
+          signal: signal.entryPrice ? {
+            direction: signal.direction,
+            entryPrice: signal.entryPrice,
+            stopLoss: signal.stopLoss || 0,
+            takeProfit: signal.takeProfit || 0,
+            rrRatio: signal.rrRatio || 0,
+          } : undefined,
+          consensusResults: { validation },
+        });
         await CrowdConsensusService.saveSkippedTrade(uid, {
           pair: signal.pair,
           direction: signal.direction,
@@ -226,6 +286,27 @@ export class CrowdConsensusScheduler {
       const tradeResult = await CrowdConsensusService.executeConsensusTrade(signal, uid);
 
       if (!tradeResult.success) {
+        // Store diagnostic for trade execution failure
+        await firestoreAdapter.saveAgentDiagnostic(agentId, {
+          agentType: 'COPY_TRADING_AGENT',
+          tradingPair: signal.pair,
+          decision: {
+            action: 'SKIP',
+            reason: tradeResult.reason || 'TRADE_EXECUTION_FAILED',
+          },
+          signal: signal.entryPrice ? {
+            direction: signal.direction,
+            entryPrice: signal.entryPrice,
+            stopLoss: signal.stopLoss || 0,
+            takeProfit: signal.takeProfit || 0,
+            rrRatio: signal.rrRatio || 0,
+          } : undefined,
+          execution: {
+            success: false,
+            error: tradeResult.reason,
+          },
+          consensusResults: { tradeResult },
+        });
         await CrowdConsensusService.saveSkippedTrade(uid, {
           pair: signal.pair,
           direction: signal.direction,
@@ -242,6 +323,28 @@ export class CrowdConsensusScheduler {
         return;
       }
 
+      // Store diagnostic for successful trade
+      await firestoreAdapter.saveAgentDiagnostic(agentId, {
+        agentType: 'COPY_TRADING_AGENT',
+        tradingPair: signal.pair,
+        decision: {
+          action: 'TRADE',
+          reason: 'CONSENSUS_SIGNAL_EXECUTED',
+        },
+        signal: signal.entryPrice ? {
+          direction: signal.direction,
+          entryPrice: signal.entryPrice,
+          stopLoss: signal.stopLoss || 0,
+          takeProfit: signal.takeProfit || 0,
+          rrRatio: signal.rrRatio || 0,
+        } : undefined,
+        execution: {
+          success: true,
+          orderId: tradeResult.tradeId,
+        },
+        consensusResults: { tradeResult },
+      });
+
       logger.info({
         uid,
         pair: signal.pair,
@@ -250,6 +353,19 @@ export class CrowdConsensusScheduler {
       }, 'Successfully executed consensus trade');
 
     } catch (error) {
+      // Store diagnostic for processing error
+      await firestoreAdapter.saveAgentDiagnostic(agentId, {
+        agentType: 'COPY_TRADING_AGENT',
+        tradingPair: signal.pair,
+        decision: {
+          action: 'SKIP',
+          reason: 'PROCESSING_ERROR',
+        },
+        execution: {
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+      });
       logger.error({
         uid,
         pair: signal.pair,

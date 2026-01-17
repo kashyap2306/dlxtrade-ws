@@ -52,6 +52,7 @@ export default function CrowdConsensus() {
   const [error, setError] = useState<string | null>(null);
   const [agentAccessChecked, setAgentAccessChecked] = useState(false);
   const [hasAgentAccess, setHasAgentAccess] = useState(false);
+  const [scheduler, setScheduler] = useState<any | null>(null);
 
   // Check Firestore approval (users/{uid}.approvedAgents)
   useEffect(() => {
@@ -98,7 +99,8 @@ export default function CrowdConsensus() {
         loadExchangeConnection(),
         loadAutoTradeStatus(),
         loadTrades(),
-        loadSkippedTrades()
+        loadSkippedTrades(),
+        loadSchedulerStatus()
       ]);
     } catch (error) {
       console.error('Error loading data:', error);
@@ -177,6 +179,18 @@ export default function CrowdConsensus() {
     } catch (error: any) {
       console.error('Error loading skipped trades:', error);
       setSkippedTrades([]);
+    }
+  };
+
+  const loadSchedulerStatus = async () => {
+    if (!user) return;
+
+    try {
+      const response = await agentsApi.getTradingAgentDiagnostics('crowd-consensus', 20);
+      setScheduler(response.data?.scheduler || null);
+    } catch (error: any) {
+      console.error('Error loading scheduler status:', error);
+      setScheduler(null);
     }
   };
 
@@ -377,7 +391,28 @@ export default function CrowdConsensus() {
 
           {/* Skipped / Rejected Trade Diagnostics */}
           <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
-            <h2 className="text-xl font-semibold text-white mb-4">Diagnostics / Skipped Trades</h2>
+            <h2 className="text-xl font-semibold text-white mb-4">Diagnostics</h2>
+
+            {/* Scheduler Status */}
+            <div className="mb-4 p-3 bg-slate-900/50 rounded-lg">
+              <div className="flex items-center justify-between">
+                <div className="text-sm text-gray-400">Scheduler</div>
+                <div className={`text-sm font-medium ${scheduler?.isRunning ? 'text-green-400' : 'text-red-400'}`}>
+                  {scheduler?.isRunning ? 'RUNNING' : 'NOT RUNNING'}
+                </div>
+              </div>
+              <div className="mt-2 text-xs text-gray-500">
+                Last scan: {scheduler?.lastExecutionAt ? new Date(scheduler.lastExecutionAt).toLocaleString() : '—'}
+              </div>
+              <div className="text-xs text-gray-500">
+                Next scan: {scheduler?.nextExecutionAt ? new Date(scheduler.nextExecutionAt).toLocaleString() : '—'}
+              </div>
+              {scheduler?.lastExecutionError && (
+                <div className="mt-1 text-xs text-red-400">Last error: {scheduler.lastExecutionError}</div>
+              )}
+            </div>
+
+            <h3 className="text-md font-medium text-white mb-3">Skipped Trades</h3>
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
                 <thead>

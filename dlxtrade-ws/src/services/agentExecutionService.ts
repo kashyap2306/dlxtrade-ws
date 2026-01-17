@@ -1109,7 +1109,7 @@ export class AgentExecutionService {
       })();
 
       if (tradesToday >= 5) {
-        vwapRuntimeService.stopAgentForDay(userId, 'MAX_TRADES_PER_DAY', todayKey);
+        await vwapRuntimeService.stopAgentForDay(userId, 'MAX_TRADES_PER_DAY', todayKey);
         await storeVWAPDiagnostics({
           timestamp: new Date(),
           agentId: `vwap_${userId}`,
@@ -1122,7 +1122,7 @@ export class AgentExecutionService {
       if (dayStartEquity > 0) {
         const dailyLossPct = (realizedPnL / dayStartEquity) * 100;
         if (dailyLossPct <= -4) {
-          vwapRuntimeService.stopAgentForDay(userId, 'DAILY_MAX_LOSS', todayKey);
+          await vwapRuntimeService.stopAgentForDay(userId, 'DAILY_MAX_LOSS', todayKey);
           await storeVWAPDiagnostics({
             timestamp: new Date(),
             agentId: `vwap_${userId}`,
@@ -1134,7 +1134,7 @@ export class AgentExecutionService {
       }
 
       if (consecutiveLosses >= 2) {
-        vwapRuntimeService.stopAgentForDay(userId, 'CONSECUTIVE_LOSSES', todayKey);
+        await vwapRuntimeService.stopAgentForDay(userId, 'CONSECUTIVE_LOSSES', todayKey);
         await storeVWAPDiagnostics({
           timestamp: new Date(),
           agentId: `vwap_${userId}`,
@@ -1176,7 +1176,7 @@ export class AgentExecutionService {
           }
         }
 
-        vwapRuntimeService.updateHeartbeat(userId);
+        await vwapRuntimeService.updateHeartbeat(userId);
         return;
       }
 
@@ -1234,7 +1234,7 @@ export class AgentExecutionService {
       }
 
       // Update runtime heartbeat
-      vwapRuntimeService.updateHeartbeat(userId);
+      await vwapRuntimeService.updateHeartbeat(userId);
 
       logger.info({
         agentId,

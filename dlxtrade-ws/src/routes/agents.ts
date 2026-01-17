@@ -439,13 +439,72 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
   // PUT /api/agents/:agentId/settings - Update agent settings for user
   fastify.put('/:agentId/settings', {
-    preHandler: [fastify.authenticate, agentAccessMiddleware],
+    preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Params: { agentId: string }; Body: any }>, reply: FastifyReply) => {
     try {
-      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
+      const user = (request as any).user;
+      const uid = user?.uid;
+      const { agentId } = request.params;
+      const settings = request.body;
+
+      if (!uid) {
+        return reply.code(403).send({ error: 'Authentication required' });
+      }
+
+      // Trading Agent settings
+      if (agentId === 'trading-agent') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'trading-agent');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'Trading Agent access not granted yet' });
+        }
+
+        const userAgents = await firestoreAdapter.getUserTradingAgents(uid);
+        const targetAgent = userAgents.find((a: any) => a.status === 'ACTIVE') || userAgents[0];
+        if (targetAgent?.id) {
+          await firestoreAdapter.updateAgentConfig(targetAgent.id, settings);
+        }
+        return { success: true, message: 'Settings updated successfully' };
+      }
+
+      // Liquidity Sweep Agent settings
+      if (agentId === 'liquidity_sniper_arbitrage') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'liquidity_sniper_arbitrage');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'Liquidity Sweep Agent access not granted yet' });
+        }
+
+        const userAgents = await firestoreAdapter.getUserTradingAgents(uid);
+        const targetAgent = selectLiquiditySweepAgent(userAgents);
+        if (targetAgent?.id) {
+          await firestoreAdapter.updateAgentConfig(targetAgent.id, settings);
+        }
+        return { success: true, message: 'Settings updated successfully' };
+      }
+
+      // VWAP Strategy settings (no persistent settings, just acknowledge)
+      if (agentId === 'vwap-strategy') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'vwap-strategy');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'VWAP Strategy access not granted yet' });
+        }
+        return { success: true, message: 'Settings updated successfully' };
+      }
+
+      // Crowd Consensus settings
+      if (agentId === 'crowd-consensus') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'crowd-consensus');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'Crowd Consensus access not granted yet' });
+        }
+
+        await CrowdConsensusService.saveUserSettings(uid, settings);
+        return { success: true, message: 'Settings updated successfully' };
+      }
+
+      return reply.code(404).send({ error: 'Agent not found' });
     } catch (err: any) {
-      logger.error({ err }, 'Error updating agent settings');
-      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
+      logger.error({ err, agentId: request.params.agentId }, 'Error updating agent settings');
+      return reply.code(500).send({ error: 'Error updating settings' });
     }
   });
 
@@ -472,13 +531,23 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
         const userAgents = await firestoreAdapter.getUserTradingAgents(uid);
         const activeAgent = userAgents.find((a: any) => a.status === 'ACTIVE') || userAgents[0];
+        
+        // Get scheduler status
+        let scheduler: any = null;
+        try {
+          const { tradingAgentScheduler } = await import('../services/tradingAgentScheduler');
+          scheduler = tradingAgentScheduler.getStatus();
+        } catch {
+          scheduler = null;
+        }
+
         if (!activeAgent?.id) {
-          return { diagnostics: [] };
+          return { diagnostics: [], scheduler };
         }
 
         const { TradingAgent } = await import('../services/tradingAgent');
         const diagnostics = await TradingAgent.getDiagnostics(activeAgent.id, limit);
-        return { diagnostics };
+        return { diagnostics, scheduler };
       }
 
       if (agentId === 'liquidity_sniper_arbitrage') {
@@ -489,13 +558,23 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
         const userAgents = await firestoreAdapter.getUserTradingAgents(uid);
         const targetAgent = selectLiquiditySweepAgent(userAgents);
+        
+        // Get scheduler status
+        let scheduler: any = null;
+        try {
+          const { tradingAgentScheduler } = await import('../services/tradingAgentScheduler');
+          scheduler = tradingAgentScheduler.getStatus();
+        } catch {
+          scheduler = null;
+        }
+
         if (!targetAgent?.id) {
-          return { diagnostics: [] };
+          return { diagnostics: [], scheduler };
         }
 
         const { TradingAgent } = await import('../services/tradingAgent');
         const diagnostics = await TradingAgent.getDiagnostics(targetAgent.id, limit);
-        return { diagnostics };
+        return { diagnostics, scheduler };
       }
 
       // VWAP Strategy diagnostics (uses user-scoped runtime agent id)
@@ -529,7 +608,74 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         };
       }
 
-      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
+      // Crowd Consensus diagnostics - redirect to dedicated endpoint
+      if (agentId === 'crowd-consensus') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'crowd-consensus');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'Crowd Consensus access not granted yet' });
+        }
+
+        // Get scheduler status
+        let scheduler: any = null;
+        try {
+          scheduler = CrowdConsensusScheduler.getStatus();
+        } catch {
+          scheduler = null;
+        }
+
+        // Get diagnostics from unified storage
+        const agentDiagnostics = await firestoreAdapter.getAgentDiagnostics(`crowd_consensus_${uid}`, limit);
+
+        // Get settings and exchange status
+        const [settings, exchangeStatus, dailyTradeCount, recentTrades, recentSkippedTrades] = await Promise.all([
+          CrowdConsensusService.getUserSettings(uid),
+          CrowdConsensusService.getExchangeConnectionStatus(uid),
+          CrowdConsensusService.getDailyTradeCount(uid),
+          CrowdConsensusService.getUserTrades(uid, limit),
+          CrowdConsensusService.getSkippedTrades(uid, limit),
+        ]);
+
+        const dailyTradeLimit = 6;
+        const autoTradeEnabled = settings?.autoTradeEnabled === true;
+        let gate = 'READY';
+        let message = 'Ready for consensus scan.';
+
+        if (!autoTradeEnabled) {
+          gate = 'AUTO_TRADE_DISABLED';
+          message = 'Auto trade is disabled.';
+        } else if (!exchangeStatus.connected) {
+          gate = 'EXCHANGE_NOT_CONNECTED';
+          message = exchangeStatus.message || 'Exchange not connected.';
+        } else if (dailyTradeCount >= dailyTradeLimit) {
+          gate = 'DAILY_LIMIT_REACHED';
+          message = 'Daily trade limit reached.';
+        }
+
+        return {
+          diagnostics: agentDiagnostics.length > 0 ? agentDiagnostics : recentSkippedTrades.map((t: any) => ({
+            id: t.id,
+            timestamp: t.timestamp,
+            decision: { action: 'SKIP', reason: t.reason || 'NO_SIGNAL' },
+            signal: t.signal || null,
+          })),
+          scheduler,
+          status: {
+            gate,
+            message,
+            autoTradeEnabled,
+            dailyTradeCount,
+            dailyTradeLimit,
+            exchangeStatus,
+            selectedAutoTradeExchange: settings?.selectedAutoTradeExchange || null,
+            dryRun: settings?.dryRun || false,
+            lastUpdated: settings?.lastUpdated || null,
+          },
+          recentTrades,
+          recentSkippedTrades,
+        };
+      }
+
+      return reply.code(404).send({ error: 'Agent not found' });
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error getting agent diagnostics');
       return reply.code(500).send({ error: 'Error fetching diagnostics' });
@@ -673,13 +819,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
     return reply.code(200).send({ source: 'firebase_only', status: 'handled_in_firestore' });
   });
 
-  // GET /api/agents/:id - Get agent by ID
-  fastify.get('/:id', {
-    preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-    return reply.code(410).send({ error: 'This endpoint has been deprecated. Use /api/agents/available.' });
-  });
-
+  // NOTE: GET /api/agents/:id route moved to END of file to avoid catching specific routes
 
   // ===== TRADING AGENT ROUTES =====
 
@@ -945,6 +1085,28 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         };
       }
 
+      // Crowd Consensus control
+      if (agentId === 'crowd-consensus') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'crowd-consensus');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'Crowd Consensus access not granted yet' });
+        }
+
+        const settings = await CrowdConsensusService.getUserSettings(uid);
+        const isActive = settings?.autoTradeEnabled === true;
+
+        return {
+          agentId: 'crowd-consensus',
+          status: isActive ? 'ACTIVE' : 'STOPPED',
+          config: {
+            name: 'Crowd Consensus Copy Trade',
+            strategyType: 'CROWD_CONSENSUS',
+            autoTradeEnabled: isActive,
+            selectedAutoTradeExchange: settings?.selectedAutoTradeExchange || null,
+          },
+        };
+      }
+
       return reply.code(404).send({ error: 'Agent not found' });
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error getting trading agent control');
@@ -1006,6 +1168,21 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         return {
           agentId: 'liquidity_sniper_arbitrage',
           status: activeAgent?.status || 'STOPPED',
+        };
+      }
+
+      // Crowd Consensus status
+      if (agentId === 'crowd-consensus') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'crowd-consensus');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'Crowd Consensus access not granted yet' });
+        }
+
+        const settings = await CrowdConsensusService.getUserSettings(uid);
+        const isActive = settings?.autoTradeEnabled === true;
+        return {
+          agentId: 'crowd-consensus',
+          status: isActive ? 'ACTIVE' : 'STOPPED',
         };
       }
 
@@ -1100,9 +1277,29 @@ export async function agentsRoutes(fastify: FastifyInstance) {
           testnet: exchangeConfig.testnet ?? false,
         });
 
-        // Start VWAP Strategy using runtime service
-        const runtimeState = vwapRuntimeService.startAgent(user.uid);
+        // Start VWAP Strategy using runtime service (now async with persistence)
+        const runtimeState = await vwapRuntimeService.startAgent(user.uid);
         return { success: true, message: 'VWAP Strategy started successfully' };
+      }
+
+      // Crowd Consensus start
+      if (agentId === 'crowd-consensus') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'crowd-consensus');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'Crowd Consensus access not granted yet' });
+        }
+
+        // Check exchange connection
+        const exchangeStatus = await CrowdConsensusService.getExchangeConnectionStatus(user.uid);
+        if (!exchangeStatus.connected) {
+          return reply.code(400).send({
+            error: 'Exchange not connected. Please connect an exchange in Settings first.',
+            exchangeStatus,
+          });
+        }
+
+        await CrowdConsensusService.setAutoTradeEnabled(user.uid, true);
+        return { success: true, message: 'Crowd Consensus auto trading started successfully', status: 'ACTIVE' };
       }
 
       return reply.code(404).send({ error: 'Agent not found' });
@@ -1162,9 +1359,20 @@ export async function agentsRoutes(fastify: FastifyInstance) {
           return reply.code(403).send({ error: 'VWAP Strategy access not granted yet' });
         }
 
-        // Stop VWAP Strategy using runtime service
-        const runtimeState = vwapRuntimeService.stopAgent(user.uid);
+        // Stop VWAP Strategy using runtime service (now async with persistence)
+        const runtimeState = await vwapRuntimeService.stopAgent(user.uid);
         return { success: true, message: 'VWAP Strategy stopped successfully' };
+      }
+
+      // Crowd Consensus stop
+      if (agentId === 'crowd-consensus') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'crowd-consensus');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'Crowd Consensus access not granted yet' });
+        }
+
+        await CrowdConsensusService.setAutoTradeEnabled(user.uid, false);
+        return { success: true, message: 'Crowd Consensus auto trading stopped successfully', status: 'INACTIVE' };
       }
 
       return reply.code(404).send({ error: 'Agent not found' });
@@ -1336,6 +1544,17 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         return { trades: todayTrades };
       }
 
+      // Crowd Consensus trades
+      if (agentId === 'crowd-consensus') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'crowd-consensus');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'Crowd Consensus access not granted yet' });
+        }
+
+        const trades = await CrowdConsensusService.getUserTrades(user.uid, limit);
+        return { trades };
+      }
+
       return reply.code(404).send({ error: 'Agent not found' });
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error getting trading agent trades');
@@ -1413,10 +1632,86 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         };
         return { performance };
       }
-      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
+
+      // VWAP Strategy performance
+      if (agentId === 'vwap-strategy') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'vwap-strategy');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'VWAP Strategy access not granted yet' });
+        }
+
+        // Get trades for VWAP strategy to calculate performance
+        const { firestoreAdapter } = await import('../services/firestoreAdapter');
+        const allTrades = await firestoreAdapter.getTrades(user.uid, 200);
+        const vwapTrades = (allTrades || []).filter((t: any) => t?.metadata?.agentId === 'vwap-strategy');
+
+        const totalTrades = vwapTrades.length;
+        const winningTrades = vwapTrades.filter((t: any) => (Number(t?.pnl) || 0) > 0).length;
+        const losingTrades = vwapTrades.filter((t: any) => (Number(t?.pnl) || 0) < 0).length;
+        const totalPnL = vwapTrades.reduce((sum: number, t: any) => sum + (Number(t?.pnl) || 0), 0);
+
+        // Calculate today's trades and PnL
+        const todayKey = new Date().toISOString().slice(0, 10);
+        const todayTrades = vwapTrades.filter((t: any) => {
+          const ts = t?.timestamp ? new Date(t.timestamp) : null;
+          return ts && ts.toISOString().slice(0, 10) === todayKey;
+        });
+        const dailyPnL = todayTrades.reduce((sum: number, t: any) => sum + (Number(t?.pnl) || 0), 0);
+
+        const performance = {
+          totalTrades,
+          winningTrades,
+          losingTrades,
+          winRate: totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0,
+          totalPnL,
+          dailyPnL,
+          drawdown: 0,
+          lastTradeAt: vwapTrades[0]?.timestamp || null,
+          dailyTrades: todayTrades.length,
+          consecutiveLosses: 0,
+        };
+        return { performance };
+      }
+
+      // Crowd Consensus performance
+      if (agentId === 'crowd-consensus') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'crowd-consensus');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'Crowd Consensus access not granted yet' });
+        }
+
+        const trades = await CrowdConsensusService.getUserTrades(user.uid, 200);
+        const totalTrades = trades.length;
+        const winningTrades = trades.filter((t: any) => (Number(t?.pnl) || 0) > 0).length;
+        const losingTrades = trades.filter((t: any) => (Number(t?.pnl) || 0) < 0).length;
+        const totalPnL = trades.reduce((sum: number, t: any) => sum + (Number(t?.pnl) || 0), 0);
+
+        const todayKey = new Date().toISOString().slice(0, 10);
+        const todayTrades = trades.filter((t: any) => {
+          const ts = t?.timestamp ? new Date(t.timestamp) : null;
+          return ts && ts.toISOString().slice(0, 10) === todayKey;
+        });
+        const dailyPnL = todayTrades.reduce((sum: number, t: any) => sum + (Number(t?.pnl) || 0), 0);
+
+        const performance = {
+          totalTrades,
+          winningTrades,
+          losingTrades,
+          winRate: totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0,
+          totalPnL,
+          dailyPnL,
+          drawdown: 0,
+          lastTradeAt: trades[0]?.timestamp || null,
+          dailyTrades: todayTrades.length,
+          consecutiveLosses: 0,
+        };
+        return { performance };
+      }
+
+      return reply.code(404).send({ error: 'Agent not found' });
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error getting trading agent performance');
-      return reply.code(410).send({ error: 'This endpoint has been deprecated.' });
+      return reply.code(500).send({ error: 'Error fetching performance' });
     }
   });
 
@@ -1481,6 +1776,190 @@ export async function agentsRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       logger.error({ err }, 'Error getting trading agents status');
       return reply.code(500).send({ error: err.message || 'Error getting status' });
+    }
+  });
+
+  // ===== LAUNCHPAD HUNTER ROUTES =====
+  // These routes are migrated from /api/agent/* (singular) to /api/agents/* (plural)
+
+  console.log("[ROUTE READY] GET /api/agents/launchpad-hunter/dashboard");
+  console.log("[ROUTE READY] GET /api/agents/launchpad-hunter/alerts");
+  console.log("[ROUTE READY] GET /api/agents/launchpad-hunter/settings");
+  console.log("[ROUTE READY] PUT /api/agents/launchpad-hunter/settings");
+
+  // GET /api/agents/launchpad-hunter/dashboard - Get launchpad hunter dashboard data
+  fastify.get('/launchpad-hunter/dashboard', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const uid = user?.uid;
+
+      if (!uid) {
+        return reply.code(403).send({ error: 'Authentication required' });
+      }
+
+      // Check if user has access to launchpad hunter
+      const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'launchpad-hunter');
+      if (!hasAccess) {
+        return reply.code(403).send({ error: 'Access denied: Launchpad Hunter not approved' });
+      }
+
+      // Get recent alerts
+      const { LaunchpadService } = await import('../services/launchpadService');
+      const alerts = await LaunchpadService.getUserAlerts(uid, 10);
+
+      // Get user settings
+      const settings = await LaunchpadService.getUserSettings(uid);
+
+      // Get current presales (cached)
+      const presales = await LaunchpadService.getCachedPresales();
+
+      return {
+        alerts,
+        settings: {
+          enabled: settings.enabled !== false,
+          selectedChains: settings.selectedChains || ['ETH', 'BSC'],
+          alertTypes: settings.alertTypes || ['upcoming', 'live'],
+          maxAlertsPerDay: settings.maxAlertsPerDay || 10,
+          riskFilter: settings.riskFilter || 'all',
+          apiKeys: settings.apiKeys || {},
+        },
+        stats: {
+          totalAlerts: alerts.length,
+          activePresales: presales.filter((p: any) => p.status === 'live').length,
+          upcomingPresales: presales.filter((p: any) => p.status === 'upcoming').length,
+        }
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting launchpad hunter dashboard');
+      return reply.code(500).send({ error: err.message || 'Error fetching dashboard data' });
+    }
+  });
+
+  // GET /api/agents/launchpad-hunter/alerts - Get launchpad alerts history
+  fastify.get('/launchpad-hunter/alerts', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Querystring: { limit?: string } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const uid = user?.uid;
+      const limit = parseInt(request.query.limit || '50');
+
+      if (!uid) {
+        return reply.code(403).send({ error: 'Authentication required' });
+      }
+
+      // Check access
+      const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'launchpad-hunter');
+      if (!hasAccess) {
+        return reply.code(403).send({ error: 'Access denied: Launchpad Hunter not approved' });
+      }
+
+      const { LaunchpadService } = await import('../services/launchpadService');
+      const alerts = await LaunchpadService.getUserAlerts(uid, limit);
+      return { alerts };
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting launchpad alerts');
+      return reply.code(500).send({ error: err.message || 'Error fetching alerts' });
+    }
+  });
+
+  // GET /api/agents/launchpad-hunter/settings - Get launchpad hunter settings
+  fastify.get('/launchpad-hunter/settings', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const uid = user?.uid;
+
+      if (!uid) {
+        return reply.code(403).send({ error: 'Authentication required' });
+      }
+
+      // Check access
+      const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'launchpad-hunter');
+      if (!hasAccess) {
+        return reply.code(403).send({ error: 'Access denied: Launchpad Hunter not approved' });
+      }
+
+      const { LaunchpadService } = await import('../services/launchpadService');
+      const settings = await LaunchpadService.getUserSettings(uid);
+      return {
+        settings: {
+          enabled: settings.enabled !== false,
+          selectedChains: settings.selectedChains || ['ETH', 'BSC'],
+          alertTypes: settings.alertTypes || ['upcoming', 'live'],
+          maxAlertsPerDay: settings.maxAlertsPerDay || 10,
+          riskFilter: settings.riskFilter || 'all',
+          apiKeys: settings.apiKeys || {},
+        }
+      };
+    } catch (err: any) {
+      logger.error({ err }, 'Error getting launchpad settings');
+      return reply.code(500).send({ error: err.message || 'Error fetching settings' });
+    }
+  });
+
+  // PUT /api/agents/launchpad-hunter/settings - Update launchpad hunter settings
+  fastify.put('/launchpad-hunter/settings', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Body: any }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const uid = user?.uid;
+      const settings = request.body;
+
+      if (!uid) {
+        return reply.code(403).send({ error: 'Authentication required' });
+      }
+
+      // Validate settings
+      const settingsSchema = z.object({
+        enabled: z.boolean().optional(),
+        selectedChains: z.array(z.string()).optional(),
+        alertTypes: z.array(z.string()).optional(),
+        maxAlertsPerDay: z.number().min(1).max(100).optional(),
+        riskFilter: z.enum(['all', 'low']).optional(),
+        apiKeys: z.object({
+          etherscan: z.string().optional(),
+          bscscan: z.string().optional(),
+          coingecko: z.string().optional(),
+          pinklock: z.string().optional(),
+        }).optional(),
+      });
+
+      const validatedSettings = settingsSchema.parse(settings);
+
+      // Check access
+      const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'launchpad-hunter');
+      if (!hasAccess) {
+        return reply.code(403).send({ error: 'Access denied: Launchpad Hunter not approved' });
+      }
+
+      // Encrypt API keys if provided
+      if (validatedSettings.apiKeys) {
+        const { encrypt } = await import('../services/keyManager');
+        const encryptedApiKeys: any = {};
+        for (const [key, value] of Object.entries(validatedSettings.apiKeys)) {
+          if (value && typeof value === 'string') {
+            encryptedApiKeys[key] = await encrypt(value);
+          }
+        }
+        validatedSettings.apiKeys = encryptedApiKeys;
+      }
+
+      const { LaunchpadService } = await import('../services/launchpadService');
+      await LaunchpadService.updateUserSettings(uid, validatedSettings);
+
+      logger.info({ uid }, 'Updated launchpad hunter settings');
+      return { message: 'Settings updated successfully' };
+    } catch (err: any) {
+      if (err instanceof z.ZodError) {
+        return reply.code(400).send({ error: 'Invalid settings', details: err.errors });
+      }
+      logger.error({ err }, 'Error updating launchpad settings');
+      return reply.code(500).send({ error: err.message || 'Error updating settings' });
     }
   });
 }

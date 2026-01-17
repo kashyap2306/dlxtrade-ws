@@ -463,6 +463,24 @@ async function start() {
             // Don't throw - allow server to continue
           }
 
+          // Restore VWAP agent states from Firestore
+          try {
+            console.log('[VWAP_PERSISTENCE] Loading persisted VWAP agent states...');
+            const { vwapRuntimeService } = await import('./services/vwapRuntimeService');
+
+            // Load persisted states from Firestore
+            await vwapRuntimeService.loadPersistedStates();
+
+            const runningAgents = vwapRuntimeService.getRunningAgents();
+            console.log('[VWAP_PERSISTENCE] ✅ VWAP state restoration completed');
+            console.log(`[VWAP_PERSISTENCE]    - Restored ${runningAgents.length} running agents`);
+            logger.info({ restoredCount: runningAgents.length }, 'VWAP agent states restored from Firestore');
+          } catch (vwapErr: any) {
+            console.error('⚠️ VWAP state restoration failed:', vwapErr.message);
+            logger.error({ error: vwapErr.message, stack: vwapErr.stack }, 'VWAP state restoration failed');
+            // Don't throw - allow server to continue with empty state
+          }
+
           // Run ONE-TIME provider key migration
           try {
             console.log('[PROVIDER_MIGRATION] Running one-time corrupted key cleanup...');

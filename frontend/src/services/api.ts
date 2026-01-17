@@ -325,6 +325,22 @@ export const agentsApi = {
   // ===== NEW POSTGRESQL-BASED AGENT APPROVAL SYSTEM =====
   // Agent marketplace
   getAvailableAgents: () => api.get('/agents/available'),
+  
+  // Legacy compatibility methods - redirect to correct endpoints
+  // Onboarding.tsx expects response.data.agents
+  // Profile.tsx expects res.data to be an array directly
+  // Dashboard.tsx expects res.data?.unlocked to be an array
+  getAll: () => api.get('/agents/available').then(res => {
+    const agents = res.data?.agents || [];
+    // Return format that works for both Onboarding.tsx (expects .agents) and Profile.tsx (expects array)
+    return { data: { agents: agents } };
+  }),
+  getUnlocked: () => api.get('/agents/my-approved').then(res => {
+    const agents = res.data?.agents || res.data?.unlocked || [];
+    // Return format that works for both Dashboard.tsx (expects .unlocked) and Profile.tsx (expects array)
+    return { data: { unlocked: agents } };
+  }),
+  
   // requestAgent: (agentId: string) => api.post('/agents/request', { agent_id: agentId }),
   // getMyRequests: () => api.get('/agents/my-requests'),
   // getMyApprovedAgents: () => api.get('/agents/my-approved'),
@@ -352,16 +368,32 @@ export const agentsApi = {
   getTradingAgentTrades: (agentId: string, limit?: number) => api.get(`/agents/${agentId}/trades`, { params: { limit } }),
   getTradingAgentPerformance: (agentId: string) => api.get(`/agents/${agentId}/performance`),
   getTradingAgentDiagnostics: (agentId: string, limit?: number) => api.get(`/agents/${agentId}/diagnostics`, { params: { limit } }),
-  // Individual agent endpoints
-  getAgentDashboard: (agentId: string) => api.get(`/agent/${agentId}/dashboard`),
-  getAgentSettings: (agentId: string) => api.get(`/agent/${agentId}/settings`),
-  updateAgentSettings: (agentId: string, settings: any) => api.put(`/agent/${agentId}/settings`, settings),
-  startAgent: (agentId: string) => api.post(`/agent/${agentId}/start`),
-  stopAgent: (agentId: string) => api.post(`/agent/${agentId}/stop`),
-  // Launchpad Hunter specific endpoints
-  getLaunchpadDashboard: () => api.get('/agent/launchpad-hunter/dashboard'),
-  getLaunchpadAlerts: (limit?: number) => api.get('/agent/launchpad-hunter/alerts', { params: { limit } }),
-  updateLaunchpadSettings: (settings: any) => api.put('/agent/launchpad-hunter/settings', settings),
+  // Individual agent endpoints - ALL agents use /api/agents/* routes (plural)
+  // The /api/agent/* (singular) routes are deprecated and return 410
+  getAgentDashboard: (agentId: string) => {
+    // All agents use /api/agents/:agentId/control
+    return api.get(`/agents/${agentId}/control`);
+  },
+  getAgentSettings: (agentId: string) => {
+    // All agents use /api/agents/:agentId/control for settings
+    return api.get(`/agents/${agentId}/control`).then(res => ({ data: { settings: res.data?.config || {} } }));
+  },
+  updateAgentSettings: (agentId: string, settings: any) => {
+    // All agents use /api/agents/:agentId/settings
+    return api.put(`/agents/${agentId}/settings`, settings);
+  },
+  startAgent: (agentId: string) => {
+    // All agents use /api/agents/:agentId/start
+    return api.post(`/agents/${agentId}/start`);
+  },
+  stopAgent: (agentId: string) => {
+    // All agents use /api/agents/:agentId/stop
+    return api.post(`/agents/${agentId}/stop`);
+  },
+  // Launchpad Hunter specific endpoints - use /api/agents/* (plural)
+  getLaunchpadDashboard: () => api.get('/agents/launchpad-hunter/dashboard'),
+  getLaunchpadAlerts: (limit?: number) => api.get('/agents/launchpad-hunter/alerts', { params: { limit } }),
+  updateLaunchpadSettings: (settings: any) => api.put('/agents/launchpad-hunter/settings', settings),
   // Crowd Consensus Copy Trade endpoints
   getCrowdConsensusDashboard: () => api.get('/agents/crowd-consensus/dashboard'),
   getCrowdConsensusSignals: (limit?: number) => api.get('/agents/crowd-consensus/signals', { params: { limit } }),

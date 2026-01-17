@@ -144,23 +144,37 @@ export class TradingAgent {
    */
   public async storeDiagnostics(diagnostics: TradingDiagnostics): Promise<void> {
     try {
-      const db = getFirebaseAdmin().firestore();
-      const diagnosticsRef = db.collection('tradingAgentDiagnostics').doc(this.config.id).collection('logs');
+      const agentType = this.config.name && this.config.name.includes('Liquidity Sweep') 
+        ? 'LIQUIDITY_SWEEP_AGENT' 
+        : 'TRADING_AGENT';
 
-      await diagnosticsRef.add({
-        agentType: this.config.name && this.config.name.includes('Liquidity Sweep') ? 'LIQUIDITY_SWEEP_AGENT' : 'TRADING_AGENT',
-        ...diagnostics,
-        timestamp: diagnostics.timestamp,
+      // Use unified diagnostics storage via firestoreAdapter
+      await firestoreAdapter.saveAgentDiagnostic(this.config.id, {
+        agentType: agentType as any,
+        tradingPair: diagnostics.tradingPair,
+        decision: {
+          action: diagnostics.decision.action as any,
+          reason: diagnostics.decision.reason,
+        },
+        signal: diagnostics.signal ? {
+          direction: diagnostics.signal.direction as any,
+          entryPrice: diagnostics.signal.entryPrice || 0,
+          stopLoss: diagnostics.signal.stopLoss || 0,
+          takeProfit: diagnostics.signal.takeProfit || 0,
+          rrRatio: diagnostics.signal.rrRatio || 0,
+        } : undefined,
+        execution: diagnostics.execution ? {
+          success: diagnostics.execution.success,
+          orderId: diagnostics.execution.orderId,
+          error: diagnostics.execution.error,
+        } : undefined,
+        runtimeState: {
+          sessionCheck: diagnostics.sessionCheck,
+          candleCheck: diagnostics.candleCheck,
+          indicators: diagnostics.indicators,
+          riskAnalysis: diagnostics.riskAnalysis,
+        },
       });
-
-      // Keep only last 100 logs per agent
-      const snapshot = await diagnosticsRef.orderBy('timestamp', 'desc').get();
-      if (snapshot.size > 100) {
-        const toDelete = snapshot.docs.slice(100);
-        const batch = db.batch();
-        toDelete.forEach(doc => batch.delete(doc.ref));
-        await batch.commit();
-      }
 
       logger.info({
         agentId: this.config.id,
@@ -178,15 +192,31 @@ export class TradingAgent {
    */
   static async getDiagnostics(agentId: string, limit: number = 20): Promise<TradingDiagnostics[]> {
     try {
-      const db = getFirebaseAdmin().firestore();
-      const diagnosticsRef = db.collection('tradingAgentDiagnostics').doc(agentId).collection('logs');
-
-      const snapshot = await diagnosticsRef
-        .orderBy('timestamp', 'desc')
-        .limit(limit)
-        .get();
-
-      return snapshot.docs.map(doc => doc.data() as TradingDiagnostics);
+      // Use unified diagnostics storage via firestoreAdapter
+      const diagnostics = await firestoreAdapter.getAgentDiagnostics(agentId, limit);
+      
+      // Map to TradingDiagnostics format for backward compatibility
+      return diagnostics.map(d => ({
+        timestamp: d.timestamp,
+        agentId: d.agentId,
+        tradingPair: d.tradingPair || '',
+        sessionCheck: d.runtimeState?.sessionCheck || { isValidSession: false, currentIST: '' },
+        candleCheck: d.runtimeState?.candleCheck || { isClosed: false, candleTimestamp: new Date(), price: 0 },
+        indicators: d.runtimeState?.indicators || {},
+        supportResistance: d.runtimeState?.supportResistance || { calculated: false },
+        signal: d.signal ? {
+          direction: d.signal.direction,
+          meetsConditions: true,
+          entryPrice: d.signal.entryPrice,
+          stopLoss: d.signal.stopLoss,
+          takeProfit: d.signal.takeProfit,
+          rrRatio: d.signal.rrRatio,
+        } : { direction: null, meetsConditions: false },
+        riskAnalysis: d.runtimeState?.riskAnalysis || {},
+        srValidation: d.runtimeState?.srValidation || {},
+        decision: d.decision as any,
+        execution: d.execution,
+      })) as TradingDiagnostics[];
     } catch (error: any) {
       logger.error({ error: error.message, agentId }, 'Failed to get diagnostics');
       return [];

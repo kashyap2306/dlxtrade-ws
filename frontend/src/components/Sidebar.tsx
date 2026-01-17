@@ -177,8 +177,11 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
         return '/agents/crowd-consensus';
       case 'liquidity_sniper_arbitrage':
         return '/agents/liquidity_sniper_arbitrage';
+      case 'launchpad-hunter':
+        return '/agents/launchpad-hunter';
       default:
-        return `/agent/${slug}`;
+        // CRITICAL: Always use /agents/ (plural) routes - /agent/ (singular) is deprecated and returns 410
+        return `/agents/${slug}`;
     }
   }
 

@@ -1305,6 +1305,161 @@ export class FirestoreAdapter {
     }
   }
 
+  // ===== VWAP STATE PERSISTENCE METHODS =====
+
+  /**
+   * Save VWAP agent state to Firestore
+   * Path: users/{uid}/agents/vwap_strategy
+   */
+  async saveVWAPAgentState(uid: string, state: {
+    agentId: string;
+    userId: string;
+    status: 'STOPPED' | 'RUNNING';
+    strategyType: 'VWAP_MEAN_REVERSION';
+    exchange?: string;
+    startedAt?: Date;
+    lastHeartbeat?: Date;
+    stoppedAt?: Date;
+    stoppedReason?: string;
+    stoppedForDayKey?: string;
+    dayKey?: string;
+    dayStartEquity?: number;
+  }): Promise<void> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const docRef = db.collection('users').doc(uid).collection('agents').doc('vwap_strategy');
+
+      const firestoreData: any = {
+        agentId: state.agentId,
+        userId: state.userId,
+        status: state.status,
+        strategyType: state.strategyType,
+        updatedAt: admin.firestore.Timestamp.now(),
+      };
+
+      // Add optional fields if present
+      if (state.exchange !== undefined) firestoreData.exchange = state.exchange;
+      if (state.startedAt) firestoreData.startedAt = admin.firestore.Timestamp.fromDate(state.startedAt);
+      if (state.lastHeartbeat) firestoreData.lastHeartbeat = admin.firestore.Timestamp.fromDate(state.lastHeartbeat);
+      if (state.stoppedAt) firestoreData.stoppedAt = admin.firestore.Timestamp.fromDate(state.stoppedAt);
+      if (state.stoppedReason !== undefined) firestoreData.stoppedReason = state.stoppedReason;
+      if (state.stoppedForDayKey !== undefined) firestoreData.stoppedForDayKey = state.stoppedForDayKey;
+      if (state.dayKey !== undefined) firestoreData.dayKey = state.dayKey;
+      if (state.dayStartEquity !== undefined) firestoreData.dayStartEquity = state.dayStartEquity;
+
+      await docRef.set(firestoreData, { merge: true });
+
+      logger.debug({ uid, status: state.status }, 'VWAP agent state saved to Firestore');
+    } catch (error: any) {
+      logger.error({ error: error.message, uid }, 'Failed to save VWAP agent state');
+      // Don't throw - allow in-memory state to continue working
+    }
+  }
+
+  /**
+   * Get VWAP agent state from Firestore
+   * Path: users/{uid}/agents/vwap_strategy
+   */
+  async getVWAPAgentState(uid: string): Promise<{
+    agentId: string;
+    userId: string;
+    status: 'STOPPED' | 'RUNNING';
+    strategyType: 'VWAP_MEAN_REVERSION';
+    exchange?: string;
+    startedAt?: Date;
+    lastHeartbeat?: Date;
+    stoppedAt?: Date;
+    stoppedReason?: string;
+    stoppedForDayKey?: string;
+    dayKey?: string;
+    dayStartEquity?: number;
+  } | null> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const docRef = db.collection('users').doc(uid).collection('agents').doc('vwap_strategy');
+      const doc = await docRef.get();
+
+      if (!doc.exists) {
+        return null;
+      }
+
+      const data = doc.data();
+      if (!data) return null;
+
+      return {
+        agentId: data.agentId,
+        userId: data.userId,
+        status: data.status || 'STOPPED',
+        strategyType: data.strategyType || 'VWAP_MEAN_REVERSION',
+        exchange: data.exchange,
+        startedAt: data.startedAt?.toDate(),
+        lastHeartbeat: data.lastHeartbeat?.toDate(),
+        stoppedAt: data.stoppedAt?.toDate(),
+        stoppedReason: data.stoppedReason,
+        stoppedForDayKey: data.stoppedForDayKey,
+        dayKey: data.dayKey,
+        dayStartEquity: data.dayStartEquity,
+      };
+    } catch (error: any) {
+      logger.error({ error: error.message, uid }, 'Failed to get VWAP agent state');
+      return null;
+    }
+  }
+
+  /**
+   * Get all running VWAP agents from Firestore
+   * Queries all users for agents/vwap_strategy documents where status === 'RUNNING'
+   */
+  async getAllRunningVWAPAgents(): Promise<Array<{
+    agentId: string;
+    userId: string;
+    status: 'STOPPED' | 'RUNNING';
+    strategyType: 'VWAP_MEAN_REVERSION';
+    exchange?: string;
+    startedAt?: Date;
+    lastHeartbeat?: Date;
+    stoppedAt?: Date;
+    stoppedReason?: string;
+    stoppedForDayKey?: string;
+    dayKey?: string;
+    dayStartEquity?: number;
+  }>> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      
+      // Use collection group query to find all vwap_strategy documents across all users
+      const snapshot = await db.collectionGroup('agents')
+        .where('strategyType', '==', 'VWAP_MEAN_REVERSION')
+        .where('status', '==', 'RUNNING')
+        .get();
+
+      const runningAgents: any[] = [];
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        runningAgents.push({
+          agentId: data.agentId,
+          userId: data.userId,
+          status: data.status,
+          strategyType: data.strategyType || 'VWAP_MEAN_REVERSION',
+          exchange: data.exchange,
+          startedAt: data.startedAt?.toDate(),
+          lastHeartbeat: data.lastHeartbeat?.toDate(),
+          stoppedAt: data.stoppedAt?.toDate(),
+          stoppedReason: data.stoppedReason,
+          stoppedForDayKey: data.stoppedForDayKey,
+          dayKey: data.dayKey,
+          dayStartEquity: data.dayStartEquity,
+        });
+      });
+
+      logger.info({ count: runningAgents.length }, 'Retrieved running VWAP agents from Firestore');
+      return runningAgents;
+    } catch (error: any) {
+      logger.error({ error: error.message }, 'Failed to get all running VWAP agents');
+      return [];
+    }
+  }
+
   /**
    * Get pending trading agent requests (for admin)
    */
@@ -4492,6 +4647,150 @@ export class FirestoreAdapter {
         "❌ [FIRESTORE] Failed to retrieve research history",
       );
       return [];
+    }
+  }
+
+  // ===== AGENT DIAGNOSTICS METHODS =====
+
+  /**
+   * Save agent diagnostic log entry
+   * Path: agentDiagnostics/{agentId}/logs/{auto-id}
+   */
+  async saveAgentDiagnostic(agentId: string, diagnostic: {
+    agentType: 'TRADING_AGENT' | 'VWAP_STRATEGY' | 'LIQUIDITY_SWEEP_AGENT' | 'COPY_TRADING_AGENT';
+    tradingPair?: string;
+    decision: {
+      action: 'TRADE' | 'SKIP' | 'STOPPED_FOR_DAY';
+      reason: string;
+    };
+    signal?: {
+      direction: 'LONG' | 'SHORT';
+      entryPrice: number;
+      stopLoss: number;
+      takeProfit: number;
+      rrRatio: number;
+    };
+    execution?: {
+      success: boolean;
+      orderId?: string;
+      error?: string;
+    };
+    runtimeState?: any;
+    consensusResults?: any;
+  }): Promise<void> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const logsRef = db.collection('agentDiagnostics').doc(agentId).collection('logs');
+
+      await logsRef.add({
+        timestamp: admin.firestore.Timestamp.now(),
+        agentId,
+        agentType: diagnostic.agentType,
+        tradingPair: diagnostic.tradingPair || null,
+        decision: diagnostic.decision,
+        signal: diagnostic.signal || null,
+        execution: diagnostic.execution || null,
+        runtimeState: diagnostic.runtimeState || null,
+        consensusResults: diagnostic.consensusResults || null,
+      });
+
+      logger.debug({ agentId, action: diagnostic.decision.action }, 'Agent diagnostic saved');
+
+      // Cleanup old diagnostics (keep last 100)
+      await this.cleanupOldDiagnostics(agentId);
+    } catch (error: any) {
+      logger.error({ error: error.message, agentId }, 'Failed to save agent diagnostic');
+      // Don't throw - diagnostics are non-critical
+    }
+  }
+
+  /**
+   * Get agent diagnostics from Firestore
+   * Path: agentDiagnostics/{agentId}/logs
+   * Returns most recent entries ordered by timestamp desc
+   */
+  async getAgentDiagnostics(agentId: string, limit: number = 20): Promise<Array<{
+    id: string;
+    timestamp: Date;
+    agentId: string;
+    agentType: string;
+    tradingPair?: string;
+    decision: {
+      action: string;
+      reason: string;
+    };
+    signal?: any;
+    execution?: any;
+    runtimeState?: any;
+    consensusResults?: any;
+  }>> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const logsRef = db.collection('agentDiagnostics').doc(agentId).collection('logs');
+
+      const snapshot = await logsRef
+        .orderBy('timestamp', 'desc')
+        .limit(limit)
+        .get();
+
+      const diagnostics: any[] = [];
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        diagnostics.push({
+          id: doc.id,
+          timestamp: data.timestamp?.toDate() || new Date(),
+          agentId: data.agentId,
+          agentType: data.agentType,
+          tradingPair: data.tradingPair,
+          decision: data.decision,
+          signal: data.signal,
+          execution: data.execution,
+          runtimeState: data.runtimeState,
+          consensusResults: data.consensusResults,
+        });
+      });
+
+      return diagnostics;
+    } catch (error: any) {
+      logger.error({ error: error.message, agentId }, 'Failed to get agent diagnostics');
+      return [];
+    }
+  }
+
+  /**
+   * Cleanup old diagnostics - keep only last 100 entries per agent
+   */
+  async cleanupOldDiagnostics(agentId: string): Promise<void> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const logsRef = db.collection('agentDiagnostics').doc(agentId).collection('logs');
+
+      // Get count of documents
+      const countSnapshot = await logsRef.count().get();
+      const totalCount = countSnapshot.data().count;
+
+      if (totalCount <= 100) {
+        return; // No cleanup needed
+      }
+
+      // Get documents to delete (oldest ones beyond 100)
+      const toDeleteCount = totalCount - 100;
+      const oldestSnapshot = await logsRef
+        .orderBy('timestamp', 'asc')
+        .limit(toDeleteCount)
+        .get();
+
+      // Delete in batches
+      const batch = db.batch();
+      oldestSnapshot.forEach(doc => {
+        batch.delete(doc.ref);
+      });
+
+      await batch.commit();
+      logger.debug({ agentId, deletedCount: toDeleteCount }, 'Cleaned up old agent diagnostics');
+    } catch (error: any) {
+      logger.error({ error: error.message, agentId }, 'Failed to cleanup old diagnostics');
+      // Don't throw - cleanup is non-critical
     }
   }
 }
