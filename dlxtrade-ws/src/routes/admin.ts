@@ -1150,6 +1150,96 @@ export async function adminRoutes(fastify: FastifyInstance) {
       }
     },
   );
+
+  // ========== AGENT APPROVAL WITH DOCUMENT CREATION ==========
+  // POST /api/admin/unlock-requests/:requestId/approve
+  fastify.post('/unlock-requests/:requestId/approve', {
+    preHandler: [fastify.authenticate, fastify.adminAuth],
+  }, async (request: FastifyRequest<{ Params: { requestId: string } }>, reply: FastifyReply) => {
+    try {
+      const adminUser = (request as any).user;
+      const { requestId } = request.params;
+
+      if (!adminUser?.uid) {
+        return reply.code(401).send({ error: 'Authentication required' });
+      }
+
+      const db = getFirebaseAdmin().firestore();
+
+      // Get the agent request
+      const requestDoc = await db.collection('agent_requests').doc(requestId).get();
+      if (!requestDoc.exists) {
+        return reply.code(404).send({ error: 'Agent request not found' });
+      }
+
+      const requestData = requestDoc.data();
+      if (!requestData) {
+        return reply.code(404).send({ error: 'Agent request data not found' });
+      }
+
+      const { userId, agentType } = requestData;
+
+      // Update the agent request status
+      await db.collection('agent_requests').doc(requestId).update({
+        status: 'APPROVED',
+        approvedAt: admin.firestore.FieldValue.serverTimestamp(),
+        approvedBy: adminUser.uid
+      });
+
+      // Update user's approved agents
+      await db.collection('users').doc(userId).update({
+        hasAgentAccess: true,
+        approvedAgents: admin.firestore.FieldValue.arrayUnion(agentType)
+      });
+
+      // Create agent document ONLY for Trading Agent and Liquidity Sweep Agent
+      if (agentType === 'TRADING_AGENT' || agentType === 'LIQUIDITY_SWEEP_AGENT') {
+        const agentId = agentType === 'TRADING_AGENT'
+          ? `trading_agent_${userId}_${Date.now()}`
+          : `liquidity_sweep_${userId}_${Date.now()}`;
+
+        const agentData = {
+          id: agentId,
+          userId: userId,
+          name: agentType === 'TRADING_AGENT' ? 'Trading Agent' : 'Liquidity Sweep Agent',
+          tradingPair: 'BTC/USDT',
+          marketType: 'futures',
+          strategyType: agentType === 'TRADING_AGENT' ? 'RSI_BOLLINGER' : 'LIQUIDITY_SWEEP',
+          status: 'INACTIVE',
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+
+        // Check if agent document already exists
+        const existingAgents = await db.collection('tradingAgents')
+          .where('userId', '==', userId)
+          .where('strategyType', '==', agentData.strategyType)
+          .get();
+
+        if (existingAgents.empty) {
+          await db.collection('tradingAgents').doc(agentId).set(agentData);
+          logger.info({ userId, agentType, agentId }, 'Agent document created during approval');
+        } else {
+          logger.info({ userId, agentType }, 'Agent document already exists, skipping creation');
+        }
+      }
+
+      logger.info({ requestId, userId, agentType, approvedBy: adminUser.uid }, 'Agent request approved successfully');
+
+      return {
+        success: true,
+        message: 'Agent access request approved successfully',
+        agentType,
+        userId
+      };
+
+    } catch (err: any) {
+      logger.error({ err, requestId: request.params.requestId }, 'Error approving agent request');
+      return reply.code(500).send({ error: err.message || 'Error approving request' });
+    }
+  });
+
+  console.log("[ROUTE READY] POST /api/admin/unlock-requests/:requestId/approve");
 }
 
 /**

@@ -1017,16 +1017,28 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         }
 
         const { firestoreAdapter } = await import('../services/firestoreAdapter');
-        const userAgents = await firestoreAdapter.getUserTradingAgents(uid);
-        const activeAgent = userAgents.find((agent: any) => agent.status === 'ACTIVE') || userAgents[0];
-
-        if (!activeAgent) {
-          return {
-            agentId: 'trading-agent',
+        let userAgents = await firestoreAdapter.getUserTradingAgents(uid);
+        
+        // Auto-create default agent if none exists
+        if (userAgents.length === 0) {
+          logger.info({ uid }, 'No trading agents found in /control, creating default agent');
+          const db = (await import('../utils/firebase')).getFirebaseAdmin().firestore();
+          const defaultAgent = {
+            id: `trading_agent_${uid}_${Date.now()}`,
+            userId: uid,
+            name: 'Trading Agent',
+            tradingPair: 'BTC/USDT',
+            marketType: 'futures',
+            strategyType: 'RSI_BOLLINGER',
             status: 'STOPPED',
-            config: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
           };
+          await db.collection('tradingAgents').doc(defaultAgent.id).set(defaultAgent);
+          userAgents = [defaultAgent];
         }
+        
+        const activeAgent = userAgents.find((agent: any) => agent.status === 'ACTIVE') || userAgents[0];
 
         return {
           agentId: 'trading-agent',
@@ -1042,16 +1054,28 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         }
 
         const { firestoreAdapter } = await import('../services/firestoreAdapter');
-        const userAgents = await firestoreAdapter.getUserTradingAgents(uid);
-        const activeAgent = selectLiquiditySweepAgent(userAgents);
-
-        if (!activeAgent) {
-          return {
-            agentId: 'liquidity_sniper_arbitrage',
+        let userAgents = await firestoreAdapter.getUserTradingAgents(uid);
+        
+        // Auto-create default agent if none exists
+        if (userAgents.length === 0) {
+          logger.info({ uid }, 'No liquidity sweep agents found in /control, creating default agent');
+          const db = (await import('../utils/firebase')).getFirebaseAdmin().firestore();
+          const defaultAgent = {
+            id: `liquidity_sweep_${uid}_${Date.now()}`,
+            userId: uid,
+            name: 'Liquidity Sweep Agent',
+            tradingPair: 'BTC/USDT',
+            marketType: 'futures',
+            strategyType: 'LIQUIDITY_SWEEP',
             status: 'STOPPED',
-            config: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
           };
+          await db.collection('tradingAgents').doc(defaultAgent.id).set(defaultAgent);
+          userAgents = [defaultAgent];
         }
+        
+        const activeAgent = selectLiquiditySweepAgent(userAgents) || userAgents[0];
 
         return {
           agentId: 'liquidity_sniper_arbitrage',
@@ -1201,39 +1225,86 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       const user = (request as any).user;
       let { agentId } = request.params;
 
+      // MANUAL START MODE: User-initiated start from UI
+      // No signal/accuracy/tradePlan validation required
+      // Agent enters ARMED state and waits for signals
+
       if (agentId === 'trading-agent') {
         const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'trading-agent');
         if (!hasAccess) {
-          return reply.code(403).send({ error: 'Trading Agent access not granted yet' });
+          return reply.code(403).send({ 
+            error: 'Trading Agent access not granted yet. Please request approval from admin first.',
+            code: 'AGENT_NOT_APPROVED'
+          });
         }
 
         const { firestoreAdapter } = await import('../services/firestoreAdapter');
         const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
         const activeAgent = userAgents.find((a: any) => a.status === 'ACTIVE');
         const targetAgent = activeAgent || userAgents[0];
+        
         if (!targetAgent?.id) {
-          return reply.code(400).send({ error: 'No Trading Agent configured for this user' });
+          return reply.code(400).send({ 
+            error: 'Agent document missing. Please contact admin to recreate your agent.',
+            code: 'AGENT_DOCUMENT_MISSING'
+          });
+        }
+
+        // Check exchange connection for manual start
+        const exchangeConfig = await firestoreAdapter.getExchangeConfig(user.uid);
+        if (!exchangeConfig?.exchange) {
+          return reply.code(400).send({ 
+            error: 'Exchange not connected. Please connect an exchange in Settings first.',
+            code: 'EXCHANGE_NOT_CONNECTED'
+          });
         }
 
         await firestoreAdapter.updateAgentStatus(targetAgent.id, 'ACTIVE');
-        return { success: true, message: 'Trading Agent started successfully' };
+        logger.info({ uid: user.uid, agentId: targetAgent.id, mode: 'manual' }, 'Trading Agent started in manual mode - ARMED and waiting for signals');
+        return { success: true, message: 'Trading Agent started successfully', mode: 'manual', status: 'ARMED' };
       }
 
       if (agentId === 'liquidity_sniper_arbitrage') {
         const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'liquidity_sniper_arbitrage');
         if (!hasAccess) {
-          return reply.code(403).send({ error: 'Liquidity Sweep Agent access not granted yet' });
+          return reply.code(403).send({ 
+            error: 'Liquidity Sweep Agent access not granted yet. Please request approval from admin first.',
+            code: 'AGENT_NOT_APPROVED'
+          });
         }
 
         const { firestoreAdapter } = await import('../services/firestoreAdapter');
         const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
-        const targetAgent = selectLiquiditySweepAgent(userAgents);
+        
+        // Validate agent document exists (must be created during approval)
+        if (userAgents.length === 0) {
+          return reply.code(400).send({ 
+            error: 'Agent document missing. Please contact admin to recreate your agent.',
+            code: 'AGENT_DOCUMENT_MISSING'
+          });
+        }
+        
+        const targetAgent = selectLiquiditySweepAgent(userAgents) || userAgents[0];
+
         if (!targetAgent?.id) {
-          return reply.code(400).send({ error: 'No Liquidity Sweep Agent configured for this user' });
+          return reply.code(400).send({ 
+            error: 'Agent document missing. Please contact admin to recreate your agent.',
+            code: 'AGENT_DOCUMENT_MISSING'
+          });
+        }
+
+        // Check exchange connection for manual start
+        const exchangeConfig = await firestoreAdapter.getExchangeConfig(user.uid);
+        if (!exchangeConfig?.exchange) {
+          return reply.code(400).send({ 
+            error: 'Exchange not connected. Please connect an exchange in Settings first.',
+            code: 'EXCHANGE_NOT_CONNECTED'
+          });
         }
 
         await firestoreAdapter.updateAgentStatus(targetAgent.id, 'ACTIVE');
-        return { success: true, message: 'Liquidity Sweep Agent started successfully' };
+        logger.info({ uid: user.uid, agentId: targetAgent.id, mode: 'manual' }, 'Liquidity Sweep Agent started in manual mode - ARMED and waiting for signals');
+        return { success: true, message: 'Liquidity Sweep Agent started successfully', mode: 'manual', status: 'ARMED' };
       }
 
       // Handle VWAP Strategy agents
@@ -1289,7 +1360,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
           return reply.code(403).send({ error: 'Crowd Consensus access not granted yet' });
         }
 
-        // Check exchange connection
+        // Check exchange connection for manual start
         const exchangeStatus = await CrowdConsensusService.getExchangeConnectionStatus(user.uid);
         if (!exchangeStatus.connected) {
           return reply.code(400).send({
@@ -1299,7 +1370,8 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         }
 
         await CrowdConsensusService.setAutoTradeEnabled(user.uid, true);
-        return { success: true, message: 'Crowd Consensus auto trading started successfully', status: 'ACTIVE' };
+        logger.info({ uid: user.uid, mode: 'manual' }, 'Crowd Consensus started in manual mode - ARMED and waiting for signals');
+        return { success: true, message: 'Crowd Consensus auto trading started successfully', mode: 'manual', status: 'ARMED' };
       }
 
       return reply.code(404).send({ error: 'Agent not found' });

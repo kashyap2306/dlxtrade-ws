@@ -43,7 +43,7 @@ interface AutoTradeStatus {
 export default function CrowdConsensus() {
   const { user, authReady } = useAuth();
   const navigate = useNavigate();
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [trades, setTrades] = useState<CrowdConsensusTrade[]>([]);
   const [skippedTrades, setSkippedTrades] = useState<SkippedTrade[]>([]);
   const [exchangeConnection, setExchangeConnection] = useState<ExchangeConnection>({ connected: false });
@@ -53,6 +53,7 @@ export default function CrowdConsensus() {
   const [agentAccessChecked, setAgentAccessChecked] = useState(false);
   const [hasAgentAccess, setHasAgentAccess] = useState(false);
   const [scheduler, setScheduler] = useState<any | null>(null);
+  const [exchangeConfigLoaded, setExchangeConfigLoaded] = useState(false);
 
   // Check Firestore approval (users/{uid}.approvedAgents)
   useEffect(() => {
@@ -76,23 +77,33 @@ export default function CrowdConsensus() {
     checkAgentAccess();
   }, [user]);
 
-  // Load data when access is confirmed
+  // Load data when ALL prerequisites are met
+  const pageReady = hasAgentAccess && agentAccessChecked && exchangeConfigLoaded;
+
   useEffect(() => {
-    if (!user || !hasAgentAccess) return;
+    if (!user || !pageReady) {
+      return;
+    }
 
     loadAllData();
 
     // Set up polling for live updates
     const interval = setInterval(() => {
-      loadTrades();
-      loadSkippedTrades();
-      loadAutoTradeStatus();
+      if (pageReady) {
+        loadTrades();
+        loadSkippedTrades();
+        loadAutoTradeStatus();
+      }
     }, 30000); // Update every 30 seconds
 
     return () => clearInterval(interval);
-  }, [user, hasAgentAccess]);
+  }, [user, pageReady]);
 
   const loadAllData = async () => {
+    if (!pageReady) {
+      console.warn('loadAllData: Skipping API calls - prerequisites not met');
+      return;
+    }
     setLoading(true);
     try {
       await Promise.all([
@@ -115,9 +126,11 @@ export default function CrowdConsensus() {
     try {
       const response = await agentsApi.getCrowdConsensusExchangeStatus();
       setExchangeConnection(response.data?.exchangeStatus || { connected: false });
+      setExchangeConfigLoaded(true);
     } catch (error: any) {
       console.error('Error loading exchange connection:', error);
       setExchangeConnection({ connected: false, message: 'Error checking exchange connection' });
+      setExchangeConfigLoaded(true);
     }
   };
 
@@ -204,12 +217,11 @@ export default function CrowdConsensus() {
       if (autoTradeStatus.autoTradeEnabled) {
         // Stop auto trade
         await agentsApi.stopCrowdConsensusAutoTrade();
-        setAutoTradeStatus({ autoTradeEnabled: false, status: 'INACTIVE', lastUpdated: new Date() });
       } else {
         // Start auto trade
         await agentsApi.startCrowdConsensusAutoTrade();
-        setAutoTradeStatus({ autoTradeEnabled: true, status: 'ACTIVE', lastUpdated: new Date() });
       }
+      await loadAutoTradeStatus();
     } catch (error: any) {
       console.error('Error toggling auto trade:', error);
       setError(error.response?.data?.error || 'Failed to toggle auto trade');
@@ -235,14 +247,6 @@ export default function CrowdConsensus() {
           <div className="text-red-400 text-lg mb-4">Access Denied</div>
           <div className="text-gray-400">You don't have access to Crowd Consensus Copy Trade</div>
         </div>
-      </div>
-    );
-  }
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500"></div>
       </div>
     );
   }

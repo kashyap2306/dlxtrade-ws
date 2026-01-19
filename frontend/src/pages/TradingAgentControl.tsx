@@ -21,12 +21,13 @@ export default function TradingAgentControl() {
     ? 'Liquidity Sweep • Unified Execution'
     : 'BTC/USDT • ETH/USDT • RSI + Bollinger Bands Strategy';
 
-  const [loading, setLoading] = useState(true);
   const [trades, setTrades] = useState<any[]>([]);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [agentAccessChecked, setAgentAccessChecked] = useState(false);
   const [hasAgentAccess, setHasAgentAccess] = useState(false);
   const [resolvedAgentId, setResolvedAgentId] = useState<string | null>(null);
+  const [realAgentDocId, setRealAgentDocId] = useState<string | null>(null);
+  const [exchangeConfigLoaded, setExchangeConfigLoaded] = useState(false);
 
   const [exchangeConfig, setExchangeConfig] = useState<any | null>(null);
   const [autoTradeEnabled, setAutoTradeEnabled] = useState(false);
@@ -34,6 +35,7 @@ export default function TradingAgentControl() {
   const [skippedTrades, setSkippedTrades] = useState<any[]>([]);
   const [agentConfig, setAgentConfig] = useState<any | null>(null);
   const [scheduler, setScheduler] = useState<any | null>(null);
+  const [loadingData, setLoadingData] = useState(false);
 
   // Check Firestore approval (users/{uid}.approvedAgents) and resolve agent ID
   useEffect(() => {
@@ -74,33 +76,31 @@ export default function TradingAgentControl() {
       } catch (err) {
         console.warn(`[${slug}] Failed to load exchange config:`, err);
         setExchangeConfig({});
+      } finally {
+        setExchangeConfigLoaded(true);
       }
     };
 
     loadExchangeConfig();
   }, [user]);
 
-  // Clear loading state when agent access check is complete but no agent is resolved
-  useEffect(() => {
-    if (agentAccessChecked && !resolvedAgentId) {
-      setLoading(false);
-    }
-  }, [agentAccessChecked, resolvedAgentId]);
+  // Load data when ALL prerequisites are met
+  const pageReady = hasAgentAccess && agentAccessChecked && exchangeConfigLoaded && resolvedAgentId;
 
-  // Load data when access is confirmed and agent ID is resolved
   useEffect(() => {
-    if (!user || !hasAgentAccess || !resolvedAgentId) return;
+    if (!user || !pageReady) {
+      return;
+    }
 
     loadData();
-  }, [user, hasAgentAccess, resolvedAgentId, slug]);
+  }, [user, pageReady]);
 
   const loadData = async () => {
     if (!user || !resolvedAgentId) {
-      console.warn('loadData: Skipping API calls - agentId not resolved yet');
-      setLoading(false); // Always clear loading state
+      console.warn('loadData: Skipping API calls - prerequisites not met');
       return;
     }
-    setLoading(true);
+    setLoadingData(true);
     try {
       // Load agent status and config
       const agentResp = await agentsApi.getTradingAgentControl(slug);
@@ -120,7 +120,7 @@ export default function TradingAgentControl() {
       console.error('Error loading data:', err);
       showToast('Failed to load data', 'error');
     } finally {
-      setLoading(false);
+      setLoadingData(false);
     }
   };
 
@@ -137,11 +137,17 @@ export default function TradingAgentControl() {
   };
 
   const handleToggleAutoTrade = async (nextEnabled: boolean) => {
-    if (!resolvedAgentId) {
-      console.warn('handleToggleAutoTrade: Skipping API call - agentId not resolved yet');
-      showToast('Agent not ready yet', 'error');
+    // Validate prerequisites before API call
+    if (!hasAgentAccess) {
+      showToast('Agent not approved. Please request approval from admin first.', 'error');
       return;
     }
+    
+    if (!resolvedAgentId) {
+      showToast('Agent not configured. Please contact admin.', 'error');
+      return;
+    }
+    
     // Validate exchange connection before starting trading
     if (nextEnabled) {
       const exchangeStatus = isExchangeConnected(exchangeConfig);
@@ -155,16 +161,26 @@ export default function TradingAgentControl() {
     try {
       if (nextEnabled) {
         await agentsApi.startTradingAgent(slug);
-        setAutoTradeEnabled(true);
         showToast('Auto trading started', 'success');
+        await loadData();
       } else {
         await agentsApi.stopTradingAgent(slug);
-        setAutoTradeEnabled(false);
         showToast('Auto trading stopped', 'success');
+        await loadData();
       }
     } catch (err: any) {
-      showToast(err.response?.data?.error || 'Failed to update auto trade', 'error');
-      // Don't change the state if the API call failed
+      const errorCode = err.response?.data?.code;
+      const errorMessage = err.response?.data?.error;
+      
+      if (errorCode === 'AGENT_NOT_APPROVED') {
+        showToast('Please request agent approval from admin first.', 'error');
+      } else if (errorCode === 'AGENT_DOCUMENT_MISSING') {
+        showToast('Agent configuration missing. Please contact admin.', 'error');
+      } else if (errorCode === 'EXCHANGE_NOT_CONNECTED') {
+        showToast('Please connect your exchange in Settings first.', 'error');
+      } else {
+        showToast(errorMessage || 'Failed to update auto trade', 'error');
+      }
     } finally {
       setTogglingAutoTrade(false);
     }
@@ -189,36 +205,6 @@ export default function TradingAgentControl() {
         <div className="text-center">
           <div className="text-red-400 text-lg mb-4">Access Denied</div>
           <div className="text-gray-400">You don't have access to {pageTitle}</div>
-        </div>
-      </div>
-    );
-  }
-
-  // Check if user has access to trading agent (document exists)
-  if (agentAccessChecked && !hasAgentAccess) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
-        <div className="text-center">
-          <h2 className="text-2xl font-bold text-white mb-4">Agent access not granted yet</h2>
-          <p className="text-gray-400 mb-6">{pageTitle} access not granted yet</p>
-          <button
-            onClick={() => navigate('/agents')}
-            className="btn btn-primary"
-          >
-            Back to Agents
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
-          <p className="text-blue-200">Loading...</p>
         </div>
       </div>
     );
@@ -277,8 +263,19 @@ export default function TradingAgentControl() {
                 </div>
                 <button
                   className="btn btn-primary"
-                  disabled={togglingAutoTrade || !resolvedAgentId || !isExchangeConnected(exchangeConfig).connected}
+                  disabled={
+                    togglingAutoTrade || 
+                    !resolvedAgentId || 
+                    !hasAgentAccess ||
+                    !isExchangeConnected(exchangeConfig).connected
+                  }
                   onClick={() => handleToggleAutoTrade(!autoTradeEnabled)}
+                  title={
+                    !hasAgentAccess ? 'Request approval from admin first' :
+                    !resolvedAgentId ? 'Agent not configured' :
+                    !isExchangeConnected(exchangeConfig).connected ? 'Connect exchange in Settings first' :
+                    autoTradeEnabled ? 'Stop trading' : 'Start trading'
+                  }
                 >
                   {togglingAutoTrade ? 'Updating…' : autoTradeEnabled ? 'Stop Trading' : 'Start Trading'}
                 </button>
@@ -292,9 +289,9 @@ export default function TradingAgentControl() {
               <button
                 className="btn btn-secondary"
                 onClick={() => loadData()}
-                disabled={loading}
+                disabled={loadingData}
               >
-                {loading ? 'Loading...' : 'Refresh'}
+                {loadingData ? 'Loading...' : 'Refresh'}
               </button>
             </div>
 

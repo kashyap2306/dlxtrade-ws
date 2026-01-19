@@ -103,32 +103,25 @@ export default function AdminUnlockRequests() {
 
     setProcessingId(requestId);
     try {
-      // Find the request to get userId and agentType
-      const request = requests.find(r => r.id === requestId);
-      if (!request) {
-        showToast('Request not found', 'error');
-        return;
+      // Call backend API to approve (which will create agent document)
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/admin/unlock-requests/${requestId}/approve`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${await user.getIdToken()}`
+        }
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to approve request');
       }
-
-      // Update the agent request
-      await updateDoc(doc(db, 'agent_requests', requestId), {
-        status: 'APPROVED',
-        approvedAt: serverTimestamp(),
-        approvedBy: user.uid
-      });
-
-      // Update user's approved agents
-      const userRef = doc(db, 'users', request.userId);
-      await updateDoc(userRef, {
-        hasAgentAccess: true,
-        approvedAgents: arrayUnion(request.agentType)
-      });
 
       showToast('Agent access request approved successfully', 'success');
       // UI will update automatically via realtime listener
     } catch (err: any) {
       console.error('Error approving request:', err);
-      showToast('Error approving request', 'error');
+      showToast(err.message || 'Error approving request', 'error');
     } finally {
       setProcessingId(null);
     }
