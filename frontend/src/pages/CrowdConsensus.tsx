@@ -53,7 +53,6 @@ export default function CrowdConsensus() {
   const [agentAccessChecked, setAgentAccessChecked] = useState(false);
   const [hasAgentAccess, setHasAgentAccess] = useState(false);
   const [scheduler, setScheduler] = useState<any | null>(null);
-  const [exchangeConfigLoaded, setExchangeConfigLoaded] = useState(false);
 
   // Check Firestore approval (users/{uid}.approvedAgents)
   useEffect(() => {
@@ -64,7 +63,6 @@ export default function CrowdConsensus() {
         const userDoc = await getDoc(doc(db, 'users', user.uid));
         const approvedAgents: string[] = (userDoc.data() as any)?.approvedAgents || [];
         const hasAccess = Array.isArray(approvedAgents) && approvedAgents.includes('COPY_TRADING_AGENT');
-        console.debug({ from: 'CrowdConsensus', agentKey: 'COPY_TRADING_AGENT', hasAccess });
         setHasAgentAccess(hasAccess);
         setAgentAccessChecked(true);
       } catch (error) {
@@ -77,8 +75,8 @@ export default function CrowdConsensus() {
     checkAgentAccess();
   }, [user]);
 
-  // Load data when ALL prerequisites are met
-  const pageReady = hasAgentAccess && agentAccessChecked && exchangeConfigLoaded;
+  // Load data when prerequisites are met (no exchange config required)
+  const pageReady = hasAgentAccess && agentAccessChecked;
 
   useEffect(() => {
     if (!user || !pageReady) {
@@ -90,9 +88,10 @@ export default function CrowdConsensus() {
     // Set up polling for live updates
     const interval = setInterval(() => {
       if (pageReady) {
+        loadAutoTradeStatus();
+        loadSchedulerStatus();
         loadTrades();
         loadSkippedTrades();
-        loadAutoTradeStatus();
       }
     }, 30000); // Update every 30 seconds
 
@@ -101,17 +100,16 @@ export default function CrowdConsensus() {
 
   const loadAllData = async () => {
     if (!pageReady) {
-      console.warn('loadAllData: Skipping API calls - prerequisites not met');
       return;
     }
     setLoading(true);
     try {
       await Promise.all([
-        loadExchangeConnection(),
         loadAutoTradeStatus(),
+        loadSchedulerStatus(),
         loadTrades(),
         loadSkippedTrades(),
-        loadSchedulerStatus()
+        loadExchangeConnection()
       ]);
     } catch (error) {
       console.error('Error loading data:', error);
@@ -126,11 +124,9 @@ export default function CrowdConsensus() {
     try {
       const response = await agentsApi.getCrowdConsensusExchangeStatus();
       setExchangeConnection(response.data?.exchangeStatus || { connected: false });
-      setExchangeConfigLoaded(true);
     } catch (error: any) {
       console.error('Error loading exchange connection:', error);
       setExchangeConnection({ connected: false, message: 'Error checking exchange connection' });
-      setExchangeConfigLoaded(true);
     }
   };
 
@@ -214,16 +210,20 @@ export default function CrowdConsensus() {
     setError(null);
 
     try {
+      // Use current UI state to decide action
       if (autoTradeStatus.autoTradeEnabled) {
-        // Stop auto trade
         await agentsApi.stopCrowdConsensusAutoTrade();
       } else {
-        // Start auto trade
         await agentsApi.startCrowdConsensusAutoTrade();
       }
+      
+      // CRITICAL: Refetch ALL data from backend after API call
       await loadAutoTradeStatus();
+      await loadSchedulerStatus();
+      await loadTrades();
+      await loadSkippedTrades();
     } catch (error: any) {
-      console.error('Error toggling auto trade:', error);
+      console.error('[CrowdConsensus] Error toggling auto trade:', error);
       setError(error.response?.data?.error || 'Failed to toggle auto trade');
     } finally {
       setTogglingAutoTrade(false);
@@ -320,7 +320,7 @@ export default function CrowdConsensus() {
                 </div>
               <button
                 onClick={toggleAutoTrade}
-                disabled={togglingAutoTrade || !exchangeConnection.connected}
+                disabled={togglingAutoTrade}
                 className={`btn ${autoTradeStatus.autoTradeEnabled ? 'btn-danger' : 'btn-success'} ${togglingAutoTrade ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 {togglingAutoTrade ? (

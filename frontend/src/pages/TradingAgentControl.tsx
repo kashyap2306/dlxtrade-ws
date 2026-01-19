@@ -26,7 +26,6 @@ export default function TradingAgentControl() {
   const [agentAccessChecked, setAgentAccessChecked] = useState(false);
   const [hasAgentAccess, setHasAgentAccess] = useState(false);
   const [resolvedAgentId, setResolvedAgentId] = useState<string | null>(null);
-  const [realAgentDocId, setRealAgentDocId] = useState<string | null>(null);
   const [exchangeConfigLoaded, setExchangeConfigLoaded] = useState(false);
 
   const [exchangeConfig, setExchangeConfig] = useState<any | null>(null);
@@ -46,7 +45,6 @@ export default function TradingAgentControl() {
         const userDoc = await getDoc(doc(db, 'users', user.uid));
         const approvedAgents: string[] = (userDoc.data() as any)?.approvedAgents || [];
         const hasAccess = Array.isArray(approvedAgents) && approvedAgents.includes(approvalKey);
-        console.debug({ from: 'TradingAgentControl', agentKey: approvalKey, hasAccess });
         setHasAgentAccess(hasAccess);
 
         if (hasAccess) {
@@ -71,7 +69,6 @@ export default function TradingAgentControl() {
     const loadExchangeConfig = async () => {
       try {
         const exchangeResp = await settingsApi.loadExchangeConfig(user.uid);
-        console.log(`[${slug}] Exchange config loaded:`, exchangeResp.data);
         setExchangeConfig(exchangeResp.data || {});
       } catch (err) {
         console.warn(`[${slug}] Failed to load exchange config:`, err);
@@ -97,7 +94,6 @@ export default function TradingAgentControl() {
 
   const loadData = async () => {
     if (!user || !resolvedAgentId) {
-      console.warn('loadData: Skipping API calls - prerequisites not met');
       return;
     }
     setLoadingData(true);
@@ -136,8 +132,7 @@ export default function TradingAgentControl() {
     return { connected, exchange };
   };
 
-  const handleToggleAutoTrade = async (nextEnabled: boolean) => {
-    // Validate prerequisites before API call
+  const handleToggleAutoTrade = async () => {
     if (!hasAgentAccess) {
       showToast('Agent not approved. Please request approval from admin first.', 'error');
       return;
@@ -147,28 +142,32 @@ export default function TradingAgentControl() {
       showToast('Agent not configured. Please contact admin.', 'error');
       return;
     }
-    
-    // Validate exchange connection before starting trading
-    if (nextEnabled) {
-      const exchangeStatus = isExchangeConnected(exchangeConfig);
-      if (!exchangeStatus.connected) {
-        showToast('Exchange not connected. Please connect your exchange in Settings first.', 'error');
-        return;
-      }
-    }
 
     setTogglingAutoTrade(true);
     try {
-      if (nextEnabled) {
-        await agentsApi.startTradingAgent(slug);
-        showToast('Auto trading started', 'success');
-        await loadData();
-      } else {
+      // Use current UI state to decide action - no status fetch
+      if (autoTradeEnabled) {
         await agentsApi.stopTradingAgent(slug);
         showToast('Auto trading stopped', 'success');
-        await loadData();
+      } else {
+        await agentsApi.startTradingAgent(slug);
+        showToast('Auto trading started', 'success');
       }
+      
+      // CRITICAL: Refetch status from backend after API call
+      const updatedStatusRes = await agentsApi.getTradingAgentControl(slug);
+      setAutoTradeEnabled(updatedStatusRes.data?.status === 'ACTIVE');
+      setAgentConfig(updatedStatusRes.data?.config || null);
+      
+      // Refresh trades and diagnostics
+      const tradesResp = await agentsApi.getTradingAgentTrades(slug, 20);
+      setTrades(tradesResp.data?.trades || []);
+      
+      const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 20);
+      setSkippedTrades(diagnosticsResp.data?.diagnostics || []);
+      setScheduler(diagnosticsResp.data?.scheduler || null);
     } catch (err: any) {
+      console.error('[TradingAgentControl] API error:', err);
       const errorCode = err.response?.data?.code;
       const errorMessage = err.response?.data?.error;
       
@@ -263,17 +262,11 @@ export default function TradingAgentControl() {
                 </div>
                 <button
                   className="btn btn-primary"
-                  disabled={
-                    togglingAutoTrade || 
-                    !resolvedAgentId || 
-                    !hasAgentAccess ||
-                    !isExchangeConnected(exchangeConfig).connected
-                  }
-                  onClick={() => handleToggleAutoTrade(!autoTradeEnabled)}
+                  disabled={togglingAutoTrade || !resolvedAgentId || !hasAgentAccess}
+                  onClick={handleToggleAutoTrade}
                   title={
                     !hasAgentAccess ? 'Request approval from admin first' :
                     !resolvedAgentId ? 'Agent not configured' :
-                    !isExchangeConnected(exchangeConfig).connected ? 'Connect exchange in Settings first' :
                     autoTradeEnabled ? 'Stop trading' : 'Start trading'
                   }
                 >

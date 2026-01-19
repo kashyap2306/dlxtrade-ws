@@ -21,7 +21,7 @@ export default function VWAPStrategy() {
   const [exchangeConfigLoaded, setExchangeConfigLoaded] = useState(false);
   const [agentStatusLoaded, setAgentStatusLoaded] = useState(false);
 
-  const [status, setStatus] = useState<AgentStatus>('STOPPED');
+  const [status, setStatus] = useState<AgentStatus | null>(null);
   const [stoppedReason, setStoppedReason] = useState<string | null>(null);
   const [trades, setTrades] = useState<any[]>([]);
   const [diagnostics, setDiagnostics] = useState<any[]>([]);
@@ -136,10 +136,12 @@ export default function VWAPStrategy() {
     setLoading(true);
     try {
       const sRes = await agentsApi.getAgentStatus(agentId);
-      setStatus((sRes.data?.status as AgentStatus) || 'STOPPED');
+      const backendStatus = (sRes.data?.status as AgentStatus) || 'STOPPED';
+      setStatus(backendStatus);
       setStoppedReason(sRes.data?.stoppedReason || null);
       setAgentStatusLoaded(true);
-    } catch {
+    } catch (err) {
+      console.error('[VWAP] Failed to load status:', err);
       setStatus('STOPPED');
       setStoppedReason(null);
       setAgentStatusLoaded(true);
@@ -179,19 +181,43 @@ export default function VWAPStrategy() {
   }, [canMakeAgentCalls]);
 
   const toggleAutoTrade = async () => {
-    // HARD BLOCK: Do not call API until all prerequisites are met
-    if (!user || !canMakeAgentCalls || !agentStatusLoaded || !exchangeConnected) {
+    if (!user || !canMakeAgentCalls) {
       showToast('Agent not ready yet', 'error');
       return;
     }
     setLoading(true);
     try {
+      // Use current UI state to decide action - no status fetch
       if (status === 'RUNNING') {
         await agentsApi.stopTradingAgent(agentId);
       } else {
         await agentsApi.startTradingAgent(agentId);
       }
-      await refreshAll();
+      
+      // CRITICAL: Refetch status from backend after API call
+      const updatedStatusRes = await agentsApi.getAgentStatus(agentId);
+      const backendStatus = (updatedStatusRes.data?.status as AgentStatus) || 'STOPPED';
+      setStatus(backendStatus);
+      setStoppedReason(updatedStatusRes.data?.stoppedReason || null);
+      
+      // Refresh other data
+      try {
+        const tRes = await agentsApi.getTradingAgentTrades(agentId, 200);
+        setTrades(Array.isArray(tRes.data?.trades) ? tRes.data.trades : []);
+      } catch {
+        setTrades([]);
+      }
+      
+      try {
+        const dRes = await agentsApi.getTradingAgentDiagnostics(agentId, 50);
+        setDiagnostics(Array.isArray(dRes.data?.diagnostics) ? dRes.data.diagnostics : []);
+        setScheduler(dRes.data?.scheduler || null);
+        setRuntime(dRes.data?.runtime || null);
+      } catch {
+        setDiagnostics([]);
+        setScheduler(null);
+        setRuntime(null);
+      }
     } catch (error: any) {
       const msg = error?.response?.data?.error || error?.response?.data?.message || 'Action failed';
       showToast(msg, 'error');
@@ -200,8 +226,8 @@ export default function VWAPStrategy() {
     }
   };
 
-  // Strict render guards: Wait for auth and agent access check
-  if (!authReady || !agentAccessChecked) {
+  // Strict render guards: Wait for auth, agent access check, AND status load
+  if (!authReady || !agentAccessChecked || !agentStatusLoaded) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center">
         <div className="text-slate-400">Loading…</div>
@@ -246,7 +272,7 @@ export default function VWAPStrategy() {
             <div className="text-xs text-slate-400">Live Status</div>
             <div className="mt-1 flex items-center justify-between">
               <div className={`text-sm ${status === 'RUNNING' ? 'text-green-400' : 'text-slate-300'}`}>
-                {status}
+                {status || 'STOPPED'}
               </div>
               <div className="text-xs text-slate-400">{stoppedReason || ''}</div>
             </div>
@@ -257,12 +283,12 @@ export default function VWAPStrategy() {
             <div className="mt-2">
               <button
                 onClick={toggleAutoTrade}
-                disabled={loading || !exchangeConnected || !canMakeAgentCalls || !agentStatusLoaded}
+                disabled={loading || !canMakeAgentCalls}
                 className={`w-full px-3 py-2 rounded text-sm disabled:opacity-50 ${
                   status === 'RUNNING' ? 'bg-red-600' : 'bg-green-600'
                 }`}
               >
-                {loading ? 'Working…' : !agentStatusLoaded ? 'Loading…' : status === 'RUNNING' ? 'Turn OFF' : 'Turn ON'}
+                {loading ? 'Working…' : status === 'RUNNING' ? 'Turn OFF' : 'Turn ON'}
               </button>
             </div>
           </div>
