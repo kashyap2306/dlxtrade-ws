@@ -126,6 +126,7 @@ export class VWAPRuntimeService {
   /**
    * Start a VWAP strategy agent
    * Persists state to Firestore before returning
+   * CRITICAL: Clears any previous stop reasons to allow fresh start
    */
   async startAgent(userId: string, wipeStopForDayFields: boolean = false): Promise<VWAPRuntimeState> {
     const agentId = `vwap_${userId}`;
@@ -141,11 +142,13 @@ export class VWAPRuntimeService {
     state.status = 'RUNNING';
     state.startedAt = new Date();
     state.lastHeartbeat = new Date();
+    
+    // CRITICAL: Clear stop reason when starting (manual start overrides manual stop)
+    delete state.stoppedAt;
+    delete state.stoppedReason;
 
     if (wipeStopForDayFields) {
       delete state.stoppedForDayKey;
-      delete state.stoppedReason;
-      delete state.stoppedAt;
     }
 
     this.runtimeStates.set(agentId, state);
@@ -157,7 +160,7 @@ export class VWAPRuntimeService {
       agentId,
       userId,
       strategyType: 'VWAP_MEAN_REVERSION'
-    }, 'VWAP Strategy runtime started and persisted');
+    }, 'VWAP Strategy runtime started and persisted (stop reason cleared)');
 
     return state;
   }
@@ -181,6 +184,7 @@ export class VWAPRuntimeService {
   /**
    * Stop a VWAP strategy agent
    * Persists state to Firestore
+   * CRITICAL: This is for MANUAL user stops - must override all skip conditions
    */
   async stopAgent(userId: string): Promise<VWAPRuntimeState | null> {
     const agentId = `vwap_${userId}`;
@@ -188,6 +192,8 @@ export class VWAPRuntimeService {
 
     if (state) {
       state.status = 'STOPPED';
+      state.stoppedAt = new Date();
+      state.stoppedReason = 'USER_REQUEST'; // CRITICAL: Mark as manual user stop
       state.lastHeartbeat = new Date();
 
       // Persist to Firestore
@@ -196,8 +202,9 @@ export class VWAPRuntimeService {
       logger.info({
         agentId,
         userId,
-        strategyType: 'VWAP_MEAN_REVERSION'
-      }, 'VWAP Strategy runtime stopped and persisted');
+        strategyType: 'VWAP_MEAN_REVERSION',
+        stopReason: 'USER_REQUEST'
+      }, 'VWAP Strategy manually stopped by user and persisted');
     }
 
     return state || null;
@@ -274,16 +281,21 @@ export class VWAPRuntimeService {
   /**
    * Update heartbeat for a running agent
    * Also persists to Firestore
+   * CRITICAL: Only updates if agent status is RUNNING
    */
   async updateHeartbeat(userId: string): Promise<void> {
     const agentId = `vwap_${userId}`;
     const state = this.runtimeStates.get(agentId);
 
+    // CRITICAL: Do NOT update heartbeat if agent is STOPPED
+    // Manual STOP must be respected - no heartbeat means agent is truly stopped
     if (state && state.status === 'RUNNING') {
       state.lastHeartbeat = new Date();
       
       // Persist heartbeat update to Firestore
       await this.saveState(state);
+    } else if (state && state.status === 'STOPPED') {
+      logger.debug({ agentId, userId }, 'Heartbeat update skipped - agent is STOPPED');
     }
   }
 

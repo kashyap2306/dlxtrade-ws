@@ -78,7 +78,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         CrowdConsensusService.getSkippedTrades(uid, limit),
       ]);
 
-      const dailyTradeLimit = 6;
+      const dailyTradeLimit = 12; // AGGRESSIVE TUNED: increased to 12
       const autoTradeEnabled = settings?.autoTradeEnabled === true;
       let gate = 'READY';
       let message = 'Ready for consensus scan.';
@@ -94,8 +94,20 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         message = 'Daily trade limit reached.';
       }
 
+      // Get global scheduler status
+      const globalSchedulerStatus = CrowdConsensusScheduler.getStatus();
+      
+      // Determine per-user scheduler status based on auto-trade state
+      const userSchedulerStatus = {
+        isRunning: autoTradeEnabled && globalSchedulerStatus.isRunning,
+        intervalMs: globalSchedulerStatus.intervalMs,
+        lastExecutionAt: globalSchedulerStatus.lastExecutionAt,
+        nextExecutionAt: autoTradeEnabled ? globalSchedulerStatus.nextExecutionAt : null,
+        lastExecutionError: globalSchedulerStatus.lastExecutionError,
+      };
+
       return {
-        scheduler: CrowdConsensusScheduler.getStatus(),
+        scheduler: userSchedulerStatus,
         status: {
           gate,
           message,
@@ -635,7 +647,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
           CrowdConsensusService.getSkippedTrades(uid, limit),
         ]);
 
-        const dailyTradeLimit = 6;
+        const dailyTradeLimit = 12; // AGGRESSIVE TUNED: increased to 12
         const autoTradeEnabled = settings?.autoTradeEnabled === true;
         let gate = 'READY';
         let message = 'Ready for consensus scan.';
@@ -1284,7 +1296,33 @@ export async function agentsRoutes(fastify: FastifyInstance) {
           });
         }
 
-        logger.info({ uid: user.uid, mode: 'manual' }, 'Liquidity Sweep Agent started in manual mode - ARMED and waiting for signals');
+        // Get or create agent document
+        let userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
+        let targetAgent = selectLiquiditySweepAgent(userAgents);
+        
+        // Auto-create default agent if none exists
+        if (!targetAgent) {
+          const db = (await import('../utils/firebase')).getFirebaseAdmin().firestore();
+          const defaultAgent = {
+            id: `liquidity_sweep_${user.uid}_${Date.now()}`,
+            userId: user.uid,
+            name: 'Liquidity Sweep Agent',
+            tradingPair: 'BTC/USDT',
+            marketType: 'futures',
+            strategyType: 'LIQUIDITY_SWEEP',
+            type: 'liquidity_sweep',
+            status: 'STOPPED',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          };
+          await db.collection('tradingAgents').doc(defaultAgent.id).set(defaultAgent);
+          targetAgent = defaultAgent;
+        }
+
+        // Update agent status to ACTIVE
+        await firestoreAdapter.updateAgentStatus(targetAgent.id, 'ACTIVE');
+        
+        logger.info({ uid: user.uid, agentId: targetAgent.id, mode: 'manual' }, 'Liquidity Sweep Agent started in manual mode - ARMED and waiting for signals');
         return { success: true, message: 'Liquidity Sweep Agent started successfully', mode: 'manual', status: 'ARMED' };
       }
 
@@ -1394,8 +1432,23 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       }
 
       if (agentId === 'liquidity_sniper_arbitrage') {
-        // SYSTEM AGENT: Always return success (idempotent)
-        logger.info({ uid: user.uid, agentId }, 'Liquidity Sweep Agent stopped successfully');
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'liquidity_sniper_arbitrage');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'Liquidity Sweep Agent access not granted yet' });
+        }
+
+        const { firestoreAdapter } = await import('../services/firestoreAdapter');
+        const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
+        const targetAgent = selectLiquiditySweepAgent(userAgents);
+        
+        // IDEMPOTENT: If no agent found, treat as already stopped
+        if (!targetAgent?.id) {
+          logger.info({ uid: user.uid, agentId }, 'Liquidity Sweep Agent stop called but no agent found - treating as already stopped');
+          return { success: true, message: 'Liquidity Sweep Agent stopped successfully' };
+        }
+
+        await firestoreAdapter.updateAgentStatus(targetAgent.id, 'STOPPED');
+        logger.info({ uid: user.uid, agentId: targetAgent.id }, 'Liquidity Sweep Agent stopped successfully');
         return { success: true, message: 'Liquidity Sweep Agent stopped successfully' };
       }
 

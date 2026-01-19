@@ -604,10 +604,10 @@ export class AgentExecutionService {
       // Check if Crowd Consensus is enabled (would be configurable)
       // For now, always run if agent has access
 
-      // Get daily trade count
+      // Get daily trade count (AGGRESSIVE TUNED: increased to 12)
       const dailyTradeCount = await CrowdConsensusService.getDailyTradeCount('crowd-consensus-user');
 
-      if (dailyTradeCount >= 6) {
+      if (dailyTradeCount >= 12) {
         logger.info('Crowd Consensus daily trade limit reached');
         return;
       }
@@ -987,6 +987,17 @@ export class AgentExecutionService {
         return;
       }
 
+      // CRITICAL: Check if agent was manually stopped by user
+      // Manual STOP must override everything - do NOT run any logic
+      if (runtimeState.status === 'STOPPED') {
+        logger.debug({
+          agentId,
+          userId,
+          status: 'STOPPED'
+        }, 'VWAP agent is STOPPED - skipping execution cycle (no heartbeat, no scan)');
+        return; // Exit immediately - no heartbeat, no diagnostics, no scan
+      }
+
       if (runtimeState.stoppedForDayKey === todayKey) {
         return;
       }
@@ -1027,8 +1038,8 @@ export class AgentExecutionService {
       };
 
       if (!runtimeState.exchange || !runtimeState.credentials?.apiKey || !runtimeState.credentials?.secret) {
-        runtimeState.status = 'STOPPED';
-        runtimeState.stoppedReason = 'EXCHANGE_NOT_CONNECTED';
+        // FIX: Do NOT stop agent - only SKIP this cycle
+        // Agent must remain RUNNING and continue scanning
         await storeVWAPDiagnostics({
           timestamp: new Date(),
           agentId: `vwap_${userId}`,
@@ -1042,6 +1053,15 @@ export class AgentExecutionService {
           srValidation: {},
           decision: { action: 'SKIP', reason: 'EXCHANGE_NOT_CONNECTED' },
         });
+        
+        logger.warn({
+          agentId: `vwap_${userId}`,
+          userId,
+          reason: 'EXCHANGE_NOT_CONNECTED'
+        }, 'SKIP: VWAP execution - exchange not connected (agent remains RUNNING)');
+        
+        // Update heartbeat to keep agent alive
+        await vwapRuntimeService.updateHeartbeat(userId);
         return;
       }
 

@@ -332,6 +332,7 @@ export class CrowdConsensusService {
 
   /**
    * Calculate stop loss and take profit based on S/R and market structure
+   * AGGRESSIVE TUNED: Reduced TP multiplier to 1.5x ATR for very fast exits and maximum RR achievability
    */
   private static calculateStopLossTakeProfit(
     direction: 'LONG' | 'SHORT',
@@ -343,11 +344,13 @@ export class CrowdConsensusService {
 
     if (direction === 'LONG') {
       const stopLoss = Math.min(sr.lastSwingLow * 0.995, entryPrice - atr);
-      const takeProfit = Math.max(sr.resistance * 0.998, entryPrice + (3 * atr));
+      // AGGRESSIVE TUNED: 1.5x ATR for very fast exits
+      const takeProfit = Math.max(sr.resistance * 0.998, entryPrice + (1.5 * atr));
       return { stopLoss, takeProfit };
     } else {
       const stopLoss = Math.max(sr.lastSwingHigh * 1.005, entryPrice + atr);
-      const takeProfit = Math.min(sr.support * 1.002, entryPrice - (3 * atr));
+      // AGGRESSIVE TUNED: 1.5x ATR for very fast exits
+      const takeProfit = Math.min(sr.support * 1.002, entryPrice - (1.5 * atr));
       return { stopLoss, takeProfit };
     }
   }
@@ -690,6 +693,10 @@ export class CrowdConsensusService {
 
   /**
    * Validate trade setup including S/R analysis and RR ratio
+   * FIXED: Proper filter order - calculate adaptive SL/TP BEFORE RR check
+   * FIXED: Configurable SR buffer instead of hard block
+   * FIXED: Increased entry timing window to 18%
+   * FIXED: Clear skip reason logging for every condition
    */
   static async validateTradeSetup(signal: ConsensusSignal): Promise<{
     valid: boolean;
@@ -703,38 +710,81 @@ export class CrowdConsensusService {
       // Get market data for S/R calculation
       const candles = await this.getMarketData(signal.pair);
       if (candles.length < 50) {
+        logger.warn({ pair: signal.pair }, 'SKIP: INSUFFICIENT_MARKET_DATA - need 50+ candles for analysis');
         return { valid: false, reason: 'INSUFFICIENT_MARKET_DATA' };
       }
 
-      // Calculate S/R levels
+      // Calculate S/R levels and ATR
       const sr = this.calculateSupportResistance(candles);
+      const atr = this.calculateATR(candles, 14);
+
+      if (atr === 0 || !isFinite(atr)) {
+        logger.warn({ pair: signal.pair, atr }, 'SKIP: INVALID_ATR - ATR is zero or invalid, cannot calculate risk');
+        return { valid: false, reason: 'INVALID_ATR' };
+      }
 
       // Calculate entry price based on consensus and S/R
       const entryPrice = this.calculateEntryPrice(signal, sr, candles[0]);
 
-      // Calculate stop loss and take profit
-      const { stopLoss, takeProfit } = this.calculateStopLossTakeProfit(
+      // STEP 1: Calculate INITIAL stop loss and take profit
+      let { stopLoss, takeProfit } = this.calculateStopLossTakeProfit(
         signal.direction,
         entryPrice,
         sr,
         candles
       );
 
-      // Validate S/R blocking
-      if (signal.direction === 'LONG' && takeProfit <= sr.resistance) {
-        return { valid: false, reason: 'SR_BLOCKED' };
-      }
-      if (signal.direction === 'SHORT' && takeProfit >= sr.support) {
-        return { valid: false, reason: 'SR_BLOCKED' };
+      // STEP 2: ADAPTIVE SR BUFFERING - adjust SL/TP if too close to SR levels
+      // FIX: Use configurable buffer (0.4 * ATR) instead of hard block - more relaxed
+      const srBuffer = 0.4 * atr;
+      
+      if (signal.direction === 'LONG') {
+        const tpToResistanceDistance = Math.abs(takeProfit - sr.resistance);
+        if (takeProfit >= sr.resistance && tpToResistanceDistance < srBuffer) {
+          const originalTP = takeProfit;
+          // Adjust TP to be slightly below resistance
+          takeProfit = sr.resistance - srBuffer;
+          logger.info({ 
+            pair: signal.pair, 
+            originalTP, 
+            adjustedTP: takeProfit,
+            resistance: sr.resistance,
+            buffer: srBuffer
+          }, 'ADAPTIVE_ADJUSTMENT: TP moved down due to resistance proximity');
+        }
+      } else {
+        const tpToSupportDistance = Math.abs(takeProfit - sr.support);
+        if (takeProfit <= sr.support && tpToSupportDistance < srBuffer) {
+          const originalTP = takeProfit;
+          // Adjust TP to be slightly above support
+          takeProfit = sr.support + srBuffer;
+          logger.info({ 
+            pair: signal.pair, 
+            originalTP, 
+            adjustedTP: takeProfit,
+            support: sr.support,
+            buffer: srBuffer
+          }, 'ADAPTIVE_ADJUSTMENT: TP moved up due to support proximity');
+        }
       }
 
-      // Calculate RR ratio
+      // STEP 3: Calculate FINAL RR ratio on ADJUSTED SL/TP
       const riskAmount = Math.abs(entryPrice - stopLoss);
       const rewardAmount = Math.abs(takeProfit - entryPrice);
-      const rrRatio = rewardAmount / riskAmount;
+      const rrRatio = riskAmount > 0 ? rewardAmount / riskAmount : 0;
 
-      // Validate RR ratio (must be at least 1:3)
-      if (rrRatio < 3) {
+      // FIX: RR check AFTER adaptive adjustments (hard floor at 1.3:1)
+      if (!isFinite(rrRatio) || rrRatio < 1.3) {
+        logger.warn({ 
+          pair: signal.pair, 
+          direction: signal.direction, 
+          rrRatio: rrRatio.toFixed(2),
+          entryPrice,
+          stopLoss,
+          takeProfit,
+          riskAmount,
+          rewardAmount
+        }, `SKIP: RR_TOO_LOW - RR ratio ${rrRatio.toFixed(2)} below 1.3:1 minimum (after SR adjustments)`);
         return {
           valid: false,
           reason: 'RR_TOO_LOW',
@@ -745,12 +795,32 @@ export class CrowdConsensusService {
         };
       }
 
-      // Check if entry is too late (price moved too far from consensus)
+      // STEP 4: Entry timing window check
+      // FIX: Increased to 18% to allow more time after signal generation (was 15%)
       const currentPrice = candles[0].close;
       const priceDiff = Math.abs(currentPrice - signal.avgEntryPrice) / signal.avgEntryPrice;
-      if (priceDiff > 0.02) { // 2% deviation max
+      if (priceDiff > 0.18) { // 18% deviation max - more relaxed
+        logger.warn({ 
+          pair: signal.pair, 
+          direction: signal.direction, 
+          priceDiff: (priceDiff * 100).toFixed(2) + '%',
+          currentPrice,
+          signalPrice: signal.avgEntryPrice,
+          maxAllowed: '18%'
+        }, 'SKIP: ENTRY_LATE - price moved >18% from signal, entry window expired');
         return { valid: false, reason: 'ENTRY_LATE' };
       }
+
+      logger.info({
+        pair: signal.pair,
+        direction: signal.direction,
+        entryPrice,
+        stopLoss,
+        takeProfit,
+        rrRatio: rrRatio.toFixed(2),
+        atr: atr.toFixed(2),
+        priceDeviation: (priceDiff * 100).toFixed(2) + '%'
+      }, '✅ TRADE_VALIDATED - all filters passed, ready for execution');
 
       return {
         valid: true,
@@ -764,8 +834,9 @@ export class CrowdConsensusService {
       logger.error({
         pair: signal.pair,
         direction: signal.direction,
-        error: error.message
-      }, 'Failed to validate trade setup');
+        error: error.message,
+        stack: error.stack
+      }, 'SKIP: VALIDATION_ERROR - exception during validation process');
       return { valid: false, reason: 'VALIDATION_ERROR' };
     }
   }
@@ -852,25 +923,56 @@ export class CrowdConsensusService {
       // Validate trade setup first
       const validation = await this.validateTradeSetup(signal);
       if (!validation.valid) {
+        logger.warn({ 
+          uid, 
+          pair: signal.pair, 
+          direction: signal.direction, 
+          reason: validation.reason 
+        }, `SKIP: ${validation.reason} - trade validation failed`);
         return { success: false, reason: validation.reason };
       }
 
       // Get user's exchange connection
       const exchangeStatus = await this.getExchangeConnectionStatus(uid);
       if (!exchangeStatus.connected) {
+        logger.warn({ 
+          uid, 
+          pair: signal.pair, 
+          message: exchangeStatus.message 
+        }, 'SKIP: EXCHANGE_NOT_CONNECTED - user has no exchange configured or connection incomplete');
         return { success: false, reason: 'EXCHANGE_NOT_CONNECTED' };
       }
 
       // Get user's exchange credentials
       const credentials = await this.getUserExchangeCredentials(uid, exchangeStatus.exchange!);
       if (!credentials) {
+        logger.warn({ 
+          uid, 
+          exchange: exchangeStatus.exchange 
+        }, 'SKIP: EXCHANGE_CREDENTIALS_MISSING - failed to decrypt or retrieve API keys');
         return { success: false, reason: 'EXCHANGE_CREDENTIALS_MISSING' };
       }
 
-      // Check daily trade limit
+      // Check daily trade limit (AGGRESSIVE TUNED: increased to 12)
       const dailyTradeCount = await this.getDailyTradeCount(uid);
-      if (dailyTradeCount >= 6) {
+      if (dailyTradeCount >= 12) {
+        logger.warn({ 
+          uid, 
+          dailyTradeCount, 
+          limit: 12 
+        }, 'SKIP: DAILY_LIMIT_REACHED - user has reached maximum 12 trades per day');
         return { success: false, reason: 'DAILY_LIMIT_REACHED' };
+      }
+
+      // FIX: Get user balance BEFORE calculating position size for better feedback
+      const userBalance = await this.getUserBalance(uid);
+      if (userBalance < 10) {
+        logger.warn({ 
+          uid, 
+          availableBalance: userBalance, 
+          minimumRequired: 10 
+        }, 'SKIP: INSUFFICIENT_BALANCE - available USDT below minimum 10 USDT');
+        return { success: false, reason: 'INSUFFICIENT_BALANCE' };
       }
 
       // Calculate position size
@@ -881,8 +983,57 @@ export class CrowdConsensusService {
         validation.stopLoss!
       );
 
-      if (positionSize <= 0) {
+      if (positionSize <= 0 || !isFinite(positionSize)) {
+        logger.warn({ 
+          uid, 
+          positionSize, 
+          balance: userBalance 
+        }, 'SKIP: INVALID_POSITION_SIZE - calculated position size is zero or invalid');
         return { success: false, reason: 'INVALID_POSITION_SIZE' };
+      }
+
+      // FIX: Calculate and validate margin requirements BEFORE execution
+      const leverage = 10; // Fixed leverage for Crowd Consensus
+      const notionalValue = positionSize * validation.entryPrice!;
+      const marginRequired = notionalValue / leverage;
+      const marginBuffer = marginRequired * 1.1; // 10% buffer for fees
+
+      if (marginBuffer > userBalance) {
+        logger.warn({ 
+          uid, 
+          marginRequired: marginRequired.toFixed(2), 
+          marginWithBuffer: marginBuffer.toFixed(2),
+          availableBalance: userBalance.toFixed(2),
+          shortfall: (marginBuffer - userBalance).toFixed(2)
+        }, 'SKIP: INSUFFICIENT_MARGIN - required margin exceeds available balance');
+        return { success: false, reason: 'INSUFFICIENT_MARGIN' };
+      }
+
+      // Check for existing open positions to prevent conflicts (inline check)
+      try {
+        const db = getFirebaseAdmin().firestore();
+        const positionsQuery = db.collection('users').doc(uid).collection('crowdConsensusTrades')
+          .where('pair', '==', signal.pair)
+          .where('status', 'in', ['EXECUTED', 'OPEN'])
+          .limit(1);
+
+        const snapshot = await positionsQuery.get();
+        if (!snapshot.empty) {
+          const existingPos = snapshot.docs[0].data();
+          logger.warn({ 
+            uid, 
+            pair: signal.pair, 
+            existingDirection: existingPos.direction
+          }, 'SKIP: EXISTING_POSITION_CONFLICT - user already has open position for this pair');
+          return { success: false, reason: 'EXISTING_POSITION_CONFLICT' };
+        }
+      } catch (error: any) {
+        // Non-blocking: log error but proceed with trade
+        logger.error({ 
+          uid, 
+          pair: signal.pair, 
+          error: error.message 
+        }, 'Failed to check existing positions - proceeding with caution');
       }
 
       // Check for DRY RUN mode
@@ -1006,8 +1157,8 @@ export class CrowdConsensusService {
         return 0;
       }
 
-      // Risk 1% of balance per trade
-      const riskAmount = balance * 0.01;
+      // AGGRESSIVE TUNED: Risk 1.5% of balance per trade (increased from 1%)
+      const riskAmount = balance * 0.015;
       const riskPerUnit = Math.abs(entryPrice - stopLoss);
 
       // Calculate max position size

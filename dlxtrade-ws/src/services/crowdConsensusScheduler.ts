@@ -155,9 +155,9 @@ export class CrowdConsensusScheduler {
         return;
       }
 
-      // Check daily trade limit
+      // Check daily trade limit (AGGRESSIVE TUNED: increased to 12)
       const dailyTradeCount = await CrowdConsensusService.getDailyTradeCount(uid);
-      if (dailyTradeCount >= 6) {
+      if (dailyTradeCount >= 12) {
         // Store diagnostic for daily limit reached
         await firestoreAdapter.saveAgentDiagnostic(agentId, {
           agentType: 'COPY_TRADING_AGENT',
@@ -165,7 +165,7 @@ export class CrowdConsensusScheduler {
             action: 'STOPPED_FOR_DAY',
             reason: 'DAILY_LIMIT_REACHED',
           },
-          runtimeState: { dailyTradeCount, dailyLimit: 6 },
+          runtimeState: { dailyTradeCount, dailyLimit: 12 },
         });
         await CrowdConsensusService.saveSkippedTrade(uid, {
           pair: 'BTCUSDT',

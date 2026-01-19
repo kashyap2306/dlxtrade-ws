@@ -54,6 +54,28 @@ export default function CrowdConsensus() {
   const [hasAgentAccess, setHasAgentAccess] = useState(false);
   const [scheduler, setScheduler] = useState<any | null>(null);
 
+  // Normalize Firestore timestamp to Date
+  const toValidDate = (value: any): Date | null => {
+    if (!value) return null;
+    if (value instanceof Date) {
+      return Number.isFinite(value.getTime()) ? value : null;
+    }
+    if (typeof value === 'number' || typeof value === 'string') {
+      const d = new Date(value);
+      return Number.isFinite(d.getTime()) ? d : null;
+    }
+    if (typeof value?.toDate === 'function') {
+      const d = value.toDate();
+      return d instanceof Date && Number.isFinite(d.getTime()) ? d : null;
+    }
+    const seconds = value?.seconds ?? value?._seconds;
+    if (typeof seconds === 'number') {
+      const d = new Date(seconds * 1000);
+      return Number.isFinite(d.getTime()) ? d : null;
+    }
+    return null;
+  };
+
   // Check Firestore approval (users/{uid}.approvedAgents)
   useEffect(() => {
     const checkAgentAccess = async () => {
@@ -158,7 +180,6 @@ export default function CrowdConsensus() {
     try {
       const response = await agentsApi.getCrowdConsensusSignals(50);
       const signals = response.data?.signals || [];
-      // Transform signals to match CrowdConsensusTrade interface
       const transformedTrades: CrowdConsensusTrade[] = signals.map((signal: any) => ({
         id: signal.id,
         pair: signal.pair,
@@ -168,7 +189,7 @@ export default function CrowdConsensus() {
         takeProfit: signal.takeProfit,
         rrRatio: signal.rrRatio,
         status: signal.status || 'OPEN',
-        executedAt: new Date(signal.executedAt || signal.timestamp)
+        executedAt: toValidDate(signal.executedAt || signal.timestamp) || new Date()
       }));
       setTrades(transformedTrades);
     } catch (error: any) {
@@ -383,7 +404,7 @@ export default function CrowdConsensus() {
                           </span>
                         </td>
                         <td className="py-2 pr-4 text-gray-300">
-                          {trade.executedAt ? new Date(trade.executedAt).toLocaleString() : '-'}
+                          {trade.executedAt ? toValidDate(trade.executedAt)?.toLocaleString() || '—' : '—'}
                         </td>
                       </tr>
                     ))
@@ -406,10 +427,10 @@ export default function CrowdConsensus() {
                 </div>
               </div>
               <div className="mt-2 text-xs text-gray-500">
-                Last scan: {scheduler?.lastExecutionAt ? new Date(scheduler.lastExecutionAt).toLocaleString() : '—'}
+                Last scan: {scheduler?.lastExecutionAt ? toValidDate(scheduler.lastExecutionAt)?.toLocaleString() || '—' : '—'}
               </div>
               <div className="text-xs text-gray-500">
-                Next scan: {scheduler?.nextExecutionAt ? new Date(scheduler.nextExecutionAt).toLocaleString() : '—'}
+                Next scan: {scheduler?.nextExecutionAt ? toValidDate(scheduler.nextExecutionAt)?.toLocaleString() || '—' : '—'}
               </div>
               {scheduler?.lastExecutionError && (
                 <div className="mt-1 text-xs text-red-400">Last error: {scheduler.lastExecutionError}</div>
@@ -455,7 +476,7 @@ export default function CrowdConsensus() {
                           </span>
                         </td>
                         <td className="py-2 pr-4 text-gray-300">
-                          {skippedTrade.timestamp ? new Date(skippedTrade.timestamp).toLocaleString() : '-'}
+                          {skippedTrade.timestamp ? toValidDate(skippedTrade.timestamp)?.toLocaleString() || '—' : '—'}
                         </td>
                       </tr>
                     ))

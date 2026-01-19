@@ -122,6 +122,11 @@ export class VWAPStrategy {
 
       if (!sessionCheck.isValidSession) {
         diagnostics.decision = { action: 'SKIP', reason: sessionCheck.reason || 'Outside trading hours' };
+        logger.warn({
+          agentId: this.config.agentId,
+          currentTime: sessionCheck.currentTime,
+          reason: sessionCheck.reason
+        }, 'SKIP: Session check failed');
         return diagnostics;
       }
 
@@ -129,6 +134,12 @@ export class VWAPStrategy {
       const candles = await marketDataProvider.getCandles(symbol, '5m', 50);
       if (!candles || candles.length < 20) {
         diagnostics.decision = { action: 'SKIP', reason: 'Insufficient market data' };
+        logger.warn({
+          agentId: this.config.agentId,
+          symbol,
+          candleCount: candles?.length || 0,
+          required: 20
+        }, 'SKIP: INSUFFICIENT_MARKET_DATA - need at least 20 candles');
         return diagnostics;
       }
 
@@ -235,34 +246,55 @@ export class VWAPStrategy {
 
   /**
    * Check if current time is within trading sessions (London/NY)
+   * FIX: Enhanced logging for session filter clarity
    */
   private checkTradingSession() {
     const now = new Date();
     const utcHour = now.getUTCHours();
     const utcMinute = now.getUTCMinutes();
+    const currentTime = `${utcHour}:${utcMinute.toString().padStart(2, '0')} UTC`;
 
     // London session: 8:00-16:59 UTC
     if (utcHour >= 8 && utcHour < 17) {
+      logger.info({
+        currentTime,
+        session: 'London',
+        sessionWindow: '08:00-16:59 UTC'
+      }, 'SESSION_CHECK: Within London trading session');
       return {
         isValidSession: true,
-        currentTime: `${utcHour}:${utcMinute.toString().padStart(2, '0')} UTC`,
+        currentTime,
         sessionType: 'London' as const
       };
     }
 
     // New York session: 14:30-21:29 UTC
     if ((utcHour === 14 && utcMinute >= 30) || (utcHour >= 15 && utcHour < 21) || (utcHour === 21 && utcMinute < 30)) {
+      logger.info({
+        currentTime,
+        session: 'NewYork',
+        sessionWindow: '14:30-21:29 UTC'
+      }, 'SESSION_CHECK: Within New York trading session');
       return {
         isValidSession: true,
-        currentTime: `${utcHour}:${utcMinute.toString().padStart(2, '0')} UTC`,
+        currentTime,
         sessionType: 'NewYork' as const
       };
     }
 
+    // Outside trading hours
+    const nextSessionStart = utcHour < 8 ? '08:00 UTC (London)' : '14:30 UTC (New York next day)';
+    logger.warn({
+      currentTime,
+      londonSession: '08:00-16:59 UTC',
+      newYorkSession: '14:30-21:29 UTC',
+      nextSessionStart
+    }, 'SKIP: OUTSIDE_TRADING_HOURS - current time outside London/NY sessions');
+
     return {
       isValidSession: false,
-      currentTime: `${utcHour}:${utcMinute.toString().padStart(2, '0')} UTC`,
-      reason: 'Outside London/NY trading sessions'
+      currentTime,
+      reason: `Outside trading hours (London: 08:00-16:59 UTC, NY: 14:30-21:29 UTC). Next session: ${nextSessionStart}`
     };
   }
 
@@ -325,6 +357,8 @@ export class VWAPStrategy {
 
   /**
    * Generate trading signal based on VWAP strategy rules
+   * FIX: Added EMA 200 buffer for flexibility (1.5% buffer - more relaxed)
+   * FIX: Clear skip reason logging for every condition
    */
   private generateSignal(
     currentCandle: CandleData,
@@ -343,29 +377,59 @@ export class VWAPStrategy {
       reason: ''
     };
 
+    // FIX: EMA 200 FLEXIBILITY - allow configurable buffer (1.5% below EMA 200)
+    // This allows trades slightly below EMA 200 in strong trends - more relaxed
+    const ema200Buffer = ema200 * 0.015; // 1.5% buffer (increased from 1%)
+    const ema200Threshold = ema200 - ema200Buffer;
+
     // LONG ENTRY RULES:
-    // 1. Price above EMA 200 (bullish bias)
-    if (currentCandle.close <= ema200) {
-      signal.reason = 'Price below EMA 200';
+    // 1. Price above EMA 200 (with buffer for flexibility)
+    if (currentCandle.close < ema200Threshold) {
+      const distanceFromEMA = ((ema200 - currentCandle.close) / ema200 * 100).toFixed(2);
+      logger.warn({
+        currentPrice: currentCandle.close,
+        ema200,
+        ema200Threshold,
+        ema200Buffer,
+        distancePercent: distanceFromEMA + '%'
+      }, `SKIP: PRICE_BELOW_EMA200 - price ${distanceFromEMA}% below EMA 200 threshold (buffer: 1.5%)`);
+      signal.reason = `Price ${distanceFromEMA}% below EMA 200 (threshold with 1.5% buffer: ${ema200Threshold.toFixed(2)})`;
       return signal;
     }
 
     // 2. Price below VWAP (reversion opportunity)
     if (currentCandle.close >= vwap) {
-      signal.reason = 'Price above VWAP';
+      const distanceFromVWAP = ((currentCandle.close - vwap) / vwap * 100).toFixed(2);
+      logger.warn({
+        currentPrice: currentCandle.close,
+        vwap,
+        distancePercent: distanceFromVWAP + '%'
+      }, `SKIP: PRICE_ABOVE_VWAP - price ${distanceFromVWAP}% above VWAP, no mean reversion opportunity`);
+      signal.reason = `Price ${distanceFromVWAP}% above VWAP (need price below VWAP for LONG)`;
       return signal;
     }
 
     // 3. Deviation threshold (BTC ≥0.8%, ETH ≥0.6%)
     const minDeviation = this.config.tradingPair === 'BTC/USDT' ? 0.8 : 0.6;
     if (deviationPercent < minDeviation) {
+      logger.warn({
+        deviationPercent: deviationPercent.toFixed(2) + '%',
+        minRequired: minDeviation + '%',
+        pair: this.config.tradingPair
+      }, `SKIP: INSUFFICIENT_VWAP_DEVIATION - deviation ${deviationPercent.toFixed(2)}% below ${minDeviation}% threshold`);
       signal.reason = `Deviation ${deviationPercent.toFixed(2)}% below threshold ${minDeviation}%`;
       return signal;
     }
 
     // 4. Bullish rejection candle
     if (!this.isBullishRejection(currentCandle)) {
-      signal.reason = 'Not a bullish rejection candle';
+      logger.warn({
+        open: currentCandle.open,
+        close: currentCandle.close,
+        high: currentCandle.high,
+        low: currentCandle.low
+      }, 'SKIP: NOT_BULLISH_REJECTION - candle does not show bullish rejection pattern');
+      signal.reason = 'Not a bullish rejection candle (need close > open with 30%+ body)';
       return signal;
     }
 
@@ -374,6 +438,17 @@ export class VWAPStrategy {
     signal.stopLoss = currentCandle.close - (1.2 * atr);
     signal.takeProfit = vwap; // Primary exit at VWAP
     signal.meetsConditions = true;
+
+    logger.info({
+      direction: 'LONG',
+      entryPrice: signal.entryPrice,
+      stopLoss: signal.stopLoss,
+      takeProfit: signal.takeProfit,
+      vwap,
+      ema200,
+      ema200Threshold,
+      deviation: deviationPercent.toFixed(2) + '%'
+    }, '✅ VWAP_SIGNAL_GENERATED - all conditions met for LONG entry');
 
     return signal;
   }
