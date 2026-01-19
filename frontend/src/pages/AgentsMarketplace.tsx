@@ -26,7 +26,7 @@ export default function AgentsMarketplace() {
   const availableAgents: Agent[] = [
     {
       id: 'TRADING_AGENT',
-      name: 'Rule-Based Trading Agent',
+      name: 'RSI + Bollinger Bands Agent',
       description: 'Fully automated trading agent with RSI/Bollinger Bands strategy. Executes deterministic trades 24/7 with SL/TP protection.',
       price: 500,
       features: [

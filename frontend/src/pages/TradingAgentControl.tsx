@@ -7,6 +7,7 @@ import { ErrorBoundary } from '../components/ErrorBoundary';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase-config';
 import { agentKeyToSlug } from '../utils/agentKeyToSlug';
+import { InformationCircleIcon, CheckCircleIcon, ClockIcon } from '@heroicons/react/24/outline';
 
 export default function TradingAgentControl() {
   const { user, authReady } = useAuth();
@@ -16,7 +17,7 @@ export default function TradingAgentControl() {
   const isLiquiditySweepAgent = (location.pathname || '').includes('liquidity_sniper_arbitrage');
   const approvalKey = isLiquiditySweepAgent ? 'LIQUIDITY_SWEEP_AGENT' : 'TRADING_AGENT';
   const slug = agentKeyToSlug(approvalKey);
-  const pageTitle = isLiquiditySweepAgent ? 'Liquidity Sweep Agent' : 'Trading Agent';
+  const pageTitle = isLiquiditySweepAgent ? 'Liquidity Sweep Agent' : 'RSI + Bollinger Bands Agent';
   const pageSubtitle = isLiquiditySweepAgent
     ? 'Liquidity Sweep • Unified Execution'
     : 'BTC/USDT • ETH/USDT • RSI + Bollinger Bands Strategy';
@@ -35,6 +36,7 @@ export default function TradingAgentControl() {
   const [agentConfig, setAgentConfig] = useState<any | null>(null);
   const [scheduler, setScheduler] = useState<any | null>(null);
   const [loadingData, setLoadingData] = useState(false);
+  const [showExecutionCriteria, setShowExecutionCriteria] = useState(false);
 
   // Check Firestore approval (users/{uid}.approvedAgents) and resolve agent ID
   useEffect(() => {
@@ -326,7 +328,306 @@ export default function TradingAgentControl() {
 
           {/* Diagnostics / Skipped Trades */}
           <div className="bg-slate-800/40 border border-purple-500/20 rounded-xl p-5">
-            <h2 className="text-lg font-semibold text-white mb-4">Diagnostics</h2>
+            <div className="flex items-center gap-2 mb-4">
+              <h2 className="text-lg font-semibold text-white">Diagnostics</h2>
+              <button
+                onClick={() => setShowExecutionCriteria(!showExecutionCriteria)}
+                className="text-purple-400 hover:text-purple-300 transition-colors"
+                title="View execution criteria checklist"
+              >
+                <InformationCircleIcon className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Execution Criteria Checklist */}
+            {showExecutionCriteria && (
+              <div className="mb-4 p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
+                <h3 className="text-sm font-semibold text-white mb-3">Execution Criteria Checklist</h3>
+                <div className="space-y-2">
+                  {/* Exchange API Connected */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">Exchange API Connected</span>
+                    {(() => {
+                      const s = isExchangeConnected(exchangeConfig);
+                      return s.connected ? (
+                        <div className="flex items-center gap-1 text-green-400">
+                          <CheckCircleIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">DONE</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1 text-yellow-400" title="Exchange not connected">
+                          <ClockIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">PENDING</span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* API Key Present */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">API Key Present</span>
+                    {(() => {
+                      const s = isExchangeConnected(exchangeConfig);
+                      return s.connected ? (
+                        <div className="flex items-center gap-1 text-green-400">
+                          <CheckCircleIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">DONE</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1 text-yellow-400" title="API key not configured">
+                          <ClockIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">PENDING</span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Secret Present */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">Secret Present</span>
+                    {(() => {
+                      const s = isExchangeConnected(exchangeConfig);
+                      return s.connected ? (
+                        <div className="flex items-center gap-1 text-green-400">
+                          <CheckCircleIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">DONE</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1 text-yellow-400" title="Secret not configured">
+                          <ClockIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">PENDING</span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Passphrase Present (conditional) */}
+                  {exchangeConfig?.exchange && ['kucoin', 'okx', 'bitget'].includes(exchangeConfig.exchange.toLowerCase()) && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-300">Passphrase Present</span>
+                      {(() => {
+                        const s = isExchangeConnected(exchangeConfig);
+                        return s.connected ? (
+                          <div className="flex items-center gap-1 text-green-400">
+                            <CheckCircleIcon className="w-4 h-4" />
+                            <span className="text-xs font-medium">DONE</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1 text-yellow-400" title="Passphrase not configured">
+                            <ClockIcon className="w-4 h-4" />
+                            <span className="text-xs font-medium">PENDING</span>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+
+                  {/* Exchange Supported */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">Exchange Supported</span>
+                    {(() => {
+                      const s = isExchangeConnected(exchangeConfig);
+                      return s.connected && s.exchange ? (
+                        <div className="flex items-center gap-1 text-green-400">
+                          <CheckCircleIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">DONE</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1 text-yellow-400" title="Exchange not configured or not supported">
+                          <ClockIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">PENDING</span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Auto Trade Enabled */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">Auto Trade Enabled</span>
+                    {autoTradeEnabled ? (
+                      <div className="flex items-center gap-1 text-green-400">
+                        <CheckCircleIcon className="w-4 h-4" />
+                        <span className="text-xs font-medium">DONE</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1 text-yellow-400" title="Auto trade is disabled">
+                        <ClockIcon className="w-4 h-4" />
+                        <span className="text-xs font-medium">PENDING</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Agent Approved */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">Agent Approved</span>
+                    {hasAgentAccess ? (
+                      <div className="flex items-center gap-1 text-green-400">
+                        <CheckCircleIcon className="w-4 h-4" />
+                        <span className="text-xs font-medium">DONE</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1 text-yellow-400" title="Agent not approved for this user">
+                        <ClockIcon className="w-4 h-4" />
+                        <span className="text-xs font-medium">PENDING</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Agent Engine Running */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">Agent Engine Running</span>
+                    {scheduler?.isRunning ? (
+                      <div className="flex items-center gap-1 text-green-400">
+                        <CheckCircleIcon className="w-4 h-4" />
+                        <span className="text-xs font-medium">DONE</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1 text-yellow-400" title="Scheduler not running">
+                        <ClockIcon className="w-4 h-4" />
+                        <span className="text-xs font-medium">PENDING</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Session Time Valid */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">Session Time Valid</span>
+                    {(() => {
+                      // Check if within trading sessions (London 8:00-16:59 UTC or NY 14:30-21:29 UTC)
+                      const now = new Date();
+                      const utcHour = now.getUTCHours();
+                      const utcMinute = now.getUTCMinutes();
+                      const isLondon = utcHour >= 8 && utcHour < 17;
+                      const isNY = (utcHour === 14 && utcMinute >= 30) || (utcHour >= 15 && utcHour < 21) || (utcHour === 21 && utcMinute < 30);
+                      const isValid = isLondon || isNY;
+                      return isValid ? (
+                        <div className="flex items-center gap-1 text-green-400">
+                          <CheckCircleIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">DONE</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1 text-yellow-400" title="Outside trading session (London 8-17 UTC or NY 14:30-21:30 UTC)">
+                          <ClockIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">PENDING</span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Strategy Conditions Met */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">Strategy Conditions Met</span>
+                    {(() => {
+                      const hasNoSignal = skippedTrades.some(t => 
+                        t.decision?.reason?.includes('NO_SIGNAL') || 
+                        t.decision?.reason?.includes('Invalid indicators')
+                      );
+                      return !hasNoSignal ? (
+                        <div className="flex items-center gap-1 text-green-400">
+                          <CheckCircleIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">DONE</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1 text-yellow-400" title="RSI + Bollinger Bands conditions not met">
+                          <ClockIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">PENDING</span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* No SR Block */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">No SR Block</span>
+                    {(() => {
+                      const hasSRBlock = skippedTrades.some(t => 
+                        t.decision?.reason?.includes('SR') || 
+                        t.decision?.reason?.includes('support') ||
+                        t.decision?.reason?.includes('resistance')
+                      );
+                      return !hasSRBlock ? (
+                        <div className="flex items-center gap-1 text-green-400">
+                          <CheckCircleIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">DONE</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1 text-yellow-400" title="Entry blocked by support/resistance level">
+                          <ClockIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">PENDING</span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Entry Not Late */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">Entry Not Late</span>
+                    {(() => {
+                      const hasEntryLate = skippedTrades.some(t => 
+                        t.decision?.reason?.includes('late') || 
+                        t.decision?.reason?.includes('already processed')
+                      );
+                      return !hasEntryLate ? (
+                        <div className="flex items-center gap-1 text-green-400">
+                          <CheckCircleIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">DONE</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1 text-yellow-400" title="Entry timing missed or candle already processed">
+                          <ClockIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">PENDING</span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* RR Ratio Acceptable */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">RR Ratio Acceptable</span>
+                    {(() => {
+                      const hasRRTooLow = skippedTrades.some(t => 
+                        t.decision?.reason?.includes('RR') || 
+                        t.decision?.reason?.includes('risk')
+                      );
+                      return !hasRRTooLow ? (
+                        <div className="flex items-center gap-1 text-green-400">
+                          <CheckCircleIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">DONE</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1 text-yellow-400" title="Risk/reward ratio too low">
+                          <ClockIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">PENDING</span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Risk Check Passed */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">Risk Check Passed</span>
+                    {(() => {
+                      const hasRiskFailure = skippedTrades.some(t => 
+                        t.decision?.reason?.includes('daily') || 
+                        t.decision?.reason?.includes('limit') ||
+                        t.decision?.reason?.includes('consecutive')
+                      );
+                      return !hasRiskFailure ? (
+                        <div className="flex items-center gap-1 text-green-400">
+                          <CheckCircleIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">DONE</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1 text-yellow-400" title="Daily limit or consecutive losses reached">
+                          <ClockIcon className="w-4 h-4" />
+                          <span className="text-xs font-medium">PENDING</span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Scheduler Status */}
             <div className="mb-4 p-3 bg-slate-900/50 rounded-lg">

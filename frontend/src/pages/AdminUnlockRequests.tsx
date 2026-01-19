@@ -18,7 +18,7 @@ interface AgentRequest {
 // Agent details for display
 const AGENT_DETAILS: Record<string, { name: string; description: string }> = {
   'TRADING_AGENT': {
-    name: 'Rule-Based Trading Agent',
+    name: 'RSI + Bollinger Bands Agent',
     description: 'Fully automated trading agent with RSI/Bollinger Bands strategy'
   },
   'COPY_TRADING_AGENT': {

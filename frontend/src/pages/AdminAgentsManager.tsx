@@ -245,7 +245,7 @@ export default function AdminAgentsManager() {
               <div className="flex items-center mb-3">
                 <span className="text-2xl mr-3">📊</span>
                 <div>
-                  <h4 className="text-lg font-bold text-white">Rule-Based Trading Agent</h4>
+                  <h4 className="text-lg font-bold text-white">RSI + Bollinger Bands Agent</h4>
                   <span className="text-xs bg-purple-500/20 text-purple-300 px-2 py-1 rounded">TRADING_AGENT</span>
                 </div>
               </div>

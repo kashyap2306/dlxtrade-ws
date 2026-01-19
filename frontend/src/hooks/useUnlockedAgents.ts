@@ -22,7 +22,7 @@ export interface UnlockedAgent {
 // Define available agents with their details
 const AGENT_DETAILS: Record<string, { name: string; description: string; features: string[]; category: string; badge: string }> = {
   'TRADING_AGENT': {
-    name: 'Rule-Based Trading Agent',
+    name: 'RSI + Bollinger Bands Agent',
     description: 'Fully automated trading agent with RSI/Bollinger Bands strategy. Executes deterministic trades 24/7 with SL/TP protection.',
     features: [
       'RSI + Bollinger Bands signals',

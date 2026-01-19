@@ -949,8 +949,8 @@ export class CrowdConsensusService {
         logger.warn({ 
           uid, 
           exchange: exchangeStatus.exchange 
-        }, 'SKIP: EXCHANGE_CREDENTIALS_MISSING - failed to decrypt or retrieve API keys');
-        return { success: false, reason: 'EXCHANGE_CREDENTIALS_MISSING' };
+        }, 'SKIP: EXCHANGE_CREDENTIALS_DECRYPT_FAILED - failed to decrypt or retrieve API keys from exchangeConfig/current');
+        return { success: false, reason: 'EXCHANGE_CREDENTIALS_DECRYPT_FAILED' };
       }
 
       // Check daily trade limit (AGGRESSIVE TUNED: increased to 12)
@@ -1117,26 +1117,85 @@ export class CrowdConsensusService {
   }
 
   /**
-   * Get user's exchange credentials
+   * Get user's exchange credentials from canonical path: users/{uid}/exchangeConfig/current
+   * FIX: Consolidated credential fetching - all agents use same path
    */
   private static async getUserExchangeCredentials(uid: string, exchange: string): Promise<any> {
     try {
-      const db = getFirebaseAdmin().firestore();
-      const integrationsRef = db.collection('users').doc(uid).collection('integrations');
-      const snapshot = await integrationsRef.where('exchange', '==', exchange).get();
-
-      if (snapshot.empty) {
+      const { firestoreAdapter } = await import('./firestoreAdapter');
+      const { decrypt } = await import('./keyManager');
+      
+      // Fetch from canonical path: users/{uid}/exchangeConfig/current
+      const exchangeConfig = await firestoreAdapter.getExchangeConfig(uid);
+      
+      if (!exchangeConfig) {
+        logger.warn({ uid, exchange }, 'EXCHANGE_CREDENTIALS_NOT_FOUND - no exchangeConfig document');
         return null;
       }
 
-      const integration = snapshot.docs[0].data();
+      // Normalize exchange name to lowercase for comparison
+      const configExchange = (exchangeConfig.exchange || '').toLowerCase();
+      const requestedExchange = (exchange || '').toLowerCase();
+      
+      if (configExchange !== requestedExchange) {
+        logger.warn({ 
+          uid, 
+          requestedExchange, 
+          configExchange 
+        }, 'EXCHANGE_MISMATCH - requested exchange does not match config');
+        return null;
+      }
+
+      // Decrypt credentials
+      const encryptedApiKey = exchangeConfig.apiKeyEncrypted;
+      const encryptedSecret = exchangeConfig.secretKeyEncrypted || exchangeConfig.secretEncrypted;
+      const encryptedPassphrase = exchangeConfig.passphraseEncrypted;
+
+      if (!encryptedApiKey || !encryptedSecret) {
+        logger.warn({ 
+          uid, 
+          exchange: configExchange,
+          hasApiKey: !!encryptedApiKey,
+          hasSecret: !!encryptedSecret
+        }, 'EXCHANGE_CREDENTIALS_INCOMPLETE - missing encrypted keys');
+        return null;
+      }
+
+      // Decrypt with proper context
+      const apiKey = decrypt(encryptedApiKey, 'background_job');
+      const secret = decrypt(encryptedSecret, 'background_job');
+      const passphrase = encryptedPassphrase ? decrypt(encryptedPassphrase, 'background_job') : undefined;
+
+      if (!apiKey || !secret) {
+        logger.error({ 
+          uid, 
+          exchange: configExchange,
+          decryptedApiKey: !!apiKey,
+          decryptedSecret: !!secret
+        }, 'EXCHANGE_CREDENTIALS_DECRYPT_FAILED - decryption returned null');
+        throw new Error('DECRYPT_FAILED');
+      }
+
+      // Debug log (temporary)
+      logger.debug({
+        uid,
+        exchange: configExchange,
+        credentialsResolved: true,
+        hasPassphrase: !!passphrase
+      }, 'Exchange credentials successfully resolved');
+
       return {
-        apiKey: integration.apiKey,
-        secret: integration.secret,
-        passphrase: integration.passphrase
+        apiKey,
+        secret,
+        passphrase,
+        testnet: exchangeConfig.testnet ?? false
       };
     } catch (error: any) {
-      logger.error({ uid, exchange, error: error.message }, 'Failed to get exchange credentials');
+      if (error.message === 'DECRYPT_FAILED') {
+        logger.error({ uid, exchange, error: 'Decryption failed' }, 'EXCHANGE_CREDENTIALS_DECRYPT_FAILED');
+      } else {
+        logger.error({ uid, exchange, error: error.message }, 'Failed to get exchange credentials');
+      }
       return null;
     }
   }

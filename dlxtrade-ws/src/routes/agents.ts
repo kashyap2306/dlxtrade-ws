@@ -554,12 +554,22 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         }
 
         if (!activeAgent?.id) {
-          return { diagnostics: [], scheduler };
+          return { diagnostics: [], scheduler, agentStatus: 'NOT_FOUND' };
         }
 
         const { TradingAgent } = await import('../services/tradingAgent');
         const diagnostics = await TradingAgent.getDiagnostics(activeAgent.id, limit);
-        return { diagnostics, scheduler };
+        
+        // Get real-time agent status from Firestore
+        const currentAgentConfig = await firestoreAdapter.getTradingAgentConfig(activeAgent.id);
+        const agentStatus = currentAgentConfig?.status || 'UNKNOWN';
+        
+        return { 
+          diagnostics, 
+          scheduler,
+          agentStatus,
+          agentConfig: currentAgentConfig
+        };
       }
 
       if (agentId === 'liquidity_sniper_arbitrage') {
@@ -1344,23 +1354,52 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
         const exchangeConfig = await firestoreAdapter.getExchangeConfig(user.uid);
         if (!exchangeConfig) {
-          return reply.code(400).send({ error: 'No exchange configuration found. Please connect your exchange in Settings.' });
+          return reply.code(400).send({ 
+            error: 'EXCHANGE_NOT_FOUND - No exchange configuration found. Please connect your exchange in Settings.' 
+          });
         }
 
         const exchange = exchangeConfig.exchange;
         if (!exchange) {
-          return reply.code(400).send({ error: 'Invalid exchange configuration. Please reconnect your exchange in Settings.' });
+          return reply.code(400).send({ 
+            error: 'EXCHANGE_NOT_FOUND - Invalid exchange configuration. Please reconnect your exchange in Settings.' 
+          });
         }
 
-        const apiKey = decrypt(exchangeConfig.apiKeyEncrypted, 'user_request');
-        const secret = decrypt(exchangeConfig.secretKeyEncrypted || exchangeConfig.secretEncrypted, 'user_request');
-        const passphrase = exchangeConfig.passphraseEncrypted ? decrypt(exchangeConfig.passphraseEncrypted, 'user_request') : undefined;
+        const encryptedApiKey = exchangeConfig.apiKeyEncrypted;
+        const encryptedSecret = exchangeConfig.secretKeyEncrypted || exchangeConfig.secretEncrypted;
+        const encryptedPassphrase = exchangeConfig.passphraseEncrypted;
+
+        if (!encryptedApiKey || !encryptedSecret) {
+          return reply.code(400).send({ 
+            error: 'EXCHANGE_CREDENTIALS_NOT_FOUND - Encrypted keys missing. Please reconnect your exchange in Settings.',
+            hasApiKey: !!encryptedApiKey,
+            hasSecret: !!encryptedSecret
+          });
+        }
+
+        const apiKey = decrypt(encryptedApiKey, 'user_request');
+        const secret = decrypt(encryptedSecret, 'user_request');
+        const passphrase = encryptedPassphrase ? decrypt(encryptedPassphrase, 'user_request') : undefined;
 
         if (!apiKey || !secret) {
-          return reply.code(400).send({ error: 'Exchange key decryption failed. Please reconnect your exchange in Settings.' });
+          return reply.code(400).send({ 
+            error: 'EXCHANGE_CREDENTIALS_DECRYPT_FAILED - Exchange key decryption failed. Please reconnect your exchange in Settings.',
+            decryptedApiKey: !!apiKey,
+            decryptedSecret: !!secret
+          });
         }
 
-        vwapRuntimeService.setAgentCredentials(user.uid, exchange, {
+        // Debug log (temporary)
+        logger.debug({
+          uid: user.uid,
+          exchange: exchange.toLowerCase(),
+          credentialsResolved: true
+        }, 'VWAP agent credentials successfully resolved');
+
+        // Normalize exchange name to lowercase
+        const normalizedExchange = exchange.toLowerCase();
+        vwapRuntimeService.setAgentCredentials(user.uid, normalizedExchange, {
           apiKey,
           secret,
           passphrase: passphrase || undefined,
@@ -1427,7 +1466,9 @@ export async function agentsRoutes(fastify: FastifyInstance) {
           return { success: true, message: 'Trading Agent stopped successfully' };
         }
 
+        // Update agent status to STOPPED in Firestore
         await firestoreAdapter.updateAgentStatus(targetAgent.id, 'STOPPED');
+        logger.info({ uid: user.uid, agentId: targetAgent.id }, 'Trading Agent stopped successfully - status updated to STOPPED');
         return { success: true, message: 'Trading Agent stopped successfully' };
       }
 

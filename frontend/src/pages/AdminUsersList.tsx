@@ -101,8 +101,8 @@ export default function AdminUsersList() {
       const uids = targetUid ? [targetUid] : users.map(u => u.uid);
 
       for (const uid of uids) {
-        // Unlock Premium Trading Agent
-        await adminApi.unlockAgent(uid, 'Premium Trading Agent');
+        // Unlock RSI + Bollinger Bands Agent
+        await adminApi.unlockAgent(uid, 'RSI + Bollinger Bands Agent');
 
         // Unlock all other agents
         const allAgentNames = [

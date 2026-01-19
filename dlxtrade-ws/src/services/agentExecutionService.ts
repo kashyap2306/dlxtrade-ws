@@ -180,10 +180,31 @@ export class AgentExecutionService {
     };
 
     try {
+      // CRITICAL: Check if agent was manually stopped by user
+      // Manual STOP must override everything - do NOT run any logic
+      const currentAgentConfig = await firestoreAdapter.getTradingAgentConfig(agentId);
+      if (!currentAgentConfig || currentAgentConfig.status === 'STOPPED') {
+        logger.debug({
+          agentId,
+          userId: agentConfig.userId,
+          status: currentAgentConfig?.status || 'NOT_FOUND'
+        }, 'Trading Agent is STOPPED - skipping execution cycle');
+        return; // Exit immediately - no diagnostics, no scan
+      }
+
+      // Also check for PAUSED status
+      if (currentAgentConfig.status === 'PAUSED') {
+        diagnostics.decision = { action: 'SKIP', reason: 'AGENT_PAUSED' };
+        await agent.storeDiagnostics(diagnostics);
+        logger.debug({ agentId }, 'Trading Agent is PAUSED - skipping execution cycle');
+        return;
+      }
       // Create agent-specific market provider using canonical exchange config
       const exchangeConfig = await firestoreAdapter.getExchangeConfig(agentConfig.userId);
       if (!exchangeConfig?.exchange) {
-        logger.warn({ agentId, uid: agentConfig.userId }, 'Execution blocked: no exchange connected');
+        diagnostics.decision = { action: 'SKIP', reason: 'EXCHANGE_NOT_FOUND' };
+        await agent.storeDiagnostics(diagnostics);
+        logger.warn({ agentId, uid: agentConfig.userId }, 'SKIP: EXCHANGE_NOT_FOUND - no exchange connected');
         return;
       }
 
@@ -191,14 +212,43 @@ export class AgentExecutionService {
       const encryptedSecret = exchangeConfig.secretKeyEncrypted || exchangeConfig.secretEncrypted;
       const encryptedPassphrase = exchangeConfig.passphraseEncrypted;
 
+      if (!encryptedApiKey || !encryptedSecret) {
+        diagnostics.decision = { action: 'SKIP', reason: 'EXCHANGE_CREDENTIALS_NOT_FOUND' };
+        await agent.storeDiagnostics(diagnostics);
+        logger.warn({ 
+          agentId, 
+          uid: agentConfig.userId, 
+          exchange: exchangeConfig.exchange,
+          hasApiKey: !!encryptedApiKey,
+          hasSecret: !!encryptedSecret
+        }, 'SKIP: EXCHANGE_CREDENTIALS_NOT_FOUND - encrypted keys missing');
+        return;
+      }
+
       const apiKey = encryptedApiKey ? decrypt(encryptedApiKey, 'background_job') : null;
       const secret = encryptedSecret ? decrypt(encryptedSecret, 'background_job') : null;
       const passphrase = encryptedPassphrase ? decrypt(encryptedPassphrase, 'background_job') : undefined;
 
       if (!apiKey || !secret) {
-        logger.warn({ agentId, uid: agentConfig.userId, exchange: exchangeConfig.exchange }, 'Execution blocked: exchange key decryption failed');
+        diagnostics.decision = { action: 'SKIP', reason: 'EXCHANGE_CREDENTIALS_DECRYPT_FAILED' };
+        await agent.storeDiagnostics(diagnostics);
+        logger.error({ 
+          agentId, 
+          uid: agentConfig.userId, 
+          exchange: exchangeConfig.exchange,
+          decryptedApiKey: !!apiKey,
+          decryptedSecret: !!secret
+        }, 'SKIP: EXCHANGE_CREDENTIALS_DECRYPT_FAILED - decryption returned null');
         return;
       }
+
+      // Debug log (temporary)
+      logger.debug({
+        agentId,
+        uid: agentConfig.userId,
+        exchange: exchangeConfig.exchange,
+        credentialsResolved: true
+      }, 'Trading Agent credentials successfully resolved');
 
       const exchangeCredentials: ExchangeCredentials = {
         apiKey,
@@ -207,7 +257,9 @@ export class AgentExecutionService {
         testnet: exchangeConfig.testnet ?? false,
       };
 
-      const marketProvider = new TradingAgentMarketProvider(exchangeCredentials, String(exchangeConfig.exchange || agentConfig.exchange) as any, 'futures');
+      // Normalize exchange name to lowercase
+      const normalizedExchange = String(exchangeConfig.exchange || agentConfig.exchange).toLowerCase();
+      const marketProvider = new TradingAgentMarketProvider(exchangeCredentials, normalizedExchange as any, 'futures');
 
       // ===== SESSION-BASED TRADING (EXCHANGE SERVER TIME) =====
       // Only trade during London (8:00-16:59 UTC) or New York (14:30-21:29 UTC) sessions
