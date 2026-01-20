@@ -145,7 +145,9 @@ export class TradingAgent {
   public async storeDiagnostics(diagnostics: TradingDiagnostics): Promise<void> {
     try {
       const agentType = this.config.name && this.config.name.includes('Liquidity Sweep') 
-        ? 'LIQUIDITY_SWEEP_AGENT' 
+        ? 'LIQUIDITY_SWEEP_AGENT'
+        : this.config.name && this.config.name.includes('HTF Trend Filter')
+        ? 'HTF_TREND_FILTER_AGENT'
         : 'TRADING_AGENT';
 
       // Use unified diagnostics storage via firestoreAdapter
@@ -551,9 +553,16 @@ export class TradingAgent {
 
     // Check if this is a Liquidity Sweep agent
     const isLiquiditySweepAgent = this.config.name && this.config.name.includes('Liquidity Sweep');
+    
+    // Check if this is an HTF Trend Filter agent
+    const isHTFTrendFilterAgent = this.config.name && this.config.name.includes('HTF Trend Filter');
 
     if (isLiquiditySweepAgent) {
       return this.generateLiquiditySweepSignal(candle, indicators, recentCandles);
+    }
+
+    if (isHTFTrendFilterAgent) {
+      return this.generateHTFTrendFilterSignal(candle, indicators, recentCandles);
     }
 
     // Create deterministic signal ID from agent + candle + indicators
@@ -956,6 +965,82 @@ export class TradingAgent {
       priceReturned,
       minorStructureShift,
       direction: confirmed ? sweepDirection : undefined
+    };
+  }
+
+  /**
+   * Generate HTF Trend Filter trading signal
+   * NOTE: This method expects 1m candles in recentCandles
+   * HTF (15m) candles must be fetched separately by the caller
+   */
+  private generateHTFTrendFilterSignal(
+    candle: any,
+    indicators: {
+      rsi: number;
+      ema50: number;
+      bbUpper: number;
+      bbLower: number;
+      atr: number;
+    },
+    recentCandles?: any[]
+  ): TradingSignal | null {
+    const { price, timestamp } = candle;
+
+    if (!recentCandles || recentCandles.length < 200) {
+      logger.debug({
+        agentId: this.config.id,
+        candlesCount: recentCandles?.length || 0
+      }, 'HTF Trend Filter: Insufficient candles for analysis');
+      return null;
+    }
+
+    // Import HTF strategy
+    const { HTFTrendFilterStrategy } = require('./htfTrendFilterStrategy');
+
+    // NOTE: For HTF analysis, we need 15m candles
+    // Since we only have 1m candles here, we'll skip HTF analysis for now
+    // The caller (agentExecutionService) should fetch both 15m and 1m candles
+    // For now, we'll assume LONG_ONLY trend as a placeholder
+    // TODO: Fetch 15m candles in agentExecutionService and pass HTF trend here
+
+    // Analyze LTF (1m) entry using the provided 1m candles
+    const ltfSignal = HTFTrendFilterStrategy.analyzeLTFEntry(recentCandles, 'LONG_ONLY');
+
+    if (!ltfSignal.isValid) {
+      logger.debug({
+        agentId: this.config.id,
+        reason: ltfSignal.reason
+      }, 'HTF Trend Filter: LTF entry conditions not met');
+      return null;
+    }
+
+    // Create deterministic signal ID
+    const createSignalId = (direction: 'LONG' | 'SHORT') => {
+      const signalData = `${this.config.id}:${timestamp}:${direction}:${price}`;
+      let hash = 0;
+      for (let i = 0; i < signalData.length; i++) {
+        const char = signalData.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;
+      }
+      return `htf_trend_filter_${Math.abs(hash).toString(36)}`;
+    };
+
+    return {
+      signalId: createSignalId(ltfSignal.direction!),
+      direction: ltfSignal.direction!,
+      entryPrice: ltfSignal.entryPrice,
+      stopLoss: ltfSignal.stopLoss,
+      takeProfit: ltfSignal.takeProfit,
+      timestamp: new Date(timestamp),
+      candleTimestamp: new Date(timestamp),
+      indicators: {
+        rsi: ltfSignal.indicators.rsi,
+        ema50: ltfSignal.indicators.ema50,
+        bbUpper: ltfSignal.indicators.bbUpper,
+        bbLower: ltfSignal.indicators.bbLower,
+        atr: indicators.atr
+      }
     };
   }
 

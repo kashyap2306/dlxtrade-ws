@@ -90,6 +90,23 @@ export default function AgentsMarketplace() {
       icon: '💰',
       category: 'Scalping Strategy',
       badge: 'Advanced'
+    },
+    {
+      id: 'HTF_TREND_FILTER_AGENT',
+      name: 'HTF Trend Filter + EMA Pullback + RSI + Bollinger Scalping Agent',
+      description: 'Multi-timeframe scalping strategy with HTF trend filter (15m), LTF entries (1m) using EMA pullbacks, RSI, and Bollinger Bands.',
+      price: 850,
+      features: [
+        'HTF Trend Filter (15m EMA 50/200)',
+        'LTF Entry Signals (1m)',
+        'EMA Pullback + RSI + Bollinger Bands',
+        'BTC/USDT & ETH/USDT pairs',
+        'Bitget USDT-M Futures',
+        'Admin approval required'
+      ],
+      icon: '📉',
+      category: 'Scalping Strategy',
+      badge: 'Advanced'
     }
   ];
 

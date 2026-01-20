@@ -25,6 +25,18 @@ export async function agentsRoutes(fastify: FastifyInstance) {
   console.log("[ROUTE READY] GET /api/admin/agents/purchase-requests");
   console.log("[ROUTE READY] POST /api/admin/agents/approve");
   console.log("[ROUTE READY] GET /api/users/:uid/features");
+  console.log("[ROUTE READY] GET /api/agents/crowd-consensus/diagnostics");
+  console.log("[ROUTE READY] GET /api/agents/crowd-consensus/dashboard");
+  console.log("[ROUTE READY] GET /api/agents/crowd-consensus/status");
+  console.log("[ROUTE READY] POST /api/agents/crowd-consensus/start");
+  console.log("[ROUTE READY] POST /api/agents/crowd-consensus/stop");
+  console.log("[ROUTE READY] GET /api/agents/crowd-consensus/exchange-status");
+  console.log("[ROUTE READY] GET /api/agents/crowd-consensus/exchange-breakdown");
+  console.log("[ROUTE READY] GET /api/agents/crowd-consensus/signals");
+  console.log("[ROUTE READY] GET /api/agents/crowd-consensus/trades");
+  console.log("[ROUTE READY] GET /api/agents/crowd-consensus/skipped-trades");
+  console.log("[ROUTE READY] GET /api/agents/crowd-consensus/settings");
+  console.log("[ROUTE READY] PUT /api/agents/crowd-consensus/settings");
 
   const selectLiquiditySweepAgent = (userAgents: any[]) => {
     const agents = Array.isArray(userAgents) ? userAgents : [];
@@ -52,6 +64,33 @@ export async function agentsRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // CRITICAL FIX: Exchange breakdown route MUST be FIRST before any /:agentId routes
+  fastify.get('/crowd-consensus/exchange-breakdown', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      console.log('[REAL ROUTE HIT] crowd-consensus/exchange-breakdown');
+      const user = (request as any).user;
+      const uid = user?.uid;
+
+      if (!uid) {
+        return reply.code(403).send({ error: 'Authentication required' });
+      }
+
+      const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'crowd-consensus');
+      if (!hasAccess) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      const data = await CrowdConsensusService.getExchangeConsensusBreakdown();
+      return reply.code(200).send(data ?? []);
+    } catch (err: any) {
+      console.error('[CROWD CONSENSUS] exchange-breakdown ERROR:', err);
+      logger.error({ err }, 'Error getting crowd consensus exchange breakdown');
+      return reply.code(500).send({ error: err.message || 'Error fetching exchange breakdown' });
+    }
+  });
+
   fastify.get('/crowd-consensus/diagnostics', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ Querystring: { limit?: string } }>, reply: FastifyReply) => {
@@ -70,15 +109,16 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         return reply.code(403).send({ error: 'Access denied: Crowd Consensus Copy Trade not approved' });
       }
 
-      const [settings, exchangeStatus, dailyTradeCount, recentTrades, recentSkippedTrades] = await Promise.all([
+      const [settings, exchangeStatus, dailyTradeCount, recentTrades, recentSkippedTrades, exchangeBreakdown] = await Promise.all([
         CrowdConsensusService.getUserSettings(uid),
         CrowdConsensusService.getExchangeConnectionStatus(uid),
         CrowdConsensusService.getDailyTradeCount(uid),
         CrowdConsensusService.getUserTrades(uid, limit),
         CrowdConsensusService.getSkippedTrades(uid, limit),
+        CrowdConsensusService.getExchangeConsensusBreakdown('BTCUSDT'),
       ]);
 
-      const dailyTradeLimit = 12; // AGGRESSIVE TUNED: increased to 12
+      const dailyTradeLimit = 5; // Max 5 trades per day
       const autoTradeEnabled = settings?.autoTradeEnabled === true;
       let gate = 'READY';
       let message = 'Ready for consensus scan.';
@@ -119,6 +159,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
           dryRun: settings?.dryRun || false,
           lastUpdated: settings?.lastUpdated || null,
         },
+        exchangeBreakdown,
         recentTrades,
         recentSkippedTrades,
       };
@@ -493,6 +534,21 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         return { success: true, message: 'Settings updated successfully' };
       }
 
+      // HTF Trend Filter Agent settings
+      if (agentId === 'htf-trend-filter-agent') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'htf-trend-filter-agent');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'HTF Trend Filter Agent access not granted yet' });
+        }
+
+        const userAgents = await firestoreAdapter.getUserTradingAgents(uid);
+        const targetAgent = userAgents.find((a: any) => String(a?.name || '').toLowerCase().includes('htf trend filter'));
+        if (targetAgent?.id) {
+          await firestoreAdapter.updateAgentConfig(targetAgent.id, settings);
+        }
+        return { success: true, message: 'Settings updated successfully' };
+      }
+
       // VWAP Strategy settings (no persistent settings, just acknowledge)
       if (agentId === 'vwap-strategy') {
         const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'vwap-strategy');
@@ -599,6 +655,44 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         return { diagnostics, scheduler };
       }
 
+      // HTF Trend Filter Agent diagnostics
+      if (agentId === 'htf-trend-filter-agent') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'htf-trend-filter-agent');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'HTF Trend Filter Agent access not granted yet' });
+        }
+
+        const userAgents = await firestoreAdapter.getUserTradingAgents(uid);
+        const targetAgent = userAgents.find((a: any) => String(a?.name || '').toLowerCase().includes('htf trend filter'));
+        
+        // Get scheduler status
+        let scheduler: any = null;
+        try {
+          const { tradingAgentScheduler } = await import('../services/tradingAgentScheduler');
+          scheduler = tradingAgentScheduler.getStatus();
+        } catch {
+          scheduler = null;
+        }
+
+        if (!targetAgent?.id) {
+          return { diagnostics: [], scheduler, agentStatus: 'NOT_FOUND' };
+        }
+
+        const { TradingAgent } = await import('../services/tradingAgent');
+        const diagnostics = await TradingAgent.getDiagnostics(targetAgent.id, limit);
+        
+        // Get real-time agent status from Firestore
+        const currentAgentConfig = await firestoreAdapter.getTradingAgentConfig(targetAgent.id);
+        const agentStatus = currentAgentConfig?.status || 'UNKNOWN';
+        
+        return { 
+          diagnostics, 
+          scheduler,
+          agentStatus,
+          agentConfig: currentAgentConfig
+        };
+      }
+
       // VWAP Strategy diagnostics (uses user-scoped runtime agent id)
       if (agentId === 'vwap-strategy') {
         const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'vwap-strategy');
@@ -657,7 +751,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
           CrowdConsensusService.getSkippedTrades(uid, limit),
         ]);
 
-        const dailyTradeLimit = 12; // AGGRESSIVE TUNED: increased to 12
+        const dailyTradeLimit = 5; // Max 5 trades per day
         const autoTradeEnabled = settings?.autoTradeEnabled === true;
         let gate = 'READY';
         let message = 'Ready for consensus scan.';
@@ -1131,6 +1225,49 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         };
       }
 
+      // HTF Trend Filter Agent control
+      if (agentId === 'htf-trend-filter-agent') {
+        console.log('[HTF CONTROL] HTF agent handler reached!', { uid, agentId });
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'htf-trend-filter-agent');
+        console.log('[HTF CONTROL] Access check result:', hasAccess);
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'HTF Trend Filter Agent access not granted yet' });
+        }
+
+        const { firestoreAdapter } = await import('../services/firestoreAdapter');
+        let userAgents = await firestoreAdapter.getUserTradingAgents(uid);
+        
+        // Auto-create default agent if none exists
+        if (userAgents.length === 0 || !userAgents.find((a: any) => a.strategyType === 'HTF_TREND_FILTER')) {
+          logger.info({ uid }, 'No HTF Trend Filter agents found in /control, creating default agent');
+          const db = (await import('../utils/firebase')).getFirebaseAdmin().firestore();
+          const defaultAgent = {
+            id: `htf_trend_filter_${uid}_${Date.now()}`,
+            userId: uid,
+            name: 'HTF Trend Filter Agent',
+            tradingPair: 'BTC/USDT',
+            marketType: 'futures',
+            strategyType: 'HTF_TREND_FILTER',
+            status: 'STOPPED',
+            riskPerTrade: 0.01, // 1% risk per trade (HARD LIMIT)
+            leverage: 5, // 5x leverage (HARD LIMIT)
+            maxTradesPerDay: 5, // 5 trades per day (HARD LIMIT)
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          };
+          await db.collection('tradingAgents').doc(defaultAgent.id).set(defaultAgent);
+          userAgents = [defaultAgent];
+        }
+        
+        const activeAgent = userAgents.find((a: any) => a.strategyType === 'HTF_TREND_FILTER') || userAgents[0];
+
+        return {
+          agentId: 'htf-trend-filter-agent',
+          status: activeAgent.status || 'STOPPED',
+          config: activeAgent || null,
+        };
+      }
+
       // Crowd Consensus control
       if (agentId === 'crowd-consensus') {
         const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'crowd-consensus');
@@ -1153,7 +1290,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         };
       }
 
-      return reply.code(404).send({ error: 'Agent not found' });
+      return reply.code(404).send({ error: 'Agent not found', receivedAgentId: agentId, availableAgents: ['trading-agent', 'liquidity_sniper_arbitrage', 'vwap-strategy', 'htf-trend-filter-agent', 'crowd-consensus'] });
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error getting trading agent control');
       return reply.code(500).send({ error: 'Error getting agent control' });
@@ -1213,6 +1350,22 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         const activeAgent = selectLiquiditySweepAgent(userAgents);
         return {
           agentId: 'liquidity_sniper_arbitrage',
+          status: activeAgent?.status || 'STOPPED',
+        };
+      }
+
+      // HTF Trend Filter Agent status
+      if (agentId === 'htf-trend-filter-agent') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'htf-trend-filter-agent');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'HTF Trend Filter Agent access not granted yet' });
+        }
+
+        const { firestoreAdapter } = await import('../services/firestoreAdapter');
+        const userAgents = await firestoreAdapter.getUserTradingAgents(uid);
+        const activeAgent = userAgents.find((a: any) => a.strategyType === 'HTF_TREND_FILTER');
+        return {
+          agentId: 'htf-trend-filter-agent',
           status: activeAgent?.status || 'STOPPED',
         };
       }
@@ -1411,6 +1564,60 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         return { success: true, message: 'VWAP Strategy started successfully' };
       }
 
+      // HTF Trend Filter Agent start
+      if (agentId === 'htf-trend-filter-agent') {
+        console.log('[HTF START] HTF agent start handler reached!', { uid: user.uid, agentId });
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'htf-trend-filter-agent');
+        console.log('[HTF START] Access check result:', hasAccess);
+        if (!hasAccess) {
+          return reply.code(403).send({ 
+            error: 'HTF Trend Filter Agent access not granted yet. Please request approval from admin first.',
+            code: 'AGENT_NOT_APPROVED'
+          });
+        }
+
+        const { firestoreAdapter } = await import('../services/firestoreAdapter');
+        const exchangeConfig = await firestoreAdapter.getExchangeConfig(user.uid);
+        if (!exchangeConfig?.exchange) {
+          return reply.code(400).send({ 
+            error: 'Exchange not connected. Please connect an exchange in Settings first.',
+            code: 'EXCHANGE_NOT_CONNECTED'
+          });
+        }
+
+        // Get or create agent document
+        let userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
+        let targetAgent = userAgents.find((a: any) => a.strategyType === 'HTF_TREND_FILTER');
+        
+        // Auto-create default agent if none exists
+        if (!targetAgent) {
+          const db = (await import('../utils/firebase')).getFirebaseAdmin().firestore();
+          const defaultAgent = {
+            id: `htf_trend_filter_${user.uid}_${Date.now()}`,
+            userId: user.uid,
+            name: 'HTF Trend Filter Agent',
+            tradingPair: 'BTC/USDT',
+            marketType: 'futures',
+            strategyType: 'HTF_TREND_FILTER',
+            type: 'htf_trend_filter',
+            status: 'STOPPED',
+            riskPerTrade: 1, // 1% risk per trade
+            leverage: 8,
+            maxTradesPerDay: 3,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          };
+          await db.collection('tradingAgents').doc(defaultAgent.id).set(defaultAgent);
+          targetAgent = defaultAgent;
+        }
+
+        // Update agent status to ACTIVE
+        await firestoreAdapter.updateAgentStatus(targetAgent.id, 'ACTIVE');
+        
+        logger.info({ uid: user.uid, agentId: targetAgent.id, mode: 'manual' }, 'HTF Trend Filter Agent started in manual mode - ARMED and waiting for signals');
+        return { success: true, message: 'HTF Trend Filter Agent started successfully', mode: 'manual', status: 'ARMED' };
+      }
+
       // Crowd Consensus start
       if (agentId === 'crowd-consensus') {
         const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'crowd-consensus');
@@ -1491,6 +1698,27 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         await firestoreAdapter.updateAgentStatus(targetAgent.id, 'STOPPED');
         logger.info({ uid: user.uid, agentId: targetAgent.id }, 'Liquidity Sweep Agent stopped successfully');
         return { success: true, message: 'Liquidity Sweep Agent stopped successfully' };
+      }
+
+      if (agentId === 'htf-trend-filter-agent') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'htf-trend-filter-agent');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'HTF Trend Filter Agent access not granted yet' });
+        }
+
+        const { firestoreAdapter } = await import('../services/firestoreAdapter');
+        const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
+        const targetAgent = userAgents.find((a: any) => a.strategyType === 'HTF_TREND_FILTER');
+        
+        // IDEMPOTENT: If no agent found, treat as already stopped
+        if (!targetAgent?.id) {
+          logger.info({ uid: user.uid, agentId }, 'HTF Trend Filter Agent stop called but no agent found - treating as already stopped');
+          return { success: true, message: 'HTF Trend Filter Agent stopped successfully' };
+        }
+
+        await firestoreAdapter.updateAgentStatus(targetAgent.id, 'STOPPED');
+        logger.info({ uid: user.uid, agentId: targetAgent.id }, 'HTF Trend Filter Agent stopped successfully');
+        return { success: true, message: 'HTF Trend Filter Agent stopped successfully' };
       }
 
       // Handle VWAP Strategy agents
@@ -1629,6 +1857,8 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       let { agentId } = request.params;
       const limit = request.query.limit ? parseInt(request.query.limit) : 50;
 
+      console.log('[TRADES ROUTE HIT]', { agentId, uid: user?.uid, limit });
+
       if (agentId === 'trading-agent') {
         const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'trading-agent');
         if (!hasAccess) {
@@ -1692,6 +1922,47 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         }
 
         const trades = await CrowdConsensusService.getUserTrades(user.uid, limit);
+        return { trades };
+      }
+
+      // HTF Trend Filter Agent trades
+      if (agentId === 'htf-trend-filter-agent') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'htf-trend-filter-agent');
+        if (!hasAccess) {
+          return reply.code(403).send({ error: 'HTF Trend Filter Agent access not granted yet' });
+        }
+
+        const { firestoreAdapter } = await import('../services/firestoreAdapter');
+        let userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
+        
+        // Auto-create default agent if none exists
+        if (userAgents.length === 0 || !userAgents.find((a: any) => a.strategyType === 'HTF_TREND_FILTER')) {
+          logger.info({ uid: user.uid }, 'No HTF Trend Filter agents found in /trades, creating default agent');
+          const db = (await import('../utils/firebase')).getFirebaseAdmin().firestore();
+          const defaultAgent = {
+            id: `htf_trend_filter_${user.uid}_${Date.now()}`,
+            userId: user.uid,
+            name: 'HTF Trend Filter Agent',
+            tradingPair: 'BTC/USDT',
+            marketType: 'futures',
+            strategyType: 'HTF_TREND_FILTER',
+            status: 'STOPPED',
+            riskPerTrade: 0.01, // 1% risk per trade (HARD LIMIT)
+            leverage: 5, // 5x leverage (HARD LIMIT)
+            maxTradesPerDay: 5, // 5 trades per day (HARD LIMIT)
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          };
+          await db.collection('tradingAgents').doc(defaultAgent.id).set(defaultAgent);
+          userAgents = [defaultAgent];
+        }
+        
+        const targetAgent = userAgents.find((a: any) => a.strategyType === 'HTF_TREND_FILTER') || userAgents[0];
+        if (!targetAgent?.id) {
+          return { trades: [] };
+        }
+
+        const trades = await firestoreAdapter.getAgentTrades(targetAgent.id, limit);
         return { trades };
       }
 

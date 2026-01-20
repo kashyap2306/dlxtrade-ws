@@ -1192,19 +1192,29 @@ export async function adminRoutes(fastify: FastifyInstance) {
         approvedAgents: admin.firestore.FieldValue.arrayUnion(agentType)
       });
 
-      // Create agent document ONLY for Trading Agent and Liquidity Sweep Agent
-      if (agentType === 'TRADING_AGENT' || agentType === 'LIQUIDITY_SWEEP_AGENT') {
+      // Create agent document ONLY for Trading Agent, Liquidity Sweep Agent, and HTF Trend Filter Agent
+      if (agentType === 'TRADING_AGENT' || agentType === 'LIQUIDITY_SWEEP_AGENT' || agentType === 'HTF_TREND_FILTER_AGENT') {
         const agentId = agentType === 'TRADING_AGENT'
           ? `trading_agent_${userId}_${Date.now()}`
-          : `liquidity_sweep_${userId}_${Date.now()}`;
+          : agentType === 'LIQUIDITY_SWEEP_AGENT'
+          ? `liquidity_sweep_${userId}_${Date.now()}`
+          : `htf_trend_filter_${userId}_${Date.now()}`;
 
         const agentData = {
           id: agentId,
           userId: userId,
-          name: agentType === 'TRADING_AGENT' ? 'Trading Agent' : 'Liquidity Sweep Agent',
+          name: agentType === 'TRADING_AGENT' 
+            ? 'Trading Agent' 
+            : agentType === 'LIQUIDITY_SWEEP_AGENT'
+            ? 'Liquidity Sweep Agent'
+            : 'HTF Trend Filter Scalping Agent',
           tradingPair: 'BTC/USDT',
           marketType: 'futures',
-          strategyType: agentType === 'TRADING_AGENT' ? 'RSI_BOLLINGER' : 'LIQUIDITY_SWEEP',
+          strategyType: agentType === 'TRADING_AGENT' 
+            ? 'RSI_BOLLINGER' 
+            : agentType === 'LIQUIDITY_SWEEP_AGENT'
+            ? 'LIQUIDITY_SWEEP'
+            : 'HTF_TREND_FILTER',
           status: 'INACTIVE',
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),

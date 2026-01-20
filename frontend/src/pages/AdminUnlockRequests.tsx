@@ -32,6 +32,10 @@ const AGENT_DETAILS: Record<string, { name: string; description: string }> = {
   'LIQUIDITY_SWEEP_AGENT': {
     name: 'Liquidity Sweep Session Scalping Agent',
     description: 'Advanced liquidity sweep detection with session-based scalping'
+  },
+  'HTF_TREND_FILTER_AGENT': {
+    name: 'HTF Trend Filter Scalping Agent',
+    description: 'Multi-timeframe scalping with HTF trend filter, EMA pullbacks, RSI, and Bollinger Bands'
   }
 };
 

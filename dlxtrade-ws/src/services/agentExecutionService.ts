@@ -298,23 +298,75 @@ export class AgentExecutionService {
 
       // Get COIN-M market data for the agent's trading pair
       const symbol = tradingPair.replace('/', '').toUpperCase();
-      const candles = await marketProvider.getCandles(
-        symbol,
-        '5m',
-        50 // Need enough candles for indicator calculation
-      );
-
-      if (candles.length < 50) {
-        logger.warn({
-          agentId,
-          candlesCount: candles.length
-        }, 'Insufficient candle data for agent execution');
-        return;
+      
+      // Check if this is an HTF Trend Filter agent - needs both 15m and 1m candles
+      const isHTFAgent = (agentConfig as any).strategyType === 'HTF_TREND_FILTER' || 
+                         (agentConfig.name && agentConfig.name.includes('HTF Trend Filter'));
+      
+      // CRITICAL: HTF agents can ONLY trade BTC/USDT and ETH/USDT
+      if (isHTFAgent) {
+        const allowedPairs = ['BTC/USDT', 'ETH/USDT'];
+        if (!allowedPairs.includes(tradingPair)) {
+          diagnostics.decision = { action: 'SKIP', reason: `HTF agents restricted to ${allowedPairs.join(', ')} only` };
+          await agent.storeDiagnostics(diagnostics);
+          logger.warn({
+            agentId,
+            tradingPair,
+            allowedPairs
+          }, 'HTF Trend Filter: Trading pair not allowed');
+          return;
+        }
       }
-
-      // IMPORTANT: Our indicator library expects candles in "most recent first" order.
-      // Many exchanges return klines oldest->newest.
-      candles.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      
+      let candles: any[];
+      let candles15m: any[] = [];
+      
+      if (isHTFAgent) {
+        // Fetch 15m candles for HTF trend analysis (need 200+ for EMA 200)
+        candles15m = await marketProvider.getCandles(symbol, '15m', 250);
+        
+        // Fetch 1m candles for LTF entry signals (need 200+ for indicators)
+        candles = await marketProvider.getCandles(symbol, '1m', 250);
+        
+        if (candles15m.length < 200) {
+          logger.warn({
+            agentId,
+            candles15mCount: candles15m.length
+          }, 'Insufficient 15m candle data for HTF Trend Filter agent');
+          return;
+        }
+        
+        if (candles.length < 200) {
+          logger.warn({
+            agentId,
+            candles1mCount: candles.length
+          }, 'Insufficient 1m candle data for HTF Trend Filter agent');
+          return;
+        }
+        
+        // Sort candles (most recent first)
+        candles15m.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        candles.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      } else {
+        // Regular agents use 5m candles
+        candles = await marketProvider.getCandles(
+          symbol,
+          '5m',
+          50 // Need enough candles for indicator calculation
+        );
+        
+        if (candles.length < 50) {
+          logger.warn({
+            agentId,
+            candlesCount: candles.length
+          }, 'Insufficient candle data for agent execution');
+          return;
+        }
+        
+        // IMPORTANT: Our indicator library expects candles in "most recent first" order.
+        // Many exchanges return klines oldest->newest.
+        candles.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      }
 
       // Get latest candle (most recent)
       const latestCandle = candles[0];
@@ -421,13 +473,83 @@ export class AgentExecutionService {
       }
 
       // Generate trading signal with S/R validation
-      const signal = agent.generateSignal(latestCandle, {
-        rsi: indicators.rsi,
-        ema50: indicators.ema50,
-        bbUpper: indicators.bbUpper,
-        bbLower: indicators.bbLower,
-        atr: indicators.atr
-      }, candles);
+      let signal;
+      
+      if (isHTFAgent) {
+        // For HTF agents, analyze HTF trend first, then generate LTF signal
+        const { HTFTrendFilterStrategy } = await import('./htfTrendFilterStrategy');
+        
+        const htfTrend = HTFTrendFilterStrategy.analyzeHTFTrend(candles15m);
+        diagnostics.htfTrend = htfTrend;
+        
+        if (htfTrend.direction === 'NO_TRADE') {
+          diagnostics.decision = { action: 'SKIP', reason: htfTrend.reason };
+          await agent.storeDiagnostics(diagnostics);
+          logger.debug({
+            agentId,
+            htfTrend
+          }, 'HTF Trend Filter: No valid trend');
+          
+          // Update last processed candle even with no signal
+          await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
+          return;
+        }
+        
+        // Analyze LTF entry with HTF trend filter
+        const ltfSignal = HTFTrendFilterStrategy.analyzeLTFEntry(candles, htfTrend.direction);
+        diagnostics.ltfSignal = ltfSignal;
+        
+        if (!ltfSignal.isValid) {
+          diagnostics.decision = { action: 'SKIP', reason: ltfSignal.reason };
+          await agent.storeDiagnostics(diagnostics);
+          logger.debug({
+            agentId,
+            ltfSignal
+          }, 'HTF Trend Filter: LTF entry conditions not met');
+          
+          // Update last processed candle even with no signal
+          await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
+          return;
+        }
+        
+        // Convert LTF signal to TradingSignal format
+        const createSignalId = (direction: 'LONG' | 'SHORT') => {
+          const signalData = `${agentId}:${candleTimestamp.getTime()}:${direction}:${ltfSignal.entryPrice}`;
+          let hash = 0;
+          for (let i = 0; i < signalData.length; i++) {
+            const char = signalData.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash;
+          }
+          return `htf_trend_filter_${Math.abs(hash).toString(36)}`;
+        };
+        
+        signal = {
+          signalId: createSignalId(ltfSignal.direction!),
+          direction: ltfSignal.direction!,
+          entryPrice: ltfSignal.entryPrice,
+          stopLoss: ltfSignal.stopLoss,
+          takeProfit: ltfSignal.takeProfit,
+          timestamp: new Date(),
+          candleTimestamp: candleTimestamp,
+          indicators: {
+            rsi: ltfSignal.indicators.rsi,
+            ema50: ltfSignal.indicators.ema50,
+            bbUpper: ltfSignal.indicators.bbUpper,
+            bbLower: ltfSignal.indicators.bbLower,
+            atr: indicators.atr
+          }
+        };
+      } else {
+        // Regular agents use standard signal generation
+        signal = agent.generateSignal(latestCandle, {
+          rsi: indicators.rsi,
+          ema50: indicators.ema50,
+          bbUpper: indicators.bbUpper,
+          bbLower: indicators.bbLower,
+          atr: indicators.atr
+        }, candles);
+      }
 
       if (!signal) {
         diagnostics.decision = diagnostics.decision || { action: 'SKIP', reason: 'No trading signal generated' };
@@ -461,7 +583,30 @@ export class AgentExecutionService {
       // ===== DAILY SAFETY RULE ENFORCEMENT =====
       const dailyCounters = await firestoreAdapter.getDailySafetyCounters(agentId);
 
-      const maxTradesPerDay = Math.min(Number(agentConfig.maxTradesPerDay) || 5, 5);
+      // CRITICAL: HTF Trend Filter agents have STRICT HARD LIMITS that cannot be overridden
+      // These limits are enforced regardless of agent config settings
+      let maxTradesPerDay: number;
+      let enforcedRiskPerTrade: number;
+      let enforcedLeverage: number;
+      
+      if (isHTFAgent) {
+        // HTF HARD LIMITS - CANNOT BE CHANGED
+        maxTradesPerDay = 5; // Strict maximum: 5 trades per day
+        enforcedRiskPerTrade = 0.01; // Strict risk: 1% per trade
+        enforcedLeverage = 5; // Strict leverage: 5x
+        
+        logger.debug({
+          agentId,
+          maxTradesPerDay,
+          riskPerTrade: enforcedRiskPerTrade,
+          leverage: enforcedLeverage
+        }, 'HTF Trend Filter Agent: Enforcing strict hard limits');
+      } else {
+        // Regular agents use config with cap
+        maxTradesPerDay = Math.min(Number(agentConfig.maxTradesPerDay) || 5, 5);
+        enforcedRiskPerTrade = Number(agentConfig.riskPerTrade) || 0.02;
+        enforcedLeverage = Number(agentConfig.leverage) || 8;
+      }
 
       // Check daily trade limit
       if (dailyCounters.tradesToday >= maxTradesPerDay) {
@@ -556,18 +701,19 @@ export class AgentExecutionService {
       // Update diagnostics with balance info
       diagnostics.riskAnalysis = {
         accountBalance: balance.equity,
-        riskPercent: agentConfig.riskPerTrade,
+        riskPercent: isHTFAgent ? enforcedRiskPerTrade : agentConfig.riskPerTrade,
         positionSize: 0, // Will be calculated below
         maxPositionSize: 0, // Will be calculated below
         availableMargin: true
       };
 
       // Position sizing (validation-only)
+      // For HTF agents, use enforced limits; for regular agents, use config
       const positionCalc = agent.calculatePositionSize(
         balance.equity,
         signal.entryPrice,
         signal.stopLoss,
-        agentConfig.leverage || 8,
+        isHTFAgent ? enforcedLeverage : (agentConfig.leverage || 8),
       );
 
       if (!positionCalc.isSafe || !isFinite(positionCalc.positionSize) || positionCalc.positionSize <= 0) {
@@ -591,6 +737,8 @@ export class AgentExecutionService {
         stopLoss: signal.stopLoss,
         takeProfit: signal.takeProfit,
         quantity: positionCalc.positionSize,
+        leverage: isHTFAgent ? enforcedLeverage : (agentConfig.leverage || 8),
+        riskPerTrade: isHTFAgent ? enforcedRiskPerTrade : agentConfig.riskPerTrade,
         status: 'OPEN',
         entryTime: signal.timestamp,
         candleTimestamp: signal.candleTimestamp,
@@ -650,8 +798,14 @@ export class AgentExecutionService {
 
   /**
    * Execute Crowd Consensus Copy Trading agent
+   * NOTE: This method is currently disabled - Crowd Consensus uses its own scheduler
    */
   private async executeCrowdConsensusAgent(): Promise<void> {
+    // DISABLED: Crowd Consensus has its own dedicated scheduler (CrowdConsensusScheduler)
+    // This method is not currently used and has incomplete implementation
+    return;
+    
+    /* COMMENTED OUT - INCOMPLETE IMPLEMENTATION
     try {
       // Check if Crowd Consensus is enabled (would be configurable)
       // For now, always run if agent has access
@@ -685,10 +839,12 @@ export class AgentExecutionService {
             continue;
           }
 
-          // Execute consensus trade
+          // Execute consensus trade - NEEDS CREDENTIALS
           const result = await CrowdConsensusService.executeConsensusTrade(
             signal,
-            'crowd-consensus-user'
+            'crowd-consensus-user',
+            'exchange-name', // TODO: Get from user settings
+            {} // TODO: Get credentials
           );
 
           if (result.success && result.trade) {
@@ -710,6 +866,7 @@ export class AgentExecutionService {
         error: error instanceof Error ? error.message : 'Unknown error'
       }, 'Failed to execute Crowd Consensus agent');
     }
+    */
   }
 
   /**

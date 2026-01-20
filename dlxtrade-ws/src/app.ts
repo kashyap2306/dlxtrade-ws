@@ -6,7 +6,7 @@ import fastifyCors from '@fastify/cors';
 import fastifyHelmet from '@fastify/helmet';
 // import fastifyRateLimit from '@fastify/rate-limit'; // DISABLED FOR DEBUG
 import admin from "firebase-admin";
-import { config } from './config';
+import { config } from './config/index';
 import { logger } from './utils/logger';
 import { firebaseAuthMiddleware } from './middleware/firebaseAuth';
 import { adminAuthMiddleware } from './middleware/adminAuth';
@@ -368,6 +368,20 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(globalStatsRoutes, { prefix: '/api/global-stats' });
   await app.register(engineStatusRoutes, { prefix: '/api/engine-status' });
   await app.register(hftLogsRoutes, { prefix: '/api/hft-logs' });
+  
+  // RUNTIME ROUTE VERIFICATION - Print all registered routes
+  console.log('\n========== REGISTERED ROUTES ==========');
+  const routes = app.printRoutes();
+  console.log(routes);
+  console.log('=======================================\n');
+  
+  // SPECIFIC CHECK: Verify exchange-breakdown route exists
+  const hasExchangeBreakdown = routes.includes('/api/agents/crowd-consensus/exchange-breakdown');
+  console.log('[ROUTE CHECK] /api/agents/crowd-consensus/exchange-breakdown EXISTS:', hasExchangeBreakdown);
+  if (!hasExchangeBreakdown) {
+    console.error('[ROUTE CHECK] ❌ CRITICAL: exchange-breakdown route NOT FOUND in registered routes!');
+  }
+  
   console.log('[APP] Registering auto-trade routes...');
   try {
     // Lazy import to avoid circular dependency

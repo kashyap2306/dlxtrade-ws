@@ -9,6 +9,8 @@ export function agentKeyToSlug(key: string): string {
       return 'crowd-consensus';
     case 'LIQUIDITY_SWEEP_AGENT':
       return 'liquidity_sniper_arbitrage';
+    case 'HTF_TREND_FILTER_AGENT':
+      return 'htf-trend-filter-agent';
     default:
       return key;
   }

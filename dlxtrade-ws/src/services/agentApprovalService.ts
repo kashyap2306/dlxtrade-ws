@@ -252,6 +252,8 @@ export class AgentApprovalService {
             return 'COPY_TRADING_AGENT';
           case 'liquidity_sniper_arbitrage':
             return 'LIQUIDITY_SWEEP_AGENT';
+          case 'htf-trend-filter-agent':
+            return 'HTF_TREND_FILTER_AGENT';
           default:
             return a;
         }

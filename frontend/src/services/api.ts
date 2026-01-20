@@ -405,6 +405,7 @@ export const agentsApi = {
   stopCrowdConsensusAutoTrade: () => api.post('/agents/crowd-consensus/stop'),
   getCrowdConsensusSkippedTrades: (limit?: number) => api.get('/agents/crowd-consensus/skipped-trades', { params: { limit } }),
   getCrowdConsensusExchangeStatus: () => api.get('/agents/crowd-consensus/exchange-status'),
+  getCrowdConsensusExchangeBreakdown: () => api.get('/agents/crowd-consensus/exchange-breakdown'),
   getCrowdConsensusDiagnostics: (limit?: number) => api.get('/agents/crowd-consensus/diagnostics', { params: { limit } }),
 };
 

@@ -33,6 +33,60 @@ interface ExchangeConnection {
   message?: string;
 }
 
+interface ExchangeBreakdown {
+  name: string;
+  signal: 'LONG' | 'SHORT' | 'NONE';
+  confidence: number;
+  positionCount: number;
+  contributedToConsensus: boolean;
+  positions?: Array<{ pair: string; count: number }>; // Added for expandable details
+}
+
+interface ConsensusBreakdown {
+  exchanges: ExchangeBreakdown[];
+  finalConsensus: 'LONG' | 'SHORT' | 'NONE';
+  consensusStrength: number;
+  status: 'EXECUTED' | 'SKIPPED' | 'PENDING';
+  skipReason?: string;
+  timestamp: Date;
+}
+
+// Exchange logo/icon mapping (using emoji/text for now - can be replaced with actual logos)
+const EXCHANGE_ICONS: Record<string, string> = {
+  binance: '🟡',
+  bybit: '🟠',
+  bitget: '🔵',
+  okx: '⚫',
+  kucoin: '🟢',
+  bingx: '🔴',
+  gate: '🟣',
+  mexc: '🔵',
+  phemex: '🟡',
+  coinex: '🟠'
+};
+
+const EXCHANGE_COLORS: Record<string, string> = {
+  binance: 'from-yellow-500 to-yellow-600',
+  bybit: 'from-orange-500 to-orange-600',
+  bitget: 'from-blue-500 to-blue-600',
+  okx: 'from-gray-700 to-gray-800',
+  kucoin: 'from-green-500 to-green-600',
+  bingx: 'from-red-500 to-red-600',
+  gate: 'from-purple-500 to-purple-600',
+  mexc: 'from-blue-400 to-blue-500',
+  phemex: 'from-yellow-400 to-yellow-500',
+  coinex: 'from-orange-400 to-orange-500'
+};
+
+interface ConsensusBreakdown {
+  exchanges: ExchangeBreakdown[];
+  finalConsensus: 'LONG' | 'SHORT' | 'NONE';
+  consensusStrength: number;
+  status: 'EXECUTED' | 'SKIPPED' | 'PENDING';
+  skipReason?: string;
+  timestamp: Date;
+}
+
 interface AutoTradeStatus {
   autoTradeEnabled: boolean;
   status: 'ACTIVE' | 'INACTIVE';
@@ -54,6 +108,8 @@ export default function CrowdConsensus() {
   const [hasAgentAccess, setHasAgentAccess] = useState(false);
   const [scheduler, setScheduler] = useState<any | null>(null);
   const [showExecutionCriteria, setShowExecutionCriteria] = useState(false);
+  const [consensusBreakdown, setConsensusBreakdown] = useState<ConsensusBreakdown | null>(null);
+  const [expandedExchanges, setExpandedExchanges] = useState<Set<string>>(new Set());
 
   // Normalize Firestore timestamp to Date
   const toValidDate = (value: any): Date | null => {
@@ -75,6 +131,36 @@ export default function CrowdConsensus() {
       return Number.isFinite(d.getTime()) ? d : null;
     }
     return null;
+  };
+
+  // Format skip reason to be more user-friendly
+  const formatSkipReason = (reason: string): string => {
+    const reasonMap: { [key: string]: string } = {
+      'NO_CONSENSUS': 'No consensus - need 2+ exchanges agreeing on same direction',
+      'RR_TOO_LOW': 'Risk/Reward ratio below minimum threshold (1.3:1)',
+      'ENTRY_LATE': 'Entry timing missed - price moved too far from signal',
+      'SR_BLOCKED': 'Take profit blocked by support/resistance level',
+      'DAILY_LIMIT_REACHED': 'Daily trade limit reached (12 trades max)',
+      'EXCHANGE_ERROR': 'Exchange connection or API error',
+      'INSUFFICIENT_BALANCE': 'Insufficient balance for trade',
+      'INSUFFICIENT_MARGIN': 'Insufficient margin for position',
+      'VALIDATION_FAILED': 'Trade validation failed',
+      'AUTO_TRADE_DISABLED': 'Auto trade is disabled',
+      'EXCHANGE_NOT_CONNECTED': 'Exchange not connected'
+    };
+    return reasonMap[reason] || reason.replace(/_/g, ' ').toLowerCase();
+  };
+
+  const toggleExchangeExpansion = (exchangeName: string) => {
+    setExpandedExchanges(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(exchangeName)) {
+        newSet.delete(exchangeName);
+      } else {
+        newSet.add(exchangeName);
+      }
+      return newSet;
+    });
   };
 
   // Check Firestore approval (users/{uid}.approvedAgents)
@@ -115,6 +201,7 @@ export default function CrowdConsensus() {
         loadSchedulerStatus();
         loadTrades();
         loadSkippedTrades();
+        loadConsensusBreakdown();
       }
     }, 30000); // Update every 30 seconds
 
@@ -132,7 +219,8 @@ export default function CrowdConsensus() {
         loadSchedulerStatus(),
         loadTrades(),
         loadSkippedTrades(),
-        loadExchangeConnection()
+        loadExchangeConnection(),
+        loadConsensusBreakdown()
       ]);
     } catch (error) {
       console.error('Error loading data:', error);
@@ -222,6 +310,18 @@ export default function CrowdConsensus() {
     } catch (error: any) {
       console.error('Error loading scheduler status:', error);
       setScheduler(null);
+    }
+  };
+
+  const loadConsensusBreakdown = async () => {
+    if (!user) return;
+
+    try {
+      const response = await agentsApi.getCrowdConsensusExchangeBreakdown();
+      setConsensusBreakdown(response.data || null);
+    } catch (error: any) {
+      console.error('Error loading consensus breakdown:', error);
+      setConsensusBreakdown(null);
     }
   };
 
@@ -414,6 +514,110 @@ export default function CrowdConsensus() {
               </table>
             </div>
           </div>
+
+          {/* Exchange Consensus Breakdown */}
+          {consensusBreakdown && (
+            <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">
+              <h2 className="text-xl font-semibold text-white mb-4">Exchange Consensus Analysis</h2>
+              
+              {/* Execution Status Banner */}
+              <div className={`mb-4 p-4 rounded-lg border ${
+                consensusBreakdown.finalConsensus !== 'NONE'
+                  ? 'bg-green-900/20 border-green-500/30'
+                  : 'bg-yellow-900/20 border-yellow-500/30'
+              }`}>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className={`text-lg font-semibold ${
+                      consensusBreakdown.finalConsensus !== 'NONE' ? 'text-green-400' : 'text-yellow-400'
+                    }`}>
+                      {consensusBreakdown.finalConsensus !== 'NONE'
+                        ? `✅ Consensus Reached: ${consensusBreakdown.finalConsensus}`
+                        : '⏳ Waiting for Consensus'
+                      }
+                    </div>
+                    <div className="text-sm text-gray-300 mt-1">
+                      {consensusBreakdown.skipReason || `${consensusBreakdown.consensusStrength} exchanges agreeing`}
+                    </div>
+                  </div>
+                  <div className="text-xs text-gray-400">
+                    {toValidDate(consensusBreakdown.timestamp)?.toLocaleTimeString() || '—'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Exchange Signals Grid */}
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+                {consensusBreakdown.exchanges.map((exchange) => {
+                  const isExpanded = expandedExchanges.has(exchange.name);
+                  return (
+                    <div
+                      key={exchange.name}
+                      className={`rounded-lg border cursor-pointer transition-all ${
+                        exchange.contributedToConsensus
+                          ? 'bg-green-900/20 border-green-500/30 hover:bg-green-900/30'
+                          : exchange.signal !== 'NONE'
+                          ? 'bg-slate-700/30 border-slate-600/30 hover:bg-slate-700/40'
+                          : 'bg-slate-800/30 border-slate-700/20 hover:bg-slate-800/40'
+                      }`}
+                      onClick={() => toggleExchangeExpansion(exchange.name)}
+                    >
+                      <div className="p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-2xl">{EXCHANGE_ICONS[exchange.name] || '📊'}</span>
+                            <div className="text-sm font-semibold text-white capitalize">
+                              {exchange.name}
+                            </div>
+                          </div>
+                          {exchange.contributedToConsensus && (
+                            <CheckCircleIcon className="w-4 h-4 text-green-400" />
+                          )}
+                        </div>
+                        <div className={`text-xs font-medium mb-1 ${
+                          exchange.signal === 'LONG' ? 'text-green-400' :
+                          exchange.signal === 'SHORT' ? 'text-red-400' :
+                          'text-gray-500'
+                        }`}>
+                          {exchange.signal}
+                        </div>
+                        <div className="text-xs text-gray-400">
+                          {exchange.confidence}% confidence
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          {exchange.positionCount} positions
+                        </div>
+                      </div>
+                      
+                      {/* Expandable Details */}
+                      {isExpanded && exchange.positionCount > 0 && (
+                        <div className="border-t border-slate-600/30 p-3 bg-slate-900/30">
+                          <div className="text-xs font-semibold text-gray-300 mb-2">Position Breakdown:</div>
+                          <div className="space-y-1">
+                            {exchange.positions && exchange.positions.length > 0 ? (
+                              exchange.positions.map((pos, idx) => (
+                                <div key={idx} className="flex justify-between text-xs">
+                                  <span className="text-gray-400">{pos.pair}</span>
+                                  <span className="text-gray-300">{pos.count} position{pos.count > 1 ? 's' : ''}</span>
+                                </div>
+                              ))
+                            ) : (
+                              <div className="text-xs text-gray-500 italic">
+                                {exchange.signal !== 'NONE' 
+                                  ? `${exchange.positionCount} ${exchange.signal} position${exchange.positionCount > 1 ? 's' : ''} detected`
+                                  : 'No active positions'
+                                }
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Skipped / Rejected Trade Diagnostics */}
           <div className="bg-slate-800/40 backdrop-blur-xl border border-purple-500/20 rounded-xl p-6">

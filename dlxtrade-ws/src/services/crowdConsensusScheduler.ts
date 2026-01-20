@@ -23,14 +23,16 @@ export class CrowdConsensusScheduler {
     try {
       this.intervalId = setInterval(async () => {
         try {
+          logger.info('🔄 [CROWD_CONSENSUS_SCHEDULER] Tick - starting execution cycle');
           this.lastExecutionAt = new Date();
           await this.executeAllActiveAgents();
           this.lastExecutionError = null;
+          logger.info('✅ [CROWD_CONSENSUS_SCHEDULER] Cycle completed successfully');
         } catch (error) {
           this.lastExecutionError = error instanceof Error ? error.message : 'Unknown error';
           logger.error({
             error: error instanceof Error ? error.message : 'Unknown error'
-          }, 'Error in Crowd Consensus scheduled execution');
+          }, '❌ [CROWD_CONSENSUS_SCHEDULER] Error in scheduled execution');
         } finally {
           this.nextExecutionAt = new Date(Date.now() + this.intervalMs);
         }
@@ -38,11 +40,11 @@ export class CrowdConsensusScheduler {
 
       this.isRunning = true;
       this.nextExecutionAt = new Date(Date.now() + this.intervalMs);
-      logger.info('Crowd Consensus scheduler started - executing every 5 minutes');
+      logger.info('✅ [CROWD_CONSENSUS_SCHEDULER] Scheduler started - executing every 5 minutes');
     } catch (error) {
       logger.error({
         error: error instanceof Error ? error.message : 'Unknown error'
-      }, 'Failed to start Crowd Consensus scheduler');
+      }, '❌ [CROWD_CONSENSUS_SCHEDULER] Failed to start scheduler');
 
       throw error;
     }
@@ -76,15 +78,17 @@ export class CrowdConsensusScheduler {
    */
   static async executeAllActiveAgents(): Promise<void> {
     try {
+      logger.info('📊 [CROWD_CONSENSUS] Finding active users...');
+      
       // Find all users with active Crowd Consensus auto trading
       const activeUsers = await this.getActiveCrowdConsensusUsers();
 
       if (activeUsers.length === 0) {
-        logger.info('No active Crowd Consensus agents found');
+        logger.info('⚠️ [CROWD_CONSENSUS] No active users found - scheduler running but no users have auto-trade enabled');
         return;
       }
 
-      logger.info({ userCount: activeUsers.length }, 'Executing Crowd Consensus agents for active users');
+      logger.info({ userCount: activeUsers.length }, '👥 [CROWD_CONSENSUS] Found active users, executing agents...');
 
       // Execute for each active user
       const results = await Promise.allSettled(
@@ -98,12 +102,12 @@ export class CrowdConsensusScheduler {
         total: activeUsers.length,
         success: successCount,
         failed: failureCount
-      }, 'Completed Crowd Consensus execution cycle');
+      }, '✅ [CROWD_CONSENSUS] Completed execution cycle');
 
     } catch (error) {
       logger.error({
         error: error instanceof Error ? error.message : 'Unknown error'
-      }, 'Failed to execute Crowd Consensus agents');
+      }, '❌ [CROWD_CONSENSUS] Failed to execute agents');
     }
   }
 
@@ -155,9 +159,9 @@ export class CrowdConsensusScheduler {
         return;
       }
 
-      // Check daily trade limit (AGGRESSIVE TUNED: increased to 12)
+      // Check daily trade limit (max 5 trades per day)
       const dailyTradeCount = await CrowdConsensusService.getDailyTradeCount(uid);
-      if (dailyTradeCount >= 12) {
+      if (dailyTradeCount >= 5) {
         // Store diagnostic for daily limit reached
         await firestoreAdapter.saveAgentDiagnostic(agentId, {
           agentType: 'COPY_TRADING_AGENT',
@@ -165,7 +169,7 @@ export class CrowdConsensusScheduler {
             action: 'STOPPED_FOR_DAY',
             reason: 'DAILY_LIMIT_REACHED',
           },
-          runtimeState: { dailyTradeCount, dailyLimit: 12 },
+          runtimeState: { dailyTradeCount, dailyLimit: 5 },
         });
         await CrowdConsensusService.saveSkippedTrade(uid, {
           pair: 'BTCUSDT',
@@ -205,43 +209,162 @@ export class CrowdConsensusScheduler {
 
   /**
    * Execute consensus analysis and trade for a user
+   * FIX: Resolve credentials ONCE per cycle, reuse for all signals
+   * FIX: Check dryRun mode BEFORE attempting credential decryption
    */
   static async executeConsensusAnalysisAndTrade(uid: string): Promise<void> {
     try {
-      // Analyze consensus from multiple exchanges
-      const consensusSignals = await CrowdConsensusService.analyzeConsensus();
+      logger.info({ uid }, '🚀 [CROWD_CONSENSUS] Starting consensus analysis and trade execution for user');
 
-      if (consensusSignals.length === 0) {
-        logger.info({ uid }, 'No consensus signals found');
+      // STEP 0: Check dryRun mode FIRST - skip ALL credential/exchange access if in test mode
+      const settings = await CrowdConsensusService.getUserSettings(uid);
+      const isDryRun = settings.dryRun === true;
+
+      // HARD GUARD: In dryRun mode, skip ALL exchange/credential access
+      if (isDryRun) {
+        console.log('[DRY RUN] Skipping ALL credential/exchange access - test mode active');
+        logger.info({ uid, dryRun: true }, '[DRY RUN] Test mode active - no real execution');
+        
+        // In dry run, analyze consensus but skip real execution
+        const consensusSignals = await CrowdConsensusService.analyzeConsensus();
+        
+        if (consensusSignals.length === 0) {
+          logger.info({ uid }, '[DRY RUN] No consensus signals found');
+          return;
+        }
+        
+        // Process signals in dry run mode (simulated)
+        for (const signal of consensusSignals) {
+          await CrowdConsensusService.executeConsensusTrade(signal, uid, 'bitget', null);
+        }
+        
+        logger.info({ uid, signalCount: consensusSignals.length }, '[DRY RUN] Completed simulated execution');
+        return; // Exit early - no real exchange access
+      }
+
+      // STEP 1: Resolve exchange credentials ONCE at cycle start (ONLY if NOT dryRun)
+      let exchangeStatus: any = { connected: false, exchange: null };
+      let credentials: any = null;
+      
+      // Only check exchange connection in REAL mode
+      exchangeStatus = await CrowdConsensusService.getExchangeConnectionStatus(uid);
+        
+      if (!exchangeStatus.connected) {
+        logger.warn({ 
+          uid, 
+          message: exchangeStatus.message 
+        }, 'EXCHANGE_NOT_CONNECTED - user has no exchange configured');
+        
+        await CrowdConsensusService.saveSkippedTrade(uid, {
+          pair: 'BTCUSDT',
+          direction: 'LONG',
+          reason: 'EXCHANGE_ERROR',
+          timestamp: new Date(),
+          details: { message: 'Exchange not connected', exchangeStatus }
+        });
+        
         return;
       }
 
-      // Process each consensus signal
+      // Get user's exchange credentials ONCE for the entire cycle
+      try {
+        credentials = await CrowdConsensusService.getUserExchangeCredentials(uid, exchangeStatus.exchange!);
+      } catch (error: any) {
+        logger.error({ 
+          uid, 
+          exchange: exchangeStatus.exchange,
+          error: error.message 
+        }, 'CREDENTIAL_DECRYPT_FAILED - failed to decrypt credentials');
+        
+        await CrowdConsensusService.saveSkippedTrade(uid, {
+          pair: 'BTCUSDT',
+          direction: 'LONG',
+          reason: 'EXCHANGE_ERROR',
+          timestamp: new Date(),
+          details: { message: 'Exchange not connected', error: error.message }
+        });
+        
+        return;
+      }
+      
+      if (!credentials) {
+        logger.warn({ 
+          uid, 
+          exchange: exchangeStatus.exchange 
+        }, 'CREDENTIALS_MISSING - credentials returned null');
+        
+        await CrowdConsensusService.saveSkippedTrade(uid, {
+          pair: 'BTCUSDT',
+          direction: 'LONG',
+          reason: 'EXCHANGE_ERROR',
+          timestamp: new Date(),
+          details: { message: 'Exchange not connected' }
+        });
+        
+        return;
+      }
+
+      logger.info({
+        uid,
+        exchange: exchangeStatus.exchange,
+        credentialsResolved: true
+      }, 'Credentials resolved - will be reused for all signals');
+
+      // STEP 2: Analyze consensus from multiple exchanges
+      const consensusSignals = await CrowdConsensusService.analyzeConsensus();
+
+      if (consensusSignals.length === 0) {
+        logger.info({ uid }, '⚠️ [CROWD_CONSENSUS] No consensus signals found - no trades to execute');
+        return;
+      }
+
+      logger.info({ 
+        uid, 
+        signalCount: consensusSignals.length,
+        signals: consensusSignals.map(s => `${s.pair} ${s.direction}`).join(', ')
+      }, '📊 [CROWD_CONSENSUS] Processing consensus signals...');
+
+      // HARD LOG - CONSENSUS FINAL RESULT
+      console.log('[CONSENSUS FINAL]', {
+        signalCount: consensusSignals.length,
+        signals: consensusSignals.map(s => ({ pair: s.pair, direction: s.direction, exchanges: s.exchanges }))
+      });
+
+      // STEP 3: Process each consensus signal using the SAME resolved credentials
       for (const signal of consensusSignals) {
         try {
-          await this.processConsensusSignal(uid, signal);
+          console.log('[EXECUTION BLOCK HIT]', { pair: signal.pair, direction: signal.direction });
+          await this.processConsensusSignal(uid, signal, exchangeStatus.exchange!, credentials);
         } catch (error) {
           logger.error({
             uid,
             pair: signal.pair,
             direction: signal.direction,
             error: error instanceof Error ? error.message : 'Unknown error'
-          }, 'Failed to process consensus signal');
+          }, '❌ [CROWD_CONSENSUS] Failed to process consensus signal');
         }
       }
+
+      logger.info({ uid }, '✅ [CROWD_CONSENSUS] Completed consensus analysis and trade execution for user');
 
     } catch (error) {
       logger.error({
         uid,
         error: error instanceof Error ? error.message : 'Unknown error'
-      }, 'Failed to execute consensus analysis and trade');
+      }, '❌ [CROWD_CONSENSUS] Failed to execute consensus analysis and trade');
     }
   }
 
   /**
    * Process a single consensus signal for a user
+   * FIX: Accept pre-resolved credentials from cycle start (no per-signal credential resolution)
    */
-  static async processConsensusSignal(uid: string, signal: any): Promise<void> {
+  static async processConsensusSignal(
+    uid: string, 
+    signal: any, 
+    exchange: string, 
+    credentials: any
+  ): Promise<void> {
     const agentId = `crowd_consensus_${uid}`;
     
     try {
@@ -282,8 +405,13 @@ export class CrowdConsensusScheduler {
         return;
       }
 
-      // Execute the trade
-      const tradeResult = await CrowdConsensusService.executeConsensusTrade(signal, uid);
+      // Execute the trade using pre-resolved credentials (no per-signal credential fetch)
+      const tradeResult = await CrowdConsensusService.executeConsensusTrade(
+        signal, 
+        uid, 
+        exchange, 
+        credentials
+      );
 
       if (!tradeResult.success) {
         // Store diagnostic for trade execution failure

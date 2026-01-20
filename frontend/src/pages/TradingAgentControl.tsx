@@ -15,11 +15,18 @@ export default function TradingAgentControl() {
   const location = useLocation();
 
   const isLiquiditySweepAgent = (location.pathname || '').includes('liquidity_sniper_arbitrage');
-  const approvalKey = isLiquiditySweepAgent ? 'LIQUIDITY_SWEEP_AGENT' : 'TRADING_AGENT';
+  const isHTFTrendFilterAgent = (location.pathname || '').includes('htf-trend-filter-agent');
+  const approvalKey = isLiquiditySweepAgent ? 'LIQUIDITY_SWEEP_AGENT' : 
+                      isHTFTrendFilterAgent ? 'HTF_TREND_FILTER_AGENT' : 
+                      'TRADING_AGENT';
   const slug = agentKeyToSlug(approvalKey);
-  const pageTitle = isLiquiditySweepAgent ? 'Liquidity Sweep Agent' : 'RSI + Bollinger Bands Agent';
+  const pageTitle = isLiquiditySweepAgent ? 'Liquidity Sweep Agent' : 
+                    isHTFTrendFilterAgent ? 'HTF Trend Filter Scalping Agent' :
+                    'RSI + Bollinger Bands Agent';
   const pageSubtitle = isLiquiditySweepAgent
     ? 'Liquidity Sweep • Unified Execution'
+    : isHTFTrendFilterAgent
+    ? 'BTC/USDT • ETH/USDT • HTF Trend Filter + EMA Pullback + RSI + Bollinger Bands'
     : 'BTC/USDT • ETH/USDT • RSI + Bollinger Bands Strategy';
 
   const [trades, setTrades] = useState<any[]>([]);
@@ -214,15 +221,15 @@ export default function TradingAgentControl() {
   return (
     <ErrorBoundary>
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
-        <div className="p-6 max-w-5xl mx-auto space-y-6">
-          <div className="flex items-center justify-between">
+        <div className="p-6 max-w-5xl mx-auto space-y-8">
+          <div className="flex items-center justify-between mb-2">
             <div>
-              <h1 className="text-2xl font-semibold text-white">{pageTitle}</h1>
-              <div className="text-sm text-gray-400">
+              <h1 className="text-3xl font-bold text-white mb-2">{pageTitle}</h1>
+              <div className="text-sm text-gray-400 leading-relaxed">
                 {pageSubtitle}
               </div>
             </div>
-            <button onClick={() => navigate('/agents')} className="btn btn-secondary">Back</button>
+            <button onClick={() => navigate('/agents')} className="btn btn-secondary px-6 py-2.5">Back</button>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -278,11 +285,11 @@ export default function TradingAgentControl() {
             </div>
           </div>
 
-          <div className="bg-slate-800/40 border border-purple-500/20 rounded-xl p-5">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-white">Trades History</h2>
+          <div className="bg-slate-800/40 border border-purple-500/20 rounded-xl p-6">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-bold text-white">Trades History</h2>
               <button
-                className="btn btn-secondary"
+                className="btn btn-secondary px-5 py-2"
                 onClick={() => loadData()}
                 disabled={loadingData}
               >
@@ -291,7 +298,10 @@ export default function TradingAgentControl() {
             </div>
 
             {trades.length === 0 ? (
-              <div className="text-sm text-gray-400">No trades yet</div>
+              <div className="text-center py-12">
+                <div className="text-gray-400 text-base">No trades yet</div>
+                <div className="text-gray-500 text-sm mt-2">Trades will appear here once the agent executes</div>
+              </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="min-w-full text-sm">
@@ -327,37 +337,37 @@ export default function TradingAgentControl() {
           </div>
 
           {/* Diagnostics / Skipped Trades */}
-          <div className="bg-slate-800/40 border border-purple-500/20 rounded-xl p-5">
-            <div className="flex items-center gap-2 mb-4">
-              <h2 className="text-lg font-semibold text-white">Diagnostics</h2>
+          <div className="bg-slate-800/40 border border-purple-500/20 rounded-xl p-6">
+            <div className="flex items-center gap-3 mb-6">
+              <h2 className="text-xl font-bold text-white">Diagnostics</h2>
               <button
                 onClick={() => setShowExecutionCriteria(!showExecutionCriteria)}
                 className="text-purple-400 hover:text-purple-300 transition-colors"
                 title="View execution criteria checklist"
               >
-                <InformationCircleIcon className="w-5 h-5" />
+                <InformationCircleIcon className="w-6 h-6" />
               </button>
             </div>
 
             {/* Execution Criteria Checklist */}
             {showExecutionCriteria && (
-              <div className="mb-4 p-4 bg-slate-900/50 rounded-lg border border-purple-500/20">
-                <h3 className="text-sm font-semibold text-white mb-3">Execution Criteria Checklist</h3>
-                <div className="space-y-2">
+              <div className="mb-6 p-5 bg-slate-900/50 rounded-lg border border-purple-500/20">
+                <h3 className="text-base font-bold text-white mb-4">Execution Criteria Checklist</h3>
+                <div className="space-y-3">
                   {/* Exchange API Connected */}
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between py-1">
                     <span className="text-sm text-gray-300">Exchange API Connected</span>
                     {(() => {
                       const s = isExchangeConnected(exchangeConfig);
                       return s.connected ? (
-                        <div className="flex items-center gap-1 text-green-400">
-                          <CheckCircleIcon className="w-4 h-4" />
-                          <span className="text-xs font-medium">DONE</span>
+                        <div className="flex items-center gap-2 text-green-400">
+                          <CheckCircleIcon className="w-5 h-5" />
+                          <span className="text-xs font-semibold">DONE</span>
                         </div>
                       ) : (
-                        <div className="flex items-center gap-1 text-yellow-400" title="Exchange not connected">
-                          <ClockIcon className="w-4 h-4" />
-                          <span className="text-xs font-medium">PENDING</span>
+                        <div className="flex items-center gap-2 text-yellow-400" title="Exchange not connected">
+                          <ClockIcon className="w-5 h-5" />
+                          <span className="text-xs font-semibold">PENDING</span>
                         </div>
                       );
                     })()}
@@ -649,9 +659,12 @@ export default function TradingAgentControl() {
             </div>
 
             <h3 className="text-md font-medium text-white mb-3">Recent Cycle Results</h3>
+            <div className="text-xs text-gray-500 mb-3">
+              Shows execution/skip decisions from recent scheduler cycles (~5 min intervals)
+            </div>
 
             {skippedTrades.length === 0 ? (
-              <div className="text-sm text-gray-400">No diagnostics yet</div>
+              <div className="text-sm text-gray-400">No cycle results yet</div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="min-w-full text-sm">
@@ -659,39 +672,67 @@ export default function TradingAgentControl() {
                     <tr className="text-gray-400 border-b border-purple-500/20">
                       <th className="text-left py-2 pr-4 font-medium">Pair</th>
                       <th className="text-left py-2 pr-4 font-medium">Direction</th>
-                      <th className="text-left py-2 pr-4 font-medium">Reason</th>
+                      <th className="text-left py-2 pr-4 font-medium">Primary Reason</th>
                       <th className="text-left py-2 pr-4 font-medium">Timestamp</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {skippedTrades.map((skipped, index) => (
-                      <tr key={index} className="border-b border-purple-500/10">
-                        <td className="py-2 pr-4 text-white font-medium">
-                          {skipped.tradingPair || skipped.pair || 'BTC/USDT'}
-                        </td>
-                        <td className={`py-2 pr-4 font-medium ${
-                          skipped.signal?.direction === 'LONG' || skipped.direction === 'LONG'
-                            ? 'text-green-400'
-                            : 'text-red-400'
-                        }`}>
-                          {skipped.signal?.direction || skipped.direction || 'LONG'}
-                        </td>
-                        <td className="py-2 pr-4">
-                          <span className={`px-2 py-1 rounded text-xs ${
-                            skipped.decision?.reason?.includes('SR') ? 'bg-purple-500/20 text-purple-400' :
-                            skipped.decision?.reason?.includes('RR') ? 'bg-orange-500/20 text-orange-400' :
-                            skipped.decision?.reason?.includes('session') ? 'bg-blue-500/20 text-blue-400' :
-                            skipped.decision?.reason?.includes('candle') ? 'bg-yellow-500/20 text-yellow-400' :
-                            'bg-gray-500/20 text-gray-400'
+                    {skippedTrades.map((skipped, index) => {
+                      // Map backend reasons to human-readable format
+                      const rawReason = skipped.decision?.reason || skipped.reason || 'NO_SIGNAL';
+                      let displayReason = rawReason;
+                      let reasonColor = 'bg-gray-500/20 text-gray-400';
+
+                      // Map to clear, human-readable reasons
+                      if (rawReason.includes('session') || rawReason.includes('SESSION')) {
+                        displayReason = 'SESSION INVALID';
+                        reasonColor = 'bg-blue-500/20 text-blue-400';
+                      } else if (rawReason.includes('SR') || rawReason.includes('support') || rawReason.includes('resistance')) {
+                        displayReason = 'SR BLOCKED';
+                        reasonColor = 'bg-purple-500/20 text-purple-400';
+                      } else if (rawReason.includes('RR') || rawReason.includes('risk')) {
+                        displayReason = 'RR TOO LOW';
+                        reasonColor = 'bg-orange-500/20 text-orange-400';
+                      } else if (rawReason.includes('late') || rawReason.includes('already processed')) {
+                        displayReason = 'ENTRY LATE';
+                        reasonColor = 'bg-yellow-500/20 text-yellow-400';
+                      } else if (rawReason.includes('NO_SIGNAL') || rawReason.includes('Invalid indicators')) {
+                        displayReason = 'NO SIGNAL';
+                        reasonColor = 'bg-gray-500/20 text-gray-400';
+                      } else if (rawReason.includes('EXCHANGE') || rawReason.includes('credentials')) {
+                        displayReason = 'EXCHANGE ERROR';
+                        reasonColor = 'bg-red-500/20 text-red-400';
+                      } else if (rawReason.includes('daily') || rawReason.includes('limit') || rawReason.includes('consecutive')) {
+                        displayReason = 'RISK LIMIT';
+                        reasonColor = 'bg-red-500/20 text-red-400';
+                      } else if (rawReason.includes('TRADE_EXECUTED') || rawReason.includes('executed')) {
+                        displayReason = 'TRADE EXECUTED';
+                        reasonColor = 'bg-green-500/20 text-green-400';
+                      }
+
+                      return (
+                        <tr key={index} className="border-b border-purple-500/10">
+                          <td className="py-2 pr-4 text-white font-medium">
+                            {skipped.tradingPair || skipped.pair || 'BTC/USDT'}
+                          </td>
+                          <td className={`py-2 pr-4 font-medium ${
+                            skipped.signal?.direction === 'LONG' || skipped.direction === 'LONG'
+                              ? 'text-green-400'
+                              : 'text-red-400'
                           }`}>
-                            {skipped.decision?.reason || skipped.reason || 'NO_SIGNAL'}
-                          </span>
-                        </td>
-                        <td className="py-2 pr-4 text-gray-300">
-                          {skipped.timestamp ? new Date(skipped.timestamp).toLocaleString() : '-'}
-                        </td>
-                      </tr>
-                    ))}
+                            {skipped.signal?.direction || skipped.direction || 'LONG'}
+                          </td>
+                          <td className="py-2 pr-4">
+                            <span className={`px-2 py-1 rounded text-xs font-medium ${reasonColor}`}>
+                              {displayReason}
+                            </span>
+                          </td>
+                          <td className="py-2 pr-4 text-gray-300">
+                            {skipped.timestamp ? new Date(skipped.timestamp).toLocaleString() : '-'}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

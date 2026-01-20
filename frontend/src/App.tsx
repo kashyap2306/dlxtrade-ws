@@ -231,12 +231,16 @@ function App() {
                   <Route path="agents/:agentKey" element={<SafeRoute><AgentDetails /></SafeRoute>} />
                   <Route path="agents/launchpad-hunter" element={<SafeRoute><LaunchpadHunter /></SafeRoute>} />
                   <Route path="agents/crowd-consensus" element={<SafeRoute><CrowdConsensus /></SafeRoute>} />
-                  <Route path="agents/trading-agent" element={<SafeRoute><TradingAgentControl /></SafeRoute>} />
-                  <Route path="agents/trading-agent/:agentId" element={<SafeRoute><TradingAgentControl /></SafeRoute>} />
+                  <Route path="agents/rsi-bollinger-agent" element={<SafeRoute><TradingAgentControl /></SafeRoute>} />
+                  <Route path="agents/rsi-bollinger-agent/:agentId" element={<SafeRoute><TradingAgentControl /></SafeRoute>} />
+                  {/* Redirect old URL to new URL */}
+                  <Route path="agents/trading-agent" element={<Navigate to="/agents/rsi-bollinger-agent" replace />} />
+                  <Route path="agents/trading-agent/:agentId" element={<Navigate to="/agents/rsi-bollinger-agent" replace />} />
                   <Route path="agents/vwap-strategy" element={<SafeRoute><VWAPStrategy /></SafeRoute>} />
                   <Route path="agents/liquidity_sniper_arbitrage" element={<SafeRoute><TradingAgentControl /></SafeRoute>} />
-                  <Route path="agent/TRADING_AGENT" element={<Navigate to="/agents/trading-agent" replace />} />
-                  <Route path="agent/TRADING_AGENT/control" element={<Navigate to="/agents/trading-agent" replace />} />
+                  <Route path="agents/htf-trend-filter-agent" element={<SafeRoute><TradingAgentControl /></SafeRoute>} />
+                  <Route path="agent/TRADING_AGENT" element={<Navigate to="/agents/rsi-bollinger-agent" replace />} />
+                  <Route path="agent/TRADING_AGENT/control" element={<Navigate to="/agents/rsi-bollinger-agent" replace />} />
                   <Route path="agent/liquidity_sniper_arbitrage" element={<Navigate to="/agents/liquidity_sniper_arbitrage" replace />} />
                   <Route path="agent/:agentKey" element={<SafeRoute><AgentDashboard /></SafeRoute>} />
                   <Route path="agent/:agentKey/control" element={<SafeRoute><AgentControl /></SafeRoute>} />

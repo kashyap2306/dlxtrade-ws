@@ -170,7 +170,7 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
     const slug = agentKeyToSlug(agentKey);
     switch (slug) {
       case 'trading-agent':
-        return '/agents/trading-agent';
+        return '/agents/rsi-bollinger-agent';
       case 'vwap-strategy':
         return '/agents/vwap-strategy';
       case 'crowd-consensus':
@@ -179,19 +179,39 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
         return '/agents/liquidity_sniper_arbitrage';
       case 'launchpad-hunter':
         return '/agents/launchpad-hunter';
+      case 'htf-trend-filter-agent':
+        return '/agents/htf-trend-filter-agent';
       default:
         // CRITICAL: Always use /agents/ (plural) routes - /agent/ (singular) is deprecated and returns 410
         return `/agents/${slug}`;
     }
   }
 
-  const agentMenuItems: MenuItem[] = agents.map(agent => ({
-    path: getSidebarAgentRoute(agent.id),
-    label: agent.label,
-    Icon: Icons.Agent,
-    icon: undefined,
-    agentKey: agent.id,
-  }));
+  const agentMenuItems: MenuItem[] = agents.map(agent => {
+    // Map agent keys to display labels
+    let displayLabel = agent.label;
+    if (agent.id === 'TRADING_AGENT') {
+      displayLabel = 'RSI + Bollinger Bands Agent';
+    } else if (agent.id === 'VWAP_STRATEGY') {
+      displayLabel = 'VWAP Strategy';
+    } else if (agent.id === 'CROWD_CONSENSUS') {
+      displayLabel = 'Crowd Consensus';
+    } else if (agent.id === 'LIQUIDITY_SWEEP_AGENT') {
+      displayLabel = 'Liquidity Sweep Agent';
+    } else if (agent.id === 'LAUNCHPAD_HUNTER') {
+      displayLabel = 'Launchpad Hunter';
+    } else if (agent.id === 'HTF_TREND_FILTER_AGENT') {
+      displayLabel = 'HTF Trend Filter Scalping Agent';
+    }
+    
+    return {
+      path: getSidebarAgentRoute(agent.id),
+      label: displayLabel,
+      Icon: Icons.Agent,
+      icon: undefined,
+      agentKey: agent.id,
+    };
+  });
 
   const menuItems: MenuItem[] = [...staticMenuItems, ...agentMenuItems];
 
