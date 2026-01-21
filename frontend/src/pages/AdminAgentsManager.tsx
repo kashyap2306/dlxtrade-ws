@@ -243,20 +243,6 @@ export default function AdminAgentsManager() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="card">
               <div className="flex items-center mb-3">
-                <span className="text-2xl mr-3">📊</span>
-                <div>
-                  <h4 className="text-lg font-bold text-white">RSI + Bollinger Bands Agent</h4>
-                  <span className="text-xs bg-purple-500/20 text-purple-300 px-2 py-1 rounded">TRADING_AGENT</span>
-                </div>
-              </div>
-              <p className="text-gray-300 text-sm mb-3">
-                Fully automated trading agent with RSI/Bollinger Bands strategy. Executes deterministic trades 24/7 with SL/TP protection.
-              </p>
-              <div className="text-green-400 font-semibold">$500.00 one-time</div>
-            </div>
-
-            <div className="card">
-              <div className="flex items-center mb-3">
                 <span className="text-2xl mr-3">👥</span>
                 <div>
                   <h4 className="text-lg font-bold text-white">Crowd Consensus Copy Trade Agent</h4>

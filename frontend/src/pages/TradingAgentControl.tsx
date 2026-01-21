@@ -22,12 +22,12 @@ export default function TradingAgentControl() {
   const slug = agentKeyToSlug(approvalKey);
   const pageTitle = isLiquiditySweepAgent ? 'Liquidity Sweep Agent' : 
                     isHTFTrendFilterAgent ? 'HTF Trend Filter Scalping Agent' :
-                    'RSI + Bollinger Bands Agent';
+                    'Trading Agent';
   const pageSubtitle = isLiquiditySweepAgent
     ? 'Liquidity Sweep • Unified Execution'
     : isHTFTrendFilterAgent
     ? 'BTC/USDT • ETH/USDT • HTF Trend Filter + EMA Pullback + RSI + Bollinger Bands'
-    : 'BTC/USDT • ETH/USDT • RSI + Bollinger Bands Strategy';
+    : 'BTC/USDT • ETH/USDT • Automated Trading Strategy';
 
   const [trades, setTrades] = useState<any[]>([]);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -175,8 +175,9 @@ export default function TradingAgentControl() {
   };
 
   const isExchangeConnected = (cfg: any): { connected: boolean; exchange?: string } => {
-    // Use the same simple exchange connection check as Settings and Dashboard
-    const connected = Boolean(cfg && cfg.exchange);
+    // CRITICAL: Check disconnected flag first - this is the single source of truth
+    // If disconnected === true, exchange MUST be treated as disconnected
+    const connected = Boolean(cfg && cfg.exchange && cfg.disconnected !== true);
     const exchange = cfg?.exchange || undefined;
     return { connected, exchange };
   };

@@ -25,23 +25,6 @@ export default function AgentsMarketplace() {
   // Hardcoded agents as per requirements - exactly 4 agents
   const availableAgents: Agent[] = [
     {
-      id: 'TRADING_AGENT',
-      name: 'RSI + Bollinger Bands Agent',
-      description: 'Fully automated trading agent with RSI/Bollinger Bands strategy. Executes deterministic trades 24/7 with SL/TP protection.',
-      price: 500,
-      features: [
-        'RSI + Bollinger Bands signals',
-        'Stop Loss & Take Profit',
-        'BTC/USDT & ETH/USDT pairs',
-        'Spot & Futures markets',
-        'Daily safety limits',
-        'Admin approval required'
-      ],
-      icon: '📊',
-      category: 'Trading Bot',
-      badge: 'Premium'
-    },
-    {
       id: 'COPY_TRADING_AGENT',
       name: 'Crowd Consensus Copy Trade Agent',
       description: 'Follows crowd consensus across 10+ exchanges, trades when multiple exchanges agree on direction',

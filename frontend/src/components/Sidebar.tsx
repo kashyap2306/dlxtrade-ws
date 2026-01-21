@@ -169,8 +169,6 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
   function getSidebarAgentRoute(agentKey: string) {
     const slug = agentKeyToSlug(agentKey);
     switch (slug) {
-      case 'trading-agent':
-        return '/agents/rsi-bollinger-agent';
       case 'vwap-strategy':
         return '/agents/vwap-strategy';
       case 'crowd-consensus':
@@ -187,31 +185,31 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
     }
   }
 
-  const agentMenuItems: MenuItem[] = agents.map(agent => {
-    // Map agent keys to display labels
-    let displayLabel = agent.label;
-    if (agent.id === 'TRADING_AGENT') {
-      displayLabel = 'RSI + Bollinger Bands Agent';
-    } else if (agent.id === 'VWAP_STRATEGY') {
-      displayLabel = 'VWAP Strategy';
-    } else if (agent.id === 'CROWD_CONSENSUS') {
-      displayLabel = 'Crowd Consensus';
-    } else if (agent.id === 'LIQUIDITY_SWEEP_AGENT') {
-      displayLabel = 'Liquidity Sweep Agent';
-    } else if (agent.id === 'LAUNCHPAD_HUNTER') {
-      displayLabel = 'Launchpad Hunter';
-    } else if (agent.id === 'HTF_TREND_FILTER_AGENT') {
-      displayLabel = 'HTF Trend Filter Scalping Agent';
-    }
-    
-    return {
-      path: getSidebarAgentRoute(agent.id),
-      label: displayLabel,
-      Icon: Icons.Agent,
-      icon: undefined,
-      agentKey: agent.id,
-    };
-  });
+  const agentMenuItems: MenuItem[] = agents
+    .filter(agent => agent.id !== 'TRADING_AGENT') // Exclude TRADING_AGENT from sidebar
+    .map(agent => {
+      // Map agent keys to display labels
+      let displayLabel = agent.label;
+      if (agent.id === 'VWAP_STRATEGY') {
+        displayLabel = 'VWAP Strategy';
+      } else if (agent.id === 'COPY_TRADING_AGENT') {
+        displayLabel = 'Crowd Consensus';
+      } else if (agent.id === 'LIQUIDITY_SWEEP_AGENT') {
+        displayLabel = 'Liquidity Sweep Agent';
+      } else if (agent.id === 'LAUNCHPAD_HUNTER') {
+        displayLabel = 'Launchpad Hunter';
+      } else if (agent.id === 'HTF_TREND_FILTER_AGENT') {
+        displayLabel = 'HTF Trend Filter Scalping Agent';
+      }
+      
+      return {
+        path: getSidebarAgentRoute(agent.id),
+        label: displayLabel,
+        Icon: Icons.Agent,
+        icon: undefined,
+        agentKey: agent.id,
+      };
+    });
 
   const menuItems: MenuItem[] = [...staticMenuItems, ...agentMenuItems];
 

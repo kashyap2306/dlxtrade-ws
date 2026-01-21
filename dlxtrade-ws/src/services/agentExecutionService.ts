@@ -242,8 +242,19 @@ export class AgentExecutionService {
       // Create agent-specific market provider using canonical exchange config
       const exchangeConfig = await firestoreAdapter.getExchangeConfig(agentConfig.userId);
       if (!exchangeConfig?.exchange) {
-        diagnostics.decision = { action: 'SKIP', reason: 'EXCHANGE_NOT_FOUND' };
-        logger.warn({ agentId, uid: agentConfig.userId }, 'SKIP: EXCHANGE_NOT_FOUND - no exchange connected');
+        diagnostics.decision = { 
+          action: 'SKIP', 
+          reason: 'NO_EXCHANGE_CONFIG_FOUND',
+          exchangeErrorReason: 'No exchange connected. Please connect your exchange in Settings → Exchange to enable trading.'
+        };
+        logger.warn({ 
+          agentId, 
+          uid: agentConfig.userId,
+          exchangeConfigPath: `users/${agentConfig.userId}/exchangeConfig/current`
+        }, 'SKIP: NO_EXCHANGE_CONFIG_FOUND - user must connect exchange in Settings');
+        
+        // Store diagnostics so user can see the error in UI
+        await agent.storeDiagnostics(diagnostics);
         return;
       }
 
@@ -268,14 +279,38 @@ export class AgentExecutionService {
       const passphrase = encryptedPassphrase ? decrypt(encryptedPassphrase, 'background_job') : undefined;
 
       if (!apiKey || !secret) {
-        diagnostics.decision = { action: 'SKIP', reason: 'EXCHANGE_CREDENTIALS_DECRYPT_FAILED' };
+        // CRITICAL: Log detailed information to diagnose decrypt failure
+        const encryptionKeyStatus = (() => {
+          try {
+            const { getEncryptionKeyStatus } = require('./keyManager');
+            return getEncryptionKeyStatus();
+          } catch {
+            return { initialized: false, keyLength: 0, keyHash: 'unknown', cached: false };
+          }
+        })();
+
+        diagnostics.decision = { 
+          action: 'SKIP', 
+          reason: 'EXCHANGE_CREDENTIALS_DECRYPT_FAILED',
+          exchangeErrorReason: 'Exchange credentials could not be decrypted. This usually means the encryption key has changed or the credentials are corrupted. Please reconnect your exchange in Settings → Exchange.'
+        };
         logger.error({ 
           agentId, 
           uid: agentConfig.userId, 
           exchange: exchangeConfig.exchange,
           decryptedApiKey: !!apiKey,
-          decryptedSecret: !!secret
-        }, 'SKIP: EXCHANGE_CREDENTIALS_DECRYPT_FAILED - decryption returned null');
+          decryptedSecret: !!secret,
+          hasEncryptedApiKey: !!encryptedApiKey,
+          hasEncryptedSecret: !!encryptedSecret,
+          encryptedApiKeyLength: encryptedApiKey?.length || 0,
+          encryptedSecretLength: encryptedSecret?.length || 0,
+          encryptedApiKeyFormat: encryptedApiKey?.includes(':') ? 'valid' : 'invalid',
+          encryptedSecretFormat: encryptedSecret?.includes(':') ? 'valid' : 'invalid',
+          encryptionKeyStatus
+        }, 'SKIP: EXCHANGE_CREDENTIALS_DECRYPT_FAILED - decryption returned null. User needs to reconnect exchange.');
+        
+        // Store diagnostics before returning so user can see the error in UI
+        await agent.storeDiagnostics(diagnostics);
         return;
       }
 

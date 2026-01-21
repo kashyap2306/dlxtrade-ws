@@ -1266,26 +1266,39 @@ const Settings = () => {
     if (!confirmed) return;
 
     try {
-      // Call backend disconnect route (preserves credentials)
-      await api.disconnect('binance'); // Use actual exchange type if available
+      // STEP 2: Call backend disconnect route (preserves credentials)
+      const response = await exchangeService.disconnect('binance'); // Use actual exchange type if available
+      
+      console.log('[EXCHANGE-DISCONNECT] Backend response:', response.data);
 
-      // Immediately update UI state for instant feedback
-      setExchangeConfig({});
-      console.log('[EXCHANGE-DISCONNECT] UI state cleared immediately');
-
-      // Refresh from backend in background (don't await)
-      loadExchangeConfig(user.uid).catch((refetchErr) => {
-        console.warn('[EXCHANGE-DISCONNECT] Failed to re-fetch exchange config:', refetchErr);
-      });
+      // STEP 2: FORCE refetch canonical config from backend - NO manual state mutation
+      await loadExchangeConfig(user.uid);
+      console.log('[EXCHANGE-DISCONNECT] Exchange config refreshed from backend');
 
       setExchangeTestResult(undefined);
       showToast('Exchange disconnected successfully. Your credentials are preserved for easy reconnection.', 'success');
     } catch (err: any) {
+      console.error('[EXCHANGE-DISCONNECT] Error:', err);
+      
       if (err.response?.status === 401) {
         handleLogout();
         return;
       }
-      showToast(err.response?.data?.error || 'Failed to disconnect exchange', 'error');
+      
+      // CRITICAL: Backend should always return 200 for disconnect
+      // If we get here, something is seriously wrong
+      // But still refetch to ensure UI reflects backend state
+      console.error('[EXCHANGE-DISCONNECT] Unexpected error - refetching config anyway');
+      try {
+        await loadExchangeConfig(user.uid);
+      } catch (refetchErr) {
+        console.warn('[EXCHANGE-DISCONNECT] Failed to re-fetch exchange config:', refetchErr);
+      }
+      setExchangeTestResult(undefined);
+      
+      // Show error but note that disconnect may have succeeded
+      const errorMessage = err.response?.data?.error || 'Disconnect request failed, but exchange may be disconnected. Please refresh the page.';
+      showToast(errorMessage, 'warning');
     }
   };
 

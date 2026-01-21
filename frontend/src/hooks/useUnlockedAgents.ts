@@ -21,19 +21,6 @@ export interface UnlockedAgent {
 
 // Define available agents with their details
 const AGENT_DETAILS: Record<string, { name: string; description: string; features: string[]; category: string; badge: string }> = {
-  'TRADING_AGENT': {
-    name: 'RSI + Bollinger Bands Agent',
-    description: 'Fully automated trading agent with RSI/Bollinger Bands strategy. Executes deterministic trades 24/7 with SL/TP protection.',
-    features: [
-      'RSI + Bollinger Bands signals',
-      'Stop Loss & Take Profit',
-      'BTC/USDT & ETH/USDT pairs',
-      'Spot & Futures markets',
-      'Daily safety limits'
-    ],
-    category: 'Trading Bot',
-    badge: 'Premium'
-  },
   'COPY_TRADING_AGENT': {
     name: 'Crowd Consensus Copy Trade Agent',
     description: 'Follows crowd consensus across 10+ exchanges, trades when multiple exchanges agree on direction',

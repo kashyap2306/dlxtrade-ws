@@ -556,17 +556,46 @@ export default function Dashboard() {
     setSavingExchange(true);
     try {
       // Call backend disconnect route (preserves credentials)
-      await api.disconnect('binance'); // Use actual exchange type if available
+      const response = await exchangeApi.disconnect('binance'); // Use actual exchange type if available
 
-      // Refresh exchangeConfig state
+      // Backend always returns success for disconnect
+      console.log('[EXCHANGE-DISCONNECT] Backend response:', response.data);
+
+      // Immediately clear UI state
       setExchangeConfig(null);
       setSelectedExchange('');
       setExchangeForm({ apiKey: '', secretKey: '', passphrase: '' });
 
+      // Show success message
       showToast('Exchange disconnected successfully. Your credentials are preserved for easy reconnection.', 'success');
+      
+      // Refresh exchange status from backend to ensure UI is in sync
+      try {
+        const statusResponse = await exchangeApi.status();
+        console.log('[EXCHANGE-DISCONNECT] Status after disconnect:', statusResponse.data);
+      } catch (statusErr) {
+        console.warn('[EXCHANGE-DISCONNECT] Failed to refresh status:', statusErr);
+      }
     } catch (err: any) {
       console.error('Disconnect exchange error:', err);
-      showToast('Failed to disconnect exchange', 'error');
+      
+      // Check if it's an auth error
+      if (err.response?.status === 401) {
+        showToast('Authentication required. Please log in again.', 'error');
+        return;
+      }
+      
+      // CRITICAL: Backend should always return 200 for disconnect
+      // If we get here, something is seriously wrong
+      // But still clear the UI state to reflect user intent
+      console.error('[EXCHANGE-DISCONNECT] Unexpected error - clearing UI state anyway');
+      setExchangeConfig(null);
+      setSelectedExchange('');
+      setExchangeForm({ apiKey: '', secretKey: '', passphrase: '' });
+      
+      // Show error but note that disconnect may have succeeded
+      const errorMessage = err.response?.data?.error || 'Disconnect request failed, but exchange may be disconnected. Please refresh the page.';
+      showToast(errorMessage, 'warning');
     } finally {
       setSavingExchange(false);
     }
@@ -624,22 +653,22 @@ export default function Dashboard() {
                       </svg>
                       Exchange API Status
                     </h3>
-                    <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${exchangeConfig && exchangeConfig.exchange
+                    <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${!!exchangeConfig && exchangeConfig.disconnected !== true
                       ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30'
                       : 'bg-red-500/10 text-red-300 border border-red-500/30'
                       }`}>
-                      <div className={`w-2 h-2 rounded-full ${exchangeConfig && exchangeConfig.exchange ? 'bg-emerald-400' : 'bg-red-400'
+                      <div className={`w-2 h-2 rounded-full ${!!exchangeConfig && exchangeConfig.disconnected !== true ? 'bg-emerald-400' : 'bg-red-400'
                         }`}></div>
-                      {exchangeConfig && exchangeConfig.exchange ? 'Connected' : 'Not Connected'}
+                      {!!exchangeConfig && exchangeConfig.disconnected !== true ? 'Connected' : 'Not Connected'}
                     </div>
                   </div>
                   <p className="text-slate-400 text-sm">
-                    {exchangeConfig && exchangeConfig.exchange
+                    {!!exchangeConfig && exchangeConfig.disconnected !== true
                       ? 'Your exchange API is connected and ready for trading.'
                       : 'Connect your exchange API keys to enable auto-trading features.'
                     }
                   </p>
-                  {!(exchangeConfig && exchangeConfig.exchange) && (
+                  {!(!!exchangeConfig && exchangeConfig.disconnected !== true) && (
                     <button
                       onClick={handleConnectClick}
                       className="mt-4 px-4 py-2 bg-slate-700/50 border border-slate-600/50 text-slate-300 rounded-lg hover:bg-slate-600/50 transition-colors text-sm font-medium"
@@ -658,19 +687,19 @@ export default function Dashboard() {
                       </svg>
                       Required APIs
                     </h3>
-                    <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${exchangeConfig && exchangeConfig.exchange
+                    <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${!!exchangeConfig && exchangeConfig.disconnected !== true
                       ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30'
                       : 'bg-red-500/10 text-red-300 border border-red-400/30'
                       }`}>
-                      <div className={`w-2 h-2 rounded-full ${exchangeConfig && exchangeConfig.exchange ? 'bg-emerald-400' : 'bg-red-400'
+                      <div className={`w-2 h-2 rounded-full ${!!exchangeConfig && exchangeConfig.disconnected !== true ? 'bg-emerald-400' : 'bg-red-400'
                         }`}></div>
-                      {exchangeConfig && exchangeConfig.exchange ? 'Connected' : 'Not Connected'}
+                      {!!exchangeConfig && exchangeConfig.disconnected !== true ? 'Connected' : 'Not Connected'}
                     </div>
                   </div>
 
                   <div className="space-y-3">
                     {[
-                      { name: 'Exchange API', key: 'isApiConnected', status: (exchangeConfig && exchangeConfig.exchange) ? 'connected' : 'disconnected' },
+                      { name: 'Exchange API', key: 'isApiConnected', status: (!!exchangeConfig && exchangeConfig.disconnected !== true) ? 'connected' : 'disconnected' },
                       { name: 'Market Data', key: 'marketData', status: 'connected' },
                       { name: 'News API', key: 'news', status: 'connected' },
                       { name: 'Metadata API', key: 'metadata', status: 'connected' }
@@ -782,7 +811,7 @@ export default function Dashboard() {
                   <div className="space-y-3 max-h-64 overflow-y-auto">
                     {activeTrades.length > 0 ? (
                       activeTrades.slice(0, 5).map((trade: any, index: number) => {
-                        const ExchangeLogoComponent = exchangeConfig?.exchange ? getExchangeLogo(exchangeConfig.exchange) : null;
+                        const ExchangeLogoComponent = (!!exchangeConfig && exchangeConfig.disconnected !== true && exchangeConfig.exchange) ? getExchangeLogo(exchangeConfig.exchange) : null;
                         const tradeTime = new Date(trade.timestamp);
                         const timeAgo = Math.floor((Date.now() - tradeTime.getTime()) / (1000 * 60)); // minutes ago
 

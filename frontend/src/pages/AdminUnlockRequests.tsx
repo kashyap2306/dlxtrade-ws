@@ -17,10 +17,6 @@ interface AgentRequest {
 
 // Agent details for display
 const AGENT_DETAILS: Record<string, { name: string; description: string }> = {
-  'TRADING_AGENT': {
-    name: 'RSI + Bollinger Bands Agent',
-    description: 'Fully automated trading agent with RSI/Bollinger Bands strategy'
-  },
   'COPY_TRADING_AGENT': {
     name: 'Crowd Consensus Copy Trade Agent',
     description: 'Follows crowd consensus across 10+ exchanges'

@@ -101,10 +101,7 @@ export default function AdminUsersList() {
       const uids = targetUid ? [targetUid] : users.map(u => u.uid);
 
       for (const uid of uids) {
-        // Unlock RSI + Bollinger Bands Agent
-        await adminApi.unlockAgent(uid, 'RSI + Bollinger Bands Agent');
-
-        // Unlock all other agents
+        // Unlock all agents
         const allAgentNames = [
           'Airdrop Multiverse Agent',
           'Liquidity Sniper & Arbitrage Agent',

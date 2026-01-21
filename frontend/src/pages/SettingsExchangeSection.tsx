@@ -16,10 +16,6 @@ interface SettingsExchangeSectionProps {
   savingExchange: boolean;
 }
 
-interface BalanceData {
-  [currency: string]: number;
-}
-
 export const SettingsExchangeSection: React.FC<SettingsExchangeSectionProps> = ({
   exchangeConfig,
   selectedExchange,
@@ -32,18 +28,22 @@ export const SettingsExchangeSection: React.FC<SettingsExchangeSectionProps> = (
   handleDisconnectExchange,
   savingExchange,
 }) => {
+  // STEP 1: SINGLE SOURCE OF TRUTH - Define once
+  // STEP 4: HARD SAFETY GUARD - disconnected flag overrides everything
+  const isExchangeConnected = !!exchangeConfig && exchangeConfig.disconnected !== true;
+
   return (
     <section id="exchange-connection" className="mb-12">
       <h2 className="text-3xl font-bold text-white mb-6 flex items-center gap-3">
         🏦 Exchange Connection
       </h2>
       <SettingsCard>
-        {exchangeConfig && exchangeConfig.exchange ? (
+        {isExchangeConnected ? (
           <div className="p-6 bg-green-500/10 border border-green-500/30 rounded-xl space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <CheckCircleIcon className="w-6 h-6 text-green-400" />
-                <span className="text-xl font-bold text-white">Connected to: {exchangeConfig.exchange.charAt(0).toUpperCase() + exchangeConfig.exchange.slice(1)}</span>
+                <span className="text-xl font-bold text-white">Connected to: {exchangeConfig?.exchange ? exchangeConfig.exchange.charAt(0).toUpperCase() + exchangeConfig.exchange.slice(1) : 'Exchange'}</span>
               </div>
               <button
                 onClick={handleDisconnectExchange}
