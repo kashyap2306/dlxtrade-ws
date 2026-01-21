@@ -115,7 +115,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         CrowdConsensusService.getDailyTradeCount(uid),
         CrowdConsensusService.getUserTrades(uid, limit),
         CrowdConsensusService.getSkippedTrades(uid, limit),
-        CrowdConsensusService.getExchangeConsensusBreakdown('BTCUSDT'),
+        CrowdConsensusService.getExchangeConsensusBreakdown(),
       ]);
 
       const dailyTradeLimit = 5; // Max 5 trades per day
@@ -675,7 +675,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         }
 
         if (!targetAgent?.id) {
-          return { diagnostics: [], scheduler, agentStatus: 'NOT_FOUND' };
+          return reply.code(200).send({ diagnostics: [], scheduler, agentStatus: 'NOT_FOUND' });
         }
 
         const { TradingAgent } = await import('../services/tradingAgent');
@@ -685,12 +685,12 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         const currentAgentConfig = await firestoreAdapter.getTradingAgentConfig(targetAgent.id);
         const agentStatus = currentAgentConfig?.status || 'UNKNOWN';
         
-        return { 
+        return reply.code(200).send({ 
           diagnostics, 
           scheduler,
           agentStatus,
           agentConfig: currentAgentConfig
-        };
+        });
       }
 
       // VWAP Strategy diagnostics (uses user-scoped runtime agent id)
@@ -1613,6 +1613,10 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
         // Update agent status to ACTIVE
         await firestoreAdapter.updateAgentStatus(targetAgent.id, 'ACTIVE');
+        
+        // CRITICAL: Reload agents in scheduler so it picks up the newly activated agent
+        const { tradingAgentScheduler } = await import('../services/tradingAgentScheduler');
+        await tradingAgentScheduler.reloadAgents();
         
         logger.info({ uid: user.uid, agentId: targetAgent.id, mode: 'manual' }, 'HTF Trend Filter Agent started in manual mode - ARMED and waiting for signals');
         return { success: true, message: 'HTF Trend Filter Agent started successfully', mode: 'manual', status: 'ARMED' };

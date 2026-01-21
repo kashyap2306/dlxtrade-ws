@@ -342,7 +342,25 @@ export default function VWAPStrategy() {
                       <td className={`p-2 ${(Number(t.pnl) || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                         {t.pnl !== undefined && t.pnl !== null ? Number(t.pnl || 0).toFixed(4) : ''}
                       </td>
-                      <td className="p-2 text-slate-300">{t.status}</td>
+                      <td className="p-2 text-slate-300">
+                        <div className="flex items-center gap-2">
+                          {/* Show info icon for failed trades with exchange error */}
+                          {(t.status === 'FAILED' || t.error || t.exchangeErrorReason) && (
+                            <div className="relative group">
+                              <svg className="w-5 h-5 text-red-400 cursor-help" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                              </svg>
+                              <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-3 bg-slate-900 border border-red-500/30 rounded-lg shadow-xl">
+                                <div className="text-xs font-semibold text-red-400 mb-1">Exchange Rejection Reason:</div>
+                                <div className="text-xs text-gray-300 leading-relaxed">
+                                  {t.exchangeErrorReason || t.error || 'Exchange rejected the order (no details provided)'}
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                          <span>{t.status}</span>
+                        </div>
+                      </td>
                     </tr>
                   ))
                 )}
@@ -404,6 +422,7 @@ export default function VWAPStrategy() {
                       const isStopForDay = reason.startsWith('STOPPED_FOR_DAY');
                       const executed = action === 'TRADE' && !!d?.execution?.success;
                       const result = executed ? 'EXECUTED' : isStopForDay ? 'STOPPED_FOR_DAY' : 'SKIPPED';
+                      const hasExchangeError = reason.includes('EXCHANGE') || reason.includes('credentials') || reason.includes('FAILED');
 
                       return (
                         <tr key={d?.id || `${idx}`} className="border-t border-slate-800">
@@ -420,7 +439,23 @@ export default function VWAPStrategy() {
                             {result}
                           </td>
                           <td className="p-2 text-slate-300">
-                            {reason || (executed ? '' : action || '')}
+                            <div className="flex items-center gap-2">
+                              {/* Show info icon for exchange errors with exact error reason */}
+                              {hasExchangeError && (
+                                <div className="relative group">
+                                  <svg className="w-5 h-5 text-red-400 cursor-help" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                                  </svg>
+                                  <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-3 bg-slate-900 border border-red-500/30 rounded-lg shadow-xl">
+                                    <div className="text-xs font-semibold text-red-400 mb-1">Exchange Rejection Reason:</div>
+                                    <div className="text-xs text-gray-300 leading-relaxed">
+                                      {d?.decision?.exchangeErrorReason || d?.exchangeErrorReason || reason || 'Exchange rejected the order (no details provided)'}
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                              <span>{reason || (executed ? '' : action || '')}</span>
+                            </div>
                           </td>
                         </tr>
                       );

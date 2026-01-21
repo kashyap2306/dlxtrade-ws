@@ -49,11 +49,17 @@ export class AgentExecutionService {
         const agent = new TradingAgent(config);
         this.activeAgents.set(config.id, agent);
 
+        // CRITICAL: Log HTF agents specifically to verify they're loaded
+        const isHTFAgent = config.strategyType === 'HTF_TREND_FILTER' || 
+                          (config.name && config.name.includes('HTF Trend Filter'));
+        
         logger.info({
           agentId: config.id,
           name: config.name,
-          tradingPair: config.tradingPair
-        }, 'Trading agent loaded and activated');
+          tradingPair: config.tradingPair,
+          strategyType: config.strategyType,
+          isHTFAgent
+        }, isHTFAgent ? '🎯 HTF Trend Filter Agent loaded and activated' : 'Trading agent loaded and activated');
       }
 
       logger.info({
@@ -142,10 +148,31 @@ export class AgentExecutionService {
    * This method is called by the scheduler every 5 minutes
    */
   async executeAllAgents(): Promise<void> {
+    // Log all agents being executed
+    const agents = Array.from(this.activeAgents.values());
+    logger.info({
+      totalAgents: agents.length,
+      agentIds: agents.map(a => a['config'].id),
+      agentNames: agents.map(a => a['config'].name),
+      strategyTypes: agents.map(a => a['config'].strategyType || 'UNKNOWN')
+    }, 'Executing all active trading agents');
+
     // Execute regular trading agents
-    const tradingAgentPromises = Array.from(this.activeAgents.values()).map(agent =>
-      this.executeAgent(agent)
-    );
+    const tradingAgentPromises = Array.from(this.activeAgents.values()).map(agent => {
+      const agentConfig = agent['config'];
+      const isHTFAgent = agentConfig.strategyType === 'HTF_TREND_FILTER' || 
+                         (agentConfig.name && agentConfig.name.includes('HTF Trend Filter'));
+      
+      if (isHTFAgent) {
+        logger.info({
+          agentId: agentConfig.id,
+          name: agentConfig.name,
+          strategyType: agentConfig.strategyType
+        }, '🎯 Executing HTF Trend Filter Agent');
+      }
+      
+      return this.executeAgent(agent);
+    });
 
     // Execute VWAP strategy agents that are currently running according to runtime service
     const vwapStrategyPromises = Array.from(this.activeVWAPStrategies.entries())
@@ -163,6 +190,19 @@ export class AgentExecutionService {
     const agentId = agent['config'].id;
     const agentConfig = agent['config'];
     const tradingPair = agentConfig.tradingPair;
+
+    // CRITICAL DEBUG: Log execution start for HTF agents
+    const isHTFAgent = (agentConfig as any).strategyType === 'HTF_TREND_FILTER' || 
+                       (agentConfig.name && agentConfig.name.includes('HTF Trend Filter'));
+    
+    if (isHTFAgent) {
+      logger.info({
+        agentId,
+        name: agentConfig.name,
+        tradingPair,
+        strategyType: (agentConfig as any).strategyType
+      }, '🎯 HTF AGENT EXECUTION STARTED');
+    }
 
     // Initialize diagnostics
     const diagnostics: any = {
@@ -184,18 +224,18 @@ export class AgentExecutionService {
       // Manual STOP must override everything - do NOT run any logic
       const currentAgentConfig = await firestoreAdapter.getTradingAgentConfig(agentId);
       if (!currentAgentConfig || currentAgentConfig.status === 'STOPPED') {
+        diagnostics.decision = { action: 'SKIP', reason: 'AGENT_STOPPED' };
         logger.debug({
           agentId,
           userId: agentConfig.userId,
           status: currentAgentConfig?.status || 'NOT_FOUND'
         }, 'Trading Agent is STOPPED - skipping execution cycle');
-        return; // Exit immediately - no diagnostics, no scan
+        return;
       }
 
       // Also check for PAUSED status
       if (currentAgentConfig.status === 'PAUSED') {
         diagnostics.decision = { action: 'SKIP', reason: 'AGENT_PAUSED' };
-        await agent.storeDiagnostics(diagnostics);
         logger.debug({ agentId }, 'Trading Agent is PAUSED - skipping execution cycle');
         return;
       }
@@ -203,7 +243,6 @@ export class AgentExecutionService {
       const exchangeConfig = await firestoreAdapter.getExchangeConfig(agentConfig.userId);
       if (!exchangeConfig?.exchange) {
         diagnostics.decision = { action: 'SKIP', reason: 'EXCHANGE_NOT_FOUND' };
-        await agent.storeDiagnostics(diagnostics);
         logger.warn({ agentId, uid: agentConfig.userId }, 'SKIP: EXCHANGE_NOT_FOUND - no exchange connected');
         return;
       }
@@ -214,7 +253,6 @@ export class AgentExecutionService {
 
       if (!encryptedApiKey || !encryptedSecret) {
         diagnostics.decision = { action: 'SKIP', reason: 'EXCHANGE_CREDENTIALS_NOT_FOUND' };
-        await agent.storeDiagnostics(diagnostics);
         logger.warn({ 
           agentId, 
           uid: agentConfig.userId, 
@@ -231,7 +269,6 @@ export class AgentExecutionService {
 
       if (!apiKey || !secret) {
         diagnostics.decision = { action: 'SKIP', reason: 'EXCHANGE_CREDENTIALS_DECRYPT_FAILED' };
-        await agent.storeDiagnostics(diagnostics);
         logger.error({ 
           agentId, 
           uid: agentConfig.userId, 
@@ -329,6 +366,8 @@ export class AgentExecutionService {
         candles = await marketProvider.getCandles(symbol, '1m', 250);
         
         if (candles15m.length < 200) {
+          diagnostics.decision = { action: 'SKIP', reason: `Insufficient 15m candles: ${candles15m.length}/200` };
+          await agent.storeDiagnostics(diagnostics);
           logger.warn({
             agentId,
             candles15mCount: candles15m.length
@@ -337,6 +376,8 @@ export class AgentExecutionService {
         }
         
         if (candles.length < 200) {
+          diagnostics.decision = { action: 'SKIP', reason: `Insufficient 1m candles: ${candles.length}/200` };
+          await agent.storeDiagnostics(diagnostics);
           logger.warn({
             agentId,
             candles1mCount: candles.length
@@ -356,6 +397,8 @@ export class AgentExecutionService {
         );
         
         if (candles.length < 50) {
+          diagnostics.decision = { action: 'SKIP', reason: `Insufficient 5m candles: ${candles.length}/50` };
+          await agent.storeDiagnostics(diagnostics);
           logger.warn({
             agentId,
             candlesCount: candles.length
@@ -434,6 +477,8 @@ export class AgentExecutionService {
           }
 
           // Do not open a new trade while one is open/managed
+          diagnostics.decision = { action: 'SKIP', reason: 'Managing open position' };
+          await agent.storeDiagnostics(diagnostics);
           await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
           return;
         }
@@ -569,6 +614,8 @@ export class AgentExecutionService {
       // Check if this signal was already executed
       const signalAlreadyExecuted = await firestoreAdapter.isSignalExecuted(agentId, signal.signalId);
       if (signalAlreadyExecuted) {
+        diagnostics.decision = { action: 'SKIP', reason: 'Signal already executed (idempotency)' };
+        await agent.storeDiagnostics(diagnostics);
         logger.info({
           agentId,
           signalId: signal.signalId,
@@ -652,6 +699,8 @@ export class AgentExecutionService {
       // Check per-pair cooldown
       const pairCooldown = await firestoreAdapter.getPairCooldown(agentId, tradingPair);
       if (pairCooldown && new Date() < pairCooldown) {
+        diagnostics.decision = { action: 'SKIP', reason: `Pair cooldown active until ${pairCooldown.toISOString()}` };
+        await agent.storeDiagnostics(diagnostics);
         logger.info({
           agentId,
           tradingPair,
@@ -674,6 +723,8 @@ export class AgentExecutionService {
 
       // Max 1 open trade per pair
       if (positionCounts.pairPositions >= 1) {
+        diagnostics.decision = { action: 'SKIP', reason: `Pair position limit: ${positionCounts.pairPositions}/1` };
+        await agent.storeDiagnostics(diagnostics);
         logger.info({
           agentId,
           tradingPair,
@@ -686,6 +737,8 @@ export class AgentExecutionService {
 
       // Max 2 total open trades
       if (positionCounts.totalPositions >= 2) {
+        diagnostics.decision = { action: 'SKIP', reason: `Total position limit: ${positionCounts.totalPositions}/2` };
+        await agent.storeDiagnostics(diagnostics);
         logger.info({
           agentId,
           totalPositions: positionCounts.totalPositions,
@@ -773,15 +826,32 @@ export class AgentExecutionService {
           quantity: tradeRecord.quantity
         }, 'Trade executed successfully with all safety checks');
       } else {
+        // CRITICAL FIX: Exchange failure MUST count as an attempt to prevent retry loops
         tradeRecord.status = 'FAILED';
         tradeRecord.error = diagnostics?.execution?.error || 'ORDER_PLACEMENT_FAILED';
+        tradeRecord.exchangeErrorReason = diagnostics?.execution?.exchangeErrorReason || diagnostics?.execution?.error || 'ORDER_PLACEMENT_FAILED';
         await firestoreAdapter.saveAgentTrade(tradeRecord);
+
+        // CRITICAL: Apply cooldown even on exchange failure to prevent immediate retry
+        // This prevents the same signal from being attempted every cycle
+        const cooldownUntil = new Date(Date.now() + 30 * 60 * 1000);
+        await firestoreAdapter.setPairCooldown(agentId, tradingPair, cooldownUntil);
+
+        // Update diagnostics decision to reflect exchange failure with cooldown
+        diagnostics.decision = {
+          action: 'EXCHANGE_FAILED_COOLDOWN',
+          reason: `Exchange order failed: ${tradeRecord.error}. Cooldown applied until ${cooldownUntil.toISOString()}`,
+          exchangeErrorReason: tradeRecord.exchangeErrorReason
+        };
 
         logger.error({
           agentId,
           tradeId: tradeRecord.id,
-          signalId: tradeRecord.signalId
-        }, 'Order placement failed, trade marked as failed');
+          signalId: tradeRecord.signalId,
+          cooldownUntil: cooldownUntil.toISOString(),
+          error: tradeRecord.error,
+          exchangeErrorReason: tradeRecord.exchangeErrorReason
+        }, 'Order placement failed, trade marked as failed, cooldown applied to prevent retry loop');
       }
 
       // Update last processed candle
@@ -793,6 +863,18 @@ export class AgentExecutionService {
         tradingPair,
         error: error instanceof Error ? error.message : 'Unknown error'
       }, 'Failed to execute agent with hardening');
+    } finally {
+      // CRITICAL: ALWAYS persist diagnostics, even on early returns or exceptions
+      // This guarantees ONE diagnostic entry per execution cycle
+      try {
+        await agent.storeDiagnostics(diagnostics);
+        logger.debug({ agentId, decision: diagnostics.decision }, 'Agent diagnostics persisted');
+      } catch (diagError) {
+        logger.error({
+          agentId,
+          error: diagError instanceof Error ? diagError.message : 'Unknown error'
+        }, 'CRITICAL: Failed to persist agent diagnostics');
+      }
     }
   }
 
@@ -1045,9 +1127,26 @@ export class AgentExecutionService {
 
       return true;
     } catch (error) {
+      // CRITICAL: Preserve RAW exchange error message for UI display
+      // Priority: err.response.data.msg → err.response.data.message → err.message → stringified
+      let exchangeErrorReason = 'Unknown error';
+      if (error && typeof error === 'object') {
+        const err = error as any;
+        if (err.response?.data?.msg) {
+          exchangeErrorReason = String(err.response.data.msg);
+        } else if (err.response?.data?.message) {
+          exchangeErrorReason = String(err.response.data.message);
+        } else if (err.message) {
+          exchangeErrorReason = String(err.message);
+        } else {
+          exchangeErrorReason = JSON.stringify(error);
+        }
+      }
+
       diagnostics.execution = {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: exchangeErrorReason,
+        exchangeErrorReason, // Explicit field for UI
       };
       try {
         await agent.storeDiagnostics(diagnostics);
@@ -1056,7 +1155,8 @@ export class AgentExecutionService {
       logger.error({
         agentId: agentConfig.id,
         tradeId: trade?.id,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: exchangeErrorReason,
+        exchangeErrorReason,
       }, 'Failed to place trade entry order');
       return false;
     }

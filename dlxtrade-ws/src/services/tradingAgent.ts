@@ -20,6 +20,7 @@ export interface TradingAgentConfig {
   passphrase?: string; // Required for Bitget
   dryRun: boolean; // Safety mode - simulate trades without executing
   status: 'PENDING_APPROVAL' | 'ACTIVE' | 'PAUSED' | 'STOPPED';
+  strategyType?: 'HTF_TREND_FILTER' | 'LIQUIDITY_SWEEP' | 'RSI_BOLLINGER' | 'VWAP_MEAN_REVERSION'; // Optional strategy type
   createdAt: Date;
   approvedAt?: Date;
   lastTradeAt?: Date;

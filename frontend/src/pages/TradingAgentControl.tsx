@@ -44,6 +44,7 @@ export default function TradingAgentControl() {
   const [scheduler, setScheduler] = useState<any | null>(null);
   const [loadingData, setLoadingData] = useState(false);
   const [showExecutionCriteria, setShowExecutionCriteria] = useState(false);
+  const [, setTimerTick] = useState(0); // Force re-render for countdown
 
   // Check Firestore approval (users/{uid}.approvedAgents) and resolve agent ID
   useEffect(() => {
@@ -99,7 +100,29 @@ export default function TradingAgentControl() {
     }
 
     loadData();
-  }, [user, pageReady]);
+
+    // Auto-refresh diagnostics every 5 minutes when agent is running
+    if (autoTradeEnabled) {
+      const intervalId = setInterval(() => {
+        loadData();
+      }, 300000); // 5 minutes
+
+      return () => clearInterval(intervalId);
+    }
+  }, [user, pageReady, autoTradeEnabled]);
+
+  // Update countdown display every second (based on backend timestamps)
+  useEffect(() => {
+    if (!scheduler?.nextExecutionAt || !autoTradeEnabled) {
+      return;
+    }
+
+    const timerId = setInterval(() => {
+      setTimerTick(prev => prev + 1); // Force re-render
+    }, 1000);
+
+    return () => clearInterval(timerId);
+  }, [scheduler?.nextExecutionAt, autoTradeEnabled]);
 
   const loadData = async () => {
     if (!user || !resolvedAgentId) {
@@ -132,6 +155,23 @@ export default function TradingAgentControl() {
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
+  };
+
+  // Calculate time remaining until next scheduler execution
+  const getNextExecutionTime = () => {
+    if (!scheduler?.nextExecutionAt) {
+      return null;
+    }
+    
+    const now = new Date().getTime();
+    const nextExecution = new Date(scheduler.nextExecutionAt).getTime();
+    const remainingMs = Math.max(0, nextExecution - now);
+    const remainingSeconds = Math.floor(remainingMs / 1000);
+    
+    const minutes = Math.floor(remainingSeconds / 60);
+    const seconds = remainingSeconds % 60;
+    
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   };
 
   const isExchangeConnected = (cfg: any): { connected: boolean; exchange?: string } => {
@@ -168,7 +208,7 @@ export default function TradingAgentControl() {
       setAutoTradeEnabled(updatedStatusRes.data?.status === 'ACTIVE');
       setAgentConfig(updatedStatusRes.data?.config || null);
       
-      // Refresh trades and diagnostics
+      // Refresh trades and diagnostics immediately
       const tradesResp = await agentsApi.getTradingAgentTrades(slug, 20);
       setTrades(tradesResp.data?.trades || []);
       
@@ -221,33 +261,33 @@ export default function TradingAgentControl() {
   return (
     <ErrorBoundary>
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
-        <div className="p-6 max-w-5xl mx-auto space-y-8">
-          <div className="flex items-center justify-between mb-2">
+        <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-2">
             <div>
-              <h1 className="text-3xl font-bold text-white mb-2">{pageTitle}</h1>
+              <h1 className="text-4xl font-bold text-white mb-2">{pageTitle}</h1>
               <div className="text-sm text-gray-400 leading-relaxed">
                 {pageSubtitle}
               </div>
             </div>
-            <button onClick={() => navigate('/agents')} className="btn btn-secondary px-6 py-2.5">Back</button>
+            <button onClick={() => navigate('/agents')} className="btn btn-secondary px-6 py-2.5 self-start sm:self-auto">Back</button>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="bg-slate-800/40 border border-purple-500/20 rounded-xl p-5">
+            <div className="bg-slate-800/50 border border-purple-500/20 hover:border-purple-500/30 rounded-xl p-6 transition-colors">
               <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm text-gray-400">Exchange Connection</div>
+                <div className="flex-1">
+                  <div className="text-xs font-medium uppercase tracking-wider text-gray-400 mb-2">Exchange Connection</div>
                   {(() => {
                     const s = isExchangeConnected(exchangeConfig);
                     return (
-                      <div className="text-white font-medium mt-1">
+                      <div className={`text-lg font-semibold ${s.connected ? 'text-green-400' : 'text-gray-300'}`}>
                         {s.connected ? `Connected${s.exchange ? ` • ${s.exchange}` : ''}` : 'Not Connected'}
                       </div>
                     );
                   })()}
                 </div>
                 <button
-                  className="btn btn-secondary"
+                  className="btn btn-secondary ml-4"
                   onClick={() => navigate('/settings#exchange-connection')}
                 >
                   Manage
@@ -256,21 +296,21 @@ export default function TradingAgentControl() {
               <div className="text-xs text-gray-500 mt-2">Uses Settings → Exchange. You can’t connect a second exchange here.</div>
             </div>
 
-            <div className="bg-slate-800/40 border border-purple-500/20 rounded-xl p-5">
+            <div className="bg-slate-800/50 border border-purple-500/20 hover:border-purple-500/30 rounded-xl p-6 transition-colors">
               <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm text-gray-400">Auto Trade</div>
-                  <div className="text-white font-medium mt-1">
+                <div className="flex-1">
+                  <div className="text-xs font-medium uppercase tracking-wider text-gray-400 mb-2">Auto Trade</div>
+                  <div className={`text-lg font-semibold ${autoTradeEnabled ? 'text-green-400' : 'text-gray-300'}`}>
                     {resolvedAgentId ? (autoTradeEnabled ? 'Running' : 'Stopped') : 'Agent Not Ready'}
                   </div>
                   {agentConfig?.dryRun && (
-                    <div className="text-yellow-400 text-xs mt-1 font-medium">
+                    <div className="text-yellow-400 text-xs mt-2 font-medium">
                       DRY RUN MODE - No real trades
                     </div>
                   )}
                 </div>
                 <button
-                  className="btn btn-primary"
+                  className="btn btn-primary ml-4"
                   disabled={togglingAutoTrade || !resolvedAgentId || !hasAgentAccess}
                   onClick={handleToggleAutoTrade}
                   title={
@@ -285,9 +325,9 @@ export default function TradingAgentControl() {
             </div>
           </div>
 
-          <div className="bg-slate-800/40 border border-purple-500/20 rounded-xl p-6">
+          <div className="bg-slate-800/50 border border-purple-500/20 hover:border-purple-500/30 rounded-xl p-6 transition-colors">
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-bold text-white">Trades History</h2>
+              <h2 className="text-2xl font-bold text-white">Trades History</h2>
               <button
                 className="btn btn-secondary px-5 py-2"
                 onClick={() => loadData()}
@@ -307,27 +347,41 @@ export default function TradingAgentControl() {
                 <table className="min-w-full text-sm">
                   <thead>
                     <tr className="text-gray-400 border-b border-purple-500/20">
-                      <th className="text-left py-2 pr-4 font-medium">Pair</th>
-                      <th className="text-left py-2 pr-4 font-medium">Side</th>
-                      <th className="text-left py-2 pr-4 font-medium">Entry Price</th>
-                      <th className="text-left py-2 pr-4 font-medium">SL</th>
-                      <th className="text-left py-2 pr-4 font-medium">TP</th>
-                      <th className="text-left py-2 pr-4 font-medium">Result</th>
-                      <th className="text-left py-2 pr-4 font-medium">Timestamp</th>
+                      <th className="text-left py-3 pr-6 font-semibold">Pair</th>
+                      <th className="text-left py-3 pr-6 font-semibold">Side</th>
+                      <th className="text-left py-3 pr-6 font-semibold">Entry Price</th>
+                      <th className="text-left py-3 pr-6 font-semibold">SL</th>
+                      <th className="text-left py-3 pr-6 font-semibold">TP</th>
+                      <th className="text-left py-3 pr-6 font-semibold">Result</th>
+                      <th className="text-left py-3 pr-6 font-semibold">Timestamp</th>
                     </tr>
                   </thead>
                   <tbody>
                     {trades.map((trade) => (
-                      <tr key={trade.id} className="border-b border-purple-500/10">
-                        <td className="py-2 pr-4 text-gray-300">{trade.symbol || 'BTC/USDT'}</td>
-                        <td className={`py-2 pr-4 ${trade.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>{trade.direction || 'BUY'}</td>
-                        <td className="py-2 pr-4 text-gray-300">{typeof trade.entryPrice === 'number' ? `$${trade.entryPrice.toFixed(2)}` : '-'}</td>
-                        <td className="py-2 pr-4 text-gray-300">{typeof trade.stopLoss === 'number' ? `$${trade.stopLoss.toFixed(2)}` : '-'}</td>
-                        <td className="py-2 pr-4 text-gray-300">{typeof trade.takeProfit === 'number' ? `$${trade.takeProfit.toFixed(2)}` : '-'}</td>
-                        <td className={`py-2 pr-4 ${trade.result === 'WIN' ? 'text-green-400' : trade.result === 'LOSS' ? 'text-red-400' : 'text-gray-400'}`}>
-                          {trade.result || (trade.status === 'OPEN' ? 'OPEN' : 'CLOSED')}
+                      <tr key={trade.id} className="border-b border-purple-500/10 hover:bg-slate-700/30 transition-colors">
+                        <td className="py-3 pr-6 text-gray-300">{trade.symbol || 'BTC/USDT'}</td>
+                        <td className={`py-3 pr-6 font-medium ${trade.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>{trade.direction || 'BUY'}</td>
+                        <td className="py-3 pr-6 text-gray-300">{typeof trade.entryPrice === 'number' ? `$${trade.entryPrice.toFixed(2)}` : '-'}</td>
+                        <td className="py-3 pr-6 text-gray-300">{typeof trade.stopLoss === 'number' ? `$${trade.stopLoss.toFixed(2)}` : '-'}</td>
+                        <td className="py-3 pr-6 text-gray-300">{typeof trade.takeProfit === 'number' ? `$${trade.takeProfit.toFixed(2)}` : '-'}</td>
+                        <td className={`py-3 pr-6 font-medium ${trade.result === 'WIN' ? 'text-green-400' : trade.result === 'LOSS' ? 'text-red-400' : 'text-gray-400'}`}>
+                          <div className="flex items-center gap-2">
+                            {/* Show info icon for failed trades with exchange error */}
+                            {(trade.status === 'FAILED' || trade.error || trade.exchangeErrorReason) && (
+                              <div className="relative group">
+                                <InformationCircleIcon className="w-5 h-5 text-red-400 cursor-help" />
+                                <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-3 bg-slate-900 border border-red-500/30 rounded-lg shadow-xl">
+                                  <div className="text-xs font-semibold text-red-400 mb-1">Exchange Rejection Reason:</div>
+                                  <div className="text-xs text-gray-300 leading-relaxed">
+                                    {trade.exchangeErrorReason || trade.error || 'Exchange rejected the order (no details provided)'}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                            <span>{trade.result || (trade.status === 'OPEN' ? 'OPEN' : trade.status === 'FAILED' ? 'FAILED' : 'CLOSED')}</span>
+                          </div>
                         </td>
-                        <td className="py-2 pr-4 text-gray-300">{trade.entryTime ? new Date(trade.entryTime).toLocaleString() : '-'}</td>
+                        <td className="py-3 pr-6 text-gray-300">{trade.entryTime ? new Date(trade.entryTime).toLocaleString() : '-'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -337,9 +391,9 @@ export default function TradingAgentControl() {
           </div>
 
           {/* Diagnostics / Skipped Trades */}
-          <div className="bg-slate-800/40 border border-purple-500/20 rounded-xl p-6">
+          <div className="bg-slate-800/50 border border-purple-500/20 hover:border-purple-500/30 rounded-xl p-6 transition-colors">
             <div className="flex items-center gap-3 mb-6">
-              <h2 className="text-xl font-bold text-white">Diagnostics</h2>
+              <h2 className="text-2xl font-bold text-white">Diagnostics</h2>
               <button
                 onClick={() => setShowExecutionCriteria(!showExecutionCriteria)}
                 className="text-purple-400 hover:text-purple-300 transition-colors"
@@ -653,27 +707,36 @@ export default function TradingAgentControl() {
               <div className="text-xs text-gray-500">
                 Next scan: {scheduler?.nextExecutionAt ? new Date(scheduler.nextExecutionAt).toLocaleString() : '—'}
               </div>
+              {scheduler?.nextExecutionAt && autoTradeEnabled && (
+                <div className="text-xs text-purple-400 mt-1">
+                  Time remaining: {getNextExecutionTime() || '—'}
+                </div>
+              )}
               {scheduler?.lastExecutionError && (
                 <div className="mt-1 text-xs text-red-400">Last error: {scheduler.lastExecutionError}</div>
               )}
             </div>
 
-            <h3 className="text-md font-medium text-white mb-3">Recent Cycle Results</h3>
-            <div className="text-xs text-gray-500 mb-3">
+            <h3 className="text-xl font-bold text-white mb-2">Recent Cycle Results</h3>
+            <div className="text-sm text-gray-400 mb-6 leading-relaxed">
               Shows execution/skip decisions from recent scheduler cycles (~5 min intervals)
             </div>
 
             {skippedTrades.length === 0 ? (
-              <div className="text-sm text-gray-400">No cycle results yet</div>
+              <div className="text-center py-8 text-gray-400 bg-slate-800/30 rounded-lg border border-purple-500/10">
+                {autoTradeEnabled 
+                  ? 'Waiting for first cycle...'
+                  : 'No cycle results yet'}
+              </div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-sm">
+              <div className="overflow-x-auto bg-slate-800/30 rounded-lg border border-purple-500/10">
+                <table className="min-w-full">
                   <thead>
-                    <tr className="text-gray-400 border-b border-purple-500/20">
-                      <th className="text-left py-2 pr-4 font-medium">Pair</th>
-                      <th className="text-left py-2 pr-4 font-medium">Direction</th>
-                      <th className="text-left py-2 pr-4 font-medium">Primary Reason</th>
-                      <th className="text-left py-2 pr-4 font-medium">Timestamp</th>
+                    <tr className="text-gray-300 border-b border-purple-500/20 bg-slate-800/50">
+                      <th className="text-left py-3 px-4 font-semibold">Pair</th>
+                      <th className="text-left py-3 px-4 font-semibold">Direction</th>
+                      <th className="text-left py-3 px-4 font-semibold">Decision</th>
+                      <th className="text-left py-3 px-4 font-semibold">Timestamp</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -684,7 +747,28 @@ export default function TradingAgentControl() {
                       let reasonColor = 'bg-gray-500/20 text-gray-400';
 
                       // Map to clear, human-readable reasons
-                      if (rawReason.includes('session') || rawReason.includes('SESSION')) {
+                      if (rawReason.includes('STOPPED') || rawReason.includes('PAUSED')) {
+                        displayReason = 'AGENT STOPPED';
+                        reasonColor = 'bg-gray-500/20 text-gray-400';
+                      } else if (rawReason.includes('candles') || rawReason.includes('Insufficient')) {
+                        displayReason = 'INSUFFICIENT DATA';
+                        reasonColor = 'bg-yellow-500/20 text-yellow-400';
+                      } else if (rawReason.includes('open position') || rawReason.includes('Managing')) {
+                        displayReason = 'MANAGING POSITION';
+                        reasonColor = 'bg-blue-500/20 text-blue-400';
+                      } else if (rawReason.includes('cooldown')) {
+                        displayReason = 'COOLDOWN ACTIVE';
+                        reasonColor = 'bg-orange-500/20 text-orange-400';
+                      } else if (rawReason.includes('position limit') || rawReason.includes('Position limit')) {
+                        displayReason = 'POSITION LIMIT';
+                        reasonColor = 'bg-red-500/20 text-red-400';
+                      } else if (rawReason.includes('idempotency') || rawReason.includes('already executed')) {
+                        displayReason = 'ALREADY EXECUTED';
+                        reasonColor = 'bg-purple-500/20 text-purple-400';
+                      } else if (rawReason.includes('HTF') || rawReason.includes('LTF') || rawReason.includes('trend')) {
+                        displayReason = 'HTF BLOCKED';
+                        reasonColor = 'bg-purple-500/20 text-purple-400';
+                      } else if (rawReason.includes('session') || rawReason.includes('SESSION')) {
                         displayReason = 'SESSION INVALID';
                         reasonColor = 'bg-blue-500/20 text-blue-400';
                       } else if (rawReason.includes('SR') || rawReason.includes('support') || rawReason.includes('resistance')) {
@@ -711,23 +795,37 @@ export default function TradingAgentControl() {
                       }
 
                       return (
-                        <tr key={index} className="border-b border-purple-500/10">
-                          <td className="py-2 pr-4 text-white font-medium">
+                        <tr key={index} className="border-b border-purple-500/10 hover:bg-slate-800/50 transition-colors">
+                          <td className="py-3 px-4 text-white font-semibold">
                             {skipped.tradingPair || skipped.pair || 'BTC/USDT'}
                           </td>
-                          <td className={`py-2 pr-4 font-medium ${
+                          <td className={`py-3 px-4 font-bold text-base ${
                             skipped.signal?.direction === 'LONG' || skipped.direction === 'LONG'
                               ? 'text-green-400'
                               : 'text-red-400'
                           }`}>
                             {skipped.signal?.direction || skipped.direction || 'LONG'}
                           </td>
-                          <td className="py-2 pr-4">
-                            <span className={`px-2 py-1 rounded text-xs font-medium ${reasonColor}`}>
-                              {displayReason}
-                            </span>
+                          <td className="py-3 px-4">
+                            <div className="flex items-center gap-2">
+                              {/* Show info icon for exchange errors with exact error reason */}
+                              {(rawReason.includes('EXCHANGE') || rawReason.includes('credentials') || rawReason.includes('FAILED')) && (
+                                <div className="relative group">
+                                  <InformationCircleIcon className="w-5 h-5 text-red-400 cursor-help" />
+                                  <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-3 bg-slate-900 border border-red-500/30 rounded-lg shadow-xl">
+                                    <div className="text-xs font-semibold text-red-400 mb-1">Exchange Rejection Reason:</div>
+                                    <div className="text-xs text-gray-300 leading-relaxed">
+                                      {skipped.decision?.exchangeErrorReason || skipped.exchangeErrorReason || rawReason || 'Exchange rejected the order (no details provided)'}
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                              <span className={`px-3 py-1.5 rounded-md text-sm font-semibold ${reasonColor}`}>
+                                {displayReason}
+                              </span>
+                            </div>
                           </td>
-                          <td className="py-2 pr-4 text-gray-300">
+                          <td className="py-3 px-4 text-gray-300 text-sm">
                             {skipped.timestamp ? new Date(skipped.timestamp).toLocaleString() : '-'}
                           </td>
                         </tr>

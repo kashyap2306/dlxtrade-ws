@@ -1101,7 +1101,10 @@ export class FirestoreAdapter {
 
       const agents: any[] = [];
       agentsSnapshot.forEach(doc => {
-        agents.push(doc.data());
+        agents.push({
+          id: doc.id, // CRITICAL: Include document ID for agent execution
+          ...doc.data()
+        });
       });
 
       return agents;
@@ -1295,7 +1298,10 @@ export class FirestoreAdapter {
 
       const agents: any[] = [];
       agentsSnapshot.forEach(doc => {
-        agents.push(doc.data());
+        agents.push({
+          id: doc.id, // CRITICAL: Include document ID
+          ...doc.data()
+        });
       });
 
       return agents;

@@ -134,7 +134,7 @@ export function decrypt(cipherText: string, context: string): string | null {
     timestamp: new Date().toISOString()
   });
 
-  // CRITICAL VALIDATION: Context must be exactly "user_request" - NO EXCEPTIONS
+  // CRITICAL VALIDATION: Context must be explicitly "user_request" or "background_job"
   if (context === undefined) {
     console.error(`🚫 [CONTEXT_LEAK_DETECTED] decrypt() called with UNDEFINED context!`);
     console.error(`   This is the source of "context: unknown" errors`);
@@ -158,8 +158,9 @@ export function decrypt(cipherText: string, context: string): string | null {
     throw new Error(`CONTEXT_LEAK: decrypt() context must be string, got ${typeof context}`);
   }
 
-  if (context !== "user_request") {
-    console.warn(`🟡 [DECRYPT_SKIPPED] decrypt() called in non-user_request context ("${context}") – skipping decryption, returning null. No Firestore write, no key clear, no status mutation.`);
+  const allowedContexts = ["user_request", "background_job"];
+  if (!allowedContexts.includes(context)) {
+    console.warn(`🟡 [DECRYPT_SKIPPED] decrypt() called in non-permitted context ("${context}") – skipping decryption, returning null. No Firestore write, no key clear, no status mutation.`);
     return null;
   }
 
@@ -206,6 +207,8 @@ export function decrypt(cipherText: string, context: string): string | null {
       {
         cipherTextLength: cipherText.length,
         cipherTextFormat: parts.length === 2 ? "iv:encrypted" : "unknown",
+        cipherTextPrefix: cipherText.substring(0, 20) + "...",
+        encryptionKeyHash: getEncryptionKeyHash(8),
       },
       "Decryption failed - invalid format or wrong encryption secret - treating as CORRUPTED",
     );
@@ -216,6 +219,8 @@ export function decrypt(cipherText: string, context: string): string | null {
       {
         error: (error as Error).message,
         cipherTextLength: cipherText?.length || 0,
+        cipherTextPrefix: cipherText?.substring(0, 20) + "...",
+        encryptionKeyHash: getEncryptionKeyHash(8),
       },
       "Decryption failed - invalid ENCRYPTION_SECRET or corrupted data - treating as CORRUPTED",
     );

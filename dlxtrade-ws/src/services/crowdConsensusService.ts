@@ -1,10 +1,11 @@
+import * as admin from 'firebase-admin';
 import { getFirebaseAdmin } from '../utils/firebase';
 import { logger } from '../utils/logger';
 
 interface MasterTraderPosition {
   exchange: string;
   traderId: string;
-  pair: 'BTCUSDT' | 'ETHUSDT';
+  pair: string; // FIXED: Any coin, not limited to BTCUSDT | ETHUSDT
   direction: 'LONG' | 'SHORT';
   entryPrice: number;
   quantity: number;
@@ -13,7 +14,7 @@ interface MasterTraderPosition {
 }
 
 interface ConsensusSignal {
-  pair: 'BTCUSDT' | 'ETHUSDT';
+  pair: string; // FIXED: Any coin, not limited to BTCUSDT | ETHUSDT
   direction: 'LONG' | 'SHORT';
   consensusStrength: number; // Number of exchanges agreeing
   avgEntryPrice: number;
@@ -33,7 +34,7 @@ interface SupportResistance {
 interface CrowdConsensusTrade {
   id: string;
   consensusId?: string;
-  pair: 'BTCUSDT' | 'ETHUSDT';
+  pair: string; // FIXED: Any coin, not limited to BTCUSDT | ETHUSDT
   direction: 'LONG' | 'SHORT';
   entryPrice: number;
   stopLoss: number;
@@ -53,7 +54,11 @@ export class CrowdConsensusService {
     'bingx', 'gate', 'mexc', 'phemex', 'coinex'
   ];
 
-  private static readonly SUPPORTED_PAIRS = ['BTCUSDT', 'ETHUSDT'];
+  // Available coins for simulation - each exchange will independently choose
+  private static readonly AVAILABLE_COINS = [
+    'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'ADAUSDT',
+    'XRPUSDT', 'DOGEUSDT', 'MATICUSDT', 'DOTUSDT', 'AVAXUSDT'
+  ];
 
   /**
    * Analyze consensus from multiple exchanges (main entry point)
@@ -101,8 +106,10 @@ export class CrowdConsensusService {
   /**
    * Get exchange-level consensus analysis for UI display
    * Returns detailed breakdown of what each exchange is signaling
+   * FIXED: Works with any coin (not hardcoded to specific pair)
+   * FIXED: Only returns exchanges that contributed to consensus (≥2 exchanges with same coin+direction)
    */
-  static async getExchangeConsensusBreakdown(pair: 'BTCUSDT' | 'ETHUSDT' = 'BTCUSDT'): Promise<{
+  static async getExchangeConsensusBreakdown(pair?: string): Promise<{
     exchanges: Array<{
       name: string;
       signal: 'LONG' | 'SHORT' | 'NONE';
@@ -116,13 +123,17 @@ export class CrowdConsensusService {
     status: 'EXECUTED' | 'SKIPPED' | 'PENDING';
     skipReason?: string;
     timestamp: Date;
+    nextScanIn?: number; // Seconds until next 5-minute scan
   }> {
     try {
       const allPositions = await this.monitorMasterTraders();
-      const pairPositions = allPositions.filter(p => p.pair === pair);
+      
+      // If pair specified, filter to that pair; otherwise use all positions
+      const relevantPositions = pair ? allPositions.filter(p => p.pair === pair) : allPositions;
 
-      const exchangeBreakdown = this.MONITORED_EXCHANGES.map(exchange => {
-        const exchangePositions = pairPositions.filter(p => p.exchange === exchange);
+      // Build full exchange breakdown first
+      const fullExchangeBreakdown = this.MONITORED_EXCHANGES.map(exchange => {
+        const exchangePositions = relevantPositions.filter(p => p.exchange === exchange);
         
         if (exchangePositions.length === 0) {
           return {
@@ -162,24 +173,38 @@ export class CrowdConsensusService {
         };
       });
 
-      const signals = this.detectConsensus(pairPositions);
-      const consensusSignal = signals.find(s => s.pair === pair);
+      const signals = this.detectConsensus(relevantPositions);
+      const consensusSignal = pair ? signals.find(s => s.pair === pair) : signals[0];
 
       let finalConsensus: 'LONG' | 'SHORT' | 'NONE' = 'NONE';
       let consensusStrength = 0;
       let skipReason: string | undefined;
 
+      // CRITICAL FIX: Only return exchanges that contributed to consensus
+      let exchangeBreakdown = fullExchangeBreakdown;
+
       if (consensusSignal) {
         finalConsensus = consensusSignal.direction;
         consensusStrength = consensusSignal.consensusStrength;
 
-        exchangeBreakdown.forEach(ex => {
+        // Mark exchanges that contributed to consensus
+        fullExchangeBreakdown.forEach(ex => {
           if (ex.signal === finalConsensus && consensusSignal.exchanges.includes(ex.name)) {
             ex.contributedToConsensus = true;
           }
         });
+
+        // FILTER: Only return exchanges that contributed to consensus
+        exchangeBreakdown = fullExchangeBreakdown.filter(ex => ex.contributedToConsensus);
+
+        logger.info({
+          totalExchanges: fullExchangeBreakdown.length,
+          consensusExchanges: exchangeBreakdown.length,
+          pair: consensusSignal.pair,
+          direction: finalConsensus
+        }, '✅ [CROWD_CONSENSUS] Filtered to show only consensus-contributing exchanges');
       } else {
-        const signalCounts = exchangeBreakdown.filter(ex => ex.signal !== 'NONE');
+        const signalCounts = fullExchangeBreakdown.filter(ex => ex.signal !== 'NONE');
         if (signalCounts.length === 0) {
           skipReason = 'No positions detected across exchanges';
         } else if (signalCounts.length === 1) {
@@ -189,7 +214,16 @@ export class CrowdConsensusService {
           const shortExchanges = signalCounts.filter(ex => ex.signal === 'SHORT').length;
           skipReason = `Conflicting signals: ${longExchanges} LONG, ${shortExchanges} SHORT (need 2+ agreeing)`;
         }
+        
+        // No consensus: return empty array (hide all exchanges)
+        exchangeBreakdown = [];
       }
+
+      // Calculate time until next 5-minute scan
+      const now = Date.now();
+      const cycleStart = Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000);
+      const nextCycleStart = cycleStart + (5 * 60 * 1000);
+      const nextScanIn = Math.floor((nextCycleStart - now) / 1000);
 
       return {
         exchanges: exchangeBreakdown,
@@ -197,44 +231,45 @@ export class CrowdConsensusService {
         consensusStrength,
         status: finalConsensus === 'NONE' ? 'SKIPPED' : 'PENDING',
         skipReason,
-        timestamp: new Date()
+        timestamp: new Date(),
+        nextScanIn
       };
     } catch (error: any) {
       logger.error({ error: error.message }, 'Failed to get exchange breakdown');
       return {
-        exchanges: this.MONITORED_EXCHANGES.map(name => ({
-          name,
-          signal: 'NONE' as const,
-          confidence: 0,
-          positionCount: 0,
-          contributedToConsensus: false,
-          positions: []
-        })),
+        exchanges: [], // Return empty on error
         finalConsensus: 'NONE',
         consensusStrength: 0,
         status: 'SKIPPED',
         skipReason: 'Error analyzing consensus',
-        timestamp: new Date()
+        timestamp: new Date(),
+        nextScanIn: 300 // Default 5 minutes
       };
     }
   }
 
   /**
    * Monitor master trader positions across exchanges
+   * FIX: EXCHANGE-FIRST approach - each exchange independently selects coin and direction
+   * FIX: Pass cycle timestamp for temporal variation (changes every 5 minutes)
    */
   static async monitorMasterTraders(): Promise<MasterTraderPosition[]> {
     const positions: MasterTraderPosition[] = [];
 
     try {
-      // TEST MODE: Generate a single consensus direction for ALL exchanges
-      const testMode = process.env.CROWD_CONSENSUS_TEST_MODE !== 'false';
-      const globalConsensusDirection = testMode ? (Math.random() < 0.5 ? 'LONG' : 'SHORT') : null;
+      // Get current cycle timestamp (rounds to 5-minute intervals)
+      const cycleTimestamp = Date.now();
+      
+      logger.info({
+        cycleTimestamp,
+        cycleId: Math.floor(cycleTimestamp / (5 * 60 * 1000))
+      }, '🔄 [CROWD_CONSENSUS] Starting new 5-minute consensus cycle');
 
-      // Monitor all supported exchanges concurrently
-      const monitoringPromises = this.MONITORED_EXCHANGES.flatMap(exchange =>
-        this.SUPPORTED_PAIRS.map(pair =>
-          this.fetchExchangeMasterPositions(exchange, pair, globalConsensusDirection)
-        )
+      // CRITICAL FIX: EXCHANGE-FIRST - each exchange researches independently
+      // NO pre-selected coin, NO shared pair variable
+      // Pass cycle timestamp for temporal variation
+      const monitoringPromises = this.MONITORED_EXCHANGES.map(exchange =>
+        this.fetchExchangeMasterPositions(exchange, cycleTimestamp)
       );
 
       const results = await Promise.allSettled(monitoringPromises);
@@ -248,13 +283,23 @@ export class CrowdConsensusService {
         }
       }
 
+      // Log per-exchange breakdown
+      const exchangeBreakdown = new Map<string, { coin: string; direction: string; count: number }>();
+      for (const pos of positions) {
+        const key = pos.exchange;
+        if (!exchangeBreakdown.has(key)) {
+          exchangeBreakdown.set(key, { coin: pos.pair, direction: pos.direction, count: 0 });
+        }
+        exchangeBreakdown.get(key)!.count++;
+      }
+
       logger.info({
         totalPositions: positions.length,
         exchangesMonitored: this.MONITORED_EXCHANGES.length,
-        pairsMonitored: this.SUPPORTED_PAIRS.length,
-        testMode,
-        globalDirection: globalConsensusDirection
-      }, 'Completed master trader monitoring');
+        exchangeBreakdown: Array.from(exchangeBreakdown.entries()).map(([ex, data]) => 
+          `${ex}: ${data.coin} ${data.direction} (${data.count} positions)`
+        )
+      }, 'Completed EXCHANGE-FIRST master trader monitoring');
 
     } catch (error: any) {
       logger.error({ error: error.message }, 'Failed to monitor master traders');
@@ -267,106 +312,93 @@ export class CrowdConsensusService {
    * Fetch master trader positions from a specific exchange
    * ⚠️ WARNING: Currently using SIMULATED data for development
    * In production, this would integrate with actual exchange copy trading APIs
-   * For now, simulates realistic master trader activity
    * 
-   * TEST MODE: Set CROWD_CONSENSUS_TEST_MODE=true to guarantee consensus
+   * CRITICAL FIX: EXCHANGE-FIRST approach with TRULY INDEPENDENT randomization
+   * - Each exchange uses exchange-specific hash + cycle timestamp for unique selection
+   * - Adds cycle-based entropy so results change every 5 minutes
+   * - NO shared random values between exchanges
+   * - Coin and direction decided INSIDE per-exchange scope
    */
   private static async fetchExchangeMasterPositions(
-    exchange: string, 
-    pair: string, 
-    globalConsensusDirection: 'LONG' | 'SHORT' | null = null
+    exchange: string,
+    cycleTimestamp?: number // Optional: timestamp of current 5-minute cycle
   ): Promise<MasterTraderPosition[]> {
     try {
-      // Simulate API delay
-      await new Promise(resolve => setTimeout(resolve, 100 + Math.random() * 200));
+      // CRITICAL FIX: Combine exchange name + cycle timestamp for TRUE independence
+      // Each exchange gets unique hash, cycle timestamp adds temporal variation
+      const exchangeHash = exchange.split('').reduce((acc, char) => {
+        return ((acc << 5) - acc) + char.charCodeAt(0);
+      }, 0);
+      
+      // Add cycle-based entropy (changes every 5 minutes, same within cycle)
+      const cycleEntropy = cycleTimestamp ? Math.floor(cycleTimestamp / (5 * 60 * 1000)) : 0;
+      
+      // Create a seeded random function combining exchange + cycle
+      const seededRandom = (seed: number) => {
+        const combined = seed + (cycleEntropy * 1000);
+        const x = Math.sin(combined) * 10000;
+        return x - Math.floor(x);
+      };
+      
+      // Simulate API delay with exchange-specific timing
+      await new Promise(resolve => setTimeout(resolve, 50 + Math.abs(exchangeHash % 150)));
 
       const positions: MasterTraderPosition[] = [];
 
-      // TEST MODE: Deterministic consensus generation for UX testing
-      // DEFAULT: true (for better UX - users see trades executing)
-      // Set CROWD_CONSENSUS_TEST_MODE=false to use random simulated data
-      const testMode = globalConsensusDirection !== null;
-      
-      if (testMode) {
-        // GUARANTEE consensus: All exchanges return 2-3 positions with SAME direction
-        // This ensures trades execute so users can test the full flow
-        const consensusDirection = globalConsensusDirection!;
-        const positionCount = Math.floor(Math.random() * 2) + 2; // 2-3 positions guaranteed
-        
-        logger.debug({ 
-          exchange, 
-          pair, 
-          testMode: true,
-          consensusDirection,
-          simulatedPositions: positionCount 
-        }, '🧪 [CROWD_CONSENSUS] TEST MODE - Generating deterministic consensus positions');
+      // EXCHANGE-FIRST: This exchange independently decides:
+      // 1. Whether it has any master trader activity (1-3 positions, never 0 for testing)
+      // Use exchange-specific seeded random
+      const activityRandom = seededRandom(exchangeHash + 1);
+      const positionCount = Math.floor(activityRandom * 3) + 1; // 1-3 positions (always has activity)
 
-        for (let i = 0; i < positionCount; i++) {
-          const basePrice = pair === 'BTCUSDT' ? 45000 + Math.random() * 5000 : 2500 + Math.random() * 300;
-          const priceVariation = (Math.random() - 0.5) * 100; // ±50 variation
-          const entryPrice = Math.round((basePrice + priceVariation) * 100) / 100;
+      // 2. Which coin the master traders are trading (INDEPENDENT choice per exchange)
+      // Use exchange hash + cycle to select coin (different for each exchange, changes per cycle)
+      const coinRandom = seededRandom(exchangeHash + 2);
+      const coinIndex = Math.floor(coinRandom * this.AVAILABLE_COINS.length);
+      const selectedCoin = this.AVAILABLE_COINS[coinIndex];
 
-          const leverage = Math.floor(Math.random() * 5) + 5; // 5-9x leverage
-          const quantity = Math.round((Math.random() * 0.3 + 0.2) * 100) / 100; // 0.2-0.5 BTC/ETH
+      // 3. Which direction the majority are trading (INDEPENDENT choice per exchange)
+      // Use exchange hash + cycle for direction
+      const directionRandom = seededRandom(exchangeHash + 3);
+      const exchangeDirection = directionRandom < 0.5 ? 'LONG' : 'SHORT';
 
-          const minutesAgo = Math.floor(Math.random() * 15);
-          const timestamp = new Date(Date.now() - minutesAgo * 60 * 1000);
+      logger.info({ 
+        exchange,
+        selectedCoin,
+        direction: exchangeDirection,
+        positionCount,
+        exchangeHash,
+        cycleEntropy,
+        coinIndex,
+        coinRandom: coinRandom.toFixed(4),
+        directionRandom: directionRandom.toFixed(4),
+        reason: `Exchange independently selected ${selectedCoin} ${exchangeDirection} using hash + cycle entropy`
+      }, '🎯 [CROWD_CONSENSUS] EXCHANGE-FIRST: Independent coin and direction selected');
 
-          positions.push({
-            exchange,
-            traderId: `${exchange}_master_${Math.floor(Math.random() * 1000)}`,
-            pair: pair as 'BTCUSDT' | 'ETHUSDT',
-            direction: consensusDirection, // ALL same direction for consensus
-            entryPrice,
-            quantity,
-            timestamp,
-            leverage
-          });
-        }
-
-        logger.debug({
-          exchange,
-          pair,
-          positionCount: positions.length,
-          direction: consensusDirection
-        }, '✅ [CROWD_CONSENSUS] TEST MODE - Consensus positions generated');
-
-        return positions;
-      }
-
-      // NORMAL MODE: Random positions (0-3 per exchange)
-      const positionCount = Math.floor(Math.random() * 4); // 0-3 positions
-
-      logger.debug({ 
-        exchange, 
-        pair, 
-        simulatedPositions: positionCount 
-      }, '🎲 [CROWD_CONSENSUS] Generating simulated positions (NOT REAL DATA)');
-
+      // Generate positions for THIS exchange's selected coin and direction
       for (let i = 0; i < positionCount; i++) {
-        // 60% chance for BTC, 40% for ETH
-        const actualPair = Math.random() < 0.6 ? 'BTCUSDT' : 'ETHUSDT';
-
-        // Skip if not the requested pair
-        if (actualPair !== pair) continue;
-
-        const direction = Math.random() < 0.5 ? 'LONG' : 'SHORT';
-        const basePrice = pair === 'BTCUSDT' ? 45000 + Math.random() * 10000 : 2500 + Math.random() * 500;
-        const priceVariation = (Math.random() - 0.5) * 200; // ±100 variation
+        const basePrice = this.getBasePriceForCoin(selectedCoin);
+        // Use exchange-specific variation with seeded random
+        const priceRandom = seededRandom(exchangeHash + 100 + i);
+        const priceVariation = (priceRandom - 0.5) * (basePrice * 0.02);
         const entryPrice = Math.round((basePrice + priceVariation) * 100) / 100;
 
-        const leverage = Math.floor(Math.random() * 8) + 3; // 3-10x leverage
-        const quantity = Math.round((Math.random() * 0.5 + 0.1) * 100) / 100; // 0.1-0.6 BTC/ETH
+        const leverageRandom = seededRandom(exchangeHash + 200 + i);
+        const leverage = Math.floor(leverageRandom * 8) + 3; // 3-10x leverage
+        
+        const quantityRandom = seededRandom(exchangeHash + 300 + i);
+        const quantity = Math.round((quantityRandom * 0.5 + 0.1) * 100) / 100;
 
         // Recent activity (last 30 minutes)
-        const minutesAgo = Math.floor(Math.random() * 30);
+        const timeRandom = seededRandom(exchangeHash + 400 + i);
+        const minutesAgo = Math.floor(timeRandom * 30);
         const timestamp = new Date(Date.now() - minutesAgo * 60 * 1000);
 
         positions.push({
           exchange,
-          traderId: `${exchange}_master_${Math.floor(Math.random() * 1000)}`,
-          pair: actualPair as 'BTCUSDT' | 'ETHUSDT',
-          direction: direction as 'LONG' | 'SHORT',
+          traderId: `${exchange}_master_${Math.floor(seededRandom(exchangeHash + 500 + i) * 1000)}`,
+          pair: selectedCoin,
+          direction: exchangeDirection,
           entryPrice,
           quantity,
           timestamp,
@@ -374,70 +406,140 @@ export class CrowdConsensusService {
         });
       }
 
-      if (positions.length > 0) {
-        logger.debug({
-          exchange,
-          pair,
-          positionCount: positions.length,
-          directions: positions.map(p => p.direction).join(', ')
-        }, '📊 [CROWD_CONSENSUS] Simulated positions generated');
-      }
+      logger.info({
+        exchange,
+        coin: selectedCoin,
+        direction: exchangeDirection,
+        positionCount: positions.length,
+        avgPrice: positions.reduce((sum, p) => sum + p.entryPrice, 0) / positions.length
+      }, '✅ [CROWD_CONSENSUS] Exchange positions generated with independent randomization');
 
       return positions;
 
     } catch (error: any) {
       logger.error({
         exchange,
-        pair,
         error: error.message
-      }, '❌ [CROWD_CONSENSUS] Failed to fetch master trader positions');
-      return [];
+      }, '❌ [CROWD_CONSENSUS] Failed to fetch master trader positions - exchange SKIPPED');
+      return []; // Exchange skipped, does not fail whole agent
     }
   }
 
   /**
+   * Get base price for a coin (for simulation)
+   */
+  private static getBasePriceForCoin(coin: string): number {
+    const priceMap: Record<string, number> = {
+      'BTCUSDT': 45000,
+      'ETHUSDT': 2500,
+      'BNBUSDT': 300,
+      'SOLUSDT': 100,
+      'ADAUSDT': 0.5,
+      'XRPUSDT': 0.6,
+      'DOGEUSDT': 0.08,
+      'MATICUSDT': 0.9,
+      'DOTUSDT': 7,
+      'AVAXUSDT': 35
+    };
+    return priceMap[coin] || 100;
+  }
+
+  /**
    * Detect consensus signals from master trader positions
+   * CRITICAL FIX: Dynamic coin detection - no hardcoded pairs
+   * Groups by (coin + direction) to find consensus
    */
   static detectConsensus(positions: MasterTraderPosition[]): ConsensusSignal[] {
     const signals: ConsensusSignal[] = [];
 
     logger.info({ 
-      totalPositions: positions.length,
-      pairs: this.SUPPORTED_PAIRS.join(', ')
-    }, '🔍 [CROWD_CONSENSUS] Analyzing positions for consensus...');
+      totalPositions: positions.length
+    }, '🔍 [CROWD_CONSENSUS] Analyzing positions for consensus (EXCHANGE-FIRST)...');
 
-    for (const pair of this.SUPPORTED_PAIRS) {
-      const pairPositions = positions.filter(p => p.pair === pair);
+    // VALIDATION: Detect if all exchanges have same direction (data corruption indicator)
+    const exchangeDirections = new Map<string, Set<string>>();
+    for (const pos of positions) {
+      if (!exchangeDirections.has(pos.exchange)) {
+        exchangeDirections.set(pos.exchange, new Set());
+      }
+      exchangeDirections.get(pos.exchange)!.add(pos.direction);
+    }
 
-      if (pairPositions.length === 0) {
-        logger.debug({ pair }, '⚠️ [CROWD_CONSENSUS] No positions for pair - skipping');
+    // Check for suspicious uniformity (all exchanges same direction)
+    const allDirections = Array.from(exchangeDirections.values())
+      .flatMap(dirs => Array.from(dirs));
+    const uniqueDirections = new Set(allDirections);
+    
+    if (uniqueDirections.size === 1 && exchangeDirections.size > 5) {
+      logger.error({
+        exchangeCount: exchangeDirections.size,
+        uniformDirection: Array.from(uniqueDirections)[0],
+        exchanges: Array.from(exchangeDirections.keys())
+      }, '🚨 CONSENSUS_DATA_CORRUPTION_DETECTED: All exchanges have identical direction - possible shared object bug');
+    }
+
+    // DYNAMIC COIN DETECTION: Find all unique coins being traded
+    const uniqueCoins = [...new Set(positions.map(p => p.pair))];
+    
+    logger.info({
+      uniqueCoins: uniqueCoins.join(', '),
+      coinCount: uniqueCoins.length
+    }, '📊 [CROWD_CONSENSUS] Detected coins across exchanges');
+
+    // Analyze each coin independently
+    for (const coin of uniqueCoins) {
+      const coinPositions = positions.filter(p => p.pair === coin);
+
+      if (coinPositions.length === 0) {
         continue;
       }
 
       // Group by direction
-      const longPositions = pairPositions.filter(p => p.direction === 'LONG');
-      const shortPositions = pairPositions.filter(p => p.direction === 'SHORT');
+      const longPositions = coinPositions.filter(p => p.direction === 'LONG');
+      const shortPositions = coinPositions.filter(p => p.direction === 'SHORT');
 
       const longExchanges = [...new Set(longPositions.map(p => p.exchange))];
       const shortExchanges = [...new Set(shortPositions.map(p => p.exchange))];
 
       logger.info({
-        pair,
-        totalPositions: pairPositions.length,
+        coin,
+        totalPositions: coinPositions.length,
         longCount: longPositions.length,
         longExchanges: longExchanges.join(', '),
         shortCount: shortPositions.length,
         shortExchanges: shortExchanges.join(', ')
-      }, '📊 [CROWD_CONSENSUS] Position breakdown');
+      }, '📊 [CROWD_CONSENSUS] Position breakdown for coin');
 
-      // Check for consensus (minimum 2-3 exchanges agreeing)
+      // VALIDATION: Ensure each exchange has unique position objects
+      const positionsByExchange = new Map<string, MasterTraderPosition[]>();
+      for (const pos of coinPositions) {
+        if (!positionsByExchange.has(pos.exchange)) {
+          positionsByExchange.set(pos.exchange, []);
+        }
+        positionsByExchange.get(pos.exchange)!.push(pos);
+      }
+
+      // Check for object reference sharing (all positions point to same object)
+      for (const [exchange, exchangePositions] of positionsByExchange.entries()) {
+        const firstPos = exchangePositions[0];
+        const allSameReference = exchangePositions.every(p => p === firstPos);
+        if (allSameReference && exchangePositions.length > 1) {
+          logger.error({
+            exchange,
+            coin,
+            positionCount: exchangePositions.length
+          }, '🚨 CONSENSUS_DATA_CORRUPTION_DETECTED: All positions share same object reference');
+        }
+      }
+
+      // Check for consensus (minimum 2 exchanges agreeing)
       const longConsensus = this.hasConsensus(longPositions);
       const shortConsensus = this.hasConsensus(shortPositions);
 
       // Skip if conflicting signals
       if (longConsensus && shortConsensus) {
         logger.warn({ 
-          pair,
+          coin,
           longExchanges: longExchanges.length,
           shortExchanges: shortExchanges.length
         }, '⚠️ [CROWD_CONSENSUS] Conflicting consensus signals - both LONG and SHORT have 2+ exchanges - skipping');
@@ -445,10 +547,10 @@ export class CrowdConsensusService {
       }
 
       if (longConsensus) {
-        const signal = this.createConsensusSignal(pair, 'LONG', longPositions);
+        const signal = this.createConsensusSignal(coin, 'LONG', longPositions);
         if (signal) {
           logger.info({
-            pair,
+            coin,
             direction: 'LONG',
             exchanges: signal.exchanges.join(', '),
             consensusStrength: signal.consensusStrength,
@@ -457,10 +559,10 @@ export class CrowdConsensusService {
           signals.push(signal);
         }
       } else if (shortConsensus) {
-        const signal = this.createConsensusSignal(pair, 'SHORT', shortPositions);
+        const signal = this.createConsensusSignal(coin, 'SHORT', shortPositions);
         if (signal) {
           logger.info({
-            pair,
+            coin,
             direction: 'SHORT',
             exchanges: signal.exchanges.join(', '),
             consensusStrength: signal.consensusStrength,
@@ -470,7 +572,7 @@ export class CrowdConsensusService {
         }
       } else {
         logger.debug({
-          pair,
+          coin,
           longExchanges: longExchanges.length,
           shortExchanges: shortExchanges.length,
           minimumRequired: 2
@@ -512,7 +614,7 @@ export class CrowdConsensusService {
     confidence += positions.length > 5 ? 10 : 0; // Bonus for many traders
 
     return {
-      pair: pair as 'BTCUSDT' | 'ETHUSDT',
+      pair, // Dynamic coin
       direction,
       consensusStrength,
       avgEntryPrice: avgPrice,
@@ -829,12 +931,12 @@ export class CrowdConsensusService {
           exchange: exchangeName,
           message: `Connected to ${exchangeName}`
         };
-      } else {
-        return {
-          connected: false,
-          message: 'Exchange connection incomplete. Please complete exchange setup in Settings.'
-        };
       }
+
+      return {
+        connected: false,
+        message: 'Exchange connection incomplete. Please complete exchange setup in Settings.'
+      };
     } catch (error: any) {
       logger.error({ error: error.message, uid }, 'Failed to get exchange connection status');
       return {
@@ -869,91 +971,83 @@ export class CrowdConsensusService {
    * Save skipped/rejected trade with comprehensive diagnostics
    */
   static async saveSkippedTrade(uid: string, skippedTrade: {
-    pair: 'BTCUSDT' | 'ETHUSDT';
-    direction: 'LONG' | 'SHORT';
-    reason: 'NO_CONSENSUS' | 'RR_TOO_LOW' | 'ENTRY_LATE' | 'SR_BLOCKED' | 'DAILY_LIMIT_REACHED' | 'EXCHANGE_ERROR';
+    pair: string; // FIX: Accept any coin, not limited to BTCUSDT | ETHUSDT
+    direction: 'LONG' | 'SHORT' | 'UNKNOWN';
+    reason: 'NO_CONSENSUS' | 'RR_TOO_LOW' | 'ENTRY_LATE' | 'SR_BLOCKED' | 'DAILY_LIMIT_REACHED' | 'EXCHANGE_ERROR' | 'COIN_OUTSIDE_TOP_100';
     timestamp: Date;
-    details?: any;
+    details?: any; // Additional diagnostic info
   }): Promise<void> {
     try {
       const db = getFirebaseAdmin().firestore();
       const skippedTradeRef = db.collection('users').doc(uid).collection('crowdConsensusSkippedTrades').doc();
 
-      // Store comprehensive diagnostic data
-      const diagnosticRecord = {
-        id: skippedTradeRef.id,
-        timestamp: skippedTrade.timestamp,
-        pair: skippedTrade.pair,
-        direction: skippedTrade.direction,
-        reason: skippedTrade.reason,
+      const { pair, direction, reason, timestamp, details } = skippedTrade;
 
-        // Market data snapshot
-        marketSnapshot: {
-          pair: skippedTrade.pair,
-          direction: skippedTrade.direction,
-          timestamp: skippedTrade.timestamp
-        },
+      await skippedTradeRef.set({
+        pair,
+        direction,
+        reason,
+        timestamp: admin.firestore.Timestamp.fromDate(timestamp),
+        details: details || null,
+        createdAt: admin.firestore.Timestamp.now()
+      });
 
-        // Consensus detection data
-        consensusSnapshot: skippedTrade.details?.consensusData ? {
-          exchanges: skippedTrade.details.consensusData.exchanges,
-          strength: skippedTrade.details.consensusData.strength,
-          avgEntryPrice: skippedTrade.details.consensusData.avgEntryPrice
-        } : null,
-
-        // Validation results
-        validationSnapshot: skippedTrade.details?.validation ? {
-          entryPrice: skippedTrade.details.validation.entryPrice,
-          stopLoss: skippedTrade.details.validation.stopLoss,
-          takeProfit: skippedTrade.details.validation.takeProfit,
-          rrRatio: skippedTrade.details.validation.rrRatio,
-          priceDeviation: skippedTrade.details.validation.priceDeviation
-        } : null,
-
-        // Support & Resistance analysis
-        srSnapshot: skippedTrade.details?.srAnalysis ? {
-          support: skippedTrade.details.srAnalysis.support,
-          resistance: skippedTrade.details.srAnalysis.resistance,
-          tpBlocked: skippedTrade.details.srAnalysis.tpBlocked,
-          reason: skippedTrade.details.srAnalysis.reason
-        } : null,
-
-        // Risk analysis
-        riskSnapshot: skippedTrade.details?.riskAnalysis ? {
-          accountBalance: skippedTrade.details.riskAnalysis.accountBalance,
-          riskPercent: skippedTrade.details.riskAnalysis.riskPercent,
-          positionSize: skippedTrade.details.riskAnalysis.positionSize,
-          marginRequired: skippedTrade.details.riskAnalysis.marginRequired,
-          liquidationRisk: skippedTrade.details.riskAnalysis.liquidationRisk
-        } : null,
-
-        // Exchange execution attempt
-        executionAttempt: skippedTrade.details?.executionAttempt ? {
-          attempted: skippedTrade.details.executionAttempt.attempted,
-          exchange: skippedTrade.details.executionAttempt.exchange,
-          error: skippedTrade.details.executionAttempt.error
-        } : null
-      };
-
-      await skippedTradeRef.set(diagnosticRecord);
-
-      logger.info({
-        uid,
-        reason: skippedTrade.reason,
-        pair: skippedTrade.pair,
-        tradeId: skippedTradeRef.id
-      }, 'Saved comprehensive skipped trade diagnostics');
+      logger.info({ uid, pair, direction, reason }, 'Skipped trade saved');
     } catch (error: any) {
-      logger.error({ error: error.message, uid }, 'Failed to save skipped trade diagnostics');
+      logger.error({ error: error.message, uid, pair: skippedTrade.pair }, 'Failed to save skipped trade');
     }
   }
 
   /**
-   * Validate trade setup including S/R analysis and RR ratio
-   * FIXED: Proper filter order - calculate adaptive SL/TP BEFORE RR check
-   * FIXED: Configurable SR buffer instead of hard block
-   * FIXED: Increased entry timing window to 18%
-   * FIXED: Clear skip reason logging for every condition
+   * Check if coin is in TOP 100 by market cap
+   */
+  private static async isInTop100ByMarketCap(pair: string): Promise<boolean> {
+    try {
+      // Extract base symbol (BTC from BTCUSDT, ETH from ETHUSDT, etc.)
+      const baseSymbol = pair.replace('USDT', '').toUpperCase();
+
+      // FIX: For simulation mode, accept all coins in AVAILABLE_COINS
+      // This allows testing with all 10 coins without external API dependency
+      const isInAvailableCoins = this.AVAILABLE_COINS.includes(pair);
+      if (isInAvailableCoins) {
+        logger.debug({
+          pair,
+          baseSymbol,
+          isInTop100: true,
+          reason: 'SIMULATION_MODE - coin in AVAILABLE_COINS list'
+        }, `TOP 100 check: ${baseSymbol} IS in TOP 100 (simulation mode)`);
+        return true;
+      }
+
+      // For coins not in AVAILABLE_COINS, check CoinGecko API
+      const response = await fetch(
+        'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1',
+        {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(10000) // 10s timeout
+        }
+      );
+
+      const data = await response.json();
+      const top100Symbols = data.map((coin: any) => coin.symbol.toUpperCase());
+      const isInTop100 = top100Symbols.includes(baseSymbol);
+
+      logger.debug({
+        pair,
+        baseSymbol,
+        isInTop100
+      }, `TOP 100 check: ${baseSymbol} ${isInTop100 ? 'IS' : 'IS NOT'} in TOP 100`);
+
+      return isInTop100;
+    } catch (error: any) {
+      logger.error({ error: error.message, pair }, 'Failed to check TOP 100 status');
+      return false;
+    }
+  }
+
+  /**
+   * Validate consensus signal with S/R and RR checks - RENAMED from validateTradeSetup
    */
   static async validateTradeSetup(signal: ConsensusSignal): Promise<{
     valid: boolean;
@@ -962,8 +1056,19 @@ export class CrowdConsensusService {
     stopLoss?: number;
     takeProfit?: number;
     rrRatio?: number;
+    vwap?: number;
   }> {
     try {
+      // STEP 0: TOP 100 COIN FILTER (HARD RULE - FIRST CHECK)
+      const isTop100 = await this.isInTop100ByMarketCap(signal.pair);
+      if (!isTop100) {
+        logger.warn({ 
+          pair: signal.pair, 
+          direction: signal.direction 
+        }, 'SKIP: COIN_OUTSIDE_TOP_100 - coin is not in TOP 100 by market cap (HARD RULE)');
+        return { valid: false, reason: 'COIN_OUTSIDE_TOP_100' };
+      }
+
       // Get market data for S/R calculation
       const candles = await this.getMarketData(signal.pair);
       if (candles.length < 50) {
@@ -980,8 +1085,44 @@ export class CrowdConsensusService {
         return { valid: false, reason: 'INVALID_ATR' };
       }
 
+      // STEP 0.5: VWAP CONFIRMATION (MANDATORY)
+      const vwap = this.calculateVWAP(candles);
+      const currentPrice = candles[candles.length - 1].close;
+      
+      if (signal.direction === 'LONG' && currentPrice < vwap) {
+        const distanceFromVWAP = (((vwap - currentPrice) / vwap) * 100).toFixed(2);
+        logger.warn({ 
+          pair: signal.pair, 
+          direction: 'LONG',
+          currentPrice,
+          vwap,
+          distancePercent: distanceFromVWAP + '%'
+        }, `SKIP: VWAP_CONFIRMATION_FAILED - LONG requires price ABOVE VWAP, but price is ${distanceFromVWAP}% BELOW VWAP`);
+        return { valid: false, reason: 'VWAP_CONFIRMATION_FAILED', vwap };
+      }
+      
+      if (signal.direction === 'SHORT' && currentPrice > vwap) {
+        const distanceFromVWAP = (((currentPrice - vwap) / vwap) * 100).toFixed(2);
+        logger.warn({ 
+          pair: signal.pair, 
+          direction: 'SHORT',
+          currentPrice,
+          vwap,
+          distancePercent: distanceFromVWAP + '%'
+        }, `SKIP: VWAP_CONFIRMATION_FAILED - SHORT requires price BELOW VWAP, but price is ${distanceFromVWAP}% ABOVE VWAP`);
+        return { valid: false, reason: 'VWAP_CONFIRMATION_FAILED', vwap };
+      }
+
+      logger.info({
+        pair: signal.pair,
+        direction: signal.direction,
+        currentPrice,
+        vwap,
+        vwapConfirmed: true
+      }, '✅ VWAP_CONFIRMED - price position relative to VWAP supports trade direction');
+
       // Calculate entry price based on consensus and S/R
-      const entryPrice = this.calculateEntryPrice(signal, sr, candles[0]);
+      const entryPrice = this.calculateEntryPrice(signal, sr, candles[candles.length - 1]);
 
       // STEP 1: Calculate INITIAL stop loss and take profit
       let { stopLoss, takeProfit } = this.calculateStopLossTakeProfit(
@@ -1030,8 +1171,8 @@ export class CrowdConsensusService {
       const rewardAmount = Math.abs(takeProfit - entryPrice);
       const rrRatio = riskAmount > 0 ? rewardAmount / riskAmount : 0;
 
-      // FIX: RR check AFTER adaptive adjustments (hard floor at 1.3:1)
-      if (!isFinite(rrRatio) || rrRatio < 1.3) {
+      // FIX: RR check AFTER adaptive adjustments (hard floor at 2.0:1 for 1:2 risk-reward)
+      if (!isFinite(rrRatio) || rrRatio < 2.0) {
         logger.warn({ 
           pair: signal.pair, 
           direction: signal.direction, 
@@ -1041,20 +1182,20 @@ export class CrowdConsensusService {
           takeProfit,
           riskAmount,
           rewardAmount
-        }, `SKIP: RR_TOO_LOW - RR ratio ${rrRatio.toFixed(2)} below 1.3:1 minimum (after SR adjustments)`);
+        }, `SKIP: RR_TOO_LOW - RR ratio ${rrRatio.toFixed(2)} below 2.0:1 minimum (1:2 risk-reward after SR adjustments)`);
         return {
           valid: false,
           reason: 'RR_TOO_LOW',
           entryPrice,
           stopLoss,
           takeProfit,
-          rrRatio
+          rrRatio,
+          vwap
         };
       }
 
       // STEP 4: Entry timing window check
       // FIX: Increased to 18% to allow more time after signal generation (was 15%)
-      const currentPrice = candles[0].close;
       const priceDiff = Math.abs(currentPrice - signal.avgEntryPrice) / signal.avgEntryPrice;
       if (priceDiff > 0.18) { // 18% deviation max - more relaxed
         logger.warn({ 
@@ -1065,7 +1206,7 @@ export class CrowdConsensusService {
           signalPrice: signal.avgEntryPrice,
           maxAllowed: '18%'
         }, 'SKIP: ENTRY_LATE - price moved >18% from signal, entry window expired');
-        return { valid: false, reason: 'ENTRY_LATE' };
+        return { valid: false, reason: 'ENTRY_LATE', vwap };
       }
 
       logger.info({
@@ -1076,15 +1217,19 @@ export class CrowdConsensusService {
         takeProfit,
         rrRatio: rrRatio.toFixed(2),
         atr: atr.toFixed(2),
-        priceDeviation: (priceDiff * 100).toFixed(2) + '%'
-      }, '✅ TRADE_VALIDATED - all filters passed, ready for execution');
+        vwap,
+        priceDeviation: (priceDiff * 100).toFixed(2) + '%',
+        support: sr.support,
+        resistance: sr.resistance
+      }, '✅ TRADE_VALIDATED - all filters passed (Consensus + VWAP + S/R), ready for execution');
 
       return {
         valid: true,
         entryPrice,
         stopLoss,
         takeProfit,
-        rrRatio
+        rrRatio,
+        vwap
       };
 
     } catch (error: any) {
@@ -1099,17 +1244,34 @@ export class CrowdConsensusService {
   }
 
   /**
+   * Calculate VWAP (Volume Weighted Average Price) from candles
+   */
+  private static calculateVWAP(candles: any[]): number {
+    let priceVolumeSum = 0;
+    let volumeSum = 0;
+
+    for (const candle of candles) {
+      const typicalPrice = (candle.high + candle.low + candle.close) / 3;
+      priceVolumeSum += typicalPrice * candle.volume;
+      volumeSum += candle.volume;
+    }
+
+    return volumeSum > 0 ? priceVolumeSum / volumeSum : candles[candles.length - 1].close;
+  }
+
+  /**
    * Get market data for S/R calculation
+   * FIX: Use dynamic pricing for all coins, generate candles in chronological order (oldest first, latest last)
    */
   private static async getMarketData(pair: string): Promise<any[]> {
     try {
       // In production, this would fetch from a market data provider
       // For now, simulate realistic candle data
       const candles = [];
-      const basePrice = pair === 'BTCUSDT' ? 45000 : 2500;
-      let currentPrice = basePrice + (Math.random() - 0.5) * 2000;
+      const basePrice = this.getBasePriceForCoin(pair); // FIX: Use proper price map for all coins
+      let currentPrice = basePrice + (Math.random() - 0.5) * (basePrice * 0.04); // 4% price variation
 
-      // Generate 100 candles (5-minute intervals)
+      // Generate 100 candles (5-minute intervals) in chronological order
       for (let i = 0; i < 100; i++) {
         const volatility = 0.005; // 0.5% volatility
         const open = currentPrice;
@@ -1118,7 +1280,7 @@ export class CrowdConsensusService {
         const low = Math.min(open, close) - Math.random() * volatility * open;
         const volume = Math.random() * 1000 + 500;
 
-        candles.unshift({ // Add to beginning for chronological order (oldest first)
+        candles.push({ // Add to end for chronological order (oldest first, latest last)
           timestamp: Date.now() - (100 - i) * 5 * 60 * 1000,
           open,
           high,
@@ -1273,7 +1435,7 @@ export class CrowdConsensusService {
       }
 
       // FIX: Calculate and validate margin requirements BEFORE execution
-      const leverage = 10; // Fixed leverage for Crowd Consensus
+      const leverage = 5; // Fixed 5x leverage for Crowd Consensus (HARD RULE)
       const notionalValue = positionSize * validation.entryPrice!;
       const marginRequired = notionalValue / leverage;
       const marginBuffer = marginRequired * 1.1; // 10% buffer for fees
@@ -1414,8 +1576,20 @@ export class CrowdConsensusService {
    */
   public static async getUserExchangeCredentials(uid: string, exchange: string): Promise<any> {
     try {
+      console.log('[CROWD_CONSENSUS_CRED_TRACE] getUserExchangeCredentials called', {
+        uid,
+        exchange,
+        timestamp: new Date().toISOString()
+      });
+
       // CRITICAL: Check dryRun mode FIRST - NEVER decrypt in test mode
       const settings = await this.getUserSettings(uid);
+      console.log('[CROWD_CONSENSUS_CRED_TRACE] User settings loaded', {
+        uid,
+        dryRun: settings.dryRun,
+        autoTradeEnabled: settings.autoTradeEnabled
+      });
+
       if (settings.dryRun === true) {
         logger.info({ uid, dryRun: true }, '[DRY RUN] Skipping credential decrypt - test mode');
         console.log('[DRY RUN] Skipping credential decrypt - test mode');
@@ -1428,6 +1602,16 @@ export class CrowdConsensusService {
       // Fetch from canonical path: users/{uid}/exchangeConfig/current
       const exchangeConfig = await firestoreAdapter.getExchangeConfig(uid);
       
+      console.log('[CROWD_CONSENSUS_CRED_TRACE] Exchange config loaded', {
+        uid,
+        configExists: !!exchangeConfig,
+        configExchange: exchangeConfig?.exchange,
+        hasApiKeyEncrypted: !!exchangeConfig?.apiKeyEncrypted,
+        hasSecretEncrypted: !!exchangeConfig?.secretEncrypted || !!exchangeConfig?.secretKeyEncrypted,
+        hasPassphraseEncrypted: !!exchangeConfig?.passphraseEncrypted,
+        firestorePath: `users/${uid}/exchangeConfig/current`
+      });
+
       if (!exchangeConfig) {
         logger.warn({ uid, exchange }, 'Exchange config not found');
         return null;
@@ -1436,6 +1620,13 @@ export class CrowdConsensusService {
       const configExchange = (exchangeConfig.exchange || '').toLowerCase();
       const requestedExchange = (exchange || '').toLowerCase();
       
+      console.log('[CROWD_CONSENSUS_CRED_TRACE] Exchange name comparison', {
+        uid,
+        configExchange,
+        requestedExchange,
+        match: configExchange === requestedExchange
+      });
+
       if (configExchange !== requestedExchange) {
         logger.warn({ 
           uid, 
@@ -1448,6 +1639,15 @@ export class CrowdConsensusService {
       const encryptedSecret = exchangeConfig.secretKeyEncrypted || exchangeConfig.secretEncrypted;
       const encryptedPassphrase = exchangeConfig.passphraseEncrypted;
 
+      console.log('[CROWD_CONSENSUS_CRED_TRACE] Encrypted fields check', {
+        uid,
+        hasApiKey: !!encryptedApiKey,
+        hasSecret: !!encryptedSecret,
+        apiKeyLength: encryptedApiKey?.length || 0,
+        secretLength: encryptedSecret?.length || 0,
+        passphraseLength: encryptedPassphrase?.length || 0
+      });
+
       if (!encryptedApiKey || !encryptedSecret) {
         logger.warn({ 
           uid, 
@@ -1458,17 +1658,41 @@ export class CrowdConsensusService {
         return null;
       }
 
+      console.log('[CROWD_CONSENSUS_CRED_TRACE] Starting decryption', {
+        uid,
+        context: 'user_request'
+      });
+
       const apiKey = decrypt(encryptedApiKey, 'user_request');
       const secret = decrypt(encryptedSecret, 'user_request');
       const passphrase = encryptedPassphrase ? decrypt(encryptedPassphrase, 'user_request') : undefined;
+
+      console.log('[CROWD_CONSENSUS_CRED_TRACE] Decryption completed', {
+        uid,
+        apiKeyDecrypted: !!apiKey,
+        secretDecrypted: !!secret,
+        passphraseDecrypted: !!passphrase,
+        apiKeyLength: apiKey?.length || 0,
+        secretLength: secret?.length || 0
+      });
 
       if (!apiKey || !secret) {
         logger.error({ 
           uid, 
           exchange: configExchange
         }, 'Credential decryption failed');
+        console.log('[CROWD_CONSENSUS_CRED_TRACE] Decryption returned null', {
+          uid,
+          apiKeyNull: !apiKey,
+          secretNull: !secret
+        });
         throw new Error('DECRYPT_FAILED');
       }
+
+      console.log('[CROWD_CONSENSUS_CRED_TRACE] Credentials successfully decrypted', {
+        uid,
+        exchange: configExchange
+      });
 
       return {
         apiKey,
@@ -1477,6 +1701,13 @@ export class CrowdConsensusService {
         testnet: exchangeConfig.testnet ?? false
       };
     } catch (error: any) {
+      console.log('[CROWD_CONSENSUS_CRED_TRACE] Error in getUserExchangeCredentials', {
+        uid,
+        exchange,
+        errorMessage: error.message,
+        errorStack: error.stack
+      });
+
       if (error.message === 'DECRYPT_FAILED') {
         logger.error({ uid, exchange }, 'Credential decryption failed');
       } else {
