@@ -627,7 +627,7 @@ export async function agentRoutes(fastify: FastifyInstance) {
       }
 
       const { TradingAgent } = await import('../services/tradingAgent');
-      const diagnostics = await TradingAgent.getDiagnostics(agentId, limit);
+      const diagnostics = await TradingAgent.getDiagnostics(agentId, limit, user.uid);
 
       return { diagnostics };
     } catch (err: any) {

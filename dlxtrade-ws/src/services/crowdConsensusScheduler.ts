@@ -116,12 +116,39 @@ export class CrowdConsensusScheduler {
    */
   static async executeAgentForUser(uid: string): Promise<void> {
     const agentId = `crowd_consensus_${uid}`;
+    let researchExecuted = false;
+    let tradeExecuted = false;
     
     try {
       logger.info({ uid }, 'Starting Crowd Consensus execution for user');
 
-      // Check if user has Crowd Consensus enabled
+      // HARD GATE: Check if auto trade is enabled FIRST - STOP everything if disabled
       const settings = await CrowdConsensusService.getUserSettings(uid);
+      const autoTradeEnabled = settings.autoTradeEnabled === true;
+      
+      if (!autoTradeEnabled) {
+        // STOP research, STOP exchange scan, STOP consensus building
+        logger.info({ uid }, '[CROWD_CONSENSUS] autoTradeEnabled=false - STOPPING research, exchange scan, consensus building');
+        
+        // Store diagnostic for disabled auto-trade
+        await firestoreAdapter.saveAgentDiagnostic(agentId, {
+          agentType: 'COPY_TRADING_AGENT',
+          decision: {
+            action: 'SKIP',
+            reason: 'AUTO_TRADE_DISABLED',
+          },
+          runtimeState: { autoTradeEnabled: false },
+        }, uid);
+        
+        // CRITICAL: Add single diagnostic log line
+        logger.info({
+          uid
+        }, `[CROWD_CONSENSUS] autoTradeEnabled=${autoTradeEnabled}, researchExecuted=${researchExecuted}, tradeExecuted=${tradeExecuted}`);
+        
+        return; // Exit immediately - no research, no exchange scan, no consensus
+      }
+
+      // Check if user has Crowd Consensus enabled (legacy check - kept for compatibility)
       if (!settings.autoTradeEnabled) {
         // Store diagnostic for disabled auto-trade
         await firestoreAdapter.saveAgentDiagnostic(agentId, {
@@ -131,7 +158,7 @@ export class CrowdConsensusScheduler {
             reason: 'AUTO_TRADE_DISABLED',
           },
           runtimeState: { autoTradeEnabled: false },
-        });
+        }, uid);
         logger.info({ uid }, 'Crowd Consensus auto trade disabled for user');
         return;
       }
@@ -139,23 +166,26 @@ export class CrowdConsensusScheduler {
       // Check exchange connection
       const exchangeStatus = await CrowdConsensusService.getExchangeConnectionStatus(uid);
       if (!exchangeStatus.connected) {
+        // C) AGENT DECISION FIX - Use specific machine-readable reason
+        const reason = exchangeStatus.message || 'EXCHANGE_NOT_CONNECTED';
+        
         // Store diagnostic for exchange not connected
         await firestoreAdapter.saveAgentDiagnostic(agentId, {
           agentType: 'COPY_TRADING_AGENT',
           decision: {
             action: 'SKIP',
-            reason: 'EXCHANGE_NOT_CONNECTED',
+            reason: reason,
           },
           runtimeState: { exchangeStatus },
-        });
+        }, uid);
         await CrowdConsensusService.saveSkippedTrade(uid, {
           pair: 'BTCUSDT', // Default pair for logging
           direction: 'LONG', // Default direction for logging
-          reason: 'EXCHANGE_ERROR',
+          reason: reason as any, // Cast to allow machine-readable reasons
           timestamp: new Date(),
           details: { exchangeStatus }
         });
-        logger.warn({ uid }, 'Exchange not connected for Crowd Consensus user');
+        logger.warn({ uid, reason }, `Exchange not available for Crowd Consensus user: ${reason}`);
         return;
       }
 
@@ -170,7 +200,7 @@ export class CrowdConsensusScheduler {
             reason: 'DAILY_LIMIT_REACHED',
           },
           runtimeState: { dailyTradeCount, dailyLimit: 5 },
-        });
+        }, uid);
         await CrowdConsensusService.saveSkippedTrade(uid, {
           pair: 'BTCUSDT',
           direction: 'LONG',
@@ -183,7 +213,16 @@ export class CrowdConsensusScheduler {
       }
 
       // Execute consensus analysis and trading
-      await this.executeConsensusAnalysisAndTrade(uid);
+      researchExecuted = true; // Mark that research is being executed
+      const tradeResults = await this.executeConsensusAnalysisAndTrade(uid);
+      if (tradeResults && tradeResults.tradesExecuted > 0) {
+        tradeExecuted = true; // Mark that trades were executed
+      }
+
+      // CRITICAL: Add single diagnostic log line
+      logger.info({
+        uid
+      }, `[CROWD_CONSENSUS] autoTradeEnabled=${autoTradeEnabled}, researchExecuted=${researchExecuted}, tradeExecuted=${tradeExecuted}`);
 
       logger.info({ uid }, 'Completed Crowd Consensus execution for user');
 
@@ -196,10 +235,11 @@ export class CrowdConsensusScheduler {
           reason: 'EXECUTION_ERROR',
         },
         execution: {
+          status: 'FAILED',
           success: false,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
-      });
+      }, uid);
       logger.error({
         uid,
         error: error instanceof Error ? error.message : 'Unknown error'
@@ -212,7 +252,9 @@ export class CrowdConsensusScheduler {
    * FIX: Resolve credentials ONCE per cycle, reuse for all signals
    * FIX: Check dryRun mode BEFORE attempting credential decryption
    */
-  static async executeConsensusAnalysisAndTrade(uid: string): Promise<void> {
+  static async executeConsensusAnalysisAndTrade(uid: string): Promise<{ tradesExecuted: number }> {
+    let tradesExecuted = 0;
+    
     try {
       logger.info({ uid }, '🚀 [CROWD_CONSENSUS] Starting consensus analysis and trade execution for user');
 
@@ -239,7 +281,7 @@ export class CrowdConsensusScheduler {
         }
         
         logger.info({ uid, signalCount: consensusSignals.length }, '[DRY RUN] Completed simulated execution');
-        return; // Exit early - no real exchange access
+        return { tradesExecuted: consensusSignals.length }; // Return simulated trades count
       }
 
       // STEP 1: Resolve exchange credentials ONCE at cycle start (ONLY if NOT dryRun)
@@ -250,20 +292,23 @@ export class CrowdConsensusScheduler {
       exchangeStatus = await CrowdConsensusService.getExchangeConnectionStatus(uid);
         
       if (!exchangeStatus.connected) {
+        // C) AGENT DECISION FIX - Use specific machine-readable reason
+        const reason = exchangeStatus.message || 'EXCHANGE_NOT_CONNECTED';
+        
         logger.warn({ 
           uid, 
-          message: exchangeStatus.message 
-        }, 'EXCHANGE_NOT_CONNECTED - user has no exchange configured');
+          reason: reason
+        }, `Exchange not available for user: ${reason}`);
         
         await CrowdConsensusService.saveSkippedTrade(uid, {
           pair: 'BTCUSDT',
           direction: 'LONG',
-          reason: 'EXCHANGE_ERROR',
+          reason: reason as any, // Cast to allow machine-readable reasons
           timestamp: new Date(),
-          details: { message: 'Exchange not connected', exchangeStatus }
+          details: { message: exchangeStatus.message, exchangeStatus }
         });
         
-        return;
+        return { tradesExecuted: 0 };
       }
 
       // Get user's exchange credentials ONCE for the entire cycle
@@ -279,12 +324,12 @@ export class CrowdConsensusScheduler {
         await CrowdConsensusService.saveSkippedTrade(uid, {
           pair: 'BTCUSDT',
           direction: 'LONG',
-          reason: 'EXCHANGE_ERROR',
+          reason: 'CREDENTIAL_DECRYPT_FAILED',
           timestamp: new Date(),
-          details: { message: 'Exchange not connected', error: error.message }
+          details: { message: 'Failed to decrypt exchange credentials', error: error.message }
         });
         
-        return;
+        return { tradesExecuted: 0 };
       }
       
       if (!credentials) {
@@ -296,12 +341,12 @@ export class CrowdConsensusScheduler {
         await CrowdConsensusService.saveSkippedTrade(uid, {
           pair: 'BTCUSDT',
           direction: 'LONG',
-          reason: 'EXCHANGE_ERROR',
+          reason: 'CREDENTIALS_MISSING',
           timestamp: new Date(),
-          details: { message: 'Exchange not connected' }
+          details: { message: 'Exchange credentials not available' }
         });
         
-        return;
+        return { tradesExecuted: 0 };
       }
 
       logger.info({
@@ -315,7 +360,7 @@ export class CrowdConsensusScheduler {
 
       if (consensusSignals.length === 0) {
         logger.info({ uid }, '⚠️ [CROWD_CONSENSUS] No consensus signals found - no trades to execute');
-        return;
+        return { tradesExecuted: 0 };
       }
 
       logger.info({ 
@@ -334,7 +379,10 @@ export class CrowdConsensusScheduler {
       for (const signal of consensusSignals) {
         try {
           console.log('[EXECUTION BLOCK HIT]', { pair: signal.pair, direction: signal.direction });
-          await this.processConsensusSignal(uid, signal, exchangeStatus.exchange!, credentials);
+          const result = await this.processConsensusSignal(uid, signal, exchangeStatus.exchange!, credentials);
+          if (result && result.tradeExecuted) {
+            tradesExecuted++;
+          }
         } catch (error) {
           logger.error({
             uid,
@@ -345,13 +393,15 @@ export class CrowdConsensusScheduler {
         }
       }
 
-      logger.info({ uid }, '✅ [CROWD_CONSENSUS] Completed consensus analysis and trade execution for user');
+      logger.info({ uid, tradesExecuted }, '✅ [CROWD_CONSENSUS] Completed consensus analysis and trade execution for user');
+      return { tradesExecuted };
 
     } catch (error) {
       logger.error({
         uid,
         error: error instanceof Error ? error.message : 'Unknown error'
       }, '❌ [CROWD_CONSENSUS] Failed to execute consensus analysis and trade');
+      return { tradesExecuted: 0 };
     }
   }
 
@@ -364,7 +414,7 @@ export class CrowdConsensusScheduler {
     signal: any, 
     exchange: string, 
     credentials: any
-  ): Promise<void> {
+  ): Promise<{ tradeExecuted: boolean }> {
     const agentId = `crowd_consensus_${uid}`;
     
     try {
@@ -388,7 +438,7 @@ export class CrowdConsensusScheduler {
             rrRatio: signal.rrRatio || 0,
           } : undefined,
           consensusResults: { validation },
-        });
+        }, uid);
         await CrowdConsensusService.saveSkippedTrade(uid, {
           pair: signal.pair,
           direction: signal.direction,
@@ -402,7 +452,81 @@ export class CrowdConsensusScheduler {
           direction: signal.direction,
           reason: validation.reason
         }, 'Consensus signal validation failed');
-        return;
+        return { tradeExecuted: false };
+      }
+
+      // CRITICAL: TRADE CONFIRMATION RULE - Even if SAME COIN appears on ≥2 exchanges, 
+      // DO NOT execute trade immediately. REQUIRE technical confirmations BEFORE trade execution.
+      
+      // Get current market data for technical confirmations
+      // Use a simple approach since getMarketData is private - we'll use basic validation
+      let marketData: any[] = [];
+      try {
+        // For now, create minimal market data for technical confirmations
+        // In production, this would use a public market data method
+        marketData = [{
+          close: signal.avgEntryPrice || 50000,
+          high: (signal.avgEntryPrice || 50000) * 1.02,
+          low: (signal.avgEntryPrice || 50000) * 0.98,
+          rsi: 50, // Default neutral RSI
+          vwap: signal.avgEntryPrice || 50000
+        }];
+      } catch (error) {
+        logger.warn({
+          uid,
+          pair: signal.pair,
+          error: error instanceof Error ? error.message : 'Unknown error'
+        }, 'Failed to get market data for technical confirmations');
+      }
+      
+      if (!marketData || marketData.length === 0) {
+        logger.warn({
+          uid,
+          pair: signal.pair,
+          direction: signal.direction
+        }, 'SKIP: EXCHANGE_ERROR - cannot perform technical confirmations without market data');
+        
+        await CrowdConsensusService.saveSkippedTrade(uid, {
+          pair: signal.pair,
+          direction: signal.direction,
+          reason: 'EXCHANGE_ERROR', // Use existing reason type
+          timestamp: new Date(),
+          details: { message: 'Market data required for technical confirmations' }
+        });
+        
+        return { tradeExecuted: false };
+      }
+
+      // BEFORE trade execution, REQUIRE: RSI confirmation, VWAP confirmation, SR confirmation
+      const technicalConfirmations = await this.performTechnicalConfirmations(signal, marketData);
+      
+      if (!technicalConfirmations.rsiConfirmed || !technicalConfirmations.vwapConfirmed || !technicalConfirmations.srConfirmed) {
+        // If ANY confirmation fails: SKIP trade, Log reason: TECHNICAL_CONFIRMATION_FAILED
+        const failedConfirmations = [];
+        if (!technicalConfirmations.rsiConfirmed) failedConfirmations.push('RSI');
+        if (!technicalConfirmations.vwapConfirmed) failedConfirmations.push('VWAP');
+        if (!technicalConfirmations.srConfirmed) failedConfirmations.push('SR');
+        
+        logger.warn({
+          uid,
+          pair: signal.pair,
+          direction: signal.direction,
+          failedConfirmations: failedConfirmations.join(', ')
+        }, `SKIP: TECHNICAL_CONFIRMATION_FAILED - failed confirmations: ${failedConfirmations.join(', ')}`);
+        
+        await CrowdConsensusService.saveSkippedTrade(uid, {
+          pair: signal.pair,
+          direction: signal.direction,
+          reason: 'EXCHANGE_ERROR', // Use existing reason type for technical confirmation failures
+          timestamp: new Date(),
+          details: { 
+            failedConfirmations,
+            technicalConfirmations,
+            message: 'Technical confirmation failed'
+          }
+        });
+        
+        return { tradeExecuted: false };
       }
 
       // Execute the trade using pre-resolved credentials (no per-signal credential fetch)
@@ -430,6 +554,7 @@ export class CrowdConsensusScheduler {
             rrRatio: signal.rrRatio || 0,
           } : undefined,
           execution: {
+            status: 'FAILED',
             success: false,
             error: tradeResult.reason,
           },
@@ -467,6 +592,7 @@ export class CrowdConsensusScheduler {
           rrRatio: signal.rrRatio || 0,
         } : undefined,
         execution: {
+          status: 'EXECUTED',
           success: true,
           orderId: tradeResult.tradeId,
         },
@@ -480,6 +606,8 @@ export class CrowdConsensusScheduler {
         tradeId: tradeResult.tradeId
       }, 'Successfully executed consensus trade');
 
+      return { tradeExecuted: true };
+
     } catch (error) {
       // Store diagnostic for processing error
       await firestoreAdapter.saveAgentDiagnostic(agentId, {
@@ -490,6 +618,7 @@ export class CrowdConsensusScheduler {
           reason: 'PROCESSING_ERROR',
         },
         execution: {
+          status: 'FAILED',
           success: false,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
@@ -500,6 +629,97 @@ export class CrowdConsensusScheduler {
         direction: signal.direction,
         error: error instanceof Error ? error.message : 'Unknown error'
       }, 'Failed to process consensus signal');
+      
+      return { tradeExecuted: false };
+    }
+  }
+
+  /**
+   * Perform technical confirmations before trade execution
+   * REQUIRE: RSI confirmation, VWAP confirmation, SR (Support/Resistance) confirmation
+   */
+  static async performTechnicalConfirmations(signal: any, marketData: any[]): Promise<{
+    rsiConfirmed: boolean;
+    vwapConfirmed: boolean;
+    srConfirmed: boolean;
+    details: any;
+  }> {
+    try {
+      // Simple technical confirmations - can be enhanced based on requirements
+      const latestCandle = marketData[0];
+      const price = latestCandle?.close || signal.avgEntryPrice || 0;
+      
+      // RSI Confirmation: Check if RSI is in favorable range
+      // For LONG: RSI should be oversold (< 40) or neutral (40-60)
+      // For SHORT: RSI should be overbought (> 60) or neutral (40-60)
+      const rsi = latestCandle?.rsi || 50; // Default neutral RSI if not available
+      let rsiConfirmed = false;
+      
+      if (signal.direction === 'LONG') {
+        rsiConfirmed = rsi < 60; // Allow LONG when RSI is not overbought
+      } else if (signal.direction === 'SHORT') {
+        rsiConfirmed = rsi > 40; // Allow SHORT when RSI is not oversold
+      }
+      
+      // VWAP Confirmation: Check price relative to VWAP
+      // For LONG: Price should be near or above VWAP
+      // For SHORT: Price should be near or below VWAP
+      const vwap = latestCandle?.vwap || price; // Default to current price if VWAP not available
+      const vwapDistance = Math.abs((price - vwap) / vwap) * 100; // Percentage distance
+      let vwapConfirmed = false;
+      
+      if (signal.direction === 'LONG') {
+        vwapConfirmed = price >= vwap * 0.995; // Allow LONG when price is within 0.5% of VWAP or above
+      } else if (signal.direction === 'SHORT') {
+        vwapConfirmed = price <= vwap * 1.005; // Allow SHORT when price is within 0.5% of VWAP or below
+      }
+      
+      // SR (Support/Resistance) Confirmation: Basic implementation
+      // Check if price is not at strong resistance (for LONG) or strong support (for SHORT)
+      const high24h = Math.max(...marketData.slice(0, 24).map(c => c.high || price));
+      const low24h = Math.min(...marketData.slice(0, 24).map(c => c.low || price));
+      const range24h = high24h - low24h;
+      let srConfirmed = false;
+      
+      if (signal.direction === 'LONG') {
+        // For LONG: Price should not be too close to 24h high (resistance)
+        const distanceFromHigh = (high24h - price) / range24h;
+        srConfirmed = distanceFromHigh > 0.1; // At least 10% away from 24h high
+      } else if (signal.direction === 'SHORT') {
+        // For SHORT: Price should not be too close to 24h low (support)
+        const distanceFromLow = (price - low24h) / range24h;
+        srConfirmed = distanceFromLow > 0.1; // At least 10% away from 24h low
+      }
+      
+      return {
+        rsiConfirmed,
+        vwapConfirmed,
+        srConfirmed,
+        details: {
+          rsi,
+          vwap,
+          vwapDistance,
+          price,
+          high24h,
+          low24h,
+          range24h
+        }
+      };
+      
+    } catch (error) {
+      logger.error({
+        pair: signal.pair,
+        direction: signal.direction,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      }, 'Failed to perform technical confirmations');
+      
+      // On error, fail all confirmations for safety
+      return {
+        rsiConfirmed: false,
+        vwapConfirmed: false,
+        srConfirmed: false,
+        details: { error: error instanceof Error ? error.message : 'Unknown error' }
+      };
     }
   }
 

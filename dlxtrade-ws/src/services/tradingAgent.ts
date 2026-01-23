@@ -141,6 +141,34 @@ export class TradingAgent {
   }
 
   /**
+   * Deep clean object by recursively removing ALL undefined fields
+   */
+  private deepCleanObject(obj: any): any {
+    if (obj === null || obj === undefined) {
+      return null;
+    }
+    
+    if (Array.isArray(obj)) {
+      return obj.map(item => this.deepCleanObject(item)).filter(item => item !== undefined);
+    }
+    
+    if (typeof obj === 'object') {
+      const cleaned: any = {};
+      for (const [key, value] of Object.entries(obj)) {
+        if (value !== undefined) {
+          const cleanedValue = this.deepCleanObject(value);
+          if (cleanedValue !== undefined) {
+            cleaned[key] = cleanedValue;
+          }
+        }
+      }
+      return Object.keys(cleaned).length > 0 ? cleaned : null;
+    }
+    
+    return obj;
+  }
+
+  /**
    * Store diagnostics log for Trading Agent
    */
   public async storeDiagnostics(diagnostics: TradingDiagnostics): Promise<void> {
@@ -151,40 +179,84 @@ export class TradingAgent {
         ? 'HTF_TREND_FILTER_AGENT'
         : 'TRADING_AGENT';
 
-      // Use unified diagnostics storage via firestoreAdapter
-      await firestoreAdapter.saveAgentDiagnostic(this.config.id, {
+      const isHTFAgent = agentType === 'HTF_TREND_FILTER_AGENT';
+      const cycleResult = diagnostics.decision?.action;
+      const skippedReason = diagnostics.decision?.reason;
+
+      let filteredDiagnostic: any = {
         agentType: agentType as any,
-        tradingPair: diagnostics.tradingPair,
         decision: {
           action: diagnostics.decision.action as any,
           reason: diagnostics.decision.reason,
         },
-        signal: diagnostics.signal ? {
-          direction: diagnostics.signal.direction as any,
-          entryPrice: diagnostics.signal.entryPrice || 0,
-          stopLoss: diagnostics.signal.stopLoss || 0,
-          takeProfit: diagnostics.signal.takeProfit || 0,
-          rrRatio: diagnostics.signal.rrRatio || 0,
-        } : undefined,
-        execution: diagnostics.execution ? {
-          success: diagnostics.execution.success,
-          orderId: diagnostics.execution.orderId,
-          error: diagnostics.execution.error,
-        } : undefined,
         runtimeState: {
           sessionCheck: diagnostics.sessionCheck,
           candleCheck: diagnostics.candleCheck,
           indicators: diagnostics.indicators,
           riskAnalysis: diagnostics.riskAnalysis,
         },
-      });
+      };
+
+      // ENFORCE SKIPPED PERSISTENCE RULES
+      if (cycleResult === 'SKIP') {
+        // Force delete ALL trading-related fields for SKIPPED cycles
+        // SKIPPED cycles must NEVER persist BTC/USDT or LONG/SHORT
+        delete filteredDiagnostic.tradingPair;
+        delete filteredDiagnostic.pair;
+        delete filteredDiagnostic.direction;
+        delete filteredDiagnostic.symbol;
+        delete filteredDiagnostic.exchangeError;
+        delete filteredDiagnostic.exchangeErrorReason;
+        
+        // Clean up skip reason for exchange errors
+        if (skippedReason?.includes('EXCHANGE_ERROR') || 
+            skippedReason?.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED')) {
+          filteredDiagnostic.decision.reason = 'SKIPPED';
+        }
+        
+        // NO signal data for skipped cycles
+      } else {
+        // For non-skipped cycles (TRADE), include trading pair and signal data
+        filteredDiagnostic.tradingPair = diagnostics.tradingPair;
+        
+        if (diagnostics.signal) {
+          filteredDiagnostic.signal = {
+            direction: diagnostics.signal.direction as any,
+            entryPrice: diagnostics.signal.entryPrice || 0,
+            stopLoss: diagnostics.signal.stopLoss || 0,
+            takeProfit: diagnostics.signal.takeProfit || 0,
+            rrRatio: diagnostics.signal.rrRatio || 0,
+          };
+        }
+        
+        if (diagnostics.execution) {
+          filteredDiagnostic.execution = {
+            success: diagnostics.execution.success,
+            orderId: diagnostics.execution.orderId,
+            error: diagnostics.execution.error,
+          };
+        }
+      }
+
+      // DEEP-CLEAN diagnostics object - recursively remove ALL undefined fields
+      // Do NOT rely on Firestore ignoreUndefinedProperties - ensure Firestore never receives undefined values
+      const cleanedDiagnostic = this.deepCleanObject(filteredDiagnostic);
+
+      if (!cleanedDiagnostic) {
+        logger.warn({ agentId: this.config.id }, 'Diagnostics object became empty after cleaning - skipping save');
+        return;
+      }
+
+      // Use unified diagnostics storage via firestoreAdapter
+      await firestoreAdapter.saveAgentDiagnostic(this.config.id, cleanedDiagnostic, this.config.userId);
 
       logger.info({
         agentId: this.config.id,
-        action: diagnostics.decision.action,
-        reason: diagnostics.decision.reason,
-        pair: diagnostics.tradingPair
-      }, 'Trading Agent diagnostics stored');
+        action: cleanedDiagnostic.decision.action,
+        reason: cleanedDiagnostic.decision.reason,
+        isSkipped: cycleResult === 'SKIP',
+        cleaned: 'deep_cleaned_undefined_fields'
+      }, 'Trading Agent diagnostics stored with deep cleaning');
     } catch (error: any) {
       logger.error({ error: error.message, agentId: this.config.id }, 'Failed to store Trading Agent diagnostics');
     }
@@ -193,10 +265,10 @@ export class TradingAgent {
   /**
    * Get recent diagnostics
    */
-  static async getDiagnostics(agentId: string, limit: number = 20): Promise<TradingDiagnostics[]> {
+  static async getDiagnostics(agentId: string, limit: number = 20, userId?: string): Promise<TradingDiagnostics[]> {
     try {
       // Use unified diagnostics storage via firestoreAdapter
-      const diagnostics = await firestoreAdapter.getAgentDiagnostics(agentId, limit);
+      const diagnostics = await firestoreAdapter.getAgentDiagnostics(agentId, limit, userId);
       
       // Map to TradingDiagnostics format for backward compatibility
       return diagnostics.map(d => ({

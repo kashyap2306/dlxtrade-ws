@@ -51,15 +51,19 @@ async function testSchedulerStatus() {
   if (htfAgents.length > 0) {
     console.log('3. Checking for recent diagnostics...');
     for (const agent of htfAgents) {
+      // Use user-scoped path: users/{uid}/agentDiagnostics/{agentId}/entries
       const diagnosticsSnapshot = await db
+        .collection('users')
+        .doc(agent.userId)
         .collection('agentDiagnostics')
         .doc(agent.id)
-        .collection('logs')
+        .collection('entries')
         .orderBy('timestamp', 'desc')
         .limit(5)
         .get();
 
       console.log(`   Agent ${agent.id} (${agent.name}):`);
+      console.log(`   User ID: ${agent.userId}`);
       console.log(`   Total diagnostics: ${diagnosticsSnapshot.size}`);
       
       if (diagnosticsSnapshot.size > 0) {

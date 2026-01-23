@@ -40,9 +40,12 @@ async function checkSchedulerStatus() {
       console.log(`   Trading Pair: ${agent.tradingPair}`);
 
       // Check for recent diagnostics
-      const diagnosticsSnapshot = await db.collection('agentDiagnostics')
+      const diagnosticsSnapshot = await db
+        .collection('users')
+        .doc(agent.userId)
+        .collection('agentDiagnostics')
         .doc(doc.id)
-        .collection('logs')
+        .collection('entries')
         .orderBy('timestamp', 'desc')
         .limit(5)
         .get();

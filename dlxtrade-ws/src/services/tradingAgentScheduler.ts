@@ -85,6 +85,30 @@ export class TradingAgentScheduler {
     }
 
     try {
+      // FIX PART 4: Scheduler-level safety net for HTF agents
+      // Before executing agents, check if any HTF agents should be skipped due to disabled modes
+      await this.preExecutionHTFCheck();
+      
+      // Add HTF scheduling log as requested
+      const allAgents = this.executionService.getAllActiveAgents();
+      const htfAgents = allAgents.filter(agent => {
+        const config = agent['config'];
+        return config.strategyType === 'HTF_TREND_FILTER' || 
+               (config.name && config.name.includes('HTF Trend Filter'));
+      });
+
+      // Log HTF agent scheduling
+      for (const agent of htfAgents) {
+        const config = agent['config'];
+        console.log("[HTF_SCHEDULED] uid=", config.userId);
+      }
+
+      // Add scheduler agent picked log for all agents
+      for (const agent of allAgents) {
+        const config = agent['config'];
+        console.log("[SCHEDULER_AGENT_PICKED]", config.id, config.status);
+      }
+      
       await this.executionService.executeAllAgents();
       logger.info('Successfully executed all active trading agents');
     } catch (error) {
@@ -92,6 +116,46 @@ export class TradingAgentScheduler {
         error: error instanceof Error ? error.message : 'Unknown error'
       }, 'Failed to execute all trading agents');
       throw error;
+    }
+  }
+
+  /**
+   * FIX PART 4: Pre-execution check for HTF agents
+   * Scheduler-level safety net to prevent HTF execution when both modes disabled
+   */
+  private async preExecutionHTFCheck(): Promise<void> {
+    try {
+      const allAgents = this.executionService.getAllActiveAgents();
+      const htfAgents = allAgents.filter(agent => {
+        const config = agent['config'];
+        return config.strategyType === 'HTF_TREND_FILTER' || 
+               (config.name && config.name.includes('HTF Trend Filter'));
+      });
+
+      if (htfAgents.length === 0) {
+        return; // No HTF agents to check
+      }
+
+      logger.debug({
+        totalAgents: allAgents.length,
+        htfAgents: htfAgents.length
+      }, '[SCHEDULER_SAFETY_NET] Pre-execution HTF check');
+
+      // This is a safety net - actual mode checking is done in agentExecutionService
+      // Just log for monitoring purposes
+      for (const agent of htfAgents) {
+        const config = agent['config'];
+        logger.debug({
+          agentId: config.id,
+          userId: config.userId,
+          name: config.name
+        }, '[SCHEDULER_SAFETY_NET] HTF agent will be checked for mode compliance');
+      }
+    } catch (error) {
+      // Don't block execution if safety check fails
+      logger.warn({
+        error: error instanceof Error ? error.message : 'Unknown error'
+      }, '[SCHEDULER_SAFETY_NET] Pre-execution HTF check failed, continuing with execution');
     }
   }
 

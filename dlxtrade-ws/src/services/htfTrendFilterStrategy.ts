@@ -37,6 +37,13 @@ export interface LTFEntrySignal {
     bbLower: number;
     volume: number;
     previousVolume: number;
+    results?: {
+      ema?: { value: number; status: 'confirmed' | 'rejected'; details?: string };
+      rsi?: { value: number; range: string; status: 'confirmed' | 'rejected'; details?: string };
+      vwap?: { status: 'confirmed' | 'rejected'; details?: string };
+      sr?: { status: 'confirmed' | 'rejected'; details?: string };
+      volume?: { status: 'confirmed' | 'rejected'; details?: string };
+    };
   };
 }
 
@@ -89,7 +96,7 @@ export class HTFTrendFilterStrategy {
   }
 
   /**
-   * Analyze LTF (1m) entry conditions
+   * Analyze LTF (1m) entry conditions with enhanced diagnostics
    */
   static analyzeLTFEntry(candles1m: CandleData[], htfTrend: HTFTrendDirection): LTFEntrySignal {
     if (htfTrend === 'NO_TRADE') {
@@ -153,7 +160,37 @@ export class HTFTrendFilterStrategy {
       const bullishClose = latestCandle.close > latestCandle.open;
       const volumeConfirm = volume >= previousVolume;
 
-      if (priceAboveEma200 && pullbackNearEma50 && rsiInRange && touchLowerBB && bullishClose && volumeConfirm) {
+      // Create detailed indicator results for diagnostics
+      const indicatorResults = {
+        ema: { 
+          value: ema50, 
+          status: (priceAboveEma200 && pullbackNearEma50) ? 'confirmed' as const : 'rejected' as const,
+          details: `Price ${priceAboveEma200 ? 'above' : 'below'} EMA200 (${ema200.toFixed(2)}), ${pullbackNearEma50 ? 'near' : 'far from'} EMA50 (${ema50.toFixed(2)})`
+        },
+        rsi: { 
+          value: rsi, 
+          range: '40-50',
+          status: rsiInRange ? 'confirmed' as const : 'rejected' as const,
+          details: `RSI ${rsi.toFixed(2)} ${rsiInRange ? 'within' : 'outside'} range 40-50`
+        },
+        vwap: { 
+          status: touchLowerBB ? 'confirmed' as const : 'rejected' as const,
+          details: `Price ${price.toFixed(2)} ${touchLowerBB ? 'touching' : 'not touching'} lower BB ${bb.lower.toFixed(2)}`
+        },
+        sr: { 
+          status: bullishClose ? 'confirmed' as const : 'rejected' as const,
+          details: `${bullishClose ? 'Bullish' : 'Bearish'} close (O:${latestCandle.open.toFixed(2)} C:${latestCandle.close.toFixed(2)})`
+        },
+        volume: { 
+          status: volumeConfirm ? 'confirmed' as const : 'rejected' as const,
+          details: `Volume ${volume.toFixed(0)} ${volumeConfirm ? '≥' : '<'} previous ${previousVolume.toFixed(0)}`
+        }
+      };
+
+      // E) TRADE EXECUTION RULES - Execute ONLY if ALL conditions pass
+      const allConditionsMet = priceAboveEma200 && pullbackNearEma50 && rsiInRange && touchLowerBB && bullishClose && volumeConfirm;
+      
+      if (allConditionsMet) {
         // Find swing low for stop loss
         const swingLow = this.findSwingLow(candles1m);
         const stopLoss = swingLow;
@@ -166,17 +203,30 @@ export class HTFTrendFilterStrategy {
           entryPrice: price,
           stopLoss,
           takeProfit,
-          reason: 'All LONG conditions met',
-          indicators
+          reason: 'EMA confirmed, RSI confirmed, VWAP confirmed, SR confirmed, Volume confirmed',
+          indicators: { ...indicators, results: indicatorResults }
         };
       } else {
-        const reasons = [];
-        if (!priceAboveEma200) reasons.push('Price not above EMA 200');
-        if (!pullbackNearEma50) reasons.push(`Pullback not near EMA 50 (${distanceToEma50Percent.toFixed(2)}% > ${maxEma50Distance}%)`);
-        if (!rsiInRange) reasons.push(`RSI ${rsi.toFixed(1)} not in 40-50 range`);
-        if (!touchLowerBB) reasons.push('Price not touching lower BB');
-        if (!bullishClose) reasons.push('Not bullish close');
-        if (!volumeConfirm) reasons.push('Volume not confirmed');
+        // Build confirmation-style decision summary
+        const confirmedIndicators = [];
+        const rejectedIndicators = [];
+        
+        if (priceAboveEma200 && pullbackNearEma50) confirmedIndicators.push('EMA confirmed');
+        else rejectedIndicators.push('EMA rejected');
+        
+        if (rsiInRange) confirmedIndicators.push('RSI confirmed');
+        else rejectedIndicators.push('RSI rejected');
+        
+        if (touchLowerBB) confirmedIndicators.push('VWAP confirmed');
+        else rejectedIndicators.push('VWAP rejected');
+        
+        if (bullishClose) confirmedIndicators.push('SR confirmed');
+        else rejectedIndicators.push('SR rejected');
+        
+        if (volumeConfirm) confirmedIndicators.push('Volume confirmed');
+        else rejectedIndicators.push('Volume rejected');
+
+        const decisionSummary = [...confirmedIndicators, ...rejectedIndicators].join(', ');
 
         return {
           isValid: false,
@@ -184,8 +234,8 @@ export class HTFTrendFilterStrategy {
           entryPrice: 0,
           stopLoss: 0,
           takeProfit: 0,
-          reason: `LONG conditions not met: ${reasons.join(', ')}`,
-          indicators
+          reason: decisionSummary,
+          indicators: { ...indicators, results: indicatorResults }
         };
       }
     }
@@ -199,7 +249,37 @@ export class HTFTrendFilterStrategy {
       const bearishClose = latestCandle.close < latestCandle.open;
       const volumeConfirm = volume >= previousVolume;
 
-      if (priceBelowEma200 && pullbackNearEma50 && rsiInRange && touchUpperBB && bearishClose && volumeConfirm) {
+      // Create detailed indicator results for diagnostics
+      const indicatorResults = {
+        ema: { 
+          value: ema50, 
+          status: (priceBelowEma200 && pullbackNearEma50) ? 'confirmed' as const : 'rejected' as const,
+          details: `Price ${priceBelowEma200 ? 'below' : 'above'} EMA200 (${ema200.toFixed(2)}), ${pullbackNearEma50 ? 'near' : 'far from'} EMA50 (${ema50.toFixed(2)})`
+        },
+        rsi: { 
+          value: rsi, 
+          range: '50-60',
+          status: rsiInRange ? 'confirmed' as const : 'rejected' as const,
+          details: `RSI ${rsi.toFixed(2)} ${rsiInRange ? 'within' : 'outside'} range 50-60`
+        },
+        vwap: { 
+          status: touchUpperBB ? 'confirmed' as const : 'rejected' as const,
+          details: `Price ${price.toFixed(2)} ${touchUpperBB ? 'touching' : 'not touching'} upper BB ${bb.upper.toFixed(2)}`
+        },
+        sr: { 
+          status: bearishClose ? 'confirmed' as const : 'rejected' as const,
+          details: `${bearishClose ? 'Bearish' : 'Bullish'} close (O:${latestCandle.open.toFixed(2)} C:${latestCandle.close.toFixed(2)})`
+        },
+        volume: { 
+          status: volumeConfirm ? 'confirmed' as const : 'rejected' as const,
+          details: `Volume ${volume.toFixed(0)} ${volumeConfirm ? '≥' : '<'} previous ${previousVolume.toFixed(0)}`
+        }
+      };
+
+      // E) TRADE EXECUTION RULES - Execute ONLY if ALL conditions pass
+      const allConditionsMet = priceBelowEma200 && pullbackNearEma50 && rsiInRange && touchUpperBB && bearishClose && volumeConfirm;
+      
+      if (allConditionsMet) {
         // Find swing high for stop loss
         const swingHigh = this.findSwingHigh(candles1m);
         const stopLoss = swingHigh;
@@ -212,17 +292,30 @@ export class HTFTrendFilterStrategy {
           entryPrice: price,
           stopLoss,
           takeProfit,
-          reason: 'All SHORT conditions met',
-          indicators
+          reason: 'EMA confirmed, RSI confirmed, VWAP confirmed, SR confirmed, Volume confirmed',
+          indicators: { ...indicators, results: indicatorResults }
         };
       } else {
-        const reasons = [];
-        if (!priceBelowEma200) reasons.push('Price not below EMA 200');
-        if (!pullbackNearEma50) reasons.push(`Pullback not near EMA 50 (${distanceToEma50Percent.toFixed(2)}% > ${maxEma50Distance}%)`);
-        if (!rsiInRange) reasons.push(`RSI ${rsi.toFixed(1)} not in 50-60 range`);
-        if (!touchUpperBB) reasons.push('Price not touching upper BB');
-        if (!bearishClose) reasons.push('Not bearish close');
-        if (!volumeConfirm) reasons.push('Volume not confirmed');
+        // Build confirmation-style decision summary
+        const confirmedIndicators = [];
+        const rejectedIndicators = [];
+        
+        if (priceBelowEma200 && pullbackNearEma50) confirmedIndicators.push('EMA confirmed');
+        else rejectedIndicators.push('EMA rejected');
+        
+        if (rsiInRange) confirmedIndicators.push('RSI confirmed');
+        else rejectedIndicators.push('RSI rejected');
+        
+        if (touchUpperBB) confirmedIndicators.push('VWAP confirmed');
+        else rejectedIndicators.push('VWAP rejected');
+        
+        if (bearishClose) confirmedIndicators.push('SR confirmed');
+        else rejectedIndicators.push('SR rejected');
+        
+        if (volumeConfirm) confirmedIndicators.push('Volume confirmed');
+        else rejectedIndicators.push('Volume rejected');
+
+        const decisionSummary = [...confirmedIndicators, ...rejectedIndicators].join(', ');
 
         return {
           isValid: false,
@@ -230,8 +323,8 @@ export class HTFTrendFilterStrategy {
           entryPrice: 0,
           stopLoss: 0,
           takeProfit: 0,
-          reason: `SHORT conditions not met: ${reasons.join(', ')}`,
-          indicators
+          reason: decisionSummary,
+          indicators: { ...indicators, results: indicatorResults }
         };
       }
     }

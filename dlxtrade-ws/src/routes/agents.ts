@@ -82,8 +82,22 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         return reply.code(403).send({ error: 'Access denied' });
       }
 
+      // A) ROUTE FIX - Reuse existing exchange config / exchange status logic
+      const exchangeStatus = await CrowdConsensusService.getExchangeConnectionStatus(uid);
+      
       const data = await CrowdConsensusService.getExchangeConsensusBreakdown();
-      return reply.code(200).send(data ?? []);
+      
+      // Ensure the route returns proper format with connection status and reason
+      const response = {
+        ...data,
+        exchangeStatus: {
+          connected: exchangeStatus.connected,
+          exchange: exchangeStatus.exchange,
+          reason: exchangeStatus.connected ? undefined : exchangeStatus.message
+        }
+      };
+      
+      return reply.code(200).send(response);
     } catch (err: any) {
       console.error('[CROWD CONSENSUS] exchange-breakdown ERROR:', err);
       logger.error({ err }, 'Error getting crowd consensus exchange breakdown');
@@ -614,7 +628,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         }
 
         const { TradingAgent } = await import('../services/tradingAgent');
-        const diagnostics = await TradingAgent.getDiagnostics(activeAgent.id, limit);
+        const diagnostics = await TradingAgent.getDiagnostics(activeAgent.id, limit, uid);
         
         // Get real-time agent status from Firestore
         const currentAgentConfig = await firestoreAdapter.getTradingAgentConfig(activeAgent.id);
@@ -651,7 +665,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         }
 
         const { TradingAgent } = await import('../services/tradingAgent');
-        const diagnostics = await TradingAgent.getDiagnostics(targetAgent.id, limit);
+        const diagnostics = await TradingAgent.getDiagnostics(targetAgent.id, limit, uid);
         return { diagnostics, scheduler };
       }
 
@@ -678,15 +692,105 @@ export async function agentsRoutes(fastify: FastifyInstance) {
           return reply.code(200).send({ diagnostics: [], scheduler, agentStatus: 'NOT_FOUND' });
         }
 
+        // Get raw diagnostics from database
         const { TradingAgent } = await import('../services/tradingAgent');
-        const diagnostics = await TradingAgent.getDiagnostics(targetAgent.id, limit);
+        const rawDiagnostics = await TradingAgent.getDiagnostics(targetAgent.id, limit, uid);
         
+        // Apply comprehensive UI contract filtering and enhancement
+        const enhancedDiagnostics = rawDiagnostics.map((diag: any) => {
+          const isSkipped = diag.decision?.action === 'SKIP';
+          const reason = diag.decision?.reason || '';
+          
+          // B) PAIR & DIRECTION FIX - Always show evaluated symbols/directions
+          let displayPair = diag.tradingPair || diag.pair;
+          let displayDirection = diag.direction || diag.signal?.direction;
+          
+          // Use "--" ONLY when symbol/direction was never evaluated
+          if (!displayPair && !diag.signal?.direction && !diag.direction) {
+            displayPair = '--';
+          }
+          if (!displayDirection && !diag.signal?.direction && !diag.direction) {
+            displayDirection = '--';
+          }
+          
+          // C) DECISION DISPLAY - Enhanced decision with indicator breakdown
+          let enhancedDecision = diag.decision;
+          if (diag.decision?.indicatorBreakdown) {
+            // Use the enhanced decision summary from firestoreAdapter
+            enhancedDecision = {
+              ...diag.decision,
+              // Add info icon support for detailed breakdown
+              hasBreakdown: true,
+              breakdown: diag.decision.indicatorBreakdown
+            };
+          }
+          
+          // D) EXECUTION STATUS - Enhanced execution status tracking
+          let executionStatus = 'SKIPPED'; // Default
+          let executionReason = null;
+          
+          if (diag.execution) {
+            executionStatus = diag.execution.status || 'SKIPPED';
+            
+            // Show EXACT exchange error details (never generic "EXCHANGE ERROR")
+            if (diag.execution.exchangeErrorReason) {
+              executionReason = diag.execution.exchangeErrorReason;
+            } else if (diag.execution.exchangeError) {
+              executionReason = diag.execution.exchangeError;
+            } else if (diag.execution.error) {
+              executionReason = diag.execution.error;
+            }
+          } else if (diag.signal?.isValid) {
+            // If we have a valid signal but no execution, it should have been executed
+            executionStatus = 'EXECUTED';
+          }
+          
+          if (isSkipped) {
+            // SKIPPED cycles: Clean up trading-related data but preserve evaluation results
+            return {
+              ...diag,
+              pair: displayPair,
+              direction: displayDirection,
+              tradingPair: displayPair,
+              signal: null, // Remove signal data for skipped cycles
+              execution: {
+                status: 'SKIPPED',
+                reason: reason.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') || 
+                       reason.includes('EXCHANGE_ERROR') ? 'Exchange connection failed' : null
+              },
+              decision: {
+                action: 'SKIP',
+                reason: reason.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') || 
+                       reason.includes('EXCHANGE_ERROR') ? 'SKIPPED' : reason,
+                hasBreakdown: enhancedDecision.hasBreakdown || false,
+                breakdown: enhancedDecision.breakdown || null
+              }
+            };
+          }
+          
+          // For non-skipped cycles, validate and enhance data
+          return {
+            ...diag,
+            pair: displayPair,
+            direction: displayDirection,
+            tradingPair: displayPair,
+            signal: diag.signal && diag.signal.direction && diag.signal.entryPrice > 0 ? diag.signal : null,
+            execution: {
+              status: executionStatus,
+              success: executionStatus === 'EXECUTED',
+              reason: executionReason,
+              orderId: diag.execution?.orderId || null
+            },
+            decision: enhancedDecision
+          };
+        });
+
         // Get real-time agent status from Firestore
         const currentAgentConfig = await firestoreAdapter.getTradingAgentConfig(targetAgent.id);
         const agentStatus = currentAgentConfig?.status || 'UNKNOWN';
         
         return reply.code(200).send({ 
-          diagnostics, 
+          diagnostics: enhancedDiagnostics, 
           scheduler,
           agentStatus,
           agentConfig: currentAgentConfig
@@ -701,7 +805,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         }
 
         const { TradingAgent } = await import('../services/tradingAgent');
-        const diagnostics = await TradingAgent.getDiagnostics(`vwap_${uid}`, limit);
+        const diagnostics = await TradingAgent.getDiagnostics(`vwap_${uid}`, limit, uid);
         let scheduler: any = null;
         try {
           const { tradingAgentScheduler } = await import('../services/tradingAgentScheduler');
@@ -740,7 +844,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         }
 
         // Get diagnostics from unified storage
-        const agentDiagnostics = await firestoreAdapter.getAgentDiagnostics(`crowd_consensus_${uid}`, limit);
+        const agentDiagnostics = await firestoreAdapter.getAgentDiagnostics(`crowd_consensus_${uid}`, limit, uid);
 
         // Get settings and exchange status
         const [settings, exchangeStatus, dailyTradeCount, recentTrades, recentSkippedTrades] = await Promise.all([

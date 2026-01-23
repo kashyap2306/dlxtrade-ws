@@ -737,92 +737,122 @@ export default function TradingAgentControl() {
                       <th className="text-left py-3 px-4 font-semibold">Pair</th>
                       <th className="text-left py-3 px-4 font-semibold">Direction</th>
                       <th className="text-left py-3 px-4 font-semibold">Decision</th>
+                      <th className="text-left py-3 px-4 font-semibold">Execution Status</th>
                       <th className="text-left py-3 px-4 font-semibold">Timestamp</th>
                     </tr>
                   </thead>
                   <tbody>
                     {skippedTrades.map((skipped, index) => {
-                      // Map backend reasons to human-readable format
+                      // B) PAIR & DIRECTION FIX - Show evaluated symbols/directions, use "--" only when never evaluated
+                      const displayPair = skipped.pair || skipped.tradingPair || '--';
+                      const displayDirection = skipped.direction || skipped.signal?.direction || '--';
+                      
+                      // C) DECISION DISPLAY - Enhanced decision with confirmation-style summary
                       const rawReason = skipped.decision?.reason || skipped.reason || 'NO_SIGNAL';
                       let displayReason = rawReason;
                       let reasonColor = 'bg-gray-500/20 text-gray-400';
+                      let hasIndicatorBreakdown = skipped.decision?.hasBreakdown || false;
 
-                      // Map to clear, human-readable reasons
-                      if (rawReason.includes('STOPPED') || rawReason.includes('PAUSED')) {
-                        displayReason = 'AGENT STOPPED';
-                        reasonColor = 'bg-gray-500/20 text-gray-400';
-                      } else if (rawReason.includes('candles') || rawReason.includes('Insufficient')) {
-                        displayReason = 'INSUFFICIENT DATA';
-                        reasonColor = 'bg-yellow-500/20 text-yellow-400';
-                      } else if (rawReason.includes('open position') || rawReason.includes('Managing')) {
-                        displayReason = 'MANAGING POSITION';
-                        reasonColor = 'bg-blue-500/20 text-blue-400';
-                      } else if (rawReason.includes('cooldown')) {
-                        displayReason = 'COOLDOWN ACTIVE';
-                        reasonColor = 'bg-orange-500/20 text-orange-400';
-                      } else if (rawReason.includes('position limit') || rawReason.includes('Position limit')) {
-                        displayReason = 'POSITION LIMIT';
-                        reasonColor = 'bg-red-500/20 text-red-400';
-                      } else if (rawReason.includes('idempotency') || rawReason.includes('already executed')) {
-                        displayReason = 'ALREADY EXECUTED';
-                        reasonColor = 'bg-purple-500/20 text-purple-400';
-                      } else if (rawReason.includes('HTF') || rawReason.includes('LTF') || rawReason.includes('trend')) {
-                        displayReason = 'HTF BLOCKED';
-                        reasonColor = 'bg-purple-500/20 text-purple-400';
-                      } else if (rawReason.includes('session') || rawReason.includes('SESSION')) {
-                        displayReason = 'SESSION INVALID';
-                        reasonColor = 'bg-blue-500/20 text-blue-400';
-                      } else if (rawReason.includes('SR') || rawReason.includes('support') || rawReason.includes('resistance')) {
-                        displayReason = 'SR BLOCKED';
-                        reasonColor = 'bg-purple-500/20 text-purple-400';
-                      } else if (rawReason.includes('RR') || rawReason.includes('risk')) {
-                        displayReason = 'RR TOO LOW';
-                        reasonColor = 'bg-orange-500/20 text-orange-400';
-                      } else if (rawReason.includes('late') || rawReason.includes('already processed')) {
-                        displayReason = 'ENTRY LATE';
-                        reasonColor = 'bg-yellow-500/20 text-yellow-400';
-                      } else if (rawReason.includes('NO_SIGNAL') || rawReason.includes('Invalid indicators')) {
-                        displayReason = 'NO SIGNAL';
-                        reasonColor = 'bg-gray-500/20 text-gray-400';
-                      } else if (rawReason.includes('EXCHANGE') || rawReason.includes('credentials')) {
-                        displayReason = 'EXCHANGE ERROR';
-                        reasonColor = 'bg-red-500/20 text-red-400';
-                      } else if (rawReason.includes('daily') || rawReason.includes('limit') || rawReason.includes('consecutive')) {
-                        displayReason = 'RISK LIMIT';
-                        reasonColor = 'bg-red-500/20 text-red-400';
-                      } else if (rawReason.includes('TRADE_EXECUTED') || rawReason.includes('executed')) {
-                        displayReason = 'TRADE EXECUTED';
-                        reasonColor = 'bg-green-500/20 text-green-400';
+                      // Use confirmation-style summaries when available
+                      if (rawReason.includes('confirmed') || rawReason.includes('rejected')) {
+                        displayReason = rawReason; // Use the enhanced decision summary
+                        reasonColor = rawReason.includes('rejected') ? 'bg-red-500/20 text-red-400' : 'bg-green-500/20 text-green-400';
+                      } else {
+                        // Map to clear, human-readable reasons for legacy data
+                        if (rawReason.includes('STOPPED') || rawReason.includes('PAUSED')) {
+                          displayReason = 'AGENT STOPPED';
+                          reasonColor = 'bg-gray-500/20 text-gray-400';
+                        } else if (rawReason.includes('candles') || rawReason.includes('Insufficient')) {
+                          displayReason = 'INSUFFICIENT DATA';
+                          reasonColor = 'bg-yellow-500/20 text-yellow-400';
+                        } else if (rawReason.includes('HTF') || rawReason.includes('LTF') || rawReason.includes('trend')) {
+                          displayReason = 'HTF BLOCKED';
+                          reasonColor = 'bg-purple-500/20 text-purple-400';
+                        } else if (rawReason.includes('session') || rawReason.includes('SESSION')) {
+                          displayReason = 'SESSION INVALID';
+                          reasonColor = 'bg-blue-500/20 text-blue-400';
+                        } else if (rawReason.includes('NO_SIGNAL') || rawReason.includes('Invalid indicators')) {
+                          displayReason = 'NO SIGNAL';
+                          reasonColor = 'bg-gray-500/20 text-gray-400';
+                        } else if (rawReason.includes('EXCHANGE') || rawReason.includes('credentials')) {
+                          displayReason = 'EXCHANGE ERROR';
+                          reasonColor = 'bg-red-500/20 text-red-400';
+                        }
                       }
 
+                      // D) EXECUTION STATUS - Enhanced execution status tracking
+                      const executionStatus = skipped.execution?.status || 'SKIPPED';
+                      const executionReason = skipped.execution?.reason;
+                      let executionColor = 'bg-gray-500/20 text-gray-400';
+                      
+                      if (executionStatus === 'EXECUTED') {
+                        executionColor = 'bg-green-500/20 text-green-400';
+                      } else if (executionStatus === 'FAILED') {
+                        executionColor = 'bg-red-500/20 text-red-400';
+                      } else if (executionStatus === 'SKIPPED') {
+                        executionColor = 'bg-gray-500/20 text-gray-400';
+                      }
+                      
                       return (
                         <tr key={index} className="border-b border-purple-500/10 hover:bg-slate-800/50 transition-colors">
                           <td className="py-3 px-4 text-white font-semibold">
-                            {skipped.tradingPair || skipped.pair || 'BTC/USDT'}
+                            {displayPair}
                           </td>
                           <td className={`py-3 px-4 font-bold text-base ${
-                            skipped.signal?.direction === 'LONG' || skipped.direction === 'LONG'
-                              ? 'text-green-400'
-                              : 'text-red-400'
+                            displayDirection === '--' ? 'text-gray-400' :
+                            displayDirection === 'LONG' ? 'text-green-400' : 'text-red-400'
                           }`}>
-                            {skipped.signal?.direction || skipped.direction || 'LONG'}
+                            {displayDirection}
                           </td>
                           <td className="py-3 px-4">
                             <div className="flex items-center gap-2">
-                              {/* Show info icon for exchange errors with exact error reason */}
-                              {(rawReason.includes('EXCHANGE') || rawReason.includes('credentials') || rawReason.includes('FAILED')) && (
+                              {/* C) DECISION DISPLAY - Add info icon for indicator breakdown */}
+                              {hasIndicatorBreakdown && (
                                 <div className="relative group">
-                                  <InformationCircleIcon className="w-5 h-5 text-red-400 cursor-help" />
-                                  <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-3 bg-slate-900 border border-red-500/30 rounded-lg shadow-xl">
-                                    <div className="text-xs font-semibold text-red-400 mb-1">Exchange Rejection Reason:</div>
-                                    <div className="text-xs text-gray-300 leading-relaxed">
-                                      {skipped.decision?.exchangeErrorReason || skipped.exchangeErrorReason || rawReason || 'Exchange rejected the order (no details provided)'}
-                                    </div>
+                                  <InformationCircleIcon className="w-4 h-4 text-blue-400 cursor-help" />
+                                  <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-80 p-4 bg-slate-900 border border-blue-500/30 rounded-lg shadow-xl">
+                                    <div className="text-xs font-semibold text-blue-400 mb-2">Indicator Breakdown:</div>
+                                    {skipped.decision?.breakdown?.details && (
+                                      <div className="space-y-1 text-xs text-gray-300">
+                                        {Object.entries(skipped.decision.breakdown.details).map(([key, value]: [string, any]) => (
+                                          <div key={key} className="flex justify-between">
+                                            <span className="capitalize">{key}:</span>
+                                            <span className={value.status === 'confirmed' ? 'text-green-400' : 'text-red-400'}>
+                                              {value.status} {value.value && `(${value.value.toFixed(2)})`}
+                                            </span>
+                                          </div>
+                                        ))}
+                                        {skipped.decision.breakdown.details.rsi?.details && (
+                                          <div className="mt-2 text-xs text-gray-400 border-t border-gray-600 pt-2">
+                                            {skipped.decision.breakdown.details.rsi.details}
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
                               )}
                               <span className={`px-3 py-1.5 rounded-md text-sm font-semibold ${reasonColor}`}>
                                 {displayReason}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="py-3 px-4">
+                            <div className="flex items-center gap-2">
+                              {/* D) EXECUTION STATUS - Show exact exchange error details */}
+                              {executionStatus === 'FAILED' && executionReason && (
+                                <div className="relative group">
+                                  <InformationCircleIcon className="w-4 h-4 text-red-400 cursor-help" />
+                                  <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-3 bg-slate-900 border border-red-500/30 rounded-lg shadow-xl">
+                                    <div className="text-xs font-semibold text-red-400 mb-1">Exchange Error:</div>
+                                    <div className="text-xs text-gray-300 leading-relaxed">
+                                      {executionReason}
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                              <span className={`px-3 py-1.5 rounded-md text-sm font-semibold ${executionColor}`}>
+                                {executionStatus}
                               </span>
                             </div>
                           </td>

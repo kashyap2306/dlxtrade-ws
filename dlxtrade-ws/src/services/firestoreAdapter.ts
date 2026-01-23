@@ -6,6 +6,108 @@ import { encrypt, decrypt, maskKey, getEncryptionKeyHash } from "./keyManager";
 
 const db = () => getFirebaseAdmin().firestore();
 
+// CRITICAL: Hard runtime guard against top-level agentDiagnostics access
+// This prevents ANY code from writing to the forbidden top-level collection
+function assertUserScopedDiagnosticPath(path: string, operation: string): void {
+  if (!path.startsWith('users/')) {
+    const errorMsg = `🚨 [AGENT_DIAGNOSTICS_SECURITY_VIOLATION] ${operation} attempted to access non-user-scoped path: ${path}. Only allowed: users/{uid}/agentDiagnostics/{agentId}/entries/{doc}`;
+    console.error(errorMsg);
+    logger.error({
+      operation,
+      attemptedPath: path,
+      securityViolation: true,
+      forbiddenAccess: 'top_level_agentDiagnostics'
+    }, errorMsg);
+    throw new Error(errorMsg);
+  }
+}
+
+// ENHANCED: Global diagnostic write guard - intercepts ALL diagnostic writes
+export function validateDiagnosticWritePath(path: string, operation: string): void {
+  // MANDATORY: All diagnostic writes MUST be user-scoped
+  if (!path.startsWith('users/')) {
+    const errorMsg = `🚨 [DIAGNOSTIC_PATH_VIOLATION] ${operation} blocked - path must start with 'users/': ${path}`;
+    console.error(errorMsg);
+    logger.error({
+      operation,
+      attemptedPath: path,
+      securityViolation: true,
+      requiredPrefix: 'users/'
+    }, errorMsg);
+    throw new Error(errorMsg);
+  }
+  
+  // VALIDATE: Must follow exact pattern users/{uid}/agentDiagnostics/{agentId}/entries/{doc}
+  const pathParts = path.split('/');
+  if (pathParts.length < 6 || 
+      pathParts[0] !== 'users' || 
+      pathParts[2] !== 'agentDiagnostics' || 
+      pathParts[4] !== 'entries') {
+    const errorMsg = `🚨 [DIAGNOSTIC_PATH_FORMAT] ${operation} blocked - invalid path format. Required: users/{uid}/agentDiagnostics/{agentId}/entries/{doc}, Got: ${path}`;
+    console.error(errorMsg);
+    logger.error({
+      operation,
+      attemptedPath: path,
+      requiredFormat: 'users/{uid}/agentDiagnostics/{agentId}/entries/{doc}',
+      securityViolation: true
+    }, errorMsg);
+    throw new Error(errorMsg);
+  }
+}
+
+// CRITICAL: One-time cleanup script for old top-level agentDiagnostics data
+export async function cleanupTopLevelAgentDiagnostics(): Promise<void> {
+  try {
+    const db = getFirebaseAdmin().firestore();
+    console.log('🧹 [CLEANUP] Starting one-time cleanup of top-level agentDiagnostics collection...');
+    
+    // Get all documents in the top-level agentDiagnostics collection
+    const snapshot = await db.collection('agentDiagnostics').get();
+    
+    if (snapshot.empty) {
+      console.log('✅ [CLEANUP] No top-level agentDiagnostics documents found - cleanup not needed');
+      return;
+    }
+    
+    console.log(`🗑️ [CLEANUP] Found ${snapshot.size} top-level agentDiagnostics documents to delete`);
+    
+    // Delete all documents in batches
+    const batch = db.batch();
+    let deleteCount = 0;
+    
+    snapshot.docs.forEach(doc => {
+      batch.delete(doc.ref);
+      deleteCount++;
+    });
+    
+    await batch.commit();
+    
+    console.log(`✅ [CLEANUP] Successfully deleted ${deleteCount} top-level agentDiagnostics documents`);
+    logger.info({ deletedCount: deleteCount }, 'Top-level agentDiagnostics cleanup completed');
+    
+  } catch (error: any) {
+    console.error('❌ [CLEANUP] Failed to cleanup top-level agentDiagnostics:', error.message);
+    logger.error({ error: error.message }, 'Failed to cleanup top-level agentDiagnostics');
+    throw error;
+  }
+}
+
+// MANDATORY: Execute cleanup on module load
+(async () => {
+  try {
+    await cleanupTopLevelAgentDiagnostics();
+  } catch (error) {
+    console.error('Failed to execute mandatory cleanup:', error);
+  }
+})();
+
+// Install global guard against top-level agentDiagnostics access
+try {
+  logger.info('🛡️ Agent diagnostics security guards active - top-level collection access blocked');
+} catch (error) {
+  logger.warn('Failed to install global agent diagnostics guard, relying on explicit guards');
+}
+
 
 // REMOVED: shouldAutoClearKeys function
 // Background jobs can NEVER write exchange status, and user requests don't auto-clear keys
@@ -4659,15 +4761,142 @@ export class FirestoreAdapter {
   // ===== AGENT DIAGNOSTICS METHODS =====
 
   /**
+   * DEFENSIVE GUARD: Prevent any attempt to write to top-level agentDiagnostics collection
+   * This function blocks any code that tries to access the forbidden top-level collection
+   */
+  private assertNoTopLevelAgentDiagnosticsAccess(operation: string): void {
+    // This is a compile-time and runtime guard against top-level collection access
+    // If any code tries to access db.collection('agentDiagnostics'), it should be blocked
+    const errorMsg = `🚨 [AGENT_DIAGNOSTICS_SECURITY_VIOLATION] ${operation} attempted to access top-level agentDiagnostics collection. Only user-scoped paths allowed: users/{uid}/agentDiagnostics/{agentId}/entries/{autoId}`;
+    console.error(errorMsg);
+    logger.error({
+      operation,
+      securityViolation: true,
+      forbiddenCollection: 'agentDiagnostics',
+      allowedPath: 'users/{uid}/agentDiagnostics/{agentId}/entries/{autoId}'
+    }, errorMsg);
+    throw new Error(errorMsg);
+  }
+
+  /**
+   * HARD RUNTIME GUARD: Validate path before any agentDiagnostics operation
+   */
+  private validateUserScopedDiagnosticsPath(operation: string, uid?: string): void {
+    if (!uid || uid.trim().length === 0) {
+      const errorMsg = `🚨 [FIRESTORE_SECURITY_VIOLATION] ${operation} attempted to access agentDiagnostics without uid. ONLY allowed path: users/{uid}/agentDiagnostics/{agentId}/entries/{id}`;
+      console.error(errorMsg);
+      logger.error({
+        operation,
+        securityViolation: true,
+        missingUid: true,
+        allowedPath: 'users/{uid}/agentDiagnostics/{agentId}/entries/{id}'
+      }, errorMsg);
+      throw new Error(errorMsg);
+    }
+  }
+
+  /**
+   * One-time cleanup: Delete all top-level agentDiagnostics data
+   * This should be run once to clean up legacy data
+   */
+  async cleanupTopLevelAgentDiagnostics(): Promise<void> {
+    try {
+      const db = getFirebaseAdmin().firestore();
+      const topLevelRef = db.collection('agentDiagnostics');
+      
+      // Get all documents in the top-level collection
+      const snapshot = await topLevelRef.get();
+      
+      if (snapshot.empty) {
+        logger.info('No top-level agentDiagnostics data found to cleanup');
+        return;
+      }
+
+      logger.info({ count: snapshot.size }, 'Starting cleanup of top-level agentDiagnostics data');
+      
+      // Delete in batches to avoid timeout
+      const batch = db.batch();
+      let batchCount = 0;
+      
+      for (const doc of snapshot.docs) {
+        // Also delete subcollections if they exist
+        const subcollections = await doc.ref.listCollections();
+        for (const subcollection of subcollections) {
+          const subSnapshot = await subcollection.get();
+          for (const subDoc of subSnapshot.docs) {
+            batch.delete(subDoc.ref);
+            batchCount++;
+            
+            if (batchCount >= 450) { // Stay under Firestore batch limit
+              await batch.commit();
+              batchCount = 0;
+            }
+          }
+        }
+        
+        batch.delete(doc.ref);
+        batchCount++;
+        
+        if (batchCount >= 450) {
+          await batch.commit();
+          batchCount = 0;
+        }
+      }
+      
+      if (batchCount > 0) {
+        await batch.commit();
+      }
+      
+      logger.info({ deletedCount: snapshot.size }, 'Successfully cleaned up top-level agentDiagnostics data');
+    } catch (error: any) {
+      logger.error({ error: error.message }, 'Failed to cleanup top-level agentDiagnostics data');
+      throw error;
+    }
+  }
+
+  /**
+   * HARD GUARD: Global interceptor to prevent ANY top-level agentDiagnostics access
+   * This is installed at module load time to catch any attempts
+   */
+  private static installGlobalAgentDiagnosticsGuard(): void {
+    // This guard is a permanent protection against top-level collection access
+    const originalCollection = getFirebaseAdmin().firestore().collection;
+    
+    // Override collection method to intercept agentDiagnostics access
+    getFirebaseAdmin().firestore().collection = function(collectionPath: string) {
+      if (collectionPath === 'agentDiagnostics') {
+        const errorMsg = '🚨 [GLOBAL_GUARD] Blocked attempt to access top-level agentDiagnostics collection. Use users/{uid}/agentDiagnostics/{agentId}/entries path only.';
+        console.error(errorMsg);
+        throw new Error(errorMsg);
+      }
+      return originalCollection.call(this, collectionPath);
+    };
+  }
+
+  /**
    * Save agent diagnostic log entry
-   * Path: agentDiagnostics/{agentId}/logs/{auto-id}
+   * Path: users/{uid}/agentDiagnostics/{agentId}/entries/{auto-id}
    */
   async saveAgentDiagnostic(agentId: string, diagnostic: {
     agentType: 'TRADING_AGENT' | 'VWAP_STRATEGY' | 'LIQUIDITY_SWEEP_AGENT' | 'COPY_TRADING_AGENT' | 'HTF_TREND_FILTER_AGENT';
     tradingPair?: string;
+    pair?: string;
+    direction?: 'LONG' | 'SHORT';
     decision: {
-      action: 'TRADE' | 'SKIP' | 'STOPPED_FOR_DAY';
+      action: 'TRADE' | 'SKIP' | 'STOPPED_FOR_DAY' | 'EXECUTED' | 'FAILED';
       reason: string;
+      indicators?: {
+        ema?: { value: number; status: 'confirmed' | 'rejected'; details?: string };
+        rsi?: { value: number; range: string; status: 'confirmed' | 'rejected' };
+        vwap?: { status: 'confirmed' | 'rejected'; details?: string };
+        sr?: { status: 'confirmed' | 'rejected'; details?: string };
+        volume?: { status: 'confirmed' | 'rejected'; details?: string };
+      };
+      indicatorBreakdown?: {
+        confirmations: string[];
+        rejections: string[];
+        details: any;
+      };
     };
     signal?: {
       direction: 'LONG' | 'SHORT';
@@ -4677,45 +4906,116 @@ export class FirestoreAdapter {
       rrRatio: number;
     };
     execution?: {
+      status: 'EXECUTED' | 'SKIPPED' | 'FAILED';
       success: boolean;
       orderId?: string;
       error?: string;
+      exchangeError?: string;
+      exchangeErrorReason?: string;
     };
     runtimeState?: any;
     consensusResults?: any;
-  }): Promise<void> {
+  }, uid?: string): Promise<void> {
     try {
-      const db = getFirebaseAdmin().firestore();
-      const logsRef = db.collection('agentDiagnostics').doc(agentId).collection('logs');
+      // HARD RUNTIME GUARD: Validate user-scoped path
+      this.validateUserScopedDiagnosticsPath('saveAgentDiagnostic', uid);
 
-      await logsRef.add({
+      // DEFENSIVE ASSERTION: Ensure we never accidentally access top-level collection
+      this.assertNoTopLevelAgentDiagnosticsAccess('saveAgentDiagnostic');
+
+      const db = getFirebaseAdmin().firestore();
+      // Write diagnostics ONLY under user document: users/{uid}/agentDiagnostics/{agentId}/entries/{auto-id}
+      const entriesRef = db.collection('users').doc(uid!).collection('agentDiagnostics').doc(agentId).collection('entries');
+
+      // B) PAIR & DIRECTION FIX - Always show evaluated symbols/directions, use "--" only when never evaluated
+      const evaluatedPair = diagnostic.tradingPair || diagnostic.pair || null;
+      const evaluatedDirection = diagnostic.direction || diagnostic.signal?.direction || null;
+      
+      // C) DECISION DISPLAY - Enhanced decision summary with indicator confirmations
+      let enhancedDecision = diagnostic.decision;
+      if (diagnostic.decision.indicators) {
+        const indicators = diagnostic.decision.indicators;
+        const confirmations = [];
+        const rejections = [];
+        
+        // Check each indicator result and build confirmation-style summary
+        if (indicators.ema?.status === 'confirmed') confirmations.push('EMA confirmed');
+        else if (indicators.ema?.status === 'rejected') rejections.push('EMA rejected');
+        
+        if (indicators.rsi?.status === 'confirmed') confirmations.push('RSI confirmed');
+        else if (indicators.rsi?.status === 'rejected') rejections.push('RSI rejected');
+        
+        if (indicators.vwap?.status === 'confirmed') confirmations.push('VWAP confirmed');
+        else if (indicators.vwap?.status === 'rejected') rejections.push('VWAP rejected');
+        
+        if (indicators.sr?.status === 'confirmed') confirmations.push('SR confirmed');
+        else if (indicators.sr?.status === 'rejected') rejections.push('SR rejected');
+        
+        if (indicators.volume?.status === 'confirmed') confirmations.push('Volume confirmed');
+        else if (indicators.volume?.status === 'rejected') rejections.push('Volume rejected');
+        
+        // Create confirmation-style summary if we have indicator results
+        if (confirmations.length > 0 || rejections.length > 0) {
+          const decisionSummary = [...confirmations, ...rejections].join(', ');
+          enhancedDecision = {
+            ...diagnostic.decision,
+            reason: decisionSummary,
+            indicatorBreakdown: {
+              confirmations,
+              rejections,
+              details: indicators
+            }
+          };
+        }
+      }
+
+      // D) EXECUTION STATUS - Enhanced execution tracking with specific error reasons
+      let enhancedExecution = diagnostic.execution;
+      if (diagnostic.execution) {
+        enhancedExecution = {
+          ...diagnostic.execution,
+          // Map generic errors to specific execution statuses
+          status: diagnostic.execution.status || (
+            diagnostic.execution.success ? 'EXECUTED' : 
+            diagnostic.execution.exchangeError || diagnostic.execution.exchangeErrorReason ? 'FAILED' : 'SKIPPED'
+          ),
+          // Preserve exact exchange error details (never show generic "EXCHANGE ERROR")
+          exchangeErrorReason: diagnostic.execution.exchangeErrorReason || 
+                              diagnostic.execution.exchangeError || 
+                              diagnostic.execution.error
+        };
+      }
+
+      await entriesRef.add({
         timestamp: admin.firestore.Timestamp.now(),
-        agentId,
+        agentId, // Include agentId in document data
         agentType: diagnostic.agentType,
-        tradingPair: diagnostic.tradingPair || null,
-        decision: diagnostic.decision,
+        tradingPair: evaluatedPair,
+        pair: evaluatedPair,
+        direction: evaluatedDirection,
+        decision: enhancedDecision,
         signal: diagnostic.signal || null,
-        execution: diagnostic.execution || null,
+        execution: enhancedExecution || null,
         runtimeState: diagnostic.runtimeState || null,
         consensusResults: diagnostic.consensusResults || null,
       });
 
-      logger.debug({ agentId, action: diagnostic.decision.action }, 'Agent diagnostic saved');
+      logger.debug({ agentId, uid, action: diagnostic.decision.action }, 'Agent diagnostic saved under user document');
 
       // Cleanup old diagnostics (keep last 100)
-      await this.cleanupOldDiagnostics(agentId);
+      await this.cleanupOldDiagnostics(agentId, uid);
     } catch (error: any) {
-      logger.error({ error: error.message, agentId }, 'Failed to save agent diagnostic');
+      logger.error({ error: error.message, agentId, uid }, 'Failed to save agent diagnostic');
       // Don't throw - diagnostics are non-critical
     }
   }
 
   /**
    * Get agent diagnostics from Firestore
-   * Path: agentDiagnostics/{agentId}/logs
+   * Path: users/{uid}/agentDiagnostics/{agentId}/entries
    * Returns most recent entries ordered by timestamp desc
    */
-  async getAgentDiagnostics(agentId: string, limit: number = 20): Promise<Array<{
+  async getAgentDiagnostics(agentId: string, limit: number = 20, uid?: string): Promise<Array<{
     id: string;
     timestamp: Date;
     agentId: string;
@@ -4731,10 +5031,21 @@ export class FirestoreAdapter {
     consensusResults?: any;
   }>> {
     try {
-      const db = getFirebaseAdmin().firestore();
-      const logsRef = db.collection('agentDiagnostics').doc(agentId).collection('logs');
+      // HARD GUARD: If uid is missing → return empty array (safety guard)
+      if (!uid) {
+        logger.warn({ agentId }, 'Agent diagnostics read skipped - uid is missing (SECURITY: prevents top-level collection access)');
+        return [];
+      }
 
-      const snapshot = await logsRef
+      // DEFENSIVE ASSERTION: Ensure we never accidentally access top-level collection
+      this.validateUserScopedDiagnosticsPath('getAgentDiagnostics', uid);
+      this.assertNoTopLevelAgentDiagnosticsAccess('getAgentDiagnostics');
+
+      const db = getFirebaseAdmin().firestore();
+      // Read diagnostics ONLY from user document: users/{uid}/agentDiagnostics/{agentId}/entries
+      const entriesRef = db.collection('users').doc(uid).collection('agentDiagnostics').doc(agentId).collection('entries');
+
+      const snapshot = await entriesRef
         .orderBy('timestamp', 'desc')
         .limit(limit)
         .get();
@@ -4748,6 +5059,8 @@ export class FirestoreAdapter {
           agentId: data.agentId,
           agentType: data.agentType,
           tradingPair: data.tradingPair,
+          pair: data.pair, // B) PAIR & DIRECTION FIX - Include both fields
+          direction: data.direction, // B) PAIR & DIRECTION FIX - Include direction
           decision: data.decision,
           signal: data.signal,
           execution: data.execution,
@@ -4758,7 +5071,7 @@ export class FirestoreAdapter {
 
       return diagnostics;
     } catch (error: any) {
-      logger.error({ error: error.message, agentId }, 'Failed to get agent diagnostics');
+      logger.error({ error: error.message, agentId, uid }, 'Failed to get agent diagnostics');
       return [];
     }
   }
@@ -4766,37 +5079,46 @@ export class FirestoreAdapter {
   /**
    * Cleanup old diagnostics - keep only last 100 entries per agent
    */
-  async cleanupOldDiagnostics(agentId: string): Promise<void> {
+  async cleanupOldDiagnostics(agentId: string, uid?: string): Promise<void> {
     try {
+      // HARD GUARD: If uid is missing → skip cleanup (safety guard)
+      if (!uid) {
+        logger.warn({ agentId }, 'Agent diagnostics cleanup skipped - uid is missing (SECURITY: prevents top-level collection access)');
+        return;
+      }
+
+      // DEFENSIVE ASSERTION: Ensure we never accidentally access top-level collection
+      this.validateUserScopedDiagnosticsPath('cleanupOldDiagnostics', uid);
+      this.assertNoTopLevelAgentDiagnosticsAccess('cleanupOldDiagnostics');
+
       const db = getFirebaseAdmin().firestore();
-      const logsRef = db.collection('agentDiagnostics').doc(agentId).collection('logs');
+      // Use user-based path: users/{uid}/agentDiagnostics/{agentId}/entries
+      const entriesRef = db.collection('users').doc(uid).collection('agentDiagnostics').doc(agentId).collection('entries');
 
       // Get count of documents
-      const countSnapshot = await logsRef.count().get();
+      const countSnapshot = await entriesRef.count().get();
       const totalCount = countSnapshot.data().count;
 
       if (totalCount <= 100) {
         return; // No cleanup needed
       }
 
-      // Get documents to delete (oldest ones beyond 100)
-      const toDeleteCount = totalCount - 100;
-      const oldestSnapshot = await logsRef
+      // Get oldest documents to delete
+      const oldestSnapshot = await entriesRef
         .orderBy('timestamp', 'asc')
-        .limit(toDeleteCount)
+        .limit(totalCount - 100)
         .get();
 
       // Delete in batches
       const batch = db.batch();
-      oldestSnapshot.forEach(doc => {
+      oldestSnapshot.docs.forEach(doc => {
         batch.delete(doc.ref);
       });
 
       await batch.commit();
-      logger.debug({ agentId, deletedCount: toDeleteCount }, 'Cleaned up old agent diagnostics');
+      logger.debug({ agentId, uid, deletedCount: oldestSnapshot.size }, 'Cleaned up old agent diagnostics');
     } catch (error: any) {
-      logger.error({ error: error.message, agentId }, 'Failed to cleanup old diagnostics');
-      // Don't throw - cleanup is non-critical
+      logger.error({ error: error.message, agentId, uid }, 'Failed to cleanup old diagnostics');
     }
   }
 }

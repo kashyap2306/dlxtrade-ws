@@ -902,26 +902,51 @@ export class CrowdConsensusService {
       const exchangeConfigDoc = await exchangeConfigRef.get();
 
       if (!exchangeConfigDoc.exists) {
+        console.log('[CROWD_CONSENSUS] No exchange config found for user');
         return {
           connected: false,
-          message: 'No exchange connection found. Please connect an exchange in Settings.'
+          message: 'NO_ACTIVE_EXCHANGE'
         };
       }
 
       const config = exchangeConfigDoc.data();
       if (!config) {
+        console.log('[CROWD_CONSENSUS] Empty exchange config for user');
         return {
           connected: false,
-          message: 'No exchange connection found. Please connect an exchange in Settings.'
+          message: 'NO_ACTIVE_EXCHANGE'
         };
       }
 
+      // STEP 4: HARD SAFETY GUARD - disconnected flag overrides everything
+      if (config.disconnected === true) {
+        console.log('[CROWD_CONSENSUS] Exchange disconnected flag detected');
+        return {
+          connected: false,
+          message: 'EXCHANGE_NOT_CONNECTED'
+        };
+      }
+
+      // B) LEGACY DATA SAFEGUARD - Normalize legacy exchange data structures
+      let normalizedConfig = config;
+      
+      // Detect and normalize legacy data structures
+      if (config.exchangeName && !config.exchange) {
+        console.log('[CROWD_CONSENSUS] Legacy data detected: normalizing exchangeName to exchange');
+        normalizedConfig = { ...config, exchange: config.exchangeName };
+      }
+      
+      if (config.providerName && !config.exchange) {
+        console.log('[CROWD_CONSENSUS] Legacy data detected: normalizing providerName to exchange');
+        normalizedConfig = { ...config, exchange: config.providerName };
+      }
+
       // Check if exchange config has required fields
-      const exchangeName = (config.exchange || config.exchangeName || config.providerName || '').toLowerCase();
-      const hasApiKey = Boolean(config.apiKeyEncrypted);
-      const hasSecret = Boolean(config.secretEncrypted ?? config.secretKeyEncrypted);
+      const exchangeName = (normalizedConfig.exchange || '').toLowerCase();
+      const hasApiKey = Boolean(normalizedConfig.apiKeyEncrypted);
+      const hasSecret = Boolean(normalizedConfig.secretEncrypted ?? normalizedConfig.secretKeyEncrypted);
       const isBitget = exchangeName === 'bitget';
-      const hasPassphrase = isBitget ? Boolean(config.passphraseEncrypted) : true;
+      const hasPassphrase = isBitget ? Boolean(normalizedConfig.passphraseEncrypted) : true;
 
       const connected = Boolean(exchangeName && hasApiKey && hasSecret && hasPassphrase);
 
@@ -933,15 +958,23 @@ export class CrowdConsensusService {
         };
       }
 
+      // Return specific machine-readable reason
+      if (!exchangeName) {
+        return {
+          connected: false,
+          message: 'NO_ACTIVE_EXCHANGE'
+        };
+      }
+
       return {
         connected: false,
-        message: 'Exchange connection incomplete. Please complete exchange setup in Settings.'
+        message: 'EXCHANGE_NOT_CONNECTED'
       };
     } catch (error: any) {
       logger.error({ error: error.message, uid }, 'Failed to get exchange connection status');
       return {
         connected: false,
-        message: 'Error checking exchange connection status.'
+        message: 'EXCHANGE_NOT_CONNECTED'
       };
     }
   }
@@ -973,7 +1006,7 @@ export class CrowdConsensusService {
   static async saveSkippedTrade(uid: string, skippedTrade: {
     pair: string; // FIX: Accept any coin, not limited to BTCUSDT | ETHUSDT
     direction: 'LONG' | 'SHORT' | 'UNKNOWN';
-    reason: 'NO_CONSENSUS' | 'RR_TOO_LOW' | 'ENTRY_LATE' | 'SR_BLOCKED' | 'DAILY_LIMIT_REACHED' | 'EXCHANGE_ERROR' | 'COIN_OUTSIDE_TOP_100';
+    reason: 'NO_CONSENSUS' | 'RR_TOO_LOW' | 'ENTRY_LATE' | 'SR_BLOCKED' | 'DAILY_LIMIT_REACHED' | 'EXCHANGE_ERROR' | 'COIN_OUTSIDE_TOP_100' | 'NO_ACTIVE_EXCHANGE' | 'EXCHANGE_NOT_CONNECTED' | 'CREDENTIAL_DECRYPT_FAILED' | 'CREDENTIALS_MISSING';
     timestamp: Date;
     details?: any; // Additional diagnostic info
   }): Promise<void> {

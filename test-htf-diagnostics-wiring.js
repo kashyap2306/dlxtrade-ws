@@ -76,7 +76,12 @@ async function diagnoseHTFDiagnostics() {
 
       // Step 3: Check if diagnostics exist for this agent
       console.log(`\nStep 3: Checking diagnostics for agent ${agentId}...`);
-      const diagnosticsRef = db.collection('agentDiagnostics').doc(agentId).collection('logs');
+      const diagnosticsRef = db
+        .collection('users')
+        .doc(agentData.userId)
+        .collection('agentDiagnostics')
+        .doc(agentId)
+        .collection('entries');
       const diagnosticsSnapshot = await diagnosticsRef
         .orderBy('timestamp', 'desc')
         .limit(5)
@@ -84,7 +89,7 @@ async function diagnoseHTFDiagnostics() {
 
       if (diagnosticsSnapshot.empty) {
         console.log(`❌ NO diagnostics found for agent ${agentId}`);
-        console.log(`   Path checked: agentDiagnostics/${agentId}/logs`);
+        console.log(`   Path checked: users/${agentData.userId}/agentDiagnostics/${agentId}/entries`);
         console.log(`   This means either:`);
         console.log(`   1. The scheduler is not executing this agent`);
         console.log(`   2. The agent is executing but diagnostics are being written to a different agentId`);
@@ -109,7 +114,7 @@ async function diagnoseHTFDiagnostics() {
       console.log(`\n\nStep 4: Frontend Query Simulation`);
       console.log(`When frontend calls /api/agents/htf-trend-filter-agent/diagnostics:`);
       console.log(`1. Backend finds HTF agent for user ${agentData.userId}`);
-      console.log(`2. Backend queries: agentDiagnostics/${agentId}/logs`);
+      console.log(`2. Backend queries: users/${agentData.userId}/agentDiagnostics/${agentId}/entries`);
       console.log(`3. Returns diagnostics to frontend`);
       
       // Verify the route would find this agent
@@ -136,30 +141,60 @@ async function diagnoseHTFDiagnostics() {
     console.log(`\n\n=== SCHEDULER ACTIVITY CHECK ===`);
     console.log(`Checking if scheduler has executed recently...`);
     
-    // Check all recent diagnostics across all agents
-    const allDiagnosticsSnapshot = await db.collectionGroup('logs')
-      .where('agentType', '==', 'HTF_TREND_FILTER_AGENT')
-      .orderBy('timestamp', 'desc')
-      .limit(10)
-      .get();
+    // Check recent diagnostics for all HTF agents found
+    let totalHTFDiagnostics = 0;
+    const recentExecutions = [];
     
-    if (allDiagnosticsSnapshot.empty) {
+    for (const agentDoc of agentsSnapshot.docs) {
+      const agentData = agentDoc.data();
+      const agentId = agentDoc.id;
+      
+      try {
+        const userDiagnosticsSnapshot = await db
+          .collection('users')
+          .doc(agentData.userId)
+          .collection('agentDiagnostics')
+          .doc(agentId)
+          .collection('entries')
+          .where('agentType', '==', 'HTF_TREND_FILTER_AGENT')
+          .orderBy('timestamp', 'desc')
+          .limit(5)
+          .get();
+        
+        totalHTFDiagnostics += userDiagnosticsSnapshot.size;
+        
+        userDiagnosticsSnapshot.forEach(doc => {
+          const data = doc.data();
+          recentExecutions.push({
+            agentId: data.agentId,
+            timestamp: data.timestamp?.toDate(),
+            decision: data.decision
+          });
+        });
+      } catch (error) {
+        console.log(`   Warning: Could not check diagnostics for agent ${agentId}: ${error.message}`);
+      }
+    }
+    
+    if (totalHTFDiagnostics === 0) {
       console.log(`❌ NO HTF diagnostics found anywhere in the system`);
       console.log(`   This strongly suggests the scheduler is NOT executing HTF agents`);
     } else {
-      console.log(`✓ Found ${allDiagnosticsSnapshot.size} HTF diagnostic entries across all agents`);
+      console.log(`✓ Found ${totalHTFDiagnostics} HTF diagnostic entries across all agents`);
       console.log(`\nMost recent HTF executions:`);
       
-      allDiagnosticsSnapshot.forEach((doc, index) => {
-        const data = doc.data();
-        const timestamp = data.timestamp?.toDate();
-        const timeSince = timestamp ? Math.floor((Date.now() - timestamp.getTime()) / 1000 / 60) : '?';
-        const agentId = data.agentId;
-        
-        console.log(`\n  ${index + 1}. Agent: ${agentId}`);
-        console.log(`     Time: ${timestamp?.toISOString() || 'Unknown'} (${timeSince} minutes ago)`);
-        console.log(`     Decision: ${data.decision?.action} - ${data.decision?.reason}`);
-      });
+      // Sort by timestamp and show most recent
+      recentExecutions
+        .sort((a, b) => (b.timestamp?.getTime() || 0) - (a.timestamp?.getTime() || 0))
+        .slice(0, 10)
+        .forEach((execution, index) => {
+          const timestamp = execution.timestamp;
+          const timeSince = timestamp ? Math.floor((Date.now() - timestamp.getTime()) / 1000 / 60) : '?';
+          
+          console.log(`\n  ${index + 1}. Agent: ${execution.agentId}`);
+          console.log(`     Time: ${timestamp?.toISOString() || 'Unknown'} (${timeSince} minutes ago)`);
+          console.log(`     Decision: ${execution.decision?.action} - ${execution.decision?.reason}`);
+        });
     }
 
     console.log('\n\n=== DIAGNOSIS COMPLETE ===\n');
