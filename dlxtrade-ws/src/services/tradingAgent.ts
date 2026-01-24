@@ -199,11 +199,31 @@ export class TradingAgent {
 
       // ENFORCE SKIPPED PERSISTENCE RULES
       if (cycleResult === 'SKIP') {
-        // Force delete ALL trading-related fields for SKIPPED cycles
-        // SKIPPED cycles must NEVER persist BTC/USDT or LONG/SHORT
-        delete filteredDiagnostic.tradingPair;
-        delete filteredDiagnostic.pair;
-        delete filteredDiagnostic.direction;
+        // For HTF agents, preserve trading pair and direction even for skipped cycles
+        // so users can see what the agent was evaluating
+        if (isHTFAgent) {
+          // Keep tradingPair and direction for HTF agents
+          filteredDiagnostic.tradingPair = diagnostics.tradingPair;
+          // Get direction from the diagnostics object (added dynamically) or signal
+          // Normalize direction values to standard format
+          const rawDirection = (diagnostics as any).direction || diagnostics.signal?.direction;
+          if (rawDirection === 'LONG_ONLY') {
+            filteredDiagnostic.direction = 'LONG';
+          } else if (rawDirection === 'SHORT_ONLY') {
+            filteredDiagnostic.direction = 'SHORT';
+          } else if (rawDirection === 'NO_TRADE') {
+            filteredDiagnostic.direction = 'NO_TRADE';
+          } else {
+            filteredDiagnostic.direction = rawDirection || 'NO_TRADE';
+          }
+        } else {
+          // For non-HTF agents, force delete trading-related fields for SKIPPED cycles
+          delete filteredDiagnostic.tradingPair;
+          delete filteredDiagnostic.pair;
+          delete filteredDiagnostic.direction;
+        }
+        
+        // Clean up other fields for all agents
         delete filteredDiagnostic.symbol;
         delete filteredDiagnostic.exchangeError;
         delete filteredDiagnostic.exchangeErrorReason;

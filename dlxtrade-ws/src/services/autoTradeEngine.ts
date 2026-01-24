@@ -3907,6 +3907,26 @@ export class AutoTradeEngine {
           "Background tasks are currently paused by system administrator",
         );
 
+        // CRITICAL FIX: Also write diagnostic entry for "Recent Cycle Results" UI
+        try {
+          await firestoreAdapter.saveAgentDiagnostic('AUTO_TRADE_AGENT', {
+            agentType: 'TRADING_AGENT',
+            tradingPair: 'AUTO_TRADE_CYCLE',
+            direction: 'LONG',
+            decision: {
+              action: 'SKIP',
+              reason: 'Background tasks paused by system administrator'
+            },
+            execution: {
+              status: 'SKIPPED',
+              success: false,
+              exchangeErrorReason: null
+            }
+          }, uid);
+        } catch (diagnosticErr: any) {
+          logger.warn({ uid, error: diagnosticErr.message }, 'Failed to save diagnostic for background tasks paused');
+        }
+
         return null; // Cycle completed with SKIPPED history
       }
 
@@ -4026,6 +4046,26 @@ export class AutoTradeEngine {
           "Exchange not connected - soft skip only",
           cycleId,
         );
+      }
+
+      // CRITICAL FIX: Also write diagnostic entry for "Recent Cycle Results" UI
+      try {
+        await firestoreAdapter.saveAgentDiagnostic('AUTO_TRADE_AGENT', {
+          agentType: 'TRADING_AGENT',
+          tradingPair: 'AUTO_TRADE_CYCLE',
+          direction: 'LONG',
+          decision: {
+            action: 'SKIP',
+            reason: 'Exchange not connected'
+          },
+          execution: {
+            status: 'SKIPPED',
+            success: false,
+            exchangeErrorReason: 'Exchange not connected'
+          }
+        }, uid);
+      } catch (diagnosticErr: any) {
+        logger.warn({ uid, error: diagnosticErr.message }, 'Failed to save diagnostic for exchange not connected');
       }
 
       return null; // Cycle completed with SKIPPED history (SOFT SKIP)

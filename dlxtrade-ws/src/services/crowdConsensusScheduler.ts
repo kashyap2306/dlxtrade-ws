@@ -559,7 +559,7 @@ export class CrowdConsensusScheduler {
             error: tradeResult.reason,
           },
           consensusResults: { tradeResult },
-        });
+        }, uid);
         await CrowdConsensusService.saveSkippedTrade(uid, {
           pair: signal.pair,
           direction: signal.direction,
@@ -597,7 +597,7 @@ export class CrowdConsensusScheduler {
           orderId: tradeResult.tradeId,
         },
         consensusResults: { tradeResult },
-      });
+      }, uid);
 
       logger.info({
         uid,
@@ -622,7 +622,7 @@ export class CrowdConsensusScheduler {
           success: false,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
-      });
+      }, uid);
       logger.error({
         uid,
         pair: signal.pair,

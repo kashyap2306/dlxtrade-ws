@@ -1,15 +1,11 @@
-import { cleanupTopLevelAgentDiagnostics } from '../services/firestoreAdapter';
 import { logger } from './logger';
 
 /**
- * One-time cleanup script for old top-level agentDiagnostics data
- * This script will be deleted after execution
+ * REMOVED: One-time cleanup script - no longer needed as all access is user-scoped
  */
 async function runCleanup() {
   try {
-    console.log('🧹 Starting one-time cleanup of top-level agentDiagnostics collection...');
-    await cleanupTopLevelAgentDiagnostics();
-    console.log('✅ Cleanup completed successfully');
+    console.log('✅ Cleanup skipped - all agentDiagnostics access is now user-scoped');
     process.exit(0);
   } catch (error: any) {
     console.error('❌ Cleanup failed:', error.message);

@@ -55,51 +55,9 @@ export function validateDiagnosticWritePath(path: string, operation: string): vo
   }
 }
 
-// CRITICAL: One-time cleanup script for old top-level agentDiagnostics data
-export async function cleanupTopLevelAgentDiagnostics(): Promise<void> {
-  try {
-    const db = getFirebaseAdmin().firestore();
-    console.log('🧹 [CLEANUP] Starting one-time cleanup of top-level agentDiagnostics collection...');
-    
-    // Get all documents in the top-level agentDiagnostics collection
-    const snapshot = await db.collection('agentDiagnostics').get();
-    
-    if (snapshot.empty) {
-      console.log('✅ [CLEANUP] No top-level agentDiagnostics documents found - cleanup not needed');
-      return;
-    }
-    
-    console.log(`🗑️ [CLEANUP] Found ${snapshot.size} top-level agentDiagnostics documents to delete`);
-    
-    // Delete all documents in batches
-    const batch = db.batch();
-    let deleteCount = 0;
-    
-    snapshot.docs.forEach(doc => {
-      batch.delete(doc.ref);
-      deleteCount++;
-    });
-    
-    await batch.commit();
-    
-    console.log(`✅ [CLEANUP] Successfully deleted ${deleteCount} top-level agentDiagnostics documents`);
-    logger.info({ deletedCount: deleteCount }, 'Top-level agentDiagnostics cleanup completed');
-    
-  } catch (error: any) {
-    console.error('❌ [CLEANUP] Failed to cleanup top-level agentDiagnostics:', error.message);
-    logger.error({ error: error.message }, 'Failed to cleanup top-level agentDiagnostics');
-    throw error;
-  }
-}
+// REMOVED: Top-level agentDiagnostics cleanup - no longer needed as all access is user-scoped
 
-// MANDATORY: Execute cleanup on module load
-(async () => {
-  try {
-    await cleanupTopLevelAgentDiagnostics();
-  } catch (error) {
-    console.error('Failed to execute mandatory cleanup:', error);
-  }
-})();
+// REMOVED: Mandatory cleanup execution - no longer needed
 
 // Install global guard against top-level agentDiagnostics access
 try {
@@ -407,11 +365,13 @@ export async function updateCachedFlags(uid: string): Promise<void> {
 export async function getLastProcessedCandle(agentId: string, tradingPair: string): Promise<Date | null> {
     try {
       const db = getFirebaseAdmin().firestore();
+      // FIX: Replace slashes with underscores to create valid Firestore document ID
+      const safeDocumentId = `candle_${tradingPair.replace(/\//g, '_')}`;
       const doc = await db
         .collection('tradingAgents')
         .doc(agentId)
         .collection('executionState')
-        .doc(`candle_${tradingPair}`)
+        .doc(safeDocumentId)
         .get();
 
       if (!doc.exists) return null;
@@ -427,11 +387,13 @@ export async function getLastProcessedCandle(agentId: string, tradingPair: strin
 export async function updateLastProcessedCandle(agentId: string, tradingPair: string, candleTimestamp: Date): Promise<void> {
     try {
       const db = getFirebaseAdmin().firestore();
+      // FIX: Replace slashes with underscores to create valid Firestore document ID
+      const safeDocumentId = `candle_${tradingPair.replace(/\//g, '_')}`;
       await db
         .collection('tradingAgents')
         .doc(agentId)
         .collection('executionState')
-        .doc(`candle_${tradingPair}`)
+        .doc(safeDocumentId)
         .set({
           lastProcessedCandle: admin.firestore.Timestamp.fromDate(candleTimestamp),
           updatedAt: admin.firestore.Timestamp.now(),
@@ -4766,22 +4728,19 @@ export class FirestoreAdapter {
    */
   private assertNoTopLevelAgentDiagnosticsAccess(operation: string): void {
     // This is a compile-time and runtime guard against top-level collection access
-    // If any code tries to access db.collection('agentDiagnostics'), it should be blocked
-    const errorMsg = `🚨 [AGENT_DIAGNOSTICS_SECURITY_VIOLATION] ${operation} attempted to access top-level agentDiagnostics collection. Only user-scoped paths allowed: users/{uid}/agentDiagnostics/{agentId}/entries/{autoId}`;
-    console.error(errorMsg);
-    logger.error({
+    // Since we're using user-scoped paths, this function serves as a documentation guard
+    // The actual path validation is done by validateUserScopedDiagnosticsPath
+    logger.debug({
       operation,
-      securityViolation: true,
-      forbiddenCollection: 'agentDiagnostics',
+      securityGuard: 'active',
       allowedPath: 'users/{uid}/agentDiagnostics/{agentId}/entries/{autoId}'
-    }, errorMsg);
-    throw new Error(errorMsg);
+    }, `Security guard active for ${operation} - ensuring user-scoped access only`);
   }
 
   /**
    * HARD RUNTIME GUARD: Validate path before any agentDiagnostics operation
    */
-  private validateUserScopedDiagnosticsPath(operation: string, uid?: string): void {
+  private validateUserScopedDiagnosticsPath(operation: string, uid: string): void {
     if (!uid || uid.trim().length === 0) {
       const errorMsg = `🚨 [FIRESTORE_SECURITY_VIOLATION] ${operation} attempted to access agentDiagnostics without uid. ONLY allowed path: users/{uid}/agentDiagnostics/{agentId}/entries/{id}`;
       console.error(errorMsg);
@@ -4796,62 +4755,11 @@ export class FirestoreAdapter {
   }
 
   /**
-   * One-time cleanup: Delete all top-level agentDiagnostics data
-   * This should be run once to clean up legacy data
+   * REMOVED: Top-level cleanup - no longer needed as all access is user-scoped
    */
   async cleanupTopLevelAgentDiagnostics(): Promise<void> {
-    try {
-      const db = getFirebaseAdmin().firestore();
-      const topLevelRef = db.collection('agentDiagnostics');
-      
-      // Get all documents in the top-level collection
-      const snapshot = await topLevelRef.get();
-      
-      if (snapshot.empty) {
-        logger.info('No top-level agentDiagnostics data found to cleanup');
-        return;
-      }
-
-      logger.info({ count: snapshot.size }, 'Starting cleanup of top-level agentDiagnostics data');
-      
-      // Delete in batches to avoid timeout
-      const batch = db.batch();
-      let batchCount = 0;
-      
-      for (const doc of snapshot.docs) {
-        // Also delete subcollections if they exist
-        const subcollections = await doc.ref.listCollections();
-        for (const subcollection of subcollections) {
-          const subSnapshot = await subcollection.get();
-          for (const subDoc of subSnapshot.docs) {
-            batch.delete(subDoc.ref);
-            batchCount++;
-            
-            if (batchCount >= 450) { // Stay under Firestore batch limit
-              await batch.commit();
-              batchCount = 0;
-            }
-          }
-        }
-        
-        batch.delete(doc.ref);
-        batchCount++;
-        
-        if (batchCount >= 450) {
-          await batch.commit();
-          batchCount = 0;
-        }
-      }
-      
-      if (batchCount > 0) {
-        await batch.commit();
-      }
-      
-      logger.info({ deletedCount: snapshot.size }, 'Successfully cleaned up top-level agentDiagnostics data');
-    } catch (error: any) {
-      logger.error({ error: error.message }, 'Failed to cleanup top-level agentDiagnostics data');
-      throw error;
-    }
+    // No longer needed - all access is user-scoped
+    logger.info('Top-level agentDiagnostics cleanup skipped - all access is user-scoped');
   }
 
   /**
@@ -4915,7 +4823,7 @@ export class FirestoreAdapter {
     };
     runtimeState?: any;
     consensusResults?: any;
-  }, uid?: string): Promise<void> {
+  }, uid: string): Promise<void> {
     try {
       // HARD RUNTIME GUARD: Validate user-scoped path
       this.validateUserScopedDiagnosticsPath('saveAgentDiagnostic', uid);
@@ -5015,7 +4923,7 @@ export class FirestoreAdapter {
    * Path: users/{uid}/agentDiagnostics/{agentId}/entries
    * Returns most recent entries ordered by timestamp desc
    */
-  async getAgentDiagnostics(agentId: string, limit: number = 20, uid?: string): Promise<Array<{
+  async getAgentDiagnostics(agentId: string, limit: number = 20, uid: string): Promise<Array<{
     id: string;
     timestamp: Date;
     agentId: string;
@@ -5031,11 +4939,8 @@ export class FirestoreAdapter {
     consensusResults?: any;
   }>> {
     try {
-      // HARD GUARD: If uid is missing → return empty array (safety guard)
-      if (!uid) {
-        logger.warn({ agentId }, 'Agent diagnostics read skipped - uid is missing (SECURITY: prevents top-level collection access)');
-        return [];
-      }
+      // HARD GUARD: uid is now mandatory
+      this.validateUserScopedDiagnosticsPath('getAgentDiagnostics', uid);
 
       // DEFENSIVE ASSERTION: Ensure we never accidentally access top-level collection
       this.validateUserScopedDiagnosticsPath('getAgentDiagnostics', uid);
@@ -5079,14 +4984,8 @@ export class FirestoreAdapter {
   /**
    * Cleanup old diagnostics - keep only last 100 entries per agent
    */
-  async cleanupOldDiagnostics(agentId: string, uid?: string): Promise<void> {
+  async cleanupOldDiagnostics(agentId: string, uid: string): Promise<void> {
     try {
-      // HARD GUARD: If uid is missing → skip cleanup (safety guard)
-      if (!uid) {
-        logger.warn({ agentId }, 'Agent diagnostics cleanup skipped - uid is missing (SECURITY: prevents top-level collection access)');
-        return;
-      }
-
       // DEFENSIVE ASSERTION: Ensure we never accidentally access top-level collection
       this.validateUserScopedDiagnosticsPath('cleanupOldDiagnostics', uid);
       this.assertNoTopLevelAgentDiagnosticsAccess('cleanupOldDiagnostics');

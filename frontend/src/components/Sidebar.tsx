@@ -118,6 +118,7 @@ export default function Sidebar({ onLogout, onMenuToggle }: SidebarProps) {
     const unsubscribe = onSnapshot(userRef, (snapshot) => {
       const data = snapshot.data();
       const approvedAgents = data?.approvedAgents || [];
+      // SIDEBAR FIX: Show ALL approved + ACTIVE agents, no filtering by strategyType or diagnostics
       const agents = Array.isArray(approvedAgents)
         ? approvedAgents.map((agentId: string) => ({
             id: agentId,

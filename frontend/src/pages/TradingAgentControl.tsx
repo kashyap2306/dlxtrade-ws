@@ -141,7 +141,22 @@ export default function TradingAgentControl() {
 
       // Load diagnostics/skipped trades
       const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 20);
-      setSkippedTrades(diagnosticsResp.data?.diagnostics || []);
+      const diagnosticsData = diagnosticsResp.data?.diagnostics || [];
+      
+      // DEBUG: Log diagnostics data for HTF agent to understand the structure
+      if (isHTFTrendFilterAgent && diagnosticsData.length > 0) {
+        console.log('[HTF DIAGNOSTICS DEBUG] First diagnostic entry:', JSON.stringify(diagnosticsData[0], null, 2));
+        console.log('[HTF DIAGNOSTICS DEBUG] All diagnostic pairs:', diagnosticsData.map(d => ({
+          pair: d.pair,
+          tradingPair: d.tradingPair,
+          symbol: d.symbol,
+          direction: d.direction,
+          signal: d.signal?.direction,
+          agentId: d.agentId
+        })));
+      }
+      
+      setSkippedTrades(diagnosticsData);
       setScheduler(diagnosticsResp.data?.scheduler || null);
 
     } catch (err: any) {
@@ -214,7 +229,14 @@ export default function TradingAgentControl() {
       setTrades(tradesResp.data?.trades || []);
       
       const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 20);
-      setSkippedTrades(diagnosticsResp.data?.diagnostics || []);
+      const diagnosticsData = diagnosticsResp.data?.diagnostics || [];
+      
+      // DEBUG: Log diagnostics data for HTF agent to understand the structure
+      if (isHTFTrendFilterAgent && diagnosticsData.length > 0) {
+        console.log('[HTF DIAGNOSTICS DEBUG] Refresh - First diagnostic entry:', JSON.stringify(diagnosticsData[0], null, 2));
+      }
+      
+      setSkippedTrades(diagnosticsData);
       setScheduler(diagnosticsResp.data?.scheduler || null);
     } catch (err: any) {
       console.error('[TradingAgentControl] API error:', err);
@@ -742,10 +764,71 @@ export default function TradingAgentControl() {
                     </tr>
                   </thead>
                   <tbody>
-                    {skippedTrades.map((skipped, index) => {
-                      // B) PAIR & DIRECTION FIX - Show evaluated symbols/directions, use "--" only when never evaluated
-                      const displayPair = skipped.pair || skipped.tradingPair || '--';
-                      const displayDirection = skipped.direction || skipped.signal?.direction || '--';
+                    {skippedTrades
+                      // FILTER OUT system-level diagnostics
+                      .filter((skipped: any) => {
+                        // Hide system-level AUTO_TRADE diagnostics
+                        if (skipped.symbol === 'AUTO_TRADE_CYCLE' || 
+                            skipped.agentId === 'AUTO_TRADE_AGENT' ||
+                            skipped.pair === 'AUTO_TRADE_CYCLE' ||
+                            skipped.tradingPair === 'AUTO_TRADE_CYCLE') {
+                          return false;
+                        }
+                        return true;
+                      })
+                      .map((skipped, index) => {
+                      // FORCE-NORMALIZE pair and direction fields BEFORE rendering
+                      // PAIR normalization priority: entry.pair -> entry.tradingPair -> entry.symbol (if NOT AUTO_TRADE_CYCLE)
+                      let normalizedPair = skipped.pair || skipped.tradingPair || (skipped.symbol !== 'AUTO_TRADE_CYCLE' ? skipped.symbol : null);
+                      
+                      // DIRECTION normalization priority: entry.direction -> entry.signal?.direction -> entry.signal (if string)
+                      let normalizedDirection = skipped.direction || skipped.signal?.direction || (typeof skipped.signal === 'string' ? skipped.signal : null);
+                      
+                      // HARD RULE: If symbol matches /^[A-Z0-9]+USDT$/ then pair = symbol
+                      if (skipped.symbol && /^[A-Z0-9]+USDT$/.test(skipped.symbol) && skipped.symbol !== 'AUTO_TRADE_CYCLE') {
+                        normalizedPair = skipped.symbol;
+                      }
+                      
+                      // HARD RULE: Map BUY/SELL/HOLD to LONG/SHORT/HOLD
+                      if (normalizedDirection === 'BUY') {
+                        normalizedDirection = 'LONG';
+                      } else if (normalizedDirection === 'SELL') {
+                        normalizedDirection = 'SHORT';
+                      } else if (normalizedDirection === 'HOLD') {
+                        normalizedDirection = 'HOLD';
+                      }
+                      
+                      // CRITICAL FIX: For HTF agent, ensure we always show real trading pairs
+                      // If we have a valid trading pair from backend, never show "--"
+                      if (isHTFTrendFilterAgent && normalizedPair && normalizedPair !== '--' && normalizedPair !== 'AUTO_TRADE_CYCLE') {
+                        // For HTF agent, if we have a real pair, we should also have a direction
+                        if (!normalizedDirection || normalizedDirection === '--') {
+                          // Check if this is a SKIPPED decision with a reason
+                          const reason = skipped.decision?.reason || skipped.reason || '';
+                          if (reason.includes('NO_SIGNAL') || reason.includes('SKIPPED') || reason.includes('STOPPED')) {
+                            normalizedDirection = 'NO_TRADE';
+                          } else if (reason.includes('EXCHANGE') || reason.includes('credentials')) {
+                            normalizedDirection = 'NO_TRADE';
+                          } else {
+                            // Default to NO_TRADE for any unhandled case
+                            normalizedDirection = 'NO_TRADE';
+                          }
+                        }
+                      }
+                      
+                      // ADDITIONAL FIX: If we have tradingPair but no pair, use tradingPair
+                      if (!normalizedPair && skipped.tradingPair && skipped.tradingPair !== 'AUTO_TRADE_CYCLE') {
+                        normalizedPair = skipped.tradingPair;
+                      }
+                      
+                      // ADDITIONAL FIX: If we have a real symbol that looks like a trading pair, use it
+                      if (!normalizedPair && skipped.symbol && /^[A-Z]{2,10}USDT?$/.test(skipped.symbol)) {
+                        normalizedPair = skipped.symbol;
+                      }
+                      
+                      // RENDERING RULE: If a real symbol exists, "--" is NOT allowed
+                      const displayPair = normalizedPair || '--';
+                      const displayDirection = normalizedDirection || '--';
                       
                       // C) DECISION DISPLAY - Enhanced decision with confirmation-style summary
                       const rawReason = skipped.decision?.reason || skipped.reason || 'NO_SIGNAL';

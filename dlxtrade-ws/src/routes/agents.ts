@@ -628,7 +628,28 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         }
 
         const { TradingAgent } = await import('../services/tradingAgent');
-        const diagnostics = await TradingAgent.getDiagnostics(activeAgent.id, limit, uid);
+        const rawDiagnostics = await TradingAgent.getDiagnostics(activeAgent.id, limit, uid);
+        
+        // FILTER OUT system-level AUTO_TRADE diagnostics that don't evaluate real trading pairs
+        const diagnostics = rawDiagnostics.filter((diag: any) => {
+          // Exclude system-level auto-trade cycle diagnostics
+          if (diag.symbol === 'AUTO_TRADE_CYCLE' || 
+              diag.agentId === 'AUTO_TRADE_AGENT' ||
+              diag.pair === 'AUTO_TRADE_CYCLE' ||
+              diag.tradingPair === 'AUTO_TRADE_CYCLE') {
+            return false;
+          }
+          
+          // Only show diagnostics that evaluated real trading symbols or have valid trading data
+          const hasRealSymbol = diag.tradingPair && 
+                               diag.tradingPair !== 'AUTO_TRADE_CYCLE' && 
+                               diag.tradingPair !== '--';
+          const hasValidDirection = diag.direction && diag.direction !== '--';
+          const hasSignalData = diag.signal?.direction;
+          
+          // Include if it has real trading pair OR valid direction OR signal data
+          return hasRealSymbol || hasValidDirection || hasSignalData;
+        });
         
         // Get real-time agent status from Firestore
         const currentAgentConfig = await firestoreAdapter.getTradingAgentConfig(activeAgent.id);
@@ -665,7 +686,29 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         }
 
         const { TradingAgent } = await import('../services/tradingAgent');
-        const diagnostics = await TradingAgent.getDiagnostics(targetAgent.id, limit, uid);
+        const rawDiagnostics = await TradingAgent.getDiagnostics(targetAgent.id, limit, uid);
+        
+        // FILTER OUT system-level AUTO_TRADE diagnostics that don't evaluate real trading pairs
+        const diagnostics = rawDiagnostics.filter((diag: any) => {
+          // Exclude system-level auto-trade cycle diagnostics
+          if (diag.symbol === 'AUTO_TRADE_CYCLE' || 
+              diag.agentId === 'AUTO_TRADE_AGENT' ||
+              diag.pair === 'AUTO_TRADE_CYCLE' ||
+              diag.tradingPair === 'AUTO_TRADE_CYCLE') {
+            return false;
+          }
+          
+          // Only show diagnostics that evaluated real trading symbols or have valid trading data
+          const hasRealSymbol = diag.tradingPair && 
+                               diag.tradingPair !== 'AUTO_TRADE_CYCLE' && 
+                               diag.tradingPair !== '--';
+          const hasValidDirection = diag.direction && diag.direction !== '--';
+          const hasSignalData = diag.signal?.direction;
+          
+          // Include if it has real trading pair OR valid direction OR signal data
+          return hasRealSymbol || hasValidDirection || hasSignalData;
+        });
+        
         return { diagnostics, scheduler };
       }
 
@@ -696,8 +739,29 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         const { TradingAgent } = await import('../services/tradingAgent');
         const rawDiagnostics = await TradingAgent.getDiagnostics(targetAgent.id, limit, uid);
         
+        // FILTER OUT system-level AUTO_TRADE diagnostics that don't evaluate real trading pairs
+        const filteredDiagnostics = rawDiagnostics.filter((diag: any) => {
+          // Exclude system-level auto-trade cycle diagnostics
+          if (diag.symbol === 'AUTO_TRADE_CYCLE' || 
+              diag.agentId === 'AUTO_TRADE_AGENT' ||
+              diag.pair === 'AUTO_TRADE_CYCLE' ||
+              diag.tradingPair === 'AUTO_TRADE_CYCLE') {
+            return false;
+          }
+          
+          // Only show diagnostics that evaluated real trading symbols or have valid trading data
+          const hasRealSymbol = diag.tradingPair && 
+                               diag.tradingPair !== 'AUTO_TRADE_CYCLE' && 
+                               diag.tradingPair !== '--';
+          const hasValidDirection = diag.direction && diag.direction !== '--';
+          const hasSignalData = diag.signal?.direction;
+          
+          // Include if it has real trading pair OR valid direction OR signal data
+          return hasRealSymbol || hasValidDirection || hasSignalData;
+        });
+        
         // Apply comprehensive UI contract filtering and enhancement
-        const enhancedDiagnostics = rawDiagnostics.map((diag: any) => {
+        const enhancedDiagnostics = filteredDiagnostics.map((diag: any) => {
           const isSkipped = diag.decision?.action === 'SKIP';
           const reason = diag.decision?.reason || '';
           

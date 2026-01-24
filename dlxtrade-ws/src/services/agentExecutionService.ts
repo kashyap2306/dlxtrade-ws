@@ -353,6 +353,10 @@ export class AgentExecutionService {
       if (!currentAgentConfig || currentAgentConfig.status === 'STOPPED') {
         skippedReason = 'AGENT_STOPPED';
         diagnostics.decision = { action: 'SKIP', reason: skippedReason };
+        diagnostics.tradingPair = tradingPair;
+        diagnostics.direction = 'NO_TRADE';
+        diagnostics.executionStatus = 'SKIPPED';
+        diagnostics.exchangeErrorReason = skippedReason;
         
         if (isHTFAgent) {
           logger.info({
@@ -376,6 +380,10 @@ export class AgentExecutionService {
       if (currentAgentConfig.status === 'PAUSED') {
         skippedReason = 'AGENT_PAUSED';
         diagnostics.decision = { action: 'SKIP', reason: skippedReason };
+        diagnostics.tradingPair = tradingPair;
+        diagnostics.direction = 'NO_TRADE';
+        diagnostics.executionStatus = 'SKIPPED';
+        diagnostics.exchangeErrorReason = skippedReason;
         
         if (isHTFAgent) {
           logger.info({
@@ -580,6 +588,10 @@ export class AgentExecutionService {
       if (!isValidSession) {
         skippedReason = 'Outside trading sessions';
         diagnostics.decision = { action: 'SKIP', reason: skippedReason };
+        diagnostics.tradingPair = tradingPair;
+        diagnostics.direction = 'NO_TRADE';
+        diagnostics.executionStatus = 'SKIPPED';
+        diagnostics.exchangeErrorReason = skippedReason;
         
         if (isHTFAgent) {
           logger.info({
@@ -607,6 +619,10 @@ export class AgentExecutionService {
         if (!allowedPairs.includes(tradingPair)) {
           skippedReason = `HTF agents restricted to ${allowedPairs.join(', ')} only`;
           diagnostics.decision = { action: 'SKIP', reason: skippedReason };
+          diagnostics.tradingPair = tradingPair;
+          diagnostics.direction = 'NO_TRADE';
+          diagnostics.executionStatus = 'SKIPPED';
+          diagnostics.exchangeErrorReason = skippedReason;
           
           logger.info({
             agentId,
@@ -666,6 +682,10 @@ export class AgentExecutionService {
           if (candles15m.length < 200) {
             skippedReason = 'MARKET_DATA_NOT_READY';
             diagnostics.decision = { action: 'SKIP', reason: skippedReason };
+            diagnostics.tradingPair = tradingPair;
+            diagnostics.direction = 'NO_TRADE';
+            diagnostics.executionStatus = 'SKIPPED';
+            diagnostics.exchangeErrorReason = skippedReason;
             
             logger.info({
               agentId,
@@ -684,6 +704,10 @@ export class AgentExecutionService {
           if (candles.length < 200) {
             skippedReason = 'MARKET_DATA_NOT_READY';
             diagnostics.decision = { action: 'SKIP', reason: skippedReason };
+            diagnostics.tradingPair = tradingPair;
+            diagnostics.direction = 'NO_TRADE';
+            diagnostics.executionStatus = 'SKIPPED';
+            diagnostics.exchangeErrorReason = skippedReason;
             
             logger.info({
               agentId,
@@ -740,6 +764,10 @@ export class AgentExecutionService {
         
         if (candles.length < 50) {
           diagnostics.decision = { action: 'SKIP', reason: `Insufficient 5m candles: ${candles.length}/50` };
+          diagnostics.tradingPair = tradingPair;
+          diagnostics.direction = 'NO_TRADE';
+          diagnostics.executionStatus = 'SKIPPED';
+          diagnostics.exchangeErrorReason = `Insufficient 5m candles: ${candles.length}/50`;
           // ALWAYS store diagnostics before returning
           await agent.storeDiagnostics(diagnostics);
           logger.warn({
@@ -821,6 +849,10 @@ export class AgentExecutionService {
 
           // Do not open a new trade while one is open/managed
           diagnostics.decision = { action: 'SKIP', reason: 'Managing open position' };
+          diagnostics.tradingPair = tradingPair;
+          diagnostics.direction = 'NO_TRADE';
+          diagnostics.executionStatus = 'SKIPPED';
+          diagnostics.exchangeErrorReason = 'Managing open position';
           await agent.storeDiagnostics(diagnostics);
           await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
           return;
@@ -834,6 +866,10 @@ export class AgentExecutionService {
       const lastProcessedCandle = await firestoreAdapter.getLastProcessedCandle(agentId, tradingPair);
       if (lastProcessedCandle && candleTimestamp.getTime() === lastProcessedCandle.getTime()) {
         diagnostics.decision = { action: 'SKIP', reason: 'Candle already processed' };
+        diagnostics.tradingPair = tradingPair;
+        diagnostics.direction = 'NO_TRADE';
+        diagnostics.executionStatus = 'SKIPPED';
+        diagnostics.exchangeErrorReason = 'Candle already processed';
         await agent.storeDiagnostics(diagnostics);
         logger.info({
           agentId,
@@ -852,6 +888,10 @@ export class AgentExecutionService {
       // Validate indicators
       if (!TechnicalIndicators.validateIndicators(indicators)) {
         diagnostics.decision = { action: 'SKIP', reason: 'Invalid indicators calculated' };
+        diagnostics.tradingPair = tradingPair;
+        diagnostics.direction = 'NO_TRADE';
+        diagnostics.executionStatus = 'SKIPPED';
+        diagnostics.exchangeErrorReason = 'Invalid indicators calculated';
         await agent.storeDiagnostics(diagnostics);
         logger.error({
           agentId,
@@ -872,6 +912,10 @@ export class AgentExecutionService {
         if (!marketScanExecuted) {
           skippedReason = 'Market scan not executed';
           diagnostics.decision = { action: 'SKIP', reason: skippedReason };
+          diagnostics.tradingPair = tradingPair;
+          diagnostics.direction = 'NO_TRADE';
+          diagnostics.executionStatus = 'SKIPPED';
+          diagnostics.exchangeErrorReason = skippedReason;
           
           logger.info({
             agentId,
@@ -892,6 +936,10 @@ export class AgentExecutionService {
         if (!exchangeUsable) {
           skippedReason = 'Exchange not usable';
           diagnostics.decision = { action: 'SKIP', reason: skippedReason };
+          diagnostics.tradingPair = tradingPair;
+          diagnostics.direction = 'NO_TRADE';
+          diagnostics.executionStatus = 'SKIPPED';
+          diagnostics.exchangeErrorReason = skippedReason;
           
           logger.info({
             agentId,
@@ -918,6 +966,10 @@ export class AgentExecutionService {
         if (htfTrend.direction === 'NO_TRADE') {
           skippedReason = htfTrend.reason;
           diagnostics.decision = { action: 'SKIP', reason: skippedReason };
+          diagnostics.tradingPair = tradingPair;
+          diagnostics.direction = 'NO_TRADE';
+          diagnostics.executionStatus = 'SKIPPED';
+          diagnostics.exchangeErrorReason = skippedReason;
           
           logger.info({
             agentId,
@@ -943,6 +995,12 @@ export class AgentExecutionService {
         if (!ltfSignal.isValid) {
           skippedReason = ltfSignal.reason;
           diagnostics.decision = { action: 'SKIP', reason: skippedReason };
+          diagnostics.tradingPair = tradingPair;
+          // Show the HTF trend direction even when LTF conditions aren't met
+          diagnostics.direction = htfTrend.direction === 'LONG_ONLY' ? 'LONG' : 
+                                 htfTrend.direction === 'SHORT_ONLY' ? 'SHORT' : 'NO_TRADE';
+          diagnostics.executionStatus = 'SKIPPED';
+          diagnostics.exchangeErrorReason = skippedReason;
           
           logger.info({
             agentId,
@@ -991,11 +1049,14 @@ export class AgentExecutionService {
         };
         signalGenerated = true;
         
-        // HTF Agent execution fix: Only attach tradingPair when conditions are met
-        // exchangeUsable === true, market scan executed, signalGenerated === true
-        if (exchangeUsable && marketScanExecuted && signalGenerated) {
-          diagnostics.tradingPair = tradingPair;
-        }
+        // HTF Agent execution fix: ALWAYS attach tradingPair and direction for diagnostics
+        diagnostics.tradingPair = tradingPair;
+        diagnostics.direction = ltfSignal.direction || 'NO_TRADE';
+        diagnostics.execution = {
+          status: 'EXECUTED',
+          success: true,
+          exchangeErrorReason: null
+        };
       } else {
         // Regular agents use standard signal generation
         signal = agent.generateSignal(latestCandle, {
@@ -1014,6 +1075,15 @@ export class AgentExecutionService {
 
       if (!signal) {
         diagnostics.decision = diagnostics.decision || { action: 'SKIP', reason: 'No trading signal generated' };
+        diagnostics.tradingPair = tradingPair;
+        diagnostics.direction = 'NO_TRADE';
+        diagnostics.executionStatus = 'SKIPPED';
+        diagnostics.exchangeErrorReason = 'No trading signal generated';
+        diagnostics.execution = {
+          status: 'SKIPPED',
+          success: false,
+          exchangeErrorReason: 'No trading signal generated'
+        };
         await agent.storeDiagnostics(diagnostics);
 
         // CRITICAL: Add single diagnostic log line for HTF agents
@@ -1039,6 +1109,15 @@ export class AgentExecutionService {
       const signalAlreadyExecuted = await firestoreAdapter.isSignalExecuted(agentId, signal.signalId);
       if (signalAlreadyExecuted) {
         diagnostics.decision = { action: 'SKIP', reason: 'Signal already executed (idempotency)' };
+        diagnostics.tradingPair = tradingPair;
+        diagnostics.direction = signal?.direction || 'NO_TRADE';
+        diagnostics.executionStatus = 'SKIPPED';
+        diagnostics.exchangeErrorReason = 'Signal already executed';
+        diagnostics.execution = {
+          status: 'SKIPPED',
+          success: false,
+          exchangeErrorReason: 'Signal already executed'
+        };
         await agent.storeDiagnostics(diagnostics);
         logger.info({
           agentId,
@@ -1082,6 +1161,15 @@ export class AgentExecutionService {
       // Check daily trade limit
       if (dailyCounters.tradesToday >= maxTradesPerDay) {
         diagnostics.decision = { action: 'SKIP', reason: `Daily trade limit reached: ${dailyCounters.tradesToday}/${maxTradesPerDay}` };
+        diagnostics.tradingPair = tradingPair;
+        diagnostics.direction = signal?.direction || 'NO_TRADE';
+        diagnostics.executionStatus = 'SKIPPED';
+        diagnostics.exchangeErrorReason = 'Daily trade limit reached';
+        diagnostics.execution = {
+          status: 'SKIPPED',
+          success: false,
+          exchangeErrorReason: 'Daily trade limit reached'
+        };
         await agent.storeDiagnostics(diagnostics);
         logger.info({
           agentId,
@@ -1096,6 +1184,15 @@ export class AgentExecutionService {
       // Check consecutive losses limit
       if (dailyCounters.consecutiveLosses >= 2) {
         diagnostics.decision = { action: 'SKIP', reason: `Consecutive losses limit: ${dailyCounters.consecutiveLosses}/2` };
+        diagnostics.tradingPair = tradingPair;
+        diagnostics.direction = signal?.direction || 'NO_TRADE';
+        diagnostics.executionStatus = 'SKIPPED';
+        diagnostics.exchangeErrorReason = 'Consecutive losses limit reached';
+        diagnostics.execution = {
+          status: 'SKIPPED',
+          success: false,
+          exchangeErrorReason: 'Consecutive losses limit reached'
+        };
         await agent.storeDiagnostics(diagnostics);
         logger.info({
           agentId,
@@ -1109,6 +1206,15 @@ export class AgentExecutionService {
       // Check daily profit target
       if (dailyCounters.dailyPnL >= 2.0) {
         diagnostics.decision = { action: 'SKIP', reason: `Daily profit target reached: ${dailyCounters.dailyPnL.toFixed(2)}R` };
+        diagnostics.tradingPair = tradingPair;
+        diagnostics.direction = signal?.direction || 'NO_TRADE';
+        diagnostics.executionStatus = 'SKIPPED';
+        diagnostics.exchangeErrorReason = 'Daily profit target reached';
+        diagnostics.execution = {
+          status: 'SKIPPED',
+          success: false,
+          exchangeErrorReason: 'Daily profit target reached'
+        };
         await agent.storeDiagnostics(diagnostics);
         logger.info({
           agentId,
@@ -1124,6 +1230,15 @@ export class AgentExecutionService {
       const pairCooldown = await firestoreAdapter.getPairCooldown(agentId, tradingPair);
       if (pairCooldown && new Date() < pairCooldown) {
         diagnostics.decision = { action: 'SKIP', reason: `Pair cooldown active until ${pairCooldown.toISOString()}` };
+        diagnostics.tradingPair = tradingPair;
+        diagnostics.direction = signal?.direction || 'NO_TRADE';
+        diagnostics.executionStatus = 'SKIPPED';
+        diagnostics.exchangeErrorReason = 'Pair cooldown active';
+        diagnostics.execution = {
+          status: 'SKIPPED',
+          success: false,
+          exchangeErrorReason: 'Pair cooldown active'
+        };
         await agent.storeDiagnostics(diagnostics);
         logger.info({
           agentId,
@@ -1148,6 +1263,15 @@ export class AgentExecutionService {
       // Max 1 open trade per pair
       if (positionCounts.pairPositions >= 1) {
         diagnostics.decision = { action: 'SKIP', reason: `Pair position limit: ${positionCounts.pairPositions}/1` };
+        diagnostics.tradingPair = tradingPair;
+        diagnostics.direction = signal?.direction || 'NO_TRADE';
+        diagnostics.executionStatus = 'SKIPPED';
+        diagnostics.exchangeErrorReason = 'Pair position limit reached';
+        diagnostics.execution = {
+          status: 'SKIPPED',
+          success: false,
+          exchangeErrorReason: 'Pair position limit reached'
+        };
         await agent.storeDiagnostics(diagnostics);
         logger.info({
           agentId,
@@ -1162,6 +1286,15 @@ export class AgentExecutionService {
       // Max 2 total open trades
       if (positionCounts.totalPositions >= 2) {
         diagnostics.decision = { action: 'SKIP', reason: `Total position limit: ${positionCounts.totalPositions}/2` };
+        diagnostics.tradingPair = tradingPair;
+        diagnostics.direction = signal?.direction || 'NO_TRADE';
+        diagnostics.executionStatus = 'SKIPPED';
+        diagnostics.exchangeErrorReason = 'Total position limit reached';
+        diagnostics.execution = {
+          status: 'SKIPPED',
+          success: false,
+          exchangeErrorReason: 'Total position limit reached'
+        };
         await agent.storeDiagnostics(diagnostics);
         logger.info({
           agentId,
@@ -1198,6 +1331,10 @@ export class AgentExecutionService {
           action: 'SKIP',
           reason: `Position sizing rejected: ${positionCalc.reason || 'UNKNOWN'}`
         };
+        diagnostics.tradingPair = tradingPair;
+        diagnostics.direction = signal?.direction || 'NO_TRADE';
+        diagnostics.executionStatus = 'SKIPPED';
+        diagnostics.exchangeErrorReason = `Position sizing rejected: ${positionCalc.reason || 'UNKNOWN'}`;
         await agent.storeDiagnostics(diagnostics);
         await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
         return;

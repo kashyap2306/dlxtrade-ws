@@ -264,6 +264,32 @@ export async function saveAutoTradeHistorySkipped(
           accuracy: existingEntry.accuracy || 0, // Preserve existing accuracy
           // Keep other fields from existing entry
         });
+        
+        // CRITICAL FIX: Also write diagnostic entry for "Recent Cycle Results" UI
+        try {
+          await firestoreAdapter.saveAgentDiagnostic('AUTO_TRADE_AGENT', {
+            agentType: 'TRADING_AGENT',
+            tradingPair: 'AUTO_TRADE_CYCLE',
+            direction: 'LONG',
+            decision: {
+              action: 'SKIP',
+              reason: skipReason
+            },
+            execution: {
+              status: 'SKIPPED',
+              success: false,
+              exchangeErrorReason: skipDetails
+            },
+            runtimeState: {
+              cycleId: cycleId,
+              researchExecuted: false
+            }
+          }, uid);
+          logger.info({ uid, skipReason }, '✅ [DIAGNOSTIC] Auto-trade SKIPPED diagnostic saved for updated cycle');
+        } catch (diagnosticError: any) {
+          logger.error({ uid, error: diagnosticError.message }, '❌ [DIAGNOSTIC] Failed to save SKIPPED diagnostic for updated cycle - continuing');
+        }
+        
         return;
       }
     } catch (checkErr: any) {
@@ -302,6 +328,31 @@ export async function saveAutoTradeHistorySkipped(
 
   await firestoreAdapter.storeResearchHistory(uid, validatedEntry);
   logger.info({ uid, skipReason, cycleId }, '✅ [HISTORY] Auto-trade SKIPPED history saved for cycle (research never executed)');
+
+  // CRITICAL FIX: Also write diagnostic entry for "Recent Cycle Results" UI
+  try {
+    await firestoreAdapter.saveAgentDiagnostic('AUTO_TRADE_AGENT', {
+      agentType: 'TRADING_AGENT',
+      tradingPair: 'AUTO_TRADE_CYCLE',
+      direction: 'LONG',
+      decision: {
+        action: 'SKIP',
+        reason: skipReason
+      },
+      execution: {
+        status: 'SKIPPED',
+        success: false,
+        exchangeErrorReason: skipDetails
+      },
+      runtimeState: {
+        cycleId: cycleId,
+        researchExecuted: false
+      }
+    }, uid);
+    logger.info({ uid, skipReason }, '✅ [DIAGNOSTIC] Auto-trade SKIPPED diagnostic saved for cycle (research never executed)');
+  } catch (diagnosticError: any) {
+    logger.error({ uid, error: diagnosticError.message }, '❌ [DIAGNOSTIC] Failed to save SKIPPED diagnostic - continuing');
+  }
 }
 
 /**
@@ -347,7 +398,7 @@ export async function saveAutoTradeHistoryWithExecutionStatus(
   }
 
   // Force executionStatus to SKIPPED if any guard failed
-  const finalExecutionStatus = forceSkipped ? 'SKIPPED' : executionStatus;
+  const finalExecutionStatus: TradeExecutionStatus | 'SKIPPED' = forceSkipped ? 'SKIPPED' : executionStatus;
   const finalDecisionStatus = forceSkipped ? 'SKIPPED' : decisionStatus;
 
   // CRITICAL: Preserve actual research signal in history, even if tradePlan is null
@@ -393,4 +444,63 @@ export async function saveAutoTradeHistoryWithExecutionStatus(
   // If executionStatus is null, this is the initial research completion history save
   await firestoreAdapter.storeResearchHistory(uid, validatedEntry);
   logger.info({ uid, symbol: researchResult.symbol, executionStatus, decisionStatus, accuracy: storedAccuracy }, '✅ [HISTORY] Auto-trade history saved after execution');
+
+  // CRITICAL FIX: Also write diagnostic entry for "Recent Cycle Results" UI
+  try {
+    // Map symbol format: BTCUSDT -> BTC/USDT
+    const tradingPair = historySymbol.includes('/') ? historySymbol : 
+      historySymbol.replace(/USDT$|BUSD$|BTC$|ETH$/, (match) => `/${match}`);
+
+    // Map signal to direction
+    const direction = finalSignal === 'BUY' ? 'LONG' : finalSignal === 'SELL' ? 'SHORT' : 'LONG';
+
+    // Map execution status
+    const diagnosticAction = finalExecutionStatus === 'FILLED' ? 'EXECUTED' : 
+                           finalExecutionStatus === 'SKIPPED' ? 'SKIP' : 
+                           finalSignal === 'HOLD' ? 'SKIP' : 'SKIP';
+
+    // Build diagnostic reason
+    let diagnosticReason = '';
+    if (finalSignal === 'HOLD') {
+      diagnosticReason = `HOLD signal (accuracy: ${storedAccuracy.toFixed(1)}%)`;
+    } else if (finalExecutionStatus === 'SKIPPED') {
+      diagnosticReason = `${finalSignal} signal skipped (accuracy: ${storedAccuracy.toFixed(1)}%)`;
+    } else if (finalExecutionStatus === 'FILLED') {
+      diagnosticReason = `${finalSignal} signal executed (accuracy: ${storedAccuracy.toFixed(1)}%)`;
+    } else {
+      diagnosticReason = `${finalSignal} signal (accuracy: ${storedAccuracy.toFixed(1)}%)`;
+    }
+
+    await firestoreAdapter.saveAgentDiagnostic('AUTO_TRADE_AGENT', {
+      agentType: 'TRADING_AGENT',
+      tradingPair: tradingPair,
+      direction: direction,
+      decision: {
+        action: diagnosticAction,
+        reason: diagnosticReason
+      },
+      signal: safeTradePlan ? {
+        direction: direction,
+        entryPrice: safeTradePlan.entryPrice || 0,
+        stopLoss: safeTradePlan.stopLoss || 0,
+        takeProfit: safeTradePlan.takeProfit2 || safeTradePlan.takeProfit || 0,
+        rrRatio: safeTradePlan.riskRewardRatio || 0
+      } : undefined,
+      execution: {
+        status: finalExecutionStatus === 'FILLED' ? 'EXECUTED' : 
+                finalExecutionStatus === 'SKIPPED' ? 'SKIPPED' : 'SKIPPED',
+        success: finalExecutionStatus === 'FILLED',
+        exchangeErrorReason: forceSkipped ? 'Invalid research data' : undefined
+      },
+      runtimeState: {
+        researchExecuted: true,
+        accuracy: storedAccuracy,
+        signal: finalSignal,
+        tradeId: tradeId
+      }
+    }, uid);
+    logger.info({ uid, symbol: historySymbol, executionStatus: finalExecutionStatus }, '✅ [DIAGNOSTIC] Auto-trade diagnostic saved after execution');
+  } catch (diagnosticError: any) {
+    logger.error({ uid, error: diagnosticError.message }, '❌ [DIAGNOSTIC] Failed to save execution diagnostic - continuing');
+  }
 }
