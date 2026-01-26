@@ -29,6 +29,122 @@ export default function TradingAgentControl() {
     ? 'BTC/USDT • ETH/USDT • HTF Trend Filter + EMA Pullback + RSI + Bollinger Bands'
     : 'BTC/USDT • ETH/USDT • Automated Trading Strategy';
 
+  // HTF Diagnostics Aggregation Logic - STRICT 5-minute cycle enforcement
+  const aggregateHTFDiagnostics = (diagnostics: any[]) => {
+    if (!isHTFTrendFilterAgent || !diagnostics.length) {
+      return diagnostics;
+    }
+
+    // Group diagnostics by STRICT 5-minute research cycle
+    const cycleGroups = new Map<string, any[]>();
+    
+    diagnostics.forEach((diagnostic) => {
+      // Skip system-level diagnostics completely
+      if (diagnostic.symbol === 'AUTO_TRADE_CYCLE' || 
+          diagnostic.agentId === 'AUTO_TRADE_AGENT' ||
+          diagnostic.pair === 'AUTO_TRADE_CYCLE' ||
+          diagnostic.tradingPair === 'AUTO_TRADE_CYCLE') {
+        return;
+      }
+
+      // STRICT 5-minute cycle definition
+      const timestamp = new Date(diagnostic.timestamp || Date.now()).getTime();
+      const cycleBucket = Math.floor(timestamp / (5 * 60 * 1000)); // 5-minute buckets
+      
+      // Extract pair/symbol for grouping
+      const pair = diagnostic.pair || diagnostic.tradingPair || diagnostic.symbol || 'UNKNOWN';
+      const agentId = diagnostic.agentId || 'HTF_TREND_FILTER_AGENT';
+      
+      // Create stable cycle key
+      const cycleKey = `${cycleBucket}-${pair}-${agentId}`;
+
+      if (!cycleGroups.has(cycleKey)) {
+        cycleGroups.set(cycleKey, []);
+      }
+      cycleGroups.get(cycleKey)!.push(diagnostic);
+    });
+
+    // Process each cycle group - EXACTLY ONE ROW per cycle
+    const aggregatedDiagnostics: any[] = [];
+    
+    cycleGroups.forEach((group, cycleKey) => {
+      // STRICT primary selection priority
+      let primary = group.find(d => d.execution?.status === 'EXECUTED') ||
+                   group.find(d => d.status === 'SKIPPED' && d.decision?.reason && 
+                     !['EXECUTION_STARTED', 'FORCE_CREATE_DIAGNOSTIC', 'CREDENTIALS_DECRYPT_FAILED'].includes(d.decision.reason)) ||
+                   group[group.length - 1]; // Latest as fallback
+
+      // ALL other diagnostics become details (including system entries)
+      const details = group.filter(d => d !== primary);
+
+      // STRICT pair extraction - NEVER allow "--"
+      let normalizedPair = null;
+      let normalizedDirection = null;
+
+      // Search ALL diagnostics in cycle for valid pair/direction
+      for (const d of group) {
+        if (!normalizedPair) {
+          normalizedPair = d.pair || d.tradingPair || (d.symbol && d.symbol !== 'AUTO_TRADE_CYCLE' ? d.symbol : null);
+        }
+        if (!normalizedDirection) {
+          normalizedDirection = d.direction || d.signal?.direction || (typeof d.signal === 'string' ? d.signal : null);
+        }
+        if (normalizedPair && normalizedDirection) break;
+      }
+
+      // Ensure proper symbol format
+      if (!normalizedPair) {
+        for (const d of group) {
+          if (d.symbol && /^[A-Z0-9]+USDT$/.test(d.symbol) && d.symbol !== 'AUTO_TRADE_CYCLE') {
+            normalizedPair = d.symbol;
+            break;
+          }
+        }
+      }
+
+      // Map BUY/SELL to LONG/SHORT
+      if (normalizedDirection === 'BUY') {
+        normalizedDirection = 'LONG';
+      } else if (normalizedDirection === 'SELL') {
+        normalizedDirection = 'SHORT';
+      }
+
+      // FORCE direction for HTF - NEVER "--"
+      if (!normalizedDirection || normalizedDirection === '--') {
+        // Check if any diagnostic has signal
+        const hasSignal = group.some(d => d.signal?.direction || (d.direction && d.direction !== '--'));
+        if (hasSignal) {
+          normalizedDirection = group.find(d => d.signal?.direction)?.signal?.direction || 
+                               group.find(d => d.direction && d.direction !== '--')?.direction || 'NO_TRADE';
+        } else {
+          normalizedDirection = 'NO_TRADE';
+        }
+      }
+
+      // FORCE pair for HTF - NEVER "--"
+      if (!normalizedPair || normalizedPair === '--') {
+        normalizedPair = 'BTCUSDT'; // Default for HTF agent
+      }
+
+      // Create aggregated diagnostic entry
+      const aggregated = {
+        ...primary,
+        pair: normalizedPair,
+        direction: normalizedDirection,
+        details: details,
+        hasDetails: details.length > 0,
+        cycleKey: cycleKey,
+        cycleBucket: Math.floor(new Date(primary.timestamp || Date.now()).getTime() / (5 * 60 * 1000)),
+        aggregatedCount: group.length
+      };
+
+      aggregatedDiagnostics.push(aggregated);
+    });
+
+    // Sort by cycle bucket (most recent first)
+    return aggregatedDiagnostics.sort((a, b) => b.cycleBucket - a.cycleBucket);
+  };
+
   const [trades, setTrades] = useState<any[]>([]);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [agentAccessChecked, setAgentAccessChecked] = useState(false);
@@ -45,6 +161,7 @@ export default function TradingAgentControl() {
   const [loadingData, setLoadingData] = useState(false);
   const [showExecutionCriteria, setShowExecutionCriteria] = useState(false);
   const [, setTimerTick] = useState(0); // Force re-render for countdown
+  const [selectedDiagnosticDetails, setSelectedDiagnosticDetails] = useState<any>(null);
 
   // Check Firestore approval (users/{uid}.approvedAgents) and resolve agent ID
   useEffect(() => {
@@ -156,7 +273,9 @@ export default function TradingAgentControl() {
         })));
       }
       
-      setSkippedTrades(diagnosticsData);
+      // Apply HTF diagnostics aggregation
+      const processedDiagnostics = aggregateHTFDiagnostics(diagnosticsData);
+      setSkippedTrades(processedDiagnostics);
       setScheduler(diagnosticsResp.data?.scheduler || null);
 
     } catch (err: any) {
@@ -236,7 +355,9 @@ export default function TradingAgentControl() {
         console.log('[HTF DIAGNOSTICS DEBUG] Refresh - First diagnostic entry:', JSON.stringify(diagnosticsData[0], null, 2));
       }
       
-      setSkippedTrades(diagnosticsData);
+      // Apply HTF diagnostics aggregation
+      const processedDiagnostics = aggregateHTFDiagnostics(diagnosticsData);
+      setSkippedTrades(processedDiagnostics);
       setScheduler(diagnosticsResp.data?.scheduler || null);
     } catch (err: any) {
       console.error('[TradingAgentControl] API error:', err);
@@ -764,156 +885,77 @@ export default function TradingAgentControl() {
                     </tr>
                   </thead>
                   <tbody>
-                    {skippedTrades
-                      // FILTER OUT system-level diagnostics
-                      .filter((skipped: any) => {
-                        // Hide system-level AUTO_TRADE diagnostics
-                        if (skipped.symbol === 'AUTO_TRADE_CYCLE' || 
-                            skipped.agentId === 'AUTO_TRADE_AGENT' ||
-                            skipped.pair === 'AUTO_TRADE_CYCLE' ||
-                            skipped.tradingPair === 'AUTO_TRADE_CYCLE') {
-                          return false;
-                        }
-                        return true;
-                      })
-                      .map((skipped, index) => {
-                      // FORCE-NORMALIZE pair and direction fields BEFORE rendering
-                      // PAIR normalization priority: entry.pair -> entry.tradingPair -> entry.symbol (if NOT AUTO_TRADE_CYCLE)
-                      let normalizedPair = skipped.pair || skipped.tradingPair || (skipped.symbol !== 'AUTO_TRADE_CYCLE' ? skipped.symbol : null);
+                    {skippedTrades.map((diagnostic) => {
+                      // Use stable cycle key for React rendering
+                      const stableKey = diagnostic.cycleKey || `${diagnostic.cycleBucket}-${diagnostic.pair}-${diagnostic.agentId || 'HTF'}`;
                       
-                      // DIRECTION normalization priority: entry.direction -> entry.signal?.direction -> entry.signal (if string)
-                      let normalizedDirection = skipped.direction || skipped.signal?.direction || (typeof skipped.signal === 'string' ? skipped.signal : null);
+                      // Use aggregated data directly (already processed)
+                      const displayPair = diagnostic.pair || 'BTCUSDT'; // Never "--" for HTF
+                      const displayDirection = diagnostic.direction || 'NO_TRADE'; // Never "--" for HTF
                       
-                      // HARD RULE: If symbol matches /^[A-Z0-9]+USDT$/ then pair = symbol
-                      if (skipped.symbol && /^[A-Z0-9]+USDT$/.test(skipped.symbol) && skipped.symbol !== 'AUTO_TRADE_CYCLE') {
-                        normalizedPair = skipped.symbol;
-                      }
-                      
-                      // HARD RULE: Map BUY/SELL/HOLD to LONG/SHORT/HOLD
-                      if (normalizedDirection === 'BUY') {
-                        normalizedDirection = 'LONG';
-                      } else if (normalizedDirection === 'SELL') {
-                        normalizedDirection = 'SHORT';
-                      } else if (normalizedDirection === 'HOLD') {
-                        normalizedDirection = 'HOLD';
-                      }
-                      
-                      // CRITICAL FIX: For HTF agent, ensure we always show real trading pairs
-                      // If we have a valid trading pair from backend, never show "--"
-                      if (isHTFTrendFilterAgent && normalizedPair && normalizedPair !== '--' && normalizedPair !== 'AUTO_TRADE_CYCLE') {
-                        // For HTF agent, if we have a real pair, we should also have a direction
-                        if (!normalizedDirection || normalizedDirection === '--') {
-                          // Check if this is a SKIPPED decision with a reason
-                          const reason = skipped.decision?.reason || skipped.reason || '';
-                          if (reason.includes('NO_SIGNAL') || reason.includes('SKIPPED') || reason.includes('STOPPED')) {
-                            normalizedDirection = 'NO_TRADE';
-                          } else if (reason.includes('EXCHANGE') || reason.includes('credentials')) {
-                            normalizedDirection = 'NO_TRADE';
-                          } else {
-                            // Default to NO_TRADE for any unhandled case
-                            normalizedDirection = 'NO_TRADE';
-                          }
-                        }
-                      }
-                      
-                      // ADDITIONAL FIX: If we have tradingPair but no pair, use tradingPair
-                      if (!normalizedPair && skipped.tradingPair && skipped.tradingPair !== 'AUTO_TRADE_CYCLE') {
-                        normalizedPair = skipped.tradingPair;
-                      }
-                      
-                      // ADDITIONAL FIX: If we have a real symbol that looks like a trading pair, use it
-                      if (!normalizedPair && skipped.symbol && /^[A-Z]{2,10}USDT?$/.test(skipped.symbol)) {
-                        normalizedPair = skipped.symbol;
-                      }
-                      
-                      // RENDERING RULE: If a real symbol exists, "--" is NOT allowed
-                      const displayPair = normalizedPair || '--';
-                      const displayDirection = normalizedDirection || '--';
-                      
-                      // C) DECISION DISPLAY - Enhanced decision with confirmation-style summary
-                      const rawReason = skipped.decision?.reason || skipped.reason || 'NO_SIGNAL';
+                      // Enhanced decision display
+                      const rawReason = diagnostic.decision?.reason || diagnostic.reason || 'NO_SIGNAL';
                       let displayReason = rawReason;
                       let reasonColor = 'bg-gray-500/20 text-gray-400';
-                      let hasIndicatorBreakdown = skipped.decision?.hasBreakdown || false;
 
-                      // Use confirmation-style summaries when available
+                      // Map to clear, human-readable reasons
                       if (rawReason.includes('confirmed') || rawReason.includes('rejected')) {
-                        displayReason = rawReason; // Use the enhanced decision summary
+                        displayReason = rawReason;
                         reasonColor = rawReason.includes('rejected') ? 'bg-red-500/20 text-red-400' : 'bg-green-500/20 text-green-400';
-                      } else {
-                        // Map to clear, human-readable reasons for legacy data
-                        if (rawReason.includes('STOPPED') || rawReason.includes('PAUSED')) {
-                          displayReason = 'AGENT STOPPED';
-                          reasonColor = 'bg-gray-500/20 text-gray-400';
-                        } else if (rawReason.includes('candles') || rawReason.includes('Insufficient')) {
-                          displayReason = 'INSUFFICIENT DATA';
-                          reasonColor = 'bg-yellow-500/20 text-yellow-400';
-                        } else if (rawReason.includes('HTF') || rawReason.includes('LTF') || rawReason.includes('trend')) {
-                          displayReason = 'HTF BLOCKED';
-                          reasonColor = 'bg-purple-500/20 text-purple-400';
-                        } else if (rawReason.includes('session') || rawReason.includes('SESSION')) {
-                          displayReason = 'SESSION INVALID';
-                          reasonColor = 'bg-blue-500/20 text-blue-400';
-                        } else if (rawReason.includes('NO_SIGNAL') || rawReason.includes('Invalid indicators')) {
-                          displayReason = 'NO SIGNAL';
-                          reasonColor = 'bg-gray-500/20 text-gray-400';
-                        } else if (rawReason.includes('EXCHANGE') || rawReason.includes('credentials')) {
-                          displayReason = 'EXCHANGE ERROR';
-                          reasonColor = 'bg-red-500/20 text-red-400';
-                        }
+                      } else if (rawReason.includes('STOPPED') || rawReason.includes('PAUSED')) {
+                        displayReason = 'AGENT STOPPED';
+                        reasonColor = 'bg-gray-500/20 text-gray-400';
+                      } else if (rawReason.includes('candles') || rawReason.includes('Insufficient')) {
+                        displayReason = 'INSUFFICIENT DATA';
+                        reasonColor = 'bg-yellow-500/20 text-yellow-400';
+                      } else if (rawReason.includes('HTF') || rawReason.includes('LTF') || rawReason.includes('trend')) {
+                        displayReason = 'HTF BLOCKED';
+                        reasonColor = 'bg-purple-500/20 text-purple-400';
+                      } else if (rawReason.includes('session') || rawReason.includes('SESSION')) {
+                        displayReason = 'SESSION INVALID';
+                        reasonColor = 'bg-blue-500/20 text-blue-400';
+                      } else if (rawReason.includes('NO_SIGNAL') || rawReason.includes('Invalid indicators')) {
+                        displayReason = 'NO SIGNAL';
+                        reasonColor = 'bg-gray-500/20 text-gray-400';
+                      } else if (rawReason.includes('EXCHANGE') || rawReason.includes('credentials')) {
+                        displayReason = 'EXCHANGE ERROR';
+                        reasonColor = 'bg-red-500/20 text-red-400';
                       }
 
-                      // D) EXECUTION STATUS - Enhanced execution status tracking
-                      const executionStatus = skipped.execution?.status || 'SKIPPED';
-                      const executionReason = skipped.execution?.reason;
+                      // Execution status
+                      const executionStatus = diagnostic.execution?.status || 'SKIPPED';
+                      const executionReason = diagnostic.execution?.reason;
                       let executionColor = 'bg-gray-500/20 text-gray-400';
                       
                       if (executionStatus === 'EXECUTED') {
                         executionColor = 'bg-green-500/20 text-green-400';
                       } else if (executionStatus === 'FAILED') {
                         executionColor = 'bg-red-500/20 text-red-400';
-                      } else if (executionStatus === 'SKIPPED') {
-                        executionColor = 'bg-gray-500/20 text-gray-400';
                       }
                       
                       return (
-                        <tr key={index} className="border-b border-purple-500/10 hover:bg-slate-800/50 transition-colors">
+                        <tr key={stableKey} className="border-b border-purple-500/10 hover:bg-slate-800/50 transition-colors">
                           <td className="py-3 px-4 text-white font-semibold">
                             {displayPair}
                           </td>
                           <td className={`py-3 px-4 font-bold text-base ${
-                            displayDirection === '--' ? 'text-gray-400' :
-                            displayDirection === 'LONG' ? 'text-green-400' : 'text-red-400'
+                            displayDirection === 'LONG' ? 'text-green-400' : 
+                            displayDirection === 'SHORT' ? 'text-red-400' :
+                            'text-gray-400'
                           }`}>
                             {displayDirection}
                           </td>
                           <td className="py-3 px-4">
                             <div className="flex items-center gap-2">
-                              {/* C) DECISION DISPLAY - Add info icon for indicator breakdown */}
-                              {hasIndicatorBreakdown && (
-                                <div className="relative group">
-                                  <InformationCircleIcon className="w-4 h-4 text-blue-400 cursor-help" />
-                                  <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-80 p-4 bg-slate-900 border border-blue-500/30 rounded-lg shadow-xl">
-                                    <div className="text-xs font-semibold text-blue-400 mb-2">Indicator Breakdown:</div>
-                                    {skipped.decision?.breakdown?.details && (
-                                      <div className="space-y-1 text-xs text-gray-300">
-                                        {Object.entries(skipped.decision.breakdown.details).map(([key, value]: [string, any]) => (
-                                          <div key={key} className="flex justify-between">
-                                            <span className="capitalize">{key}:</span>
-                                            <span className={value.status === 'confirmed' ? 'text-green-400' : 'text-red-400'}>
-                                              {value.status} {value.value && `(${value.value.toFixed(2)})`}
-                                            </span>
-                                          </div>
-                                        ))}
-                                        {skipped.decision.breakdown.details.rsi?.details && (
-                                          <div className="mt-2 text-xs text-gray-400 border-t border-gray-600 pt-2">
-                                            {skipped.decision.breakdown.details.rsi.details}
-                                          </div>
-                                        )}
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
+                              {/* Details icon for aggregated diagnostics */}
+                              {diagnostic.hasDetails && (
+                                <button
+                                  onClick={() => setSelectedDiagnosticDetails(diagnostic)}
+                                  className="text-blue-400 hover:text-blue-300 transition-colors"
+                                  title="View detailed breakdown"
+                                >
+                                  <InformationCircleIcon className="w-4 h-4" />
+                                </button>
                               )}
                               <span className={`px-3 py-1.5 rounded-md text-sm font-semibold ${reasonColor}`}>
                                 {displayReason}
@@ -922,7 +964,7 @@ export default function TradingAgentControl() {
                           </td>
                           <td className="py-3 px-4">
                             <div className="flex items-center gap-2">
-                              {/* D) EXECUTION STATUS - Show exact exchange error details */}
+                              {/* Execution error details */}
                               {executionStatus === 'FAILED' && executionReason && (
                                 <div className="relative group">
                                   <InformationCircleIcon className="w-4 h-4 text-red-400 cursor-help" />
@@ -940,7 +982,7 @@ export default function TradingAgentControl() {
                             </div>
                           </td>
                           <td className="py-3 px-4 text-gray-300 text-sm">
-                            {skipped.timestamp ? new Date(skipped.timestamp).toLocaleString() : '-'}
+                            {diagnostic.timestamp ? new Date(diagnostic.timestamp).toLocaleString() : '-'}
                           </td>
                         </tr>
                       );
@@ -951,6 +993,116 @@ export default function TradingAgentControl() {
             )}
           </div>
         </div>
+
+        {/* Diagnostic Details Modal */}
+        {selectedDiagnosticDetails && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-slate-800 rounded-xl border border-purple-500/30 max-w-2xl w-full max-h-[80vh] overflow-y-auto">
+              <div className="p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-xl font-bold text-white">
+                    Research Cycle Details - {selectedDiagnosticDetails.pair || 'Unknown Pair'}
+                  </h3>
+                  <button
+                    onClick={() => setSelectedDiagnosticDetails(null)}
+                    className="text-gray-400 hover:text-white transition-colors"
+                  >
+                    ✕
+                  </button>
+                </div>
+                
+                <div className="space-y-4">
+                  {/* Primary Decision */}
+                  <div className="bg-slate-900/50 rounded-lg p-4">
+                    <h4 className="text-sm font-semibold text-purple-400 mb-2">Primary Decision</h4>
+                    <div className="text-sm text-gray-300">
+                      <div><strong>Reason:</strong> {selectedDiagnosticDetails.decision?.reason || selectedDiagnosticDetails.reason || 'No reason provided'}</div>
+                      <div><strong>Status:</strong> {selectedDiagnosticDetails.execution?.status || 'SKIPPED'}</div>
+                      <div><strong>Timestamp:</strong> {selectedDiagnosticDetails.timestamp ? new Date(selectedDiagnosticDetails.timestamp).toLocaleString() : 'Unknown'}</div>
+                    </div>
+                  </div>
+
+                  {/* Additional Details */}
+                  {selectedDiagnosticDetails.details && selectedDiagnosticDetails.details.length > 0 && (
+                    <div className="bg-slate-900/50 rounded-lg p-4">
+                      <h4 className="text-sm font-semibold text-purple-400 mb-3">
+                        All Cycle Diagnostics ({selectedDiagnosticDetails.details.length + 1} total)
+                      </h4>
+                      <div className="space-y-3">
+                        {/* Sort all diagnostics (including primary) by timestamp */}
+                        {[selectedDiagnosticDetails, ...selectedDiagnosticDetails.details]
+                          .sort((a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime())
+                          .map((detail: any, index: number) => {
+                            const isSystemDiagnostic = ['EXECUTION_STARTED', 'FORCE_CREATE_DIAGNOSTIC', 'CREDENTIALS_DECRYPT_FAILED'].includes(detail.decision?.reason || detail.reason);
+                            const isPrimary = detail === selectedDiagnosticDetails;
+                            
+                            return (
+                              <div key={index} className={`border-l-2 pl-3 ${isPrimary ? 'border-green-500/50 bg-green-500/5' : isSystemDiagnostic ? 'border-gray-500/30' : 'border-purple-500/30'}`}>
+                                <div className="flex items-center gap-2 mb-1">
+                                  <div className="text-xs text-gray-400">
+                                    {detail.timestamp ? new Date(detail.timestamp).toLocaleString() : 'Unknown time'}
+                                  </div>
+                                  {isPrimary && (
+                                    <span className="text-xs bg-green-500/20 text-green-400 px-2 py-0.5 rounded">PRIMARY</span>
+                                  )}
+                                  {isSystemDiagnostic && (
+                                    <span className="text-xs bg-gray-500/20 text-gray-400 px-2 py-0.5 rounded">SYSTEM</span>
+                                  )}
+                                </div>
+                                <div className="text-sm text-gray-300">
+                                  {detail.decision?.reason || detail.reason || 'No details available'}
+                                </div>
+                                {detail.execution?.reason && (
+                                  <div className="text-xs text-red-400 mt-1">
+                                    Execution: {detail.execution.reason}
+                                  </div>
+                                )}
+                                {detail.pair && detail.pair !== selectedDiagnosticDetails.pair && (
+                                  <div className="text-xs text-blue-400 mt-1">
+                                    Pair: {detail.pair}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Indicator Breakdown (if available) */}
+                  {selectedDiagnosticDetails.decision?.breakdown?.details && (
+                    <div className="bg-slate-900/50 rounded-lg p-4">
+                      <h4 className="text-sm font-semibold text-purple-400 mb-3">Indicator Analysis</h4>
+                      <div className="grid grid-cols-2 gap-3">
+                        {Object.entries(selectedDiagnosticDetails.decision.breakdown.details).map(([key, value]: [string, any]) => (
+                          <div key={key} className="flex justify-between items-center">
+                            <span className="text-sm text-gray-300 capitalize">{key}:</span>
+                            <span className={`text-sm font-semibold ${value.status === 'confirmed' ? 'text-green-400' : 'text-red-400'}`}>
+                              {value.status} {value.value && `(${value.value.toFixed(2)})`}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Aggregation Info */}
+                  <div className="bg-slate-900/50 rounded-lg p-4">
+                    <h4 className="text-sm font-semibold text-purple-400 mb-2">5-Minute Research Cycle</h4>
+                    <div className="text-xs text-gray-400 space-y-1">
+                      <div>Cycle Key: {selectedDiagnosticDetails.cycleKey || 'Generated'}</div>
+                      <div>Time Bucket: {selectedDiagnosticDetails.cycleBucket || 'Unknown'}</div>
+                      <div>Bucket Time: {selectedDiagnosticDetails.cycleBucket ? 
+                        new Date(selectedDiagnosticDetails.cycleBucket * 5 * 60 * 1000).toLocaleString() : 'Unknown'}</div>
+                      <div>Total Diagnostics: {selectedDiagnosticDetails.aggregatedCount || 1}</div>
+                      <div>Details Available: {selectedDiagnosticDetails.hasDetails ? 'Yes' : 'No'}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {toast && <Toast message={toast.message} type={toast.type} />}
       </div>
