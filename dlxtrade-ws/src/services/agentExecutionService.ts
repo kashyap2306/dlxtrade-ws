@@ -320,9 +320,11 @@ export class AgentExecutionService {
           tpBlocked: false,
           rrValid: false
         },
-        // PART 1 FIX: EXECUTION_STARTED should show htfBiasDirection if available
+        // PART A FIX: EXECUTION_STARTED should show htfBiasDirection if available
         direction: htfBiasDirection || 'NO_TRADE',
-        decision: { action: "SKIP", reason: "EXECUTION_STARTED" },
+        // PART B FIX: EXECUTION_STARTED is INFO, not SKIP
+        decision: { action: "INFO", reason: "EXECUTION_STARTED" },
+        isSkipped: false,
         // PART B FIX: Add failure object for EXECUTION_STARTED
         failure: {
           reasonCode: 'EXECUTION_STARTED',
@@ -970,15 +972,8 @@ export class AgentExecutionService {
           diagnostics.decision = { action: 'SKIP', reason: 'Managing open position' };
           diagnostics.tradingPair = tradingPair;
           // PART 1 FIX: For HTF agents, show HTF direction even when managing open position
-          if (isHTFAgent && candles15m && candles15m.length >= 200) {
-            try {
-              const { HTFTrendFilterStrategy } = await import('./htfTrendFilterStrategy');
-              const htfTrend = HTFTrendFilterStrategy.analyzeHTFTrend(candles15m);
-              diagnostics.direction = htfTrend.direction === 'LONG_ONLY' ? 'LONG' : 
-                                     htfTrend.direction === 'SHORT_ONLY' ? 'SHORT' : 'NO_TRADE';
-            } catch {
-              diagnostics.direction = 'NO_TRADE';
-            }
+          if (isHTFAgent && htfBiasDirection) {
+            diagnostics.direction = htfBiasDirection;
           } else {
             diagnostics.direction = 'NO_TRADE';
           }
@@ -1004,15 +999,8 @@ export class AgentExecutionService {
         diagnostics.decision = { action: 'SKIP', reason: 'Candle already processed' };
         diagnostics.tradingPair = tradingPair;
         // PART 1 FIX: For HTF agents, show HTF direction even when candle already processed
-        if (isHTFAgent && candles15m && candles15m.length >= 200) {
-          try {
-            const { HTFTrendFilterStrategy } = await import('./htfTrendFilterStrategy');
-            const htfTrend = HTFTrendFilterStrategy.analyzeHTFTrend(candles15m);
-            diagnostics.direction = htfTrend.direction === 'LONG_ONLY' ? 'LONG' : 
-                                   htfTrend.direction === 'SHORT_ONLY' ? 'SHORT' : 'NO_TRADE';
-          } catch {
-            diagnostics.direction = 'NO_TRADE';
-          }
+        if (isHTFAgent && htfBiasDirection) {
+          diagnostics.direction = htfBiasDirection;
         } else {
           diagnostics.direction = 'NO_TRADE';
         }
@@ -1043,15 +1031,8 @@ export class AgentExecutionService {
         diagnostics.decision = { action: 'SKIP', reason: 'Invalid indicators calculated' };
         diagnostics.tradingPair = tradingPair;
         // PART 1 FIX: For HTF agents, show HTF direction even when indicators are invalid
-        if (isHTFAgent && candles15m && candles15m.length >= 200) {
-          try {
-            const { HTFTrendFilterStrategy } = await import('./htfTrendFilterStrategy');
-            const htfTrend = HTFTrendFilterStrategy.analyzeHTFTrend(candles15m);
-            diagnostics.direction = htfTrend.direction === 'LONG_ONLY' ? 'LONG' : 
-                                   htfTrend.direction === 'SHORT_ONLY' ? 'SHORT' : 'NO_TRADE';
-          } catch {
-            diagnostics.direction = 'NO_TRADE';
-          }
+        if (isHTFAgent && htfBiasDirection) {
+          diagnostics.direction = htfBiasDirection;
         } else {
           diagnostics.direction = 'NO_TRADE';
         }
@@ -1084,15 +1065,8 @@ export class AgentExecutionService {
           diagnostics.decision = { action: 'SKIP', reason: skippedReason };
           diagnostics.tradingPair = tradingPair;
           // PART 1 FIX: For HTF agents, show HTF direction even when market scan not executed
-          if (candles15m && candles15m.length >= 200) {
-            try {
-              const { HTFTrendFilterStrategy } = await import('./htfTrendFilterStrategy');
-              const htfTrend = HTFTrendFilterStrategy.analyzeHTFTrend(candles15m);
-              diagnostics.direction = htfTrend.direction === 'LONG_ONLY' ? 'LONG' : 
-                                     htfTrend.direction === 'SHORT_ONLY' ? 'SHORT' : 'NO_TRADE';
-            } catch {
-              diagnostics.direction = 'NO_TRADE';
-            }
+          if (isHTFAgent && htfBiasDirection) {
+            diagnostics.direction = htfBiasDirection;
           } else {
             diagnostics.direction = 'NO_TRADE';
           }
@@ -1125,15 +1099,8 @@ export class AgentExecutionService {
           diagnostics.decision = { action: 'SKIP', reason: skippedReason };
           diagnostics.tradingPair = tradingPair;
           // PART 1 FIX: For HTF agents, show HTF direction even when exchange not usable
-          if (candles15m && candles15m.length >= 200) {
-            try {
-              const { HTFTrendFilterStrategy } = await import('./htfTrendFilterStrategy');
-              const htfTrend = HTFTrendFilterStrategy.analyzeHTFTrend(candles15m);
-              diagnostics.direction = htfTrend.direction === 'LONG_ONLY' ? 'LONG' : 
-                                     htfTrend.direction === 'SHORT_ONLY' ? 'SHORT' : 'NO_TRADE';
-            } catch {
-              diagnostics.direction = 'NO_TRADE';
-            }
+          if (isHTFAgent && htfBiasDirection) {
+            diagnostics.direction = htfBiasDirection;
           } else {
             diagnostics.direction = 'NO_TRADE';
           }
@@ -1293,20 +1260,8 @@ export class AgentExecutionService {
         diagnostics.decision = diagnostics.decision || { action: 'SKIP', reason: 'No trading signal generated' };
         diagnostics.tradingPair = tradingPair;
         // PART 1 FIX: For HTF agents, try to preserve HTF trend direction even when no signal generated
-        if (isHTFAgent && marketScanExecuted) {
-          try {
-            const { HTFTrendFilterStrategy } = await import('./htfTrendFilterStrategy');
-            if (candles15m && candles15m.length >= 200) {
-              const htfTrend = HTFTrendFilterStrategy.analyzeHTFTrend(candles15m);
-              // CRITICAL: NEVER overwrite direction to NO_TRADE if HTF bias exists
-              diagnostics.direction = htfTrend.direction === 'LONG_ONLY' ? 'LONG' : 
-                                     htfTrend.direction === 'SHORT_ONLY' ? 'SHORT' : 'NO_TRADE';
-            } else {
-              diagnostics.direction = 'NO_TRADE';
-            }
-          } catch {
-            diagnostics.direction = 'NO_TRADE';
-          }
+        if (isHTFAgent && htfBiasDirection) {
+          diagnostics.direction = htfBiasDirection;
         } else {
           diagnostics.direction = 'NO_TRADE';
         }

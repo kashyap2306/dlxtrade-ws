@@ -961,16 +961,18 @@ export default function TradingAgentControl() {
                                 </button>
                               )}
                               
-                              {/* PART C: Info icon (ⓘ) before EXECUTION_STARTED with exact failure reason */}
-                              {rawReason === 'EXECUTION_STARTED' && (
+                              {/* PART C: Single info icon (ⓘ) for all skip/failure reasons */}
+                              {(diagnostic.failure || rawReason !== 'NO_SIGNAL') && (
                                 <div className="relative group">
-                                  <span className="text-blue-400 cursor-help text-sm mr-1" title="Click for execution details">ⓘ</span>
+                                  <span className={`cursor-help text-sm mr-1 ${rawReason === 'EXECUTION_STARTED' ? 'text-blue-400' : 'text-yellow-400'}`} title="Click for details">ⓘ</span>
                                   <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-96 p-4 bg-slate-900 border border-blue-500/30 rounded-lg shadow-xl">
-                                    <div className="text-xs font-semibold text-blue-400 mb-2">EXECUTION_STARTED - Exact Details:</div>
+                                    <div className="text-xs font-semibold text-blue-400 mb-2">
+                                      {rawReason === 'EXECUTION_STARTED' ? 'EXECUTION_STARTED - Exact Details:' : 'Skip/Failure Details - Trade kyu skip/fail hua?'}
+                                    </div>
                                     <div className="space-y-2 text-xs text-gray-300">
                                       {/* PRIMARY FAILURE REASON */}
                                       <div>
-                                        <span className="font-semibold text-white">Primary Reason:</span> {diagnostic.failure?.reasonText || diagnostic.decision?.reason || 'Agent execution cycle started - analyzing market conditions'}
+                                        <span className="font-semibold text-white">Exact reasonText:</span> {diagnostic.failure?.reasonText || rawReason || 'Not provided by engine'}
                                       </div>
                                       
                                       {/* FAILURE CATEGORY */}
@@ -984,86 +986,6 @@ export default function TradingAgentControl() {
                                       {diagnostic.failure?.reasonCode && (
                                         <div>
                                           <span className="font-semibold text-blue-400">Reason Code:</span> {diagnostic.failure.reasonCode}
-                                        </div>
-                                      )}
-                                      
-                                      {/* EXCHANGE FAILURES */}
-                                      {diagnostic.exchangeFailure && (
-                                        <>
-                                          <div>
-                                            <span className="font-semibold text-red-400">Exchange:</span> {diagnostic.exchangeFailure.exchange || 'Not specified'}
-                                          </div>
-                                          <div>
-                                            <span className="font-semibold text-red-400">Failure Type:</span> {diagnostic.exchangeFailure.failureType || 'UNKNOWN'}
-                                          </div>
-                                          <div>
-                                            <span className="font-semibold text-red-400">Raw Error:</span> {diagnostic.exchangeFailure.rawError || 'Not provided by engine'}
-                                          </div>
-                                        </>
-                                      )}
-                                      
-                                      {/* RAW NUMBERS */}
-                                      <div className="mt-2 pt-2 border-t border-gray-600">
-                                        <div className="font-semibold text-white mb-1">Raw Numbers:</div>
-                                        {diagnostic.signal?.entryPrice ? (
-                                          <div>Entry Price: {diagnostic.signal.entryPrice}</div>
-                                        ) : (
-                                          <div>Entry Price: Not provided by engine</div>
-                                        )}
-                                        {diagnostic.signal?.stopLoss ? (
-                                          <div>Stop Loss: {diagnostic.signal.stopLoss}</div>
-                                        ) : (
-                                          <div>Stop Loss: Not provided by engine</div>
-                                        )}
-                                        {diagnostic.signal?.takeProfit ? (
-                                          <div>Take Profit: {diagnostic.signal.takeProfit}</div>
-                                        ) : (
-                                          <div>Take Profit: Not provided by engine</div>
-                                        )}
-                                        {diagnostic.signal?.rrRatio ? (
-                                          <div>RR Ratio: {diagnostic.signal.rrRatio.toFixed(2)}</div>
-                                        ) : (
-                                          <div>RR Ratio: Not provided by engine</div>
-                                        )}
-                                        {diagnostic.riskAnalysis?.accountBalance ? (
-                                          <div>Available Balance: {diagnostic.riskAnalysis.accountBalance}</div>
-                                        ) : (
-                                          <div>Available Balance: Not provided by engine</div>
-                                        )}
-                                        {diagnostic.riskAnalysis?.marginRequired ? (
-                                          <div>Required Margin: {diagnostic.riskAnalysis.marginRequired}</div>
-                                        ) : (
-                                          <div>Required Margin: Not provided by engine</div>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-                              )}
-                              
-                              {/* PART C: Info icon (ⓘ) for all other skip/failure reasons */}
-                              {rawReason !== 'EXECUTION_STARTED' && rawReason !== 'NO_SIGNAL' && (
-                                <div className="relative group">
-                                  <span className="text-yellow-400 cursor-help text-sm mr-1" title="Click for skip/failure details">ⓘ</span>
-                                  <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-96 p-4 bg-slate-900 border border-yellow-500/30 rounded-lg shadow-xl">
-                                    <div className="text-xs font-semibold text-yellow-400 mb-2">Skip/Failure Details - Trade kyu skip/fail hua?</div>
-                                    <div className="space-y-2 text-xs text-gray-300">
-                                      {/* PRIMARY FAILURE REASON */}
-                                      <div>
-                                        <span className="font-semibold text-white">Exact reasonText:</span> {diagnostic.failure?.reasonText || rawReason || 'Not provided by engine'}
-                                      </div>
-                                      
-                                      {/* FAILURE CATEGORY */}
-                                      {diagnostic.failure?.category && (
-                                        <div>
-                                          <span className="font-semibold text-yellow-400">Category:</span> {diagnostic.failure.category}
-                                        </div>
-                                      )}
-                                      
-                                      {/* FAILURE REASON CODE */}
-                                      {diagnostic.failure?.reasonCode && (
-                                        <div>
-                                          <span className="font-semibold text-yellow-400">Reason Code:</span> {diagnostic.failure.reasonCode}
                                         </div>
                                       )}
                                       
