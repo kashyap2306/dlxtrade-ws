@@ -96,7 +96,7 @@ export class HTFTrendFilterStrategy {
   }
 
   /**
-   * Analyze LTF (1m) entry conditions with enhanced diagnostics
+   * Analyze LTF (1m) entry conditions with SIMPLE swing-structure SL/TP
    */
   static analyzeLTFEntry(candles1m: CandleData[], htfTrend: HTFTrendDirection): LTFEntrySignal {
     if (htfTrend === 'NO_TRADE') {
@@ -191,11 +191,93 @@ export class HTFTrendFilterStrategy {
       const allConditionsMet = priceAboveEma200 && pullbackNearEma50 && rsiInRange && touchLowerBB && bullishClose && volumeConfirm;
       
       if (allConditionsMet) {
-        // Find swing low for stop loss
-        const swingLow = this.findSwingLow(candles1m);
-        const stopLoss = swingLow;
-        const slDistance = price - stopLoss;
-        const takeProfit = price + (slDistance * 1.2); // TP = 1.2 × SL distance
+        // SIMPLE SWING-STRUCTURE SL/TP LOGIC
+        // 1) SL: LONG = just BELOW last clear swing LOW
+        const stopLoss = this.findSwingLow(candles1m);
+        
+        // 2) TP: LONG = nearest visible RESISTANCE
+        const takeProfit = this.findNearestResistance(candles1m, price);
+        
+        // 3) RR CHECK: Minimum RR = 1:1
+        const riskPerUnit = Math.abs(price - stopLoss);
+        const rewardPerUnit = Math.abs(takeProfit - price);
+        const rrRatio = riskPerUnit > 0 ? rewardPerUnit / riskPerUnit : 0;
+        
+        // If RR < 1 → SKIP trade (do NOT force TP or SL)
+        if (!isFinite(rrRatio) || rrRatio < 1.0) {
+          logger.warn({
+            entryPrice: price,
+            stopLoss,
+            takeProfit,
+            riskPerUnit,
+            rewardPerUnit,
+            rrRatio: rrRatio.toFixed(2),
+            reason: 'RR_FAIL'
+          }, 'HTF LONG: RR_FAIL - Risk/Reward ratio below 1:1');
+          
+          return {
+            isValid: false,
+            direction: null,
+            entryPrice: 0,
+            stopLoss: 0,
+            takeProfit: 0,
+            reason: `RR_FAIL: ${rrRatio.toFixed(2)} < 1.0`,
+            indicators: { ...indicators, results: indicatorResults }
+          };
+        }
+        
+        // Check if structure is clear - if structure is unclear → SKIP
+        if (stopLoss >= price || takeProfit <= price) {
+          logger.warn({
+            entryPrice: price,
+            stopLoss,
+            takeProfit,
+            reason: 'NO_STRUCTURE'
+          }, 'HTF LONG: NO_STRUCTURE - Invalid swing structure');
+          
+          return {
+            isValid: false,
+            direction: null,
+            entryPrice: 0,
+            stopLoss: 0,
+            takeProfit: 0,
+            reason: 'NO_STRUCTURE: Invalid swing levels',
+            indicators: { ...indicators, results: indicatorResults }
+          };
+        }
+
+        // If SL too far & TP too close → SKIP (no extra filters allowed)
+        const slDistancePercent = Math.abs((price - stopLoss) / price) * 100;
+        const tpDistancePercent = Math.abs((takeProfit - price) / price) * 100;
+        
+        if (slDistancePercent > 2.0 && tpDistancePercent < 0.5) {
+          logger.warn({
+            entryPrice: price,
+            stopLoss,
+            takeProfit,
+            slDistancePercent: slDistancePercent.toFixed(2),
+            tpDistancePercent: tpDistancePercent.toFixed(2),
+            reason: 'POOR_STRUCTURE'
+          }, 'HTF LONG: POOR_STRUCTURE - SL too far & TP too close');
+          
+          return {
+            isValid: false,
+            direction: null,
+            entryPrice: 0,
+            stopLoss: 0,
+            takeProfit: 0,
+            reason: 'POOR_STRUCTURE: SL too far & TP too close',
+            indicators: { ...indicators, results: indicatorResults }
+          };
+        }
+
+        logger.info({
+          entryPrice: price,
+          stopLoss,
+          takeProfit,
+          calculatedRR: rrRatio.toFixed(2),
+          reason: 'VALID_STRUCTURE'
+        }, 'HTF LONG: Valid swing structure with RR >= 1:1');
 
         return {
           isValid: true,
@@ -280,11 +362,89 @@ export class HTFTrendFilterStrategy {
       const allConditionsMet = priceBelowEma200 && pullbackNearEma50 && rsiInRange && touchUpperBB && bearishClose && volumeConfirm;
       
       if (allConditionsMet) {
-        // Find swing high for stop loss
-        const swingHigh = this.findSwingHigh(candles1m);
-        const stopLoss = swingHigh;
-        const slDistance = stopLoss - price;
-        const takeProfit = price - (slDistance * 1.2); // TP = 1.2 × SL distance
+        // SIMPLE SWING-STRUCTURE SL/TP LOGIC
+        // 1) SL: SHORT = just ABOVE last clear swing HIGH
+        const stopLoss = this.findSwingHigh(candles1m);
+        
+        // 2) TP: SHORT = nearest visible SUPPORT
+        const takeProfit = this.findNearestSupport(candles1m, price);
+        
+        // 3) RR CHECK: Minimum RR = 1:1
+        const riskPerUnit = Math.abs(stopLoss - price);
+        const rewardPerUnit = Math.abs(price - takeProfit);
+        const rrRatio = riskPerUnit > 0 ? rewardPerUnit / riskPerUnit : 0;
+        
+        // If RR < 1 → SKIP trade (do NOT force TP or SL)
+        if (!isFinite(rrRatio) || rrRatio < 1.0) {
+          logger.warn({
+            entryPrice: price,
+            stopLoss,
+            takeProfit,
+            riskPerUnit,
+            rewardPerUnit,
+            rrRatio: rrRatio.toFixed(2)
+          }, 'HTF SHORT: RR_FAIL - Risk/Reward ratio below 1:1');
+          
+          return {
+            isValid: false,
+            direction: null,
+            entryPrice: 0,
+            stopLoss: 0,
+            takeProfit: 0,
+            reason: `RR_FAIL: ${rrRatio.toFixed(2)} < 1.0`,
+            indicators: { ...indicators, results: indicatorResults }
+          };
+        }
+        
+        // Check if structure is clear - if structure is unclear → SKIP
+        if (stopLoss <= price || takeProfit >= price) {
+          logger.warn({
+            entryPrice: price,
+            stopLoss,
+            takeProfit
+          }, 'HTF SHORT: NO_STRUCTURE - Invalid swing structure');
+          
+          return {
+            isValid: false,
+            direction: null,
+            entryPrice: 0,
+            stopLoss: 0,
+            takeProfit: 0,
+            reason: 'NO_STRUCTURE: Invalid swing levels',
+            indicators: { ...indicators, results: indicatorResults }
+          };
+        }
+
+        // If SL too far & TP too close → SKIP (no extra filters allowed)
+        const slDistancePercent = Math.abs((stopLoss - price) / price) * 100;
+        const tpDistancePercent = Math.abs((price - takeProfit) / price) * 100;
+        
+        if (slDistancePercent > 2.0 && tpDistancePercent < 0.5) {
+          logger.warn({
+            entryPrice: price,
+            stopLoss,
+            takeProfit,
+            slDistancePercent: slDistancePercent.toFixed(2),
+            tpDistancePercent: tpDistancePercent.toFixed(2)
+          }, 'HTF SHORT: POOR_STRUCTURE - SL too far & TP too close');
+          
+          return {
+            isValid: false,
+            direction: null,
+            entryPrice: 0,
+            stopLoss: 0,
+            takeProfit: 0,
+            reason: 'POOR_STRUCTURE: SL too far & TP too close',
+            indicators: { ...indicators, results: indicatorResults }
+          };
+        }
+
+        logger.info({
+          entryPrice: price,
+          stopLoss,
+          takeProfit,
+          rrRatio: rrRatio.toFixed(2)
+        }, 'HTF SHORT: Valid swing structure with RR >= 1:1');
 
         return {
           isValid: true,
@@ -341,25 +501,69 @@ export class HTFTrendFilterStrategy {
   }
 
   /**
-   * Find swing low for LONG stop loss
-   * Looks back 20 candles for the lowest low
+   * Find swing low for LONG stop loss - SIMPLE approach
+   * LONG: place SL just BELOW the last clear swing LOW
    */
   private static findSwingLow(candles: CandleData[]): number {
     const lookback = Math.min(20, candles.length);
     const recentCandles = candles.slice(0, lookback);
     const lows = recentCandles.map(c => c.low);
-    return Math.min(...lows);
+    const swingLow = Math.min(...lows);
+    
+    // Place SL just BELOW the swing low (no ATR, no buffers, no extra math)
+    return swingLow * 0.999; // Just below swing low
   }
 
   /**
-   * Find swing high for SHORT stop loss
-   * Looks back 20 candles for the highest high
+   * Find swing high for SHORT stop loss - SIMPLE approach  
+   * SHORT: place SL just ABOVE the last clear swing HIGH
    */
   private static findSwingHigh(candles: CandleData[]): number {
     const lookback = Math.min(20, candles.length);
     const recentCandles = candles.slice(0, lookback);
     const highs = recentCandles.map(c => c.high);
-    return Math.max(...highs);
+    const swingHigh = Math.max(...highs);
+    
+    // Place SL just ABOVE the swing high (no ATR, no buffers, no extra math)
+    return swingHigh * 1.001; // Just above swing high
+  }
+
+  /**
+   * Find nearest resistance for LONG take profit - SIMPLE approach
+   * LONG: nearest visible RESISTANCE
+   */
+  private static findNearestResistance(candles: CandleData[], entryPrice: number): number {
+    const lookback = Math.min(50, candles.length);
+    const recentCandles = candles.slice(0, lookback);
+    
+    // Find highs above entry price that could act as resistance
+    const resistanceLevels = recentCandles
+      .map(c => c.high)
+      .filter(high => high > entryPrice)
+      .sort((a, b) => a - b); // Sort ascending to get nearest first
+    
+    // Return nearest visible resistance above entry
+    // If no clear resistance found, skip trade (will be caught by RR check)
+    return resistanceLevels.length > 0 ? resistanceLevels[0] : entryPrice * 1.005; // Minimal fallback
+  }
+
+  /**
+   * Find nearest support for SHORT take profit - SIMPLE approach
+   * SHORT: nearest visible SUPPORT
+   */
+  private static findNearestSupport(candles: CandleData[], entryPrice: number): number {
+    const lookback = Math.min(50, candles.length);
+    const recentCandles = candles.slice(0, lookback);
+    
+    // Find lows below entry price that could act as support
+    const supportLevels = recentCandles
+      .map(c => c.low)
+      .filter(low => low < entryPrice)
+      .sort((a, b) => b - a); // Sort descending to get nearest first
+    
+    // Return nearest visible support below entry
+    // If no clear support found, skip trade (will be caught by RR check)
+    return supportLevels.length > 0 ? supportLevels[0] : entryPrice * 0.995; // Minimal fallback
   }
 
   /**

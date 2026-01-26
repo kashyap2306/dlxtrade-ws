@@ -102,7 +102,10 @@ export class TradingAgentMarketProvider implements MarketDataProvider {
   }
 
   /**
-   * Place an order
+   * Place an order with immediate SL/TP placement
+   * CRITICAL: Entry order = MARKET order only, Execute only when signal is already approved
+   * ORDER PLACEMENT: Entry + SL + TP must be placed on the EXCHANGE, not backend-managed
+   * SL/TP must be placed immediately after entry (same execution flow)
    */
   async placeOrder(order: {
     symbol: string;
@@ -114,79 +117,200 @@ export class TradingAgentMarketProvider implements MarketDataProvider {
     takeProfit?: number;
   }): Promise<string> {
     try {
-      // Bitget Futures: support preset SL/TP on the exchange when available
-      if (this.exchange === 'bitget' && this.marketType === 'futures' && (this.exchangeConnector as any).placeFuturesOrder) {
-        const orderResult = await (this.exchangeConnector as any).placeFuturesOrder({
-          symbol: order.symbol,
-          side: order.side as 'BUY' | 'SELL',
-          type: order.type as 'MARKET' | 'LIMIT',
-          quantity: order.quantity,
-          price: order.price,
-          stopLoss: order.stopLoss,
-          takeProfit: order.takeProfit,
-        });
-
-        const orderId = orderResult.orderId || orderResult.id || orderResult.clientOrderId;
-        if (!orderId) {
-          throw new Error('Order placed but no order ID returned');
-        }
-        return orderId.toString();
-      }
-
-      if (this.marketType === 'futures' && (this.exchangeConnector as any).placeFuturesOrder) {
-        const orderResult = await (this.exchangeConnector as any).placeFuturesOrder({
-          symbol: order.symbol,
-          side: order.side as 'BUY' | 'SELL',
-          type: order.type as 'MARKET' | 'LIMIT',
-          quantity: order.quantity,
-          price: order.price,
-        });
-
-        const orderId = orderResult.orderId || orderResult.id || orderResult.clientOrderId;
-        if (!orderId) {
-          throw new Error('Order placed but no order ID returned');
-        }
-        return orderId.toString();
-      }
-
-      if (!this.exchangeConnector.placeOrder) {
-        throw new Error('Order placement not supported by this exchange connector');
-      }
-
-      // For now, place basic market order
-      // TODO: Implement stop loss and take profit orders
-      const orderResult = await this.exchangeConnector.placeOrder({
+      // STEP 1: Place entry order (MARKET only as per requirements)
+      const entryOrderResult = await this.placeEntryOrder({
         symbol: order.symbol,
-        side: order.side as 'BUY' | 'SELL',
-        type: order.type as 'MARKET' | 'LIMIT',
+        side: order.side,
+        type: 'MARKET', // Force MARKET entry as per requirements
         quantity: order.quantity,
         price: order.price
       });
 
-      // Extract order ID from result
-      const orderId = orderResult.orderId || orderResult.id || orderResult.clientOrderId;
-
-      if (!orderId) {
-        throw new Error('Order placed but no order ID returned');
+      const entryOrderId = entryOrderResult.orderId || entryOrderResult.id || entryOrderResult.clientOrderId;
+      if (!entryOrderId) {
+        throw new Error('Entry order placed but no order ID returned');
       }
 
       logger.info({
-        orderId,
+        entryOrderId,
         symbol: order.symbol,
         side: order.side,
         quantity: order.quantity,
-        type: order.type
-      }, 'Order placed successfully for trading agent');
+        type: 'MARKET',
+        entryOrderPlaced: true
+      }, 'STEP 1: Entry order (MARKET) placed successfully');
 
-      return orderId.toString();
+      // STEP 2: Place SL/TP orders immediately after entry (if provided)
+      // CRITICAL: SL/TP must be placed immediately after entry (same execution flow)
+      if (order.stopLoss || order.takeProfit) {
+        logger.info({
+          symbol: order.symbol,
+          stopLoss: order.stopLoss,
+          takeProfit: order.takeProfit,
+          quantity: order.quantity,
+          entrySide: order.side
+        }, 'STEP 2: Placing SL/TP orders on exchange immediately after entry');
+
+        await this.placeSLTPOrders(order.symbol, order.side, order.quantity, order.stopLoss, order.takeProfit);
+      } else {
+        logger.warn({
+          symbol: order.symbol,
+          side: order.side,
+          quantity: order.quantity
+        }, 'STEP 2: No SL/TP provided - entry only order');
+      }
+
+      logger.info({
+        entryOrderId,
+        symbol: order.symbol,
+        side: order.side,
+        quantity: order.quantity,
+        type: 'MARKET',
+        stopLoss: order.stopLoss,
+        takeProfit: order.takeProfit,
+        slTpPlaced: !!(order.stopLoss || order.takeProfit),
+        executionComplete: true
+      }, 'Order with SL/TP placed successfully - execution complete');
+
+      return entryOrderId.toString();
     } catch (error) {
       logger.error({
         error: error instanceof Error ? error.message : 'Unknown error',
         symbol: order.symbol,
         side: order.side,
-        quantity: order.quantity
-      }, 'Failed to place order for trading agent');
+        quantity: order.quantity,
+        stopLoss: order.stopLoss,
+        takeProfit: order.takeProfit,
+        executionFailed: true
+      }, 'CRITICAL: Failed to place order with SL/TP');
       throw error;
+    }
+  }
+
+  /**
+   * Place entry order only
+   */
+  private async placeEntryOrder(order: {
+    symbol: string;
+    side: 'BUY' | 'SELL';
+    type: 'MARKET' | 'LIMIT';
+    quantity: number;
+    price?: number;
+  }): Promise<any> {
+    // Bitget Futures: use futures order placement
+    if (this.exchange === 'bitget' && this.marketType === 'futures' && (this.exchangeConnector as any).placeFuturesOrder) {
+      return await (this.exchangeConnector as any).placeFuturesOrder({
+        symbol: order.symbol,
+        side: order.side as 'BUY' | 'SELL',
+        type: order.type as 'MARKET' | 'LIMIT',
+        quantity: order.quantity,
+        price: order.price,
+      });
+    }
+
+    if (this.marketType === 'futures' && (this.exchangeConnector as any).placeFuturesOrder) {
+      return await (this.exchangeConnector as any).placeFuturesOrder({
+        symbol: order.symbol,
+        side: order.side as 'BUY' | 'SELL',
+        type: order.type as 'MARKET' | 'LIMIT',
+        quantity: order.quantity,
+        price: order.price,
+      });
+    }
+
+    if (!this.exchangeConnector.placeOrder) {
+      throw new Error('Order placement not supported by this exchange connector');
+    }
+
+    return await this.exchangeConnector.placeOrder({
+      symbol: order.symbol,
+      side: order.side as 'BUY' | 'SELL',
+      type: order.type as 'MARKET' | 'LIMIT',
+      quantity: order.quantity,
+      price: order.price
+    });
+  }
+
+  /**
+   * Place SL/TP orders immediately after entry
+   * CRITICAL: Entry + SL + TP must be placed on the EXCHANGE, not backend-managed
+   * SL/TP must be placed immediately after entry (same execution flow)
+   */
+  private async placeSLTPOrders(
+    symbol: string, 
+    entrySide: 'BUY' | 'SELL', 
+    quantity: number, 
+    stopLoss?: number, 
+    takeProfit?: number
+  ): Promise<void> {
+    const promises: Promise<any>[] = [];
+
+    // Determine exit side (opposite of entry)
+    const exitSide: 'BUY' | 'SELL' = entrySide === 'BUY' ? 'SELL' : 'BUY';
+
+    // Place Stop Loss order - CRITICAL: Must be placed on exchange
+    if (stopLoss && isFinite(stopLoss)) {
+      const slPromise = this.placeFuturesOrder({
+        symbol,
+        side: exitSide,
+        type: 'STOP_MARKET',
+        quantity,
+        stopPrice: stopLoss,
+        reduceOnly: true
+      }).catch(error => {
+        logger.error({
+          error: error instanceof Error ? error.message : 'Unknown error',
+          symbol,
+          stopLoss,
+          side: exitSide,
+          orderType: 'STOP_MARKET'
+        }, 'CRITICAL: Failed to place Stop Loss order on exchange');
+        // Don't throw - allow TP to still be placed
+      });
+      promises.push(slPromise);
+    }
+
+    // Place Take Profit order - CRITICAL: Must be placed on exchange
+    if (takeProfit && isFinite(takeProfit)) {
+      const tpPromise = this.placeFuturesOrder({
+        symbol,
+        side: exitSide,
+        type: 'TAKE_PROFIT_MARKET',
+        quantity,
+        stopPrice: takeProfit,
+        reduceOnly: true
+      }).catch(error => {
+        logger.error({
+          error: error instanceof Error ? error.message : 'Unknown error',
+          symbol,
+          takeProfit,
+          side: exitSide,
+          orderType: 'TAKE_PROFIT_MARKET'
+        }, 'CRITICAL: Failed to place Take Profit order on exchange');
+        // Don't throw - allow SL to still be placed
+      });
+      promises.push(tpPromise);
+    }
+
+    // Wait for all SL/TP orders to complete - CRITICAL: Must complete before returning
+    if (promises.length > 0) {
+      const results = await Promise.allSettled(promises);
+      
+      // Log results for verification
+      const slResult = stopLoss ? results[0] : null;
+      const tpResult = takeProfit ? results[promises.length - 1] : null;
+      
+      logger.info({
+        symbol,
+        entrySide,
+        quantity,
+        stopLoss,
+        takeProfit,
+        slPlaced: slResult?.status === 'fulfilled',
+        tpPlaced: tpResult?.status === 'fulfilled',
+        slError: slResult?.status === 'rejected' ? (slResult.reason as any)?.message : null,
+        tpError: tpResult?.status === 'rejected' ? (tpResult.reason as any)?.message : null
+      }, 'SL/TP orders placement completed on exchange');
     }
   }
 

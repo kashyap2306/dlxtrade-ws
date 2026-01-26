@@ -920,6 +920,9 @@ export default function TradingAgentControl() {
                       } else if (rawReason.includes('EXCHANGE') || rawReason.includes('credentials')) {
                         displayReason = 'EXCHANGE ERROR';
                         reasonColor = 'bg-red-500/20 text-red-400';
+                      } else if (rawReason === 'EXECUTION_STARTED') {
+                        displayReason = 'EXECUTION_STARTED';
+                        reasonColor = 'bg-blue-500/20 text-blue-400';
                       }
 
                       // Execution status
@@ -957,32 +960,193 @@ export default function TradingAgentControl() {
                                   <InformationCircleIcon className="w-4 h-4" />
                                 </button>
                               )}
-                              <span className={`px-3 py-1.5 rounded-md text-sm font-semibold ${reasonColor}`}>
+                              
+                              {/* PART C: Info icon (ⓘ) before EXECUTION_STARTED with exact failure reason */}
+                              {rawReason === 'EXECUTION_STARTED' && (
+                                <div className="relative group">
+                                  <span className="text-blue-400 cursor-help text-sm mr-1" title="Click for execution details">ⓘ</span>
+                                  <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-96 p-4 bg-slate-900 border border-blue-500/30 rounded-lg shadow-xl">
+                                    <div className="text-xs font-semibold text-blue-400 mb-2">EXECUTION_STARTED - Exact Details:</div>
+                                    <div className="space-y-2 text-xs text-gray-300">
+                                      {/* PRIMARY FAILURE REASON */}
+                                      <div>
+                                        <span className="font-semibold text-white">Primary Reason:</span> {diagnostic.failure?.reasonText || diagnostic.decision?.reason || 'Agent execution cycle started - analyzing market conditions'}
+                                      </div>
+                                      
+                                      {/* FAILURE CATEGORY */}
+                                      {diagnostic.failure?.category && (
+                                        <div>
+                                          <span className="font-semibold text-blue-400">Category:</span> {diagnostic.failure.category}
+                                        </div>
+                                      )}
+                                      
+                                      {/* FAILURE REASON CODE */}
+                                      {diagnostic.failure?.reasonCode && (
+                                        <div>
+                                          <span className="font-semibold text-blue-400">Reason Code:</span> {diagnostic.failure.reasonCode}
+                                        </div>
+                                      )}
+                                      
+                                      {/* EXCHANGE FAILURES */}
+                                      {diagnostic.exchangeFailure && (
+                                        <>
+                                          <div>
+                                            <span className="font-semibold text-red-400">Exchange:</span> {diagnostic.exchangeFailure.exchange || 'Not specified'}
+                                          </div>
+                                          <div>
+                                            <span className="font-semibold text-red-400">Failure Type:</span> {diagnostic.exchangeFailure.failureType || 'UNKNOWN'}
+                                          </div>
+                                          <div>
+                                            <span className="font-semibold text-red-400">Raw Error:</span> {diagnostic.exchangeFailure.rawError || 'Not provided by engine'}
+                                          </div>
+                                        </>
+                                      )}
+                                      
+                                      {/* RAW NUMBERS */}
+                                      <div className="mt-2 pt-2 border-t border-gray-600">
+                                        <div className="font-semibold text-white mb-1">Raw Numbers:</div>
+                                        {diagnostic.signal?.entryPrice ? (
+                                          <div>Entry Price: {diagnostic.signal.entryPrice}</div>
+                                        ) : (
+                                          <div>Entry Price: Not provided by engine</div>
+                                        )}
+                                        {diagnostic.signal?.stopLoss ? (
+                                          <div>Stop Loss: {diagnostic.signal.stopLoss}</div>
+                                        ) : (
+                                          <div>Stop Loss: Not provided by engine</div>
+                                        )}
+                                        {diagnostic.signal?.takeProfit ? (
+                                          <div>Take Profit: {diagnostic.signal.takeProfit}</div>
+                                        ) : (
+                                          <div>Take Profit: Not provided by engine</div>
+                                        )}
+                                        {diagnostic.signal?.rrRatio ? (
+                                          <div>RR Ratio: {diagnostic.signal.rrRatio.toFixed(2)}</div>
+                                        ) : (
+                                          <div>RR Ratio: Not provided by engine</div>
+                                        )}
+                                        {diagnostic.riskAnalysis?.accountBalance ? (
+                                          <div>Available Balance: {diagnostic.riskAnalysis.accountBalance}</div>
+                                        ) : (
+                                          <div>Available Balance: Not provided by engine</div>
+                                        )}
+                                        {diagnostic.riskAnalysis?.marginRequired ? (
+                                          <div>Required Margin: {diagnostic.riskAnalysis.marginRequired}</div>
+                                        ) : (
+                                          <div>Required Margin: Not provided by engine</div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                              
+                              {/* PART C: Info icon (ⓘ) for all other skip/failure reasons */}
+                              {rawReason !== 'EXECUTION_STARTED' && rawReason !== 'NO_SIGNAL' && (
+                                <div className="relative group">
+                                  <span className="text-yellow-400 cursor-help text-sm mr-1" title="Click for skip/failure details">ⓘ</span>
+                                  <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-96 p-4 bg-slate-900 border border-yellow-500/30 rounded-lg shadow-xl">
+                                    <div className="text-xs font-semibold text-yellow-400 mb-2">Skip/Failure Details - Trade kyu skip/fail hua?</div>
+                                    <div className="space-y-2 text-xs text-gray-300">
+                                      {/* PRIMARY FAILURE REASON */}
+                                      <div>
+                                        <span className="font-semibold text-white">Exact reasonText:</span> {diagnostic.failure?.reasonText || rawReason || 'Not provided by engine'}
+                                      </div>
+                                      
+                                      {/* FAILURE CATEGORY */}
+                                      {diagnostic.failure?.category && (
+                                        <div>
+                                          <span className="font-semibold text-yellow-400">Category:</span> {diagnostic.failure.category}
+                                        </div>
+                                      )}
+                                      
+                                      {/* FAILURE REASON CODE */}
+                                      {diagnostic.failure?.reasonCode && (
+                                        <div>
+                                          <span className="font-semibold text-yellow-400">Reason Code:</span> {diagnostic.failure.reasonCode}
+                                        </div>
+                                      )}
+                                      
+                                      {/* EXCHANGE FAILURES */}
+                                      {diagnostic.exchangeFailure && (
+                                        <>
+                                          <div className="mt-2 pt-2 border-t border-gray-600">
+                                            <div className="font-semibold text-red-400 mb-1">Exchange Details:</div>
+                                          </div>
+                                          <div>
+                                            <span className="font-semibold text-red-400">Exchange:</span> {diagnostic.exchangeFailure.exchange || 'Not specified'}
+                                          </div>
+                                          <div>
+                                            <span className="font-semibold text-red-400">Failure Type:</span> {diagnostic.exchangeFailure.failureType || 'UNKNOWN'}
+                                          </div>
+                                          <div>
+                                            <span className="font-semibold text-red-400">Raw Error:</span> {diagnostic.exchangeFailure.rawError || 'Not provided by engine'}
+                                          </div>
+                                        </>
+                                      )}
+                                      
+                                      {/* RAW NUMBERS */}
+                                      <div className="mt-2 pt-2 border-t border-gray-600">
+                                        <div className="font-semibold text-white mb-1">Raw Numbers:</div>
+                                        {diagnostic.signal?.entryPrice ? (
+                                          <div>Entry Price: {diagnostic.signal.entryPrice}</div>
+                                        ) : (
+                                          <div>Entry Price: Not provided by engine</div>
+                                        )}
+                                        {diagnostic.signal?.stopLoss ? (
+                                          <div>Stop Loss: {diagnostic.signal.stopLoss}</div>
+                                        ) : (
+                                          <div>Stop Loss: Not provided by engine</div>
+                                        )}
+                                        {diagnostic.signal?.takeProfit ? (
+                                          <div>Take Profit: {diagnostic.signal.takeProfit}</div>
+                                        ) : (
+                                          <div>Take Profit: Not provided by engine</div>
+                                        )}
+                                        {diagnostic.signal?.rrRatio ? (
+                                          <div>RR Ratio: {diagnostic.signal.rrRatio.toFixed(2)}</div>
+                                        ) : (
+                                          <div>RR Ratio: Not provided by engine</div>
+                                        )}
+                                        {diagnostic.riskAnalysis?.accountBalance ? (
+                                          <div>Available futures balance: {diagnostic.riskAnalysis.accountBalance}</div>
+                                        ) : (
+                                          <div>Available futures balance: Not provided by engine</div>
+                                        )}
+                                        {diagnostic.riskAnalysis?.marginRequired ? (
+                                          <div>Required margin: {diagnostic.riskAnalysis.marginRequired}</div>
+                                        ) : (
+                                          <div>Required margin: Not provided by engine</div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                              
+                              <span className={`px-2 py-1 rounded text-xs font-medium ${reasonColor}`}>
                                 {displayReason}
                               </span>
                             </div>
                           </td>
                           <td className="py-3 px-4">
                             <div className="flex items-center gap-2">
-                              {/* Execution error details */}
                               {executionStatus === 'FAILED' && executionReason && (
                                 <div className="relative group">
                                   <InformationCircleIcon className="w-4 h-4 text-red-400 cursor-help" />
                                   <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-3 bg-slate-900 border border-red-500/30 rounded-lg shadow-xl">
                                     <div className="text-xs font-semibold text-red-400 mb-1">Exchange Error:</div>
-                                    <div className="text-xs text-gray-300 leading-relaxed">
-                                      {executionReason}
-                                    </div>
+                                    <div className="text-xs text-gray-300">{executionReason}</div>
                                   </div>
                                 </div>
                               )}
-                              <span className={`px-3 py-1.5 rounded-md text-sm font-semibold ${executionColor}`}>
+                              <span className={`px-2 py-1 rounded text-xs font-medium ${executionColor}`}>
                                 {executionStatus}
                               </span>
                             </div>
                           </td>
-                          <td className="py-3 px-4 text-gray-300 text-sm">
-                            {diagnostic.timestamp ? new Date(diagnostic.timestamp).toLocaleString() : '-'}
+                          <td className="py-3 px-4 text-gray-400 text-sm">
+                            {new Date(diagnostic.timestamp).toLocaleString()}
                           </td>
                         </tr>
                       );
@@ -993,119 +1157,87 @@ export default function TradingAgentControl() {
             )}
           </div>
         </div>
+      </div>
 
-        {/* Diagnostic Details Modal */}
-        {selectedDiagnosticDetails && (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-            <div className="bg-slate-800 rounded-xl border border-purple-500/30 max-w-2xl w-full max-h-[80vh] overflow-y-auto">
-              <div className="p-6">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-xl font-bold text-white">
-                    Research Cycle Details - {selectedDiagnosticDetails.pair || 'Unknown Pair'}
-                  </h3>
-                  <button
-                    onClick={() => setSelectedDiagnosticDetails(null)}
-                    className="text-gray-400 hover:text-white transition-colors"
-                  >
-                    ✕
-                  </button>
+      {/* Diagnostic Details Modal */}
+      {selectedDiagnosticDetails && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 px-4">
+          <div className="bg-slate-900 border border-purple-500/20 rounded-xl p-6 max-w-4xl mx-4 max-h-[90vh] overflow-y-auto w-full">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-xl font-semibold text-white">
+                Diagnostic Details - {selectedDiagnosticDetails.pair} ({selectedDiagnosticDetails.cycleBucket})
+              </h3>
+              <button
+                onClick={() => setSelectedDiagnosticDetails(null)}
+                className="text-gray-400 hover:text-white transition-colors"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <h4 className="text-sm font-semibold text-purple-400 mb-2">Summary</h4>
+                  <div className="text-sm text-gray-300 space-y-1">
+                    <div>Pair: {selectedDiagnosticDetails.pair}</div>
+                    <div>Direction: <span className={`font-semibold ${
+                      selectedDiagnosticDetails.direction === 'LONG' ? 'text-green-400' : 
+                      selectedDiagnosticDetails.direction === 'SHORT' ? 'text-red-400' : 'text-gray-400'
+                    }`}>{selectedDiagnosticDetails.direction}</span></div>
+                    <div>Decision: {selectedDiagnosticDetails.decision?.reason || selectedDiagnosticDetails.reason}</div>
+                    <div>Cycles: {selectedDiagnosticDetails.details?.length + 1 || 1}</div>
+                  </div>
                 </div>
                 
-                <div className="space-y-4">
-                  {/* Primary Decision */}
-                  <div className="bg-slate-900/50 rounded-lg p-4">
-                    <h4 className="text-sm font-semibold text-purple-400 mb-2">Primary Decision</h4>
+                <div>
+                  <h4 className="text-sm font-semibold text-purple-400 mb-2">Execution</h4>
+                  <div className="text-sm text-gray-300 space-y-1">
+                    <div>Status: {selectedDiagnosticDetails.execution?.status || 'SKIPPED'}</div>
+                    <div>Reason: {selectedDiagnosticDetails.execution?.reason || 'N/A'}</div>
+                  </div>
+                </div>
+              </div>
+              
+              <div>
+                <h4 className="text-sm font-semibold text-purple-400 mb-2">All Cycle Details</h4>
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {/* Current cycle */}
+                  <div className="p-3 bg-slate-800/50 rounded border border-purple-500/20">
+                    <div className="text-xs text-purple-400 mb-1">Current Cycle</div>
                     <div className="text-sm text-gray-300">
-                      <div><strong>Reason:</strong> {selectedDiagnosticDetails.decision?.reason || selectedDiagnosticDetails.reason || 'No reason provided'}</div>
-                      <div><strong>Status:</strong> {selectedDiagnosticDetails.execution?.status || 'SKIPPED'}</div>
-                      <div><strong>Timestamp:</strong> {selectedDiagnosticDetails.timestamp ? new Date(selectedDiagnosticDetails.timestamp).toLocaleString() : 'Unknown'}</div>
+                      {selectedDiagnosticDetails.decision?.reason || selectedDiagnosticDetails.reason || 'No reason provided'}
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      {new Date(selectedDiagnosticDetails.timestamp).toLocaleString()}
                     </div>
                   </div>
-
-                  {/* Additional Details */}
-                  {selectedDiagnosticDetails.details && selectedDiagnosticDetails.details.length > 0 && (
-                    <div className="bg-slate-900/50 rounded-lg p-4">
-                      <h4 className="text-sm font-semibold text-purple-400 mb-3">
-                        All Cycle Diagnostics ({selectedDiagnosticDetails.details.length + 1} total)
-                      </h4>
-                      <div className="space-y-3">
-                        {/* Sort all diagnostics (including primary) by timestamp */}
-                        {[selectedDiagnosticDetails, ...selectedDiagnosticDetails.details]
-                          .sort((a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime())
-                          .map((detail: any, index: number) => {
-                            const isSystemDiagnostic = ['EXECUTION_STARTED', 'FORCE_CREATE_DIAGNOSTIC', 'CREDENTIALS_DECRYPT_FAILED'].includes(detail.decision?.reason || detail.reason);
-                            const isPrimary = detail === selectedDiagnosticDetails;
-                            
-                            return (
-                              <div key={index} className={`border-l-2 pl-3 ${isPrimary ? 'border-green-500/50 bg-green-500/5' : isSystemDiagnostic ? 'border-gray-500/30' : 'border-purple-500/30'}`}>
-                                <div className="flex items-center gap-2 mb-1">
-                                  <div className="text-xs text-gray-400">
-                                    {detail.timestamp ? new Date(detail.timestamp).toLocaleString() : 'Unknown time'}
-                                  </div>
-                                  {isPrimary && (
-                                    <span className="text-xs bg-green-500/20 text-green-400 px-2 py-0.5 rounded">PRIMARY</span>
-                                  )}
-                                  {isSystemDiagnostic && (
-                                    <span className="text-xs bg-gray-500/20 text-gray-400 px-2 py-0.5 rounded">SYSTEM</span>
-                                  )}
-                                </div>
-                                <div className="text-sm text-gray-300">
-                                  {detail.decision?.reason || detail.reason || 'No details available'}
-                                </div>
-                                {detail.execution?.reason && (
-                                  <div className="text-xs text-red-400 mt-1">
-                                    Execution: {detail.execution.reason}
-                                  </div>
-                                )}
-                                {detail.pair && detail.pair !== selectedDiagnosticDetails.pair && (
-                                  <div className="text-xs text-blue-400 mt-1">
-                                    Pair: {detail.pair}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
+                  
+                  {/* Previous cycles */}
+                  {selectedDiagnosticDetails.details?.map((detail: any, idx: number) => (
+                    <div key={idx} className="p-3 bg-slate-800/30 rounded border border-gray-600/20">
+                      <div className="text-xs text-gray-400 mb-1">Previous Cycle {idx + 1}</div>
+                      <div className="text-sm text-gray-300">
+                        {detail.decision?.reason || detail.reason || 'No reason provided'}
+                      </div>
+                      <div className="text-xs text-gray-500 mt-1">
+                        {detail.timestamp ? new Date(detail.timestamp).toLocaleString() : 'Time not available'}
                       </div>
                     </div>
-                  )}
-
-                  {/* Indicator Breakdown (if available) */}
-                  {selectedDiagnosticDetails.decision?.breakdown?.details && (
-                    <div className="bg-slate-900/50 rounded-lg p-4">
-                      <h4 className="text-sm font-semibold text-purple-400 mb-3">Indicator Analysis</h4>
-                      <div className="grid grid-cols-2 gap-3">
-                        {Object.entries(selectedDiagnosticDetails.decision.breakdown.details).map(([key, value]: [string, any]) => (
-                          <div key={key} className="flex justify-between items-center">
-                            <span className="text-sm text-gray-300 capitalize">{key}:</span>
-                            <span className={`text-sm font-semibold ${value.status === 'confirmed' ? 'text-green-400' : 'text-red-400'}`}>
-                              {value.status} {value.value && `(${value.value.toFixed(2)})`}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Aggregation Info */}
-                  <div className="bg-slate-900/50 rounded-lg p-4">
-                    <h4 className="text-sm font-semibold text-purple-400 mb-2">5-Minute Research Cycle</h4>
-                    <div className="text-xs text-gray-400 space-y-1">
-                      <div>Cycle Key: {selectedDiagnosticDetails.cycleKey || 'Generated'}</div>
-                      <div>Time Bucket: {selectedDiagnosticDetails.cycleBucket || 'Unknown'}</div>
-                      <div>Bucket Time: {selectedDiagnosticDetails.cycleBucket ? 
-                        new Date(selectedDiagnosticDetails.cycleBucket * 5 * 60 * 1000).toLocaleString() : 'Unknown'}</div>
-                      <div>Total Diagnostics: {selectedDiagnosticDetails.aggregatedCount || 1}</div>
-                      <div>Details Available: {selectedDiagnosticDetails.hasDetails ? 'Yes' : 'No'}</div>
-                    </div>
-                  </div>
+                  ))}
                 </div>
               </div>
             </div>
           </div>
-        )}
+        </div>
+      )}
 
-        {toast && <Toast message={toast.message} type={toast.type} />}
-      </div>
+      {/* Toast notification */}
+      {toast && (
+        <Toast message={toast.message} type={toast.type} />
+      )}
     </ErrorBoundary>
   );
 }

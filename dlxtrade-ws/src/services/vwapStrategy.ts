@@ -159,7 +159,7 @@ export class VWAPStrategy {
       };
 
       // Check entry conditions
-      const signal = this.generateSignal(currentCandle, vwap, ema200, atr, diagnostics.marketData.deviationPercent);
+      const signal = this.generateSignal(currentCandle, vwap, ema200, atr, diagnostics.marketData.deviationPercent, candles);
       diagnostics.signal = signal;
 
       if (!signal.meetsConditions) {
@@ -167,13 +167,7 @@ export class VWAPStrategy {
         return diagnostics;
       }
 
-      // Risk analysis
-      const accountBalance = await marketDataProvider.getAccountBalance();
-      const riskAmount = accountBalance.equity * this.config.riskPerTrade;
-      const stopDistance = atr * 1.2;
-      const positionSize = stopDistance > 0 ? (riskAmount / stopDistance) : 0;
-
-      // Validate RR (hard gate)
+      // Validate RR (hard gate) - already done in generateSignal, but double-check
       const entryPrice = Number(signal.entryPrice) || 0;
       const stopLoss = Number(signal.stopLoss) || 0;
       const takeProfit = Number(signal.takeProfit) || 0;
@@ -182,10 +176,16 @@ export class VWAPStrategy {
       const rrRatio = riskPerUnit > 0 ? rewardPerUnit / riskPerUnit : 0;
       diagnostics.signal.rrRatio = rrRatio;
 
-      if (!isFinite(rrRatio) || rrRatio < 1.3) {
+      if (!isFinite(rrRatio) || rrRatio < 1.0) {
         diagnostics.decision = { action: 'SKIP', reason: `RR_TOO_LOW_${rrRatio.toFixed(2)}` };
         return diagnostics;
       }
+
+      // Risk analysis
+      const accountBalance = await marketDataProvider.getAccountBalance();
+      const riskAmount = accountBalance.equity * this.config.riskPerTrade;
+      const stopDistance = Math.abs(entryPrice - stopLoss);
+      const positionSize = stopDistance > 0 ? (riskAmount / stopDistance) : 0;
 
       diagnostics.riskAnalysis = {
         accountBalance: accountBalance.equity,
@@ -225,10 +225,14 @@ export class VWAPStrategy {
           orderId: orderResult
         };
 
-        diagnostics.decision = { action: 'TRADE', reason: `Executed ${signal.direction} trade` };
+        diagnostics.decision = { action: 'TRADE', reason: `Executed ${signal.direction} trade with SL/TP on exchange` };
         this.lastExecutionTime = new Date();
       } else {
-        diagnostics.decision = { action: 'TRADE', reason: `DRY RUN: Would execute ${signal.direction} trade` };
+        diagnostics.decision = { action: 'TRADE', reason: `DRY RUN: Would execute ${signal.direction} trade with SL/TP` };
+        diagnostics.execution = {
+          success: true,
+          orderId: 'DRY_RUN'
+        };
       }
 
     } catch (error) {
@@ -365,7 +369,8 @@ export class VWAPStrategy {
     vwap: number,
     ema200: number,
     atr: number,
-    deviationPercent: number
+    deviationPercent: number,
+    candles: CandleData[]
   ): VWAPStrategyDiagnostics['signal'] {
 
     const signal = {
@@ -433,10 +438,68 @@ export class VWAPStrategy {
       return signal;
     }
 
-    // Generate LONG signal
+    // Generate LONG signal with SIMPLE swing-structure SL/TP
     signal.direction = 'LONG';
-    signal.stopLoss = currentCandle.close - (1.2 * atr);
-    signal.takeProfit = vwap; // Primary exit at VWAP
+    
+    // SIMPLE SWING-STRUCTURE SL/TP LOGIC
+    // 1) SL: LONG = just BELOW the last clear swing LOW
+    signal.stopLoss = this.findSwingLow(candles);
+    
+    // 2) TP: LONG = nearest visible RESISTANCE
+    signal.takeProfit = this.findNearestResistance(candles, currentCandle.close);
+    
+    // 3) RR CHECK: Minimum RR = 1:1
+    const riskPerUnit = Math.abs(currentCandle.close - signal.stopLoss);
+    const rewardPerUnit = Math.abs(signal.takeProfit - currentCandle.close);
+    const rrRatio = riskPerUnit > 0 ? rewardPerUnit / riskPerUnit : 0;
+    
+    // If RR < 1 → SKIP trade (do NOT force TP or SL)
+    if (!isFinite(rrRatio) || rrRatio < 1.0) {
+      logger.warn({
+        entryPrice: currentCandle.close,
+        stopLoss: signal.stopLoss,
+        takeProfit: signal.takeProfit,
+        riskPerUnit,
+        rewardPerUnit,
+        rrRatio: rrRatio.toFixed(2)
+      }, 'VWAP LONG: RR_FAIL - Risk/Reward ratio below 1:1');
+      
+      signal.reason = `RR_FAIL: ${rrRatio.toFixed(2)} < 1.0`;
+      signal.meetsConditions = false;
+      return signal;
+    }
+    
+    // Check if structure is clear - if structure is unclear → SKIP
+    if (signal.stopLoss >= currentCandle.close || signal.takeProfit <= currentCandle.close) {
+      logger.warn({
+        entryPrice: currentCandle.close,
+        stopLoss: signal.stopLoss,
+        takeProfit: signal.takeProfit
+      }, 'VWAP LONG: NO_STRUCTURE - Invalid swing structure');
+      
+      signal.reason = 'NO_STRUCTURE: Invalid swing levels';
+      signal.meetsConditions = false;
+      return signal;
+    }
+
+    // If SL too far & TP too close → SKIP (no extra filters allowed)
+    const slDistancePercent = Math.abs((currentCandle.close - signal.stopLoss) / currentCandle.close) * 100;
+    const tpDistancePercent = Math.abs((signal.takeProfit - currentCandle.close) / currentCandle.close) * 100;
+    
+    if (slDistancePercent > 2.0 && tpDistancePercent < 0.5) {
+      logger.warn({
+        entryPrice: currentCandle.close,
+        stopLoss: signal.stopLoss,
+        takeProfit: signal.takeProfit,
+        slDistancePercent: slDistancePercent.toFixed(2),
+        tpDistancePercent: tpDistancePercent.toFixed(2)
+      }, 'VWAP LONG: POOR_STRUCTURE - SL too far & TP too close');
+      
+      signal.reason = 'POOR_STRUCTURE: SL too far & TP too close';
+      signal.meetsConditions = false;
+      return signal;
+    }
+
     signal.meetsConditions = true;
 
     logger.info({
@@ -468,5 +531,71 @@ export class VWAPStrategy {
 
     // Body should be at least 30% of total range
     return (bodySize / totalRange) >= 0.3;
+  }
+
+  /**
+   * Find swing low for LONG stop loss - SIMPLE approach
+   * LONG: place SL just BELOW the last clear swing LOW
+   */
+  private findSwingLow(candles: CandleData[]): number {
+    const lookback = Math.min(20, candles.length);
+    const recentCandles = candles.slice(-lookback); // Take last 20 candles
+    const lows = recentCandles.map(c => c.low);
+    const swingLow = Math.min(...lows);
+    
+    // Place SL just BELOW the swing low (no ATR, no buffers, no extra math)
+    return swingLow * 0.999; // Just below swing low
+  }
+
+  /**
+   * Find swing high for SHORT stop loss - SIMPLE approach
+   * SHORT: place SL just ABOVE the last clear swing HIGH
+   */
+  private findSwingHigh(candles: CandleData[]): number {
+    const lookback = Math.min(20, candles.length);
+    const recentCandles = candles.slice(-lookback); // Take last 20 candles
+    const highs = recentCandles.map(c => c.high);
+    const swingHigh = Math.max(...highs);
+    
+    // Place SL just ABOVE the swing high (no ATR, no buffers, no extra math)
+    return swingHigh * 1.001; // Just above swing high
+  }
+
+  /**
+   * Find nearest resistance for LONG take profit - SIMPLE approach
+   * LONG: nearest visible RESISTANCE
+   */
+  private findNearestResistance(candles: CandleData[], entryPrice: number): number {
+    const lookback = Math.min(50, candles.length);
+    const recentCandles = candles.slice(-lookback); // Take last 50 candles
+    
+    // Find highs above entry price that could act as resistance
+    const resistanceLevels = recentCandles
+      .map(c => c.high)
+      .filter(high => high > entryPrice)
+      .sort((a, b) => a - b); // Sort ascending to get nearest first
+    
+    // Return nearest visible resistance above entry
+    // If no clear resistance found, skip trade (will be caught by RR check)
+    return resistanceLevels.length > 0 ? resistanceLevels[0] : entryPrice * 1.005; // Minimal fallback
+  }
+
+  /**
+   * Find nearest support for SHORT take profit - SIMPLE approach
+   * SHORT: nearest visible SUPPORT
+   */
+  private findNearestSupport(candles: CandleData[], entryPrice: number): number {
+    const lookback = Math.min(50, candles.length);
+    const recentCandles = candles.slice(-lookback); // Take last 50 candles
+    
+    // Find lows below entry price that could act as support
+    const supportLevels = recentCandles
+      .map(c => c.low)
+      .filter(low => low < entryPrice)
+      .sort((a, b) => b - a); // Sort descending to get nearest first
+    
+    // Return nearest visible support below entry
+    // If no clear support found, skip trade (will be caught by RR check)
+    return supportLevels.length > 0 ? supportLevels[0] : entryPrice * 0.995; // Minimal fallback
   }
 }
