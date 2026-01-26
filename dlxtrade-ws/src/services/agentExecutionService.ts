@@ -298,7 +298,7 @@ export class AgentExecutionService {
     let skippedReason: string | null = null;
     let agentExecutionRan = false; // Track if agent logic actually executed
 
-    // INTERNAL HELPER: Single source for skip finalization
+    // INTERNAL HELPER: Single source for skip finalization - THE ONLY SKIP WRITER
     const finalizeSkip = (reasonCode: string, reasonText: string, category: 'SESSION' | 'EXCHANGE' | 'DATA' | 'RISK' | 'SIGNAL') => {
       diagnostics.decision = { action: 'SKIP', reason: reasonText };
       diagnostics.failure = {
@@ -826,8 +826,6 @@ export class AgentExecutionService {
         if (htfTrend.direction === 'NO_TRADE') {
           skippedReason = htfTrend.reason;
           finalizeSkip('HTF_NO_TRADE', htfTrend.reason || 'HTF trend analysis indicates no trade opportunity', 'SIGNAL');
-          // CRITICAL: For HTF NO_TRADE, direction should be NO_TRADE (overriding early setting)
-          diagnostics.direction = 'NO_TRADE';
           
           logger.info({
             agentId,
@@ -906,10 +904,6 @@ export class AgentExecutionService {
         // HTF Agent execution fix: ALWAYS attach tradingPair for diagnostics
         diagnostics.tradingPair = tradingPair;
         // CRITICAL: Direction was already set early - do NOT overwrite it here
-        diagnostics.execution = {
-          status: 'EXECUTED',
-          success: true
-        };
       } else {
         // Regular agents use standard signal generation
         signal = agent.generateSignal(latestCandle, {
@@ -1055,10 +1049,6 @@ export class AgentExecutionService {
       // Max 1 open trade per pair
       if (positionCounts.pairPositions >= 1) {
         finalizeSkip('PAIR_POSITION_LIMIT', `Pair position limit reached: ${positionCounts.pairPositions}/1`, 'RISK');
-        diagnostics.execution = {
-          status: 'SKIPPED',
-          success: false
-        };
         logger.info({
           agentId,
           tradingPair,
@@ -1072,10 +1062,6 @@ export class AgentExecutionService {
       // Max 2 total open trades
       if (positionCounts.totalPositions >= 2) {
         finalizeSkip('TOTAL_POSITION_LIMIT', `Total position limit reached: ${positionCounts.totalPositions}/2`, 'RISK');
-        diagnostics.execution = {
-          status: 'SKIPPED',
-          success: false
-        };
         logger.info({
           agentId,
           totalPositions: positionCounts.totalPositions,
@@ -1215,7 +1201,7 @@ export class AgentExecutionService {
       // CRITICAL FIX: ALWAYS persist diagnostics, even on early returns or exceptions
       // This guarantees ONE diagnostic entry per execution cycle
       try {
-        // FIX 2: HARD BAN EXECUTION_STARTED - Set executionStatus based on actual outcome
+        // executionStatus logic: if execution.success === true → EXECUTED, else if execution.success === false → FAILED, else → SKIPPED
         if (diagnostics.execution?.success === true) {
           diagnostics.executionStatus = 'EXECUTED';
         } else if (diagnostics.execution?.success === false) {
@@ -1224,11 +1210,7 @@ export class AgentExecutionService {
           diagnostics.executionStatus = 'SKIPPED';
         }
 
-        // FIX 5: DIRECTION CONSISTENCY RULE - REMOVED
-        // Direction was set ONCE early and should NEVER be changed
-        // This logic is removed to prevent direction flipping
-
-        // FIX 3: NORMALIZE FAILURE OBJECT - Create from decision.reason if missing
+        // POPUP GUARANTEE: Ensure SKIPPED rows ALWAYS have diagnostics.failure with reasonText and category
         if (diagnostics.executionStatus === 'SKIPPED' || diagnostics.executionStatus === 'FAILED') {
           if (!diagnostics.failure) {
             // Build failure object from decision.reason
@@ -1240,12 +1222,12 @@ export class AgentExecutionService {
             };
           }
           
-          // Validate failure object has required fields
-          if (!diagnostics.failure.reasonCode) {
-            diagnostics.failure.reasonCode = 'UNKNOWN';
+          // Validate failure object has required fields - NO EMPTY STRINGS, NO PLACEHOLDERS, NO "UNKNOWN"
+          if (!diagnostics.failure.reasonCode || diagnostics.failure.reasonCode === 'UNKNOWN') {
+            diagnostics.failure.reasonCode = 'NO_SIGNAL';
           }
-          if (!diagnostics.failure.reasonText) {
-            diagnostics.failure.reasonText = diagnostics.decision?.reason || diagnostics.failure.reasonCode;
+          if (!diagnostics.failure.reasonText || diagnostics.failure.reasonText === 'UNKNOWN' || diagnostics.failure.reasonText === '') {
+            diagnostics.failure.reasonText = diagnostics.decision?.reason || 'No trading signal generated';
           }
           if (!diagnostics.failure.category) {
             // Infer category from reasonCode
@@ -1264,7 +1246,10 @@ export class AgentExecutionService {
           }
         }
 
-        // FIX 4: CLEAN DIAGNOSTIC PAYLOAD - STRIP all non-UI fields
+        // PRESERVE EXCHANGE ERROR - NEVER delete diagnostics.execution.exchangeErrorReason or diagnostics.execution.error
+        // UI must receive RAW exchange error
+
+        // Clean diagnostic payload - remove internal fields not needed by UI
         delete diagnostics.indicators;
         delete diagnostics.srValidation;
         delete diagnostics.supportResistance;
@@ -1287,7 +1272,7 @@ export class AgentExecutionService {
         delete diagnostics.exchangeErrorReason;
         delete diagnostics.failureCategory;
 
-        // FIX 2: Remove execution object when SKIPPED
+        // FINALLY BLOCK – READ ONLY: Remove execution object when SKIPPED
         if (diagnostics.executionStatus === 'SKIPPED') {
           delete diagnostics.execution;
         }
@@ -1379,104 +1364,6 @@ export class AgentExecutionService {
   /**
    * Place order on exchange with atomic SL/TP attachment
    */
-  /*
-  private async placeOrderFromTradeAtomic(trade: any, agentConfig: TradingAgentConfig, marketProvider: TradingAgentMarketProvider, diagnostics: any, agent: TradingAgent): Promise<boolean> {
-    try {
-      const side = trade.direction === 'LONG' ? 'BUY' : 'SELL';
-      const symbol = agentConfig.tradingPair.replace('/', '').toUpperCase();
-
-      // Check if we already have a position for this symbol (COIN-M Futures)
-      const hasExistingPosition = await (marketProvider as any).hasCoinMPosition(symbol);
-      if (hasExistingPosition) {
-        diagnostics.execution = { success: false, error: 'Position already exists for symbol' };
-        // CRITICAL FIX: Remove storeDiagnostics call - will be handled in finally block
-        logger.info({
-          agentId: agentConfig.id,
-          tradeId: trade.id,
-          symbol,
-          reason: 'EXISTING_POSITION'
-        }, 'Skipping trade: position already exists for symbol');
-        return false;
-      }
-
-      // Get account balance for risk calculation
-      const balance = await marketProvider.getAccountBalance();
-
-      // Calculate position size based on configurable risk per trade (4-5%)
-      const riskAmount = balance.totalBalance * (agentConfig.riskPerTrade / 100);
-      const riskPerContract = trade.entryPrice * (1 / agentConfig.leverage); // Value per contract
-      const maxContracts = Math.floor(riskAmount / riskPerContract);
-      const quantity = Math.min(maxContracts, trade.quantity);
-
-      if (quantity < 0.001) { // Minimum order size check
-        diagnostics.execution = { success: false, error: `Insufficient risk budget: need ${riskPerContract.toFixed(4)} per contract, have ${(riskAmount / trade.entryPrice * agentConfig.leverage).toFixed(4)}` };
-        // CRITICAL FIX: Remove storeDiagnostics call - will be handled in finally block
-        logger.warn({
-          agentId: agentConfig.id,
-          tradeId: trade.id,
-          riskAmount,
-          riskPerContract,
-          maxContracts,
-          quantity,
-          reason: 'INSUFFICIENT_RISK_BUDGET'
-        }, 'Skipping trade: insufficient risk budget for minimum position size');
-        return false;
-      }
-
-      // ===== BITGET COIN-M BRACKET ORDER =====
-      // Place atomic bracket order: entry + SL + TP together
-      const orderResult = await (marketProvider as any).placeCoinMBracketOrder({
-        symbol,
-        side,
-        quantity,
-        entryPrice: trade.entryPrice,
-        stopLoss: trade.stopLoss,
-        takeProfit: trade.takeProfit,
-        leverage: agentConfig.leverage
-      });
-
-      // Update diagnostics with successful execution
-      diagnostics.execution = {
-        success: true,
-        orderId: orderResult.orderId
-      };
-      // CRITICAL FIX: Remove storeDiagnostics call - will be handled in finally block
-
-      logger.info({
-        agentId: agentConfig.id,
-        tradeId: trade.id,
-        orderId: orderResult.orderId,
-        symbol,
-        side,
-        quantity,
-        entryPrice: trade.entryPrice,
-        stopLoss: trade.stopLoss,
-        takeProfit: trade.takeProfit,
-        leverage: agentConfig.leverage,
-        riskAmount,
-        balance: balance.totalBalance
-      }, 'COIN-M bracket order placed successfully');
-
-      return true;
-
-    } catch (error) {
-      // Update diagnostics with failed execution
-      diagnostics.execution = {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      };
-
-      logger.error({
-        agentId: agentConfig.id,
-        tradeId: trade.id,
-        symbol: agentConfig.tradingPair.replace('/', ''),
-        error: error instanceof Error ? error.message : 'Unknown error'
-      }, 'Failed to place COIN-M bracket order');
-
-      return false;
-  }
-  */
-
   private async placeOrderFromTradeAtomic(trade: any, agentConfig: TradingAgentConfig, marketProvider: TradingAgentMarketProvider, diagnostics: any, agent: TradingAgent): Promise<boolean> {
     try {
       const uid = agentConfig.userId;
@@ -1518,7 +1405,6 @@ export class AgentExecutionService {
         calculatedRR: trade.calculatedRR || 0,
         slTpPlacedOnExchange: !!(trade.stopLoss || trade.takeProfit)
       };
-      // CRITICAL FIX: Remove storeDiagnostics call - will be handled in finally block
 
       // Persist to canonical trades collection for UI history
       const tradeDocId = await firestoreAdapter.saveTrade(uid, {
@@ -1577,7 +1463,6 @@ export class AgentExecutionService {
         error: exchangeErrorReason,
         exchangeErrorReason, // Explicit field for UI
       };
-      // CRITICAL FIX: Remove storeDiagnostics call - will be handled in finally block
 
       logger.error({
         agentId: agentConfig.id,
