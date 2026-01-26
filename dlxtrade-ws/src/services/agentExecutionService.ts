@@ -216,154 +216,6 @@ export class AgentExecutionService {
     // PART A FIX: HTF bias direction tracking - NEVER overwrite once set
     let htfBiasDirection: 'LONG' | 'SHORT' | 'NO_TRADE' | null = null;
 
-    // PART A FIX: For HTF agents, calculate HTF bias direction EARLY and preserve it
-    if (isHTFAgent) {
-      try {
-        // Try to get HTF trend direction early for consistent display
-        const { HTFTrendFilterStrategy } = await import('./htfTrendFilterStrategy');
-        const candles15m = await this.marketDataProvider.getCandles(symbol, '15m', 250);
-        if (candles15m && candles15m.length >= 200) {
-          candles15m.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-          const htfTrend = HTFTrendFilterStrategy.analyzeHTFTrend(candles15m);
-          // PART A FIX: Set htfBiasDirection as soon as HTF trend is known
-          if (htfTrend.direction === 'LONG_ONLY') {
-            htfBiasDirection = 'LONG';
-          } else if (htfTrend.direction === 'SHORT_ONLY') {
-            htfBiasDirection = 'SHORT';
-          } else {
-            htfBiasDirection = 'NO_TRADE';
-          }
-          logger.debug({
-            agentId,
-            htfDirection: htfBiasDirection,
-            htfTrendDirection: htfTrend.direction
-          }, 'HTF Agent: Early HTF bias direction calculated');
-        }
-      } catch (error) {
-        logger.warn({
-          agentId,
-          error: error instanceof Error ? error.message : 'Unknown error'
-        }, 'HTF Agent: Failed to calculate early HTF bias direction');
-        htfBiasDirection = 'NO_TRADE';
-      }
-    }
-
-    // STEP 1: FORCE DIAGNOSTIC WRITE (NON-NEGOTIABLE)
-    // HARD FORCED diagnostic write ONLY for HTF agent - BEFORE any early return
-    if (isHTFAgent && agentConfig.userId) {
-      try {
-        // Directly call firestoreAdapter.saveAgentDiagnostic - DO NOT rely on TradingAgent.storeDiagnostics
-        await firestoreAdapter.saveAgentDiagnostic(agentId, {
-          agentType: 'HTF_TREND_FILTER_AGENT',
-          decision: {
-            action: 'SKIP',
-            reason: 'FORCE_CREATE_DIAGNOSTIC'
-          },
-          runtimeState: {
-            createdAt: new Date(),
-            forceWrite: true
-          }
-        }, agentConfig.userId);
-
-        // STEP 2: ADD HARD LOG CONFIRMATION
-        console.log(`[DIAGNOSTIC_FORCE_WRITE] uid=${agentConfig.userId} agent=${agentId}`);
-        
-      } catch (forceWriteError) {
-        console.error(`[DIAGNOSTIC_FORCE_WRITE_ERROR] uid=${agentConfig.userId} agent=${agentId} error:`, forceWriteError);
-      }
-    }
-
-    // FORCE DIAGNOSTICS WRITE AT TOP OF HTF EXECUTION
-    if (isHTFAgent) {
-      // Force diagnostics write at the very start of execution
-      const initialDiagnostics: any = {
-        timestamp: new Date(),
-        agentId,
-        tradingPair: tradingPair,
-        sessionCheck: {
-          isValidSession: false,
-          currentIST: new Date().toISOString()
-        },
-        candleCheck: {
-          isClosed: false,
-          candleTimestamp: new Date(),
-          price: 0
-        },
-        indicators: {
-          rsi: 0,
-          ema50: 0,
-          bbUpper: 0,
-          bbLower: 0,
-          atr: 0
-        },
-        supportResistance: {
-          support: 0,
-          resistance: 0,
-          calculated: false
-        },
-        signal: {
-          direction: null,
-          entryPrice: 0,
-          stopLoss: 0,
-          takeProfit: 0,
-          rrRatio: 0,
-          meetsConditions: false
-        },
-        riskAnalysis: {
-          accountBalance: 0,
-          riskPercent: 0,
-          positionSize: 0,
-          maxPositionSize: 0,
-          availableMargin: false
-        },
-        srValidation: {
-          tpBlocked: false,
-          rrValid: false
-        },
-        // PART A FIX: EXECUTION_STARTED should show htfBiasDirection if available
-        direction: htfBiasDirection || 'NO_TRADE',
-        // PART B FIX: EXECUTION_STARTED is INFO, not SKIP
-        decision: { action: "INFO", reason: "EXECUTION_STARTED" },
-        isSkipped: false,
-        // PART B FIX: Add failure object for EXECUTION_STARTED
-        failure: {
-          reasonCode: 'EXECUTION_STARTED',
-          reasonText: 'Agent execution cycle started - analyzing market conditions',
-          category: 'EXECUTION'
-        }
-      };
-      
-      try {
-        await agent.storeDiagnostics(initialDiagnostics);
-        logger.debug({
-          agentId,
-          name: agentConfig.name,
-          tradingPair
-        }, '🎯 HTF AGENT: Forced diagnostics write at execution start');
-      } catch (diagError) {
-        logger.error({
-          agentId,
-          error: diagError instanceof Error ? diagError.message : 'Unknown error'
-        }, 'HTF AGENT: Failed to write initial diagnostics');
-      }
-    }
-
-    // FIX PART A — HARD RESET EXECUTION STATE
-    // At the START of EVERY cycle: Force reset execution state
-    // Do NOT reuse any previous cycle data
-    if (isHTFAgent) {
-      logger.debug({
-        agentId,
-        name: agentConfig.name,
-        tradingPair,
-        strategyType: (agentConfig as any).strategyType
-      }, '🎯 HTF AGENT EXECUTION STARTED - HARD RESET execution state');
-      
-      // Force reset all previous cycle data
-      // lastErrorReason, lastDecision, lastSignal - all cleared
-      // This prevents reusing stale state from previous cycles
-    }
-
     // FIX PART 2 — SAFE DECISION INITIALIZATION
     // Initialize fresh diagnostics for this cycle only - NO reuse of previous cycle data
     // SAFE DECISION INITIALIZATION: Default to SKIP with NO_SIGNAL, never EXCHANGE_ERROR
@@ -384,8 +236,60 @@ export class AgentExecutionService {
       lastDecision: null,
       lastSignal: null,
       executionStateReset: true,
-      cycleId: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}` // Unique cycle ID
+      cycleId: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`, // Unique cycle ID
+      direction: 'NO_TRADE' // Default direction
     };
+
+    // PART A FIX: For HTF agents, calculate HTF bias direction EARLY and preserve it
+    if (isHTFAgent) {
+      try {
+        // Try to get HTF trend direction early for consistent display
+        const { HTFTrendFilterStrategy } = await import('./htfTrendFilterStrategy');
+        const candles15m = await this.marketDataProvider.getCandles(symbol, '15m', 250);
+        if (candles15m && candles15m.length >= 200) {
+          candles15m.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+          const htfTrend = HTFTrendFilterStrategy.analyzeHTFTrend(candles15m);
+          // PART A FIX: Set htfBiasDirection as soon as HTF trend is known
+          if (htfTrend.direction === 'LONG_ONLY') {
+            htfBiasDirection = 'LONG';
+          } else if (htfTrend.direction === 'SHORT_ONLY') {
+            htfBiasDirection = 'SHORT';
+          } else {
+            htfBiasDirection = 'NO_TRADE';
+          }
+          // CRITICAL: Set direction ONCE and NEVER change it
+          diagnostics.direction = htfBiasDirection;
+          logger.debug({
+            agentId,
+            htfDirection: htfBiasDirection,
+            htfTrendDirection: htfTrend.direction
+          }, 'HTF Agent: Early HTF bias direction calculated and set');
+        }
+      } catch (error) {
+        logger.warn({
+          agentId,
+          error: error instanceof Error ? error.message : 'Unknown error'
+        }, 'HTF Agent: Failed to calculate early HTF bias direction');
+        htfBiasDirection = 'NO_TRADE';
+        diagnostics.direction = 'NO_TRADE';
+      }
+    }
+
+    // FIX PART A — HARD RESET EXECUTION STATE
+    // At the START of EVERY cycle: Force reset execution state
+    // Do NOT reuse any previous cycle data
+    if (isHTFAgent) {
+      logger.debug({
+        agentId,
+        name: agentConfig.name,
+        tradingPair,
+        strategyType: (agentConfig as any).strategyType
+      }, '🎯 HTF AGENT EXECUTION STARTED - HARD RESET execution state');
+      
+      // Force reset all previous cycle data
+      // lastErrorReason, lastDecision, lastSignal - all cleared
+      // This prevents reusing stale state from previous cycles
+    }
 
     // Initialize tracking variables for this cycle only - NEVER reuse previous values
     let exchangeUsable = false;
@@ -394,24 +298,24 @@ export class AgentExecutionService {
     let skippedReason: string | null = null;
     let agentExecutionRan = false; // Track if agent logic actually executed
 
+    // INTERNAL HELPER: Single source for skip finalization
+    const finalizeSkip = (reasonCode: string, reasonText: string, category: 'SESSION' | 'EXCHANGE' | 'DATA' | 'RISK' | 'SIGNAL') => {
+      diagnostics.decision = { action: 'SKIP', reason: reasonText };
+      diagnostics.failure = {
+        reasonCode,
+        reasonText,
+        category
+      };
+      diagnostics.tradingPair = tradingPair;
+    };
+
     try {
       // CRITICAL: Check if agent was manually stopped by user
       // Manual STOP must override everything - do NOT run any logic
       const currentAgentConfig = await firestoreAdapter.getTradingAgentConfig(agentId);
       if (!currentAgentConfig || currentAgentConfig.status === 'STOPPED') {
         skippedReason = 'AGENT_STOPPED';
-        diagnostics.decision = { action: 'SKIP', reason: skippedReason };
-        diagnostics.tradingPair = tradingPair;
-        
-        // PART A FIX: Use htfBiasDirection for HTF agents, NO_TRADE for others
-        diagnostics.direction = htfBiasDirection || 'NO_TRADE';
-        diagnostics.executionStatus = 'SKIPPED';
-        // PART B FIX: Add structured failure object
-        diagnostics.failure = {
-          reasonCode: 'AGENT_STOPPED',
-          reasonText: 'Agent was manually stopped by user',
-          category: 'AGENT_CONTROL'
-        };
+        finalizeSkip('AGENT_STOPPED', 'Agent was manually stopped by user', 'SESSION');
         
         if (isHTFAgent) {
           logger.info({
@@ -426,26 +330,13 @@ export class AgentExecutionService {
           status: currentAgentConfig?.status || 'NOT_FOUND'
         }, 'Trading Agent is STOPPED - skipping execution cycle');
         
-        // ALWAYS store diagnostics before returning
-        await agent.storeDiagnostics(diagnostics);
         return;
       }
 
       // Also check for PAUSED status
       if (currentAgentConfig.status === 'PAUSED') {
         skippedReason = 'AGENT_PAUSED';
-        diagnostics.decision = { action: 'SKIP', reason: skippedReason };
-        diagnostics.tradingPair = tradingPair;
-        
-        // PART A FIX: Use htfBiasDirection for HTF agents, NO_TRADE for others
-        diagnostics.direction = htfBiasDirection || 'NO_TRADE';
-        diagnostics.executionStatus = 'SKIPPED';
-        // PART B FIX: Add structured failure object
-        diagnostics.failure = {
-          reasonCode: 'AGENT_PAUSED',
-          reasonText: 'Agent was manually paused by user',
-          category: 'AGENT_CONTROL'
-        };
+        finalizeSkip('AGENT_PAUSED', 'Agent was manually paused by user', 'SESSION');
         
         if (isHTFAgent) {
           logger.info({
@@ -456,8 +347,6 @@ export class AgentExecutionService {
         
         logger.debug({ agentId }, 'Trading Agent is PAUSED - skipping execution cycle');
         
-        // ALWAYS store diagnostics before returning
-        await agent.storeDiagnostics(diagnostics);
         return;
       }
 
@@ -465,19 +354,7 @@ export class AgentExecutionService {
       const exchangeConfig = await firestoreAdapter.getExchangeConfig(agentConfig.userId);
       if (!exchangeConfig?.exchange) {
         skippedReason = 'NO_EXCHANGE_CONFIG_FOUND';
-        diagnostics.decision = { 
-          action: 'SKIP', 
-          reason: skippedReason
-        };
-        diagnostics.tradingPair = tradingPair;
-        // PART A FIX: Use htfBiasDirection for HTF agents, NO_TRADE for others
-        diagnostics.direction = htfBiasDirection || 'NO_TRADE';
-        // PART B FIX: Add structured failure object
-        diagnostics.failure = {
-          reasonCode: 'NO_EXCHANGE_CONFIG_FOUND',
-          reasonText: 'No exchange connected. Please connect your exchange in Settings → Exchange to enable trading.',
-          category: 'EXCHANGE'
-        };
+        finalizeSkip('NO_EXCHANGE_CONFIG_FOUND', 'No exchange connected. Please connect your exchange in Settings → Exchange to enable trading.', 'EXCHANGE');
         
         if (isHTFAgent) {
           logger.info({
@@ -492,8 +369,6 @@ export class AgentExecutionService {
           exchangeConfigPath: `users/${agentConfig.userId}/exchangeConfig/current`
         }, 'SKIP: NO_EXCHANGE_CONFIG_FOUND - user must connect exchange in Settings');
         
-        // Store diagnostics so user can see the error in UI
-        await agent.storeDiagnostics(diagnostics);
         return;
       }
 
@@ -535,19 +410,7 @@ export class AgentExecutionService {
 
       if (!encryptedApiKey || !encryptedSecret) {
         skippedReason = 'NO_EXCHANGE_CREDENTIALS';
-        diagnostics.decision = { 
-          action: 'SKIP', 
-          reason: skippedReason
-        };
-        diagnostics.tradingPair = tradingPair;
-        // PART A FIX: Use htfBiasDirection for HTF agents, NO_TRADE for others
-        diagnostics.direction = htfBiasDirection || 'NO_TRADE';
-        // PART B FIX: Add structured failure object
-        diagnostics.failure = {
-          reasonCode: 'NO_EXCHANGE_CREDENTIALS',
-          reasonText: 'Exchange credentials not found. Please connect your exchange in Settings → Exchange.',
-          category: 'EXCHANGE'
-        };
+        finalizeSkip('NO_EXCHANGE_CREDENTIALS', 'Exchange credentials not found. Please connect your exchange in Settings → Exchange.', 'EXCHANGE');
         
         if (isHTFAgent) {
           logger.info({
@@ -565,8 +428,6 @@ export class AgentExecutionService {
           exchangeUsable
         }, `SKIP: ${skippedReason} - encrypted keys missing`);
         
-        // Store diagnostics before returning so user can see the error in UI
-        await agent.storeDiagnostics(diagnostics);
         return;
       }
 
@@ -576,19 +437,7 @@ export class AgentExecutionService {
 
       if (!apiKey || !secret) {
         skippedReason = 'CREDENTIALS_DECRYPT_FAILED';
-        diagnostics.decision = { 
-          action: 'SKIP', 
-          reason: skippedReason
-        };
-        diagnostics.tradingPair = tradingPair;
-        // PART A FIX: Use htfBiasDirection for HTF agents, NO_TRADE for others
-        diagnostics.direction = htfBiasDirection || 'NO_TRADE';
-        // PART B FIX: Add structured failure object
-        diagnostics.failure = {
-          reasonCode: 'CREDENTIALS_DECRYPT_FAILED',
-          reasonText: 'Exchange credentials could not be decrypted. Please reconnect your exchange in Settings → Exchange.',
-          category: 'EXCHANGE'
-        };
+        finalizeSkip('CREDENTIALS_DECRYPT_FAILED', 'Exchange credentials could not be decrypted. Please reconnect your exchange in Settings → Exchange.', 'EXCHANGE');
         
         // CRITICAL: Log detailed information to diagnose decrypt failure
         const encryptionKeyStatus = (() => {
@@ -623,8 +472,6 @@ export class AgentExecutionService {
           encryptionKeyStatus
         }, `SKIP: ${skippedReason} - decryption failed. User needs to reconnect exchange.`);
         
-        // Store diagnostics before returning so user can see the error in UI
-        await agent.storeDiagnostics(diagnostics);
         return;
       }
 
@@ -673,17 +520,7 @@ export class AgentExecutionService {
 
       if (!isValidSession) {
         skippedReason = 'Outside trading sessions';
-        diagnostics.decision = { action: 'SKIP', reason: skippedReason };
-        diagnostics.tradingPair = tradingPair;
-        // PART A FIX: Use htfBiasDirection for HTF agents, NO_TRADE for others
-        diagnostics.direction = htfBiasDirection || 'NO_TRADE';
-        diagnostics.executionStatus = 'SKIPPED';
-        // PART B FIX: Add structured failure object
-        diagnostics.failure = {
-          reasonCode: 'OUTSIDE_TRADING_SESSION',
-          reasonText: `Outside trading hours. Current time: ${utcHour}:${utcMinute.toString().padStart(2, '0')} UTC. Trading sessions: London (8:00-16:59 UTC), New York (14:30-21:29 UTC)`,
-          category: 'SESSION'
-        };
+        finalizeSkip('OUTSIDE_TRADING_SESSION', `Outside trading hours. Current time: ${utcHour}:${utcMinute.toString().padStart(2, '0')} UTC. Trading sessions: London (8:00-16:59 UTC), New York (14:30-21:29 UTC)`, 'SESSION');
         
         if (isHTFAgent) {
           logger.info({
@@ -691,9 +528,6 @@ export class AgentExecutionService {
             tradingPair
           }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
         }
-        
-        // ALWAYS store diagnostics before returning
-        await agent.storeDiagnostics(diagnostics);
         logger.info({
           agentId,
           currentTime: `${now.getUTCHours()}:${now.getUTCMinutes().toString().padStart(2, '0')} UTC`,
@@ -707,25 +541,13 @@ export class AgentExecutionService {
         const allowedPairs = ['BTC/USDT', 'ETH/USDT'];
         if (!allowedPairs.includes(tradingPair)) {
           skippedReason = `HTF agents restricted to ${allowedPairs.join(', ')} only`;
-          diagnostics.decision = { action: 'SKIP', reason: skippedReason };
-          diagnostics.tradingPair = tradingPair;
-          // PART A FIX: Use htfBiasDirection for HTF agents even when pair is restricted
-          diagnostics.direction = htfBiasDirection || 'NO_TRADE';
-          diagnostics.executionStatus = 'SKIPPED';
-          // PART B FIX: Add structured failure object
-          diagnostics.failure = {
-            reasonCode: 'PAIR_RESTRICTION',
-            reasonText: `HTF Trend Filter agents are restricted to ${allowedPairs.join(', ')} only. Current pair: ${tradingPair}`,
-            category: 'RISK'
-          };
+          finalizeSkip('PAIR_RESTRICTION', `HTF Trend Filter agents are restricted to ${allowedPairs.join(', ')} only. Current pair: ${tradingPair}`, 'RISK');
           
           logger.info({
             agentId,
             tradingPair
           }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
           
-          // ALWAYS store diagnostics before returning
-          await agent.storeDiagnostics(diagnostics);
           logger.warn({
             agentId,
             tradingPair,
@@ -753,27 +575,13 @@ export class AgentExecutionService {
           // Validate candle data is not empty - CRITICAL CHECK
           if (!candles15m || candles15m.length === 0 || !candles || candles.length === 0) {
             skippedReason = 'MARKET_DATA_NOT_READY';
-            diagnostics.decision = { 
-              action: 'SKIP', 
-              reason: skippedReason
-            };
-            diagnostics.tradingPair = tradingPair;
-            // PART A FIX: Use htfBiasDirection for HTF agents, NO_TRADE for others
-            diagnostics.direction = htfBiasDirection || 'NO_TRADE';
-            // PART B FIX: Add structured failure object
-            diagnostics.failure = {
-              reasonCode: 'MARKET_DATA_NOT_READY',
-              reasonText: 'Candle data empty - market data not available',
-              category: 'DATA'
-            };
+            finalizeSkip('MARKET_DATA_NOT_READY', 'Candle data empty - market data not available', 'DATA');
             
             logger.info({
               agentId,
               tradingPair
             }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
             
-            // ALWAYS store diagnostics before returning
-            await agent.storeDiagnostics(diagnostics);
             logger.error({
               agentId,
               candles15mCount: candles15m?.length || 0,
@@ -784,25 +592,13 @@ export class AgentExecutionService {
           
           if (candles15m.length < 200) {
             skippedReason = 'MARKET_DATA_NOT_READY';
-            diagnostics.decision = { action: 'SKIP', reason: skippedReason };
-            diagnostics.tradingPair = tradingPair;
-            // PART A FIX: Use htfBiasDirection for HTF agents, NO_TRADE for others
-            diagnostics.direction = htfBiasDirection || 'NO_TRADE';
-            diagnostics.executionStatus = 'SKIPPED';
-            // PART B FIX: Add structured failure object
-            diagnostics.failure = {
-              reasonCode: 'MARKET_DATA_NOT_READY',
-              reasonText: `Insufficient 15m candle data: ${candles15m.length}/200 required`,
-              category: 'DATA'
-            };
+            finalizeSkip('MARKET_DATA_NOT_READY', `Insufficient 15m candle data: ${candles15m.length}/200 required`, 'DATA');
             
             logger.info({
               agentId,
               tradingPair
             }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
             
-            // ALWAYS store diagnostics before returning
-            await agent.storeDiagnostics(diagnostics);
             logger.warn({
               agentId,
               candles15mCount: candles15m.length
@@ -812,25 +608,13 @@ export class AgentExecutionService {
           
           if (candles.length < 200) {
             skippedReason = 'MARKET_DATA_NOT_READY';
-            diagnostics.decision = { action: 'SKIP', reason: skippedReason };
-            diagnostics.tradingPair = tradingPair;
-            // PART A FIX: Use htfBiasDirection for HTF agents, NO_TRADE for others
-            diagnostics.direction = htfBiasDirection || 'NO_TRADE';
-            diagnostics.executionStatus = 'SKIPPED';
-            // PART B FIX: Add structured failure object
-            diagnostics.failure = {
-              reasonCode: 'MARKET_DATA_NOT_READY',
-              reasonText: `Insufficient 1m candle data: ${candles.length}/200 required`,
-              category: 'DATA'
-            };
+            finalizeSkip('MARKET_DATA_NOT_READY', `Insufficient 1m candle data: ${candles.length}/200 required`, 'DATA');
             
             logger.info({
               agentId,
               tradingPair
             }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
             
-            // ALWAYS store diagnostics before returning
-            await agent.storeDiagnostics(diagnostics);
             logger.warn({
               agentId,
               candles1mCount: candles.length
@@ -850,19 +634,13 @@ export class AgentExecutionService {
           // If market data fetch failed - DO NOT generate signal, DO NOT default to BTC/USDT, DO NOT reuse previous signal
           // Mark cycle as SKIPPED with reason = MARKET_DATA_NOT_READY
           skippedReason = 'MARKET_DATA_NOT_READY';
-          diagnostics.decision = { 
-            action: 'SKIP', 
-            reason: skippedReason,
-            marketDataError: marketDataError instanceof Error ? marketDataError.message : 'Unknown error'
-          };
+          finalizeSkip('MARKET_DATA_NOT_READY', marketDataError instanceof Error ? marketDataError.message : 'Market data fetch failed', 'DATA');
           
           logger.info({
             agentId,
             tradingPair
           }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
           
-          // ALWAYS store diagnostics before returning
-          await agent.storeDiagnostics(diagnostics);
           logger.error({
             agentId,
             error: marketDataError instanceof Error ? marketDataError.message : 'Unknown error'
@@ -878,19 +656,7 @@ export class AgentExecutionService {
         );
         
         if (candles.length < 50) {
-          diagnostics.decision = { action: 'SKIP', reason: `Insufficient 5m candles: ${candles.length}/50` };
-          diagnostics.tradingPair = tradingPair;
-          // Regular agents don't have HTF trend, so NO_TRADE is correct
-          diagnostics.direction = 'NO_TRADE';
-          diagnostics.executionStatus = 'SKIPPED';
-          // PART B FIX: Add structured failure object
-          diagnostics.failure = {
-            reasonCode: 'MARKET_DATA_NOT_READY',
-            reasonText: `Insufficient 5m candles: ${candles.length}/50`,
-            category: 'DATA'
-          };
-          // ALWAYS store diagnostics before returning
-          await agent.storeDiagnostics(diagnostics);
+          finalizeSkip('MARKET_DATA_NOT_READY', `Insufficient 5m candles: ${candles.length}/50`, 'DATA');
           logger.warn({
             agentId,
             candlesCount: candles.length
@@ -969,22 +735,7 @@ export class AgentExecutionService {
           }
 
           // Do not open a new trade while one is open/managed
-          diagnostics.decision = { action: 'SKIP', reason: 'Managing open position' };
-          diagnostics.tradingPair = tradingPair;
-          // PART 1 FIX: For HTF agents, show HTF direction even when managing open position
-          if (isHTFAgent && htfBiasDirection) {
-            diagnostics.direction = htfBiasDirection;
-          } else {
-            diagnostics.direction = 'NO_TRADE';
-          }
-          diagnostics.executionStatus = 'SKIPPED';
-          // PART B FIX: Add structured failure object
-          diagnostics.failure = {
-            reasonCode: 'MANAGING_OPEN_POSITION',
-            reasonText: 'Managing existing open position - no new trades allowed',
-            category: 'RISK'
-          };
-          await agent.storeDiagnostics(diagnostics);
+          finalizeSkip('MANAGING_OPEN_POSITION', 'Managing existing open position - no new trades allowed', 'RISK');
           await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
           return;
         }
@@ -996,22 +747,7 @@ export class AgentExecutionService {
       // Check if this candle was already processed
       const lastProcessedCandle = await firestoreAdapter.getLastProcessedCandle(agentId, tradingPair);
       if (lastProcessedCandle && candleTimestamp.getTime() === lastProcessedCandle.getTime()) {
-        diagnostics.decision = { action: 'SKIP', reason: 'Candle already processed' };
-        diagnostics.tradingPair = tradingPair;
-        // PART 1 FIX: For HTF agents, show HTF direction even when candle already processed
-        if (isHTFAgent && htfBiasDirection) {
-          diagnostics.direction = htfBiasDirection;
-        } else {
-          diagnostics.direction = 'NO_TRADE';
-        }
-        diagnostics.executionStatus = 'SKIPPED';
-        // PART B FIX: Add structured failure object
-        diagnostics.failure = {
-          reasonCode: 'CANDLE_ALREADY_PROCESSED',
-          reasonText: 'This candle was already processed in a previous cycle',
-          category: 'DATA'
-        };
-        await agent.storeDiagnostics(diagnostics);
+        finalizeSkip('CANDLE_ALREADY_PROCESSED', 'This candle was already processed in a previous cycle', 'DATA');
         logger.info({
           agentId,
           candleTimestamp: candleTimestamp.toISOString(),
@@ -1028,22 +764,7 @@ export class AgentExecutionService {
 
       // Validate indicators
       if (!TechnicalIndicators.validateIndicators(indicators)) {
-        diagnostics.decision = { action: 'SKIP', reason: 'Invalid indicators calculated' };
-        diagnostics.tradingPair = tradingPair;
-        // PART 1 FIX: For HTF agents, show HTF direction even when indicators are invalid
-        if (isHTFAgent && htfBiasDirection) {
-          diagnostics.direction = htfBiasDirection;
-        } else {
-          diagnostics.direction = 'NO_TRADE';
-        }
-        diagnostics.executionStatus = 'SKIPPED';
-        // PART B FIX: Add structured failure object
-        diagnostics.failure = {
-          reasonCode: 'INVALID_INDICATORS',
-          reasonText: 'Technical indicators could not be calculated properly',
-          category: 'DATA'
-        };
-        await agent.storeDiagnostics(diagnostics);
+        finalizeSkip('INVALID_INDICATORS', 'Technical indicators could not be calculated properly', 'DATA');
         logger.error({
           agentId,
           indicators
@@ -1062,29 +783,13 @@ export class AgentExecutionService {
         
         if (!marketScanExecuted) {
           skippedReason = 'Market scan not executed';
-          diagnostics.decision = { action: 'SKIP', reason: skippedReason };
-          diagnostics.tradingPair = tradingPair;
-          // PART 1 FIX: For HTF agents, show HTF direction even when market scan not executed
-          if (isHTFAgent && htfBiasDirection) {
-            diagnostics.direction = htfBiasDirection;
-          } else {
-            diagnostics.direction = 'NO_TRADE';
-          }
-          diagnostics.executionStatus = 'SKIPPED';
-          // PART B FIX: Add structured failure object
-          diagnostics.failure = {
-            reasonCode: 'MARKET_SCAN_NOT_EXECUTED',
-            reasonText: 'Market scan was not executed - preventing signal generation',
-            category: 'DATA'
-          };
+          finalizeSkip('MARKET_SCAN_NOT_EXECUTED', 'Market scan was not executed - preventing signal generation', 'DATA');
           
           logger.info({
             agentId,
             tradingPair
           }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
           
-          // ALWAYS store diagnostics before returning
-          await agent.storeDiagnostics(diagnostics);
           logger.warn({
             agentId
           }, 'HTF Trend Filter: Market scan not executed - preventing signal generation');
@@ -1096,29 +801,13 @@ export class AgentExecutionService {
         
         if (!exchangeUsable) {
           skippedReason = 'Exchange not usable';
-          diagnostics.decision = { action: 'SKIP', reason: skippedReason };
-          diagnostics.tradingPair = tradingPair;
-          // PART 1 FIX: For HTF agents, show HTF direction even when exchange not usable
-          if (isHTFAgent && htfBiasDirection) {
-            diagnostics.direction = htfBiasDirection;
-          } else {
-            diagnostics.direction = 'NO_TRADE';
-          }
-          diagnostics.executionStatus = 'SKIPPED';
-          // PART B FIX: Add structured failure object
-          diagnostics.failure = {
-            reasonCode: 'EXCHANGE_NOT_USABLE',
-            reasonText: 'Exchange connection is not usable - check credentials and connection',
-            category: 'EXCHANGE'
-          };
+          finalizeSkip('EXCHANGE_NOT_USABLE', 'Exchange connection is not usable - check credentials and connection', 'EXCHANGE');
           
           logger.info({
             agentId,
             tradingPair
           }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
           
-          // ALWAYS store diagnostics before returning
-          await agent.storeDiagnostics(diagnostics);
           logger.warn({
             agentId
           }, 'HTF Trend Filter: Exchange not usable - preventing signal generation');
@@ -1136,20 +825,15 @@ export class AgentExecutionService {
         
         if (htfTrend.direction === 'NO_TRADE') {
           skippedReason = htfTrend.reason;
-          diagnostics.decision = { action: 'SKIP', reason: skippedReason };
-          diagnostics.tradingPair = tradingPair;
-          // PART 1 FIX: Only set NO_TRADE if HTF trend itself is NO_TRADE
+          finalizeSkip('HTF_NO_TRADE', htfTrend.reason || 'HTF trend analysis indicates no trade opportunity', 'SIGNAL');
+          // CRITICAL: For HTF NO_TRADE, direction should be NO_TRADE (overriding early setting)
           diagnostics.direction = 'NO_TRADE';
-          diagnostics.executionStatus = 'SKIPPED';
-          diagnostics.exchangeErrorReason = skippedReason;
           
           logger.info({
             agentId,
             tradingPair
           }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
           
-          // ALWAYS store diagnostics before returning
-          await agent.storeDiagnostics(diagnostics);
           logger.debug({
             agentId,
             htfTrend
@@ -1166,22 +850,13 @@ export class AgentExecutionService {
         
         if (!ltfSignal.isValid) {
           skippedReason = ltfSignal.reason;
-          diagnostics.decision = { action: 'SKIP', reason: skippedReason };
-          diagnostics.tradingPair = tradingPair;
-          // PART 1 FIX: Show HTF trend direction even when LTF conditions aren't met
-          // CRITICAL: NEVER overwrite direction to NO_TRADE if HTF bias exists
-          diagnostics.direction = htfTrend.direction === 'LONG_ONLY' ? 'LONG' : 
-                                 htfTrend.direction === 'SHORT_ONLY' ? 'SHORT' : 'NO_TRADE';
-          diagnostics.executionStatus = 'SKIPPED';
-          diagnostics.exchangeErrorReason = skippedReason;
+          finalizeSkip('LTF_CONDITIONS_NOT_MET', ltfSignal.reason || 'LTF entry conditions not met despite valid HTF trend', 'SIGNAL');
           
           logger.info({
             agentId,
             tradingPair
           }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
           
-          // ALWAYS store diagnostics before returning
-          await agent.storeDiagnostics(diagnostics);
           logger.debug({
             agentId,
             ltfSignal
@@ -1228,17 +903,12 @@ export class AgentExecutionService {
         };
         signalGenerated = true;
         
-        // HTF Agent execution fix: ALWAYS attach tradingPair and direction for diagnostics
+        // HTF Agent execution fix: ALWAYS attach tradingPair for diagnostics
         diagnostics.tradingPair = tradingPair;
-        // PART 1 FIX: Set direction based on HTF trend bias, not just LTF signal
-        // CRITICAL: On EXECUTION_STARTED, direction must already reflect HTF bias (LONG/SHORT)
-        diagnostics.direction = ltfSignal.direction || 
-                               (htfTrend.direction === 'LONG_ONLY' ? 'LONG' : 
-                                htfTrend.direction === 'SHORT_ONLY' ? 'SHORT' : 'NO_TRADE');
+        // CRITICAL: Direction was already set early - do NOT overwrite it here
         diagnostics.execution = {
           status: 'EXECUTED',
-          success: true,
-          exchangeErrorReason: null
+          success: true
         };
       } else {
         // Regular agents use standard signal generation
@@ -1257,28 +927,7 @@ export class AgentExecutionService {
       }
 
       if (!signal) {
-        diagnostics.decision = diagnostics.decision || { action: 'SKIP', reason: 'No trading signal generated' };
-        diagnostics.tradingPair = tradingPair;
-        // PART 1 FIX: For HTF agents, try to preserve HTF trend direction even when no signal generated
-        if (isHTFAgent && htfBiasDirection) {
-          diagnostics.direction = htfBiasDirection;
-        } else {
-          diagnostics.direction = 'NO_TRADE';
-        }
-        diagnostics.executionStatus = 'SKIPPED';
-        // PART B FIX: Add structured failure object
-        diagnostics.failure = {
-          reasonCode: 'NO_SIGNAL',
-          reasonText: 'No trading signal generated - market conditions not met',
-          category: 'SIGNAL'
-        };
-        diagnostics.execution = {
-          status: 'SKIPPED',
-          success: false,
-          exchangeErrorReason: 'No trading signal generated'
-        };
-        await agent.storeDiagnostics(diagnostics);
-
+        finalizeSkip('NO_SIGNAL', 'No trading signal generated - market conditions not met', 'SIGNAL');
         // CRITICAL: Add single diagnostic log line for HTF agents
         if (isHTFAgent) {
           logger.info({
@@ -1301,23 +950,7 @@ export class AgentExecutionService {
       // Check if this signal was already executed
       const signalAlreadyExecuted = await firestoreAdapter.isSignalExecuted(agentId, signal.signalId);
       if (signalAlreadyExecuted) {
-        diagnostics.decision = { action: 'SKIP', reason: 'Signal already executed (idempotency)' };
-        diagnostics.tradingPair = tradingPair;
-        // PART 1 FIX: Preserve signal direction even when signal already executed
-        diagnostics.direction = signal?.direction || 'NO_TRADE';
-        diagnostics.executionStatus = 'SKIPPED';
-        // PART B FIX: Add structured failure object
-        diagnostics.failure = {
-          reasonCode: 'SIGNAL_ALREADY_EXECUTED',
-          reasonText: 'This signal was already executed in a previous cycle',
-          category: 'RISK'
-        };
-        diagnostics.execution = {
-          status: 'SKIPPED',
-          success: false,
-          exchangeErrorReason: 'Signal already executed'
-        };
-        await agent.storeDiagnostics(diagnostics);
+        finalizeSkip('SIGNAL_ALREADY_EXECUTED', 'This signal was already executed in a previous cycle', 'RISK');
         logger.info({
           agentId,
           signalId: signal.signalId,
@@ -1359,23 +992,7 @@ export class AgentExecutionService {
 
       // Check daily trade limit
       if (dailyCounters.tradesToday >= maxTradesPerDay) {
-        diagnostics.decision = { action: 'SKIP', reason: `Daily trade limit reached: ${dailyCounters.tradesToday}/${maxTradesPerDay}` };
-        diagnostics.tradingPair = tradingPair;
-        // PART 1 FIX: Preserve signal direction even when daily limit reached
-        diagnostics.direction = signal?.direction || 'NO_TRADE';
-        diagnostics.executionStatus = 'SKIPPED';
-        // PART B FIX: Add structured failure object
-        diagnostics.failure = {
-          reasonCode: 'DAILY_TRADE_LIMIT',
-          reasonText: 'Daily trade limit reached - no more trades allowed today',
-          category: 'RISK'
-        };
-        diagnostics.execution = {
-          status: 'SKIPPED',
-          success: false,
-          exchangeErrorReason: 'Daily trade limit reached'
-        };
-        await agent.storeDiagnostics(diagnostics);
+        finalizeSkip('DAILY_TRADE_LIMIT', `Daily trade limit reached: ${dailyCounters.tradesToday}/${maxTradesPerDay}`, 'RISK');
         logger.info({
           agentId,
           tradesToday: dailyCounters.tradesToday,
@@ -1388,23 +1005,7 @@ export class AgentExecutionService {
 
       // Check consecutive losses limit
       if (dailyCounters.consecutiveLosses >= 2) {
-        diagnostics.decision = { action: 'SKIP', reason: `Consecutive losses limit: ${dailyCounters.consecutiveLosses}/2` };
-        diagnostics.tradingPair = tradingPair;
-        // PART 1 FIX: Preserve signal direction even when consecutive losses limit reached
-        diagnostics.direction = signal?.direction || 'NO_TRADE';
-        diagnostics.executionStatus = 'SKIPPED';
-        // PART B FIX: Add structured failure object
-        diagnostics.failure = {
-          reasonCode: 'CONSECUTIVE_LOSSES_LIMIT',
-          reasonText: 'Consecutive losses limit reached - trading paused for risk management',
-          category: 'RISK'
-        };
-        diagnostics.execution = {
-          status: 'SKIPPED',
-          success: false,
-          exchangeErrorReason: 'Consecutive losses limit reached'
-        };
-        await agent.storeDiagnostics(diagnostics);
+        finalizeSkip('CONSECUTIVE_LOSSES_LIMIT', 'Consecutive losses limit reached - trading paused for risk management', 'RISK');
         logger.info({
           agentId,
           consecutiveLosses: dailyCounters.consecutiveLosses,
@@ -1416,18 +1017,7 @@ export class AgentExecutionService {
 
       // Check daily profit target
       if (dailyCounters.dailyPnL >= 2.0) {
-        diagnostics.decision = { action: 'SKIP', reason: `Daily profit target reached: ${dailyCounters.dailyPnL.toFixed(2)}R` };
-        diagnostics.tradingPair = tradingPair;
-        // PART 1 FIX: Preserve signal direction even when daily profit target reached
-        diagnostics.direction = signal?.direction || 'NO_TRADE';
-        diagnostics.executionStatus = 'SKIPPED';
-        diagnostics.exchangeErrorReason = 'Daily profit target reached';
-        diagnostics.execution = {
-          status: 'SKIPPED',
-          success: false,
-          exchangeErrorReason: 'Daily profit target reached'
-        };
-        await agent.storeDiagnostics(diagnostics);
+        finalizeSkip('DAILY_PROFIT_TARGET', `Daily profit target reached: ${dailyCounters.dailyPnL.toFixed(2)}R`, 'RISK');
         logger.info({
           agentId,
           dailyPnL: dailyCounters.dailyPnL,
@@ -1441,18 +1031,7 @@ export class AgentExecutionService {
       // Check per-pair cooldown
       const pairCooldown = await firestoreAdapter.getPairCooldown(agentId, tradingPair);
       if (pairCooldown && new Date() < pairCooldown) {
-        diagnostics.decision = { action: 'SKIP', reason: `Pair cooldown active until ${pairCooldown.toISOString()}` };
-        diagnostics.tradingPair = tradingPair;
-        // PART 1 FIX: Preserve signal direction even when pair cooldown active
-        diagnostics.direction = signal?.direction || 'NO_TRADE';
-        diagnostics.executionStatus = 'SKIPPED';
-        diagnostics.exchangeErrorReason = 'Pair cooldown active';
-        diagnostics.execution = {
-          status: 'SKIPPED',
-          success: false,
-          exchangeErrorReason: 'Pair cooldown active'
-        };
-        await agent.storeDiagnostics(diagnostics);
+        finalizeSkip('PAIR_COOLDOWN_ACTIVE', `Pair cooldown active until ${pairCooldown.toISOString()}`, 'RISK');
         logger.info({
           agentId,
           tradingPair,
@@ -1475,18 +1054,11 @@ export class AgentExecutionService {
 
       // Max 1 open trade per pair
       if (positionCounts.pairPositions >= 1) {
-        diagnostics.decision = { action: 'SKIP', reason: `Pair position limit: ${positionCounts.pairPositions}/1` };
-        diagnostics.tradingPair = tradingPair;
-        // PART 1 FIX: Preserve signal direction even when pair position limit reached
-        diagnostics.direction = signal?.direction || 'NO_TRADE';
-        diagnostics.executionStatus = 'SKIPPED';
-        diagnostics.exchangeErrorReason = 'Pair position limit reached';
+        finalizeSkip('PAIR_POSITION_LIMIT', `Pair position limit reached: ${positionCounts.pairPositions}/1`, 'RISK');
         diagnostics.execution = {
           status: 'SKIPPED',
-          success: false,
-          exchangeErrorReason: 'Pair position limit reached'
+          success: false
         };
-        await agent.storeDiagnostics(diagnostics);
         logger.info({
           agentId,
           tradingPair,
@@ -1499,18 +1071,11 @@ export class AgentExecutionService {
 
       // Max 2 total open trades
       if (positionCounts.totalPositions >= 2) {
-        diagnostics.decision = { action: 'SKIP', reason: `Total position limit: ${positionCounts.totalPositions}/2` };
-        diagnostics.tradingPair = tradingPair;
-        // PART 1 FIX: Preserve signal direction even when total position limit reached
-        diagnostics.direction = signal?.direction || 'NO_TRADE';
-        diagnostics.executionStatus = 'SKIPPED';
-        diagnostics.exchangeErrorReason = 'Total position limit reached';
+        finalizeSkip('TOTAL_POSITION_LIMIT', `Total position limit reached: ${positionCounts.totalPositions}/2`, 'RISK');
         diagnostics.execution = {
           status: 'SKIPPED',
-          success: false,
-          exchangeErrorReason: 'Total position limit reached'
+          success: false
         };
-        await agent.storeDiagnostics(diagnostics);
         logger.info({
           agentId,
           totalPositions: positionCounts.totalPositions,
@@ -1542,16 +1107,7 @@ export class AgentExecutionService {
       );
 
       if (!positionCalc.isSafe || !isFinite(positionCalc.positionSize) || positionCalc.positionSize <= 0) {
-        diagnostics.decision = {
-          action: 'SKIP',
-          reason: `Position sizing rejected: ${positionCalc.reason || 'UNKNOWN'}`
-        };
-        diagnostics.tradingPair = tradingPair;
-        // PART 1 FIX: Preserve signal direction even when position sizing rejected
-        diagnostics.direction = signal?.direction || 'NO_TRADE';
-        diagnostics.executionStatus = 'SKIPPED';
-        diagnostics.exchangeErrorReason = `Position sizing rejected: ${positionCalc.reason || 'UNKNOWN'}`;
-        await agent.storeDiagnostics(diagnostics);
+        finalizeSkip('POSITION_SIZING_REJECTED', `Position sizing rejected: ${positionCalc.reason || 'UNKNOWN'}`, 'RISK');
         await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
         return;
       }
@@ -1656,17 +1212,84 @@ export class AgentExecutionService {
         error: error instanceof Error ? error.message : 'Unknown error'
       }, 'Failed to execute agent with hardening');
     } finally {
-      // CRITICAL: ALWAYS persist diagnostics, even on early returns or exceptions
+      // CRITICAL FIX: ALWAYS persist diagnostics, even on early returns or exceptions
       // This guarantees ONE diagnostic entry per execution cycle
       try {
-        // Clean up SKIPPED cycles before persistence
-        if (diagnostics.decision?.action === 'SKIP' || diagnostics.decision?.action === 'SKIPPED') {
-          // Delete exchange-related fields for SKIPPED cycles
-          delete diagnostics.exchangeError;
-          delete diagnostics.exchangeErrorReason;
-          delete diagnostics.symbol;
-          delete diagnostics.pair;
-          delete diagnostics.direction;
+        // FIX 2: HARD BAN EXECUTION_STARTED - Set executionStatus based on actual outcome
+        if (diagnostics.execution?.success === true) {
+          diagnostics.executionStatus = 'EXECUTED';
+        } else if (diagnostics.execution?.success === false) {
+          diagnostics.executionStatus = 'FAILED';
+        } else {
+          diagnostics.executionStatus = 'SKIPPED';
+        }
+
+        // FIX 5: DIRECTION CONSISTENCY RULE - REMOVED
+        // Direction was set ONCE early and should NEVER be changed
+        // This logic is removed to prevent direction flipping
+
+        // FIX 3: NORMALIZE FAILURE OBJECT - Create from decision.reason if missing
+        if (diagnostics.executionStatus === 'SKIPPED' || diagnostics.executionStatus === 'FAILED') {
+          if (!diagnostics.failure) {
+            // Build failure object from decision.reason
+            const reason = diagnostics.decision?.reason || 'UNKNOWN';
+            diagnostics.failure = {
+              reasonCode: reason.toUpperCase().replace(/[^A-Z0-9_]/g, '_'),
+              reasonText: reason,
+              category: 'SIGNAL'
+            };
+          }
+          
+          // Validate failure object has required fields
+          if (!diagnostics.failure.reasonCode) {
+            diagnostics.failure.reasonCode = 'UNKNOWN';
+          }
+          if (!diagnostics.failure.reasonText) {
+            diagnostics.failure.reasonText = diagnostics.decision?.reason || diagnostics.failure.reasonCode;
+          }
+          if (!diagnostics.failure.category) {
+            // Infer category from reasonCode
+            const code = diagnostics.failure.reasonCode.toUpperCase();
+            if (code.includes('SESSION') || code.includes('TRADING_HOURS') || code.includes('STOPPED') || code.includes('PAUSED')) {
+              diagnostics.failure.category = 'SESSION';
+            } else if (code.includes('EXCHANGE') || code.includes('CREDENTIALS') || code.includes('DECRYPT')) {
+              diagnostics.failure.category = 'EXCHANGE';
+            } else if (code.includes('DATA') || code.includes('CANDLE') || code.includes('INDICATOR')) {
+              diagnostics.failure.category = 'DATA';
+            } else if (code.includes('RISK') || code.includes('LIMIT') || code.includes('COOLDOWN') || code.includes('POSITION')) {
+              diagnostics.failure.category = 'RISK';
+            } else {
+              diagnostics.failure.category = 'SIGNAL';
+            }
+          }
+        }
+
+        // FIX 4: CLEAN DIAGNOSTIC PAYLOAD - STRIP all non-UI fields
+        delete diagnostics.indicators;
+        delete diagnostics.srValidation;
+        delete diagnostics.supportResistance;
+        delete diagnostics.exchangeErrorCleared;
+        delete diagnostics.previousErrorsCleared;
+        delete diagnostics.executionStateReset;
+        delete diagnostics.lastDecision;
+        delete diagnostics.lastSignal;
+        delete diagnostics.lastErrorReason;
+        delete diagnostics.cycleId;
+        delete diagnostics.exchangeUsable;
+        delete diagnostics.htfTrend;
+        delete diagnostics.ltfSignal;
+        delete diagnostics.sessionCheck;
+        delete diagnostics.candleCheck;
+        delete diagnostics.riskAnalysis;
+        delete diagnostics.signal;
+
+        // Remove old top-level failure fields (now in failure object)
+        delete diagnostics.exchangeErrorReason;
+        delete diagnostics.failureCategory;
+
+        // FIX 2: Remove execution object when SKIPPED
+        if (diagnostics.executionStatus === 'SKIPPED') {
+          delete diagnostics.execution;
         }
 
         await agent.storeDiagnostics(diagnostics);
@@ -1766,7 +1389,7 @@ export class AgentExecutionService {
       const hasExistingPosition = await (marketProvider as any).hasCoinMPosition(symbol);
       if (hasExistingPosition) {
         diagnostics.execution = { success: false, error: 'Position already exists for symbol' };
-        await agent.storeDiagnostics(diagnostics);
+        // CRITICAL FIX: Remove storeDiagnostics call - will be handled in finally block
         logger.info({
           agentId: agentConfig.id,
           tradeId: trade.id,
@@ -1787,7 +1410,7 @@ export class AgentExecutionService {
 
       if (quantity < 0.001) { // Minimum order size check
         diagnostics.execution = { success: false, error: `Insufficient risk budget: need ${riskPerContract.toFixed(4)} per contract, have ${(riskAmount / trade.entryPrice * agentConfig.leverage).toFixed(4)}` };
-        await agent.storeDiagnostics(diagnostics);
+        // CRITICAL FIX: Remove storeDiagnostics call - will be handled in finally block
         logger.warn({
           agentId: agentConfig.id,
           tradeId: trade.id,
@@ -1817,7 +1440,7 @@ export class AgentExecutionService {
         success: true,
         orderId: orderResult.orderId
       };
-      await agent.storeDiagnostics(diagnostics);
+      // CRITICAL FIX: Remove storeDiagnostics call - will be handled in finally block
 
       logger.info({
         agentId: agentConfig.id,
@@ -1842,7 +1465,6 @@ export class AgentExecutionService {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error'
       };
-      await agent.storeDiagnostics(diagnostics);
 
       logger.error({
         agentId: agentConfig.id,
@@ -1869,13 +1491,11 @@ export class AgentExecutionService {
 
       if (!uid) {
         diagnostics.execution = { success: false, error: 'MISSING_USER_ID' };
-        await agent.storeDiagnostics(diagnostics);
         return false;
       }
 
       if (!symbol || !isFinite(quantity) || quantity <= 0) {
         diagnostics.execution = { success: false, error: 'INVALID_ORDER_PARAMS' };
-        await agent.storeDiagnostics(diagnostics);
         return false;
       }
 
@@ -1898,7 +1518,7 @@ export class AgentExecutionService {
         calculatedRR: trade.calculatedRR || 0,
         slTpPlacedOnExchange: !!(trade.stopLoss || trade.takeProfit)
       };
-      await agent.storeDiagnostics(diagnostics);
+      // CRITICAL FIX: Remove storeDiagnostics call - will be handled in finally block
 
       // Persist to canonical trades collection for UI history
       const tradeDocId = await firestoreAdapter.saveTrade(uid, {
@@ -1957,9 +1577,7 @@ export class AgentExecutionService {
         error: exchangeErrorReason,
         exchangeErrorReason, // Explicit field for UI
       };
-      try {
-        await agent.storeDiagnostics(diagnostics);
-      } catch { }
+      // CRITICAL FIX: Remove storeDiagnostics call - will be handled in finally block
 
       logger.error({
         agentId: agentConfig.id,

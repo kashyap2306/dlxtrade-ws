@@ -68,10 +68,14 @@ export default function TradingAgentControl() {
     const aggregatedDiagnostics: any[] = [];
     
     cycleGroups.forEach((group, cycleKey) => {
-      // STRICT primary selection priority
+      // STRICT primary selection priority - real SKIP reasons override EXECUTION_STARTED
+      // PART B FIX: EXECUTION_STARTED with action="INFO" should be treated as execution, not skip
       let primary = group.find(d => d.execution?.status === 'EXECUTED') ||
+                   group.find(d => d.decision?.action === 'INFO' && d.decision?.reason === 'EXECUTION_STARTED') ||
                    group.find(d => d.status === 'SKIPPED' && d.decision?.reason && 
                      !['EXECUTION_STARTED', 'FORCE_CREATE_DIAGNOSTIC', 'CREDENTIALS_DECRYPT_FAILED'].includes(d.decision.reason)) ||
+                   group.find(d => d.decision?.action === 'SKIP' && d.decision?.reason && 
+                     !['EXECUTION_STARTED', 'FORCE_CREATE_DIAGNOSTIC'].includes(d.decision.reason)) ||
                    group[group.length - 1]; // Latest as fallback
 
       // ALL other diagnostics become details (including system entries)
@@ -81,8 +85,8 @@ export default function TradingAgentControl() {
       let normalizedPair = null;
       let normalizedDirection = null;
 
-      // Search ALL diagnostics in cycle for valid pair/direction
-      for (const d of group) {
+      // Search ALL diagnostics in cycle for valid pair/direction - prioritize non-EXECUTION_STARTED
+      for (const d of group.filter(d => d.decision?.reason !== 'EXECUTION_STARTED')) {
         if (!normalizedPair) {
           normalizedPair = d.pair || d.tradingPair || (d.symbol && d.symbol !== 'AUTO_TRADE_CYCLE' ? d.symbol : null);
         }
@@ -90,6 +94,16 @@ export default function TradingAgentControl() {
           normalizedDirection = d.direction || d.signal?.direction || (typeof d.signal === 'string' ? d.signal : null);
         }
         if (normalizedPair && normalizedDirection) break;
+      }
+
+      // If no direction found from real diagnostics, check EXECUTION_STARTED
+      if (!normalizedDirection) {
+        for (const d of group.filter(d => d.decision?.reason === 'EXECUTION_STARTED')) {
+          if (d.direction && d.direction !== 'NO_TRADE') {
+            normalizedDirection = d.direction;
+            break;
+          }
+        }
       }
 
       // Ensure proper symbol format
@@ -142,7 +156,10 @@ export default function TradingAgentControl() {
     });
 
     // Sort by cycle bucket (most recent first)
-    return aggregatedDiagnostics.sort((a, b) => b.cycleBucket - a.cycleBucket);
+    const sortedDiagnostics = aggregatedDiagnostics.sort((a, b) => b.cycleBucket - a.cycleBucket);
+    
+    // PART D FIX: Return sorted diagnostics - frontend will handle limiting to 3/10
+    return sortedDiagnostics;
   };
 
   const [trades, setTrades] = useState<any[]>([]);
@@ -162,6 +179,7 @@ export default function TradingAgentControl() {
   const [showExecutionCriteria, setShowExecutionCriteria] = useState(false);
   const [, setTimerTick] = useState(0); // Force re-render for countdown
   const [selectedDiagnosticDetails, setSelectedDiagnosticDetails] = useState<any>(null);
+  const [showMoreDiagnostics, setShowMoreDiagnostics] = useState(false);
 
   // Check Firestore approval (users/{uid}.approvedAgents) and resolve agent ID
   useEffect(() => {
@@ -861,9 +879,25 @@ export default function TradingAgentControl() {
               )}
             </div>
 
-            <h3 className="text-xl font-bold text-white mb-2">Recent Cycle Results</h3>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xl font-bold text-white">Recent Cycle Results</h3>
+              {isHTFTrendFilterAgent && skippedTrades.length > 3 && (
+                <button
+                  onClick={() => setShowMoreDiagnostics(!showMoreDiagnostics)}
+                  className="text-purple-400 hover:text-purple-300 transition-colors text-sm"
+                >
+                  {showMoreDiagnostics ? 'View Less' : `View More (${skippedTrades.length - 3} more)`}
+                </button>
+              )}
+            </div>
             <div className="text-sm text-gray-400 mb-6 leading-relaxed">
               Shows execution/skip decisions from recent scheduler cycles (~5 min intervals)
+              {isHTFTrendFilterAgent && !showMoreDiagnostics && skippedTrades.length > 3 && (
+                <span className="text-purple-400"> • Showing latest 3 cycles</span>
+              )}
+              {isHTFTrendFilterAgent && showMoreDiagnostics && (
+                <span className="text-purple-400"> • Showing latest {Math.min(skippedTrades.length, 10)} cycles</span>
+              )}
             </div>
 
             {skippedTrades.length === 0 ? (
@@ -885,7 +919,12 @@ export default function TradingAgentControl() {
                     </tr>
                   </thead>
                   <tbody>
-                    {skippedTrades.map((diagnostic) => {
+                    {(isHTFTrendFilterAgent && !showMoreDiagnostics 
+                      ? skippedTrades.slice(0, 3) 
+                      : isHTFTrendFilterAgent && showMoreDiagnostics 
+                      ? skippedTrades.slice(0, 10)
+                      : skippedTrades
+                    ).map((diagnostic) => {
                       // Use stable cycle key for React rendering
                       const stableKey = diagnostic.cycleKey || `${diagnostic.cycleBucket}-${diagnostic.pair}-${diagnostic.agentId || 'HTF'}`;
                       
@@ -895,6 +934,15 @@ export default function TradingAgentControl() {
                       
                       // Enhanced decision display
                       const rawReason = diagnostic.decision?.reason || diagnostic.reason || 'NO_SIGNAL';
+                      const executionStatus = diagnostic.execution?.status || 'SKIPPED';
+                      
+                      // STRICT RULE: Show (i) icon ONLY for executionStatus === "SKIPPED" AND NOT for EXECUTION_STARTED
+                      const shouldShowPopup = (
+                        executionStatus === 'SKIPPED' && 
+                        rawReason !== 'EXECUTION_STARTED' && 
+                        diagnostic.decision?.action !== 'INFO'
+                      );
+                      
                       let displayReason = rawReason;
                       let reasonColor = 'bg-gray-500/20 text-gray-400';
 
@@ -925,8 +973,7 @@ export default function TradingAgentControl() {
                         reasonColor = 'bg-blue-500/20 text-blue-400';
                       }
 
-                      // Execution status
-                      const executionStatus = diagnostic.execution?.status || 'SKIPPED';
+                      // Execution status (already declared above)
                       const executionReason = diagnostic.execution?.reason;
                       let executionColor = 'bg-gray-500/20 text-gray-400';
                       
@@ -950,99 +997,19 @@ export default function TradingAgentControl() {
                           </td>
                           <td className="py-3 px-4">
                             <div className="flex items-center gap-2">
-                              {/* Details icon for aggregated diagnostics */}
-                              {diagnostic.hasDetails && (
-                                <button
-                                  onClick={() => setSelectedDiagnosticDetails(diagnostic)}
-                                  className="text-blue-400 hover:text-blue-300 transition-colors"
-                                  title="View detailed breakdown"
-                                >
-                                  <InformationCircleIcon className="w-4 h-4" />
-                                </button>
-                              )}
-                              
-                              {/* PART C: Single info icon (ⓘ) for all skip/failure reasons */}
-                              {(diagnostic.failure || rawReason !== 'NO_SIGNAL') && (
-                                <div className="relative group">
-                                  <span className={`cursor-help text-sm mr-1 ${rawReason === 'EXECUTION_STARTED' ? 'text-blue-400' : 'text-yellow-400'}`} title="Click for details">ⓘ</span>
-                                  <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-96 p-4 bg-slate-900 border border-blue-500/30 rounded-lg shadow-xl">
-                                    <div className="text-xs font-semibold text-blue-400 mb-2">
-                                      {rawReason === 'EXECUTION_STARTED' ? 'EXECUTION_STARTED - Exact Details:' : 'Skip/Failure Details - Trade kyu skip/fail hua?'}
-                                    </div>
-                                    <div className="space-y-2 text-xs text-gray-300">
-                                      {/* PRIMARY FAILURE REASON */}
-                                      <div>
-                                        <span className="font-semibold text-white">Exact reasonText:</span> {diagnostic.failure?.reasonText || rawReason || 'Not provided by engine'}
-                                      </div>
-                                      
-                                      {/* FAILURE CATEGORY */}
-                                      {diagnostic.failure?.category && (
-                                        <div>
-                                          <span className="font-semibold text-blue-400">Category:</span> {diagnostic.failure.category}
-                                        </div>
-                                      )}
-                                      
-                                      {/* FAILURE REASON CODE */}
-                                      {diagnostic.failure?.reasonCode && (
-                                        <div>
-                                          <span className="font-semibold text-blue-400">Reason Code:</span> {diagnostic.failure.reasonCode}
-                                        </div>
-                                      )}
-                                      
-                                      {/* EXCHANGE FAILURES */}
-                                      {diagnostic.exchangeFailure && (
-                                        <>
-                                          <div className="mt-2 pt-2 border-t border-gray-600">
-                                            <div className="font-semibold text-red-400 mb-1">Exchange Details:</div>
-                                          </div>
-                                          <div>
-                                            <span className="font-semibold text-red-400">Exchange:</span> {diagnostic.exchangeFailure.exchange || 'Not specified'}
-                                          </div>
-                                          <div>
-                                            <span className="font-semibold text-red-400">Failure Type:</span> {diagnostic.exchangeFailure.failureType || 'UNKNOWN'}
-                                          </div>
-                                          <div>
-                                            <span className="font-semibold text-red-400">Raw Error:</span> {diagnostic.exchangeFailure.rawError || 'Not provided by engine'}
-                                          </div>
-                                        </>
-                                      )}
-                                      
-                                      {/* RAW NUMBERS */}
-                                      <div className="mt-2 pt-2 border-t border-gray-600">
-                                        <div className="font-semibold text-white mb-1">Raw Numbers:</div>
-                                        {diagnostic.signal?.entryPrice ? (
-                                          <div>Entry Price: {diagnostic.signal.entryPrice}</div>
-                                        ) : (
-                                          <div>Entry Price: Not provided by engine</div>
-                                        )}
-                                        {diagnostic.signal?.stopLoss ? (
-                                          <div>Stop Loss: {diagnostic.signal.stopLoss}</div>
-                                        ) : (
-                                          <div>Stop Loss: Not provided by engine</div>
-                                        )}
-                                        {diagnostic.signal?.takeProfit ? (
-                                          <div>Take Profit: {diagnostic.signal.takeProfit}</div>
-                                        ) : (
-                                          <div>Take Profit: Not provided by engine</div>
-                                        )}
-                                        {diagnostic.signal?.rrRatio ? (
-                                          <div>RR Ratio: {diagnostic.signal.rrRatio.toFixed(2)}</div>
-                                        ) : (
-                                          <div>RR Ratio: Not provided by engine</div>
-                                        )}
-                                        {diagnostic.riskAnalysis?.accountBalance ? (
-                                          <div>Available futures balance: {diagnostic.riskAnalysis.accountBalance}</div>
-                                        ) : (
-                                          <div>Available futures balance: Not provided by engine</div>
-                                        )}
-                                        {diagnostic.riskAnalysis?.marginRequired ? (
-                                          <div>Required margin: {diagnostic.riskAnalysis.marginRequired}</div>
-                                        ) : (
-                                          <div>Required margin: Not provided by engine</div>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </div>
+                              {/* STRICT RULE: Show (i) icon ONLY for executionStatus === "SKIPPED" */}
+                              {executionStatus === 'SKIPPED' && (
+                                <div className="relative">
+                                  <span 
+                                    className={`cursor-pointer text-sm mr-1 ${
+                                      (diagnostic.failure?.reasonCode?.includes('EXCHANGE') || 
+                                       diagnostic.failure?.reasonCode?.includes('CREDENTIALS') ||
+                                       rawReason.includes('EXCHANGE') || rawReason.includes('credentials')) ? 'text-red-400' : 
+                                      'text-yellow-400'
+                                    }`} 
+                                    title="Click for details"
+                                    onClick={() => setSelectedDiagnosticDetails(diagnostic)}
+                                  >ⓘ</span>
                                 </div>
                               )}
                               
@@ -1081,13 +1048,13 @@ export default function TradingAgentControl() {
         </div>
       </div>
 
-      {/* Diagnostic Details Modal */}
+      {/* Diagnostic Details Modal - STRICT RULES COMPLIANT */}
       {selectedDiagnosticDetails && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 px-4">
-          <div className="bg-slate-900 border border-purple-500/20 rounded-xl p-6 max-w-4xl mx-4 max-h-[90vh] overflow-y-auto w-full">
+          <div className="bg-slate-900 border border-purple-500/20 rounded-xl p-6 max-w-lg mx-4 max-h-[80vh] overflow-y-auto w-full">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-semibold text-white">
-                Diagnostic Details - {selectedDiagnosticDetails.pair} ({selectedDiagnosticDetails.cycleBucket})
+              <h3 className="text-lg font-semibold text-white">
+                Trade Diagnostic
               </h3>
               <button
                 onClick={() => setSelectedDiagnosticDetails(null)}
@@ -1099,58 +1066,110 @@ export default function TradingAgentControl() {
               </button>
             </div>
             
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <h4 className="text-sm font-semibold text-purple-400 mb-2">Summary</h4>
-                  <div className="text-sm text-gray-300 space-y-1">
-                    <div>Pair: {selectedDiagnosticDetails.pair}</div>
-                    <div>Direction: <span className={`font-semibold ${
-                      selectedDiagnosticDetails.direction === 'LONG' ? 'text-green-400' : 
-                      selectedDiagnosticDetails.direction === 'SHORT' ? 'text-red-400' : 'text-gray-400'
-                    }`}>{selectedDiagnosticDetails.direction}</span></div>
-                    <div>Decision: {selectedDiagnosticDetails.decision?.reason || selectedDiagnosticDetails.reason}</div>
-                    <div>Cycles: {selectedDiagnosticDetails.details?.length + 1 || 1}</div>
-                  </div>
-                </div>
-                
-                <div>
-                  <h4 className="text-sm font-semibold text-purple-400 mb-2">Execution</h4>
-                  <div className="text-sm text-gray-300 space-y-1">
-                    <div>Status: {selectedDiagnosticDetails.execution?.status || 'SKIPPED'}</div>
-                    <div>Reason: {selectedDiagnosticDetails.execution?.reason || 'N/A'}</div>
-                  </div>
-                </div>
+            <div className="space-y-3">
+              {/* Direction */}
+              <div className="flex justify-between items-center">
+                <span className="text-gray-400 font-medium">Direction</span>
+                <span className={`font-bold ${
+                  selectedDiagnosticDetails.direction === 'LONG' ? 'text-green-400' : 
+                  selectedDiagnosticDetails.direction === 'SHORT' ? 'text-red-400' : 
+                  'text-gray-300'
+                }`}>{selectedDiagnosticDetails.direction}</span>
               </div>
               
-              <div>
-                <h4 className="text-sm font-semibold text-purple-400 mb-2">All Cycle Details</h4>
-                <div className="space-y-2 max-h-64 overflow-y-auto">
-                  {/* Current cycle */}
-                  <div className="p-3 bg-slate-800/50 rounded border border-purple-500/20">
-                    <div className="text-xs text-purple-400 mb-1">Current Cycle</div>
-                    <div className="text-sm text-gray-300">
-                      {selectedDiagnosticDetails.decision?.reason || selectedDiagnosticDetails.reason || 'No reason provided'}
-                    </div>
-                    <div className="text-xs text-gray-500 mt-1">
-                      {new Date(selectedDiagnosticDetails.timestamp).toLocaleString()}
+              {/* Final Decision */}
+              <div className="flex justify-between items-center">
+                <span className="text-gray-400 font-medium">Final Decision</span>
+                <span className="font-bold text-yellow-400">SKIPPED</span>
+              </div>
+              
+              {/* Exact Reason */}
+              <div className="flex justify-between items-start">
+                <span className="text-gray-400 font-medium">Exact Reason</span>
+                <span className="text-gray-300 text-right max-w-64 leading-relaxed">
+                  {(() => {
+                    const reasonText = selectedDiagnosticDetails.failure?.reasonText;
+                    if (!reasonText) return 'Reason not available';
+                    
+                    // Backend mapping according to strict rules
+                    if (reasonText.includes('Exchange credentials could not be decrypted')) {
+                      return 'Exchange API keys could not be decrypted';
+                    } else if (reasonText.includes('No exchange connected')) {
+                      return 'Exchange not connected';
+                    } else if (reasonText.includes('Insufficient futures balance') || reasonText.includes('LOW_FUTURES_BALANCE')) {
+                      return 'Insufficient futures balance';
+                    } else if (reasonText.includes('Risk/reward') || reasonText.includes('RR_INVALID')) {
+                      return 'Risk–Reward conditions failed';
+                    } else if (reasonText.includes('Outside trading hours')) {
+                      return 'Outside trading hours';
+                    } else if (reasonText.includes('Insufficient market data') || reasonText.includes('candle data')) {
+                      return 'Insufficient market data';
+                    } else if (reasonText.includes('No trading signal') || reasonText.includes('market conditions not met')) {
+                      return 'No trading signal generated';
+                    } else if (reasonText.includes('Daily trade limit')) {
+                      return 'Daily trade limit reached';
+                    } else if (reasonText.includes('Consecutive losses')) {
+                      return 'Consecutive losses limit reached';
+                    } else if (reasonText.includes('Agent was manually stopped')) {
+                      return 'Agent manually stopped';
+                    } else if (reasonText.includes('Agent was manually paused')) {
+                      return 'Agent manually paused';
+                    } else {
+                      return reasonText.length > 80 ? reasonText.substring(0, 80) + '...' : reasonText;
+                    }
+                  })()}
+                </span>
+              </div>
+              
+              {/* Failure Category */}
+              <div className="flex justify-between items-center">
+                <span className="text-gray-400 font-medium">Failure Category</span>
+                <span className="text-gray-300 font-bold">
+                  {selectedDiagnosticDetails.failure?.failureCategory || 'OTHER'}
+                </span>
+              </div>
+              
+              {/* Exchange Details - ONLY if exchangeFailure exists */}
+              {selectedDiagnosticDetails.exchangeFailure && (
+                <>
+                  <div className="border-t border-gray-600 pt-3 mt-3">
+                    <div className="text-sm font-semibold text-red-400 mb-2">Exchange Details</div>
+                    
+                    {/* Exchange name */}
+                    {selectedDiagnosticDetails.exchangeFailure.exchange && (
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="text-gray-400 font-medium">Exchange</span>
+                        <span className="text-red-400 font-bold capitalize">
+                          {selectedDiagnosticDetails.exchangeFailure.exchange}
+                        </span>
+                      </div>
+                    )}
+                    
+                    {/* Exact exchange failure */}
+                    <div className="flex justify-between items-start">
+                      <span className="text-gray-400 font-medium">Exchange Error</span>
+                      <span className="text-red-400 text-right max-w-48 leading-relaxed">
+                        {(() => {
+                          const failureType = selectedDiagnosticDetails.exchangeFailure.failureType;
+                          const exchange = selectedDiagnosticDetails.exchangeFailure.exchange || 'Exchange';
+                          
+                          if (failureType === 'NOT_CONNECTED') {
+                            return `${exchange.charAt(0).toUpperCase() + exchange.slice(1)} not connected`;
+                          } else if (failureType === 'LOW_FUTURES_BALANCE') {
+                            return 'Low futures balance';
+                          } else if (failureType === 'DECRYPT_FAILED') {
+                            return 'API key decryption failed';
+                          } else if (failureType === 'INVALID_KEYS') {
+                            return 'Invalid API keys';
+                          } else {
+                            return selectedDiagnosticDetails.exchangeFailure.rawError || 'Exchange error';
+                          }
+                        })()}
+                      </span>
                     </div>
                   </div>
-                  
-                  {/* Previous cycles */}
-                  {selectedDiagnosticDetails.details?.map((detail: any, idx: number) => (
-                    <div key={idx} className="p-3 bg-slate-800/30 rounded border border-gray-600/20">
-                      <div className="text-xs text-gray-400 mb-1">Previous Cycle {idx + 1}</div>
-                      <div className="text-sm text-gray-300">
-                        {detail.decision?.reason || detail.reason || 'No reason provided'}
-                      </div>
-                      <div className="text-xs text-gray-500 mt-1">
-                        {detail.timestamp ? new Date(detail.timestamp).toLocaleString() : 'Time not available'}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+                </>
+              )}
             </div>
           </div>
         </div>
