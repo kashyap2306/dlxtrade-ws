@@ -8,6 +8,8 @@ import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase-config';
 import { agentKeyToSlug } from '../utils/agentKeyToSlug';
 import { InformationCircleIcon, CheckCircleIcon, ClockIcon } from '@heroicons/react/24/outline';
+import ExchangeHealthCheck from '../components/ExchangeHealthCheck';
+import ManualTradeTrigger from '../components/ManualTradeTrigger';
 
 export default function TradingAgentControl() {
   const { user, authReady } = useAuth();
@@ -1045,6 +1047,31 @@ export default function TradingAgentControl() {
               </div>
             )}
           </div>
+
+          {/* HTF Agent Features - Exchange Health Check & Manual Trade Trigger */}
+          {isHTFTrendFilterAgent && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Feature 1: Exchange Execution Health Check */}
+              <div className="bg-slate-800/50 border border-purple-500/20 hover:border-purple-500/30 rounded-xl p-6 transition-colors">
+                <h3 className="text-xl font-bold text-white mb-4">Exchange Health Check</h3>
+                <div className="text-sm text-gray-400 mb-4">
+                  Test exchange order execution endpoint without placing real trades
+                </div>
+                
+                <ExchangeHealthCheck agentId={slug} />
+              </div>
+
+              {/* Feature 2: Manual Trade Trigger */}
+              <div className="bg-slate-800/50 border border-purple-500/20 hover:border-purple-500/30 rounded-xl p-6 transition-colors">
+                <h3 className="text-xl font-bold text-white mb-4">Manual Test Trade</h3>
+                <div className="text-sm text-gray-400 mb-4">
+                  Execute a test trade using the same execution path as the agent
+                </div>
+                
+                <ManualTradeTrigger agentId={slug} />
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

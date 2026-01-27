@@ -92,3 +92,105 @@ export class ExchangeConnectorFactory {
   }
 }
 
+export class ExchangeConnector {
+  // Utility method for testing exchange execution
+  static async testOrderExecution(
+    exchangeName: ExchangeName, 
+    credentials: { apiKey: string; apiSecret: string; sandbox?: boolean }, 
+    symbol: string
+  ): Promise<{
+    orderEndpointReachable: boolean;
+    permissionsOk: boolean;
+    futuresEnabled: boolean;
+    symbolTradable: boolean;
+    message?: string;
+  }> {
+    try {
+      const exchangeCredentials: ExchangeCredentials = {
+        apiKey: credentials.apiKey,
+        secret: credentials.apiSecret,
+        testnet: credentials.sandbox ?? true
+      };
+
+      // Add passphrase for exchanges that require it
+      if (exchangeName === 'bitget' || exchangeName === 'weex') {
+        // For test purposes, we'll skip passphrase validation
+        // In production, this should be provided
+        (exchangeCredentials as any).passphrase = 'test';
+      }
+
+      const connector = ExchangeConnectorFactory.create(exchangeName, exchangeCredentials);
+
+      // Test 1: Order endpoint reachable
+      let orderEndpointReachable = false;
+      let permissionsOk = false;
+      let futuresEnabled = false;
+      let symbolTradable = false;
+
+      try {
+        // Test connection first
+        const connectionTest = await connector.testConnection();
+        orderEndpointReachable = connectionTest.success;
+
+        if (orderEndpointReachable) {
+          // Test 2: Check permissions by getting account info
+          if (connector.getAccount) {
+            try {
+              await connector.getAccount();
+              permissionsOk = true;
+            } catch (err: any) {
+              logger.warn({ err: err.message }, 'Account permissions test failed');
+              permissionsOk = false;
+            }
+          } else {
+            // If no getAccount method, assume permissions are OK if connection works
+            permissionsOk = true;
+          }
+
+          // Test 3: Check futures enabled by getting futures balance
+          if (connector.getFuturesBalance) {
+            try {
+              await connector.getFuturesBalance();
+              futuresEnabled = true;
+            } catch (err: any) {
+              logger.warn({ err: err.message }, 'Futures balance test failed');
+              futuresEnabled = false;
+            }
+          }
+
+          // Test 4: Check if symbol is tradable by getting ticker
+          try {
+            await connector.getTicker(symbol);
+            symbolTradable = true;
+          } catch (err: any) {
+            logger.warn({ err: err.message, symbol }, 'Symbol ticker test failed');
+            symbolTradable = false;
+          }
+        }
+
+        return {
+          orderEndpointReachable,
+          permissionsOk,
+          futuresEnabled,
+          symbolTradable,
+          message: 'Exchange execution test completed successfully'
+        };
+
+      } catch (err: any) {
+        logger.error({ err, exchangeName }, 'Exchange execution test failed');
+        return {
+          orderEndpointReachable: false,
+          permissionsOk: false,
+          futuresEnabled: false,
+          symbolTradable: false,
+          message: err.message || 'Exchange execution test failed'
+        };
+      }
+
+    } catch (err: any) {
+      logger.error({ err, exchangeName }, 'Exchange connector creation failed');
+      throw new Error(`Exchange connector creation failed: ${err.message}`);
+    }
+  }
+}
+

@@ -720,17 +720,29 @@ export async function sanitizedSet(
   }
 
   // HARD WRITE BARRIER: Block any write to exchangeStatus/keysClearedAt/keysClearedReason
+  // EXCEPTION: Allow these fields ONLY from /exchange/connect route with proper token
   if (isExchangeConfig && (
     'exchangeStatus' in data || 
     'keysClearedAt' in data || 
     'keysClearedReason' in data
   )) {
-    const errorMsg = `🚨 [HARD_WRITE_BARRIER] Attempted to write forbidden fields to exchange config: ${Object.keys(data).filter(k => ['exchangeStatus', 'keysClearedAt', 'keysClearedReason'].includes(k))}`;
-    console.error(errorMsg);
-    console.error('   Path:', docRef.path);
-    console.error('   Stack:', new Error().stack);
-    console.error('   HARD ERROR: Write protection invariant triggered by sanitizedSet.');
-    throw new Error(errorMsg);
+    // Check if this is an allowed exchange connect write
+    const hasConnectToken = (globalThis as any).__DLX_EXCHANGE_CONNECT_WRITE_TOKEN === true;
+    const stackTrace = new Error().stack || '';
+    const isFromExchangeRoute = stackTrace.includes('/routes/exchange.ts') || stackTrace.includes('\\routes\\exchange.ts');
+    
+    if (!hasConnectToken || !isFromExchangeRoute) {
+      const errorMsg = `🚨 [HARD_WRITE_BARRIER] Attempted to write forbidden fields to exchange config: ${Object.keys(data).filter(k => ['exchangeStatus', 'keysClearedAt', 'keysClearedReason'].includes(k))}`;
+      console.error(errorMsg);
+      console.error('   Path:', docRef.path);
+      console.error('   Has connect token:', hasConnectToken);
+      console.error('   Is from exchange route:', isFromExchangeRoute);
+      console.error('   Stack:', stackTrace);
+      console.error('   HARD ERROR: Write protection invariant triggered by sanitizedSet.');
+      throw new Error(errorMsg);
+    }
+    
+    console.log('✅ [EXCHANGE_CONNECT_WRITE_ALLOWED] Allowing forbidden fields from exchange connect route');
   }
 
   console.log("🔍 [SANITIZED_SET_ENTRY] Raw payload keys:", Object.keys(data));

@@ -9,7 +9,7 @@ import {
   type ExchangeName,
   type ExchangeCredentials,
 } from "../services/exchangeConnector";
-import { encrypt, decrypt } from "../services/keyManager";
+import { encrypt, decrypt, getFullEncryptionKeyHash } from "../services/keyManager";
 import { logger } from "../utils/logger";
 import * as admin from "firebase-admin";
 
@@ -848,17 +848,53 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
 
         try {
           // ONLY construct with allowed fields - NO exchangeStatus EVER
+          let apiKeyEncrypted: string;
+          let secretEncrypted: string;
+          let passphraseEncrypted: string | undefined;
+          
+          try {
+            apiKeyEncrypted = encrypt(apiKey);
+            secretEncrypted = encrypt(secret);
+            
+            // CRITICAL VALIDATION: Encrypted keys must never be empty
+            if (!apiKeyEncrypted || apiKeyEncrypted.length === 0) {
+              throw new Error('ENCRYPTION_FAILED: API key encryption returned empty string');
+            }
+            if (!secretEncrypted || secretEncrypted.length === 0) {
+              throw new Error('ENCRYPTION_FAILED: Secret key encryption returned empty string');
+            }
+            
+            if (passphrase) {
+              passphraseEncrypted = encrypt(passphrase);
+              if (!passphraseEncrypted || passphraseEncrypted.length === 0) {
+                throw new Error('ENCRYPTION_FAILED: Passphrase encryption returned empty string');
+              }
+            }
+          } catch (encryptErr: any) {
+            // HARD FAIL: Encryption must succeed completely or not at all
+            console.error('🚨 [ENCRYPTION_VALIDATION_FAILED]', {
+              uid: user.uid,
+              error: encryptErr.message,
+              operation: 'exchange_connect_encrypt'
+            });
+            throw encryptErr;
+          }
+          
           const allowedConfig: any = {
             exchange: resolvedExchange,
-            apiKeyEncrypted: encrypt(apiKey),
-            secretEncrypted: encrypt(secret),
+            apiKeyEncrypted,
+            secretEncrypted,
             testnet: false,
             disconnected: false, // Clear disconnected flag when reconnecting
+            exchangeStatus: admin.firestore.FieldValue.delete(), // Clear corrupted status
+            corruptedAt: admin.firestore.FieldValue.delete(),
+            corruptedReason: admin.firestore.FieldValue.delete(),
+            encryptionKeyHash: getFullEncryptionKeyHash(), // Store current encryption key hash
             updatedAt: admin.firestore.Timestamp.now(),
           };
 
-          if (passphrase) {
-            allowedConfig.passphraseEncrypted = encrypt(passphrase);
+          if (passphraseEncrypted) {
+            allowedConfig.passphraseEncrypted = passphraseEncrypted;
           }
 
           if (!existingDoc.exists) {
@@ -1275,6 +1311,26 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
           exchange,
         };
       } catch (err: any) {
+        if (
+          err.message &&
+          err.message.includes("ENCRYPTION_FAILED")
+        ) {
+          logger.error(
+            { error: err.message, uid: user.uid },
+            "Exchange credential encryption failed - keys not saved",
+          );
+          // 🔥 HARD_LOG: ENCRYPTION_FAILED_RETURN_PATH
+          console.log("🔥 [HARD_LOG] [ENCRYPTION_FAILED_RETURN_PATH]", {
+            uid: user.uid,
+            error: err.message,
+            operation: "exchange_connect",
+            result: "encryption_failed",
+          });
+          return reply.code(400).send({
+            error: "ENCRYPTION_FAILED: " + err.message,
+            connected: false,
+          });
+        }
         if (
           err.message &&
           err.message.includes("EXCHANGE_KEY_DECRYPTION_FAILED")

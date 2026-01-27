@@ -591,6 +591,15 @@ export async function isExchangeUsable(
     };
   }
 
+  // Check if exchange is marked as corrupted
+  if (cleanConfig.exchangeStatus === 'CORRUPTED') {
+    return {
+      usable: false,
+      reason: "corrupted",
+      exchange: cleanConfig.exchange,
+    };
+  }
+
   const exchange = (cleanConfig.exchange || "").toLowerCase().trim();
 
   // CRITICAL: Check for encrypted keys presence BEFORE attempting decryption
@@ -707,6 +716,47 @@ export async function isExchangeUsable(
   } catch (error: any) {
     // CRITICAL: Decryption exceptions are NOT credential validation failures
     // NEVER write INVALID_KEYS here - only in POST /exchange/connect
+    
+    // Check if this is an ENCRYPTION_SECRET_CHANGED error (bad decrypt)
+    if (error.message && error.message.includes("ENCRYPTION_SECRET_CHANGED")) {
+      logger.error(
+        {
+          uid,
+          exchange,
+          error: error.message,
+        },
+        "🚨 ENCRYPTION_SECRET_CHANGED: Exchange keys are corrupted due to encryption secret change - marking exchange as CORRUPTED"
+      );
+      
+      // Mark exchange as corrupted so user knows to reconnect
+      try {
+        const docRef = db()
+          .collection("users")
+          .doc(uid)
+          .collection("exchangeConfig")
+          .doc("current");
+
+        await docRef.update({
+          exchangeStatus: "CORRUPTED",
+          corruptedAt: admin.firestore.Timestamp.now(),
+          corruptedReason: "ENCRYPTION_SECRET_CHANGED",
+        });
+        
+        logger.info({ uid, exchange }, "Exchange marked as CORRUPTED");
+      } catch (updateError: any) {
+        logger.error(
+          { uid, exchange, error: updateError.message },
+          "Failed to mark exchange as corrupted"
+        );
+      }
+
+      return {
+        usable: false,
+        reason: "corrupted",
+        exchange,
+      };
+    }
+    
     logger.warn(
       {
         uid,
@@ -4240,6 +4290,32 @@ export class FirestoreAdapter {
         return cleanData;
       }
 
+      // Check for encryption secret consistency if we have encrypted keys
+      if (data && data.apiKeyEncrypted && data.encryptionKeyHash) {
+        const { isEncryptionSecretChanged } = await import('./keyManager');
+        if (isEncryptionSecretChanged(data.encryptionKeyHash)) {
+          logger.warn(
+            { uid },
+            "ENCRYPTION_SECRET_CHANGED detected - exchange config is corrupted"
+          );
+          
+          // Mark as corrupted but don't throw - let caller handle it
+          try {
+            await this.markExchangeAsCorrupted(uid, 'ENCRYPTION_SECRET_CHANGED');
+          } catch (markError) {
+            logger.error({ uid, error: markError }, 'Failed to mark exchange as corrupted during getExchangeConfig');
+          }
+          
+          // Return data with corrupted status
+          return {
+            ...data,
+            exchangeStatus: 'CORRUPTED',
+            corruptedReason: 'ENCRYPTION_SECRET_CHANGED',
+            corruptedAt: new Date()
+          };
+        }
+      }
+
       return data;
     } catch (error: any) {
       logger.error(
@@ -4247,6 +4323,43 @@ export class FirestoreAdapter {
         "Error getting exchange config",
       );
       return null;
+    }
+  }
+
+  /**
+   * Mark exchange config as corrupted due to encryption secret change
+   * This prevents further decrypt attempts and forces user to reconnect
+   */
+  async markExchangeAsCorrupted(
+    uid: string,
+    reason: string = "ENCRYPTION_SECRET_CHANGED"
+  ): Promise<void> {
+    try {
+      const docRef = db()
+        .collection("users")
+        .doc(uid)
+        .collection("exchangeConfig")
+        .doc("current");
+
+      await docRef.update({
+        exchangeStatus: "CORRUPTED",
+        corruptedReason: reason,
+        corruptedAt: admin.firestore.Timestamp.now(),
+        // Keep encrypted keys for potential recovery after reconnect
+        // but mark them as unusable
+        lastCorruptionCheck: admin.firestore.Timestamp.now()
+      });
+
+      logger.warn(
+        { uid, reason },
+        "Exchange config marked as CORRUPTED - user must reconnect exchange"
+      );
+    } catch (error: any) {
+      logger.error(
+        { error: error.message, uid, reason },
+        "Failed to mark exchange config as corrupted"
+      );
+      throw error;
     }
   }
 

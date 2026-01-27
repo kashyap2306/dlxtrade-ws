@@ -123,6 +123,9 @@ export async function exchangeAndTradingRoutes(fastify: FastifyInstance) {
         passphraseEncrypted: !!sanitizedConfig?.passphraseEncrypted,
         connected: usabilityResult.usable,
         disconnected: sanitizedConfig?.disconnected === true, // CRITICAL: Include disconnected flag for UI
+        // Include corruption status for UI handling
+        corrupted: sanitizedConfig?.exchangeStatus === 'CORRUPTED',
+        corruptedReason: sanitizedConfig?.corruptedReason,
       };
 
       routeExitLog('GET /exchangeConfig/current', startTime);

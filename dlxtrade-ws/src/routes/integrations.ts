@@ -1089,14 +1089,44 @@ export async function integrationsRoutes(fastify: FastifyInstance) {
 
       const configData: any = {
         exchange: resolvedExchange,
-        apiKeyEncrypted: encrypt(apiKey),
-        secretEncrypted: encrypt(secret),
-        testnet,
-        updatedAt: admin.firestore.Timestamp.now(),
       };
 
-      if (passphrase) {
-        configData.passphraseEncrypted = encrypt(passphrase);
+      try {
+        // Encrypt keys with validation
+        const apiKeyEncrypted = encrypt(apiKey);
+        const secretEncrypted = encrypt(secret);
+        
+        // CRITICAL VALIDATION: Encrypted keys must never be empty
+        if (!apiKeyEncrypted || apiKeyEncrypted.length === 0) {
+          throw new Error('ENCRYPTION_FAILED: API key encryption returned empty string');
+        }
+        if (!secretEncrypted || secretEncrypted.length === 0) {
+          throw new Error('ENCRYPTION_FAILED: Secret key encryption returned empty string');
+        }
+        
+        configData.apiKeyEncrypted = apiKeyEncrypted;
+        configData.secretEncrypted = secretEncrypted;
+        configData.testnet = testnet;
+        configData.updatedAt = admin.firestore.Timestamp.now();
+
+        if (passphrase) {
+          const passphraseEncrypted = encrypt(passphrase);
+          if (!passphraseEncrypted || passphraseEncrypted.length === 0) {
+            throw new Error('ENCRYPTION_FAILED: Passphrase encryption returned empty string');
+          }
+          configData.passphraseEncrypted = passphraseEncrypted;
+        }
+      } catch (encryptErr: any) {
+        logger.error({ 
+          error: encryptErr.message, 
+          uid: user.uid,
+          targetUid: targetUserId,
+          exchange
+        }, 'Exchange credential encryption failed');
+        return reply.code(400).send({ 
+          error: 'ENCRYPTION_FAILED: ' + encryptErr.message,
+          success: false
+        });
       }
 
       const sanitizedConfigData = sanitizeFirestorePayload(configData);

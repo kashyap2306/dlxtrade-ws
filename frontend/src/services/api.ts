@@ -407,6 +407,11 @@ export const agentsApi = {
   getCrowdConsensusExchangeStatus: () => api.get('/agents/crowd-consensus/exchange-status'),
   getCrowdConsensusExchangeBreakdown: () => api.get('/agents/crowd-consensus/exchange-breakdown'),
   getCrowdConsensusDiagnostics: (limit?: number) => api.get('/agents/crowd-consensus/diagnostics', { params: { limit } }),
+  
+  // HTF Trend Filter Agent specific endpoints
+  testExchangeExecution: (agentId: string) => api.post(`/agents/${agentId}/test-exchange-execution`),
+  executeManualTrade: (agentId: string, tradeData: { pair: string; side: 'LONG' | 'SHORT'; quantity: number }) => 
+    api.post(`/agents/${agentId}/execute-manual-trade`, tradeData),
 };
 
 // Activity Logs - routes include /api prefix from baseURL

@@ -2545,5 +2545,237 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: err.message || 'Error updating settings' });
     }
   });
+
+  // POST /api/agents/:agentId/test-exchange-execution - Test exchange execution endpoint
+  fastify.post('/:agentId/test-exchange-execution', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ Params: { agentId: string } }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const uid = user?.uid;
+      const { agentId } = request.params;
+
+      if (!uid) {
+        return reply.code(403).send({ error: 'Authentication required' });
+      }
+
+      // Only support HTF Trend Filter Agent for now
+      if (agentId !== 'htf-trend-filter-agent') {
+        return reply.code(404).send({ error: 'Agent not found or not supported' });
+      }
+
+      const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'htf-trend-filter-agent');
+      if (!hasAccess) {
+        return reply.code(403).send({ error: 'HTF Trend Filter Agent access not granted yet' });
+      }
+
+      // Get user's exchange configuration
+      const exchangeConfig = await firestoreAdapter.getExchangeConfig(uid);
+      if (!exchangeConfig || !exchangeConfig.exchange) {
+        return reply.code(400).send({
+          error: 'No exchange configured',
+          orderEndpointReachable: false,
+          permissionsOk: false,
+          futuresEnabled: false,
+          symbolTradable: false
+        });
+      }
+
+      const exchangeKey = exchangeConfig.exchange;
+
+      // CHECK FOR CORRUPTED STATUS: Encryption secret may have changed
+      if (exchangeConfig.exchangeStatus === 'CORRUPTED') {
+        logger.warn({ uid, agentId, reason: exchangeConfig.corruptedReason }, 'Exchange is CORRUPTED - cannot decrypt keys');
+        return reply.code(200).send({
+          orderEndpointReachable: false,
+          permissionsOk: false,
+          futuresEnabled: false,
+          symbolTradable: false,
+          exchange: exchangeKey,
+          error: 'EXCHANGE_CORRUPTED',
+          message: 'Exchange keys are invalid due to encryption secret change. Please reconnect exchange.'
+        });
+      }
+
+      try {
+        // Decrypt exchange credentials
+        let decryptedApiKey: string | null = null;
+        let decryptedApiSecret: string | null = null;
+
+        try {
+          decryptedApiKey = decrypt(exchangeConfig.apiKeyEncrypted, 'exchange');
+          decryptedApiSecret = decrypt(exchangeConfig.secretKeyEncrypted || exchangeConfig.secretEncrypted, 'exchange');
+        } catch (decryptError: any) {
+          // Handle ENCRYPTION_SECRET_CHANGED error specifically
+          if (decryptError.message?.includes('ENCRYPTION_SECRET_CHANGED')) {
+            logger.warn({ uid, agentId, error: decryptError.message }, 'Exchange keys corrupted due to encryption secret change');
+            
+            // Mark exchange as corrupted
+            try {
+              await firestoreAdapter.markExchangeAsCorrupted(uid, 'ENCRYPTION_SECRET_CHANGED');
+            } catch (markError) {
+              logger.error({ uid, agentId, error: markError }, 'Failed to mark exchange as corrupted');
+            }
+            
+            return reply.code(200).send({
+              orderEndpointReachable: false,
+              permissionsOk: false,
+              futuresEnabled: false,
+              symbolTradable: false,
+              exchange: exchangeKey,
+              error: 'EXCHANGE_CORRUPTED',
+              message: 'Exchange keys are invalid due to encryption secret change. Please reconnect exchange.'
+            });
+          }
+          
+          // Handle other decryption errors
+          throw decryptError;
+        }
+
+        // EXECUTION GUARD: Assert keys are not null before proceeding
+        if (!decryptedApiKey || decryptedApiKey.trim() === '') {
+          throw new Error('EXCHANGE_KEYS_NOT_DECRYPTED: API key decryption failed or returned empty');
+        }
+        
+        if (!decryptedApiSecret || decryptedApiSecret.trim() === '') {
+          throw new Error('EXCHANGE_KEYS_NOT_DECRYPTED: Secret key decryption failed or returned empty');
+        }
+
+        // Import exchange connector
+        const { ExchangeConnector } = await import('../services/exchangeConnector');
+
+        // Test order execution endpoint with dry-run
+        const testResult = await ExchangeConnector.testOrderExecution(exchangeKey as any, {
+          apiKey: decryptedApiKey,
+          apiSecret: decryptedApiSecret,
+          sandbox: exchangeConfig.sandbox || false
+        }, 'BTC/USDT');
+
+        return reply.code(200).send({
+          orderEndpointReachable: testResult.orderEndpointReachable,
+          permissionsOk: testResult.permissionsOk,
+          futuresEnabled: testResult.futuresEnabled,
+          symbolTradable: testResult.symbolTradable,
+          exchange: exchangeKey,
+          message: testResult.message || 'Exchange execution test completed'
+        });
+
+      } catch (err: any) {
+        logger.error({ err, uid, agentId }, 'Exchange execution test failed');
+        
+        // Return specific error messages based on error type
+        let errorMessage = err.message || 'Exchange connection failed';
+        
+        // Map specific errors to user-friendly messages
+        if (err.message?.includes('ENCRYPTION_SECRET_CHANGED')) {
+          errorMessage = 'EXCHANGE_CORRUPTED';
+        } else if (err.message?.includes('EXCHANGE_KEYS_NOT_DECRYPTED')) {
+          errorMessage = 'EXCHANGE_KEYS_NOT_DECRYPTED';
+        } else if (err.message?.includes('PERMISSION_DENIED')) {
+          errorMessage = 'PERMISSION_DENIED';
+        } else if (err.message?.includes('FUTURES_DISABLED')) {
+          errorMessage = 'FUTURES_DISABLED';
+        } else if (err.message?.includes('SYMBOL_NOT_TRADABLE')) {
+          errorMessage = 'SYMBOL_NOT_TRADABLE';
+        }
+        
+        return reply.code(200).send({
+          orderEndpointReachable: false,
+          permissionsOk: false,
+          futuresEnabled: false,
+          symbolTradable: false,
+          exchange: exchangeKey,
+          error: errorMessage,
+          rawError: err.toString()
+        });
+      }
+
+    } catch (err: any) {
+      logger.error({ err }, 'Error testing exchange execution');
+      return reply.code(500).send({ error: err.message || 'Error testing exchange execution' });
+    }
+  });
+
+  // POST /api/agents/:agentId/execute-manual-trade - Execute manual test trade
+  fastify.post('/:agentId/execute-manual-trade', {
+    preHandler: [fastify.authenticate],
+  }, async (request: FastifyRequest<{ 
+    Params: { agentId: string }; 
+    Body: { pair: string; side: 'LONG' | 'SHORT'; quantity: number } 
+  }>, reply: FastifyReply) => {
+    try {
+      const user = (request as any).user;
+      const uid = user?.uid;
+      const { agentId } = request.params;
+      const { pair, side, quantity } = request.body;
+
+      if (!uid) {
+        return reply.code(403).send({ error: 'Authentication required' });
+      }
+
+      // Validate input
+      const tradeSchema = z.object({
+        pair: z.string().min(1),
+        side: z.enum(['LONG', 'SHORT']),
+        quantity: z.number().min(0.001)
+      });
+
+      const validatedTrade = tradeSchema.parse({ pair, side, quantity });
+
+      // Only support HTF Trend Filter Agent for now
+      if (agentId !== 'htf-trend-filter-agent') {
+        return reply.code(404).send({ error: 'Agent not found or not supported' });
+      }
+
+      const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'htf-trend-filter-agent');
+      if (!hasAccess) {
+        return reply.code(403).send({ error: 'HTF Trend Filter Agent access not granted yet' });
+      }
+
+      // Get user's trading agent
+      const userAgents = await firestoreAdapter.getUserTradingAgents(uid);
+      const targetAgent = userAgents.find((a: any) => String(a?.name || '').toLowerCase().includes('htf trend filter'));
+      
+      if (!targetAgent?.id) {
+        return reply.code(404).send({ error: 'HTF Trend Filter Agent not found' });
+      }
+
+      // Call the SAME execution path used by the agent
+      const { AgentExecutionService } = await import('../services/agentExecutionService');
+      
+      // Create manual execution context
+      const manualExecutionContext = {
+        agentId: targetAgent.id,
+        tradingPair: validatedTrade.pair,
+        side: validatedTrade.side,
+        quantity: validatedTrade.quantity,
+        testMode: true, // TEST ONLY mode
+        manualTrigger: true
+      };
+
+      const executionResult = await AgentExecutionService.executeManualTrade(uid, manualExecutionContext);
+
+      return reply.code(200).send({
+        success: executionResult.success,
+        message: executionResult.message,
+        orderId: executionResult.orderId || null,
+        executionDetails: executionResult.details || null,
+        error: executionResult.error || null,
+        rawError: executionResult.rawError || null
+      });
+
+    } catch (err: any) {
+      if (err instanceof z.ZodError) {
+        return reply.code(400).send({ error: 'Invalid trade parameters', details: err.errors });
+      }
+      
+      logger.error({ err }, 'Error executing manual trade');
+      return reply.code(500).send({ 
+        success: false,
+        error: err.message || 'Error executing manual trade',
+        rawError: err.toString()
+      });
+    }
+  });
 }
 

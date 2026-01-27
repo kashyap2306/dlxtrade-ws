@@ -271,7 +271,6 @@ export class AgentExecutionService {
           error: error instanceof Error ? error.message : 'Unknown error'
         }, 'HTF Agent: Failed to calculate early HTF bias direction');
         htfBiasDirection = 'NO_TRADE';
-        diagnostics.direction = 'NO_TRADE';
       }
     }
 
@@ -372,6 +371,27 @@ export class AgentExecutionService {
         return;
       }
 
+      // Check if exchange is corrupted due to encryption secret change
+      if (exchangeConfig.exchangeStatus === 'CORRUPTED') {
+        skippedReason = 'EXCHANGE_CORRUPTED';
+        finalizeSkip('EXCHANGE_CORRUPTED', 'Exchange keys are invalid due to encryption secret change. Please reconnect exchange.', 'EXCHANGE');
+        
+        if (isHTFAgent) {
+          logger.info({
+            agentId,
+            tradingPair
+          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
+        }
+        
+        logger.warn({ 
+          agentId, 
+          uid: agentConfig.userId,
+          corruptedReason: exchangeConfig.corruptedReason
+        }, 'SKIP: EXCHANGE_CORRUPTED - exchange keys corrupted, user must reconnect');
+        
+        return;
+      }
+
       // FIX PART B — EXCHANGE ERROR TRUTH SOURCE
       // Compute exchange status ONLY from isExchangeUsable() - single source of truth
       exchangeUsable = exchangeConfig?.exchange && 
@@ -431,13 +451,69 @@ export class AgentExecutionService {
         return;
       }
 
-      const apiKey = encryptedApiKey ? decrypt(encryptedApiKey, 'background_job') : null;
-      const secret = encryptedSecret ? decrypt(encryptedSecret, 'background_job') : null;
-      const passphrase = encryptedPassphrase ? decrypt(encryptedPassphrase, 'background_job') : undefined;
+      let apiKey: string | null = null;
+      let secret: string | null = null;
+      let passphrase: string | undefined = undefined;
 
+      try {
+        apiKey = encryptedApiKey ? decrypt(encryptedApiKey, 'exchange') : null;
+        secret = encryptedSecret ? decrypt(encryptedSecret, 'exchange') : null;
+        passphrase = encryptedPassphrase ? decrypt(encryptedPassphrase, 'exchange') : undefined;
+      } catch (decryptError: any) {
+        // Handle ENCRYPTION_SECRET_CHANGED error specifically
+        if (decryptError.message?.includes('ENCRYPTION_SECRET_CHANGED')) {
+          skippedReason = 'EXCHANGE_CORRUPTED';
+          finalizeSkip('EXCHANGE_CORRUPTED', 'Exchange keys are invalid due to encryption secret change. Please reconnect exchange.', 'EXCHANGE');
+          
+          // Mark exchange config as corrupted
+          try {
+            await firestoreAdapter.markExchangeAsCorrupted(agentConfig.userId, 'ENCRYPTION_SECRET_CHANGED');
+          } catch (markError) {
+            logger.error({ agentId, uid: agentConfig.userId, error: markError }, 'Failed to mark exchange as corrupted');
+          }
+          
+          if (isHTFAgent) {
+            logger.info({
+              agentId,
+              tradingPair
+            }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
+          }
+          
+          logger.error({ 
+            agentId, 
+            uid: agentConfig.userId, 
+            exchange: exchangeConfig.exchange,
+            error: decryptError.message
+          }, `SKIP: ${skippedReason} - encryption secret has changed, exchange marked as corrupted`);
+          
+          return;
+        }
+        
+        // Handle other decryption errors
+        skippedReason = 'EXCHANGE_KEYS_NOT_DECRYPTED';
+        finalizeSkip('EXCHANGE_KEYS_NOT_DECRYPTED', 'Failed to decrypt exchange keys', 'EXCHANGE');
+        
+        if (isHTFAgent) {
+          logger.info({
+            agentId,
+            tradingPair
+          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
+        }
+        
+        logger.error({ 
+          agentId, 
+          uid: agentConfig.userId, 
+          exchange: exchangeConfig.exchange,
+          error: decryptError.message
+        }, `SKIP: ${skippedReason} - decryption failed`);
+        
+        return;
+      }
+
+      // EXECUTION GUARD: Assert keys are not null before proceeding
       if (!apiKey || !secret) {
-        skippedReason = 'CREDENTIALS_DECRYPT_FAILED';
-        finalizeSkip('CREDENTIALS_DECRYPT_FAILED', 'Exchange credentials could not be decrypted. Please reconnect your exchange in Settings → Exchange.', 'EXCHANGE');
+        skippedReason = 'EXCHANGE_KEYS_NOT_DECRYPTED';
+        finalizeSkip('EXCHANGE_KEYS_NOT_DECRYPTED', 'EXCHANGE_KEYS_NOT_DECRYPTED', 'EXCHANGE');
         
         // CRITICAL: Log detailed information to diagnose decrypt failure
         const encryptionKeyStatus = (() => {
@@ -823,9 +899,10 @@ export class AgentExecutionService {
         const htfTrend = HTFTrendFilterStrategy.analyzeHTFTrend(candles15m);
         diagnostics.htfTrend = htfTrend;
         
+        // LOGIC FIX (MANDATORY): If direction === NO_TRADE, do NOT start execution pipeline
         if (htfTrend.direction === 'NO_TRADE') {
           skippedReason = htfTrend.reason;
-          finalizeSkip('HTF_NO_TRADE', htfTrend.reason || 'HTF trend analysis indicates no trade opportunity', 'SIGNAL');
+          finalizeSkip('HTF_CONDITION_NOT_MET', htfTrend.reason || 'HTF trend conditions not met - no trade opportunity', 'SIGNAL');
           
           logger.info({
             agentId,
@@ -1201,7 +1278,7 @@ export class AgentExecutionService {
       // CRITICAL FIX: ALWAYS persist diagnostics, even on early returns or exceptions
       // This guarantees ONE diagnostic entry per execution cycle
       try {
-        // executionStatus logic: if execution.success === true → EXECUTED, else if execution.success === false → FAILED, else → SKIPPED
+        // EXECUTION STATUS RULE (KEEP AS IS): success === true → EXECUTED, success === false → FAILED, else → SKIPPED
         if (diagnostics.execution?.success === true) {
           diagnostics.executionStatus = 'EXECUTED';
         } else if (diagnostics.execution?.success === false) {
@@ -1210,41 +1287,8 @@ export class AgentExecutionService {
           diagnostics.executionStatus = 'SKIPPED';
         }
 
-        // POPUP GUARANTEE: Ensure SKIPPED rows ALWAYS have diagnostics.failure with reasonText and category
-        if (diagnostics.executionStatus === 'SKIPPED' || diagnostics.executionStatus === 'FAILED') {
-          if (!diagnostics.failure) {
-            // Build failure object from decision.reason
-            const reason = diagnostics.decision?.reason || 'UNKNOWN';
-            diagnostics.failure = {
-              reasonCode: reason.toUpperCase().replace(/[^A-Z0-9_]/g, '_'),
-              reasonText: reason,
-              category: 'SIGNAL'
-            };
-          }
-          
-          // Validate failure object has required fields - NO EMPTY STRINGS, NO PLACEHOLDERS, NO "UNKNOWN"
-          if (!diagnostics.failure.reasonCode || diagnostics.failure.reasonCode === 'UNKNOWN') {
-            diagnostics.failure.reasonCode = 'NO_SIGNAL';
-          }
-          if (!diagnostics.failure.reasonText || diagnostics.failure.reasonText === 'UNKNOWN' || diagnostics.failure.reasonText === '') {
-            diagnostics.failure.reasonText = diagnostics.decision?.reason || 'No trading signal generated';
-          }
-          if (!diagnostics.failure.category) {
-            // Infer category from reasonCode
-            const code = diagnostics.failure.reasonCode.toUpperCase();
-            if (code.includes('SESSION') || code.includes('TRADING_HOURS') || code.includes('STOPPED') || code.includes('PAUSED')) {
-              diagnostics.failure.category = 'SESSION';
-            } else if (code.includes('EXCHANGE') || code.includes('CREDENTIALS') || code.includes('DECRYPT')) {
-              diagnostics.failure.category = 'EXCHANGE';
-            } else if (code.includes('DATA') || code.includes('CANDLE') || code.includes('INDICATOR')) {
-              diagnostics.failure.category = 'DATA';
-            } else if (code.includes('RISK') || code.includes('LIMIT') || code.includes('COOLDOWN') || code.includes('POSITION')) {
-              diagnostics.failure.category = 'RISK';
-            } else {
-              diagnostics.failure.category = 'SIGNAL';
-            }
-          }
-        }
+        // FINALLY BLOCK – READ ONLY (STRICT): If diagnostics.failure is missing → DO NOTHING
+        // NEVER invent failure in finally
 
         // PRESERVE EXCHANGE ERROR - NEVER delete diagnostics.execution.exchangeErrorReason or diagnostics.execution.error
         // UI must receive RAW exchange error
@@ -1905,6 +1949,233 @@ export class AgentExecutionService {
         agentId,
         userId
       }, 'VWAP Strategy execution error');
+    }
+  }
+
+  static async executeManualTrade(
+    userId: string,
+    context: {
+      agentId: string;
+      tradingPair: string;
+      side: 'LONG' | 'SHORT';
+      quantity: number;
+      testMode: boolean;
+      manualTrigger: boolean;
+    }
+  ): Promise<{
+    success: boolean;
+    message: string;
+    orderId?: string;
+    details?: any;
+    error?: string;
+    rawError?: string;
+  }> {
+    try {
+      logger.info({
+        userId,
+        agentId: context.agentId,
+        tradingPair: context.tradingPair,
+        side: context.side,
+        quantity: context.quantity,
+        testMode: context.testMode
+      }, 'Executing manual trade');
+
+      // Get user's exchange configuration
+      const exchangeConfig = await firestoreAdapter.getExchangeConfig(userId);
+      if (!exchangeConfig || !exchangeConfig.exchange) {
+        return {
+          success: false,
+          message: 'No exchange configured',
+          error: 'EXCHANGE_NOT_CONFIGURED'
+        };
+      }
+
+      const exchangeKey = exchangeConfig.exchange;
+
+      // CHECK FOR CORRUPTED STATUS: Encryption secret may have changed
+      if (exchangeConfig.exchangeStatus === 'CORRUPTED') {
+        logger.warn({ userId, agentId: context.agentId, reason: exchangeConfig.corruptedReason }, 'Exchange is CORRUPTED - cannot decrypt keys');
+        return {
+          success: false,
+          message: 'Exchange keys are invalid due to encryption secret change',
+          error: 'EXCHANGE_CORRUPTED'
+        };
+      }
+
+      try {
+        // Decrypt exchange credentials
+        let decryptedApiKey: string | null = null;
+        let decryptedApiSecret: string | null = null;
+        let decryptedPassphrase: string | null = null;
+
+        try {
+          decryptedApiKey = decrypt(exchangeConfig.apiKeyEncrypted, 'exchange');
+          decryptedApiSecret = decrypt(exchangeConfig.secretKeyEncrypted || exchangeConfig.secretEncrypted, 'exchange');
+          decryptedPassphrase = exchangeConfig.passphraseEncrypted ? 
+            decrypt(exchangeConfig.passphraseEncrypted, 'exchange') : null;
+        } catch (decryptError: any) {
+          // Handle ENCRYPTION_SECRET_CHANGED error specifically
+          if (decryptError.message?.includes('ENCRYPTION_SECRET_CHANGED')) {
+            logger.warn({ userId, agentId: context.agentId, error: decryptError.message }, 'Exchange keys corrupted due to encryption secret change');
+            
+            // Mark exchange as corrupted
+            try {
+              await firestoreAdapter.markExchangeAsCorrupted(userId, 'ENCRYPTION_SECRET_CHANGED');
+            } catch (markError) {
+              logger.error({ userId, agentId: context.agentId, error: markError }, 'Failed to mark exchange as corrupted');
+            }
+            
+            return {
+              success: false,
+              message: 'Exchange keys are invalid due to encryption secret change. Please reconnect exchange.',
+              error: 'EXCHANGE_CORRUPTED'
+            };
+          }
+          
+          // Handle other decryption errors
+          throw decryptError;
+        }
+
+        // EXECUTION GUARD: Assert keys are not null before proceeding
+        if (!decryptedApiKey || decryptedApiKey.trim() === '') {
+          throw new Error('EXCHANGE_KEYS_NOT_DECRYPTED: API key decryption failed or returned empty');
+        }
+        
+        if (!decryptedApiSecret || decryptedApiSecret.trim() === '') {
+          throw new Error('EXCHANGE_KEYS_NOT_DECRYPTED: Secret key decryption failed or returned empty');
+        }
+
+        // Create exchange connector
+        const { ExchangeConnectorFactory } = await import('./exchangeConnector');
+        const exchangeCredentials = {
+          apiKey: decryptedApiKey,
+          secret: decryptedApiSecret,
+          testnet: exchangeConfig.sandbox || true
+        };
+
+        // Add passphrase for exchanges that require it
+        if (exchangeKey === 'bitget' || exchangeKey === 'weex') {
+          // EXECUTION GUARD: Assert passphrase is not null for required exchanges
+          if (exchangeConfig.passphraseEncrypted && (!decryptedPassphrase || decryptedPassphrase.trim() === '')) {
+            throw new Error('EXCHANGE_KEYS_NOT_DECRYPTED: Passphrase decryption failed or returned empty');
+          }
+          
+          (exchangeCredentials as any).passphrase = decryptedPassphrase || 'test';
+        }
+
+        const connector = ExchangeConnectorFactory.create(exchangeKey, exchangeCredentials);
+
+        // Test connection first
+        const connectionTest = await connector.testConnection();
+        if (!connectionTest.success) {
+          return {
+            success: false,
+            message: 'Exchange connection failed',
+            error: connectionTest.message,
+            rawError: connectionTest.details?.toString()
+          };
+        }
+
+        // In TEST MODE, we don't place actual orders
+        if (context.testMode) {
+          // Simulate order placement
+          const simulatedOrderId = `TEST_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          
+          return {
+            success: true,
+            message: `Test trade simulation successful: ${context.side} ${context.quantity} ${context.tradingPair}`,
+            orderId: simulatedOrderId,
+            details: {
+              exchange: exchangeKey,
+              pair: context.tradingPair,
+              side: context.side,
+              quantity: context.quantity,
+              testMode: true,
+              timestamp: new Date().toISOString()
+            }
+          };
+        }
+
+        // For actual trades (if testMode is false), place the order
+        if (connector.placeOrder) {
+          const orderParams = {
+            symbol: context.tradingPair.replace('/', ''),
+            side: context.side === 'LONG' ? 'BUY' as const : 'SELL' as const,
+            type: 'MARKET' as const,
+            quantity: context.quantity
+          };
+
+          const orderResult = await connector.placeOrder(orderParams);
+          
+          return {
+            success: true,
+            message: `Manual trade executed successfully: ${context.side} ${context.quantity} ${context.tradingPair}`,
+            orderId: orderResult.orderId || orderResult.id,
+            details: {
+              exchange: exchangeKey,
+              pair: context.tradingPair,
+              side: context.side,
+              quantity: context.quantity,
+              orderResult,
+              timestamp: new Date().toISOString()
+            }
+          };
+        } else {
+          return {
+            success: false,
+            message: 'Exchange does not support order placement',
+            error: 'ORDER_PLACEMENT_NOT_SUPPORTED'
+          };
+        }
+
+      } catch (err: any) {
+        logger.error({ err, userId, context }, 'Manual trade execution failed');
+        
+        // Map specific errors to exact error codes for UI
+        let errorCode = err.message || 'Unknown execution error';
+        
+        if (err.message?.includes('ENCRYPTION_SECRET_CHANGED')) {
+          errorCode = 'EXCHANGE_CORRUPTED';
+        } else if (err.message?.includes('EXCHANGE_KEYS_NOT_DECRYPTED')) {
+          errorCode = 'EXCHANGE_KEYS_NOT_DECRYPTED';
+        } else if (err.message?.includes('PERMISSION_DENIED')) {
+          errorCode = 'PERMISSION_DENIED';
+        } else if (err.message?.includes('FUTURES_DISABLED')) {
+          errorCode = 'FUTURES_DISABLED';
+        } else if (err.message?.includes('SYMBOL_NOT_TRADABLE')) {
+          errorCode = 'SYMBOL_NOT_TRADABLE';
+        } else if (err.message?.includes('API key') || err.message?.includes('apiKey')) {
+          errorCode = 'EXCHANGE_KEYS_NOT_DECRYPTED';
+        } else if (err.message?.includes('Secret') || err.message?.includes('secret')) {
+          errorCode = 'EXCHANGE_KEYS_NOT_DECRYPTED';
+        }
+        
+        return {
+          success: false,
+          message: 'Trade execution failed',
+          error: errorCode,
+          rawError: err.toString()
+        };
+      }
+
+    } catch (err: any) {
+      logger.error({ err, userId, context }, 'Manual trade setup failed');
+      
+      // Map specific errors to exact error codes for UI
+      let errorCode = err.message || 'Unknown setup error';
+      
+      if (err.message?.includes('EXCHANGE_KEYS_NOT_DECRYPTED')) {
+        errorCode = 'EXCHANGE_KEYS_NOT_DECRYPTED';
+      } else if (err.message?.includes('EXCHANGE_NOT_CONFIGURED')) {
+        errorCode = 'EXCHANGE_NOT_CONFIGURED';
+      }
+      
+      return {
+        success: false,
+        message: 'Trade setup failed',
+        error: errorCode,
+        rawError: err.toString()
+      };
     }
   }
 }

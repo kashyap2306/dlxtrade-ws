@@ -31,6 +31,7 @@ export const SettingsExchangeSection: React.FC<SettingsExchangeSectionProps> = (
   // STEP 1: SINGLE SOURCE OF TRUTH - Define once
   // STEP 4: HARD SAFETY GUARD - disconnected flag overrides everything
   const isExchangeConnected = !!exchangeConfig && exchangeConfig.disconnected !== true;
+  const isExchangeCorrupted = exchangeConfig?.exchangeStatus === 'CORRUPTED';
 
   return (
     <section id="exchange-connection" className="mb-12">
@@ -38,7 +39,36 @@ export const SettingsExchangeSection: React.FC<SettingsExchangeSectionProps> = (
         🏦 Exchange Connection
       </h2>
       <SettingsCard>
-        {isExchangeConnected ? (
+        {isExchangeCorrupted ? (
+          <div className="p-6 bg-red-500/10 border border-red-500/30 rounded-xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <ExclamationTriangleIcon className="w-6 h-6 text-red-400" />
+                <span className="text-xl font-bold text-white">Exchange Keys Corrupted</span>
+              </div>
+              <button
+                onClick={handleDisconnectExchange}
+                className="px-4 py-2 bg-red-500/70 text-white font-medium rounded-lg hover:bg-red-600/80 transition-all duration-300"
+              >
+                Reconnect
+              </button>
+            </div>
+            <div className="space-y-2">
+              <p className="text-sm text-red-300">
+                Exchange: {exchangeConfig?.exchange ? exchangeConfig.exchange.charAt(0).toUpperCase() + exchangeConfig.exchange.slice(1) : 'Unknown'}
+              </p>
+              <p className="text-sm text-red-300">
+                Reason: {exchangeConfig?.corruptedReason || 'ENCRYPTION_SECRET_CHANGED'}
+              </p>
+            </div>
+            <div className="p-3 bg-yellow-900/20 border border-yellow-500/30 rounded-lg">
+              <p className="text-xs text-yellow-300">
+                <strong>Action Required:</strong> Your exchange keys cannot be decrypted due to an encryption secret change. 
+                Please click "Reconnect" and re-enter your exchange API credentials to restore trading functionality.
+              </p>
+            </div>
+          </div>
+        ) : isExchangeConnected ? (
           <div className="p-6 bg-green-500/10 border border-green-500/30 rounded-xl space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -143,14 +173,14 @@ export const SettingsExchangeSection: React.FC<SettingsExchangeSectionProps> = (
                 <div className="flex justify-end gap-3 pt-4 border-t border-white/10">
                   <button
                     onClick={handleTestExchange}
-                    disabled={savingExchange}
+                    disabled={savingExchange || isExchangeCorrupted}
                     className="px-6 py-3 bg-blue-500/70 text-white font-semibold rounded-xl hover:bg-blue-600/80 transition-all duration-300 disabled:opacity-50"
                   >
                     {savingExchange ? 'Testing...' : 'Test Connection'}
                   </button>
                   <button
                     onClick={handleSaveExchange}
-                    disabled={savingExchange || !exchangeForm.apiKey || !exchangeForm.secretKey}
+                    disabled={savingExchange || !exchangeForm.apiKey || !exchangeForm.secretKey || isExchangeCorrupted}
                     className="px-8 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold rounded-xl hover:from-purple-600 hover:to-pink-600 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all duration-300 disabled:opacity-50"
                   >
                     {savingExchange ? 'Saving...' : 'Save & Connect'}

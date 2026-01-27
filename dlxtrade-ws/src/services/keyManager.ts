@@ -22,6 +22,9 @@ let CACHED_ENCRYPTION_KEY: Buffer | null = null;
 let CACHED_ENCRYPTION_SECRET: string | null = null;
 let CACHED_KEY_HASH: string | null = null;
 
+// Store encryption key hash on server boot for consistency checking
+let SERVER_BOOT_ENCRYPTION_HASH: string | null = null;
+
 /**
  * CRITICAL: Initialize encryption key cache at server startup
  * This MUST be called once before any encrypt/decrypt operations
@@ -52,6 +55,9 @@ export function initializeEncryptionKey(): void {
   CACHED_ENCRYPTION_SECRET = keyString;
   CACHED_ENCRYPTION_KEY = Buffer.from(keyString.slice(0, KEY_LENGTH), "utf8");
   CACHED_KEY_HASH = createHash("sha256").update(keyString).digest("hex");
+  
+  // Store server boot hash for consistency checking
+  SERVER_BOOT_ENCRYPTION_HASH = CACHED_KEY_HASH;
 
   logger.info(
     {
@@ -78,7 +84,9 @@ function getIV(): Buffer {
 }
 
 export function encrypt(text: string): string {
-  if (!text) return "";
+  if (!text || (typeof text === 'string' && text.trim().length === 0)) {
+    throw new Error("ENCRYPTION_FAILED: Cannot encrypt empty or whitespace-only string - input is required");
+  }
   try {
     const key = getEncryptionKey();
     const iv = getIV();
@@ -88,10 +96,20 @@ export function encrypt(text: string): string {
     encrypted += cipher.final("base64");
 
     const ivBase64 = iv.toString("base64");
-    return `${ivBase64}:${encrypted}`;
+    const result = `${ivBase64}:${encrypted}`;
+    
+    // CRITICAL VALIDATION: Ensure encryption produced non-empty output
+    if (!result || result.length === 0) {
+      throw new Error("ENCRYPTION_FAILED: Encryption produced empty output");
+    }
+    
+    // Store encryption key hash with encrypted data for consistency checking
+    const keyHash = getFullEncryptionKeyHash();
+    
+    return result;
   } catch (error) {
     logger.error({ error: (error as Error).message }, "Encryption failed");
-    throw new Error("Failed to encrypt data");
+    throw error instanceof Error ? error : new Error("Failed to encrypt data");
   }
 }
 
@@ -134,7 +152,7 @@ export function decrypt(cipherText: string, context: string): string | null {
     timestamp: new Date().toISOString()
   });
 
-  // CRITICAL VALIDATION: Context must be explicitly "user_request" or "background_job"
+  // CRITICAL VALIDATION: Context must be explicitly "user_request", "background_job", or "exchange"
   if (context === undefined) {
     console.error(`🚫 [CONTEXT_LEAK_DETECTED] decrypt() called with UNDEFINED context!`);
     console.error(`   This is the source of "context: unknown" errors`);
@@ -158,7 +176,7 @@ export function decrypt(cipherText: string, context: string): string | null {
     throw new Error(`CONTEXT_LEAK: decrypt() context must be string, got ${typeof context}`);
   }
 
-  const allowedContexts = ["user_request", "background_job"];
+  const allowedContexts = ["user_request", "background_job", "exchange"];
   if (!allowedContexts.includes(context)) {
     console.warn(`🟡 [DECRYPT_SKIPPED] decrypt() called in non-permitted context ("${context}") – skipping decryption, returning null. No Firestore write, no key clear, no status mutation.`);
     return null;
@@ -215,12 +233,32 @@ export function decrypt(cipherText: string, context: string): string | null {
     return null;
   } catch (error) {
     // Expected failure when ENCRYPTION_SECRET mismatches old data
+    const errorMessage = (error as Error).message;
+    
+    // Detect OpenSSL bad decrypt error indicating encryption secret change
+    if (errorMessage && errorMessage.includes("bad decrypt")) {
+      logger.error(
+        {
+          error: errorMessage,
+          cipherTextLength: cipherText?.length || 0,
+          cipherTextPrefix: cipherText?.substring(0, 20) + "...",
+          encryptionKeyHash: getEncryptionKeyHash(8),
+          context,
+        },
+        "🚨 BAD_DECRYPT_ERROR - ENCRYPTION_SECRET has changed! Exchange keys are unreadable. User must reconnect exchange."
+      );
+      
+      // Throw a specific error so callers can mark exchange as corrupted
+      throw new Error("ENCRYPTION_SECRET_CHANGED: Exchange keys cannot be decrypted - please reconnect your exchange");
+    }
+    
     logger.warn(
       {
-        error: (error as Error).message,
+        error: errorMessage,
         cipherTextLength: cipherText?.length || 0,
         cipherTextPrefix: cipherText?.substring(0, 20) + "...",
         encryptionKeyHash: getEncryptionKeyHash(8),
+        context,
       },
       "Decryption failed - invalid ENCRYPTION_SECRET or corrupted data - treating as CORRUPTED",
     );
@@ -246,20 +284,21 @@ export function decryptOrThrow(
     timestamp: new Date().toISOString()
   });
 
-  // CRITICAL VALIDATION: Context must be exactly "user_request"
+  // CRITICAL VALIDATION: Context must be exactly "user_request" or "exchange"
   if (!context || typeof context !== 'string') {
     console.error(`🚫 [DECRYPT_OR_THROW_CONTEXT_LEAK] decryptOrThrow called with invalid context!`);
     console.error(`   Provided: ${context} (type: ${typeof context})`);
     console.error(`   Field: ${fieldName}`);
     console.error(`   This is the source of "context: unknown" errors`);
-    throw new Error(`decryptOrThrow: Context must be string "user_request", got ${typeof context}: ${context}`);
+    throw new Error(`decryptOrThrow: Context must be string "user_request" or "exchange", got ${typeof context}: ${context}`);
   }
 
-  if (context !== "user_request") {
+  const allowedContexts = ["user_request", "exchange"];
+  if (!allowedContexts.includes(context)) {
     console.error(`🚫 [DECRYPT_OR_THROW_CONTEXT_LEAK] decryptOrThrow called with invalid context "${context}"`);
-    console.error(`   Allowed: "user_request" only`);
+    console.error(`   Allowed: "user_request" or "exchange" only`);
     console.error(`   Field: ${fieldName}`);
-    throw new Error(`decryptOrThrow: Context "${context}" not permitted - only "user_request" allowed`);
+    throw new Error(`decryptOrThrow: Context "${context}" not permitted - only "user_request" or "exchange" allowed`);
   }
 
   console.log(`✅ [DECRYPT_OR_THROW_VALID] Context "${context}" verified for ${fieldName}`);
@@ -304,6 +343,67 @@ export function getEncryptionKeyHash(prefixLength: number = 8): string {
     );
   }
   return CACHED_KEY_HASH.slice(0, prefixLength);
+}
+
+export function getFullEncryptionKeyHash(): string {
+  if (CACHED_KEY_HASH === null) {
+    throw new Error(
+      "ENCRYPTION KEY NOT INITIALIZED - initializeEncryptionKey() must be called at server startup",
+    );
+  }
+  return CACHED_KEY_HASH;
+}
+
+export function isEncryptionSecretChanged(storedHash: string | undefined): boolean {
+  if (!storedHash) {
+    // No stored hash means legacy data or new exchange config
+    return false;
+  }
+  
+  const currentHash = getFullEncryptionKeyHash();
+  const changed = storedHash !== currentHash;
+  
+  if (changed) {
+    logger.warn(
+      {
+        storedHash: storedHash.slice(0, 8),
+        currentHash: currentHash.slice(0, 8),
+      },
+      "🚨 ENCRYPTION_SECRET mismatch detected - stored hash does not match current encryption key"
+    );
+  }
+  
+  return changed;
+}
+
+/**
+ * Check if encryption secret has changed since server boot
+ * This detects runtime changes to ENCRYPTION_SECRET environment variable
+ */
+export function checkEncryptionSecretConsistency(): {
+  consistent: boolean;
+  bootHash: string;
+  currentHash: string;
+} {
+  const currentHash = getFullEncryptionKeyHash();
+  const bootHash = SERVER_BOOT_ENCRYPTION_HASH || '';
+  const consistent = bootHash === currentHash;
+  
+  if (!consistent) {
+    logger.error(
+      {
+        bootHash: bootHash.slice(0, 8),
+        currentHash: currentHash.slice(0, 8),
+      },
+      "🚨 CRITICAL: ENCRYPTION_SECRET changed during runtime - this should never happen"
+    );
+  }
+  
+  return {
+    consistent,
+    bootHash,
+    currentHash
+  };
 }
 
 export async function listKeys(): Promise<

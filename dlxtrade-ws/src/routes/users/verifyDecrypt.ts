@@ -36,8 +36,8 @@ async function testDecryption() {
 
         console.log("Attempting decrypt with MISSING context (should fail compile or runtime)...");
         try {
-            // @ts-ignore
-            decrypt(encrypted);
+            // @ts-ignore - This is intentionally testing the error case
+            decrypt(encrypted, undefined);
             console.error("FAIL: decrypt() with missing context passed (should have thrown)");
         } catch (e: any) {
             console.log(`SUCCESS: Caught expected error: ${e.message}`);
