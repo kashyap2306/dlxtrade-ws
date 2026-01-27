@@ -2610,12 +2610,8 @@ export async function agentsRoutes(fastify: FastifyInstance) {
           if (decryptError.message?.includes('ENCRYPTION_SECRET_CHANGED')) {
             logger.warn({ uid, agentId, error: decryptError.message }, 'Exchange keys corrupted due to encryption secret change');
             
-            // Mark exchange as corrupted
-            try {
-              await firestoreAdapter.markExchangeAsCorrupted(uid, 'ENCRYPTION_SECRET_CHANGED');
-            } catch (markError) {
-              logger.error({ uid, agentId, error: markError }, 'Failed to mark exchange as corrupted');
-            }
+            // NOTE: Do NOT attempt to mark exchange as corrupted in Firestore
+            // Exchange status is managed exclusively by /exchange/connect
             
             return reply.code(200).send({
               orderEndpointReachable: false,

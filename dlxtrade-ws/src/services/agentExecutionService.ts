@@ -465,12 +465,9 @@ export class AgentExecutionService {
           skippedReason = 'EXCHANGE_CORRUPTED';
           finalizeSkip('EXCHANGE_CORRUPTED', 'Exchange keys are invalid due to encryption secret change. Please reconnect exchange.', 'EXCHANGE');
           
-          // Mark exchange config as corrupted
-          try {
-            await firestoreAdapter.markExchangeAsCorrupted(agentConfig.userId, 'ENCRYPTION_SECRET_CHANGED');
-          } catch (markError) {
-            logger.error({ agentId, uid: agentConfig.userId, error: markError }, 'Failed to mark exchange as corrupted');
-          }
+          // NOTE: Do NOT attempt to mark exchange as corrupted in Firestore
+          // Exchange status is managed exclusively by /exchange/connect
+          logger.warn({ agentId, uid: agentConfig.userId }, 'ENCRYPTION_SECRET_CHANGED detected - soft skipping cycle without Firestore update');
           
           if (isHTFAgent) {
             logger.info({
@@ -2018,12 +2015,8 @@ export class AgentExecutionService {
           if (decryptError.message?.includes('ENCRYPTION_SECRET_CHANGED')) {
             logger.warn({ userId, agentId: context.agentId, error: decryptError.message }, 'Exchange keys corrupted due to encryption secret change');
             
-            // Mark exchange as corrupted
-            try {
-              await firestoreAdapter.markExchangeAsCorrupted(userId, 'ENCRYPTION_SECRET_CHANGED');
-            } catch (markError) {
-              logger.error({ userId, agentId: context.agentId, error: markError }, 'Failed to mark exchange as corrupted');
-            }
+            // NOTE: Do NOT attempt to mark exchange as corrupted in Firestore
+            // Exchange status is managed exclusively by /exchange/connect
             
             return {
               success: false,

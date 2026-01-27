@@ -716,43 +716,24 @@ export async function isExchangeUsable(
   } catch (error: any) {
     // CRITICAL: Decryption exceptions are NOT credential validation failures
     // NEVER write INVALID_KEYS here - only in POST /exchange/connect
+    // NEVER write CORRUPTED status here - that violates Firestore guard
     
     // Check if this is an ENCRYPTION_SECRET_CHANGED error (bad decrypt)
     if (error.message && error.message.includes("ENCRYPTION_SECRET_CHANGED")) {
-      logger.error(
+      logger.warn(
         {
           uid,
           exchange,
           error: error.message,
         },
-        "🚨 ENCRYPTION_SECRET_CHANGED: Exchange keys are corrupted due to encryption secret change - marking exchange as CORRUPTED"
+        "⚠️ ENCRYPTION_SECRET_CHANGED: Encryption secret was changed - exchange keys cannot be decrypted. User must reconnect exchange via /exchange/connect to re-encrypt keys."
       );
       
-      // Mark exchange as corrupted so user knows to reconnect
-      try {
-        const docRef = db()
-          .collection("users")
-          .doc(uid)
-          .collection("exchangeConfig")
-          .doc("current");
-
-        await docRef.update({
-          exchangeStatus: "CORRUPTED",
-          corruptedAt: admin.firestore.Timestamp.now(),
-          corruptedReason: "ENCRYPTION_SECRET_CHANGED",
-        });
-        
-        logger.info({ uid, exchange }, "Exchange marked as CORRUPTED");
-      } catch (updateError: any) {
-        logger.error(
-          { uid, exchange, error: updateError.message },
-          "Failed to mark exchange as corrupted"
-        );
-      }
-
+      // DO NOT write to Firestore - background jobs and isExchangeUsable are READ-ONLY
+      // User must manually reconnect exchange through UI to fix encryption issue
       return {
         usable: false,
-        reason: "corrupted",
+        reason: "not_connected",
         exchange,
       };
     }
@@ -4296,23 +4277,12 @@ export class FirestoreAdapter {
         if (isEncryptionSecretChanged(data.encryptionKeyHash)) {
           logger.warn(
             { uid },
-            "ENCRYPTION_SECRET_CHANGED detected - exchange config is corrupted"
+            "ENCRYPTION_SECRET_CHANGED detected - exchange config is corrupted. Do not attempt Firestore update."
           );
           
-          // Mark as corrupted but don't throw - let caller handle it
-          try {
-            await this.markExchangeAsCorrupted(uid, 'ENCRYPTION_SECRET_CHANGED');
-          } catch (markError) {
-            logger.error({ uid, error: markError }, 'Failed to mark exchange as corrupted during getExchangeConfig');
-          }
-          
-          // Return data with corrupted status
-          return {
-            ...data,
-            exchangeStatus: 'CORRUPTED',
-            corruptedReason: 'ENCRYPTION_SECRET_CHANGED',
-            corruptedAt: new Date()
-          };
+          // NOTE: Do NOT write to Firestore - exchangeStatus is read-only outside /exchange/connect
+          // Just return the data as-is; callers will check isExchangeUsable() which handles this
+          return data;
         }
       }
 

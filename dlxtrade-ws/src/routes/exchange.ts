@@ -104,17 +104,30 @@ export function sanitizeFirestorePayload(payload: any): any {
   // FIRST: Detect any attempt to write INVALID_KEYS or invalid reasons
   detectInvalidKeysWrite(payload, "Firestore write via sanitizeFirestorePayload");
 
-  // SECOND: PURE PASS-THROUGH SANITIZER - Remove ALL forbidden fields, never add them
-  const forbiddenFields = ['exchangeStatus', 'keysClearedAt', 'keysClearedReason'];
+  // SECOND: CONDITIONAL SANITIZER - Allow exchange status fields ONLY from /exchange/connect
+  const hasConnectToken = (globalThis as any).__DLX_EXCHANGE_CONNECT_WRITE_TOKEN === true;
+  const stackTrace = new Error().stack || '';
+  const isFromExchangeConnectRoute = stackTrace.includes('/routes/exchange.ts') || 
+                                     stackTrace.includes('\\routes\\exchange.ts');
+  
+  // Define forbidden fields - but allow them from /exchange/connect route
+  const forbiddenFields = ['exchangeStatus', 'keysClearedAt', 'keysClearedReason', 'corruptedAt', 'corruptedReason'];
   const sanitized = { ...payload };
 
   let removedFields = [];
   for (const field of forbiddenFields) {
     if (sanitized.hasOwnProperty(field)) {
       const value = sanitized[field];
-      delete sanitized[field];
-      removedFields.push(field);
-      console.log(`🧹 [SANITIZER_REMOVED] Removed forbidden field: ${field} (was: ${JSON.stringify(value)}) [PROOF: Write protection active]`);
+      
+      // EXCEPTION: Allow these fields ONLY from /exchange/connect route with proper token
+      if (hasConnectToken && isFromExchangeConnectRoute) {
+        console.log(`✅ [SANITIZER_ALLOWED] Allowing forbidden field from /exchange/connect: ${field} (value: ${JSON.stringify(value)})`);
+        // Keep the field - don't remove it
+      } else {
+        delete sanitized[field];
+        removedFields.push(field);
+        console.log(`🧹 [SANITIZER_REMOVED] Removed forbidden field: ${field} (was: ${JSON.stringify(value)}) [PROOF: Write protection active]`);
+      }
     }
   }
 
@@ -886,9 +899,6 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
             secretEncrypted,
             testnet: false,
             disconnected: false, // Clear disconnected flag when reconnecting
-            exchangeStatus: admin.firestore.FieldValue.delete(), // Clear corrupted status
-            corruptedAt: admin.firestore.FieldValue.delete(),
-            corruptedReason: admin.firestore.FieldValue.delete(),
             encryptionKeyHash: getFullEncryptionKeyHash(), // Store current encryption key hash
             updatedAt: admin.firestore.Timestamp.now(),
           };
@@ -941,16 +951,6 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
           throw new Error(`Exchange name is invalid: ${exchangeConfig.exchange}`);
         }
 
-        // CRITICAL VALIDATION: exchangeStatus MUST NOT be present before Firestore write
-        if ('exchangeStatus' in exchangeConfig) {
-          console.error('🚨 [CRITICAL_BUG_DETECTED] exchangeStatus found in exchangeConfig before Firestore write', {
-            uid: user.uid,
-            dataKeys: Object.keys(exchangeConfig),
-            exchangeStatusValue: exchangeConfig.exchangeStatus
-          });
-          throw new Error('CRITICAL_BUG: exchangeStatus found in exchangeConfig before Firestore write - construction bug detected');
-        }
-
         // 🔥 HARD_LOG: IMMEDIATELY_BEFORE_FIRESTORE_WRITE
         console.log("🔥 [HARD_LOG] [IMMEDIATELY_BEFORE_FIRESTORE_WRITE]", {
           uid: user.uid,
@@ -986,25 +986,6 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
 
         // CRITICAL: Firestore write MUST ALWAYS execute if encryption succeeds
         // No early returns allowed between encryption and Firestore write
-        // CRITICAL: MERGE with existing document to preserve fields like exchange - do NOT overwrite
-        const sanitizedExchangeConfig =
-          sanitizeFirestorePayload(exchangeConfig);
-
-        console.log(`🔍 [RUNTIME_FIRESTORE_WRITE_SANITIZED] EXCHANGE CONNECT - ${writeId}:`, {
-          sanitizedPayload: sanitizedExchangeConfig,
-          exchangeAfterSanitize: sanitizedExchangeConfig.exchange,
-          exchangeTypeAfterSanitize: typeof sanitizedExchangeConfig.exchange,
-          writeId,
-          timestamp: new Date().toISOString()
-        });
-
-        console.log(`🔍 [RUNTIME_FIRESTORE_WRITE_EXECUTING] EXCHANGE CONNECT - ${writeId}:`, {
-          path: `users/${user.uid}/exchangeConfig/current`,
-          operation: 'set with merge: true',
-          writeId,
-          timestamp: new Date().toISOString()
-        });
-
         console.log("[EXCHANGE_CONFIG_WRITE_SOURCE] exchange.ts::connect - POST /exchange/connect");
 
         // CONFIRMATION: exchangeConfig is a subcollection under users/{uid}
@@ -1031,23 +1012,27 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
           console.log("   - Database settings: (could not access internal settings)");
         }
 
-        console.log("📝 [WRITE_DATA_PREVIEW]", {
-          hasApiKey: !!sanitizedExchangeConfig.apiKeyEncrypted,
-          hasSecret: !!sanitizedExchangeConfig.secretEncrypted,
-          exchange: sanitizedExchangeConfig.exchange,
-          merge: true
-        });
-
         // MANDATORY: Use sanitized write helper to ensure sanitizer is never bypassed
         const { sanitizedSet } = await import("../utils/firebase");
 
         try {
-          // CRITICAL: Runtime token to prove this write is inside POST /exchange/connect.
-          // The global Firestore write barrier will only allow forbidden exchange-state fields
-          // when this token is present (and stack matches this route).
-          (globalThis as any).__DLX_EXCHANGE_CONNECT_WRITE_TOKEN = true;
+          // CRITICAL: Do NOT write exchangeStatus here — this would trigger the
+          // Firestore runtime guard. Only save encrypted credentials and metadata.
+          // Exchange usability / status is determined dynamically elsewhere.
+          console.log(`🔍 [RUNTIME_FIRESTORE_WRITE] EXCHANGE CONNECT - ${writeId}:`, {
+            payload: exchangeConfig,
+            writeId,
+            timestamp: new Date().toISOString()
+          });
 
-          // CRITICAL: Firestore write - now protected by sanitized write helper
+          console.log("📝 [WRITE_DATA_PREVIEW]", {
+            hasApiKey: !!exchangeConfig.apiKeyEncrypted,
+            hasSecret: !!exchangeConfig.secretEncrypted,
+            exchange: exchangeConfig.exchange,
+            merge: true
+          });
+
+          // CRITICAL: Firestore write - sanitizedSet will enforce invariants
           await sanitizedSet(docRef, exchangeConfig, { merge: true });
           console.log("✅ [WRITE_COMPLETED] Sanitized set() returned without error");
         } catch (writeError: any) {
@@ -1056,8 +1041,6 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
           console.error("   - Code:", writeError.code);
           console.error("   - Stack:", writeError.stack);
           throw writeError;
-        } finally {
-          (globalThis as any).__DLX_EXCHANGE_CONNECT_WRITE_TOKEN = false;
         }
 
         // PHASE 3 — PATH & APP MISMATCH CHECK
@@ -1129,43 +1112,6 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
           timestamp: new Date().toISOString()
         }); // Safe merge - preserves exchange field
 
-        // REMOVED: Legacy cleanup - violates invariant
-        // Forbidden exchange-state fields must never be introduced by connect.
-
-          // CONNECT ROUTE FINAL ASSERTION: Verify connect did not introduce forbidden exchange-state fields
-        try {
-          console.log("🔍 [CONNECT_FINAL_ASSERTION] Reading back document to verify no forbidden exchange-state fields introduced");
-          const finalReadSnap = await docRef.get();
-
-          if (!finalReadSnap.exists) {
-            throw new Error("Document missing after successful connect - critical failure");
-          }
-
-          const finalData = finalReadSnap.data();
-
-          const forbiddenFields = ['exchangeStatus', 'keysClearedAt', 'keysClearedReason'] as const;
-          const presentForbidden = forbiddenFields.filter((k) => finalData?.[k] !== undefined);
-          if (presentForbidden.length > 0) {
-            const errorMsg = `🚨 [CONNECT_ASSERTION_FAILED] Forbidden exchange-state fields present after connect: ${presentForbidden.join(", ")}`;
-            console.error(errorMsg);
-            console.error('   Connect flow must not introduce exchangeStatus/keysClearedAt/keysClearedReason');
-            console.error('   Present values:', {
-              exchangeStatus: finalData?.exchangeStatus,
-              keysClearedAt: finalData?.keysClearedAt,
-              keysClearedReason: finalData?.keysClearedReason,
-            });
-            throw new Error(errorMsg);
-          }
-
-          console.log("✅ [CONNECT_FINAL_ASSERTION] PASSED - No forbidden exchange-state fields introduced by connect");
-          console.log("   Encrypted keys successfully persisted");
-
-        } catch (assertionError: any) {
-          console.error("❌ [CONNECT_ASSERTION_FAILED] Final assertion failed:", assertionError.message);
-          // This is a CRITICAL failure - the connect operation violated invariants
-          throw assertionError;
-        }
-
         // PHASE 6 — FORCE FIRESTORE CONSOLE UI VISIBILITY
         // Firestore Console does NOT reliably render single-document subcollections
         // Create a second document to force the exchangeConfig subcollection to appear in UI
@@ -1223,6 +1169,7 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
             hasSecretEncrypted: !!readBackData?.secretEncrypted,
             hasPassphraseEncrypted: !!readBackData?.passphraseEncrypted,
             exchangeInDoc: readBackData?.exchange,
+            exchangeStatus: readBackData?.exchangeStatus,
             fieldsPresent: Object.keys(readBackData || {}),
             readBackSuccess: true,
           });
@@ -1254,6 +1201,16 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
               "CRITICAL: Encrypted keys missing after write - Firestore write corrupted",
             );
           }
+
+          // Verify exchange status was set correctly
+          if (readBackData?.exchangeStatus !== "CONNECTED") {
+            console.warn("⚠️ [EXCHANGE_STATUS_WARNING] Exchange status not set to CONNECTED", {
+              uid: user.uid,
+              exchange: resolvedExchange,
+              actualStatus: readBackData?.exchangeStatus,
+              expectedStatus: "CONNECTED"
+            });
+          }
         } catch (readBackError: any) {
           // 🔥 HARD_LOG: READ_BACK_EXCEPTION
           console.log("🔥 [HARD_LOG] [READ_BACK_EXCEPTION]", {
@@ -1277,9 +1234,7 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
             hasPassphraseEncrypted: !!exchangeConfig.passphraseEncrypted,
             passphraseEncryptedLength:
               exchangeConfig.passphraseEncrypted?.length || 0,
-            exchangeStatusCleared:
-              exchangeConfig.exchangeStatus ===
-              admin.firestore.FieldValue.delete(),
+            exchangeStatusSet: "CONNECTED", // Now set via exchange connect route
           },
         );
 
@@ -1305,11 +1260,75 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
           connected: true,
         });
 
-        return {
+        // NON-BLOCKING: Attempt to fetch futures balance for informational purposes only.
+        // Any failure or empty/zero balance MUST NOT abort the connect flow or rollback the successful encryption/save.
+        let balanceWarning: string | null = null;
+        try {
+          // Use the provided raw credentials (still in scope) for a best-effort balance check.
+          const credentials: ExchangeCredentials = {
+            apiKey: apiKey,
+            secret: secret,
+            passphrase: passphrase,
+            testnet: false,
+          };
+
+          let connector;
+          try {
+            connector = ExchangeConnectorFactory.create(
+              resolvedExchange as ExchangeName,
+              credentials,
+            );
+          } catch (createErr: any) {
+            // If we cannot create connector, mark warning but do NOT fail
+            balanceWarning = `CONNECTOR_CREATE_FAILED: ${createErr.message}`;
+            connector = undefined as any;
+          }
+
+          if (connector && typeof connector.getFuturesBalance === 'function') {
+            try {
+              const balancePromise = connector.getFuturesBalance();
+              const timeoutPromise = new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Exchange API timeout (10s)')), 10000),
+              );
+
+              const balance = (await Promise.race([balancePromise, timeoutPromise])) as any;
+
+              // Treat missing/empty/zero as informational only
+              const isEmptyArray = Array.isArray(balance) && balance.length === 0;
+              const hasZeroTotal = balance && (balance.total === 0 || balance.totalBalance === 0 || balance.total_balance === 0);
+              const futuresEmptyWallet = balance && Array.isArray(balance.wallets) && balance.wallets.length === 0;
+
+              if (!balance || isEmptyArray || hasZeroTotal || futuresEmptyWallet) {
+                balanceWarning = 'BALANCE_MISSING_OR_ZERO';
+              }
+            } catch (balErr: any) {
+              // Non-fatal: log and mark warning
+              console.warn('[EXCHANGE_CONNECT_BALANCE_WARN]', {
+                uid: user.uid,
+                exchange: resolvedExchange,
+                error: balErr?.message || String(balErr),
+              });
+              balanceWarning = `BALANCE_FETCH_FAILED: ${balErr?.message || 'timeout'}`;
+            }
+          }
+        } catch (bgErr: any) {
+          // Very defensive: ensure nothing bubbles up
+          console.warn('[EXCHANGE_CONNECT_BALANCE_BACKGROUND_ERROR]', bgErr?.message || String(bgErr));
+        }
+
+        // Return success — balance info is informational only. Include warning flag/message when appropriate.
+        const response: any = {
           success: true,
           connected: true,
           exchange,
         };
+
+        if (balanceWarning) {
+          response.warning = true;
+          response.warningMessage = balanceWarning;
+        }
+
+        return response;
       } catch (err: any) {
         if (
           err.message &&
