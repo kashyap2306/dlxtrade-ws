@@ -31,6 +31,7 @@ export class AgentExecutionService {
   private marketDataProvider: MarketDataProvider;
   private activeAgents: Map<string, TradingAgent> = new Map();
   private activeVWAPStrategies: Map<string, VWAPStrategy> = new Map();
+  private static manualTradeExecutionGuard: Map<string, number> = new Map(); // userId+agentId -> timestamp
 
   constructor(marketDataProvider: MarketDataProvider) {
     this.marketDataProvider = marketDataProvider;
@@ -182,7 +183,7 @@ export class AgentExecutionService {
           name: agentConfig.name,
           strategyType: agentConfig.strategyType,
           status: agentConfig.status
-        }, '🎯 Executing HTF Trend Filter Agent - status=ACTIVE');
+        }, ' Executing HTF Trend Filter Agent - status=ACTIVE');
       }
       
       tradingAgentPromises.push(this.executeAgent(agent));
@@ -205,9 +206,14 @@ export class AgentExecutionService {
     const agentId = agent['config'].id;
     const agentConfig = agent['config'];
     const tradingPair = agentConfig.tradingPair;
-    
+
+    const normalizeSymbol = (value: string) => String(value || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+
     // Get symbol early for use throughout the function
-    const symbol = tradingPair.replace('/', '').toUpperCase();
+    const symbol = normalizeSymbol(tradingPair);
+
+    // Pair key used for all pair checks and per-pair persistence keys
+    const pairKey = symbol;
 
     // Check if this is an HTF Trend Filter agent early for proper scoping
     const isHTFAgent = (agentConfig as any).strategyType === 'HTF_TREND_FILTER' || 
@@ -283,7 +289,7 @@ export class AgentExecutionService {
         name: agentConfig.name,
         tradingPair,
         strategyType: (agentConfig as any).strategyType
-      }, '🎯 HTF AGENT EXECUTION STARTED - HARD RESET execution state');
+      }, ' HTF AGENT EXECUTION STARTED - HARD RESET execution state');
       
       // Force reset all previous cycle data
       // lastErrorReason, lastDecision, lastSignal - all cleared
@@ -296,6 +302,7 @@ export class AgentExecutionService {
     let signalGenerated = false;
     let skippedReason: string | null = null;
     let agentExecutionRan = false; // Track if agent logic actually executed
+    let htfMarketDataSkip: { reasonCode: string; reasonText: string } | null = null;
 
     // INTERNAL HELPER: Single source for skip finalization - THE ONLY SKIP WRITER
     const finalizeSkip = (reasonCode: string, reasonText: string, category: 'SESSION' | 'EXCHANGE' | 'DATA' | 'RISK' | 'SIGNAL') => {
@@ -336,17 +343,26 @@ export class AgentExecutionService {
       if (currentAgentConfig.status === 'PAUSED') {
         skippedReason = 'AGENT_PAUSED';
         finalizeSkip('AGENT_PAUSED', 'Agent was manually paused by user', 'SESSION');
-        
+
         if (isHTFAgent) {
           logger.info({
             agentId,
             tradingPair
           }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
         }
-        
+
         logger.debug({ agentId }, 'Trading Agent is PAUSED - skipping execution cycle');
-        
         return;
+      }
+
+      // HTF agents are COMPLETELY STANDALONE and execute when agent status is ACTIVE
+      // They do NOT depend on global auto-trade or telegram modes
+      if (isHTFAgent) {
+        logger.debug({
+          agentId,
+          uid: agentConfig.userId,
+          status: agentConfig.status
+        }, 'HTF Agent: STANDALONE execution - bypassing all global mode checks');
       }
 
       // Create agent-specific market provider using canonical exchange config
@@ -354,43 +370,25 @@ export class AgentExecutionService {
       if (!exchangeConfig?.exchange) {
         skippedReason = 'NO_EXCHANGE_CONFIG_FOUND';
         finalizeSkip('NO_EXCHANGE_CONFIG_FOUND', 'No exchange connected. Please connect your exchange in Settings → Exchange to enable trading.', 'EXCHANGE');
-        
+
         if (isHTFAgent) {
           logger.info({
             agentId,
             tradingPair
           }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
         }
-        
-        logger.warn({ 
-          agentId, 
+
+        logger.warn({
+          agentId,
           uid: agentConfig.userId,
           exchangeConfigPath: `users/${agentConfig.userId}/exchangeConfig/current`
         }, 'SKIP: NO_EXCHANGE_CONFIG_FOUND - user must connect exchange in Settings');
-        
+
         return;
       }
 
-      // Check if exchange is corrupted due to encryption secret change
-      if (exchangeConfig.exchangeStatus === 'CORRUPTED') {
-        skippedReason = 'EXCHANGE_CORRUPTED';
-        finalizeSkip('EXCHANGE_CORRUPTED', 'Exchange keys are invalid due to encryption secret change. Please reconnect exchange.', 'EXCHANGE');
-        
-        if (isHTFAgent) {
-          logger.info({
-            agentId,
-            tradingPair
-          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
-        }
-        
-        logger.warn({ 
-          agentId, 
-          uid: agentConfig.userId,
-          corruptedReason: exchangeConfig.corruptedReason
-        }, 'SKIP: EXCHANGE_CORRUPTED - exchange keys corrupted, user must reconnect');
-        
-        return;
-      }
+      // NOTE: Do NOT hard-skip when exchangeStatus === 'CORRUPTED'.
+      // Decryption success is authoritative; if keys cannot decrypt (e.g. ENCRYPTION_SECRET_CHANGED), we'll skip in the decrypt catch below.
 
       // FIX PART B — EXCHANGE ERROR TRUTH SOURCE
       // Compute exchange status ONLY from isExchangeUsable() - single source of truth
@@ -567,54 +565,23 @@ export class AgentExecutionService {
       const normalizedExchange = String(exchangeConfig.exchange || agentConfig.exchange).toLowerCase();
       const marketProvider = new TradingAgentMarketProvider(exchangeCredentials, normalizedExchange as any, 'futures');
 
-      // ===== SESSION-BASED TRADING (EXCHANGE SERVER TIME) =====
-      // Only trade during London (8:00-16:59 UTC) or New York (14:30-21:29 UTC) sessions
-      const now = new Date();
-      const utcHour = now.getUTCHours();
-      const utcMinute = now.getUTCMinutes();
+      // SINGLE SOURCE OF TRUTH: If keys decrypt successfully (and user didn't disconnect), exchange is usable.
+      exchangeUsable = exchangeConfig.disconnected !== true && !!apiKey && !!secret && (normalizedExchange !== 'bitget' || !!passphrase);
 
-      // London session: 8:00-16:59 UTC
-      const isLondonSession = utcHour >= 8 && utcHour < 17;
-
-      // New York session: 14:30-21:29 UTC
-      const isNYSession = (utcHour === 14 && utcMinute >= 30) ||
-                         (utcHour >= 15 && utcHour < 21) ||
-                         (utcHour === 21 && utcMinute < 30);
-
-      const isValidSession = isLondonSession || isNYSession;
-
-      // Update diagnostics with session check
-      diagnostics.sessionCheck = {
-        isValidSession,
-        currentTime: `${utcHour}:${utcMinute.toString().padStart(2, '0')} UTC`,
-        sessionType: isLondonSession ? 'London' : isNYSession ? 'NewYork' : undefined,
-        reason: isValidSession ? 'Valid trading session' : 'Outside trading hours'
-      };
-
-      if (!isValidSession) {
-        skippedReason = 'Outside trading sessions';
-        finalizeSkip('OUTSIDE_TRADING_SESSION', `Outside trading hours. Current time: ${utcHour}:${utcMinute.toString().padStart(2, '0')} UTC. Trading sessions: London (8:00-16:59 UTC), New York (14:30-21:29 UTC)`, 'SESSION');
-        
-        if (isHTFAgent) {
-          logger.info({
-            agentId,
-            tradingPair
-          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
-        }
-        logger.info({
-          agentId,
-          currentTime: `${now.getUTCHours()}:${now.getUTCMinutes().toString().padStart(2, '0')} UTC`,
-          sessionCheck: 'OUTSIDE_TRADING_HOURS'
-        }, 'Execution blocked: outside trading sessions');
+      if (!exchangeUsable) {
+        skippedReason = 'EXCHANGE_NOT_USABLE';
+        finalizeSkip('EXCHANGE_NOT_USABLE', normalizedExchange === 'bitget' && !passphrase
+          ? 'Bitget passphrase missing or failed to decrypt'
+          : 'Exchange connection is not usable - check credentials and connection', 'EXCHANGE');
         return;
       }
 
       // CRITICAL: HTF agents can ONLY trade BTC/USDT and ETH/USDT
       if (isHTFAgent) {
-        const allowedPairs = ['BTC/USDT', 'ETH/USDT'];
-        if (!allowedPairs.includes(tradingPair)) {
-          skippedReason = `HTF agents restricted to ${allowedPairs.join(', ')} only`;
-          finalizeSkip('PAIR_RESTRICTION', `HTF Trend Filter agents are restricted to ${allowedPairs.join(', ')} only. Current pair: ${tradingPair}`, 'RISK');
+        const allowedSymbols = ['BTCUSDT', 'ETHUSDT'];
+        if (!allowedSymbols.includes(symbol)) {
+          skippedReason = `HTF agents restricted to BTC/USDT, ETH/USDT only`;
+          finalizeSkip('PAIR_RESTRICTION', `HTF Trend Filter agents are restricted to BTC/USDT, ETH/USDT only. Current pair: ${tradingPair}`, 'RISK');
           
           logger.info({
             agentId,
@@ -624,13 +591,13 @@ export class AgentExecutionService {
           logger.warn({
             agentId,
             tradingPair,
-            allowedPairs
+            allowedSymbols
           }, 'HTF Trend Filter: Trading pair not allowed');
           return;
         }
       }
       
-      let candles: any[];
+      let candles: any[] = [];
       let candles15m: any[] = [];
       
       if (isHTFAgent) {
@@ -664,43 +631,23 @@ export class AgentExecutionService {
           }
           
           if (candles15m.length < 200) {
-            skippedReason = 'MARKET_DATA_NOT_READY';
-            finalizeSkip('MARKET_DATA_NOT_READY', `Insufficient 15m candle data: ${candles15m.length}/200 required`, 'DATA');
-            
-            logger.info({
-              agentId,
-              tradingPair
-            }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
-            
-            logger.warn({
-              agentId,
-              candles15mCount: candles15m.length
-            }, 'HTF Trend Filter: Insufficient 15m candle data - BANNED fallback signals');
-            return;
+            htfMarketDataSkip = {
+              reasonCode: 'MARKET_DATA_NOT_READY',
+              reasonText: `Insufficient 15m candle data: ${candles15m.length}/200 required`
+            };
+          } else if (candles.length < 200) {
+            htfMarketDataSkip = {
+              reasonCode: 'MARKET_DATA_NOT_READY',
+              reasonText: `Insufficient 1m candle data: ${candles.length}/200 required`
+            };
           }
-          
-          if (candles.length < 200) {
-            skippedReason = 'MARKET_DATA_NOT_READY';
-            finalizeSkip('MARKET_DATA_NOT_READY', `Insufficient 1m candle data: ${candles.length}/200 required`, 'DATA');
-            
-            logger.info({
-              agentId,
-              tradingPair
-            }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
-            
-            logger.warn({
-              agentId,
-              candles1mCount: candles.length
-            }, 'HTF Trend Filter: Insufficient 1m candle data - BANNED fallback signals');
-            return;
-          }
-          
+
           // Sort candles (most recent first)
           candles15m.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
           candles.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
           
           // Mark that market scan was successfully executed - CRITICAL for signal generation
-          marketScanExecuted = true;
+          marketScanExecuted = !htfMarketDataSkip;
           
         } catch (marketDataError) {
           // FIX PART C — BAN FALLBACK SIGNALS (CRITICAL)
@@ -758,7 +705,7 @@ export class AgentExecutionService {
       try {
         const recentAgentTrades = await firestoreAdapter.getAgentTrades(agentId, 25);
         const openTradesForPair = (recentAgentTrades || []).filter((t: any) => {
-          return t?.status === 'OPEN' && String(t?.tradingPair || '').toUpperCase() === String(tradingPair).toUpperCase();
+          return t?.status === 'OPEN' && normalizeSymbol(t?.tradingPair) === pairKey;
         });
 
         if (openTradesForPair.length > 0) {
@@ -809,7 +756,7 @@ export class AgentExecutionService {
 
           // Do not open a new trade while one is open/managed
           finalizeSkip('MANAGING_OPEN_POSITION', 'Managing existing open position - no new trades allowed', 'RISK');
-          await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
+          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
           return;
         }
       } catch (error) {
@@ -818,9 +765,10 @@ export class AgentExecutionService {
 
       // ===== CLOSED-CANDLE DETERMINISM =====
       // Check if this candle was already processed
-      const lastProcessedCandle = await firestoreAdapter.getLastProcessedCandle(agentId, tradingPair);
+      const lastProcessedCandle = await firestoreAdapter.getLastProcessedCandle(agentId, pairKey);
       if (lastProcessedCandle && candleTimestamp.getTime() === lastProcessedCandle.getTime()) {
         finalizeSkip('CANDLE_ALREADY_PROCESSED', 'This candle was already processed in a previous cycle', 'DATA');
+        
         logger.info({
           agentId,
           candleTimestamp: candleTimestamp.toISOString(),
@@ -855,8 +803,8 @@ export class AgentExecutionService {
         // Else → SKIP
         
         if (!marketScanExecuted) {
-          skippedReason = 'Market scan not executed';
-          finalizeSkip('MARKET_SCAN_NOT_EXECUTED', 'Market scan was not executed - preventing signal generation', 'DATA');
+          skippedReason = htfMarketDataSkip?.reasonText || 'Market scan not executed';
+          finalizeSkip(htfMarketDataSkip?.reasonCode || 'MARKET_SCAN_NOT_EXECUTED', htfMarketDataSkip?.reasonText || 'Market scan was not executed - preventing signal generation', 'DATA');
           
           logger.info({
             agentId,
@@ -868,27 +816,11 @@ export class AgentExecutionService {
           }, 'HTF Trend Filter: Market scan not executed - preventing signal generation');
           
           // Update last processed candle even with no signal
-          await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
+          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
           return;
         }
         
-        if (!exchangeUsable) {
-          skippedReason = 'Exchange not usable';
-          finalizeSkip('EXCHANGE_NOT_USABLE', 'Exchange connection is not usable - check credentials and connection', 'EXCHANGE');
-          
-          logger.info({
-            agentId,
-            tradingPair
-          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
-          
-          logger.warn({
-            agentId
-          }, 'HTF Trend Filter: Exchange not usable - preventing signal generation');
-          
-          // Update last processed candle even with no signal
-          await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
-          return;
-        }
+        // exchangeUsable is guaranteed true here due to earlier gate
         
         // For HTF agents, analyze HTF trend first, then generate LTF signal
         const { HTFTrendFilterStrategy } = await import('./htfTrendFilterStrategy');
@@ -912,7 +844,7 @@ export class AgentExecutionService {
           }, 'HTF Trend Filter: No valid trend');
           
           // Update last processed candle even with no signal
-          await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
+          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
           return;
         }
         
@@ -935,7 +867,7 @@ export class AgentExecutionService {
           }, 'HTF Trend Filter: LTF entry conditions not met');
           
           // Update last processed candle even with no signal
-          await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
+          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
           return;
         }
         
@@ -971,7 +903,7 @@ export class AgentExecutionService {
             bbUpper: ltfSignal.indicators.bbUpper,
             bbLower: ltfSignal.indicators.bbLower,
             atr: indicators.atr
-          }
+          },
         };
         signalGenerated = true;
         
@@ -1001,7 +933,7 @@ export class AgentExecutionService {
           logger.info({
             agentId,
             tradingPair
-          }, `[HTF_AGENT] cycle evaluated: exchangeUsable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}`);
+          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}`);
         }
 
         logger.debug({
@@ -1010,7 +942,7 @@ export class AgentExecutionService {
         }, 'No trading signal generated');
 
         // Update last processed candle even with no signal
-        await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
+        await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
         return;
       }
 
@@ -1026,7 +958,7 @@ export class AgentExecutionService {
         }, 'Execution blocked: signal already executed');
 
         // Update last processed candle
-        await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
+        await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
         return;
       }
 
@@ -1067,7 +999,7 @@ export class AgentExecutionService {
           maxTrades: maxTradesPerDay,
           reason: 'DAILY_TRADE_LIMIT'
         }, 'Execution blocked: daily trade limit reached');
-        await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
+        await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
         return;
       }
 
@@ -1079,26 +1011,26 @@ export class AgentExecutionService {
           consecutiveLosses: dailyCounters.consecutiveLosses,
           reason: 'CONSECUTIVE_LOSSES_LIMIT'
         }, 'Execution blocked: consecutive losses limit reached');
-        await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
+        await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
         return;
       }
 
       // Check daily profit target
-      if (dailyCounters.dailyPnL >= 2.0) {
+      if (!isHTFAgent && dailyCounters.dailyPnL >= 2.0) {
         finalizeSkip('DAILY_PROFIT_TARGET', `Daily profit target reached: ${dailyCounters.dailyPnL.toFixed(2)}R`, 'RISK');
         logger.info({
           agentId,
           dailyPnL: dailyCounters.dailyPnL,
           reason: 'DAILY_PROFIT_TARGET'
         }, 'Execution blocked: daily profit target reached');
-        await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
+        await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
         return;
       }
 
       // ===== COOLDOWN PRECISION =====
       // Check per-pair cooldown
-      const pairCooldown = await firestoreAdapter.getPairCooldown(agentId, tradingPair);
-      if (pairCooldown && new Date() < pairCooldown) {
+      const pairCooldown = await firestoreAdapter.getPairCooldown(agentId, pairKey);
+      if (!isHTFAgent && pairCooldown && new Date() < pairCooldown) {
         finalizeSkip('PAIR_COOLDOWN_ACTIVE', `Pair cooldown active until ${pairCooldown.toISOString()}`, 'RISK');
         logger.info({
           agentId,
@@ -1106,7 +1038,7 @@ export class AgentExecutionService {
           cooldownUntil: pairCooldown.toISOString(),
           reason: 'PAIR_COOLDOWN_ACTIVE'
         }, 'Execution blocked: pair cooldown active');
-        await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
+        await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
         return;
       }
 
@@ -1114,7 +1046,7 @@ export class AgentExecutionService {
       // Check position limits with current counts
       const positionTrades = await firestoreAdapter.getAgentTrades(agentId, 50);
       const openTrades = (positionTrades || []).filter((t: any) => t?.status === 'OPEN');
-      const pairOpenTrades = openTrades.filter((t: any) => String(t?.tradingPair || '').toUpperCase() === String(tradingPair).toUpperCase());
+      const pairOpenTrades = openTrades.filter((t: any) => normalizeSymbol(t?.tradingPair) === pairKey);
       const positionCounts = {
         pairPositions: pairOpenTrades.length,
         totalPositions: openTrades.length,
@@ -1129,7 +1061,7 @@ export class AgentExecutionService {
           currentPositions: positionCounts.pairPositions,
           reason: 'PAIR_POSITION_LIMIT'
         }, 'Execution blocked: pair position limit reached');
-        await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
+        await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
         return;
       }
 
@@ -1141,7 +1073,7 @@ export class AgentExecutionService {
           totalPositions: positionCounts.totalPositions,
           reason: 'TOTAL_POSITION_LIMIT'
         }, 'Execution blocked: total position limit reached');
-        await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
+        await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
         return;
       }
 
@@ -1168,7 +1100,7 @@ export class AgentExecutionService {
 
       if (!positionCalc.isSafe || !isFinite(positionCalc.positionSize) || positionCalc.positionSize <= 0) {
         finalizeSkip('POSITION_SIZING_REJECTED', `Position sizing rejected: ${positionCalc.reason || 'UNKNOWN'}`, 'RISK');
-        await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
+        await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
         return;
       }
 
@@ -1209,7 +1141,7 @@ export class AgentExecutionService {
 
         // Set pair cooldown (30 minutes from trade execution)
         const cooldownUntil = new Date(Date.now() + 30 * 60 * 1000);
-        await firestoreAdapter.setPairCooldown(agentId, tradingPair, cooldownUntil);
+        await firestoreAdapter.setPairCooldown(agentId, pairKey, cooldownUntil);
 
         logger.info({
           agentId,
@@ -1224,7 +1156,7 @@ export class AgentExecutionService {
           slTpPlacedOnExchange: true
         }, 'Trade executed successfully with SL/TP placed on exchange');
       } else {
-        // CRITICAL FIX: Exchange failure MUST count as an attempt to prevent retry loops
+        // CRITICAL: Exchange failure MUST count as an attempt to prevent retry loops
         tradeRecord.status = 'FAILED';
         tradeRecord.error = diagnostics?.execution?.error || 'ORDER_PLACEMENT_FAILED';
         tradeRecord.exchangeErrorReason = diagnostics?.execution?.exchangeErrorReason || diagnostics?.execution?.error || 'ORDER_PLACEMENT_FAILED';
@@ -1233,7 +1165,7 @@ export class AgentExecutionService {
         // CRITICAL: Apply cooldown even on exchange failure to prevent immediate retry
         // This prevents the same signal from being attempted every cycle
         const cooldownUntil = new Date(Date.now() + 30 * 60 * 1000);
-        await firestoreAdapter.setPairCooldown(agentId, tradingPair, cooldownUntil);
+        await firestoreAdapter.setPairCooldown(agentId, pairKey, cooldownUntil);
 
         // Update diagnostics decision to reflect exchange failure with cooldown
         diagnostics.decision = {
@@ -1253,7 +1185,7 @@ export class AgentExecutionService {
       }
 
       // Update last processed candle
-      await firestoreAdapter.updateLastProcessedCandle(agentId, tradingPair, candleTimestamp);
+      await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
 
       // CRITICAL: Add single diagnostic log line for HTF agents at end of successful execution
       if (isHTFAgent) {
@@ -1330,79 +1262,6 @@ export class AgentExecutionService {
   }
 
   /**
-   * Execute Crowd Consensus Copy Trading agent
-   * NOTE: This method is currently disabled - Crowd Consensus uses its own scheduler
-   */
-  private async executeCrowdConsensusAgent(): Promise<void> {
-    // DISABLED: Crowd Consensus has its own dedicated scheduler (CrowdConsensusScheduler)
-    // This method is not currently used and has incomplete implementation
-    return;
-    
-    /* COMMENTED OUT - INCOMPLETE IMPLEMENTATION
-    try {
-      // Check if Crowd Consensus is enabled (would be configurable)
-      // For now, always run if agent has access
-
-      // Get daily trade count (AGGRESSIVE TUNED: increased to 12)
-      const dailyTradeCount = await CrowdConsensusService.getDailyTradeCount('crowd-consensus-user');
-
-      if (dailyTradeCount >= 12) {
-        logger.info('Crowd Consensus daily trade limit reached');
-        return;
-      }
-
-      // Monitor master trader positions
-      const masterPositions = await CrowdConsensusService.monitorMasterTraders();
-
-      // Detect consensus signals
-      const consensusSignals = CrowdConsensusService.detectConsensus(masterPositions);
-
-      if (consensusSignals.length === 0) {
-        logger.debug('No consensus signals detected');
-        return;
-      }
-
-      // Execute trades for each consensus signal
-      for (const signal of consensusSignals) {
-        try {
-          // Check if we already have a position for this pair
-          const hasPosition = await (this.marketDataProvider as any).hasCoinMPosition(signal.pair);
-          if (hasPosition) {
-            logger.info({ pair: signal.pair }, 'Position already exists - skipping consensus trade');
-            continue;
-          }
-
-          // Execute consensus trade - NEEDS CREDENTIALS
-          const result = await CrowdConsensusService.executeConsensusTrade(
-            signal,
-            'crowd-consensus-user',
-            'exchange-name', // TODO: Get from user settings
-            {} // TODO: Get credentials
-          );
-
-          if (result.success && result.trade) {
-            // Save trade record
-            await CrowdConsensusService.saveConsensusTrade('crowd-consensus-user', result.trade);
-            logger.info({ tradeId: result.trade.id, pair: signal.pair }, 'Crowd Consensus trade executed');
-          }
-        } catch (error: any) {
-          logger.error({
-            error: error.message,
-            pair: signal.pair,
-            direction: signal.direction
-          }, 'Failed to execute consensus trade');
-        }
-      }
-
-    } catch (error) {
-      logger.error({
-        error: error instanceof Error ? error.message : 'Unknown error'
-      }, 'Failed to execute Crowd Consensus agent');
-    }
-    */
-  }
-
-  /**
    * Place order on exchange with atomic SL/TP attachment
    */
   private async placeOrderFromTradeAtomic(trade: any, agentConfig: TradingAgentConfig, marketProvider: TradingAgentMarketProvider, diagnostics: any, agent: TradingAgent): Promise<boolean> {
@@ -1414,7 +1273,8 @@ export class AgentExecutionService {
         : 'trading-agent';
 
       const side: 'BUY' | 'SELL' = trade.direction === 'LONG' ? 'BUY' : 'SELL';
-      const symbol = (trade.symbol || agentConfig.tradingPair.replace('/', '')).toUpperCase();
+      const normalizeSymbol = (value: string) => String(value || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+      const symbol = normalizeSymbol(trade.symbol || agentConfig.tradingPair);
       const quantity = Number(trade.quantity) || 0;
 
       if (!uid) {
@@ -1425,6 +1285,26 @@ export class AgentExecutionService {
       if (!symbol || !isFinite(quantity) || quantity <= 0) {
         diagnostics.execution = { success: false, error: 'INVALID_ORDER_PARAMS' };
         return false;
+      }
+
+      // CRITICAL: HTF Trend Filter Agent REAL ORDER PLACEMENT
+      // For HTF auto-execution, this is ALWAYS a real order (testMode = false)
+      // Manual test endpoints use executeManualTrade with testMode = true
+      const isHTFAgent = (agentConfig as any).strategyType === 'HTF_TREND_FILTER' || 
+                         (agentConfig.name && agentConfig.name.includes('HTF Trend Filter'));
+
+      if (isHTFAgent) {
+        logger.info({
+          uid,
+          agentId: agentConfig.id,
+          symbol,
+          side,
+          quantity,
+          stopLoss: trade.stopLoss,
+          takeProfit: trade.takeProfit,
+          testMode: false,
+          realOrder: true
+        }, '🚀 REAL_BITGET_ORDER_PLACED: HTF Trend Filter Agent placing REAL Bitget futures order');
       }
 
       // Place entry order (MARKET). SL/TP are placed immediately after entry on the exchange.
@@ -1444,8 +1324,28 @@ export class AgentExecutionService {
         stopLoss: Number(trade.stopLoss) || 0,
         takeProfit: Number(trade.takeProfit) || 0,
         calculatedRR: trade.calculatedRR || 0,
-        slTpPlacedOnExchange: !!(trade.stopLoss || trade.takeProfit)
+        slTpPlacedOnExchange: !!(trade.stopLoss || trade.takeProfit),
+        testMode: false, // HTF auto-execution is ALWAYS real
+        realOrderPlaced: true
       };
+
+      // CRITICAL: Log successful REAL order placement for HTF agents
+      if (isHTFAgent) {
+        logger.info({
+          uid,
+          agentId: agentConfig.id,
+          orderId,
+          symbol,
+          side,
+          quantity,
+          stopLoss: trade.stopLoss,
+          takeProfit: trade.takeProfit,
+          exchange: agentConfig.exchange,
+          marketType: 'futures',
+          testMode: false,
+          realOrderConfirmed: true
+        }, '✅ REAL_BITGET_ORDER_CONFIRMED: HTF Trend Filter Agent REAL order placed successfully on Bitget futures');
+      }
 
       // Persist to canonical trades collection for UI history
       const tradeDocId = await firestoreAdapter.saveTrade(uid, {
@@ -1968,14 +1868,57 @@ export class AgentExecutionService {
     rawError?: string;
   }> {
     try {
-      logger.info({
+      // HARD GUARD: Reject testMode completely - manual trades are REAL ONLY
+      if (context.testMode === true) {
+        logger.error({
+          tag: '[MANUAL_TRADE_TEST_MODE_REJECTED]',
+          userId,
+          agentId: context.agentId,
+          reason: 'Test mode is not supported for manual trades in production'
+        }, 'Manual trade execution rejected - test mode not allowed');
+        
+        return {
+          success: false,
+          message: 'Test mode is not supported. Manual trades execute on real Bitget Futures only.',
+          error: 'TEST_MODE_NOT_SUPPORTED'
+        };
+      }
+
+      // DUPLICATE EXECUTION GUARD: Prevent multiple manual trades within 5-10 second window
+      const executionKey = `${userId}#${context.agentId}`;
+      const lastExecutionTime = AgentExecutionService.manualTradeExecutionGuard.get(executionKey);
+      const now = Date.now();
+      const COOLDOWN_MS = 8000; // 8 second cooldown window
+
+      if (lastExecutionTime && (now - lastExecutionTime) < COOLDOWN_MS) {
+        const remainingWait = Math.ceil((COOLDOWN_MS - (now - lastExecutionTime)) / 1000);
+        logger.warn({
+          tag: '[MANUAL_TRADE_DUPLICATE_PREVENTED]',
+          userId,
+          agentId: context.agentId,
+          lastExecutionTime,
+          remainingWaitSeconds: remainingWait
+        }, `Manual trade blocked - please wait ${remainingWait}s before next trade`);
+        
+        return {
+          success: false,
+          message: `Too many manual trades. Please wait ${remainingWait} seconds before executing another trade.`,
+          error: 'MANUAL_TRADE_COOLDOWN_ACTIVE'
+        };
+      }
+
+      // Record this execution time
+      AgentExecutionService.manualTradeExecutionGuard.set(executionKey, now);
+
+      logger.warn({
+        tag: '[REAL_MANUAL_TRADE_EXECUTION]',
         userId,
         agentId: context.agentId,
         tradingPair: context.tradingPair,
         side: context.side,
         quantity: context.quantity,
-        testMode: context.testMode
-      }, 'Executing manual trade');
+        executionMode: 'REAL_BITGET_FUTURES'
+      }, 'Manual trade execution - REAL MODE (live Bitget Futures order)');
 
       // Get user's exchange configuration
       const exchangeConfig = await firestoreAdapter.getExchangeConfig(userId);
@@ -1988,16 +1931,6 @@ export class AgentExecutionService {
       }
 
       const exchangeKey = exchangeConfig.exchange;
-
-      // CHECK FOR CORRUPTED STATUS: Encryption secret may have changed
-      if (exchangeConfig.exchangeStatus === 'CORRUPTED') {
-        logger.warn({ userId, agentId: context.agentId, reason: exchangeConfig.corruptedReason }, 'Exchange is CORRUPTED - cannot decrypt keys');
-        return {
-          success: false,
-          message: 'Exchange keys are invalid due to encryption secret change',
-          error: 'EXCHANGE_CORRUPTED'
-        };
-      }
 
       try {
         // Decrypt exchange credentials
@@ -2040,10 +1973,12 @@ export class AgentExecutionService {
 
         // Create exchange connector
         const { ExchangeConnectorFactory } = await import('./exchangeConnector');
+        // For manual trades: if testMode = false (real execution), force testnet = false
+        // Otherwise default to sandbox/testnet for safety
         const exchangeCredentials = {
           apiKey: decryptedApiKey,
           secret: decryptedApiSecret,
-          testnet: exchangeConfig.sandbox || true
+          testnet: context.testMode ? (exchangeConfig.sandbox || true) : false
         };
 
         // Add passphrase for exchanges that require it
@@ -2053,7 +1988,11 @@ export class AgentExecutionService {
             throw new Error('EXCHANGE_KEYS_NOT_DECRYPTED: Passphrase decryption failed or returned empty');
           }
           
-          (exchangeCredentials as any).passphrase = decryptedPassphrase || 'test';
+          // For bitget/weex a real passphrase is required; do not default to 'test'
+          if (!decryptedPassphrase || decryptedPassphrase.trim() === '') {
+            throw new Error('Passphrase is required for ' + exchangeKey);
+          }
+          (exchangeCredentials as any).passphrase = decryptedPassphrase;
         }
 
         const connector = ExchangeConnectorFactory.create(exchangeKey, exchangeCredentials);
@@ -2068,29 +2007,16 @@ export class AgentExecutionService {
             rawError: connectionTest.details?.toString()
           };
         }
-
-        // In TEST MODE, we don't place actual orders
-        if (context.testMode) {
-          // Simulate order placement
-          const simulatedOrderId = `TEST_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-          
-          return {
-            success: true,
-            message: `Test trade simulation successful: ${context.side} ${context.quantity} ${context.tradingPair}`,
-            orderId: simulatedOrderId,
-            details: {
-              exchange: exchangeKey,
-              pair: context.tradingPair,
-              side: context.side,
-              quantity: context.quantity,
-              testMode: true,
-              timestamp: new Date().toISOString()
-            }
-          };
-        }
-
-        // For actual trades (if testMode is false), place the order
+        // Always execute REAL order (testMode is rejected above)
+        // For actual trades, place the order on Bitget Futures
         if (connector.placeOrder) {
+          // Log testMode value right before placing order
+          logger.info({
+            tag: '[MANUAL_TRADE_EXECUTION_MODE]',
+            testMode: context.testMode,
+            executionMode: context.testMode ? 'SIMULATION' : 'REAL_BITGET_FUTURES'
+          }, 'Determining execution mode for manual trade');
+          
           const orderParams = {
             symbol: context.tradingPair.replace('/', ''),
             side: context.side === 'LONG' ? 'BUY' as const : 'SELL' as const,
@@ -2099,6 +2025,16 @@ export class AgentExecutionService {
           };
 
           const orderResult = await connector.placeOrder(orderParams);
+          
+          logger.warn({
+            tag: '[REAL_MANUAL_TRADE_EXECUTION]',
+            testMode: context.testMode,
+            orderId: orderResult.orderId || orderResult.id,
+            pair: context.tradingPair,
+            side: context.side,
+            quantity: context.quantity,
+            exchange: exchangeKey
+          }, 'REAL manual trade executed - order placed on Bitget Futures');
           
           return {
             success: true,

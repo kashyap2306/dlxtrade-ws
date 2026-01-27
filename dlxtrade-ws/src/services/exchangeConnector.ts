@@ -96,7 +96,7 @@ export class ExchangeConnector {
   // Utility method for testing exchange execution
   static async testOrderExecution(
     exchangeName: ExchangeName, 
-    credentials: { apiKey: string; apiSecret: string; sandbox?: boolean }, 
+    credentials: { apiKey: string; apiSecret: string; passphrase?: string; sandbox?: boolean }, 
     symbol: string
   ): Promise<{
     orderEndpointReachable: boolean;
@@ -106,64 +106,57 @@ export class ExchangeConnector {
     message?: string;
   }> {
     try {
+      // Validate passphrase for exchanges that require it
+      if ((exchangeName === 'bitget' || exchangeName === 'weex') && !credentials.passphrase) {
+        throw new Error(`Passphrase is required for ${exchangeName}`);
+      }
+
       const exchangeCredentials: ExchangeCredentials = {
         apiKey: credentials.apiKey,
         secret: credentials.apiSecret,
+        passphrase: credentials.passphrase,
         testnet: credentials.sandbox ?? true
       };
 
-      // Add passphrase for exchanges that require it
-      if (exchangeName === 'bitget' || exchangeName === 'weex') {
-        // For test purposes, we'll skip passphrase validation
-        // In production, this should be provided
-        (exchangeCredentials as any).passphrase = 'test';
-      }
-
       const connector = ExchangeConnectorFactory.create(exchangeName, exchangeCredentials);
 
-      // Test 1: Order endpoint reachable
+      // Test 1: Order endpoint reachable (MUST NOT fail on 400 for futures-only keys)
       let orderEndpointReachable = false;
       let permissionsOk = false;
       let futuresEnabled = false;
       let symbolTradable = false;
 
       try {
-        // Test connection first
+        // Test connection first - this now supports both spot and futures keys
         const connectionTest = await connector.testConnection();
         orderEndpointReachable = connectionTest.success;
 
         if (orderEndpointReachable) {
-          // Test 2: Check permissions by getting account info
-          if (connector.getAccount) {
-            try {
-              await connector.getAccount();
-              permissionsOk = true;
-            } catch (err: any) {
-              logger.warn({ err: err.message }, 'Account permissions test failed');
-              permissionsOk = false;
-            }
+          // Test 2: Check permissions by examining connection details
+          // For Bitget, if connection succeeded, permissions are OK
+          if (connectionTest.details) {
+            permissionsOk = connectionTest.details.permissions?.canTrade || false;
+            // CRITICAL FIX: Check if futures is available from connection test
+            futuresEnabled = connectionTest.details.futuresAvailable || false;
           } else {
-            // If no getAccount method, assume permissions are OK if connection works
-            permissionsOk = true;
+            permissionsOk = true; // Connection worked, so permissions OK
+            futuresEnabled = true; // Assume futures enabled if available in details
           }
 
-          // Test 3: Check futures enabled by getting futures balance
-          if (connector.getFuturesBalance) {
-            try {
-              await connector.getFuturesBalance();
-              futuresEnabled = true;
-            } catch (err: any) {
-              logger.warn({ err: err.message }, 'Futures balance test failed');
-              futuresEnabled = false;
-            }
-          }
-
-          // Test 4: Check if symbol is tradable by getting ticker
+          // Test 3: Check if symbol is tradable by getting ticker
           try {
-            await connector.getTicker(symbol);
+            // CRITICAL FIX: For Bitget, use raw symbol format (BTCUSDT) and ensure futures-only validation
+            let testSymbol = symbol;
+            if (exchangeName === 'bitget') {
+              // Convert BTC/USDT to BTCUSDT for Bitget futures
+              testSymbol = symbol.replace(/[\/\-]/g, '').toUpperCase();
+              logger.info({ originalSymbol: symbol, testSymbol }, 'Bitget: Converting symbol for futures ticker test');
+            }
+            
+            await connector.getTicker(testSymbol);
             symbolTradable = true;
           } catch (err: any) {
-            logger.warn({ err: err.message, symbol }, 'Symbol ticker test failed');
+            logger.warn({ err: err.message, symbol, exchangeName }, 'Symbol ticker test failed');
             symbolTradable = false;
           }
         }

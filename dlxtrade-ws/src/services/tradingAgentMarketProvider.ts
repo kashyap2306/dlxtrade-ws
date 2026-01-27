@@ -9,7 +9,22 @@ export class TradingAgentMarketProvider implements MarketDataProvider {
 
   constructor(exchangeCredentials: ExchangeCredentials, exchange: string = 'binance', marketType: 'spot' | 'futures' = 'spot') {
     this.exchange = exchange;
-    this.marketType = marketType;
+    
+    // CRITICAL FIX: Force futures mode for Bitget to prevent spot endpoint calls
+    if (exchange === 'bitget') {
+      this.marketType = 'futures';
+      if (marketType === 'spot') {
+        logger.warn({ exchange }, 'Bitget forced to futures mode - spot trading not supported');
+      }
+    } else {
+      this.marketType = marketType;
+    }
+    
+    // FUTURES-ONLY GUARD: Throw error if spot mode is attempted for Bitget
+    if (exchange === 'bitget' && marketType === 'spot') {
+      throw new Error('BITGET_SPOT_MODE_FORBIDDEN: Bitget must use futures mode only');
+    }
+    
     this.exchangeConnector = ExchangeConnectorFactory.create(
       exchange as any,
       exchangeCredentials

@@ -410,7 +410,7 @@ export const agentsApi = {
   
   // HTF Trend Filter Agent specific endpoints
   testExchangeExecution: (agentId: string) => api.post(`/agents/${agentId}/test-exchange-execution`),
-  executeManualTrade: (agentId: string, tradeData: { pair: string; side: 'LONG' | 'SHORT'; quantity: number }) => 
+  executeManualTrade: (agentId: string, tradeData: { pair: string; side: 'LONG' | 'SHORT'; quantity: number; executeRealTrade?: boolean }) => 
     api.post(`/agents/${agentId}/execute-manual-trade`, tradeData),
 };
 

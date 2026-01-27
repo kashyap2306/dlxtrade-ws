@@ -43,8 +43,12 @@ export class BitgetAdapter implements ExchangeConnector {
     }
   }
 
+  private normalizeFuturesSymbol(symbol: string): string {
+    return String(symbol || '').replace(/[\/\-]/g, '').toUpperCase();
+  }
+
   private async getUsdtMContractInfo(symbol: string): Promise<{ minOrderQty: number; tickSize: number; pricePrecision: number; qtyPrecision: number }> {
-    const key = `USDT-FUTURES:${symbol.toUpperCase()}`;
+    const key = `USDT-FUTURES:${this.normalizeFuturesSymbol(symbol)}`;
     const cached = this.contractInfoCache.get(key);
     if (cached && cached.expiresAt > Date.now()) {
       return cached.value;
@@ -57,7 +61,7 @@ export class BitgetAdapter implements ExchangeConnector {
       });
 
       const list = Array.isArray(response?.data) ? response.data : [];
-      const contract = list.find((c: any) => String(c?.symbol || '').toUpperCase() === symbol.toUpperCase());
+      const contract = list.find((c: any) => String(c?.symbol || '').toUpperCase() === this.normalizeFuturesSymbol(symbol));
       if (!contract) {
         this.contractInfoCache.set(key, { expiresAt: Date.now() + 5 * 60 * 1000, value: fallback });
         return fallback;
@@ -100,6 +104,12 @@ export class BitgetAdapter implements ExchangeConnector {
       throw new ExchangeError('Passphrase is required for Bitget API', 400);
     }
 
+    // Safety guard: Bitget adapter must never call SPOT endpoints
+    if (endpoint.startsWith('/api/v2/spot')) {
+      // Defensive: prevent accidental spot calls for Bitget
+      throw new ExchangeError('SPOT_ENDPOINT_FORBIDDEN_FOR_BITGET', 400);
+    }
+
     const timestamp = Date.now().toString();
     const queryString = Object.keys(params)
       .sort()
@@ -122,6 +132,19 @@ export class BitgetAdapter implements ExchangeConnector {
     }
 
     try {
+      // DEBUG: Log final request data and params before axios request
+      if (endpoint.includes('place-order')) {
+        console.log('[BITGET_FINAL_DATA]', body ? JSON.parse(body) : 'no-body');
+        console.log('[BITGET_FINAL_PARAMS]', params);
+        logger.info({
+          tag: '[BITGET_AXIOS_REQUEST]',
+          endpoint,
+          queryString,
+          body: body ? JSON.parse(body) : 'no-body',
+          paramsObject: params
+        }, 'Final Bitget axios request');
+      }
+
       const response = await this.httpClient.request({
         method,
         url: fullUrl,
@@ -140,22 +163,20 @@ export class BitgetAdapter implements ExchangeConnector {
 
   async getOrderbook(symbol: string, limit: number = 20): Promise<Orderbook> {
     try {
-      const data = await this.request('GET', '/api/v2/spot/market/orderbook', {
-        symbol: symbol.toUpperCase(),
+      // Use FUTURES orderbook (mix) for Bitget
+      const s = this.normalizeFuturesSymbol(symbol);
+      const data = await this.request('GET', '/api/v2/mix/market/depth', {
+        symbol: s,
         limit: limit.toString(),
+        productType: 'USDT-FUTURES'
       });
 
+      const book = data.data || {};
       return {
-        symbol: data.data?.symbol || symbol,
-        bids: (data.data?.bids || []).map(([price, qty]: [string, string]) => ({
-          price,
-          quantity: qty,
-        })),
-        asks: (data.data?.asks || []).map(([price, qty]: [string, string]) => ({
-          price,
-          quantity: qty,
-        })),
-        lastUpdateId: data.data?.timestamp || Date.now(),
+        symbol: book.symbol || symbol,
+        bids: (book.bids || []).map((b: any) => ({ price: String(b[0] ?? b.price ?? ''), quantity: String(b[1] ?? b.qty ?? '0') })),
+        asks: (book.asks || []).map((a: any) => ({ price: String(a[0] ?? a.price ?? ''), quantity: String(a[1] ?? a.qty ?? '0') })),
+        lastUpdateId: book.timestamp || Date.now(),
       };
     } catch (error: any) {
       logger.error({ error, symbol }, 'Error getting Bitget orderbook');
@@ -171,13 +192,18 @@ export class BitgetAdapter implements ExchangeConnector {
 
   async getTicker(symbol?: string): Promise<any> {
     try {
+      // ALWAYS use FUTURES (mix) tickers for Bitget
       if (symbol) {
-        const data = await this.request('GET', '/api/v2/spot/market/tickers', {
-          symbol: symbol.toUpperCase(),
+        const s = this.normalizeFuturesSymbol(symbol);
+        const data = await this.request('GET', '/api/v2/mix/market/tickers', {
+          symbol: s,
+          productType: 'USDT-FUTURES'
         });
         return data.data?.[0] || {};
       } else {
-        const data = await this.request('GET', '/api/v2/spot/market/tickers', {});
+        const data = await this.request('GET', '/api/v2/mix/market/tickers', {
+          productType: 'USDT-FUTURES'
+        });
         return data.data || [];
       }
     } catch (error: any) {
@@ -188,11 +214,17 @@ export class BitgetAdapter implements ExchangeConnector {
 
   async getKlines(symbol: string, interval: string = '1m', limit: number = 100): Promise<any[]> {
     try {
-      const data = await this.request('GET', '/api/v2/spot/market/candles', {
-        symbol: symbol.toUpperCase(),
+      // Use FUTURES candles for Bitget
+      const s = this.normalizeFuturesSymbol(symbol);
+      const data = await this.request('GET', '/api/v2/mix/market/candles', {
+        symbol: s,
         granularity: interval,
+        productType: 'USDT-FUTURES',
         limit: limit.toString(),
       });
+      if (data.code && data.code !== '00000') {
+        throw new ExchangeError(`Failed to get futures klines: ${data.msg}`, 400);
+      }
       return data.data || [];
     } catch (error: any) {
       logger.error({ error, symbol, interval }, 'Error getting Bitget klines');
@@ -202,8 +234,9 @@ export class BitgetAdapter implements ExchangeConnector {
 
   async getFuturesKlines(symbol: string, interval: string = '5m', limit: number = 100): Promise<any[]> {
     try {
+      const s = this.normalizeFuturesSymbol(symbol);
       const response = await this.request('GET', '/api/v2/mix/market/candles', {
-        symbol: symbol.toUpperCase(),
+        symbol: s,
         granularity: interval,
         productType: 'USDT-FUTURES',
         limit: limit.toString(),
@@ -274,14 +307,12 @@ export class BitgetAdapter implements ExchangeConnector {
         return { success: false, message: 'Passphrase is required for Bitget' };
       }
 
-      // 1. Test with Spot account info (validates key & permissions)
-      const spotResponse = await this.request('GET', '/api/v2/spot/account/info', {}, true);
-
-      if (spotResponse.code !== '00000' && !spotResponse.data) {
-        return { success: false, message: spotResponse.msg || 'Connection test failed' };
-      }
-
-      // 2. Fetch Futures Balance (USDT-M)
+      // CRITICAL: Bitget futures-only trading - no spot fallback allowed
+      // For HTF agents (futures trading), try FUTURES endpoint ONLY
+      let futuresSuccess = false;
+      let accountId = 'Bitget User';
+      
+      // 1. Try Futures FIRST (HTF agents use futures trading)
       let futuresDetails = {
         total: 0,
         available: 0,
@@ -290,25 +321,36 @@ export class BitgetAdapter implements ExchangeConnector {
 
       try {
         // Bitget V2 Futures Account API: /api/v2/mix/account/accounts?productType=USDT-FUTURES
+        // This is the correct endpoint for futures-enabled keys (used by HTF agents)
         const futuresResponse = await this.request('GET', '/api/v2/mix/account/accounts', {
           productType: 'USDT-FUTURES'
         }, true);
 
-        if (futuresResponse.data && Array.isArray(futuresResponse.data)) {
-          // Find USDT margin account
-          // Data structure typically handled per margin coin for USDT-M
-          const usdtAccount = futuresResponse.data.find((acc: any) => acc.marginCoin === 'USDT');
-          if (usdtAccount) {
-            futuresDetails.total = parseFloat(usdtAccount.equity || usdtAccount.available || '0');
-            futuresDetails.available = parseFloat(usdtAccount.available || '0');
+        // Futures endpoint accessible - check if we got valid account data
+        if (futuresResponse && (futuresResponse.code === '00000' || futuresResponse.data)) {
+          futuresSuccess = true; // Endpoint is accessible and returns data
+          
+          if (Array.isArray(futuresResponse.data)) {
+            // Find USDT margin account for balance info
+            const usdtAccount = futuresResponse.data.find((acc: any) => acc.marginCoin === 'USDT');
+            if (usdtAccount) {
+              futuresDetails.total = parseFloat(usdtAccount.equity || usdtAccount.available || '0');
+              futuresDetails.available = parseFloat(usdtAccount.available || '0');
+            }
+            // Set accountId from first account if available
+            if (futuresResponse.data.length > 0 && futuresResponse.data[0]?.uid) {
+              accountId = futuresResponse.data[0].uid;
+            }
           }
         }
       } catch (futuresErr: any) {
-        logger.warn({ error: futuresErr.message }, 'Failed to fetch Bitget futures balance');
+        const errorMsg = futuresErr.message || '';
+        logger.debug({ error: errorMsg }, 'Futures account test failed for Bitget - no fallback to spot allowed');
+        // Do NOT fallback to spot for Bitget - enforce futures-only
+        return { success: false, message: 'Futures account not accessible - ensure API key/secret/passphrase are for USDT-FUTURES' };
       }
 
-      const accountId = spotResponse.data?.userId || spotResponse.data?.user_id || 'Bitget User';
-
+      // SUCCESS: Futures endpoint is available
       return {
         success: true,
         message: 'Connection successful',
@@ -319,9 +361,12 @@ export class BitgetAdapter implements ExchangeConnector {
           accountId: accountId,
           balance: futuresDetails,
           permissions: {
-            canTrade: true // Inferred from successful account info and balance fetch
+            canTrade: true
           },
-          isTradeReady: futuresDetails.available >= 10 // Basic check example
+          spotAvailable: false,
+          futuresAvailable: true,
+          futuresEnabled: true,
+          isTradeReady: futuresDetails.available >= 10
         }
       };
     } catch (error: any) {
@@ -335,7 +380,8 @@ export class BitgetAdapter implements ExchangeConnector {
 
   async getAccount(): Promise<any> {
     try {
-      return await this.request('GET', '/api/v2/spot/account/info', {}, true);
+      // For Bitget we only support FUTURES (Mix) accounts
+      return await this.getFuturesBalance();
     } catch (error: any) {
       logger.error({ error }, 'Error getting Bitget account');
       return { error: error.message || 'Failed to get account' };
@@ -351,8 +397,9 @@ export class BitgetAdapter implements ExchangeConnector {
   }): Promise<any> {
     try {
       const { symbol, side, type = 'MARKET', quantity, price } = params;
+      const s = this.normalizeFuturesSymbol(symbol);
 
-      const contractInfo = await this.getUsdtMContractInfo(symbol);
+      const contractInfo = await this.getUsdtMContractInfo(s);
       const qtyPrecisionPow = Math.pow(10, Math.max(0, contractInfo.qtyPrecision || 0));
       const roundedQty = qtyPrecisionPow > 0 ? Math.floor(Number(quantity || 0) * qtyPrecisionPow) / qtyPrecisionPow : Number(quantity || 0);
       if (!isFinite(roundedQty) || roundedQty <= 0) {
@@ -372,11 +419,12 @@ export class BitgetAdapter implements ExchangeConnector {
       };
       const roundedPrice = typeof price === 'number' ? roundPrice(price) : price;
 
-      // CRITICAL: Aligned with AutoTradeEngine which sets ISOLATED margin mode
-      // Must match the account mode set via setMarginType
+      // CRITICAL: Bitget USDT-FUTURES does NOT support hedge mode for MARKET orders
+      // Use UNILATERAL mode (side: 'buy'/'sell' only, no holdSide parameter)
+      // Aligned with ISOLATED margin mode set via setMarginType
       const orderParams: any = {
         productType: 'USDT-FUTURES',
-        symbol: symbol.toUpperCase(),
+        symbol: s,
         side: side.toLowerCase(), // Bitget V2 Mix uses lowercase 'buy'/'sell'
         orderType: type.toLowerCase(), // 'market' or 'limit'
         marginMode: 'isolated', // FIXED: Was 'crossed', causing mismatch with engine intent
@@ -390,6 +438,16 @@ export class BitgetAdapter implements ExchangeConnector {
         // force: 'gtc' ? Bitget might default to GTC
         orderParams.force = 'gtc';
       }
+
+      // DEBUG: Log final order payload before sending to Bitget
+      console.log('[BITGET_FINAL_ORDER_PAYLOAD]', JSON.stringify(orderParams, null, 2));
+      logger.info({ 
+        tag: '[BITGET_ORDER_REQUEST]',
+        payload: orderParams,
+        side: orderParams.side,
+        orderType: orderParams.orderType,
+        mode: 'UNILATERAL'
+      }, 'Sending UNILATERAL mode order to Bitget API');
 
       // API: /api/v2/mix/order/place-order
       const response = await this.request('POST', '/api/v2/mix/order/place-order', orderParams, true);
@@ -452,7 +510,7 @@ export class BitgetAdapter implements ExchangeConnector {
         const tpslParams: any = {
           marginCoin: 'USDT',
           productType: 'USDT-FUTURES',
-          symbol: symbol.toUpperCase(),
+          symbol: this.normalizeFuturesSymbol(symbol),
           holdSide,
         };
 
@@ -485,7 +543,7 @@ export class BitgetAdapter implements ExchangeConnector {
   async setLeverage(symbol: string, leverage: number): Promise<void> {
     try {
       const params = {
-        symbol: symbol.toUpperCase(),
+        symbol: this.normalizeFuturesSymbol(symbol),
         productType: 'USDT-FUTURES',
         marginCoin: 'USDT',
         leverage: leverage.toString(),
@@ -516,7 +574,7 @@ export class BitgetAdapter implements ExchangeConnector {
     try {
       const mode = marginType.toLowerCase(); // 'isolated' or 'crossed'
       const params = {
-        symbol: symbol.toUpperCase(),
+        symbol: this.normalizeFuturesSymbol(symbol),
         productType: 'USDT-FUTURES',
         marginCoin: 'USDT',
         marginMode: mode,

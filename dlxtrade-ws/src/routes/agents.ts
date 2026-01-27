@@ -2601,10 +2601,12 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         // Decrypt exchange credentials
         let decryptedApiKey: string | null = null;
         let decryptedApiSecret: string | null = null;
+        let decryptedPassphrase: string | undefined = undefined;
 
         try {
           decryptedApiKey = decrypt(exchangeConfig.apiKeyEncrypted, 'exchange');
           decryptedApiSecret = decrypt(exchangeConfig.secretKeyEncrypted || exchangeConfig.secretEncrypted, 'exchange');
+          decryptedPassphrase = exchangeConfig.passphraseEncrypted ? decrypt(exchangeConfig.passphraseEncrypted, 'exchange') : undefined;
         } catch (decryptError: any) {
           // Handle ENCRYPTION_SECRET_CHANGED error specifically
           if (decryptError.message?.includes('ENCRYPTION_SECRET_CHANGED')) {
@@ -2644,8 +2646,9 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         const testResult = await ExchangeConnector.testOrderExecution(exchangeKey as any, {
           apiKey: decryptedApiKey,
           apiSecret: decryptedApiSecret,
+          passphrase: decryptedPassphrase,
           sandbox: exchangeConfig.sandbox || false
-        }, 'BTC/USDT');
+        }, exchangeKey === 'bitget' ? 'BTCUSDT' : 'BTC/USDT'); // CRITICAL FIX: Use raw symbol format for Bitget
 
         return reply.code(200).send({
           orderEndpointReachable: testResult.orderEndpointReachable,
@@ -2692,18 +2695,26 @@ export async function agentsRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // POST /api/agents/:agentId/execute-manual-trade - Execute manual test trade
+  // POST /api/agents/:agentId/execute-manual-trade - Execute manual trade (test or real)
   fastify.post('/:agentId/execute-manual-trade', {
     preHandler: [fastify.authenticate],
   }, async (request: FastifyRequest<{ 
     Params: { agentId: string }; 
-    Body: { pair: string; side: 'LONG' | 'SHORT'; quantity: number } 
+    Body: { pair: string; side: 'LONG' | 'SHORT'; quantity: number; executeRealTrade?: boolean } 
   }>, reply: FastifyReply) => {
     try {
       const user = (request as any).user;
       const uid = user?.uid;
       const { agentId } = request.params;
-      const { pair, side, quantity } = request.body;
+      const { pair, side, quantity, executeRealTrade } = request.body;
+      
+      // Log full request body at route entry
+      logger.info({
+        tag: '[HTF_MANUAL_TRADE_REQUEST]',
+        uid,
+        agentId,
+        requestBody: request.body
+      }, 'HTF manual trade request received');
 
       if (!uid) {
         return reply.code(403).send({ error: 'Authentication required' });
@@ -2713,10 +2724,11 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       const tradeSchema = z.object({
         pair: z.string().min(1),
         side: z.enum(['LONG', 'SHORT']),
-        quantity: z.number().min(0.001)
+        quantity: z.number().min(0.001),
+        executeRealTrade: z.boolean().optional()
       });
 
-      const validatedTrade = tradeSchema.parse({ pair, side, quantity });
+      const validatedTrade = tradeSchema.parse({ pair, side, quantity, executeRealTrade });
 
       // Only support HTF Trend Filter Agent for now
       if (agentId !== 'htf-trend-filter-agent') {
@@ -2736,6 +2748,9 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         return reply.code(404).send({ error: 'HTF Trend Filter Agent not found' });
       }
 
+      // Manual trades are REAL ONLY - testMode is always false
+      const testMode = false;
+
       // Call the SAME execution path used by the agent
       const { AgentExecutionService } = await import('../services/agentExecutionService');
       
@@ -2745,10 +2760,20 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         tradingPair: validatedTrade.pair,
         side: validatedTrade.side,
         quantity: validatedTrade.quantity,
-        testMode: true, // TEST ONLY mode
+        testMode: testMode,
         manualTrigger: true
       };
 
+      // Log the REAL execution request
+      logger.warn({
+        tag: '[REAL_MANUAL_TRADE_REQUEST]',
+        uid,
+        agentId: targetAgent.id,
+        pair: validatedTrade.pair,
+        side: validatedTrade.side,
+        quantity: validatedTrade.quantity
+      }, 'Real manual trade request - order will be placed on Bitget Futures');
+      
       const executionResult = await AgentExecutionService.executeManualTrade(uid, manualExecutionContext);
 
       return reply.code(200).send({

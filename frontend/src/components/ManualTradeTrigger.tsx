@@ -25,6 +25,9 @@ export default function ManualTradeTrigger({ agentId }: ManualTradeTriggerProps)
   });
 
   const handleExecuteTrade = async () => {
+    // Prevent duplicate requests
+    if (executing) return;
+    
     setExecuting(true);
     setResult(null);
 
@@ -32,8 +35,17 @@ export default function ManualTradeTrigger({ agentId }: ManualTradeTriggerProps)
       const tradeData = {
         pair: formData.pair,
         side: formData.side,
-        quantity: parseFloat(formData.quantity)
+        quantity: parseFloat(formData.quantity),
+        executeRealTrade: true
       };
+      
+      // Console log before API call to confirm real execution
+      console.log('[HTF_MANUAL_TRADE_TRIGGER] Executing REAL manual trade:', {
+        agentId,
+        tradeData,
+        executeRealTrade: true,
+        executionType: 'REAL_BITGET_FUTURES'
+      });
       
       const response = await agentsApi.executeManualTrade(agentId, tradeData);
       setResult(response.data);
@@ -94,15 +106,15 @@ export default function ManualTradeTrigger({ agentId }: ManualTradeTriggerProps)
       <button
         onClick={handleExecuteTrade}
         disabled={executing}
-        className="btn btn-primary w-full"
+        className="btn btn-error w-full"
       >
         {executing ? (
           <div className="flex items-center gap-2">
             <ClockIcon className="w-4 h-4 animate-spin" />
-            Executing Test Trade...
+            Executing Real Trade...
           </div>
         ) : (
-          'Execute Test Trade'
+          '🚀 Execute Real Trade'
         )}
       </button>
 

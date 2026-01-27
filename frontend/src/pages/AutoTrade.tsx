@@ -24,7 +24,7 @@ const PageLoader = () => (
 );
 
 export default function AutoTrade() {
-  const { user } = useAuth();
+  const { user, authReady } = useAuth();
   const [loading, setLoading] = useState(false); // Never show global loading like Research page
   const [error, setError] = useState<any>(null);
   const [retryCount, setRetryCount] = useState(0);
@@ -151,12 +151,12 @@ export default function AutoTrade() {
   // Removed auto-enable logic - backend is source of truth for exchange connection
   // Auto-enable would require backend exchangeConnected check, not frontend exchangeConfig
 
-  // Load all data when user changes
+  // Load all data when user changes and auth is ready
   useEffect(() => {
-    if (user) {
+    if (user && authReady) {
       loadAllData();
     }
-  }, [user, loadAllData]);
+  }, [user, authReady, loadAllData]);
 
   // Emergency timeout: force loading=false after 3 seconds
   useEffect(() => {

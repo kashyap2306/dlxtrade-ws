@@ -1,5 +1,15 @@
+import { onAuthStateChanged } from 'firebase/auth';
 import { collection, getDocs } from 'firebase/firestore';
 import { auth, db } from './firebase-config';
+
+export const firebaseReady: Promise<void> = new Promise((resolve) => {
+  try {
+    onAuthStateChanged(auth, () => resolve());
+  } catch (err) {
+    console.warn('[firebaseReady] failed to initialize:', err);
+    resolve();
+  }
+});
 
 export async function resolveAgentDoc(
   agentKey: string

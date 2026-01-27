@@ -72,6 +72,18 @@ export default function TradingAgentControl() {
     cycleGroups.forEach((group, cycleKey) => {
       // STRICT primary selection priority - real SKIP reasons override EXECUTION_STARTED
       // PART B FIX: EXECUTION_STARTED with action="INFO" should be treated as execution, not skip
+      const hasUsableExchange = group.some((d) =>
+        d?.exchangeUsable === true ||
+        d?.exchangeStatus === 'USABLE' ||
+        d?.decision?.reason === 'EXCHANGE_USABLE'
+      );
+
+      const isStaleExchangeError = (d: any) =>
+        hasUsableExchange &&
+        (d?.decision?.reason === 'EXCHANGE_CORRUPTED' ||
+          d?.decision?.reason === 'EXCHANGE_KEYS_NOT_DECRYPTED' ||
+          d?.decision?.reason === 'CREDENTIALS_DECRYPT_FAILED');
+
       let primary = group.find(d => d.execution?.status === 'EXECUTED') ||
                    group.find(d => d.decision?.action === 'INFO' && d.decision?.reason === 'EXECUTION_STARTED') ||
                    group.find(d => d.status === 'SKIPPED' && d.decision?.reason && 
@@ -79,6 +91,10 @@ export default function TradingAgentControl() {
                    group.find(d => d.decision?.action === 'SKIP' && d.decision?.reason && 
                      !['EXECUTION_STARTED', 'FORCE_CREATE_DIAGNOSTIC'].includes(d.decision.reason)) ||
                    group[group.length - 1]; // Latest as fallback
+
+      if (primary && isStaleExchangeError(primary)) {
+        primary = group.find(d => !isStaleExchangeError(d)) || primary;
+      }
 
       // ALL other diagnostics become details (including system entries)
       const details = group.filter(d => d !== primary);

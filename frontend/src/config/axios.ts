@@ -129,12 +129,8 @@ api.interceptors.request.use(
 
     // Wait until Firebase auth state is known (resolved once)
     try {
-      if (!isFirebaseReady()) {
-        console.warn('[AXIOS] Firebase is not ready');
-        // Optionally, throw or handle the not-ready state here
-      } else {
-        console.log('[AXIOS] ✅ isFirebaseReady true');
-      }
+      await firebaseReady;
+      console.log('[AXIOS] 🔄 firebaseReady resolved');
     } catch (e) {
       console.warn('[AXIOS] firebaseReady rejection:', e);
     }
@@ -295,7 +291,7 @@ api.interceptors.response.use(
 );
 
 // Import the updated firebase utilities
-import { getAuthToken } from './firebase-utils';
+import { firebaseReady, getAuthToken } from './firebase-utils';
 
 // Health Ping Service
 class HealthPingService {

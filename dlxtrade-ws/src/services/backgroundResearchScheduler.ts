@@ -48,6 +48,22 @@ export class BackgroundResearchScheduler {
   // Lock to prevent parallel execution of updateUserResearchSchedule() for same uid
   private activeScheduleLocks = new Map<string, boolean>();
 
+  private async hasActiveHTFAgent(uid: string): Promise<boolean> {
+    try {
+      const agents = await firestoreAdapter.getUserTradingAgents(uid);
+      return (agents || []).some((agent: any) => {
+        const strategyType = agent?.strategyType;
+        const name = agent?.name;
+        const status = agent?.status;
+        return status === 'ACTIVE' &&
+          (strategyType === 'HTF_TREND_FILTER' || (name && name.includes('HTF Trend Filter')));
+      });
+    } catch (error) {
+      logger.warn({ uid, error: error instanceof Error ? error.message : 'Unknown error' }, 'Failed to check HTF agent status');
+      return false;
+    }
+  }
+
   /**
    * Start the background research scheduler
    *
@@ -293,11 +309,14 @@ export class BackgroundResearchScheduler {
             (settings?.backgroundResearchEnabled === true &&
               settings?.telegramBackgroundResearchEnabled !== false);
 
-          // Bootstrap if either mode is enabled
-          if (autoTradeEnabled || telegramBgResearchEnabled) {
+          // CRITICAL HTF FIX: Check for active HTF agent
+          const hasActiveHTF = await this.hasActiveHTFAgent(uid);
+
+          // Bootstrap if either mode is enabled OR HTF agent is active
+          if (autoTradeEnabled || telegramBgResearchEnabled || hasActiveHTF) {
             enabledCount++;
             logger.info(
-              { uid, autoTradeEnabled, telegramBgResearchEnabled },
+              { uid, autoTradeEnabled, telegramBgResearchEnabled, hasActiveHTF },
               "📋 [SCHEDULER] Found enabled user during bootstrap",
             );
 
@@ -472,18 +491,33 @@ export class BackgroundResearchScheduler {
               (settings?.backgroundResearchEnabled === true &&
                 settings?.telegramBackgroundResearchEnabled !== false);
 
-            // EARLY RETURN: Skip users with both modes disabled
-            if (!autoTradeEnabled && !telegramBgResearchEnabled) {
+            // CRITICAL HTF FIX: Check for active HTF agent first
+            const hasActiveHTF = await this.hasActiveHTFAgent(uid);
+            
+            // HTF BYPASS: If user has active HTF agent, ALWAYS schedule regardless of mode settings
+            if (hasActiveHTF) {
               console.log(
-                "🔥 [HARD_LOG] [EARLY_RETURN] Both modes disabled for user:",
+                "🔥 [HARD_LOG] [HTF_BYPASS] HTF agent active for user:",
                 uid,
-                "- skipping user in this cycle",
+                "- bypassing all mode checks, forcing AUTO_TRADE_RESEARCH mode",
               );
-              continue; // Skip this user entirely
+              finalMode = "AUTO_TRADE_RESEARCH";
+              finalFrequency = settings?.researchFrequencyMinutes || 5;
+              // Skip all other mode checks - HTF agents always run
+            } else {
+              // EARLY RETURN: Skip users with both modes disabled (only if NO HTF agent)
+              if (!autoTradeEnabled && !telegramBgResearchEnabled) {
+                console.log(
+                  "🔥 [HARD_LOG] [EARLY_RETURN] Both modes disabled for user:",
+                  uid,
+                  "- skipping user in this cycle",
+                );
+                continue; // Skip this user entirely
+              }
             }
 
             // CONFLICT RESOLUTION: Auto-Trade always wins for execution mode
-            if (autoTradeEnabled) {
+            if (!hasActiveHTF && autoTradeEnabled) {
               finalMode = "AUTO_TRADE_RESEARCH";
               finalFrequency = settings?.researchFrequencyMinutes || 5;
 
@@ -514,7 +548,7 @@ export class BackgroundResearchScheduler {
                 await this.forceStopUserScheduler(uid, exchangeStatus.reason);
                 shouldSkipUser = true;
               }
-            } else if (telegramBgResearchEnabled) {
+            } else if (!hasActiveHTF && telegramBgResearchEnabled) {
               finalMode = "TELEGRAM_BACKGROUND_RESEARCH";
               finalFrequency = settings?.researchFrequencyMinutes || 5;
             }
@@ -700,24 +734,40 @@ export class BackgroundResearchScheduler {
           "- this should be rare",
         );
 
-        // EARLY RETURN: Skip users with both modes disabled
-        if (!autoTradeEnabled && !telegramBgResearchEnabled) {
+        // CRITICAL HTF FIX: Check for active HTF agent first
+        const hasActiveHTF = await this.hasActiveHTFAgent(uid);
+        
+        // HTF BYPASS: If user has active HTF agent, ALWAYS schedule regardless of mode settings
+        if (hasActiveHTF) {
           console.log(
-            "🔥 [HARD_LOG] [EARLY_RETURN] Both modes disabled for user:",
+            "🔥 [HARD_LOG] [HTF_BYPASS_FALLBACK] HTF agent active for user:",
             uid,
-            "- skipping all processing",
+            "- bypassing all mode checks, forcing AUTO_TRADE_RESEARCH mode",
           );
-          // Remove any existing interval for this user
-          if (this.userIntervals.has(uid)) {
-            clearInterval(this.userIntervals.get(uid)!);
-            this.userIntervals.delete(uid);
-            this.userJobStates.delete(uid);
+          mode = RESEARCH_MODE.AUTO_TRADE_RESEARCH;
+          finalFrequency = settings?.researchFrequencyMinutes || 5;
+          shouldSchedule = true;
+          // Skip all other mode checks - HTF agents always run
+        } else {
+          // EARLY RETURN: Skip users with both modes disabled (only if NO HTF agent)
+          if (!autoTradeEnabled && !telegramBgResearchEnabled) {
             console.log(
-              "🔥 [HARD_LOG] [INTERVAL_CLEANUP] Removed interval for disabled user:",
+              "🔥 [HARD_LOG] [EARLY_RETURN] Both modes disabled for user:",
               uid,
+              "- skipping all processing",
             );
+            // Remove any existing interval for this user
+            if (this.userIntervals.has(uid)) {
+              clearInterval(this.userIntervals.get(uid)!);
+              this.userIntervals.delete(uid);
+              this.userJobStates.delete(uid);
+              console.log(
+                "🔥 [HARD_LOG] [INTERVAL_CLEANUP] Removed interval for disabled user:",
+                uid,
+              );
+            }
+            return;
           }
-          return;
         }
 
         // CONFLICT RESOLUTION: Auto-Trade always wins for execution mode
@@ -731,9 +781,11 @@ export class BackgroundResearchScheduler {
           autoTradeEnabled,
           "telegramBgResearchEnabled:",
           telegramBgResearchEnabled,
+          "hasActiveHTF:",
+          hasActiveHTF,
         );
 
-        if (autoTradeEnabled) {
+        if (!hasActiveHTF && autoTradeEnabled) {
           // AUTO_TRADE_RESEARCH mode - HIGHEST PRIORITY
           // CRITICAL: Telegram Background Research engine is COMPLETELY BYPASSED when Auto-Trade is enabled
           mode = RESEARCH_MODE.AUTO_TRADE_RESEARCH;
@@ -839,7 +891,7 @@ export class BackgroundResearchScheduler {
             },
             "🔍 [SCHEDULER_DEBUG] AUTO_TRADE_RESEARCH mode enabled - scheduler will run regardless of API availability, Telegram engine BYPASSED, alerts from Auto-Trade engine",
           );
-        } else if (telegramBgResearchEnabled) {
+        } else if (!hasActiveHTF && telegramBgResearchEnabled) {
           // TELEGRAM_BACKGROUND_RESEARCH mode (TELEGRAM_ONLY)
           // CRITICAL: This mode ONLY runs when Auto-Trade is DISABLED
           mode = RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH;
@@ -888,21 +940,22 @@ export class BackgroundResearchScheduler {
             { uid, frequency: finalFrequency },
             "📱 [SCHEDULER] Scheduler running in TELEGRAM_ONLY mode",
           );
-        } else {
-          // BOTH are OFF → do not schedule
-          // CRITICAL: Scheduler is disabled ONLY when BOTH autoTradeEnabled AND telegramBgResearchEnabled are false
+        } else if (!hasActiveHTF) {
+          // BOTH are OFF → do not schedule (only if NO HTF agent)
+          // CRITICAL: Scheduler is disabled ONLY when BOTH autoTradeEnabled AND telegramBgResearchEnabled are false AND no HTF agent
           console.log(
             "🔥 [HARD_LOG] [MODE_BOTH_OFF] Both modes OFF for user:",
             uid,
-            "- disabling scheduler",
+            "- disabling scheduler (NO HTF agent)",
           );
           logger.info(
             {
               uid,
               autoTradeEnabled,
               telegramBgResearchEnabled,
+              hasActiveHTF: false,
             },
-            "⏭️ [SCHEDULER] Both Auto Trade and Telegram Background Research are OFF - disabling scheduler",
+            "⏭️ [SCHEDULER] Both Auto Trade and Telegram Background Research are OFF and no HTF agent - disabling scheduler",
           );
           await this.disableUserScheduler(uid);
           return;
@@ -1524,17 +1577,28 @@ export class BackgroundResearchScheduler {
         (settings?.backgroundResearchEnabled === true &&
           settings?.telegramBackgroundResearchEnabled !== false);
 
-      // CRITICAL: User MUST be scheduled if either condition is true
-      if (!autoTradeEnabled && !telegramBgResearchEnabled) {
+      // CRITICAL HTF FIX: Check for active HTF agent first
+      const hasActiveHTF = await this.hasActiveHTFAgent(uid);
+      
+      // HTF BYPASS: If user has active HTF agent, ALWAYS schedule regardless of mode settings
+      if (hasActiveHTF) {
         logger.info(
-          { uid, autoTradeEnabled, telegramBgResearchEnabled },
-          "⏭️ [SCHEDULER] User not eligible for scheduling - both modes disabled",
+          { uid, hasActiveHTF: true },
+          "🔒 [SCHEDULER] HTF agent active - forcing registration regardless of mode settings",
         );
-        return {
-          scheduled: false,
-          reason:
-            "Both auto-trade and Telegram background research are disabled",
-        };
+      } else {
+        // CRITICAL: User MUST be scheduled if either condition is true (only check if NO HTF agent)
+        if (!autoTradeEnabled && !telegramBgResearchEnabled) {
+          logger.info(
+            { uid, autoTradeEnabled, telegramBgResearchEnabled, hasActiveHTF: false },
+            "⏭️ [SCHEDULER] User not eligible for scheduling - both modes disabled and no HTF agent",
+          );
+          return {
+            scheduled: false,
+            reason:
+              "Both auto-trade and Telegram background research are disabled and no HTF agent",
+          };
+        }
       }
 
       // FORCE registration via updateUserResearchSchedule
