@@ -5,8 +5,8 @@ export function agentKeyToSlug(key: string): string {
       return 'vwap-strategy';
     case 'COPY_TRADING_AGENT':
       return 'crowd-consensus';
-    case 'LIQUIDITY_SWEEP_AGENT':
-      return 'liquidity_sniper_arbitrage';
+    case 'BB_RSI_EMA200_SCALPER':
+      return 'bb-rsi-scalper';
     case 'HTF_TREND_FILTER_AGENT':
       return 'htf-trend-filter-agent';
     default:

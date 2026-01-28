@@ -19,8 +19,8 @@ export async function resolveAgentDoc(
   const aliasKey = (() => {
     const k = agentKey.toLowerCase();
     switch (k) {
-      case 'liquidity_sniper_arbitrage':
-        return 'LIQUIDITY_SWEEP_AGENT';
+      case 'bb-rsi-scalper':
+        return 'BB_RSI_EMA200_SCALPER';
       default:
         return agentKey;
     }

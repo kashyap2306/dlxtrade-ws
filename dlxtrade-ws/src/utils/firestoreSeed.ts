@@ -102,22 +102,7 @@ async function seedAgents(db: admin.firestore.Firestore): Promise<void> {
         badge: 'Advanced',
         createdAt: admin.firestore.Timestamp.now(),
       },
-      {
-        id: 'liquidity_sniper_arbitrage',
-        name: 'Liquidity Sniper & Arbitrage Agent',
-        price: 500,
-        description: 'DEX–CEX arbitrage with micro-second gap execution',
-        features: [
-          'DEX–CEX arbitrage detection',
-          'Micro-second gap execution',
-          'Real-time opportunity scanning',
-          'Automated profit capture',
-        ],
-        icon: '⚡',
-        category: 'Arbitrage',
-        badge: 'Premium',
-        createdAt: admin.firestore.Timestamp.now(),
-      },
+
       {
         id: 'ai_launchpad_hunter',
         name: 'AI Launchpad Hunter & Presale Sniper',

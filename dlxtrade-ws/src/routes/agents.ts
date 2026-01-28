@@ -38,11 +38,11 @@ export async function agentsRoutes(fastify: FastifyInstance) {
   console.log("[ROUTE READY] GET /api/agents/crowd-consensus/settings");
   console.log("[ROUTE READY] PUT /api/agents/crowd-consensus/settings");
 
-  const selectLiquiditySweepAgent = (userAgents: any[]) => {
+  const selectBBRsiAgent = (userAgents: any[]) => {
     const agents = Array.isArray(userAgents) ? userAgents : [];
-    const primary = agents.find((a: any) => String(a?.name || '').toLowerCase().includes('liquidity sweep'));
+    const primary = agents.find((a: any) => String(a?.name || '').toLowerCase().includes('bb-rsi') || String(a?.strategyType || '').includes('MEAN_REVERSION'));
     if (primary) return primary;
-    const fallback = agents.find((a: any) => String(a?.name || '').toLowerCase().includes('liquidity'));
+    const fallback = agents.find((a: any) => String(a?.strategyType || '') === 'MEAN_REVERSION_SCALPER');
     return fallback || null;
   };
 
@@ -533,15 +533,15 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         return { success: true, message: 'Settings updated successfully' };
       }
 
-      // Liquidity Sweep Agent settings
-      if (agentId === 'liquidity_sniper_arbitrage') {
-        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'liquidity_sniper_arbitrage');
+
+      if (agentId === 'bb-rsi-scalper') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'bb-rsi-scalper');
         if (!hasAccess) {
-          return reply.code(403).send({ error: 'Liquidity Sweep Agent access not granted yet' });
+          return reply.code(403).send({ error: 'BB-RSI Scalper Agent access not granted yet' });
         }
 
         const userAgents = await firestoreAdapter.getUserTradingAgents(uid);
-        const targetAgent = selectLiquiditySweepAgent(userAgents);
+        const targetAgent = selectBBRsiAgent(userAgents);
         if (targetAgent?.id) {
           await firestoreAdapter.updateAgentConfig(targetAgent.id, settings);
         }
@@ -663,14 +663,14 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         };
       }
 
-      if (agentId === 'liquidity_sniper_arbitrage') {
-        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'liquidity_sniper_arbitrage');
+      if (agentId === 'bb-rsi-scalper') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'bb-rsi-scalper');
         if (!hasAccess) {
-          return reply.code(403).send({ error: 'Liquidity Sweep Agent access not granted yet' });
+          return reply.code(403).send({ error: 'BB-RSI Scalper Agent access not granted yet' });
         }
 
         const userAgents = await firestoreAdapter.getUserTradingAgents(uid);
-        const targetAgent = selectLiquiditySweepAgent(userAgents);
+        const targetAgent = selectBBRsiAgent(userAgents);
         
         // Get scheduler status
         let scheduler: any = null;
@@ -1331,10 +1331,10 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         };
       }
 
-      if (agentId === 'liquidity_sniper_arbitrage') {
-        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'liquidity_sniper_arbitrage');
+      if (agentId === 'bb-rsi-scalper') {
+        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'bb-rsi-scalper');
         if (!hasAccess) {
-          return reply.code(403).send({ error: 'Liquidity Sweep Agent access not granted yet' });
+          return reply.code(403).send({ error: 'BB-RSI Scalper Agent access not granted yet' });
         }
 
         const { firestoreAdapter } = await import('../services/firestoreAdapter');
@@ -1342,15 +1342,15 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         
         // Auto-create default agent if none exists
         if (userAgents.length === 0) {
-          logger.info({ uid }, 'No liquidity sweep agents found in /control, creating default agent');
+          logger.info({ uid }, 'No BB-RSI Scalper agents found in /control, creating default agent');
           const db = (await import('../utils/firebase')).getFirebaseAdmin().firestore();
           const defaultAgent = {
-            id: `liquidity_sweep_${uid}_${Date.now()}`,
+            id: `bb_rsi_scalper_${uid}_${Date.now()}`,
             userId: uid,
-            name: 'Liquidity Sweep Agent',
+            name: 'BB-RSI EMA200 Scalper Pro',
             tradingPair: 'BTC/USDT',
             marketType: 'futures',
-            strategyType: 'LIQUIDITY_SWEEP',
+            strategyType: 'MEAN_REVERSION_SCALPER',
             status: 'STOPPED',
             createdAt: new Date(),
             updatedAt: new Date(),
@@ -1359,10 +1359,10 @@ export async function agentsRoutes(fastify: FastifyInstance) {
           userAgents = [defaultAgent];
         }
         
-        const activeAgent = selectLiquiditySweepAgent(userAgents) || userAgents[0];
+        const activeAgent = selectBBRsiAgent(userAgents) || userAgents[0];
 
         return {
-          agentId: 'liquidity_sniper_arbitrage',
+          agentId: 'bb-rsi-scalper',
           status: activeAgent.status || 'STOPPED',
           config: activeAgent || null,
         };
@@ -1458,7 +1458,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         };
       }
 
-      return reply.code(404).send({ error: 'Agent not found', receivedAgentId: agentId, availableAgents: ['trading-agent', 'liquidity_sniper_arbitrage', 'vwap-strategy', 'htf-trend-filter-agent', 'crowd-consensus'] });
+      return reply.code(404).send({ error: 'Agent not found', receivedAgentId: agentId, availableAgents: ['trading-agent', 'bb-rsi-scalper', 'vwap-strategy', 'htf-trend-filter-agent', 'crowd-consensus'] });
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error getting trading agent control');
       return reply.code(500).send({ error: 'Error getting agent control' });
@@ -1507,20 +1507,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         };
       }
 
-      if (agentId === 'liquidity_sniper_arbitrage') {
-        const hasAccess = await AgentApprovalService.userHasAgentAccess(uid, 'liquidity_sniper_arbitrage');
-        if (!hasAccess) {
-          return reply.code(403).send({ error: 'Liquidity Sweep Agent access not granted yet' });
-        }
 
-        const { firestoreAdapter } = await import('../services/firestoreAdapter');
-        const userAgents = await firestoreAdapter.getUserTradingAgents(uid);
-        const activeAgent = selectLiquiditySweepAgent(userAgents);
-        return {
-          agentId: 'liquidity_sniper_arbitrage',
-          status: activeAgent?.status || 'STOPPED',
-        };
-      }
 
       // HTF Trend Filter Agent status
       if (agentId === 'htf-trend-filter-agent') {
@@ -1607,54 +1594,6 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         await firestoreAdapter.updateAgentStatus(targetAgent.id, 'ACTIVE');
         logger.info({ uid: user.uid, agentId: targetAgent.id, mode: 'manual' }, 'Trading Agent started in manual mode - ARMED and waiting for signals');
         return { success: true, message: 'Trading Agent started successfully', mode: 'manual', status: 'ARMED' };
-      }
-
-      if (agentId === 'liquidity_sniper_arbitrage') {
-        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'liquidity_sniper_arbitrage');
-        if (!hasAccess) {
-          return reply.code(403).send({ 
-            error: 'Liquidity Sweep Agent access not granted yet. Please request approval from admin first.',
-            code: 'AGENT_NOT_APPROVED'
-          });
-        }
-
-        const { firestoreAdapter } = await import('../services/firestoreAdapter');
-        const exchangeConfig = await firestoreAdapter.getExchangeConfig(user.uid);
-        if (!exchangeConfig?.exchange) {
-          return reply.code(400).send({ 
-            error: 'Exchange not connected. Please connect an exchange in Settings first.',
-            code: 'EXCHANGE_NOT_CONNECTED'
-          });
-        }
-
-        // Get or create agent document
-        let userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
-        let targetAgent = selectLiquiditySweepAgent(userAgents);
-        
-        // Auto-create default agent if none exists
-        if (!targetAgent) {
-          const db = (await import('../utils/firebase')).getFirebaseAdmin().firestore();
-          const defaultAgent = {
-            id: `liquidity_sweep_${user.uid}_${Date.now()}`,
-            userId: user.uid,
-            name: 'Liquidity Sweep Agent',
-            tradingPair: 'BTC/USDT',
-            marketType: 'futures',
-            strategyType: 'LIQUIDITY_SWEEP',
-            type: 'liquidity_sweep',
-            status: 'STOPPED',
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          };
-          await db.collection('tradingAgents').doc(defaultAgent.id).set(defaultAgent);
-          targetAgent = defaultAgent;
-        }
-
-        // Update agent status to ACTIVE
-        await firestoreAdapter.updateAgentStatus(targetAgent.id, 'ACTIVE');
-        
-        logger.info({ uid: user.uid, agentId: targetAgent.id, mode: 'manual' }, 'Liquidity Sweep Agent started in manual mode - ARMED and waiting for signals');
-        return { success: true, message: 'Liquidity Sweep Agent started successfully', mode: 'manual', status: 'ARMED' };
       }
 
       // Handle VWAP Strategy agents
@@ -1851,27 +1790,6 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         return { success: true, message: 'Trading Agent stopped successfully' };
       }
 
-      if (agentId === 'liquidity_sniper_arbitrage') {
-        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'liquidity_sniper_arbitrage');
-        if (!hasAccess) {
-          return reply.code(403).send({ error: 'Liquidity Sweep Agent access not granted yet' });
-        }
-
-        const { firestoreAdapter } = await import('../services/firestoreAdapter');
-        const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
-        const targetAgent = selectLiquiditySweepAgent(userAgents);
-        
-        // IDEMPOTENT: If no agent found, treat as already stopped
-        if (!targetAgent?.id) {
-          logger.info({ uid: user.uid, agentId }, 'Liquidity Sweep Agent stop called but no agent found - treating as already stopped');
-          return { success: true, message: 'Liquidity Sweep Agent stopped successfully' };
-        }
-
-        await firestoreAdapter.updateAgentStatus(targetAgent.id, 'STOPPED');
-        logger.info({ uid: user.uid, agentId: targetAgent.id }, 'Liquidity Sweep Agent stopped successfully');
-        return { success: true, message: 'Liquidity Sweep Agent stopped successfully' };
-      }
-
       if (agentId === 'htf-trend-filter-agent') {
         const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'htf-trend-filter-agent');
         if (!hasAccess) {
@@ -1947,23 +1865,6 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         await firestoreAdapter.updateAgentStatus(targetAgent.id, 'PAUSED');
         return { success: true, message: 'Trading Agent paused successfully' };
       }
-
-      if (agentId === 'liquidity_sniper_arbitrage') {
-        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'liquidity_sniper_arbitrage');
-        if (!hasAccess) {
-          return reply.code(403).send({ error: 'Liquidity Sweep Agent access not granted yet' });
-        }
-
-        const { firestoreAdapter } = await import('../services/firestoreAdapter');
-        const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
-        const targetAgent = selectLiquiditySweepAgent(userAgents);
-        if (!targetAgent?.id) {
-          return reply.code(400).send({ error: 'No Liquidity Sweep Agent configured for this user' });
-        }
-
-        await firestoreAdapter.updateAgentStatus(targetAgent.id, 'PAUSED');
-        return { success: true, message: 'Liquidity Sweep Agent paused successfully' };
-      }
       return reply.code(404).send({ error: 'Agent not found' });
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error pausing trading agent');
@@ -1996,23 +1897,6 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         await firestoreAdapter.updateAgentStatus(targetAgent.id, 'ACTIVE');
         return { success: true, message: 'Trading Agent resumed successfully' };
       }
-
-      if (agentId === 'liquidity_sniper_arbitrage') {
-        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'liquidity_sniper_arbitrage');
-        if (!hasAccess) {
-          return reply.code(403).send({ error: 'Liquidity Sweep Agent access not granted yet' });
-        }
-
-        const { firestoreAdapter } = await import('../services/firestoreAdapter');
-        const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
-        const targetAgent = selectLiquiditySweepAgent(userAgents);
-        if (!targetAgent?.id) {
-          return reply.code(400).send({ error: 'No Liquidity Sweep Agent configured for this user' });
-        }
-
-        await firestoreAdapter.updateAgentStatus(targetAgent.id, 'ACTIVE');
-        return { success: true, message: 'Liquidity Sweep Agent resumed successfully' };
-      }
       return reply.code(404).send({ error: 'Agent not found' });
     } catch (err: any) {
       logger.error({ err, agentId: request.params.agentId }, 'Error resuming trading agent');
@@ -2041,23 +1925,6 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
         const activeAgent = userAgents.find((a: any) => a.status === 'ACTIVE');
         const targetAgent = activeAgent || userAgents[0];
-        if (!targetAgent?.id) {
-          return { trades: [] };
-        }
-
-        const trades = await firestoreAdapter.getAgentTrades(targetAgent.id, limit);
-        return { trades };
-      }
-
-      if (agentId === 'liquidity_sniper_arbitrage') {
-        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'liquidity_sniper_arbitrage');
-        if (!hasAccess) {
-          return reply.code(403).send({ error: 'Liquidity Sweep Agent access not granted yet' });
-        }
-
-        const { firestoreAdapter } = await import('../services/firestoreAdapter');
-        const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
-        const targetAgent = selectLiquiditySweepAgent(userAgents);
         if (!targetAgent?.id) {
           return { trades: [] };
         }
@@ -2163,37 +2030,6 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
         const activeAgent = userAgents.find((a: any) => a.status === 'ACTIVE');
         const targetAgent = activeAgent || userAgents[0];
-        if (!targetAgent) {
-          return { performance: { totalTrades: 0, winningTrades: 0, losingTrades: 0, winRate: 0, totalPnL: 0, dailyPnL: 0, drawdown: 0, lastTradeAt: null, dailyTrades: 0, consecutiveLosses: 0 } };
-        }
-
-        const totalTrades = targetAgent.totalTrades || 0;
-        const winningTrades = targetAgent.winningTrades || 0;
-        const losingTrades = targetAgent.losingTrades || 0;
-        const performance = {
-          totalTrades,
-          winningTrades,
-          losingTrades,
-          winRate: totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0,
-          totalPnL: targetAgent.totalPnL || 0,
-          dailyPnL: targetAgent.dailyPnL || 0,
-          drawdown: targetAgent.drawdown || 0,
-          lastTradeAt: targetAgent.lastTradeAt || null,
-          dailyTrades: targetAgent.dailyTrades || 0,
-          consecutiveLosses: targetAgent.consecutiveLosses || 0,
-        };
-        return { performance };
-      }
-
-      if (agentId === 'liquidity_sniper_arbitrage') {
-        const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'liquidity_sniper_arbitrage');
-        if (!hasAccess) {
-          return reply.code(403).send({ error: 'Liquidity Sweep Agent access not granted yet' });
-        }
-
-        const { firestoreAdapter } = await import('../services/firestoreAdapter');
-        const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
-        const targetAgent = selectLiquiditySweepAgent(userAgents);
         if (!targetAgent) {
           return { performance: { totalTrades: 0, winningTrades: 0, losingTrades: 0, winRate: 0, totalPnL: 0, dailyPnL: 0, drawdown: 0, lastTradeAt: null, dailyTrades: 0, consecutiveLosses: 0 } };
         }

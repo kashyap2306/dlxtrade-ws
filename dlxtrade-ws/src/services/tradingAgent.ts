@@ -20,7 +20,7 @@ export interface TradingAgentConfig {
   passphrase?: string; // Required for Bitget
   dryRun: boolean; // Safety mode - simulate trades without executing
   status: 'PENDING_APPROVAL' | 'ACTIVE' | 'PAUSED' | 'STOPPED';
-  strategyType?: 'HTF_TREND_FILTER' | 'LIQUIDITY_SWEEP' | 'RSI_BOLLINGER' | 'VWAP_MEAN_REVERSION'; // Optional strategy type
+  strategyType?: 'HTF_TREND_FILTER' | 'RSI_BOLLINGER' | 'VWAP_MEAN_REVERSION' | 'MEAN_REVERSION_SCALPER'; // Optional strategy type
   createdAt: Date;
   approvedAt?: Date;
   lastTradeAt?: Date;
@@ -173,9 +173,7 @@ export class TradingAgent {
    */
   public async storeDiagnostics(diagnostics: TradingDiagnostics): Promise<void> {
     try {
-      const agentType = this.config.name && this.config.name.includes('Liquidity Sweep') 
-        ? 'LIQUIDITY_SWEEP_AGENT'
-        : this.config.name && this.config.name.includes('HTF Trend Filter')
+      const agentType = this.config.name && this.config.name.includes('HTF Trend Filter')
         ? 'HTF_TREND_FILTER_AGENT'
         : 'TRADING_AGENT';
 
@@ -644,15 +642,8 @@ export class TradingAgent {
     const { price, timestamp } = candle;
     const { rsi, ema50, bbUpper, bbLower, atr } = indicators;
 
-    // Check if this is a Liquidity Sweep agent
-    const isLiquiditySweepAgent = this.config.name && this.config.name.includes('Liquidity Sweep');
-    
     // Check if this is an HTF Trend Filter agent
     const isHTFTrendFilterAgent = this.config.name && this.config.name.includes('HTF Trend Filter');
-
-    if (isLiquiditySweepAgent) {
-      return this.generateLiquiditySweepSignal(candle, indicators, recentCandles);
-    }
 
     if (isHTFTrendFilterAgent) {
       return this.generateHTFTrendFilterSignal(candle, indicators, recentCandles);
@@ -850,215 +841,6 @@ export class TradingAgent {
     }
 
     return null; // No signal
-  }
-
-  /**
-   * Generate liquidity sweep trading signal
-   */
-  private generateLiquiditySweepSignal(
-    candle: any,
-    indicators: {
-      rsi: number;
-      ema50: number;
-      bbUpper: number;
-      bbLower: number;
-      atr: number;
-    },
-    recentCandles?: any[]
-  ): TradingSignal | null {
-    const { price, timestamp } = candle;
-    const { rsi, ema50, bbUpper, bbLower, atr } = indicators;
-
-    if (!recentCandles || recentCandles.length < 20) {
-      return null;
-    }
-
-    // Create deterministic signal ID
-    const createSignalId = (direction: 'LONG' | 'SHORT') => {
-      const signalData = `${this.config.id}:${timestamp}:${direction}:${price}`;
-      let hash = 0;
-      for (let i = 0; i < signalData.length; i++) {
-        const char = signalData.charCodeAt(i);
-        hash = ((hash << 5) - hash) + char;
-        hash = hash & hash;
-      }
-      return `liquidity_sweep_${Math.abs(hash).toString(36)}`;
-    };
-
-    // Detect market structure: equal highs/lows
-    const marketStructure = this.detectMarketStructure(recentCandles);
-    if (!marketStructure.detected) {
-      return null;
-    }
-
-    // Detect liquidity sweep
-    const sweep = this.detectLiquiditySweep(recentCandles, marketStructure);
-    if (!sweep.detected) {
-      return null;
-    }
-
-    // Check entry confirmation
-    const confirmation = this.checkEntryConfirmation(recentCandles, marketStructure, sweep.direction!);
-    if (!confirmation.confirmed) {
-      return null;
-    }
-
-    // Generate signal
-    const entryPrice = price;
-    let stopLoss: number;
-    let takeProfit: number;
-
-    if (confirmation.direction === 'SHORT') {
-      stopLoss = candle.high + (atr * 0.1); // Just beyond sweep wick
-      takeProfit = entryPrice - (Math.abs(entryPrice - stopLoss) * 3); // 1:3 RR preferred
-    } else {
-      stopLoss = candle.low - (atr * 0.1); // Just beyond sweep wick
-      takeProfit = entryPrice + (Math.abs(entryPrice - stopLoss) * 3); // 1:3 RR preferred
-    }
-
-    return {
-      signalId: createSignalId(confirmation.direction!),
-      direction: confirmation.direction!,
-      entryPrice,
-      stopLoss,
-      takeProfit,
-      timestamp: new Date(timestamp),
-      candleTimestamp: new Date(timestamp),
-      indicators: { rsi, ema50, bbUpper, bbLower, atr }
-    };
-  }
-
-  /**
-   * Detect market structure: equal highs or equal lows
-   */
-  private detectMarketStructure(candles: any[]): { detected: boolean; type?: 'equalHighs' | 'equalLows'; level?: number; confirmed: boolean } {
-    if (candles.length < 15) {
-      return { detected: false, confirmed: false };
-    }
-
-    const recentCandles = candles.slice(-15);
-    const highs = recentCandles.map(c => c.high);
-    const maxHigh = Math.max(...highs);
-    const equalHighs = highs.filter(h => Math.abs(h - maxHigh) / maxHigh <= 0.001).length;
-
-    const lows = recentCandles.map(c => c.low);
-    const minLow = Math.min(...lows);
-    const equalLows = lows.filter(l => Math.abs(l - minLow) / minLow <= 0.001).length;
-
-    if (equalHighs >= 3) {
-      return {
-        detected: true,
-        type: 'equalHighs',
-        level: maxHigh,
-        confirmed: equalHighs >= 4
-      };
-    }
-
-    if (equalLows >= 3) {
-      return {
-        detected: true,
-        type: 'equalLows',
-        level: minLow,
-        confirmed: equalLows >= 4
-      };
-    }
-
-    return { detected: false, confirmed: false };
-  }
-
-  /**
-   * Detect liquidity sweep above/below equal highs/lows
-   */
-  private detectLiquiditySweep(candles: any[], marketStructure: any): {
-    detected: boolean;
-    direction?: 'LONG' | 'SHORT';
-    wickLength?: number;
-    volumeSpike?: boolean;
-    wickBeyondLevel: boolean;
-  } {
-    if (!marketStructure.detected || !marketStructure.confirmed) {
-      return { detected: false, wickBeyondLevel: false };
-    }
-
-    const latestCandle = candles[candles.length - 1];
-    const level = marketStructure.level;
-
-    if (marketStructure.type === 'equalHighs') {
-      const wickAbove = latestCandle.high - level;
-      const wickLength = wickAbove > 0 ? wickAbove : 0;
-      const wickBeyondLevel = wickLength > 0;
-
-      const recentVolumes = candles.slice(-10, -1).map(c => c.volume);
-      const avgVolume = recentVolumes.reduce((a, b) => a + b, 0) / recentVolumes.length;
-      const volumeSpike = latestCandle.volume > avgVolume * 1.5;
-
-      return {
-        detected: wickBeyondLevel && volumeSpike,
-        direction: 'SHORT',
-        wickLength,
-        volumeSpike,
-        wickBeyondLevel
-      };
-    } else if (marketStructure.type === 'equalLows') {
-      const wickBelow = level - latestCandle.low;
-      const wickLength = wickBelow > 0 ? wickBelow : 0;
-      const wickBeyondLevel = wickLength > 0;
-
-      const recentVolumes = candles.slice(-10, -1).map(c => c.volume);
-      const avgVolume = recentVolumes.reduce((a, b) => a + b, 0) / recentVolumes.length;
-      const volumeSpike = latestCandle.volume > avgVolume * 1.5;
-
-      return {
-        detected: wickBeyondLevel && volumeSpike,
-        direction: 'LONG',
-        wickLength,
-        volumeSpike,
-        wickBeyondLevel
-      };
-    }
-
-    return { detected: false, wickBeyondLevel: false };
-  }
-
-  /**
-   * Check entry confirmation: price returns back inside the range with minor structure shift
-   */
-  private checkEntryConfirmation(candles: any[], marketStructure: any, sweepDirection: 'LONG' | 'SHORT'): {
-    confirmed: boolean;
-    priceReturned: boolean;
-    minorStructureShift: boolean;
-    direction?: 'LONG' | 'SHORT';
-  } {
-    if (candles.length < 5) {
-      return { confirmed: false, priceReturned: false, minorStructureShift: false };
-    }
-
-    const latestCandle = candles[candles.length - 1];
-    const prevCandle = candles[candles.length - 2];
-    const level = marketStructure.level;
-
-    let priceReturned = false;
-    if (marketStructure.type === 'equalHighs') {
-      priceReturned = latestCandle.close < level;
-    } else if (marketStructure.type === 'equalLows') {
-      priceReturned = latestCandle.close > level;
-    }
-
-    let minorStructureShift = false;
-    if (sweepDirection === 'SHORT' && marketStructure.type === 'equalHighs') {
-      minorStructureShift = latestCandle.high < prevCandle.high;
-    } else if (sweepDirection === 'LONG' && marketStructure.type === 'equalLows') {
-      minorStructureShift = latestCandle.low > prevCandle.low;
-    }
-
-    const confirmed = priceReturned && minorStructureShift;
-
-    return {
-      confirmed,
-      priceReturned,
-      minorStructureShift,
-      direction: confirmed ? sweepDirection : undefined
-    };
   }
 
   /**

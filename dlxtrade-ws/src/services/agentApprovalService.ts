@@ -250,8 +250,8 @@ export class AgentApprovalService {
             return 'VWAP_STRATEGY';
           case 'crowd-consensus':
             return 'COPY_TRADING_AGENT';
-          case 'liquidity_sniper_arbitrage':
-            return 'LIQUIDITY_SWEEP_AGENT';
+          case 'bb-rsi-scalper':
+            return 'BB_RSI_EMA200_SCALPER';
           case 'htf-trend-filter-agent':
             return 'HTF_TREND_FILTER_AGENT';
           default:

@@ -10,6 +10,7 @@ import { AgentApprovalService } from './agentApprovalService';
 import { vwapRuntimeService } from './vwapRuntimeService';
 import { getFirebaseAdmin } from '../utils/firebase';
 import { decrypt } from './keyManager';
+import { BBRsiEma200ScalperStrategy } from './bbRsiEma200ScalperStrategy';
 
 export type { CandleData } from './technicalIndicators';
 
@@ -54,13 +55,22 @@ export class AgentExecutionService {
         const isHTFAgent = config.strategyType === 'HTF_TREND_FILTER' || 
                           (config.name && config.name.includes('HTF Trend Filter'));
         
+        // Log BB-RSI EMA200 Scalper agents
+        const isBBRsiAgent = config.strategyType === 'MEAN_REVERSION_SCALPER' ||
+                             (config.name && config.name.includes('BB-RSI'));
+        
+        const agentTypeLabel = isHTFAgent ? '🎯 HTF Trend Filter Agent' : 
+                               isBBRsiAgent ? '📊 BB-RSI EMA200 Scalper Pro Agent' : 
+                               'Trading agent';
+        
         logger.info({
           agentId: config.id,
           name: config.name,
           tradingPair: config.tradingPair,
           strategyType: config.strategyType,
-          isHTFAgent
-        }, isHTFAgent ? '🎯 HTF Trend Filter Agent loaded and activated' : 'Trading agent loaded and activated');
+          isHTFAgent,
+          isBBRsiAgent
+        }, `${agentTypeLabel} loaded and activated`);
       }
 
       logger.info({
@@ -218,6 +228,10 @@ export class AgentExecutionService {
     // Check if this is an HTF Trend Filter agent early for proper scoping
     const isHTFAgent = (agentConfig as any).strategyType === 'HTF_TREND_FILTER' || 
                        (agentConfig.name && agentConfig.name.includes('HTF Trend Filter'));
+
+    // Check if this is a BB-RSI EMA200 Scalper agent
+    const isBBRsiAgent = (agentConfig as any).strategyType === 'MEAN_REVERSION_SCALPER' ||
+                         (agentConfig.name && agentConfig.name.includes('BB-RSI'));
 
     // PART A FIX: HTF bias direction tracking - NEVER overwrite once set
     let htfBiasDirection: 'LONG' | 'SHORT' | 'NO_TRADE' | null = null;
@@ -618,6 +632,22 @@ export class AgentExecutionService {
           return;
         }
       }
+
+      // CRITICAL: BB-RSI agents can trade BTC, ETH, SOL, BNB, XRP ONLY
+      if (isBBRsiAgent) {
+        const allowedSymbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT'];
+        if (!allowedSymbols.includes(symbol)) {
+          skippedReason = `BB-RSI agents restricted to BTC/USDT, ETH/USDT, SOL/USDT, BNB/USDT, XRP/USDT only`;
+          finalizeSkip('PAIR_RESTRICTION', `BB-RSI EMA200 Scalper agents are restricted to: BTC/USDT, ETH/USDT, SOL/USDT, BNB/USDT, XRP/USDT. Current pair: ${tradingPair}`, 'RISK');
+          
+          logger.warn({
+            agentId,
+            tradingPair,
+            allowedSymbols
+          }, 'BB-RSI Scalper: Trading pair not allowed');
+          return;
+        }
+      }
       
       let candles: any[] = [];
       let candles15m: any[] = [];
@@ -687,6 +717,58 @@ export class AgentExecutionService {
             agentId,
             error: marketDataError instanceof Error ? marketDataError.message : 'Unknown error'
           }, 'HTF Trend Filter: Market scan failed - BANNED fallback signals, NO default BTC/USDT, NO reuse previous signal');
+          return;
+        }
+      } else if (isBBRsiAgent) {
+        // BB-RSI Scalper uses 3m primary + 5m confirmation
+        try {
+          // Fetch 3m candles for primary signal (need 250+ for BB/RSI/EMA200)
+          candles = await marketProvider.getCandles(symbol, '3m', 250);
+          
+          // Fetch 5m candles for confirmation (need 250+ for BB/RSI/EMA200)
+          candles15m = await marketProvider.getCandles(symbol, '5m', 250);
+          
+          if (!candles || candles.length === 0 || !candles15m || candles15m.length === 0) {
+            skippedReason = 'MARKET_DATA_NOT_READY';
+            finalizeSkip('MARKET_DATA_NOT_READY', 'Candle data empty - market data not available', 'DATA');
+            
+            logger.warn({
+              agentId,
+              candles3mCount: candles?.length || 0,
+              candles5mCount: candles15m?.length || 0
+            }, 'BB-RSI Scalper: Candle data empty');
+            
+            return;
+          }
+          
+          if (candles.length < 250) {
+            htfMarketDataSkip = {
+              reasonCode: 'MARKET_DATA_NOT_READY',
+              reasonText: `Insufficient 3m candle data: ${candles.length}/250 required`
+            };
+          } else if (candles15m.length < 250) {
+            htfMarketDataSkip = {
+              reasonCode: 'MARKET_DATA_NOT_READY',
+              reasonText: `Insufficient 5m candle data: ${candles15m.length}/250 required`
+            };
+          }
+
+          // Sort candles (most recent first)
+          candles.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+          candles15m.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+          
+          // Mark that market scan was successfully executed
+          marketScanExecuted = !htfMarketDataSkip;
+          
+        } catch (marketDataError) {
+          skippedReason = 'MARKET_DATA_NOT_READY';
+          finalizeSkip('MARKET_DATA_NOT_READY', marketDataError instanceof Error ? marketDataError.message : 'Market data fetch failed', 'DATA');
+          
+          logger.error({
+            agentId,
+            error: marketDataError instanceof Error ? marketDataError.message : 'Unknown error'
+          }, 'BB-RSI Scalper: Market scan failed');
+          
           return;
         }
       } else {
@@ -818,7 +900,89 @@ export class AgentExecutionService {
       // Generate trading signal with S/R validation
       let signal;
       
-      if (isHTFAgent) {
+      if (isBBRsiAgent) {
+        // BB-RSI EMA200 Scalper mean reversion strategy
+        
+        if (!marketScanExecuted) {
+          skippedReason = htfMarketDataSkip?.reasonText || 'Market scan not executed';
+          finalizeSkip(htfMarketDataSkip?.reasonCode || 'MARKET_SCAN_NOT_EXECUTED', htfMarketDataSkip?.reasonText || 'Market scan was not executed - preventing signal generation', 'DATA');
+          
+          logger.debug({
+            agentId,
+            tradingPair,
+            reason: skippedReason
+          }, 'BB-RSI Scalper: Market scan not executed');
+          
+          // Update last processed candle even with no signal
+          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
+          return;
+        }
+
+        // Get account balance for position sizing
+        try {
+          const accountInfo = await marketProvider.getAccountBalance();
+          const accountBalance = accountInfo?.equity || 10000; // Default to 10k if unavailable
+
+          // Generate BB-RSI mean reversion signal
+          const bbRsiSignal = BBRsiEma200ScalperStrategy.generateSignal(candles, accountBalance);
+          
+          diagnostics.signal = bbRsiSignal;
+          diagnostics.tradeSetup = bbRsiSignal.tradeSetup;
+          
+          if (!bbRsiSignal.isValid) {
+            skippedReason = bbRsiSignal.reason;
+            finalizeSkip('NO_MEAN_REVERSION_SIGNAL', bbRsiSignal.reason || 'No mean reversion setup detected', 'SIGNAL');
+            
+            logger.debug({
+              agentId,
+              tradingPair,
+              reason: bbRsiSignal.reason,
+              indicators: bbRsiSignal.indicators
+            }, 'BB-RSI Scalper: No valid signal');
+            
+            // Update last processed candle
+            await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
+            return;
+          }
+
+          // Valid signal - continue with execution
+          signal = {
+            direction: bbRsiSignal.direction,
+            entryPrice: bbRsiSignal.entryPrice,
+            stopLoss: bbRsiSignal.stopLoss,
+            takeProfit: bbRsiSignal.takeProfit2, // Use TP2 as primary target
+            takeProfit1: bbRsiSignal.takeProfit1, // Intermediate TP
+            confidence: bbRsiSignal.confidence,
+            reason: bbRsiSignal.reason
+          };
+          
+          signalGenerated = true;
+          agentExecutionRan = true;
+          
+          logger.info({
+            agentId,
+            tradingPair,
+            signal: signal.direction,
+            entryPrice: signal.entryPrice,
+            stopLoss: signal.stopLoss,
+            tp1: signal.takeProfit1,
+            tp2: signal.takeProfit,
+            confidence: signal.confidence
+          }, 'BB-RSI Scalper: Valid mean reversion signal generated');
+          
+        } catch (error) {
+          skippedReason = 'BB_RSI_SIGNAL_ERROR';
+          finalizeSkip('BB_RSI_SIGNAL_ERROR', error instanceof Error ? error.message : 'Error generating BB-RSI signal', 'SIGNAL');
+          
+          logger.error({
+            agentId,
+            error: error instanceof Error ? error.message : 'Unknown error'
+          }, 'BB-RSI Scalper: Signal generation failed');
+          
+          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
+          return;
+        }
+      } else if (isHTFAgent) {
         // FIX PART D — REQUIRE REAL DATA CONFIRMATION
         // HTF agent may generate signal ONLY if ALL true:
         // - exchange usable, marketScanExecuted === true, indicators evaluated (EMA / RSI / HTF trend), result is not NO_TRADE
@@ -1290,9 +1454,6 @@ export class AgentExecutionService {
     try {
       const uid = agentConfig.userId;
       const agentName = String(agentConfig.name || '');
-      const agentSlug = agentName.toLowerCase().includes('liquidity sweep')
-        ? 'liquidity_sniper_arbitrage'
-        : 'trading-agent';
 
       const side: 'BUY' | 'SELL' = trade.direction === 'LONG' ? 'BUY' : 'SELL';
       const normalizeSymbol = (value: string) => String(value || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
@@ -1382,7 +1543,7 @@ export class AgentExecutionService {
         riskPercent: agentConfig.riskPerTrade,
         status: 'open',
         metadata: {
-          agentId: agentSlug,
+          agentId: agentConfig.id,
           signalId: trade.signalId,
           tradeId: trade.id,
           direction: trade.direction,
@@ -1396,7 +1557,6 @@ export class AgentExecutionService {
       logger.info({
         uid,
         agentId: agentConfig.id,
-        agentSlug,
         orderId,
         symbol,
         side,

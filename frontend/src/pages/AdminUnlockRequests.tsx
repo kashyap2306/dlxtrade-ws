@@ -25,9 +25,9 @@ const AGENT_DETAILS: Record<string, { name: string; description: string }> = {
     name: 'VWAP Strategy',
     description: 'Institutional-grade VWAP mean reversion scalping strategy'
   },
-  'LIQUIDITY_SWEEP_AGENT': {
-    name: 'Liquidity Sweep Session Scalping Agent',
-    description: 'Advanced liquidity sweep detection with session-based scalping'
+  'BB_RSI_EMA200_SCALPER': {
+    name: 'BB-RSI EMA200 Scalper Pro (3m/5m Futures)',
+    description: 'Mean reversion scalping with Bollinger Bands, RSI confirmation, and 200 EMA filter'
   },
   'HTF_TREND_FILTER_AGENT': {
     name: 'HTF Trend Filter Scalping Agent',

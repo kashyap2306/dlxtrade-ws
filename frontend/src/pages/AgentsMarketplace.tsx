@@ -58,19 +58,19 @@ export default function AgentsMarketplace() {
       badge: 'Institutional'
     },
     {
-      id: 'LIQUIDITY_SWEEP_AGENT',
-      name: 'Liquidity Sweep Session Scalping Agent',
-      description: 'Advanced scalping agent with institutional-grade liquidity detection and session-based risk management.',
+      id: 'BB_RSI_EMA200_SCALPER',
+      name: 'BB-RSI EMA200 Scalper Pro (3m/5m Futures)',
+      description: 'Mean reversion scalping with Bollinger Bands, RSI confirmation, and 200 EMA filter on 3m/5m timeframes.',
       price: 800,
       features: [
-        'Liquidity Sweep Detection',
-        'Session-Based Trading',
-        'BTC/USDT & ETH/USDT pairs',
-        'Perpetual Futures markets',
-        'Advanced risk management',
+        'Bollinger Bands Mean Reversion',
+        'RSI Confirmation (≤30/≥70)',
+        'EMA 200 Trend Filter',
+        'ADX Trend Strength Filter',
+        'BTC/ETH/SOL/BNB/XRP pairs',
         'Admin approval required'
       ],
-      icon: '💰',
+      icon: '📊',
       category: 'Scalping Strategy',
       badge: 'Advanced'
     },

@@ -48,15 +48,15 @@ const AGENT_DETAILS: Record<string, { name: string; description: string; feature
     category: 'Scalping Strategy',
     badge: 'Institutional'
   },
-  'LIQUIDITY_SWEEP_AGENT': {
-    name: 'Liquidity Sweep Session Scalping Agent',
-    description: 'Advanced liquidity sweep detection with session-based scalping. Identifies institutional sweeps above/below equal highs/lows during London/NY trading sessions.',
+  'BB_RSI_EMA200_SCALPER': {
+    name: 'BB-RSI EMA200 Scalper Pro (3m/5m Futures)',
+    description: 'Mean reversion scalping with Bollinger Bands, RSI confirmation, and 200 EMA filter on 3m/5m timeframes. Bitget USDT-M Futures.',
     features: [
-      'Liquidity Sweep Detection',
-      'Equal Highs/Lows Structure',
-      'Session-Based Trading (London/NY)',
-      'BTC/USDT & ETH/USDT pairs',
-      'Perpetual Futures only',
+      'Bollinger Bands Mean Reversion',
+      'RSI Confirmation (≤30/≥70)',
+      'EMA 200 Trend Filter',
+      'ADX Trend Strength Filter',
+      'BTC/ETH/SOL/BNB/XRP pairs',
       'Admin approval required'
     ],
     category: 'Scalping Strategy',
@@ -136,7 +136,7 @@ export function useUnlockedAgents() {
 
   // Memoize computed values to prevent unnecessary recalculations
   const hasPremiumAgent = useMemo(() => unlockedAgents.some(agent =>
-    ['TRADING_AGENT', 'COPY_TRADING_AGENT', 'VWAP_STRATEGY', 'LIQUIDITY_SWEEP_AGENT'].includes(agent.agentId)
+    ['TRADING_AGENT', 'COPY_TRADING_AGENT', 'VWAP_STRATEGY', 'BB_RSI_EMA200_SCALPER'].includes(agent.agentId)
   ), [unlockedAgents]);
 
   // Memoize return value to ensure stable references

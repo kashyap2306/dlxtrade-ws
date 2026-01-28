@@ -4882,7 +4882,7 @@ export class FirestoreAdapter {
    * Path: users/{uid}/agentDiagnostics/{agentId}/entries/{auto-id}
    */
   async saveAgentDiagnostic(agentId: string, diagnostic: {
-    agentType: 'TRADING_AGENT' | 'VWAP_STRATEGY' | 'LIQUIDITY_SWEEP_AGENT' | 'COPY_TRADING_AGENT' | 'HTF_TREND_FILTER_AGENT';
+    agentType: 'TRADING_AGENT' | 'VWAP_STRATEGY' | 'COPY_TRADING_AGENT' | 'HTF_TREND_FILTER_AGENT' | 'BB_RSI_EMA200_SCALPER';
     tradingPair?: string;
     pair?: string;
     direction?: 'LONG' | 'SHORT';

@@ -16,12 +16,10 @@ export async function agentRoutes(fastify: FastifyInstance) {
   console.log("[ROUTE READY] POST /api/agent/:agentId/start");
   console.log("[ROUTE READY] POST /api/agent/:agentId/stop");
 
-  // HARD DEPRECATION: trading/vwap/liquidity-sweep agents must ONLY use /api/agents/:agentSlug/*
+  // HARD DEPRECATION: trading/vwap agents must ONLY use /api/agents/:agentSlug/*
   const deprecatedAgentIds = new Set([
     'trading-agent',
     'vwap-strategy',
-    'liquidity_sniper_arbitrage',
-    'LIQUIDITY_SWEEP_AGENT',
   ]);
 
   // Launchpad Hunter specific routes
