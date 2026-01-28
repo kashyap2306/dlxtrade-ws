@@ -495,6 +495,15 @@ export async function isExchangeUsable(
       };
     }
 
+    // CHECK: If encryption secret has changed, exchange is no longer usable
+    if (config.encryptionInvalid === true) {
+      return {
+        usable: false,
+        reason: "encryption_invalid",
+        exchange: config.exchange,
+      };
+    }
+
     // LEGACY SAFETY: Strip legacy fields if present (read-only cleanup)
     const cleanConfig = { ...config };
     if (cleanConfig.exchangeStatus !== undefined) {
@@ -4280,9 +4289,13 @@ export class FirestoreAdapter {
             "ENCRYPTION_SECRET_CHANGED detected - exchange config is corrupted. Do not attempt Firestore update."
           );
           
-          // NOTE: Do NOT write to Firestore - exchangeStatus is read-only outside /exchange/connect
-          // Just return the data as-is; callers will check isExchangeUsable() which handles this
-          return data;
+          // ADD FLAG: Mark config as having invalid encryption so frontend knows to display reconnection prompt
+          return {
+            ...data,
+            encryptionInvalid: true,
+            disconnected: true,
+            lastValidationError: 'Encryption secret has changed - exchange must be reconnected'
+          };
         }
       }
 

@@ -900,6 +900,8 @@ export async function exchangeRoutes(fastify: FastifyInstance) {
             testnet: false,
             disconnected: false, // Clear disconnected flag when reconnecting
             encryptionKeyHash: getFullEncryptionKeyHash(), // Store current encryption key hash
+            encryptionInvalid: false, // CRITICAL: Clear encryption invalid flag on successful reconnect
+            lastValidationError: null, // Clear any previous validation error
             updatedAt: admin.firestore.Timestamp.now(),
           };
 

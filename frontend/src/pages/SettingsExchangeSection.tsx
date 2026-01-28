@@ -30,8 +30,8 @@ export const SettingsExchangeSection: React.FC<SettingsExchangeSectionProps> = (
 }) => {
   // STEP 1: SINGLE SOURCE OF TRUTH - Define once
   // STEP 4: HARD SAFETY GUARD - disconnected flag overrides everything
-  const isExchangeConnected = !!exchangeConfig && exchangeConfig.disconnected !== true;
-  const isExchangeCorrupted = exchangeConfig?.exchangeStatus === 'CORRUPTED';
+  const isExchangeConnected = !!exchangeConfig && exchangeConfig.disconnected !== true && exchangeConfig.encryptionInvalid !== true;
+  const isExchangeCorrupted = exchangeConfig?.exchangeStatus === 'CORRUPTED' || exchangeConfig?.encryptionInvalid === true;
 
   return (
     <section id="exchange-connection" className="mb-12">
@@ -44,27 +44,30 @@ export const SettingsExchangeSection: React.FC<SettingsExchangeSectionProps> = (
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <ExclamationTriangleIcon className="w-6 h-6 text-red-400" />
-                <span className="text-xl font-bold text-white">Exchange Keys Corrupted</span>
+                <span className="text-xl font-bold text-white">Reconnect Exchange Required</span>
               </div>
               <button
                 onClick={handleDisconnectExchange}
                 className="px-4 py-2 bg-red-500/70 text-white font-medium rounded-lg hover:bg-red-600/80 transition-all duration-300"
               >
-                Reconnect
+                Reconnect Now
               </button>
             </div>
             <div className="space-y-2">
               <p className="text-sm text-red-300">
                 Exchange: {exchangeConfig?.exchange ? exchangeConfig.exchange.charAt(0).toUpperCase() + exchangeConfig.exchange.slice(1) : 'Unknown'}
               </p>
-              <p className="text-sm text-red-300">
-                Reason: {exchangeConfig?.corruptedReason || 'ENCRYPTION_SECRET_CHANGED'}
-              </p>
+              {exchangeConfig?.encryptionInvalid && (
+                <p className="text-sm text-red-300">
+                  Reason: {exchangeConfig?.lastValidationError || 'Encryption secret has changed - exchange keys cannot be decrypted'}
+                </p>
+              )}
             </div>
             <div className="p-3 bg-yellow-900/20 border border-yellow-500/30 rounded-lg">
               <p className="text-xs text-yellow-300">
-                <strong>Action Required:</strong> Your exchange keys cannot be decrypted due to an encryption secret change. 
-                Please click "Reconnect" and re-enter your exchange API credentials to restore trading functionality.
+                <strong>Action Required:</strong> Your exchange keys are invalid due to an encryption secret change. 
+                Please click "Reconnect Now" and re-enter your exchange API credentials to restore trading functionality.
+                Agents and auto-trading will resume automatically once reconnected.
               </p>
             </div>
           </div>

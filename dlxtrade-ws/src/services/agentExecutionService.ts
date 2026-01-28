@@ -387,6 +387,28 @@ export class AgentExecutionService {
         return;
       }
 
+      // CHECK: If encryption secret has changed, mark exchange as requiring reconnection
+      if (exchangeConfig.encryptionInvalid === true) {
+        skippedReason = 'EXCHANGE_ENCRYPTION_INVALID';
+        finalizeSkip('EXCHANGE_ENCRYPTION_INVALID', 'Exchange keys are invalid due to encryption secret change. Please reconnect exchange.', 'EXCHANGE');
+
+        if (isHTFAgent) {
+          logger.info({
+            agentId,
+            tradingPair
+          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
+        }
+
+        logger.warn({
+          agentId,
+          uid: agentConfig.userId,
+          exchange: exchangeConfig.exchange,
+          error: exchangeConfig.lastValidationError
+        }, 'SKIP: Exchange encryption invalid - user must reconnect exchange');
+
+        return;
+      }
+
       // NOTE: Do NOT hard-skip when exchangeStatus === 'CORRUPTED'.
       // Decryption success is authoritative; if keys cannot decrypt (e.g. ENCRYPTION_SECRET_CHANGED), we'll skip in the decrypt catch below.
 
@@ -1927,6 +1949,16 @@ export class AgentExecutionService {
           success: false,
           message: 'No exchange configured',
           error: 'EXCHANGE_NOT_CONFIGURED'
+        };
+      }
+
+      // CHECK: If encryption secret has changed, reject manual trade and request reconnection
+      if (exchangeConfig.encryptionInvalid === true) {
+        logger.warn({ userId, agentId: context.agentId }, 'Manual trade rejected - exchange encryption invalid');
+        return {
+          success: false,
+          message: 'Exchange keys are invalid due to encryption secret change. Please reconnect exchange.',
+          error: 'EXCHANGE_CORRUPTED'
         };
       }
 
