@@ -987,7 +987,40 @@ export class AgentExecutionService {
 
       // Get latest candle (most recent)
       const latestCandle = candles[0];
-      const candleTimestamp = new Date(latestCandle.timestamp);
+      
+      // CRITICAL FIX: Validate and safely create candleTimestamp
+      // Ensure timestamp is valid before creating Date object to prevent Firestore errors
+      let candleTimestamp: Date;
+      try {
+        const rawTimestamp = latestCandle.timestamp;
+        
+        // Validate timestamp exists and is a valid number
+        if (!rawTimestamp || typeof rawTimestamp !== 'number' || !Number.isFinite(rawTimestamp) || isNaN(rawTimestamp)) {
+          logger.warn(
+            { agentId, pairKey, rawTimestamp, type: typeof rawTimestamp },
+            '⚠️ [CANDLE_TIMESTAMP_VALIDATION] Invalid candle timestamp - using current time as fallback'
+          );
+          candleTimestamp = new Date();
+        } else {
+          // Create Date from valid timestamp
+          candleTimestamp = new Date(rawTimestamp);
+          
+          // Verify the Date object is valid
+          if (isNaN(candleTimestamp.getTime())) {
+            logger.warn(
+              { agentId, pairKey, rawTimestamp },
+              '⚠️ [CANDLE_TIMESTAMP_VALIDATION] Created invalid Date object - using current time as fallback'
+            );
+            candleTimestamp = new Date();
+          }
+        }
+      } catch (timestampError: any) {
+        logger.warn(
+          { agentId, pairKey, error: timestampError.message },
+          '⚠️ [CANDLE_TIMESTAMP_VALIDATION] Failed to create candleTimestamp - using current time as fallback'
+        );
+        candleTimestamp = new Date();
+      }
 
       // Update diagnostics with candle info
       diagnostics.candleCheck = {

@@ -4031,11 +4031,24 @@ export class AutoTradeEngine {
         );
 
         // Save SKIPPED history for background tasks paused
-        await saveAutoTradeHistorySkipped(
-          uid,
-          "BACKGROUND_TASKS_PAUSED",
-          "Background tasks are currently paused by system administrator",
-        );
+        if (!skipHistoryStorage) {
+          // CRITICAL: Check if history already written for this cycleId
+          if (this.hasHistoryForCycle(uid, cycleId)) {
+            logger.warn(
+              { uid, cycleId, reason: "BACKGROUND_TASKS_PAUSED" },
+              "⚠️ [HISTORY_GUARD] History already written for this cycleId - skipping duplicate write"
+            );
+          } else {
+            await saveAutoTradeHistorySkipped(
+              uid,
+              "BACKGROUND_TASKS_PAUSED",
+              "Background tasks are currently paused by system administrator",
+              cycleId,
+              false, // researchExecuted = false (research never ran)
+            );
+            this.markHistoryWritten(uid, cycleId);
+          }
+        }
 
         // CRITICAL FIX: Also write diagnostic entry for "Recent Cycle Results" UI
         try {
@@ -4133,12 +4146,22 @@ export class AutoTradeEngine {
         "❌ [CONFIG_LOAD] Failed to load user config/settings at cycle start",
       );
       if (!skipHistoryStorage) {
-        await saveAutoTradeHistorySkipped(
-          uid,
-          "SYSTEM_ERROR",
-          `CONFIG_LOAD_FAILED: ${configError.message}`,
-          cycleId,
-        );
+        // CRITICAL: Check if history already written for this cycleId
+        if (this.hasHistoryForCycle(uid, cycleId)) {
+          logger.warn(
+            { uid, cycleId, reason: "SYSTEM_ERROR" },
+            "⚠️ [HISTORY_GUARD] History already written for this cycleId - skipping duplicate write"
+          );
+        } else {
+          await saveAutoTradeHistorySkipped(
+            uid,
+            "SYSTEM_ERROR",
+            `CONFIG_LOAD_FAILED: ${configError.message}`,
+            cycleId,
+            false, // researchExecuted = false (research never ran)
+          );
+          this.markHistoryWritten(uid, cycleId);
+        }
       }
       return null;
     }
@@ -4159,27 +4182,9 @@ export class AutoTradeEngine {
       `[CYCLE_EXCHANGE_CHECK] Exchange usability checked ONCE at cycle start - result will be cached for entire cycle`,
     );
 
-    // PRIORITY ORDER: exchangeUsabilityCached.usable result > disconnected flags > historical state
-    // If exchangeUsabilityCached.usable === true, ALWAYS proceed regardless of reason
-    if (exchangeUsabilityCached.usable) {
-      // Exchange is usable - log success and proceed
-      // CRITICAL FIX: When usable=true, NEVER block regardless of disconnected flags
-      logger.info(
-        {
-          uid,
-          cycleId,
-          exchange: exchangeUsabilityCached.exchange,
-          reason: exchangeUsabilityCached.reason,
-          usable: exchangeUsabilityCached.usable,
-        },
-        `[AUTO_TRADE_PROCEED] Exchange is usable - proceeding with auto-trade cycle`,
-      );
-      // CRITICAL: Clear any disconnected flags when exchange is usable
-      // This ensures disconnected state doesn't persist when decryption succeeds
-      
-      // SKIP the entire exchange blocking logic when usable=true
-      // Continue to the rest of the auto-trade cycle
-    } else {
+    // CRITICAL FIX: If exchange is NOT usable, IMMEDIATELY return with cycle-level history ONLY
+    // Do NOT proceed to research, executeTradeWithResearchResult, or symbol-level history
+    if (!exchangeUsabilityCached.usable) {
       const normalizedExchangeReason =
         exchangeUsabilityCached.reason === "connected"
           ? "connected"
@@ -4187,103 +4192,88 @@ export class AutoTradeEngine {
             ? "disconnected"
             : "not_connected";
 
-      // MANDATORY INVARIANT: Same as scheduler
-      // 1. not_connected → SOFT SKIP ONLY
-      if (normalizedExchangeReason === "not_connected") {
-        // SOFT SKIP: Exchange not usable - skip this cycle
-        logger.warn(
-          {
+      logger.warn(
+        {
+          uid,
+          cycleId,
+          exchange: exchangeUsabilityCached.exchange,
+          reason: normalizedExchangeReason,
+          usable: exchangeUsabilityCached.usable,
+        },
+        `[AUTO_TRADE_EXCHANGE_BLOCK] Exchange not usable - IMMEDIATE RETURN with cycle-level history ONLY`,
+      );
+
+      // CRITICAL: Write ONLY ONE cycle-level history entry
+      if (!skipHistoryStorage) {
+        // CRITICAL: Check if history already written for this cycleId
+        if (this.hasHistoryForCycle(uid, cycleId)) {
+          logger.warn(
+            { uid, cycleId, reason: "EXCHANGE_NOT_USABLE" },
+            "⚠️ [HISTORY_GUARD] History already written for this cycleId - skipping duplicate write"
+          );
+        } else {
+          await saveAutoTradeHistorySkipped(
             uid,
+            "EXCHANGE_NOT_USABLE",
+            normalizedExchangeReason,
             cycleId,
-            exchange: exchangeUsabilityCached.exchange,
-            reason: normalizedExchangeReason,
-            usable: exchangeUsabilityCached.usable,
-            softSkipOnly: true,
-          },
-          `[AUTO_TRADE_SOFT_SKIP] Exchange not usable (not_connected) - skipping cycle without stopping`,
-        );
-
-        // Save SKIPPED history for not_connected
-        if (!skipHistoryStorage) {
-          // CRITICAL: Check if history already written for this cycleId
-          if (this.hasHistoryForCycle(uid, cycleId)) {
-            logger.warn(
-              { uid, cycleId, reason: "EXCHANGE_NOT_CONNECTED" },
-              "⚠️ [HISTORY_GUARD] History already written for this cycleId - skipping duplicate write"
-            );
-          } else {
-            await saveAutoTradeHistorySkipped(
-              uid,
-              "EXCHANGE_NOT_CONNECTED",
-              "Exchange not connected - soft skip only",
-              cycleId,
-            );
-            this.markHistoryWritten(uid, cycleId);
-          }
+            false, // researchExecuted = false (research never ran)
+          );
+          this.markHistoryWritten(uid, cycleId);
+          
+          logger.info(
+            { uid, cycleId, skipReason: "EXCHANGE_NOT_USABLE", skipDetails: normalizedExchangeReason },
+            "✅ [HISTORY] Cycle-level history saved for exchange not usable"
+          );
         }
-
-        // CRITICAL FIX: Also write diagnostic entry for "Recent Cycle Results" UI
-        try {
-          await firestoreAdapter.saveAgentDiagnostic('AUTO_TRADE_AGENT', {
-            agentType: 'TRADING_AGENT',
-            tradingPair: 'AUTO_TRADE_CYCLE',
-            direction: 'LONG',
-            decision: {
-              action: 'SKIP',
-              reason: 'Exchange not connected'
-            },
-            execution: {
-              status: 'SKIPPED',
-              success: false,
-              exchangeErrorReason: 'Exchange not connected'
-            },
-            runtimeState: {
-              cycleId: cycleId,
-              exchangeUsable: false,
-              exchangeReason: normalizedExchangeReason
-            }
-          }, uid);
-        } catch (diagnosticErr: any) {
-          logger.warn({ uid, error: diagnosticErr.message }, 'Failed to save diagnostic for exchange not connected');
-        }
-
-        return null; // Cycle completed with SKIPPED history (SOFT SKIP)
-      } else if (normalizedExchangeReason === "disconnected") {
-        // HARD STOP: Exchange disconnected by user
-        logger.warn(
-          {
-            uid,
-            cycleId,
-            exchange: exchangeUsabilityCached.exchange,
-            reason: normalizedExchangeReason,
-            usable: exchangeUsabilityCached.usable,
-            hardStop: true,
-          },
-          `AUTO_TRADE_BLOCKED: EXCHANGE_${normalizedExchangeReason.toUpperCase()} - hard stop required`,
-        );
-
-        // Save SKIPPED history for disconnected
-        if (!skipHistoryStorage) {
-          // CRITICAL: Check if history already written for this cycleId
-          if (this.hasHistoryForCycle(uid, cycleId)) {
-            logger.warn(
-              { uid, cycleId, reason: "EXCHANGE_NOT_USABLE" },
-              "⚠️ [HISTORY_GUARD] History already written for this cycleId - skipping duplicate write"
-            );
-          } else {
-            await saveAutoTradeHistorySkipped(
-              uid,
-              "EXCHANGE_NOT_USABLE",
-              normalizedExchangeReason,
-              cycleId,
-            );
-            this.markHistoryWritten(uid, cycleId);
-          }
-        }
-
-        return null; // Cycle completed with SKIPPED history (HARD STOP)
       }
+
+      // CRITICAL: Write ONLY ONE diagnostic entry for cycle-level skip
+      try {
+        await firestoreAdapter.saveAgentDiagnostic('AUTO_TRADE_AGENT', {
+          agentType: 'TRADING_AGENT',
+          tradingPair: 'AUTO_TRADE_CYCLE',
+          direction: 'LONG',
+          decision: {
+            action: 'SKIP',
+            reason: `Exchange not usable: ${normalizedExchangeReason}`
+          },
+          execution: {
+            status: 'SKIPPED',
+            success: false,
+            exchangeErrorReason: normalizedExchangeReason
+          },
+          runtimeState: {
+            cycleId: cycleId,
+            exchangeUsable: false,
+            exchangeReason: normalizedExchangeReason,
+            researchExecuted: false
+          }
+        }, uid);
+        
+        logger.info(
+          { uid, cycleId, reason: normalizedExchangeReason },
+          "✅ [DIAGNOSTIC] Cycle-level diagnostic saved for exchange not usable"
+        );
+      } catch (diagnosticErr: any) {
+        logger.warn({ uid, error: diagnosticErr.message }, 'Failed to save diagnostic for exchange not usable');
+      }
+
+      // IMMEDIATE RETURN - do NOT proceed to research or executeTradeWithResearchResult
+      return null;
     }
+
+    // Exchange is usable - log success and proceed with normal flow
+    logger.info(
+      {
+        uid,
+        cycleId,
+        exchange: exchangeUsabilityCached.exchange,
+        reason: exchangeUsabilityCached.reason,
+        usable: exchangeUsabilityCached.usable,
+      },
+      `[AUTO_TRADE_PROCEED] Exchange is usable - proceeding with auto-trade cycle`,
+    );
 
     // CRITICAL: Validate provided research result
     if (!researchResult || !researchResult.symbol || !researchResult.signal) {
@@ -4304,6 +4294,7 @@ export class AutoTradeEngine {
             "INVALID_RESEARCH_RESULT",
             "Scheduler provided invalid research result for auto-trade execution",
             cycleId,
+            false, // researchExecuted = false (research result is invalid)
           );
           this.markHistoryWritten(uid, cycleId);
         }

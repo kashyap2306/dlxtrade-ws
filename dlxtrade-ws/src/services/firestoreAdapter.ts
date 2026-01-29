@@ -223,6 +223,37 @@ export async function updateDailySafetyCounters(
     try {
       const db = getFirebaseAdmin().firestore();
       const now = new Date();
+      
+      // CRITICAL FIX: Validate timestamp before creating Firestore Timestamp
+      let validTimestamp: admin.firestore.Timestamp;
+      
+      try {
+        const ms = now.getTime();
+        if (!Number.isFinite(ms) || isNaN(ms)) {
+          logger.warn(
+            { agentId, ms },
+            '⚠️ [TIMESTAMP_VALIDATION] Invalid timestamp in updateDailySafetyCounters, using Timestamp.now()'
+          );
+          validTimestamp = admin.firestore.Timestamp.now();
+        } else {
+          const seconds = Math.floor(ms / 1000);
+          if (!Number.isFinite(seconds) || isNaN(seconds) || !Number.isInteger(seconds)) {
+            logger.warn(
+              { agentId, seconds, ms },
+              '⚠️ [TIMESTAMP_VALIDATION] Invalid seconds in updateDailySafetyCounters, using Timestamp.now()'
+            );
+            validTimestamp = admin.firestore.Timestamp.now();
+          } else {
+            validTimestamp = new admin.firestore.Timestamp(seconds, 0);
+          }
+        }
+      } catch (timestampError: any) {
+        logger.warn(
+          { agentId, error: timestampError.message },
+          '⚠️ [TIMESTAMP_VALIDATION] Failed to create timestamp in updateDailySafetyCounters, using Timestamp.now()'
+        );
+        validTimestamp = admin.firestore.Timestamp.now();
+      }
 
       await db
         .collection('tradingAgents')
@@ -231,7 +262,7 @@ export async function updateDailySafetyCounters(
         .doc('current')
         .set({
           ...updates,
-          lastResetDate: admin.firestore.Timestamp.fromDate(now),
+          lastResetDate: validTimestamp,
           updatedAt: admin.firestore.Timestamp.now()
         }, { merge: true });
 
@@ -246,6 +277,37 @@ export async function resetDailySafetyCounters(agentId: string): Promise<void> {
     try {
       const db = getFirebaseAdmin().firestore();
       const now = new Date();
+      
+      // CRITICAL FIX: Validate timestamp before creating Firestore Timestamp
+      let validTimestamp: admin.firestore.Timestamp;
+      
+      try {
+        const ms = now.getTime();
+        if (!Number.isFinite(ms) || isNaN(ms)) {
+          logger.warn(
+            { agentId, ms },
+            '⚠️ [TIMESTAMP_VALIDATION] Invalid timestamp in resetDailySafetyCounters, using Timestamp.now()'
+          );
+          validTimestamp = admin.firestore.Timestamp.now();
+        } else {
+          const seconds = Math.floor(ms / 1000);
+          if (!Number.isFinite(seconds) || isNaN(seconds) || !Number.isInteger(seconds)) {
+            logger.warn(
+              { agentId, seconds, ms },
+              '⚠️ [TIMESTAMP_VALIDATION] Invalid seconds in resetDailySafetyCounters, using Timestamp.now()'
+            );
+            validTimestamp = admin.firestore.Timestamp.now();
+          } else {
+            validTimestamp = new admin.firestore.Timestamp(seconds, 0);
+          }
+        }
+      } catch (timestampError: any) {
+        logger.warn(
+          { agentId, error: timestampError.message },
+          '⚠️ [TIMESTAMP_VALIDATION] Failed to create timestamp in resetDailySafetyCounters, using Timestamp.now()'
+        );
+        validTimestamp = admin.firestore.Timestamp.now();
+      }
 
       await db
         .collection('tradingAgents')
@@ -256,7 +318,7 @@ export async function resetDailySafetyCounters(agentId: string): Promise<void> {
           consecutiveLosses: 0,
           dailyPnL: 0,
           tradesToday: 0,
-          lastResetDate: admin.firestore.Timestamp.fromDate(now),
+          lastResetDate: validTimestamp,
           updatedAt: admin.firestore.Timestamp.now()
         });
 
@@ -296,13 +358,58 @@ export async function getPairCooldown(agentId: string, tradingPair: string): Pro
 export async function setPairCooldown(agentId: string, tradingPair: string, cooldownUntil: Date): Promise<void> {
     try {
       const db = getFirebaseAdmin().firestore();
+      
+      // CRITICAL FIX: Validate and convert timestamp to ensure valid integer seconds
+      let validTimestamp: admin.firestore.Timestamp;
+      
+      try {
+        // Ensure cooldownUntil is a valid Date object
+        if (!cooldownUntil || !(cooldownUntil instanceof Date)) {
+          logger.warn(
+            { agentId, tradingPair, cooldownUntil, type: typeof cooldownUntil },
+            '⚠️ [TIMESTAMP_VALIDATION] Invalid cooldownUntil - not a Date object, skipping cooldown update'
+          );
+          return; // Skip update safely instead of throwing
+        }
+        
+        // Get milliseconds and validate
+        const ms = cooldownUntil.getTime();
+        if (!Number.isFinite(ms) || isNaN(ms)) {
+          logger.warn(
+            { agentId, tradingPair, ms, cooldownUntil },
+            '⚠️ [TIMESTAMP_VALIDATION] Invalid cooldown milliseconds (NaN or not finite), skipping update'
+          );
+          return; // Skip update safely instead of throwing
+        }
+        
+        // Convert milliseconds to seconds (MUST be integer for Firestore)
+        const seconds = Math.floor(ms / 1000);
+        if (!Number.isFinite(seconds) || isNaN(seconds) || !Number.isInteger(seconds)) {
+          logger.warn(
+            { agentId, tradingPair, seconds, ms },
+            '⚠️ [TIMESTAMP_VALIDATION] Invalid cooldown seconds (NaN, not finite, or not integer), skipping update'
+          );
+          return; // Skip update safely instead of throwing
+        }
+        
+        // Create Firestore Timestamp with validated integer seconds
+        validTimestamp = new admin.firestore.Timestamp(seconds, 0);
+        
+      } catch (timestampError: any) {
+        logger.warn(
+          { agentId, tradingPair, error: timestampError.message, cooldownUntil },
+          '⚠️ [TIMESTAMP_VALIDATION] Failed to create valid Firestore Timestamp for cooldown, skipping update'
+        );
+        return; // Skip update safely instead of throwing
+      }
+      
       await db
         .collection('tradingAgents')
         .doc(agentId)
         .collection('cooldowns')
         .doc(tradingPair)
         .set({
-          cooldownUntil: admin.firestore.Timestamp.fromDate(cooldownUntil),
+          cooldownUntil: validTimestamp,
           setAt: admin.firestore.Timestamp.now()
         });
 
@@ -389,13 +496,59 @@ export async function updateLastProcessedCandle(agentId: string, tradingPair: st
       const db = getFirebaseAdmin().firestore();
       // FIX: Replace slashes with underscores to create valid Firestore document ID
       const safeDocumentId = `candle_${tradingPair.replace(/\//g, '_')}`;
+      
+      // CRITICAL FIX: Validate and convert timestamp to ensure valid integer seconds
+      // Firestore Timestamp requires seconds to be a valid integer
+      let validTimestamp: admin.firestore.Timestamp;
+      
+      try {
+        // Ensure candleTimestamp is a valid Date object
+        if (!candleTimestamp || !(candleTimestamp instanceof Date)) {
+          logger.warn(
+            { agentId, tradingPair, candleTimestamp, type: typeof candleTimestamp },
+            '⚠️ [TIMESTAMP_VALIDATION] Invalid candleTimestamp - not a Date object, skipping update'
+          );
+          return; // Skip update safely instead of throwing
+        }
+        
+        // Get milliseconds and validate
+        const ms = candleTimestamp.getTime();
+        if (!Number.isFinite(ms) || isNaN(ms)) {
+          logger.warn(
+            { agentId, tradingPair, ms, candleTimestamp },
+            '⚠️ [TIMESTAMP_VALIDATION] Invalid timestamp milliseconds (NaN or not finite), skipping update'
+          );
+          return; // Skip update safely instead of throwing
+        }
+        
+        // Convert milliseconds to seconds (MUST be integer for Firestore)
+        const seconds = Math.floor(ms / 1000);
+        if (!Number.isFinite(seconds) || isNaN(seconds)) {
+          logger.warn(
+            { agentId, tradingPair, seconds, ms },
+            '⚠️ [TIMESTAMP_VALIDATION] Invalid timestamp seconds (NaN or not finite), skipping update'
+          );
+          return; // Skip update safely instead of throwing
+        }
+        
+        // Create Firestore Timestamp with validated integer seconds
+        validTimestamp = new admin.firestore.Timestamp(seconds, 0);
+        
+      } catch (timestampError: any) {
+        logger.warn(
+          { agentId, tradingPair, error: timestampError.message, candleTimestamp },
+          '⚠️ [TIMESTAMP_VALIDATION] Failed to create valid Firestore Timestamp, skipping update'
+        );
+        return; // Skip update safely instead of throwing
+      }
+      
       await db
         .collection('tradingAgents')
         .doc(agentId)
         .collection('executionState')
         .doc(safeDocumentId)
         .set({
-          lastProcessedCandle: admin.firestore.Timestamp.fromDate(candleTimestamp),
+          lastProcessedCandle: validTimestamp,
           updatedAt: admin.firestore.Timestamp.now(),
         }, { merge: true });
 

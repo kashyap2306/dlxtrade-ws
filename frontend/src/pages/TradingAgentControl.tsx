@@ -163,7 +163,22 @@ export default function TradingAgentControl() {
           const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
           return bTime - aTime;
         });
-        setDiagnosticsEntries(entries);
+        
+        // CRITICAL FIX: Deduplicate by (cycleId + pair) - keep only latest entry per unique combination
+        const seen = new Map<string, any>();
+        const deduplicated = entries.filter((entry: any) => {
+          const cycleId = entry.runtimeState?.cycleId || entry.id || '';
+          const pair = entry.tradingPair || entry.symbol || '';
+          const key = `${cycleId}_${pair}`;
+          
+          if (!seen.has(key)) {
+            seen.set(key, entry);
+            return true;
+          }
+          return false;
+        });
+        
+        setDiagnosticsEntries(deduplicated);
       } else {
         // Load research history for AUTO_TRADE cycles ONLY (non-HTF agents)
         const researchResp = await researchApi.deepResearch.getHistory(50);
@@ -266,7 +281,22 @@ export default function TradingAgentControl() {
           const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
           return bTime - aTime;
         });
-        setDiagnosticsEntries(entries);
+        
+        // CRITICAL FIX: Deduplicate by (cycleId + pair) - keep only latest entry per unique combination
+        const seen = new Map<string, any>();
+        const deduplicated = entries.filter((entry: any) => {
+          const cycleId = entry.runtimeState?.cycleId || entry.id || '';
+          const pair = entry.tradingPair || entry.symbol || '';
+          const key = `${cycleId}_${pair}`;
+          
+          if (!seen.has(key)) {
+            seen.set(key, entry);
+            return true;
+          }
+          return false;
+        });
+        
+        setDiagnosticsEntries(deduplicated);
       } else {
         // Refresh research history for AUTO_TRADE cycles ONLY (non-HTF agents)
         const researchResp = await researchApi.deepResearch.getHistory(50);
@@ -790,22 +820,22 @@ export default function TradingAgentControl() {
 
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-xl font-bold text-white">Recent Cycle Results</h3>
-              {isHTFTrendFilterAgent && diagnosticsEntries.length > 3 && (
+              {isHTFTrendFilterAgent && diagnosticsEntries.length > 10 && (
                 <button
                   onClick={() => setShowMoreDiagnostics(!showMoreDiagnostics)}
                   className="text-purple-400 hover:text-purple-300 transition-colors text-sm"
                 >
-                  {showMoreDiagnostics ? 'View Less' : `View More (${diagnosticsEntries.length - 3} more)`}
+                  {showMoreDiagnostics ? 'View Less' : `View More (${Math.min(diagnosticsEntries.length - 10, 40)} more)`}
                 </button>
               )}
             </div>
             <div className="text-sm text-gray-400 mb-6 leading-relaxed">
               Shows execution/skip decisions from recent scheduler cycles (~5 min intervals)
-              {isHTFTrendFilterAgent && !showMoreDiagnostics && diagnosticsEntries.length > 3 && (
-                <span className="text-purple-400"> • Showing latest 3 cycles</span>
+              {isHTFTrendFilterAgent && !showMoreDiagnostics && diagnosticsEntries.length > 10 && (
+                <span className="text-purple-400"> • Showing latest 10 cycles</span>
               )}
               {isHTFTrendFilterAgent && showMoreDiagnostics && (
-                <span className="text-purple-400"> • Showing latest {Math.min(diagnosticsEntries.length, 10)} cycles</span>
+                <span className="text-purple-400"> • Showing latest {Math.min(diagnosticsEntries.length, 50)} cycles</span>
               )}
             </div>
 
@@ -826,23 +856,66 @@ export default function TradingAgentControl() {
                         <th className="text-left py-3 px-4 font-semibold">Pair</th>
                         <th className="text-left py-3 px-4 font-semibold">Direction</th>
                         <th className="text-left py-3 px-4 font-semibold">Decision</th>
-                        <th className="text-left py-3 px-4 font-semibold">Execution Status</th>
                         <th className="text-left py-3 px-4 font-semibold">Skip Reason</th>
                         <th className="text-left py-3 px-4 font-semibold">Timestamp</th>
                       </tr>
                     </thead>
                     <tbody>
                       {(!showMoreDiagnostics 
-                        ? diagnosticsEntries.slice(0, 3) 
-                        : diagnosticsEntries.slice(0, 10)
+                        ? diagnosticsEntries.slice(0, 10) 
+                        : diagnosticsEntries.slice(0, 50)
                       ).map((entry, index) => {
                         // Map diagnostics to table columns
                         const displayPair = entry.tradingPair || entry.symbol || '—';
                         const displayDirection = entry.direction || '—';
                         const displayDecision = entry.decision?.action || '—';
-                        const displayExecutionStatus = entry.execution?.status || '—';
-                        // CRITICAL: Use runtimeState for HTF skip reasons
-                        const displaySkipReason = entry.runtimeState?.skipDetails ?? entry.runtimeState?.skipReason ?? entry.decision?.reason ?? '—';
+                        
+                        // Check if full diagnostics data exists for info icon
+                        const hasFullDiagnostics = !!(entry.runtimeState?.indicators?.results);
+                        
+                        // Build clean, SHORT skip reason (3-4 words max)
+                        let shortSkipReason = '';
+                        const runtimeState = entry.runtimeState;
+                        
+                        // Check if we have indicator results for breakdown
+                        if (runtimeState?.indicators?.results) {
+                          const results = runtimeState.indicators.results;
+                          
+                          // CRITICAL FIX: Show ONLY FIRST rejected indicator (3-4 words max)
+                          if (results.ema?.status === 'rejected') {
+                            shortSkipReason = 'EMA rejected';
+                          } else if (results.rsi?.status === 'rejected') {
+                            shortSkipReason = 'RSI rejected';
+                          } else if (results.vwap?.status === 'rejected') {
+                            shortSkipReason = 'VWAP rejected';
+                          } else if (results.sr?.status === 'rejected') {
+                            shortSkipReason = 'SR rejected';
+                          } else if (results.volume?.status === 'rejected') {
+                            shortSkipReason = 'Volume rejected';
+                          } else {
+                            // All confirmed - show success message
+                            shortSkipReason = 'All conditions met';
+                          }
+                        } else {
+                          // No indicator breakdown - use strict fallback chain (max 30 chars)
+                          if (displayDecision === 'TRADE') {
+                            shortSkipReason = 'All conditions met';
+                          } else {
+                            // Get raw reason and trim to max 30 chars
+                            let rawReason = runtimeState?.skipDetails || 
+                                          runtimeState?.skipReason || 
+                                          entry.decision?.reason || 
+                                          'Skipped';
+                            
+                            // Trim to max 30 chars
+                            if (rawReason.length > 30) {
+                              shortSkipReason = rawReason.substring(0, 27) + '...';
+                            } else {
+                              shortSkipReason = rawReason;
+                            }
+                          }
+                        }
+                        
                         const displayTimestamp = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : '—';
                         
                         let reasonColor = 'bg-gray-500/20 text-gray-400';
@@ -850,15 +923,6 @@ export default function TradingAgentControl() {
                           reasonColor = 'bg-green-500/20 text-green-400';
                         } else if (displayDecision === 'SKIP') {
                           reasonColor = 'bg-yellow-500/20 text-yellow-400';
-                        }
-
-                        let executionColor = 'bg-gray-500/20 text-gray-400';
-                        if (displayExecutionStatus === 'EXECUTED') {
-                          executionColor = 'bg-green-500/20 text-green-400';
-                        } else if (displayExecutionStatus === 'FAILED') {
-                          executionColor = 'bg-red-500/20 text-red-400';
-                        } else if (displayExecutionStatus === 'SKIPPED') {
-                          executionColor = 'bg-yellow-500/20 text-yellow-400';
                         }
                         
                         return (
@@ -870,17 +934,24 @@ export default function TradingAgentControl() {
                               {displayDirection}
                             </td>
                             <td className="py-3 px-4">
-                              <span className={`px-2 py-1 rounded text-xs font-medium ${reasonColor}`}>
-                                {displayDecision}
-                              </span>
-                            </td>
-                            <td className="py-3 px-4">
-                              <span className={`px-2 py-1 rounded text-xs font-medium ${executionColor}`}>
-                                {displayExecutionStatus}
-                              </span>
+                              <div className="flex items-center gap-2">
+                                {/* Info icon at the VERY START of Decision column */}
+                                {hasFullDiagnostics && (
+                                  <button
+                                    onClick={() => setSelectedDiagnosticDetails(entry)}
+                                    className="flex-shrink-0 text-purple-400 hover:text-purple-300 transition-colors"
+                                    title="View full diagnostic breakdown"
+                                  >
+                                    <InformationCircleIcon className="w-5 h-5" />
+                                  </button>
+                                )}
+                                <span className={`px-2 py-1 rounded text-xs font-medium ${reasonColor}`}>
+                                  {displayDecision}
+                                </span>
+                              </div>
                             </td>
                             <td className="py-3 px-4 text-gray-400 text-sm">
-                              {displaySkipReason}
+                              <span className="leading-tight">{shortSkipReason}</span>
                             </td>
                             <td className="py-3 px-4 text-gray-400 text-sm">
                               {displayTimestamp}
@@ -999,13 +1070,13 @@ export default function TradingAgentControl() {
         </div>
       </div>
 
-      {/* Diagnostic Details Modal - STRICT RULES COMPLIANT */}
+      {/* Diagnostic Details Modal - Full Indicator Breakdown */}
       {selectedDiagnosticDetails && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 px-4">
-          <div className="bg-slate-900 border border-purple-500/20 rounded-xl p-6 max-w-lg mx-4 max-h-[80vh] overflow-y-auto w-full">
+          <div className="bg-slate-900 border border-purple-500/20 rounded-xl p-6 max-w-2xl mx-4 max-h-[80vh] overflow-y-auto w-full">
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-lg font-semibold text-white">
-                Trade Diagnostic
+                Full Diagnostic Breakdown
               </h3>
               <button
                 onClick={() => setSelectedDiagnosticDetails(null)}
@@ -1017,7 +1088,15 @@ export default function TradingAgentControl() {
               </button>
             </div>
             
-            <div className="space-y-3">
+            <div className="space-y-4">
+              {/* Trading Pair */}
+              <div className="flex justify-between items-center">
+                <span className="text-gray-400 font-medium">Trading Pair</span>
+                <span className="font-bold text-white">
+                  {selectedDiagnosticDetails.tradingPair || selectedDiagnosticDetails.symbol || '—'}
+                </span>
+              </div>
+              
               {/* Direction */}
               <div className="flex justify-between items-center">
                 <span className="text-gray-400 font-medium">Direction</span>
@@ -1025,152 +1104,208 @@ export default function TradingAgentControl() {
                   selectedDiagnosticDetails.direction === 'LONG' ? 'text-green-400' : 
                   selectedDiagnosticDetails.direction === 'SHORT' ? 'text-red-400' : 
                   'text-gray-300'
-                }`}>{selectedDiagnosticDetails.direction}</span>
+                }`}>{selectedDiagnosticDetails.direction || '—'}</span>
               </div>
               
               {/* Final Decision */}
               <div className="flex justify-between items-center">
                 <span className="text-gray-400 font-medium">Final Decision</span>
-                <span className="font-bold text-yellow-400">SKIPPED</span>
-              </div>
-              
-              {/* Exact Reason */}
-              <div className="flex justify-between items-start">
-                <span className="text-gray-400 font-medium">Exact Reason</span>
-                <span className="text-gray-300 text-right max-w-96 leading-relaxed">
-                  {(() => {
-                    // First, check for indicator decision results (HTF strategy)
-                    const indicatorResults = selectedDiagnosticDetails.signal?.indicators?.results;
-                    if (indicatorResults && Object.keys(indicatorResults).length > 0) {
-                      // Build a list of all indicator checks with their status
-                      const checks: string[] = [];
-                      
-                      if (indicatorResults.ema) {
-                        const status = indicatorResults.ema.status === 'confirmed' ? '✓ EMA confirmed' : '✗ EMA rejected';
-                        checks.push(status);
-                      }
-                      if (indicatorResults.rsi) {
-                        const status = indicatorResults.rsi.status === 'confirmed' ? '✓ RSI confirmed' : '✗ RSI rejected';
-                        checks.push(status);
-                      }
-                      if (indicatorResults.vwap) {
-                        const status = indicatorResults.vwap.status === 'confirmed' ? '✓ VWAP confirmed' : '✗ VWAP rejected';
-                        checks.push(status);
-                      }
-                      if (indicatorResults.sr) {
-                        const status = indicatorResults.sr.status === 'confirmed' ? '✓ SR confirmed' : '✗ SR rejected';
-                        checks.push(status);
-                      }
-                      if (indicatorResults.volume) {
-                        const status = indicatorResults.volume.status === 'confirmed' ? '✓ Volume confirmed' : '✗ Volume rejected';
-                        checks.push(status);
-                      }
-                      
-                      if (checks.length > 0) {
-                        return checks.join(' • ');
-                      }
-                    }
-                    
-                    // Fallback to decision reason if no indicator results
-                    const decisionReason = selectedDiagnosticDetails.decision?.reason;
-                    if (decisionReason) {
-                      // Check for common indicator-related reasons
-                      if (decisionReason.includes('confirmed') || decisionReason.includes('rejected')) {
-                        return decisionReason;
-                      }
-                    }
-                    
-                    // Then check failure reason text
-                    const reasonText = selectedDiagnosticDetails.failure?.reasonText;
-                    if (reasonText) {
-                      // Backend mapping according to strict rules
-                      if (reasonText.includes('Exchange credentials could not be decrypted')) {
-                        return 'Exchange API keys could not be decrypted';
-                      } else if (reasonText.includes('No exchange connected')) {
-                        return 'Exchange not connected';
-                      } else if (reasonText.includes('Insufficient futures balance') || reasonText.includes('LOW_FUTURES_BALANCE')) {
-                        return 'Insufficient futures balance';
-                      } else if (reasonText.includes('Risk/reward') || reasonText.includes('RR_INVALID')) {
-                        return 'Risk–Reward conditions failed';
-                      } else if (reasonText.includes('Outside trading hours')) {
-                        return 'Outside trading hours';
-                      } else if (reasonText.includes('Insufficient market data') || reasonText.includes('candle data')) {
-                        return 'Insufficient market data';
-                      } else if (reasonText.includes('No trading signal') || reasonText.includes('market conditions not met')) {
-                        return 'No trading signal generated';
-                      } else if (reasonText.includes('Daily trade limit')) {
-                        return 'Daily trade limit reached';
-                      } else if (reasonText.includes('Consecutive losses')) {
-                        return 'Consecutive losses limit reached';
-                      } else if (reasonText.includes('Agent was manually stopped')) {
-                        return 'Agent manually stopped';
-                      } else if (reasonText.includes('Agent was manually paused')) {
-                        return 'Agent manually paused';
-                      } else {
-                        return reasonText.length > 80 ? reasonText.substring(0, 80) + '...' : reasonText;
-                      }
-                    }
-                    
-                    // Use decision reason as last resort
-                    if (decisionReason) {
-                      return decisionReason.length > 80 ? decisionReason.substring(0, 80) + '...' : decisionReason;
-                    }
-                    
-                    // Only show this if absolutely nothing is available
-                    return 'Reason not available';
-                  })()}
+                <span className={`px-3 py-1 rounded text-sm font-bold ${
+                  selectedDiagnosticDetails.decision?.action === 'TRADE' 
+                    ? 'bg-green-500/20 text-green-400' 
+                    : 'bg-yellow-500/20 text-yellow-400'
+                }`}>
+                  {selectedDiagnosticDetails.decision?.action || 'SKIP'}
                 </span>
               </div>
               
-              {/* Failure Category */}
-              <div className="flex justify-between items-center">
-                <span className="text-gray-400 font-medium">Failure Category</span>
-                <span className="text-gray-300 font-bold">
-                  {selectedDiagnosticDetails.failure?.failureCategory || 'OTHER'}
-                </span>
-              </div>
-              
-              {/* Exchange Details - ONLY if exchangeFailure exists */}
-              {selectedDiagnosticDetails.exchangeFailure && (
+              {/* Indicator Breakdown - ONLY if indicators.results exists */}
+              {selectedDiagnosticDetails.runtimeState?.indicators?.results && (
                 <>
-                  <div className="border-t border-gray-600 pt-3 mt-3">
-                    <div className="text-sm font-semibold text-red-400 mb-2">Exchange Details</div>
-                    
-                    {/* Exchange name */}
-                    {selectedDiagnosticDetails.exchangeFailure.exchange && (
-                      <div className="flex justify-between items-center mb-2">
-                        <span className="text-gray-400 font-medium">Exchange</span>
-                        <span className="text-red-400 font-bold capitalize">
-                          {selectedDiagnosticDetails.exchangeFailure.exchange}
-                        </span>
-                      </div>
-                    )}
-                    
-                    {/* Exact exchange failure */}
-                    <div className="flex justify-between items-start">
-                      <span className="text-gray-400 font-medium">Exchange Error</span>
-                      <span className="text-red-400 text-right max-w-48 leading-relaxed">
-                        {(() => {
-                          const failureType = selectedDiagnosticDetails.exchangeFailure.failureType;
-                          const exchange = selectedDiagnosticDetails.exchangeFailure.exchange || 'Exchange';
-                          
-                          if (failureType === 'NOT_CONNECTED') {
-                            return `${exchange.charAt(0).toUpperCase() + exchange.slice(1)} not connected`;
-                          } else if (failureType === 'LOW_FUTURES_BALANCE') {
-                            return 'Low futures balance';
-                          } else if (failureType === 'DECRYPT_FAILED') {
-                            return 'API key decryption failed';
-                          } else if (failureType === 'INVALID_KEYS') {
-                            return 'Invalid API keys';
-                          } else {
-                            return selectedDiagnosticDetails.exchangeFailure.rawError || 'Exchange error';
-                          }
-                        })()}
-                      </span>
+                  <div className="border-t border-purple-500/20 pt-4 mt-4">
+                    <div className="text-sm font-semibold text-purple-400 mb-3">Indicator Analysis</div>
+                    <div className="space-y-3">
+                      {/* EMA */}
+                      {selectedDiagnosticDetails.runtimeState.indicators.results.ema && (
+                        <div className="flex justify-between items-start">
+                          <div className="flex-1">
+                            <div className="font-medium text-gray-300">EMA (Exponential Moving Average)</div>
+                            <div className="text-xs text-gray-500 mt-1">
+                              {selectedDiagnosticDetails.runtimeState.indicators.results.ema.reason || 'Trend alignment check'}
+                            </div>
+                          </div>
+                          <span className={`flex items-center gap-1.5 text-sm font-bold ml-4 ${
+                            selectedDiagnosticDetails.runtimeState.indicators.results.ema.status === 'confirmed' 
+                              ? 'text-green-400' 
+                              : 'text-red-400'
+                          }`}>
+                            {selectedDiagnosticDetails.runtimeState.indicators.results.ema.status === 'confirmed' ? (
+                              <>
+                                <CheckCircleIcon className="w-5 h-5" />
+                                <span>Confirmed</span>
+                              </>
+                            ) : (
+                              <>
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                                <span>Rejected</span>
+                              </>
+                            )}
+                          </span>
+                        </div>
+                      )}
+                      
+                      {/* RSI */}
+                      {selectedDiagnosticDetails.runtimeState.indicators.results.rsi && (
+                        <div className="flex justify-between items-start">
+                          <div className="flex-1">
+                            <div className="font-medium text-gray-300">RSI (Relative Strength Index)</div>
+                            <div className="text-xs text-gray-500 mt-1">
+                              {selectedDiagnosticDetails.runtimeState.indicators.results.rsi.reason || 'Momentum check'}
+                            </div>
+                          </div>
+                          <span className={`flex items-center gap-1.5 text-sm font-bold ml-4 ${
+                            selectedDiagnosticDetails.runtimeState.indicators.results.rsi.status === 'confirmed' 
+                              ? 'text-green-400' 
+                              : 'text-red-400'
+                          }`}>
+                            {selectedDiagnosticDetails.runtimeState.indicators.results.rsi.status === 'confirmed' ? (
+                              <>
+                                <CheckCircleIcon className="w-5 h-5" />
+                                <span>Confirmed</span>
+                              </>
+                            ) : (
+                              <>
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                                <span>Rejected</span>
+                              </>
+                            )}
+                          </span>
+                        </div>
+                      )}
+                      
+                      {/* VWAP */}
+                      {selectedDiagnosticDetails.runtimeState.indicators.results.vwap && (
+                        <div className="flex justify-between items-start">
+                          <div className="flex-1">
+                            <div className="font-medium text-gray-300">VWAP (Volume Weighted Average Price)</div>
+                            <div className="text-xs text-gray-500 mt-1">
+                              {selectedDiagnosticDetails.runtimeState.indicators.results.vwap.reason || 'Price position check'}
+                            </div>
+                          </div>
+                          <span className={`flex items-center gap-1.5 text-sm font-bold ml-4 ${
+                            selectedDiagnosticDetails.runtimeState.indicators.results.vwap.status === 'confirmed' 
+                              ? 'text-green-400' 
+                              : 'text-red-400'
+                          }`}>
+                            {selectedDiagnosticDetails.runtimeState.indicators.results.vwap.status === 'confirmed' ? (
+                              <>
+                                <CheckCircleIcon className="w-5 h-5" />
+                                <span>Confirmed</span>
+                              </>
+                            ) : (
+                              <>
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                                <span>Rejected</span>
+                              </>
+                            )}
+                          </span>
+                        </div>
+                      )}
+                      
+                      {/* Volume */}
+                      {selectedDiagnosticDetails.runtimeState.indicators.results.volume && (
+                        <div className="flex justify-between items-start">
+                          <div className="flex-1">
+                            <div className="font-medium text-gray-300">Volume</div>
+                            <div className="text-xs text-gray-500 mt-1">
+                              {selectedDiagnosticDetails.runtimeState.indicators.results.volume.reason || 'Volume confirmation check'}
+                            </div>
+                          </div>
+                          <span className={`flex items-center gap-1.5 text-sm font-bold ml-4 ${
+                            selectedDiagnosticDetails.runtimeState.indicators.results.volume.status === 'confirmed' 
+                              ? 'text-green-400' 
+                              : 'text-red-400'
+                          }`}>
+                            {selectedDiagnosticDetails.runtimeState.indicators.results.volume.status === 'confirmed' ? (
+                              <>
+                                <CheckCircleIcon className="w-5 h-5" />
+                                <span>Confirmed</span>
+                              </>
+                            ) : (
+                              <>
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                                <span>Rejected</span>
+                              </>
+                            )}
+                          </span>
+                        </div>
+                      )}
+                      
+                      {/* Support/Resistance */}
+                      {selectedDiagnosticDetails.runtimeState.indicators.results.sr && (
+                        <div className="flex justify-between items-start">
+                          <div className="flex-1">
+                            <div className="font-medium text-gray-300">Support/Resistance</div>
+                            <div className="text-xs text-gray-500 mt-1">
+                              {selectedDiagnosticDetails.runtimeState.indicators.results.sr.reason || 'Key level check'}
+                            </div>
+                          </div>
+                          <span className={`flex items-center gap-1.5 text-sm font-bold ml-4 ${
+                            selectedDiagnosticDetails.runtimeState.indicators.results.sr.status === 'confirmed' 
+                              ? 'text-green-400' 
+                              : 'text-red-400'
+                          }`}>
+                            {selectedDiagnosticDetails.runtimeState.indicators.results.sr.status === 'confirmed' ? (
+                              <>
+                                <CheckCircleIcon className="w-5 h-5" />
+                                <span>Confirmed</span>
+                              </>
+                            ) : (
+                              <>
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                                <span>Rejected</span>
+                              </>
+                            )}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </>
               )}
+              
+              {/* Skip Reason - Show if no indicators or as summary */}
+              <div className="border-t border-purple-500/20 pt-4 mt-4">
+                <div className="flex justify-between items-start">
+                  <span className="text-gray-400 font-medium">Skip Reason</span>
+                  <span className="text-gray-300 text-right max-w-md leading-relaxed">
+                    {selectedDiagnosticDetails.runtimeState?.skipDetails || 
+                     selectedDiagnosticDetails.runtimeState?.skipReason || 
+                     selectedDiagnosticDetails.decision?.reason || 
+                     'No reason provided'}
+                  </span>
+                </div>
+              </div>
+              
+              {/* Timestamp */}
+              <div className="flex justify-between items-center text-sm">
+                <span className="text-gray-500">Timestamp</span>
+                <span className="text-gray-400">
+                  {selectedDiagnosticDetails.timestamp 
+                    ? new Date(selectedDiagnosticDetails.timestamp).toLocaleString() 
+                    : '—'}
+                </span>
+              </div>
             </div>
           </div>
         </div>
