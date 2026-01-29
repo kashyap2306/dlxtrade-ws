@@ -3922,7 +3922,8 @@ export class AutoTradeEngine {
     );
 
     // CRITICAL FIX: HTF agent bypass - IMMEDIATELY return BEFORE any auto-trade logic
-    // HTF agents are research-only and should NOT run auto-trade execution
+    // HTF agents execute ONLY from TradingAgentScheduler → AgentExecutionService.executeAllAgents()
+    // DO NOT execute HTF from AutoTradeEngine / processUserResearch path
     const isHTFAgent = researchResult?.metadata?.agentType === 'HTF_TREND_FILTER' || 
                        researchResult?.agentId === 'htf-trend-filter-agent' ||
                        researchResult?.source === 'HTF_AGENT';
@@ -3930,120 +3931,13 @@ export class AutoTradeEngine {
     if (isHTFAgent) {
       logger.info(
         { uid, cycleId, agentType: researchResult?.metadata?.agentType },
-        "🔍 [HTF_AGENT_BYPASS] HTF agent detected - bypassing ALL auto-trade logic (research-only mode)"
+        "🔍 [HTF_AGENT_BYPASS] HTF agent detected - bypassing AutoTradeEngine (HTF executes from TradingAgentScheduler only)"
       );
+      console.log('🔥 [HARD_LOG] [HTF_BYPASS] AutoTradeEngine skipping HTF agent - execution handled by TradingAgentScheduler only');
       
-      // CRITICAL: Save HTF diagnostics with correct agentId (NOT AUTO_TRADE_AGENT)
-      // HTF diagnostics must be saved to users/{uid}/agentDiagnostics/HTF_*/entries
-      try {
-        const htfAgentId = researchResult?.agentId || 'htf-trend-filter-agent';
-        const tradingPair = researchResult?.symbol || researchResult?.metadata?.symbol || 'BTC/USDT';
-        const signal = researchResult?.signal || 'HOLD';
-        const accuracy = researchResult?.accuracy || 0;
-        
-        // Determine skip reason from research result
-        let skipReason = 'Research completed';
-        let skipReasonShort = 'Research done'; // 3-4 words max
-        let conditionMatched = false;
-        
-        // Extract indicator results if available
-        const indicatorResults = researchResult?.indicators || researchResult?.metadata?.indicators || {};
-        
-        if (researchResult?.skipReason) {
-          skipReason = researchResult.skipReason;
-          // Generate short skip reason (3-4 words)
-          if (skipReason.includes('EMA')) {
-            skipReasonShort = 'EMA rejected';
-          } else if (skipReason.includes('RSI')) {
-            skipReasonShort = 'RSI rejected';
-          } else if (skipReason.includes('VWAP')) {
-            skipReasonShort = 'VWAP rejected';
-          } else if (skipReason.includes('Volume')) {
-            skipReasonShort = 'Volume rejected';
-          } else if (skipReason.includes('SR') || skipReason.includes('Support') || skipReason.includes('Resistance')) {
-            skipReasonShort = 'SR rejected';
-          } else {
-            skipReasonShort = skipReason.substring(0, 30); // Fallback: trim to 30 chars
-          }
-        } else if (signal === 'HOLD') {
-          skipReason = `HOLD signal (accuracy: ${(accuracy * 100).toFixed(1)}%)`;
-          skipReasonShort = 'HOLD signal';
-        } else if (accuracy < 0.75) {
-          skipReason = `Accuracy too low: ${(accuracy * 100).toFixed(1)}% < 75%`;
-          skipReasonShort = 'Accuracy low';
-        } else if (!researchResult?.tradePlan) {
-          skipReason = 'No valid trade plan generated';
-          skipReasonShort = 'No trade plan';
-        } else {
-          conditionMatched = true;
-          skipReason = `${signal} signal (accuracy: ${(accuracy * 100).toFixed(1)}%)`;
-          skipReasonShort = 'All conditions met';
-        }
-        
-        await firestoreAdapter.saveAgentDiagnostic(htfAgentId, {
-          agentType: 'HTF_TREND_FILTER_AGENT',
-          tradingPair: tradingPair,
-          direction: signal === 'BUY' ? 'LONG' : signal === 'SELL' ? 'SHORT' : 'LONG',
-          decision: {
-            action: conditionMatched ? 'TRADE' : 'SKIP',
-            reason: skipReason
-          },
-          signal: researchResult?.tradePlan ? {
-            direction: signal === 'BUY' ? 'LONG' : signal === 'SELL' ? 'SHORT' : 'LONG',
-            entryPrice: researchResult.tradePlan.entryPrice || 0,
-            stopLoss: researchResult.tradePlan.stopLoss || 0,
-            takeProfit: researchResult.tradePlan.takeProfit2 || researchResult.tradePlan.takeProfit || 0,
-            rrRatio: researchResult.tradePlan.riskRewardRatio || 0
-          } : undefined,
-          execution: {
-            status: conditionMatched ? 'EXECUTED' : 'SKIPPED',
-            success: conditionMatched,
-            exchangeErrorReason: conditionMatched ? undefined : skipReason
-          },
-          runtimeState: {
-            cycleId: cycleId,
-            researchExecuted: true,
-            accuracy: accuracy,
-            signal: signal,
-            conditionMatched: conditionMatched,
-            skipReason: skipReason,
-            skipReasonShort: skipReasonShort, // 3-4 words max
-            skipDetails: researchResult?.skipDetails || skipReason,
-            researchStatus: researchResult?.status || 'COMPLETED',
-            finalDecision: conditionMatched ? 'TRADE' : 'SKIP',
-            // Include indicator results structure for frontend modal
-            indicators: {
-              results: indicatorResults // Full indicator breakdown
-            }
-          }
-        }, uid);
-        
-        logger.info(
-          { uid, cycleId, htfAgentId, skipReason, skipReasonShort, conditionMatched },
-          '✅ [HTF_DIAGNOSTICS] HTF agent diagnostics saved with cycleId and skipReasonShort'
-        );
-      } catch (diagnosticError: any) {
-        logger.error(
-          { uid, cycleId, error: diagnosticError.message },
-          '❌ [HTF_DIAGNOSTICS] Failed to save HTF diagnostics - continuing'
-        );
-      }
-      
-      // HTF agents only run research and save diagnostics
-      // They do NOT:
-      // - Check exchange usability
-      // - Write AUTO_TRADE_CYCLE history
-      // - Run AUTO_TRADE_BLOCKED logic
-      // - Call executeTradeWithResearchResult
-      // Return the research result without any auto-trade processing
-      return {
-        symbol: researchResult.symbol,
-        signal: researchResult.signal,
-        accuracy: researchResult.accuracy,
-        result: researchResult.result || researchResult,
-        processingTimeMs: researchResult.processingTimeMs || 0,
-        metadata: researchResult.metadata || { symbol: researchResult.symbol },
-      };
+      // CRITICAL: Return immediately WITHOUT writing diagnostics or executing any logic
+      // HTF diagnostics are written by AgentExecutionService during scheduler execution
+      return null;
     }
 
     // CRITICAL: Atomic concurrency guard - ensure only ONE auto-trade cycle runs at a time per user

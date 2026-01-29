@@ -348,13 +348,18 @@ export class AgentExecutionService {
    * This method is called by the scheduler every 5 minutes
    */
   async executeAllAgents(): Promise<void> {
+    // Generate a single scheduler cycleId for this execution tick
+    // All agents executed in this tick will share this cycleId
+    const schedulerCycleId = `scheduler_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
     // Log all agents being executed
     const agents = Array.from(this.activeAgents.values());
     logger.info({
       totalAgents: agents.length,
       agentIds: agents.map(a => a['config'].id),
       agentNames: agents.map(a => a['config'].name),
-      strategyTypes: agents.map(a => a['config'].strategyType || 'UNKNOWN')
+      strategyTypes: agents.map(a => a['config'].strategyType || 'UNKNOWN'),
+      schedulerCycleId
     }, 'Executing all active trading agents');
 
     // Execute all trading agents - HTF agents MUST execute if agent.status === "ACTIVE"
@@ -381,11 +386,18 @@ export class AgentExecutionService {
           agentId: agentConfig.id,
           name: agentConfig.name,
           strategyType: agentConfig.strategyType,
-          status: agentConfig.status
+          status: agentConfig.status,
+          schedulerCycleId
         }, ' Executing HTF Trend Filter Agent - status=ACTIVE');
       }
       
-      tradingAgentPromises.push(this.executeAgent(agent));
+      // Add small delay between agent executions to ensure unique timestamps
+      if (tradingAgentPromises.length > 0) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      
+      // Pass scheduler cycleId to each agent execution
+      tradingAgentPromises.push(this.executeAgent(agent, schedulerCycleId));
     }
 
     // Execute VWAP strategy agents that are currently running according to runtime service
@@ -400,7 +412,7 @@ export class AgentExecutionService {
   /**
    * Execute trading logic for a single agent with full hardening and diagnostics
    */
-  private async executeAgent(agent: TradingAgent): Promise<void> {
+  private async executeAgent(agent: TradingAgent, schedulerCycleId?: string): Promise<void> {
     console.error("[EXECUTE_AGENT_ENTRY]", "uid=", agent['config']?.userId, "agentId=", agent['config']?.id, "time=", new Date().toISOString());
     const agentId = agent['config'].id;
     const agentConfig = agent['config'];
@@ -417,6 +429,43 @@ export class AgentExecutionService {
     // Check if this is an HTF Trend Filter agent early for proper scoping
     const isHTFAgent = (agentConfig as any).strategyType === 'HTF_TREND_FILTER' || 
                        (agentConfig.name && agentConfig.name.includes('HTF Trend Filter'));
+
+    // CRITICAL: Execution flag to track if agent logic actually ran
+    // Diagnostics should ONLY be written when this is true
+    let executionStarted = false;
+
+    // CRITICAL: HTF execution source verification
+    if (isHTFAgent) {
+      console.log('🔥 [HTF_EXECUTION_SOURCE] scheduler_only - HTF executing from TradingAgentScheduler → AgentExecutionService');
+      logger.info({
+        agentId,
+        userId: agentConfig.userId,
+        source: 'TradingAgentScheduler'
+      }, '[HTF_EXECUTION_SOURCE] scheduler_only');
+    }
+
+    // CRITICAL FIX #1: Prevent duplicate execution within 5-minute window using existing diagnostics
+    if (isHTFAgent) {
+      const recentDiagnostics = await firestoreAdapter.getAgentDiagnostics(agentId, 1, agentConfig.userId);
+      if (recentDiagnostics && recentDiagnostics.length > 0) {
+        const lastDiagnostic = recentDiagnostics[0];
+        const lastExecutionTime = lastDiagnostic.timestamp;
+        if (lastExecutionTime) {
+          const timeSinceLastExecution = Date.now() - lastExecutionTime.getTime();
+          const fiveMinutesMs = 5 * 60 * 1000;
+          if (timeSinceLastExecution < fiveMinutesMs) {
+            const remainingMs = fiveMinutesMs - timeSinceLastExecution;
+            logger.info({
+              agentId,
+              timeSinceLastExecution,
+              remainingMs,
+              lastExecution: lastExecutionTime.toISOString()
+            }, 'HTF agent execution blocked: within 5-minute window - NO diagnostic write');
+            return; // Early return - executionStarted remains false
+          }
+        }
+      }
+    }
 
     // CRITICAL HTF DIAGNOSTIC: Log HTF agent execution entry
     if (isHTFAgent) {
@@ -440,8 +489,14 @@ export class AgentExecutionService {
     // FIX PART 2 — SAFE DECISION INITIALIZATION
     // Initialize fresh diagnostics for this cycle only - NO reuse of previous cycle data
     // SAFE DECISION INITIALIZATION: Default to SKIP with NO_SIGNAL, never EXCHANGE_ERROR
+    const executionTimestamp = new Date();
+    
+    // Use scheduler cycleId if provided (all agents in same scheduler tick share this)
+    // Otherwise generate agent-specific cycleId (for manual execution)
+    const cycleId = schedulerCycleId || `${executionTimestamp.getTime()}_${Math.random().toString(36).substr(2, 9)}`;
+    
     const diagnostics: any = {
-      timestamp: new Date(),
+      timestamp: executionTimestamp,
       agentId,
       // HTF Agent execution fix: Do NOT attach tradingPair unless conditions are met
       sessionCheck: {},
@@ -457,43 +512,20 @@ export class AgentExecutionService {
       lastDecision: null,
       lastSignal: null,
       executionStateReset: true,
-      cycleId: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`, // Unique cycle ID
-      direction: 'NO_TRADE' // Default direction
+      cycleId, // Shared scheduler cycleId or agent-specific cycleId
+      schedulerCycleId, // Always include scheduler cycleId for grouping
+      direction: 'NO_TRADE', // Default direction
+      // EXECUTION TRANSPARENCY: Track execution path
+      executionState: {
+        researchedOnly: false,
+        eligibleForExecution: false,
+        executionAttempted: false,
+        executionEvaluated: false,
+        executionBlockedReason: null
+      },
+      // HTF EVALUATION GUARD: Track if HTF logic actually ran
+      htfEvaluated: false
     };
-
-    // PART A FIX: For HTF agents, calculate HTF bias direction EARLY and preserve it
-    if (isHTFAgent) {
-      try {
-        // Try to get HTF trend direction early for consistent display
-        const { HTFTrendFilterStrategy } = await import('./htfTrendFilterStrategy');
-        const candles15m = await this.marketDataProvider.getCandles(symbol, '15m', 250);
-        if (candles15m && candles15m.length >= 200) {
-          candles15m.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-          const htfTrend = HTFTrendFilterStrategy.analyzeHTFTrend(candles15m);
-          // PART A FIX: Set htfBiasDirection as soon as HTF trend is known
-          if (htfTrend.direction === 'LONG_ONLY') {
-            htfBiasDirection = 'LONG';
-          } else if (htfTrend.direction === 'SHORT_ONLY') {
-            htfBiasDirection = 'SHORT';
-          } else {
-            htfBiasDirection = 'NO_TRADE';
-          }
-          // CRITICAL: Set direction ONCE and NEVER change it
-          diagnostics.direction = htfBiasDirection;
-          logger.debug({
-            agentId,
-            htfDirection: htfBiasDirection,
-            htfTrendDirection: htfTrend.direction
-          }, 'HTF Agent: Early HTF bias direction calculated and set');
-        }
-      } catch (error) {
-        logger.warn({
-          agentId,
-          error: error instanceof Error ? error.message : 'Unknown error'
-        }, 'HTF Agent: Failed to calculate early HTF bias direction');
-        htfBiasDirection = 'NO_TRADE';
-      }
-    }
 
     // FIX PART A — HARD RESET EXECUTION STATE
     // At the START of EVERY cycle: Force reset execution state
@@ -545,6 +577,9 @@ export class AgentExecutionService {
           diagnostics.runtimeState = diagnostics.runtimeState || {};
           diagnostics.runtimeState.finalDecision = 'SKIP';
           diagnostics.runtimeState.skipReasonShort = 'Agent stopped';
+          diagnostics.executionState.researchedOnly = true;
+          diagnostics.executionState.executionEvaluated = true;
+          diagnostics.executionState.executionBlockedReason = 'AGENT_STOPPED';
           
           logger.info({
             agentId,
@@ -574,6 +609,9 @@ export class AgentExecutionService {
           diagnostics.runtimeState = diagnostics.runtimeState || {};
           diagnostics.runtimeState.finalDecision = 'SKIP';
           diagnostics.runtimeState.skipReasonShort = 'Agent paused';
+          diagnostics.executionState.researchedOnly = true;
+          diagnostics.executionState.executionEvaluated = true;
+          diagnostics.executionState.executionBlockedReason = 'AGENT_PAUSED';
           
           logger.info({
             agentId,
@@ -609,6 +647,9 @@ export class AgentExecutionService {
           diagnostics.runtimeState = diagnostics.runtimeState || {};
           diagnostics.runtimeState.finalDecision = 'SKIP';
           diagnostics.runtimeState.skipReasonShort = 'No exchange';
+          diagnostics.executionState.researchedOnly = true;
+          diagnostics.executionState.executionEvaluated = true;
+          diagnostics.executionState.executionBlockedReason = 'NO_EXCHANGE_CONFIG_FOUND';
           
           logger.info({
             agentId,
@@ -632,6 +673,10 @@ export class AgentExecutionService {
         finalizeSkip('EXCHANGE_ENCRYPTION_INVALID', 'Exchange keys are invalid due to encryption secret change. Please reconnect exchange.', 'EXCHANGE');
 
         if (isHTFAgent) {
+          diagnostics.executionState.researchedOnly = true;
+          diagnostics.executionState.executionEvaluated = true;
+          diagnostics.executionState.executionBlockedReason = 'EXCHANGE_ENCRYPTION_INVALID';
+          
           logger.info({
             agentId,
             tradingPair
@@ -899,6 +944,11 @@ export class AgentExecutionService {
         }
       }
       
+      // CRITICAL: Mark that execution has started
+      // From this point forward, we're doing actual agent execution logic
+      // Diagnostics should be written if we reach this point
+      executionStarted = true;
+      
       let candles: any[] = [];
       let candles15m: any[] = [];
       
@@ -950,6 +1000,46 @@ export class AgentExecutionService {
           
           // Mark that market scan was successfully executed - CRITICAL for signal generation
           marketScanExecuted = !htfMarketDataSkip;
+          
+          // CRITICAL: Calculate HTF bias direction AFTER validation and candle fetch
+          // This ensures HTF logic only runs when execution has officially started
+          if (marketScanExecuted && candles15m.length >= 200) {
+            try {
+              const { HTFTrendFilterStrategy } = await import('./htfTrendFilterStrategy');
+              const htfTrend = HTFTrendFilterStrategy.analyzeHTFTrend(candles15m);
+              
+              // Set htfBiasDirection based on HTF trend
+              if (htfTrend.direction === 'LONG_ONLY') {
+                htfBiasDirection = 'LONG';
+              } else if (htfTrend.direction === 'SHORT_ONLY') {
+                htfBiasDirection = 'SHORT';
+              } else {
+                htfBiasDirection = 'NO_TRADE';
+              }
+              
+              // CRITICAL: Set direction to HTF bias and NEVER change it
+              // This ensures direction is visible even when decision = SKIP
+              diagnostics.direction = htfBiasDirection;
+              diagnostics.htfBias = htfBiasDirection;
+              
+              // CRITICAL HTF GUARD: Mark that HTF logic actually evaluated
+              diagnostics.htfEvaluated = true;
+              
+              logger.debug({
+                agentId,
+                htfDirection: htfBiasDirection,
+                htfTrendDirection: htfTrend.direction
+              }, 'HTF Agent: HTF bias direction calculated after validation');
+            } catch (error) {
+              logger.warn({
+                agentId,
+                error: error instanceof Error ? error.message : 'Unknown error'
+              }, 'HTF Agent: Failed to calculate HTF bias direction');
+              htfBiasDirection = 'NO_TRADE';
+              diagnostics.direction = 'NO_TRADE';
+              diagnostics.htfBias = 'NO_TRADE';
+            }
+          }
           
         } catch (marketDataError) {
           // FIX PART C — BAN FALLBACK SIGNALS (CRITICAL)
@@ -1291,11 +1381,22 @@ export class AgentExecutionService {
         
         // exchangeUsable is guaranteed true here due to earlier gate
         
-        // For HTF agents, analyze HTF trend first, then generate LTF signal
-        const { HTFTrendFilterStrategy } = await import('./htfTrendFilterStrategy');
-        
-        const htfTrend = HTFTrendFilterStrategy.analyzeHTFTrend(candles15m);
-        diagnostics.htfTrend = htfTrend;
+        // For HTF agents, use HTF trend computed earlier (avoid re-running HTF bias calculation)
+        // diagnostics.htfEvaluated MUST only be set when HTF candles were fetched and HTF bias calculated
+        let htfTrend: any = null;
+        if (diagnostics.htfTrend) {
+          htfTrend = diagnostics.htfTrend;
+        } else if (htfBiasDirection) {
+          htfTrend = {
+            direction: htfBiasDirection === 'LONG' ? 'LONG_ONLY' : htfBiasDirection === 'SHORT' ? 'SHORT_ONLY' : 'NO_TRADE',
+            reason: 'Derived from precomputed HTF bias'
+          };
+          diagnostics.htfTrend = htfTrend;
+        } else {
+          // No HTF bias available (should not happen if marketScanExecuted === true)
+          htfTrend = { direction: 'NO_TRADE', reason: 'HTF not evaluated' };
+          diagnostics.htfTrend = htfTrend;
+        }
         
         // LOGIC FIX (MANDATORY): If direction === NO_TRADE, do NOT start execution pipeline
         if (htfTrend.direction === 'NO_TRADE') {
@@ -1303,6 +1404,9 @@ export class AgentExecutionService {
           
           // CRITICAL: Set skipReasonShort for NO_TRADE
           diagnostics.skipReasonShort = 'HTF no trade';
+          diagnostics.executionState.researchedOnly = true;
+          diagnostics.executionState.executionEvaluated = true;
+          diagnostics.executionState.executionBlockedReason = 'HTF_CONDITION_NOT_MET';
           
           finalizeSkip('HTF_CONDITION_NOT_MET', htfTrend.reason || 'HTF trend conditions not met - no trade opportunity', 'SIGNAL');
           
@@ -1322,12 +1426,21 @@ export class AgentExecutionService {
         }
         
         // Analyze LTF entry with HTF trend filter
+        // Import strategy module here to avoid re-running HTF trend analysis
+        const { HTFTrendFilterStrategy } = await import('./htfTrendFilterStrategy');
         const ltfSignal = HTFTrendFilterStrategy.analyzeLTFEntry(candles, htfTrend.direction);
         diagnostics.ltfSignal = ltfSignal;
         
         // CRITICAL: Store indicator results for frontend modal display
-        if (ltfSignal.indicators?.results) {
+        // Ensure indicators are ALWAYS populated, never left as empty {}
+        if (ltfSignal.indicators?.results && Object.keys(ltfSignal.indicators.results).length > 0) {
           diagnostics.indicators.results = ltfSignal.indicators.results;
+        } else {
+          // If no results, create placeholder to show evaluation happened
+          diagnostics.indicators.results = {
+            evaluated: false,
+            reason: 'No indicator results available'
+          };
         }
         
         if (!ltfSignal.isValid) {
@@ -1352,6 +1465,9 @@ export class AgentExecutionService {
           
           // Store skipReasonShort in diagnostics for frontend
           diagnostics.skipReasonShort = skipReasonShort;
+          diagnostics.executionState.researchedOnly = true;
+          diagnostics.executionState.executionEvaluated = true;
+          diagnostics.executionState.executionBlockedReason = 'LTF_CONDITIONS_NOT_MET';
           
           finalizeSkip('LTF_CONDITIONS_NOT_MET', ltfSignal.reason || 'LTF entry conditions not met despite valid HTF trend', 'SIGNAL');
           
@@ -1413,6 +1529,15 @@ export class AgentExecutionService {
         // CRITICAL: For successful signals, set skipReasonShort to indicate all conditions met
         diagnostics.skipReasonShort = 'All conditions met';
         
+        // CRITICAL: Store indicator results for TRADE cases too (not just SKIP)
+        if (ltfSignal.indicators?.results) {
+          diagnostics.indicators.results = ltfSignal.indicators.results;
+        }
+        
+        // Mark as eligible for execution
+        diagnostics.executionState.researchedOnly = false;
+        diagnostics.executionState.eligibleForExecution = true;
+        
         // CRITICAL: Direction was already set early - do NOT overwrite it here
       } else {
         // Regular agents use standard signal generation
@@ -1432,6 +1557,11 @@ export class AgentExecutionService {
 
       if (!signal) {
         finalizeSkip('NO_SIGNAL', 'No trading signal generated - market conditions not met', 'SIGNAL');
+        // Mark as research-only
+        diagnostics.executionState.researchedOnly = true;
+        diagnostics.executionState.eligibleForExecution = false;
+        diagnostics.executionState.executionBlockedReason = 'NO_SIGNAL';
+        
         // CRITICAL: Add single diagnostic log line for HTF agents
         if (isHTFAgent) {
           logger.info({
@@ -1455,6 +1585,8 @@ export class AgentExecutionService {
       const signalAlreadyExecuted = await firestoreAdapter.isSignalExecuted(agentId, signal.signalId);
       if (signalAlreadyExecuted) {
         finalizeSkip('SIGNAL_ALREADY_EXECUTED', 'This signal was already executed in a previous cycle', 'RISK');
+        diagnostics.executionState.executionEvaluated = true;
+        diagnostics.executionState.executionBlockedReason = 'SIGNAL_ALREADY_EXECUTED';
         logger.info({
           agentId,
           signalId: signal.signalId,
@@ -1497,6 +1629,8 @@ export class AgentExecutionService {
       // Check daily trade limit
       if (dailyCounters.tradesToday >= maxTradesPerDay) {
         finalizeSkip('DAILY_TRADE_LIMIT', `Daily trade limit reached: ${dailyCounters.tradesToday}/${maxTradesPerDay}`, 'RISK');
+        diagnostics.executionState.executionEvaluated = true;
+        diagnostics.executionState.executionBlockedReason = 'DAILY_TRADE_LIMIT';
         logger.info({
           agentId,
           tradesToday: dailyCounters.tradesToday,
@@ -1510,6 +1644,8 @@ export class AgentExecutionService {
       // Check consecutive losses limit
       if (dailyCounters.consecutiveLosses >= 2) {
         finalizeSkip('CONSECUTIVE_LOSSES_LIMIT', 'Consecutive losses limit reached - trading paused for risk management', 'RISK');
+        diagnostics.executionState.executionEvaluated = true;
+        diagnostics.executionState.executionBlockedReason = 'CONSECUTIVE_LOSSES_LIMIT';
         logger.info({
           agentId,
           consecutiveLosses: dailyCounters.consecutiveLosses,
@@ -1559,6 +1695,8 @@ export class AgentExecutionService {
       // Max 1 open trade per pair
       if (positionCounts.pairPositions >= 1) {
         finalizeSkip('PAIR_POSITION_LIMIT', `Pair position limit reached: ${positionCounts.pairPositions}/1`, 'RISK');
+        diagnostics.executionState.executionEvaluated = true;
+        diagnostics.executionState.executionBlockedReason = 'PAIR_POSITION_LIMIT';
         logger.info({
           agentId,
           tradingPair,
@@ -1572,6 +1710,8 @@ export class AgentExecutionService {
       // Max 2 total open trades
       if (positionCounts.totalPositions >= 2) {
         finalizeSkip('TOTAL_POSITION_LIMIT', `Total position limit reached: ${positionCounts.totalPositions}/2`, 'RISK');
+        diagnostics.executionState.executionEvaluated = true;
+        diagnostics.executionState.executionBlockedReason = 'TOTAL_POSITION_LIMIT';
         logger.info({
           agentId,
           totalPositions: positionCounts.totalPositions,
@@ -1604,6 +1744,8 @@ export class AgentExecutionService {
 
       if (!positionCalc.isSafe || !isFinite(positionCalc.positionSize) || positionCalc.positionSize <= 0) {
         finalizeSkip('POSITION_SIZING_REJECTED', `Position sizing rejected: ${positionCalc.reason || 'UNKNOWN'}`, 'RISK');
+        diagnostics.executionState.executionEvaluated = true;
+        diagnostics.executionState.executionBlockedReason = 'POSITION_SIZING_REJECTED';
         await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
         return;
       }
@@ -1630,6 +1772,10 @@ export class AgentExecutionService {
 
       // Update diagnostics with risk analysis
       diagnostics.riskAnalysis.positionSize = tradeRecord.quantity;
+
+      // Mark execution as attempted
+      diagnostics.executionState.executionEvaluated = true;
+      diagnostics.executionState.executionAttempted = true;
 
       // Place actual order on exchange (MARKET entry) and persist to trades collection
       const orderSuccess = await this.placeOrderFromTradeAtomic(tradeRecord, agentConfig, marketProvider, diagnostics, agent);
@@ -1708,8 +1854,17 @@ export class AgentExecutionService {
         error: error instanceof Error ? error.message : 'Unknown error'
       }, 'Failed to execute agent with hardening');
     } finally {
-      // CRITICAL FIX: ALWAYS persist diagnostics, even on early returns or exceptions
-      // This guarantees ONE diagnostic entry per execution cycle
+      // CRITICAL: Only persist diagnostics if execution actually started
+      // Do NOT write diagnostics for early returns (agent stopped, paused, validation failures, etc.)
+      if (!executionStarted) {
+        logger.debug({
+          agentId,
+          reason: 'Execution did not start - skipping diagnostic write'
+        }, 'Skipping diagnostic write: execution did not reach execution logic');
+        return;
+      }
+      
+      // Execution started - persist diagnostics
       try {
         // CRITICAL HTF FIX: Ensure ALL required fields are populated for HTF agents
         // This guarantees diagnostics are written even when early returns happen
@@ -1722,6 +1877,26 @@ export class AgentExecutionService {
           // Ensure runtimeState exists
           if (!diagnostics.runtimeState) {
             diagnostics.runtimeState = {};
+          }
+          
+          // Copy execution state to runtimeState for frontend visibility
+          if (diagnostics.executionState) {
+            diagnostics.runtimeState.executionState = diagnostics.executionState;
+          }
+          
+          // Copy HTF bias to runtimeState for frontend visibility
+          if (diagnostics.htfBias) {
+            diagnostics.runtimeState.htfBias = diagnostics.htfBias;
+          }
+          
+          // Copy htfEvaluated flag to runtimeState
+          if (diagnostics.htfEvaluated !== undefined) {
+            diagnostics.runtimeState.htfEvaluated = diagnostics.htfEvaluated;
+          }
+          
+          // CRITICAL FIX #2: Also copy direction to runtimeState for backward compatibility
+          if (diagnostics.direction) {
+            diagnostics.runtimeState.direction = diagnostics.direction;
           }
           
           // Ensure cycleId is set (should already be set at line 428, but double-check)
@@ -1774,18 +1949,46 @@ export class AgentExecutionService {
             diagnostics.skipReasonShort = diagnostics.runtimeState.skipReasonShort;
           }
           
-          // Ensure indicators.results exists (even if empty) for frontend modal
-          if (!diagnostics.indicators) {
-            diagnostics.indicators = {};
+          // CRITICAL FIX #4: Copy indicators to runtimeState.indicators.results
+          // Backend calculates indicators as flat object: { ema: {...}, rsi: {...}, vwap: {...} }
+          // Frontend expects: runtimeState.indicators.results = { ema: {...}, rsi: {...}, vwap: {...} }
+          if (!diagnostics.runtimeState.indicators) {
+            diagnostics.runtimeState.indicators = {};
           }
-          if (!diagnostics.indicators.results) {
-            diagnostics.indicators.results = {};
+          
+          // CRITICAL: Check if indicators were actually calculated (not just initialized as {})
+          // Only copy if indicators has actual indicator keys (ema, rsi, vwap, etc.)
+          const hasRealIndicators = diagnostics.indicators && 
+                                    typeof diagnostics.indicators === 'object' &&
+                                    Object.keys(diagnostics.indicators).some(key => 
+                                      ['ema', 'rsi', 'vwap', 'sr', 'volume', 'atr', 'bollinger'].includes(key)
+                                    );
+          
+          if (hasRealIndicators) {
+            // Copy actual calculated indicators
+            diagnostics.runtimeState.indicators.results = diagnostics.indicators;
+          } else {
+            // No real indicators calculated - set to empty object
+            // This prevents info icon from showing when there's no real data
+            diagnostics.runtimeState.indicators.results = {};
           }
           
           // CRITICAL: HTF agents write diagnostics directly with FIXED agentId
           // This ensures HTF diagnostics are saved to the correct collection path
           // MUST use "htf-trend-filter-agent" as the agentId for all HTF diagnostics
           const htfAgentId = 'htf-trend-filter-agent';
+          
+          // CRITICAL HTF GUARD: Only write diagnostics if HTF logic actually ran
+          // This prevents fake diagnostics from scheduler heartbeats, validation failures, etc.
+          if (diagnostics.htfEvaluated !== true) {
+            logger.debug({
+              agentId: htfAgentId,
+              cycleId: diagnostics.cycleId || diagnostics.runtimeState?.cycleId,
+              htfEvaluated: diagnostics.htfEvaluated,
+              reason: 'HTF logic did not execute in this cycle'
+            }, '[HTF_DIAGNOSTIC_SKIP] Skipping HTF diagnostic write: HTF not evaluated');
+            return;
+          }
           
           // Debug log to confirm diagnostic write is happening
           console.log('[HTF_DIAGNOSTIC_WRITE_START]', {
@@ -1803,7 +2006,10 @@ export class AgentExecutionService {
             cycleId: diagnostics.cycleId || diagnostics.runtimeState?.cycleId,
             finalDecision: diagnostics.runtimeState.finalDecision,
             skipReasonShort: diagnostics.runtimeState.skipReasonShort,
-            tradingPair: diagnostics.tradingPair
+            tradingPair: diagnostics.tradingPair,
+            hasIndicators: !!diagnostics.runtimeState.indicators,
+            hasResults: !!diagnostics.runtimeState.indicators?.results,
+            indicatorKeys: diagnostics.runtimeState.indicators?.results ? Object.keys(diagnostics.runtimeState.indicators.results) : []
           }, '[HTF_DIAGNOSTIC_WRITE] cycleId=' + (diagnostics.cycleId || diagnostics.runtimeState?.cycleId));
           
           // Save HTF diagnostic directly using firestoreAdapter
@@ -1820,7 +2026,9 @@ export class AgentExecutionService {
           console.log('[HTF_DIAGNOSTIC_WRITE_SUCCESS]', {
             htfAgentId,
             cycleId: diagnostics.runtimeState.cycleId,
-            userId: agentConfig.userId
+            userId: agentConfig.userId,
+            savedIndicators: !!diagnostics.runtimeState.indicators?.results,
+            indicatorKeys: diagnostics.runtimeState.indicators?.results ? Object.keys(diagnostics.runtimeState.indicators.results) : []
           });
           
           logger.debug({ agentId: htfAgentId, cycleId: diagnostics.runtimeState.cycleId }, 'HTF diagnostics persisted directly');

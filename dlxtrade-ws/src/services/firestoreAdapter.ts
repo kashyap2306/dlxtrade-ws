@@ -5298,8 +5298,10 @@ export class FirestoreAdapter {
       let enhancedExecution = normalizedDiagnostic.execution;
 
       // CRITICAL: Write clean, normalized diagnostic object to Firestore
+      // Use diagnostic's execution timestamp, not Firestore write time
+      const executionTimestamp = normalizedDiagnostic.timestamp || new Date();
       const firestorePayload = {
-        timestamp: admin.firestore.Timestamp.now(),
+        timestamp: admin.firestore.Timestamp.fromDate(executionTimestamp),
         agentId, // Include agentId in document data
         agentType: normalizedDiagnostic.agentType,
         tradingPair: evaluatedPair,
