@@ -33,6 +33,8 @@ export class AgentExecutionService {
   private activeAgents: Map<string, TradingAgent> = new Map();
   private activeVWAPStrategies: Map<string, VWAPStrategy> = new Map();
   private static manualTradeExecutionGuard: Map<string, number> = new Map(); // userId+agentId -> timestamp
+  // CRITICAL: HTF cycle guard to prevent duplicate diagnostics writes per scheduler cycle
+  private static htfCycleHistoryWritten: Set<string> = new Set(); // Set of cycleIds already written for HTF agent
 
   constructor(marketDataProvider: MarketDataProvider) {
     this.marketDataProvider = marketDataProvider;
@@ -350,7 +352,11 @@ export class AgentExecutionService {
   async executeAllAgents(): Promise<void> {
     // Generate a single scheduler cycleId for this execution tick
     // All agents executed in this tick will share this cycleId
-    const schedulerCycleId = `scheduler_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    // CRITICAL FIX: Use TIME-BUCKET based cycleId to ensure stability across multiple diagnostics writes
+    // This ensures all diagnostics within the same 5-minute scheduler window use the SAME cycleId
+    const now = Date.now();
+    const fiveMinuteBucket = Math.floor(now / (5 * 60 * 1000));
+    const schedulerCycleId = `scheduler_bucket_${fiveMinuteBucket}`;
     
     // Log all agents being executed
     const agents = Array.from(this.activeAgents.values());
@@ -492,8 +498,12 @@ export class AgentExecutionService {
     const executionTimestamp = new Date();
     
     // Use scheduler cycleId if provided (all agents in same scheduler tick share this)
-    // Otherwise generate agent-specific cycleId (for manual execution)
-    const cycleId = schedulerCycleId || `${executionTimestamp.getTime()}_${Math.random().toString(36).substr(2, 9)}`;
+    // Otherwise generate agent-specific cycleId using TIME-BUCKET for stability (for manual execution)
+    // CRITICAL FIX: Use time-bucket based cycleId to prevent duplicates from timestamp variance
+    const cycleId = schedulerCycleId || (() => {
+      const bucketTime = Math.floor(executionTimestamp.getTime() / (5 * 60 * 1000));
+      return `manual_bucket_${bucketTime}`;
+    })();
     
     const diagnostics: any = {
       timestamp: executionTimestamp,
@@ -1990,29 +2000,33 @@ export class AgentExecutionService {
             return;
           }
           
-          // Debug log to confirm diagnostic write is happening
-          console.log('[HTF_DIAGNOSTIC_WRITE_START]', {
-            htfAgentId,
-            originalAgentId: agentId,
-            cycleId: diagnostics.cycleId || diagnostics.runtimeState?.cycleId,
-            finalDecision: diagnostics.runtimeState.finalDecision,
-            skipReasonShort: diagnostics.runtimeState.skipReasonShort,
-            tradingPair: diagnostics.tradingPair,
-            userId: agentConfig.userId
-          });
+          // CRITICAL FIX: HTF agents should use agent.storeDiagnostics() to leverage cycle guard logic
+          // This ensures EXACTLY ONE write per cycleId (prevents duplicate rows for same scheduler cycle)
+          const cycleId = diagnostics.cycleId || diagnostics.runtimeState?.cycleId;
+          
+          // Check if this cycle has already been written for HTF agent
+          if (cycleId && AgentExecutionService.htfCycleHistoryWritten.has(cycleId)) {
+            logger.debug({
+              agentId: htfAgentId,
+              cycleId,
+              reason: 'HTF diagnostics already written for this cycle'
+            }, '[HTF_CYCLE_GUARD] Skipping duplicate write for same scheduler cycle');
+            return;
+          }
           
           logger.info({
             agentId: htfAgentId,
-            cycleId: diagnostics.cycleId || diagnostics.runtimeState?.cycleId,
+            cycleId: cycleId,
             finalDecision: diagnostics.runtimeState.finalDecision,
             skipReasonShort: diagnostics.runtimeState.skipReasonShort,
             tradingPair: diagnostics.tradingPair,
             hasIndicators: !!diagnostics.runtimeState.indicators,
             hasResults: !!diagnostics.runtimeState.indicators?.results,
             indicatorKeys: diagnostics.runtimeState.indicators?.results ? Object.keys(diagnostics.runtimeState.indicators.results) : []
-          }, '[HTF_DIAGNOSTIC_WRITE] cycleId=' + (diagnostics.cycleId || diagnostics.runtimeState?.cycleId));
+          }, '[HTF_DIAGNOSTIC_WRITE] Writing aggregated HTF diagnostics');
           
-          // Save HTF diagnostic directly using firestoreAdapter
+          // Store diagnostics directly using firestoreAdapter with HTF agent ID
+          // Note: Using direct saveAgentDiagnostic call with 'htf-trend-filter-agent' agentId for Firestore path
           await firestoreAdapter.saveAgentDiagnostic(htfAgentId, {
             agentType: 'HTF_TREND_FILTER_AGENT',
             tradingPair: diagnostics.tradingPair,
@@ -2023,15 +2037,19 @@ export class AgentExecutionService {
             runtimeState: diagnostics.runtimeState
           }, agentConfig.userId);
           
-          console.log('[HTF_DIAGNOSTIC_WRITE_SUCCESS]', {
-            htfAgentId,
-            cycleId: diagnostics.runtimeState.cycleId,
-            userId: agentConfig.userId,
-            savedIndicators: !!diagnostics.runtimeState.indicators?.results,
-            indicatorKeys: diagnostics.runtimeState.indicators?.results ? Object.keys(diagnostics.runtimeState.indicators.results) : []
-          });
+          // Mark this cycle as written to prevent duplicates
+          if (cycleId) {
+            AgentExecutionService.htfCycleHistoryWritten.add(cycleId);
+            
+            // Cleanup: Keep only last 100 cycleIds in memory to prevent unbounded growth
+            if (AgentExecutionService.htfCycleHistoryWritten.size > 100) {
+              const cyclesArray = Array.from(AgentExecutionService.htfCycleHistoryWritten);
+              const toRemove = cyclesArray.slice(0, cyclesArray.length - 100);
+              toRemove.forEach(id => AgentExecutionService.htfCycleHistoryWritten.delete(id));
+            }
+          }
           
-          logger.debug({ agentId: htfAgentId, cycleId: diagnostics.runtimeState.cycleId }, 'HTF diagnostics persisted directly');
+          logger.debug({ agentId: htfAgentId, cycleId }, 'HTF diagnostics persisted with cycle guard protection');
         } else {
           // Non-HTF agents use standard storeDiagnostics method
           const normalizedDiagnostics = this.normalizeDiagnosticsForPersistence(diagnostics, agentId);

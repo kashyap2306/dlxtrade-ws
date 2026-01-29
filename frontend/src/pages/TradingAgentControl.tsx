@@ -115,29 +115,74 @@ export default function TradingAgentControl() {
     setLastDiagnosticsHash('');
   }, [slug, resolvedAgentId]);
 
-  // Helper function: Process HTF diagnostics - return a sorted array of raw entries
-  // NOTE: Do NOT collapse by schedulerCycleId; keep one row per Firestore document
+  // Helper function: Process HTF diagnostics - group by 5-minute time-bucket to show ONE row per cycle
   const processDiagnostics = (rawEntries: any[]): any[] => {
     if (!rawEntries || rawEntries.length === 0) return [];
 
     console.log('[HTF_PROCESS_DEBUG] Processing diagnostics, raw entries:', rawEntries.length);
 
-    // Filter strictly to HTF agent entries only (exclude AUTO_TRADE diagnostics)
-    const htfEntries = rawEntries.filter((entry: any) => {
-      const agentType = entry.agentType;
-      const agentId = entry.agentId;
-      return agentType === 'HTF_TREND_FILTER_AGENT' || (agentId && agentId.includes('htf'));
+    // Group entries by 5-minute time-bucket
+    const bucketMap = new Map<string, any[]>();
+    
+    rawEntries.forEach((entry: any) => {
+      // Calculate 5-minute bucket from timestamp
+      const timestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : Date.now();
+      const fiveMinuteBucket = Math.floor(timestamp / (5 * 60 * 1000));
+      const bucketKey = `bucket_${fiveMinuteBucket}`;
+      
+      if (!bucketMap.has(bucketKey)) {
+        bucketMap.set(bucketKey, []);
+      }
+      bucketMap.get(bucketKey)!.push(entry);
     });
 
-    // Sort by timestamp descending (latest first)
-    const sortedEntries = [...htfEntries].sort((a: any, b: any) => {
-      const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
-      const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
-      return bTime - aTime;
+    // Process each bucket to create ONE row per cycle
+    // Prefer HTF Trend Filter as primary, merge AUTO_TRADE as secondary
+    const processedBuckets = Array.from(bucketMap.entries()).map(([bucketKey, entries]) => {
+      // Find HTF entry in this bucket (primary)
+      const htfEntry = entries.find((e: any) => {
+        const agentType = e.agentType;
+        const agentId = e.agentId;
+        return agentType === 'HTF_TREND_FILTER_AGENT' || (agentId && agentId.includes('htf'));
+      });
+
+      // Find AUTO_TRADE entry in this bucket (secondary)
+      const autoTradeEntry = entries.find((e: any) => {
+        const agentType = e.agentType;
+        const agentId = e.agentId;
+        return agentType === 'AUTO_TRADE_AGENT' || (agentId && agentId.includes('auto'));
+      });
+
+      // Use HTF as primary, with AUTO_TRADE skip reason as fallback
+      const primaryEntry = htfEntry || autoTradeEntry;
+      
+      if (!primaryEntry) {
+        // Safety fallback - shouldn't happen
+        return entries[0];
+      }
+
+      // Merge data: HTF takes priority, AUTO_TRADE supplements
+      const merged = {
+        ...primaryEntry,
+        bucketKey, // Add bucket key for React key stability
+        source: htfEntry ? 'HTF_TREND_FILTER_AGENT' : 'AUTO_TRADE_AGENT',
+        autoTradeSkipReason: autoTradeEntry?.decision?.reason || autoTradeEntry?.runtimeState?.skipReason,
+        htfDetails: htfEntry ? primaryEntry : null,
+        autoTradeDetails: autoTradeEntry || null
+      };
+
+      return merged;
     });
 
-    // Limit to last 50 entries (preserve one doc per Firestore entry)
-    return sortedEntries.slice(0, 50);
+    // Sort by bucket key descending (latest first)
+    processedBuckets.sort((a: any, b: any) => {
+      const aBucket = parseInt(a.bucketKey.replace('bucket_', ''));
+      const bBucket = parseInt(b.bucketKey.replace('bucket_', ''));
+      return bBucket - aBucket;
+    });
+
+    // Limit to 50 buckets (one row per 5-min cycle)
+    return processedBuckets.slice(0, 50);
   };
 
   // Helper function: Generate hash of diagnostics payload to detect changes
@@ -950,7 +995,7 @@ export default function TradingAgentControl() {
                       {(!showMoreDiagnostics 
                         ? diagnosticsEntries.slice(0, 10) 
                         : diagnosticsEntries.slice(0, 50)
-                      ).map((entry, index) => {
+                      ).map((entry) => {
                         // Map diagnostics to table columns
                         const displayPair = entry.tradingPair || entry.symbol || '—';
                         // CANONICAL: Use HTF bias as primary source, fallback to direction only if bias missing
@@ -958,14 +1003,13 @@ export default function TradingAgentControl() {
                         const displayDirection = htfBias === 'NO_TRADE' ? 'NO TRADE' : (htfBias || '—');
                         const displayDecision = entry.decision?.action || '—';
                         
-                        // Check if full diagnostics data exists for info icon
-                        // Must have results object AND it must have at least one indicator key
+                        // ALWAYS show info icon - full diagnostics are expected to be present
                         const hasFullDiagnostics = !!(
                           entry.runtimeState?.indicators?.results && 
                           Object.keys(entry.runtimeState.indicators.results).length > 0
                         );
                         
-                        // Build skip reason - prioritize execution block details
+                        // Build skip reason - prioritize HTF details, fallback to AUTO_TRADE
                         let shortSkipReason = '';
                         const runtimeState = entry.runtimeState;
                         const executionState = runtimeState?.executionState;
@@ -1001,20 +1045,28 @@ export default function TradingAgentControl() {
                             shortSkipReason = 'All conditions met';
                           }
                         } else {
-                          // No indicator breakdown - use strict fallback chain
-                          if (displayDecision === 'TRADE') {
-                            shortSkipReason = 'All conditions met';
+                          // Fallback: Check AUTO_TRADE skip reason if HTF has none
+                          if (entry.autoTradeSkipReason) {
+                            shortSkipReason = entry.autoTradeSkipReason;
+                            if (shortSkipReason.length > 40) {
+                              shortSkipReason = shortSkipReason.substring(0, 37) + '...';
+                            }
                           } else {
-                            // Get raw reason and trim
-                            let rawReason = runtimeState?.skipDetails || 
-                                          runtimeState?.skipReason || 
-                                          entry.decision?.reason || 
-                                          'Skipped';
-                            
-                            if (rawReason.length > 40) {
-                              shortSkipReason = rawReason.substring(0, 37) + '...';
+                            // No indicator breakdown - use strict fallback chain
+                            if (displayDecision === 'TRADE') {
+                              shortSkipReason = 'All conditions met';
                             } else {
-                              shortSkipReason = rawReason;
+                              // Get raw reason and trim
+                              let rawReason = runtimeState?.skipDetails || 
+                                            runtimeState?.skipReason || 
+                                            entry.decision?.reason || 
+                                            'Skipped';
+                              
+                              if (rawReason.length > 40) {
+                                shortSkipReason = rawReason.substring(0, 37) + '...';
+                              } else {
+                                shortSkipReason = rawReason;
+                              }
                             }
                           }
                         }
@@ -1039,7 +1091,7 @@ export default function TradingAgentControl() {
                         }
                         
                         return (
-                          <tr key={entry.id || index} className="border-b border-purple-500/10 hover:bg-slate-800/50 transition-colors">
+                          <tr key={entry.bucketKey || entry.id || `row_${entry.timestamp}`} className="border-b border-purple-500/10 hover:bg-slate-800/50 transition-colors">
                             <td className="py-3 px-4 text-white font-semibold">
                               {displayPair}
                             </td>
@@ -1051,17 +1103,15 @@ export default function TradingAgentControl() {
                                 <span className={`px-2 py-1 rounded text-xs font-medium ${reasonColor}`}>
                                   {displayDecision}
                                 </span>
-                                {/* Info icon INSIDE Decision column, IMMEDIATELY NEXT TO decision badge */}
-                                {hasFullDiagnostics && (
-                                  <button
-                                    onClick={() => setSelectedDiagnosticDetails(entry)}
-                                    className="flex-shrink-0 text-purple-400 hover:text-purple-300 transition-colors"
-                                    title="View full diagnostic breakdown"
-                                    aria-label="View diagnostic details"
-                                  >
-                                    <InformationCircleIcon className="w-5 h-5" />
-                                  </button>
-                                )}
+                                {/* Info icon ALWAYS visible - shows full diagnostic breakdown */}
+                                <button
+                                  onClick={() => setSelectedDiagnosticDetails(entry)}
+                                  className="flex-shrink-0 text-purple-400 hover:text-purple-300 transition-colors"
+                                  title="View full diagnostic breakdown and skip reasons"
+                                  aria-label="View diagnostic details"
+                                >
+                                  <InformationCircleIcon className="w-5 h-5" />
+                                </button>
                               </div>
                             </td>
                             <td className="py-3 px-4 text-gray-400 text-sm">
@@ -1209,6 +1259,20 @@ export default function TradingAgentControl() {
             </div>
             
             <div className="space-y-6">
+              {/* Source Badge - Show HTF or AUTO_TRADE source */}
+              {selectedDiagnosticDetails.source && (
+                <div className="flex items-center gap-2 p-2 bg-slate-800/50 rounded-lg w-fit">
+                  <span className="text-xs font-semibold text-gray-400">Source:</span>
+                  <span className={`px-2 py-1 rounded text-xs font-bold ${
+                    selectedDiagnosticDetails.source === 'HTF_TREND_FILTER_AGENT'
+                      ? 'bg-blue-500/20 text-blue-400'
+                      : 'bg-orange-500/20 text-orange-400'
+                  }`}>
+                    {selectedDiagnosticDetails.source === 'HTF_TREND_FILTER_AGENT' ? 'HTF Trend Filter' : 'Auto-Trade Engine'}
+                  </span>
+                </div>
+              )}
+              
               {/* Summary Section */}
               <div className="bg-slate-800/50 rounded-lg p-4 space-y-3">
                 <div className="flex justify-between items-center">
@@ -1248,14 +1312,14 @@ export default function TradingAgentControl() {
                 </div>
               </div>
               
-              {/* Indicator Breakdown - Grouped by Category */}
+              {/* HTF Indicator Breakdown - Grouped by Category */}
               {selectedDiagnosticDetails.runtimeState?.indicators?.results ? (
                 <div className="space-y-4">
                   <div className="text-base font-bold text-purple-400 flex items-center gap-2">
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                     </svg>
-                    Condition Analysis
+                    HTF Condition Analysis
                   </div>
                   
                   {(() => {
@@ -1366,9 +1430,9 @@ export default function TradingAgentControl() {
                 </div>
               )}
               
-              {/* Skip Reason Summary */}
-              <div className="bg-slate-800/50 rounded-lg p-4 border-l-4 border-yellow-500/50">
-                <div className="text-sm font-semibold text-yellow-400 mb-2">Skip Reason Summary</div>
+              {/* HTF Skip Reason Summary */}
+              <div className="bg-slate-800/50 rounded-lg p-4 border-l-4 border-blue-500/50">
+                <div className="text-sm font-semibold text-blue-400 mb-2">HTF Filter Analysis</div>
                 <div className="text-gray-300 leading-relaxed">
                   {selectedDiagnosticDetails.runtimeState?.skipDetails || 
                    selectedDiagnosticDetails.runtimeState?.skipReason || 
@@ -1376,6 +1440,16 @@ export default function TradingAgentControl() {
                    'No detailed reason provided'}
                 </div>
               </div>
+
+              {/* AUTO_TRADE Skip Reason (if present in same cycle) */}
+              {selectedDiagnosticDetails.autoTradeDetails && selectedDiagnosticDetails.autoTradeSkipReason && (
+                <div className="bg-slate-800/50 rounded-lg p-4 border-l-4 border-orange-500/50">
+                  <div className="text-sm font-semibold text-orange-400 mb-2">Auto-Trade Engine Skip Reason</div>
+                  <div className="text-gray-300 leading-relaxed">
+                    {selectedDiagnosticDetails.autoTradeSkipReason}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
