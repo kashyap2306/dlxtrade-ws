@@ -5509,6 +5509,13 @@ export class FirestoreAdapter {
    */
   async cleanupOldDiagnostics(agentId: string, uid: string): Promise<void> {
     try {
+      // CRITICAL: NEVER cleanup AUTO_TRADE_AGENT or HTF diagnostics
+      // These diagnostics must be preserved for history tracking
+      if (agentId === 'AUTO_TRADE_AGENT' || agentId.includes('htf-trend-filter')) {
+        logger.debug({ agentId, uid }, 'Skipping cleanup for AUTO_TRADE_AGENT/HTF - diagnostics preserved');
+        return;
+      }
+      
       // DEFENSIVE ASSERTION: Ensure we never accidentally access top-level collection
       this.validateUserScopedDiagnosticsPath('cleanupOldDiagnostics', uid);
       this.assertNoTopLevelAgentDiagnosticsAccess('cleanupOldDiagnostics');

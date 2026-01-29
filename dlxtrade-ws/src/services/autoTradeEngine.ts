@@ -537,6 +537,10 @@ export class AutoTradeEngine {
   // Map<uid, Set<cycleId>>
   private cycleHistoryWritten: Map<string, Set<string>> = new Map();
   
+  // CRITICAL: Track cycleIds that have already written diagnostics to prevent duplicates
+  // Map<uid, Set<cycleId>>
+  private cycleDiagnosticWritten: Map<string, Set<string>> = new Map();
+  
   /**
    * Check if history has already been written for this cycleId
    */
@@ -556,6 +560,32 @@ export class AutoTradeEngine {
     
     // Clean up old cycleIds (keep only last 100 per user to prevent memory leak)
     const userCycles = this.cycleHistoryWritten.get(uid)!;
+    if (userCycles.size > 100) {
+      const cyclesArray = Array.from(userCycles);
+      const toRemove = cyclesArray.slice(0, cyclesArray.length - 100);
+      toRemove.forEach(id => userCycles.delete(id));
+    }
+  }
+  
+  /**
+   * Check if diagnostic has already been written for this cycleId
+   */
+  private hasDiagnosticForCycle(uid: string, cycleId: string): boolean {
+    const userCycles = this.cycleDiagnosticWritten.get(uid);
+    return userCycles ? userCycles.has(cycleId) : false;
+  }
+  
+  /**
+   * Mark that diagnostic has been written for this cycleId
+   */
+  private markDiagnosticWritten(uid: string, cycleId: string): void {
+    if (!this.cycleDiagnosticWritten.has(uid)) {
+      this.cycleDiagnosticWritten.set(uid, new Set());
+    }
+    this.cycleDiagnosticWritten.get(uid)!.add(cycleId);
+    
+    // Clean up old cycleIds (keep only last 100 per user to prevent memory leak)
+    const userCycles = this.cycleDiagnosticWritten.get(uid)!;
     if (userCycles.size > 100) {
       const cyclesArray = Array.from(userCycles);
       const toRemove = cyclesArray.slice(0, cyclesArray.length - 100);
@@ -3913,19 +3943,41 @@ export class AutoTradeEngine {
         
         // Determine skip reason from research result
         let skipReason = 'Research completed';
+        let skipReasonShort = 'Research done'; // 3-4 words max
         let conditionMatched = false;
+        
+        // Extract indicator results if available
+        const indicatorResults = researchResult?.indicators || researchResult?.metadata?.indicators || {};
         
         if (researchResult?.skipReason) {
           skipReason = researchResult.skipReason;
+          // Generate short skip reason (3-4 words)
+          if (skipReason.includes('EMA')) {
+            skipReasonShort = 'EMA rejected';
+          } else if (skipReason.includes('RSI')) {
+            skipReasonShort = 'RSI rejected';
+          } else if (skipReason.includes('VWAP')) {
+            skipReasonShort = 'VWAP rejected';
+          } else if (skipReason.includes('Volume')) {
+            skipReasonShort = 'Volume rejected';
+          } else if (skipReason.includes('SR') || skipReason.includes('Support') || skipReason.includes('Resistance')) {
+            skipReasonShort = 'SR rejected';
+          } else {
+            skipReasonShort = skipReason.substring(0, 30); // Fallback: trim to 30 chars
+          }
         } else if (signal === 'HOLD') {
           skipReason = `HOLD signal (accuracy: ${(accuracy * 100).toFixed(1)}%)`;
+          skipReasonShort = 'HOLD signal';
         } else if (accuracy < 0.75) {
           skipReason = `Accuracy too low: ${(accuracy * 100).toFixed(1)}% < 75%`;
+          skipReasonShort = 'Accuracy low';
         } else if (!researchResult?.tradePlan) {
           skipReason = 'No valid trade plan generated';
+          skipReasonShort = 'No trade plan';
         } else {
           conditionMatched = true;
           skipReason = `${signal} signal (accuracy: ${(accuracy * 100).toFixed(1)}%)`;
+          skipReasonShort = 'All conditions met';
         }
         
         await firestoreAdapter.saveAgentDiagnostic(htfAgentId, {
@@ -3955,14 +4007,20 @@ export class AutoTradeEngine {
             signal: signal,
             conditionMatched: conditionMatched,
             skipReason: skipReason,
+            skipReasonShort: skipReasonShort, // 3-4 words max
             skipDetails: researchResult?.skipDetails || skipReason,
-            researchStatus: researchResult?.status || 'COMPLETED'
+            researchStatus: researchResult?.status || 'COMPLETED',
+            finalDecision: conditionMatched ? 'TRADE' : 'SKIP',
+            // Include indicator results structure for frontend modal
+            indicators: {
+              results: indicatorResults // Full indicator breakdown
+            }
           }
         }, uid);
         
         logger.info(
-          { uid, cycleId, htfAgentId, skipReason, conditionMatched },
-          '✅ [HTF_DIAGNOSTICS] HTF agent diagnostics saved'
+          { uid, cycleId, htfAgentId, skipReason, skipReasonShort, conditionMatched },
+          '✅ [HTF_DIAGNOSTICS] HTF agent diagnostics saved with cycleId and skipReasonShort'
         );
       } catch (diagnosticError: any) {
         logger.error(
@@ -4051,23 +4109,36 @@ export class AutoTradeEngine {
         }
 
         // CRITICAL FIX: Also write diagnostic entry for "Recent Cycle Results" UI
-        try {
-          await firestoreAdapter.saveAgentDiagnostic('AUTO_TRADE_AGENT', {
-            agentType: 'TRADING_AGENT',
-            tradingPair: 'AUTO_TRADE_CYCLE',
-            direction: 'LONG',
-            decision: {
-              action: 'SKIP',
-              reason: 'Background tasks paused by system administrator'
-            },
-            execution: {
-              status: 'SKIPPED',
-              success: false,
-              exchangeErrorReason: null
-            }
-          }, uid);
-        } catch (diagnosticErr: any) {
-          logger.warn({ uid, error: diagnosticErr.message }, 'Failed to save diagnostic for background tasks paused');
+        // Use same cycle guard as history to prevent duplicates
+        if (!this.hasDiagnosticForCycle(uid, cycleId)) {
+          try {
+            await firestoreAdapter.saveAgentDiagnostic('AUTO_TRADE_AGENT', {
+              agentType: 'TRADING_AGENT',
+              tradingPair: 'AUTO_TRADE_CYCLE',
+              direction: 'LONG',
+              decision: {
+                action: 'SKIP',
+                reason: 'Background tasks paused by system administrator'
+              },
+              execution: {
+                status: 'SKIPPED',
+                success: false,
+                exchangeErrorReason: null
+              }
+            }, uid);
+            
+            // Mark diagnostic as written for this cycle
+            this.markDiagnosticWritten(uid, cycleId);
+            
+            logger.info({ uid, cycleId }, '✅ [DIAGNOSTIC] Diagnostic saved for background tasks paused');
+          } catch (diagnosticErr: any) {
+            logger.warn({ uid, error: diagnosticErr.message }, 'Failed to save diagnostic for background tasks paused');
+          }
+        } else {
+          logger.debug(
+            { uid, cycleId, reason: "BACKGROUND_TASKS_PAUSED" },
+            "⚠️ [DIAGNOSTIC_GUARD] Diagnostic already written for this cycleId - skipping duplicate write"
+          );
         }
 
         return null; // Cycle completed with SKIPPED history
@@ -4229,34 +4300,45 @@ export class AutoTradeEngine {
       }
 
       // CRITICAL: Write ONLY ONE diagnostic entry for cycle-level skip
-      try {
-        await firestoreAdapter.saveAgentDiagnostic('AUTO_TRADE_AGENT', {
-          agentType: 'TRADING_AGENT',
-          tradingPair: 'AUTO_TRADE_CYCLE',
-          direction: 'LONG',
-          decision: {
-            action: 'SKIP',
-            reason: `Exchange not usable: ${normalizedExchangeReason}`
-          },
-          execution: {
-            status: 'SKIPPED',
-            success: false,
-            exchangeErrorReason: normalizedExchangeReason
-          },
-          runtimeState: {
-            cycleId: cycleId,
-            exchangeUsable: false,
-            exchangeReason: normalizedExchangeReason,
-            researchExecuted: false
-          }
-        }, uid);
-        
-        logger.info(
-          { uid, cycleId, reason: normalizedExchangeReason },
-          "✅ [DIAGNOSTIC] Cycle-level diagnostic saved for exchange not usable"
+      // Use same cycle guard as history to prevent duplicates
+      if (!this.hasDiagnosticForCycle(uid, cycleId)) {
+        try {
+          await firestoreAdapter.saveAgentDiagnostic('AUTO_TRADE_AGENT', {
+            agentType: 'TRADING_AGENT',
+            tradingPair: 'AUTO_TRADE_CYCLE',
+            direction: 'LONG',
+            decision: {
+              action: 'SKIP',
+              reason: `Exchange not usable: ${normalizedExchangeReason}`
+            },
+            execution: {
+              status: 'SKIPPED',
+              success: false,
+              exchangeErrorReason: normalizedExchangeReason
+            },
+            runtimeState: {
+              cycleId: cycleId,
+              exchangeUsable: false,
+              exchangeReason: normalizedExchangeReason,
+              researchExecuted: false
+            }
+          }, uid);
+          
+          // Mark diagnostic as written for this cycle
+          this.markDiagnosticWritten(uid, cycleId);
+          
+          logger.info(
+            { uid, cycleId, reason: normalizedExchangeReason },
+            "✅ [DIAGNOSTIC] Cycle-level diagnostic saved for exchange not usable"
+          );
+        } catch (diagnosticErr: any) {
+          logger.warn({ uid, error: diagnosticErr.message }, 'Failed to save diagnostic for exchange not usable');
+        }
+      } else {
+        logger.debug(
+          { uid, cycleId, reason: "EXCHANGE_NOT_USABLE" },
+          "⚠️ [DIAGNOSTIC_GUARD] Diagnostic already written for this cycleId - skipping duplicate write"
         );
-      } catch (diagnosticErr: any) {
-        logger.warn({ uid, error: diagnosticErr.message }, 'Failed to save diagnostic for exchange not usable');
       }
 
       // IMMEDIATE RETURN - do NOT proceed to research or executeTradeWithResearchResult

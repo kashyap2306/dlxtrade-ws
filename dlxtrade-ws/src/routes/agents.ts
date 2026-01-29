@@ -735,9 +735,11 @@ export async function agentsRoutes(fastify: FastifyInstance) {
           return reply.code(200).send({ diagnostics: [], scheduler, agentStatus: 'NOT_FOUND' });
         }
 
-        // Get raw diagnostics from database
+        // CRITICAL FIX: HTF diagnostics are saved with FIXED agentId 'htf-trend-filter-agent'
+        // NOT with the individual agent ID like 'htf_trend_filter_HLNfoLg8thRFmi90Y6wuZBdMENP2_1769076615353'
+        // This ensures all HTF diagnostics are stored in a single collection per user
         const { TradingAgent } = await import('../services/tradingAgent');
-        const rawDiagnostics = await TradingAgent.getDiagnostics(targetAgent.id, limit, uid);
+        const rawDiagnostics = await TradingAgent.getDiagnostics('htf-trend-filter-agent', limit, uid);
         
         // FILTER OUT system-level AUTO_TRADE diagnostics that don't evaluate real trading pairs
         const filteredDiagnostics = rawDiagnostics.filter((diag: any) => {

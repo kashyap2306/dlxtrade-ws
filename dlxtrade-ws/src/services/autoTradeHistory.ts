@@ -287,31 +287,6 @@ export async function saveAutoTradeHistorySkipped(
           // Keep other fields from existing entry
         });
         
-        // CRITICAL FIX: Also write diagnostic entry for "Recent Cycle Results" UI
-        try {
-          await firestoreAdapter.saveAgentDiagnostic('AUTO_TRADE_AGENT', {
-            agentType: 'TRADING_AGENT',
-            tradingPair: 'AUTO_TRADE_CYCLE',
-            direction: 'LONG',
-            decision: {
-              action: 'SKIP',
-              reason: skipReason
-            },
-            execution: {
-              status: 'SKIPPED',
-              success: false,
-              exchangeErrorReason: skipDetails
-            },
-            runtimeState: {
-              cycleId: cycleId,
-              researchExecuted: false
-            }
-          }, uid);
-          logger.info({ uid, skipReason }, '✅ [DIAGNOSTIC] Auto-trade SKIPPED diagnostic saved for updated cycle');
-        } catch (diagnosticError: any) {
-          logger.error({ uid, error: diagnosticError.message }, '❌ [DIAGNOSTIC] Failed to save SKIPPED diagnostic for updated cycle - continuing');
-        }
-        
         return;
       }
     } catch (checkErr: any) {
@@ -350,31 +325,6 @@ export async function saveAutoTradeHistorySkipped(
 
   await firestoreAdapter.storeResearchHistory(uid, validatedEntry);
   logger.info({ uid, skipReason, cycleId }, '✅ [HISTORY] Auto-trade SKIPPED history saved for cycle (research never executed)');
-
-  // CRITICAL FIX: Also write diagnostic entry for "Recent Cycle Results" UI
-  try {
-    await firestoreAdapter.saveAgentDiagnostic('AUTO_TRADE_AGENT', {
-      agentType: 'TRADING_AGENT',
-      tradingPair: 'AUTO_TRADE_CYCLE',
-      direction: 'LONG',
-      decision: {
-        action: 'SKIP',
-        reason: skipReason
-      },
-      execution: {
-        status: 'SKIPPED',
-        success: false,
-        exchangeErrorReason: skipDetails
-      },
-      runtimeState: {
-        cycleId: cycleId,
-        researchExecuted: false
-      }
-    }, uid);
-    logger.info({ uid, skipReason }, '✅ [DIAGNOSTIC] Auto-trade SKIPPED diagnostic saved for cycle (research never executed)');
-  } catch (diagnosticError: any) {
-    logger.error({ uid, error: diagnosticError.message }, '❌ [DIAGNOSTIC] Failed to save SKIPPED diagnostic - continuing');
-  }
 }
 
 /**

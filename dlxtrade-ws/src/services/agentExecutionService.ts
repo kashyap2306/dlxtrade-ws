@@ -210,9 +210,15 @@ export class AgentExecutionService {
    */
   async loadActiveAgents(): Promise<void> {
     try {
+      console.log('[LOAD_ACTIVE_AGENTS] Fetching active agents from Firestore...');
       const agentConfigs = await firestoreAdapter.getActiveTradingAgents();
+      console.log(`[LOAD_ACTIVE_AGENTS] Found ${agentConfigs.length} active agents`);
 
       this.activeAgents.clear();
+
+      let htfCount = 0;
+      let bbRsiCount = 0;
+      let otherCount = 0;
 
       for (const config of agentConfigs) {
         const agent = new TradingAgent(config);
@@ -226,9 +232,19 @@ export class AgentExecutionService {
         const isBBRsiAgent = config.strategyType === 'MEAN_REVERSION_SCALPER' ||
                              (config.name && config.name.includes('BB-RSI'));
         
+        if (isHTFAgent) {
+          htfCount++;
+        } else if (isBBRsiAgent) {
+          bbRsiCount++;
+        } else {
+          otherCount++;
+        }
+        
         const agentTypeLabel = isHTFAgent ? '🎯 HTF Trend Filter Agent' : 
                                isBBRsiAgent ? '📊 BB-RSI EMA200 Scalper Pro Agent' : 
                                'Trading agent';
+        
+        console.log(`[LOAD_ACTIVE_AGENTS] ${agentTypeLabel}: ${config.id} (${config.name}) - ${config.tradingPair}`);
         
         logger.info({
           agentId: config.id,
@@ -240,13 +256,19 @@ export class AgentExecutionService {
         }, `${agentTypeLabel} loaded and activated`);
       }
 
+      console.log(`[LOAD_ACTIVE_AGENTS] Summary: ${htfCount} HTF, ${bbRsiCount} BB-RSI, ${otherCount} other agents`);
+
       logger.info({
-        agentCount: this.activeAgents.size
+        agentCount: this.activeAgents.size,
+        htfCount,
+        bbRsiCount,
+        otherCount
       }, 'All active trading agents loaded');
 
       // Load VWAP Strategy agents
       await this.loadActiveVWAPStrategies();
     } catch (error) {
+      console.error('[LOAD_ACTIVE_AGENTS] ERROR:', error);
       logger.error({
         error: error instanceof Error ? error.message : 'Unknown error'
       }, 'Failed to load active trading agents');
@@ -396,6 +418,18 @@ export class AgentExecutionService {
     const isHTFAgent = (agentConfig as any).strategyType === 'HTF_TREND_FILTER' || 
                        (agentConfig.name && agentConfig.name.includes('HTF Trend Filter'));
 
+    // CRITICAL HTF DIAGNOSTIC: Log HTF agent execution entry
+    if (isHTFAgent) {
+      console.log('[HTF_EXECUTE_AGENT_START]', {
+        agentId,
+        userId: agentConfig.userId,
+        name: agentConfig.name,
+        tradingPair,
+        status: agentConfig.status,
+        timestamp: new Date().toISOString()
+      });
+    }
+
     // Check if this is a BB-RSI EMA200 Scalper agent
     const isBBRsiAgent = (agentConfig as any).strategyType === 'MEAN_REVERSION_SCALPER' ||
                          (agentConfig.name && agentConfig.name.includes('BB-RSI'));
@@ -504,10 +538,18 @@ export class AgentExecutionService {
         skippedReason = 'AGENT_STOPPED';
         finalizeSkip('AGENT_STOPPED', 'Agent was manually stopped by user', 'SESSION');
         
+        // CRITICAL HTF FIX: Populate required diagnostic fields BEFORE early return
         if (isHTFAgent) {
+          diagnostics.tradingPair = tradingPair;
+          diagnostics.skipReasonShort = 'Agent stopped';
+          diagnostics.runtimeState = diagnostics.runtimeState || {};
+          diagnostics.runtimeState.finalDecision = 'SKIP';
+          diagnostics.runtimeState.skipReasonShort = 'Agent stopped';
+          
           logger.info({
             agentId,
-            tradingPair
+            tradingPair,
+            cycleId: diagnostics.cycleId
           }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
         }
         
@@ -525,10 +567,18 @@ export class AgentExecutionService {
         skippedReason = 'AGENT_PAUSED';
         finalizeSkip('AGENT_PAUSED', 'Agent was manually paused by user', 'SESSION');
 
+        // CRITICAL HTF FIX: Populate required diagnostic fields BEFORE early return
         if (isHTFAgent) {
+          diagnostics.tradingPair = tradingPair;
+          diagnostics.skipReasonShort = 'Agent paused';
+          diagnostics.runtimeState = diagnostics.runtimeState || {};
+          diagnostics.runtimeState.finalDecision = 'SKIP';
+          diagnostics.runtimeState.skipReasonShort = 'Agent paused';
+          
           logger.info({
             agentId,
-            tradingPair
+            tradingPair,
+            cycleId: diagnostics.cycleId
           }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
         }
 
@@ -552,10 +602,18 @@ export class AgentExecutionService {
         skippedReason = 'NO_EXCHANGE_CONFIG_FOUND';
         finalizeSkip('NO_EXCHANGE_CONFIG_FOUND', 'No exchange connected. Please connect your exchange in Settings → Exchange to enable trading.', 'EXCHANGE');
 
+        // CRITICAL HTF FIX: Populate required diagnostic fields BEFORE early return
         if (isHTFAgent) {
+          diagnostics.tradingPair = tradingPair;
+          diagnostics.skipReasonShort = 'No exchange';
+          diagnostics.runtimeState = diagnostics.runtimeState || {};
+          diagnostics.runtimeState.finalDecision = 'SKIP';
+          diagnostics.runtimeState.skipReasonShort = 'No exchange';
+          
           logger.info({
             agentId,
-            tradingPair
+            tradingPair,
+            cycleId: diagnostics.cycleId
           }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
         }
 
@@ -1242,6 +1300,10 @@ export class AgentExecutionService {
         // LOGIC FIX (MANDATORY): If direction === NO_TRADE, do NOT start execution pipeline
         if (htfTrend.direction === 'NO_TRADE') {
           skippedReason = htfTrend.reason;
+          
+          // CRITICAL: Set skipReasonShort for NO_TRADE
+          diagnostics.skipReasonShort = 'HTF no trade';
+          
           finalizeSkip('HTF_CONDITION_NOT_MET', htfTrend.reason || 'HTF trend conditions not met - no trade opportunity', 'SIGNAL');
           
           logger.info({
@@ -1263,13 +1325,40 @@ export class AgentExecutionService {
         const ltfSignal = HTFTrendFilterStrategy.analyzeLTFEntry(candles, htfTrend.direction);
         diagnostics.ltfSignal = ltfSignal;
         
+        // CRITICAL: Store indicator results for frontend modal display
+        if (ltfSignal.indicators?.results) {
+          diagnostics.indicators.results = ltfSignal.indicators.results;
+        }
+        
         if (!ltfSignal.isValid) {
           skippedReason = ltfSignal.reason;
+          
+          // CRITICAL: Generate skipReasonShort (3-4 words) from FIRST rejected indicator
+          let skipReasonShort = 'Conditions not met';
+          if (ltfSignal.indicators?.results) {
+            const results = ltfSignal.indicators.results;
+            if (results.ema?.status === 'rejected') {
+              skipReasonShort = 'EMA rejected';
+            } else if (results.rsi?.status === 'rejected') {
+              skipReasonShort = 'RSI rejected';
+            } else if (results.vwap?.status === 'rejected') {
+              skipReasonShort = 'VWAP rejected';
+            } else if (results.volume?.status === 'rejected') {
+              skipReasonShort = 'Volume rejected';
+            } else if (results.sr?.status === 'rejected') {
+              skipReasonShort = 'SR rejected';
+            }
+          }
+          
+          // Store skipReasonShort in diagnostics for frontend
+          diagnostics.skipReasonShort = skipReasonShort;
+          
           finalizeSkip('LTF_CONDITIONS_NOT_MET', ltfSignal.reason || 'LTF entry conditions not met despite valid HTF trend', 'SIGNAL');
           
           logger.info({
             agentId,
-            tradingPair
+            tradingPair,
+            skipReasonShort
           }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
           
           logger.debug({
@@ -1320,6 +1409,10 @@ export class AgentExecutionService {
         
         // HTF Agent execution fix: ALWAYS attach tradingPair for diagnostics
         diagnostics.tradingPair = tradingPair;
+        
+        // CRITICAL: For successful signals, set skipReasonShort to indicate all conditions met
+        diagnostics.skipReasonShort = 'All conditions met';
+        
         // CRITICAL: Direction was already set early - do NOT overwrite it here
       } else {
         // Regular agents use standard signal generation
@@ -1618,12 +1711,125 @@ export class AgentExecutionService {
       // CRITICAL FIX: ALWAYS persist diagnostics, even on early returns or exceptions
       // This guarantees ONE diagnostic entry per execution cycle
       try {
-        // STRICT DIAGNOSTICS NORMALIZATION: Enforce invariants before persistence
-        const normalizedDiagnostics = this.normalizeDiagnosticsForPersistence(diagnostics, agentId);
-        
-        await agent.storeDiagnostics(normalizedDiagnostics);
-        
-        logger.debug({ agentId, decision: normalizedDiagnostics.decision }, 'Agent diagnostics persisted with strict normalization');
+        // CRITICAL HTF FIX: Ensure ALL required fields are populated for HTF agents
+        // This guarantees diagnostics are written even when early returns happen
+        if (isHTFAgent) {
+          // Ensure tradingPair is always set for HTF agents
+          if (!diagnostics.tradingPair) {
+            diagnostics.tradingPair = tradingPair;
+          }
+          
+          // Ensure runtimeState exists
+          if (!diagnostics.runtimeState) {
+            diagnostics.runtimeState = {};
+          }
+          
+          // Ensure cycleId is set (should already be set at line 428, but double-check)
+          if (!diagnostics.runtimeState.cycleId && diagnostics.cycleId) {
+            diagnostics.runtimeState.cycleId = diagnostics.cycleId;
+          }
+          
+          // Ensure finalDecision is set
+          if (!diagnostics.runtimeState.finalDecision) {
+            diagnostics.runtimeState.finalDecision = diagnostics.decision?.action === 'TRADE' ? 'TRADE' : 'SKIP';
+          }
+          
+          // Ensure skipReasonShort is set (3-4 words max)
+          if (!diagnostics.runtimeState.skipReasonShort && !diagnostics.skipReasonShort) {
+            // Generate skipReasonShort from decision reason
+            const reason = diagnostics.decision?.reason || diagnostics.failure?.reasonText || 'Skipped';
+            if (reason.includes('AGENT_STOPPED')) {
+              diagnostics.skipReasonShort = 'Agent stopped';
+            } else if (reason.includes('AGENT_PAUSED')) {
+              diagnostics.skipReasonShort = 'Agent paused';
+            } else if (reason.includes('NO_EXCHANGE')) {
+              diagnostics.skipReasonShort = 'No exchange';
+            } else if (reason.includes('EXCHANGE_ENCRYPTION_INVALID')) {
+              diagnostics.skipReasonShort = 'Exchange invalid';
+            } else if (reason.includes('EXCHANGE_NOT_USABLE')) {
+              diagnostics.skipReasonShort = 'Exchange unusable';
+            } else if (reason.includes('MARKET_DATA_NOT_READY')) {
+              diagnostics.skipReasonShort = 'Market data missing';
+            } else if (reason.includes('HTF_CONDITION_NOT_MET')) {
+              diagnostics.skipReasonShort = 'HTF no trade';
+            } else if (reason.includes('LTF_CONDITIONS_NOT_MET')) {
+              diagnostics.skipReasonShort = 'LTF rejected';
+            } else if (reason.includes('EMA')) {
+              diagnostics.skipReasonShort = 'EMA rejected';
+            } else if (reason.includes('RSI')) {
+              diagnostics.skipReasonShort = 'RSI rejected';
+            } else if (reason.includes('VWAP')) {
+              diagnostics.skipReasonShort = 'VWAP rejected';
+            } else if (reason.includes('Volume')) {
+              diagnostics.skipReasonShort = 'Volume rejected';
+            } else if (reason.includes('SR')) {
+              diagnostics.skipReasonShort = 'SR rejected';
+            } else {
+              diagnostics.skipReasonShort = 'Skipped';
+            }
+            diagnostics.runtimeState.skipReasonShort = diagnostics.skipReasonShort;
+          } else if (diagnostics.skipReasonShort && !diagnostics.runtimeState.skipReasonShort) {
+            diagnostics.runtimeState.skipReasonShort = diagnostics.skipReasonShort;
+          } else if (!diagnostics.skipReasonShort && diagnostics.runtimeState.skipReasonShort) {
+            diagnostics.skipReasonShort = diagnostics.runtimeState.skipReasonShort;
+          }
+          
+          // Ensure indicators.results exists (even if empty) for frontend modal
+          if (!diagnostics.indicators) {
+            diagnostics.indicators = {};
+          }
+          if (!diagnostics.indicators.results) {
+            diagnostics.indicators.results = {};
+          }
+          
+          // CRITICAL: HTF agents write diagnostics directly with FIXED agentId
+          // This ensures HTF diagnostics are saved to the correct collection path
+          // MUST use "htf-trend-filter-agent" as the agentId for all HTF diagnostics
+          const htfAgentId = 'htf-trend-filter-agent';
+          
+          // Debug log to confirm diagnostic write is happening
+          console.log('[HTF_DIAGNOSTIC_WRITE_START]', {
+            htfAgentId,
+            originalAgentId: agentId,
+            cycleId: diagnostics.cycleId || diagnostics.runtimeState?.cycleId,
+            finalDecision: diagnostics.runtimeState.finalDecision,
+            skipReasonShort: diagnostics.runtimeState.skipReasonShort,
+            tradingPair: diagnostics.tradingPair,
+            userId: agentConfig.userId
+          });
+          
+          logger.info({
+            agentId: htfAgentId,
+            cycleId: diagnostics.cycleId || diagnostics.runtimeState?.cycleId,
+            finalDecision: diagnostics.runtimeState.finalDecision,
+            skipReasonShort: diagnostics.runtimeState.skipReasonShort,
+            tradingPair: diagnostics.tradingPair
+          }, '[HTF_DIAGNOSTIC_WRITE] cycleId=' + (diagnostics.cycleId || diagnostics.runtimeState?.cycleId));
+          
+          // Save HTF diagnostic directly using firestoreAdapter
+          await firestoreAdapter.saveAgentDiagnostic(htfAgentId, {
+            agentType: 'HTF_TREND_FILTER_AGENT',
+            tradingPair: diagnostics.tradingPair,
+            direction: diagnostics.direction || 'LONG',
+            decision: diagnostics.decision || { action: 'SKIP', reason: 'No decision' },
+            signal: diagnostics.signal,
+            execution: diagnostics.execution,
+            runtimeState: diagnostics.runtimeState
+          }, agentConfig.userId);
+          
+          console.log('[HTF_DIAGNOSTIC_WRITE_SUCCESS]', {
+            htfAgentId,
+            cycleId: diagnostics.runtimeState.cycleId,
+            userId: agentConfig.userId
+          });
+          
+          logger.debug({ agentId: htfAgentId, cycleId: diagnostics.runtimeState.cycleId }, 'HTF diagnostics persisted directly');
+        } else {
+          // Non-HTF agents use standard storeDiagnostics method
+          const normalizedDiagnostics = this.normalizeDiagnosticsForPersistence(diagnostics, agentId);
+          await agent.storeDiagnostics(normalizedDiagnostics);
+          logger.debug({ agentId, decision: normalizedDiagnostics.decision }, 'Agent diagnostics persisted with strict normalization');
+        }
       } catch (diagError) {
         logger.error({
           agentId,

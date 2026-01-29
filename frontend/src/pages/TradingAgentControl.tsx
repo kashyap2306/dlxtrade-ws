@@ -99,6 +99,14 @@ export default function TradingAgentControl() {
   // Load data when ALL prerequisites are met
   const pageReady = hasAgentAccess && agentAccessChecked && exchangeConfigLoaded && resolvedAgentId;
 
+  // CRITICAL STATE RESET: Clear diagnostics when agentId changes
+  // This prevents stale data from previous agent being shown
+  useEffect(() => {
+    console.log('[HTF_DIAGNOSTICS] Agent changed, resetting diagnostics state');
+    setDiagnosticsEntries([]);
+    setSkippedTrades([]);
+  }, [slug, resolvedAgentId]);
+
   useEffect(() => {
     if (!user || !pageReady) {
       return;
@@ -151,12 +159,16 @@ export default function TradingAgentControl() {
 
       // CRITICAL: HTF agents use diagnostics, not research_history
       if (isHTFTrendFilterAgent) {
-        // Load diagnostics for HTF agent
-        const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 20);
+        // Load diagnostics for HTF agent (request 50 to support View More)
+        const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 50);
         setScheduler(diagnosticsResp.data?.scheduler || null);
         
         // Extract diagnostics entries for Recent Cycle Results
         const entries = diagnosticsResp.data?.diagnostics || [];
+        
+        console.log('[HTF_DIAGNOSTICS] Received entries:', entries.length);
+        console.log('[HTF_DIAGNOSTICS] Raw entries:', entries);
+        
         // Sort by timestamp descending (latest first)
         entries.sort((a: any, b: any) => {
           const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
@@ -164,20 +176,36 @@ export default function TradingAgentControl() {
           return bTime - aTime;
         });
         
-        // CRITICAL FIX: Deduplicate by (cycleId + pair) - keep only latest entry per unique combination
-        const seen = new Map<string, any>();
-        const deduplicated = entries.filter((entry: any) => {
-          const cycleId = entry.runtimeState?.cycleId || entry.id || '';
-          const pair = entry.tradingPair || entry.symbol || '';
-          const key = `${cycleId}_${pair}`;
+        // CRITICAL FIX: Robust deduplication that doesn't remove valid entries
+        // Use cycleId if available, otherwise use Firestore document ID, otherwise use timestamp+index
+        const seen = new Set<string>();
+        const deduplicated = entries.filter((entry: any, index: number) => {
+          // Try multiple fallback keys to ensure we don't filter out valid diagnostics
+          const cycleId = entry.runtimeState?.cycleId || entry.cycleId;
+          const docId = entry.id;
+          const timestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : 0;
           
-          if (!seen.has(key)) {
-            seen.set(key, entry);
-            return true;
+          // Build dedup key: prefer cycleId, fallback to docId, fallback to timestamp+index
+          let dedupKey = '';
+          if (cycleId) {
+            dedupKey = `cycle_${cycleId}`;
+          } else if (docId) {
+            dedupKey = `doc_${docId}`;
+          } else {
+            dedupKey = `ts_${timestamp}_${index}`;
           }
-          return false;
+          
+          if (seen.has(dedupKey)) {
+            return false;
+          }
+          
+          seen.add(dedupKey);
+          return true;
         });
         
+        console.log('[HTF_DIAGNOSTICS] After deduplication:', deduplicated.length);
+        
+        // FORCE STATE UPDATE: Always set diagnostics, never skip this step
         setDiagnosticsEntries(deduplicated);
       } else {
         // Load research history for AUTO_TRADE cycles ONLY (non-HTF agents)
@@ -269,12 +297,16 @@ export default function TradingAgentControl() {
       
       // CRITICAL: HTF agents use diagnostics, not research_history
       if (isHTFTrendFilterAgent) {
-        // Refresh diagnostics for HTF agent
-        const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 20);
+        // Refresh diagnostics for HTF agent (request 50 to support View More)
+        const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 50);
         setScheduler(diagnosticsResp.data?.scheduler || null);
         
         // Extract diagnostics entries for Recent Cycle Results
         const entries = diagnosticsResp.data?.diagnostics || [];
+        
+        console.log('[HTF_DIAGNOSTICS] Toggle - Received entries:', entries.length);
+        console.log('[HTF_DIAGNOSTICS] Toggle - Raw entries:', entries);
+        
         // Sort by timestamp descending (latest first)
         entries.sort((a: any, b: any) => {
           const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
@@ -282,20 +314,39 @@ export default function TradingAgentControl() {
           return bTime - aTime;
         });
         
-        // CRITICAL FIX: Deduplicate by (cycleId + pair) - keep only latest entry per unique combination
-        const seen = new Map<string, any>();
-        const deduplicated = entries.filter((entry: any) => {
-          const cycleId = entry.runtimeState?.cycleId || entry.id || '';
-          const pair = entry.tradingPair || entry.symbol || '';
-          const key = `${cycleId}_${pair}`;
+        // CRITICAL FIX: Robust deduplication that doesn't remove valid entries
+        // Use cycleId if available, otherwise use Firestore document ID, otherwise use timestamp+index
+        const seen = new Set<string>();
+        const deduplicated = entries.filter((entry: any, index: number) => {
+          // Try multiple fallback keys to ensure we don't filter out valid diagnostics
+          const cycleId = entry.runtimeState?.cycleId || entry.cycleId;
+          const docId = entry.id;
+          const timestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : 0;
           
-          if (!seen.has(key)) {
-            seen.set(key, entry);
-            return true;
+          // Build dedup key: prefer cycleId, fallback to docId, fallback to timestamp+index
+          let dedupKey = '';
+          if (cycleId) {
+            dedupKey = `cycle_${cycleId}`;
+          } else if (docId) {
+            dedupKey = `doc_${docId}`;
+          } else {
+            dedupKey = `ts_${timestamp}_${index}`;
           }
-          return false;
+          
+          if (seen.has(dedupKey)) {
+            return false;
+          }
+          
+          seen.add(dedupKey);
+          return true;
         });
         
+        console.log('[HTF_DIAGNOSTICS] Toggle - After deduplication:', deduplicated.length);
+        
+        // FORCE STATE UPDATE: Always set diagnostics, never skip this step
+        setDiagnosticsEntries(deduplicated);
+        
+        // FORCE STATE UPDATE: Always set diagnostics, never skip this step
         setDiagnosticsEntries(deduplicated);
       } else {
         // Refresh research history for AUTO_TRADE cycles ONLY (non-HTF agents)
@@ -841,14 +892,9 @@ export default function TradingAgentControl() {
 
             {/* CRITICAL: HTF agents use diagnostics, non-HTF use research_history */}
             {isHTFTrendFilterAgent ? (
-              // HTF Agent: Use diagnostics entries
-              diagnosticsEntries.length === 0 ? (
-                <div className="text-center py-8 text-gray-400 bg-slate-800/30 rounded-lg border border-purple-500/10">
-                  {autoTradeEnabled 
-                    ? 'Waiting for first cycle...'
-                    : 'No cycle results yet'}
-                </div>
-              ) : (
+              // HTF Agent: Use diagnostics entries ONLY
+              // Show table if ANY diagnostic exists (even SKIP entries)
+              diagnosticsEntries.length > 0 ? (
                 <div className="overflow-x-auto bg-slate-800/30 rounded-lg border border-purple-500/10">
                   <table className="min-w-full">
                     <thead>
@@ -961,6 +1007,12 @@ export default function TradingAgentControl() {
                       })}
                     </tbody>
                   </table>
+                </div>
+              ) : (
+                <div className="text-center py-8 text-gray-400 bg-slate-800/30 rounded-lg border border-purple-500/10">
+                  {autoTradeEnabled 
+                    ? 'Waiting for first cycle...'
+                    : 'No cycle results yet'}
                 </div>
               )
             ) : (

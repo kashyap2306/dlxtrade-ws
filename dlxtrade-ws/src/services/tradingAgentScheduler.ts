@@ -85,31 +85,42 @@ export class TradingAgentScheduler {
     }
 
     try {
+      // CRITICAL FIX: Reload agents before each execution to pick up newly created HTF agents
+      // This ensures HTF agents created after scheduler startup are executed
+      console.log('[SCHEDULER_TICK] Reloading active agents from Firestore...');
+      await this.executionService.loadActiveAgents();
+      
       // FIX PART 4: Scheduler-level safety net for HTF agents
       // Before executing agents, check if any HTF agents should be skipped due to disabled modes
       await this.preExecutionHTFCheck();
       
       // Add HTF scheduling log as requested
       const allAgents = this.executionService.getAllActiveAgents();
+      console.log(`[SCHEDULER_TICK] Total active agents loaded: ${allAgents.length}`);
+      
       const htfAgents = allAgents.filter(agent => {
         const config = agent['config'];
         return config.strategyType === 'HTF_TREND_FILTER' || 
                (config.name && config.name.includes('HTF Trend Filter'));
       });
 
+      console.log(`[SCHEDULER_TICK] HTF agents found: ${htfAgents.length}`);
+
       // Log HTF agent scheduling
       for (const agent of htfAgents) {
         const config = agent['config'];
-        console.log("[HTF_SCHEDULED] uid=", config.userId);
+        console.log("[HTF_SCHEDULED] uid=", config.userId, "agentId=", config.id, "status=", config.status);
       }
 
       // Add scheduler agent picked log for all agents
       for (const agent of allAgents) {
         const config = agent['config'];
-        console.log("[SCHEDULER_AGENT_PICKED]", config.id, config.status);
+        console.log("[SCHEDULER_AGENT_PICKED]", config.id, config.status, config.name);
       }
       
+      console.log('[SCHEDULER_TICK] Executing all agents...');
       await this.executionService.executeAllAgents();
+      console.log('[SCHEDULER_TICK] Execution completed');
       logger.info('Successfully executed all active trading agents');
     } catch (error) {
       logger.error({

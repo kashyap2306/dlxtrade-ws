@@ -135,9 +135,42 @@ export interface TradeRecord {
 
 export class TradingAgent {
   private config: TradingAgentConfig;
+  // CRITICAL: In-memory cycle guard to prevent duplicate diagnostic writes per cycle
+  private static cycleHistoryWritten: Map<string, Set<string>> = new Map(); // agentId -> Set<cycleId>
 
   constructor(config: TradingAgentConfig) {
     this.config = config;
+  }
+
+  /**
+   * Check if diagnostics have already been written for this cycle
+   */
+  private hasHistoryForCycle(cycleId: string): boolean {
+    if (!cycleId) return false;
+    const agentCycles = TradingAgent.cycleHistoryWritten.get(this.config.id);
+    return agentCycles ? agentCycles.has(cycleId) : false;
+  }
+
+  /**
+   * Mark diagnostics as written for this cycle
+   */
+  private markHistoryWritten(cycleId: string): void {
+    if (!cycleId) return;
+    
+    let agentCycles = TradingAgent.cycleHistoryWritten.get(this.config.id);
+    if (!agentCycles) {
+      agentCycles = new Set<string>();
+      TradingAgent.cycleHistoryWritten.set(this.config.id, agentCycles);
+    }
+    
+    agentCycles.add(cycleId);
+    
+    // Cleanup: Keep only last 100 cycleIds per agent to prevent memory leaks
+    if (agentCycles.size > 100) {
+      const cyclesArray = Array.from(agentCycles);
+      const toRemove = cyclesArray.slice(0, cyclesArray.length - 100);
+      toRemove.forEach(id => agentCycles!.delete(id));
+    }
   }
 
   /**
@@ -172,6 +205,9 @@ export class TradingAgent {
    * Store diagnostics log for Trading Agent
    */
   public async storeDiagnostics(diagnostics: TradingDiagnostics): Promise<void> {
+    // CRITICAL: Extract cycleId early for use throughout method
+    const cycleId = (diagnostics as any).cycleId || (diagnostics as any).runtimeState?.cycleId;
+    
     try {
       const agentType = this.config.name && this.config.name.includes('HTF Trend Filter')
         ? 'HTF_TREND_FILTER_AGENT'
@@ -179,6 +215,16 @@ export class TradingAgent {
 
       const isHTFAgent = agentType === 'HTF_TREND_FILTER_AGENT';
       const cycleResult = diagnostics.decision?.action;
+      
+      // CRITICAL: Enforce single write per cycle - check if already written
+      if (cycleId && this.hasHistoryForCycle(cycleId)) {
+        logger.debug({
+          agentId: this.config.id,
+          cycleId,
+          action: diagnostics.decision?.action
+        }, '⚠️ [CYCLE_GUARD] Diagnostics already written for this cycleId - skipping duplicate write');
+        return;
+      }
 
       // STRICT NORMALIZATION: Apply the same normalization logic as agentExecutionService
       const normalizedDiagnostics = this.strictNormalizeDiagnostics(diagnostics);
@@ -191,6 +237,9 @@ export class TradingAgent {
           candleCheck: diagnostics.candleCheck,
           indicators: diagnostics.indicators,
           riskAnalysis: diagnostics.riskAnalysis,
+          cycleId: cycleId, // Include cycleId in runtimeState
+          finalDecision: cycleResult || 'SKIP', // MANDATORY: finalDecision field
+          skipReasonShort: (diagnostics as any).skipReasonShort || 'Skipped', // MANDATORY: 3-4 words max
         },
       };
 
@@ -244,15 +293,21 @@ export class TradingAgent {
       // Use unified diagnostics storage via firestoreAdapter
       await firestoreAdapter.saveAgentDiagnostic(this.config.id, cleanedDiagnostic, this.config.userId);
 
+      // CRITICAL: Mark cycle as written AFTER successful save
+      if (cycleId) {
+        this.markHistoryWritten(cycleId);
+      }
+
       logger.info({
         agentId: this.config.id,
+        cycleId: cycleId,
         action: cleanedDiagnostic.decision.action,
         reason: cleanedDiagnostic.decision.reason,
         isSkipped: cycleResult === 'SKIP',
         normalized: 'strict_normalization_applied'
       }, 'Trading Agent diagnostics stored with strict normalization');
     } catch (error: any) {
-      logger.error({ error: error.message, agentId: this.config.id }, 'Failed to store Trading Agent diagnostics');
+      logger.error({ error: error.message, agentId: this.config.id, cycleId }, 'Failed to store Trading Agent diagnostics');
     }
   }
 
