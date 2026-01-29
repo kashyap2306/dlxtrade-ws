@@ -71,7 +71,7 @@ function Layout() {
     <>
       <TopNavigation />
       <Sidebar />
-      <main className="lg:ml-64">
+      <main className="lg:ml-64 min-h-screen">
         <Outlet />
       </main>
     </>

@@ -179,14 +179,13 @@ export class TradingAgent {
 
       const isHTFAgent = agentType === 'HTF_TREND_FILTER_AGENT';
       const cycleResult = diagnostics.decision?.action;
-      const skippedReason = diagnostics.decision?.reason;
+
+      // STRICT NORMALIZATION: Apply the same normalization logic as agentExecutionService
+      const normalizedDiagnostics = this.strictNormalizeDiagnostics(diagnostics);
 
       let filteredDiagnostic: any = {
         agentType: agentType as any,
-        decision: {
-          action: diagnostics.decision.action as any,
-          reason: diagnostics.decision.reason,
-        },
+        decision: normalizedDiagnostics.decision,
         runtimeState: {
           sessionCheck: diagnostics.sessionCheck,
           candleCheck: diagnostics.candleCheck,
@@ -198,12 +197,8 @@ export class TradingAgent {
       // ENFORCE SKIPPED PERSISTENCE RULES
       if (cycleResult === 'SKIP') {
         // For HTF agents, preserve trading pair and direction even for skipped cycles
-        // so users can see what the agent was evaluating
         if (isHTFAgent) {
-          // Keep tradingPair and direction for HTF agents
           filteredDiagnostic.tradingPair = diagnostics.tradingPair;
-          // Get direction from the diagnostics object (added dynamically) or signal
-          // Normalize direction values to standard format
           const rawDirection = (diagnostics as any).direction || diagnostics.signal?.direction;
           if (rawDirection === 'LONG_ONLY') {
             filteredDiagnostic.direction = 'LONG';
@@ -220,44 +215,25 @@ export class TradingAgent {
           delete filteredDiagnostic.pair;
           delete filteredDiagnostic.direction;
         }
-        
-        // Clean up other fields for all agents
-        delete filteredDiagnostic.symbol;
-        delete filteredDiagnostic.exchangeError;
-        delete filteredDiagnostic.exchangeErrorReason;
-        
-        // Clean up skip reason for exchange errors
-        if (skippedReason?.includes('EXCHANGE_ERROR') || 
-            skippedReason?.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED')) {
-          filteredDiagnostic.decision.reason = 'SKIPPED';
-        }
-        
-        // NO signal data for skipped cycles
       } else {
         // For non-skipped cycles (TRADE), include trading pair and signal data
         filteredDiagnostic.tradingPair = diagnostics.tradingPair;
         
-        if (diagnostics.signal) {
-          filteredDiagnostic.signal = {
-            direction: diagnostics.signal.direction as any,
-            entryPrice: diagnostics.signal.entryPrice || 0,
-            stopLoss: diagnostics.signal.stopLoss || 0,
-            takeProfit: diagnostics.signal.takeProfit || 0,
-            rrRatio: diagnostics.signal.rrRatio || 0,
-          };
+        if (normalizedDiagnostics.signal) {
+          filteredDiagnostic.signal = normalizedDiagnostics.signal;
         }
         
-        if (diagnostics.execution) {
-          filteredDiagnostic.execution = {
-            success: diagnostics.execution.success,
-            orderId: diagnostics.execution.orderId,
-            error: diagnostics.execution.error,
-          };
+        if (normalizedDiagnostics.execution) {
+          filteredDiagnostic.execution = normalizedDiagnostics.execution;
         }
       }
 
+      // Include normalized failure if present
+      if (normalizedDiagnostics.failure) {
+        filteredDiagnostic.failure = normalizedDiagnostics.failure;
+      }
+
       // DEEP-CLEAN diagnostics object - recursively remove ALL undefined fields
-      // Do NOT rely on Firestore ignoreUndefinedProperties - ensure Firestore never receives undefined values
       const cleanedDiagnostic = this.deepCleanObject(filteredDiagnostic);
 
       if (!cleanedDiagnostic) {
@@ -273,11 +249,142 @@ export class TradingAgent {
         action: cleanedDiagnostic.decision.action,
         reason: cleanedDiagnostic.decision.reason,
         isSkipped: cycleResult === 'SKIP',
-        cleaned: 'deep_cleaned_undefined_fields'
-      }, 'Trading Agent diagnostics stored with deep cleaning');
+        normalized: 'strict_normalization_applied'
+      }, 'Trading Agent diagnostics stored with strict normalization');
     } catch (error: any) {
       logger.error({ error: error.message, agentId: this.config.id }, 'Failed to store Trading Agent diagnostics');
     }
+  }
+
+  /**
+   * CRITICAL: Strict diagnostics normalization to prevent stale exchange errors
+   */
+  private strictNormalizeDiagnostics(diagnostics: any): any {
+    const exchangeUsable = (diagnostics as any).exchangeUsable === true;
+    const exchangeDecryptionSuccess = (diagnostics as any).exchangeDecryptionSuccess === true;
+    const exchangeSuccessful = exchangeUsable || exchangeDecryptionSuccess;
+
+    const normalized: any = {};
+
+    // DECISION NORMALIZATION
+    if (diagnostics.decision) {
+      normalized.decision = {
+        action: diagnostics.decision.action || 'SKIP',
+        reason: diagnostics.decision.reason || 'NO_REASON_PROVIDED'
+      };
+
+      // CRITICAL: If exchange is successful, clear ALL exchange error references
+      if (exchangeSuccessful && normalized.decision.reason) {
+        const reason = normalized.decision.reason;
+        if (reason.includes('Exchange keys are invalid') ||
+            reason.includes('encryption secret change') ||
+            reason.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') ||
+            reason.includes('EXCHANGE_ERROR') ||
+            reason.includes('EXCHANGE_CORRUPTED') ||
+            reason.includes('EXCHANGE_NOT_USABLE') ||
+            reason.includes('NO_EXCHANGE_CREDENTIALS')) {
+          
+          normalized.decision.reason = normalized.decision.action === 'SKIP' ? 'SKIPPED' : normalized.decision.action;
+          
+          logger.info({
+            agentId: this.config.id,
+            originalReason: reason,
+            newReason: normalized.decision.reason,
+            exchangeUsable,
+            exchangeDecryptionSuccess
+          }, 'TRADING_AGENT_NORMALIZATION: Cleared stale exchange error from decision.reason');
+        }
+      }
+    } else {
+      normalized.decision = { action: 'SKIP', reason: 'NO_DECISION_PROVIDED' };
+    }
+
+    // EXECUTION NORMALIZATION
+    if (diagnostics.execution) {
+      normalized.execution = {
+        success: diagnostics.execution.success || false,
+        orderId: diagnostics.execution.orderId || undefined,
+        error: diagnostics.execution.error || undefined
+      };
+
+      // CRITICAL: If exchange is successful, remove exchangeErrorReason entirely
+      if (exchangeSuccessful) {
+        delete normalized.execution.exchangeErrorReason;
+        delete normalized.execution.exchangeError;
+      } else {
+        normalized.execution.exchangeErrorReason = diagnostics.execution.exchangeErrorReason || undefined;
+        normalized.execution.exchangeError = diagnostics.execution.exchangeError || undefined;
+      }
+
+      // Remove undefined fields
+      Object.keys(normalized.execution).forEach(key => {
+        if (normalized.execution[key] === undefined) {
+          delete normalized.execution[key];
+        }
+      });
+    }
+
+    // FAILURE NORMALIZATION
+    if (diagnostics.failure) {
+      normalized.failure = {
+        reasonCode: diagnostics.failure.reasonCode || undefined,
+        reasonText: diagnostics.failure.reasonText || undefined,
+        category: diagnostics.failure.category || undefined
+      };
+
+      // CRITICAL: If exchange is successful, remove exchange-related failures
+      if (exchangeSuccessful && normalized.failure.reasonText) {
+        const reasonText = normalized.failure.reasonText;
+        if (reasonText.includes('Exchange keys are invalid') ||
+            reasonText.includes('encryption secret change') ||
+            reasonText.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') ||
+            reasonText.includes('EXCHANGE_ERROR') ||
+            reasonText.includes('EXCHANGE_CORRUPTED')) {
+          
+          delete normalized.failure;
+          
+          logger.info({
+            agentId: this.config.id,
+            originalFailureText: reasonText,
+            exchangeUsable,
+            exchangeDecryptionSuccess
+          }, 'TRADING_AGENT_NORMALIZATION: Cleared stale exchange failure');
+        }
+      }
+
+      // Remove undefined fields and empty objects
+      if (normalized.failure) {
+        Object.keys(normalized.failure).forEach(key => {
+          if (normalized.failure[key] === undefined) {
+            delete normalized.failure[key];
+          }
+        });
+        
+        if (Object.keys(normalized.failure).length === 0) {
+          delete normalized.failure;
+        }
+      }
+    }
+
+    // SIGNAL NORMALIZATION
+    if (diagnostics.signal) {
+      normalized.signal = {
+        direction: diagnostics.signal.direction || undefined,
+        entryPrice: diagnostics.signal.entryPrice || undefined,
+        stopLoss: diagnostics.signal.stopLoss || undefined,
+        takeProfit: diagnostics.signal.takeProfit || undefined,
+        rrRatio: diagnostics.signal.rrRatio || undefined
+      };
+
+      // Remove undefined fields
+      Object.keys(normalized.signal).forEach(key => {
+        if (normalized.signal[key] === undefined) {
+          delete normalized.signal[key];
+        }
+      });
+    }
+
+    return normalized;
   }
 
   /**
@@ -289,27 +396,63 @@ export class TradingAgent {
       const diagnostics = await firestoreAdapter.getAgentDiagnostics(agentId, limit, userId);
       
       // Map to TradingDiagnostics format for backward compatibility
-      return diagnostics.map(d => ({
-        timestamp: d.timestamp,
-        agentId: d.agentId,
-        tradingPair: d.tradingPair || '',
-        sessionCheck: d.runtimeState?.sessionCheck || { isValidSession: false, currentIST: '' },
-        candleCheck: d.runtimeState?.candleCheck || { isClosed: false, candleTimestamp: new Date(), price: 0 },
-        indicators: d.runtimeState?.indicators || {},
-        supportResistance: d.runtimeState?.supportResistance || { calculated: false },
-        signal: d.signal ? {
-          direction: d.signal.direction,
-          meetsConditions: true,
-          entryPrice: d.signal.entryPrice,
-          stopLoss: d.signal.stopLoss,
-          takeProfit: d.signal.takeProfit,
-          rrRatio: d.signal.rrRatio,
-        } : { direction: null, meetsConditions: false },
-        riskAnalysis: d.runtimeState?.riskAnalysis || {},
-        srValidation: d.runtimeState?.srValidation || {},
-        decision: d.decision as any,
-        execution: d.execution,
-      })) as TradingDiagnostics[];
+      return diagnostics.map(d => {
+        // CRITICAL: Filter out stale exchange error states from historical diagnostics
+        // If a diagnostic shows exchange success markers, ensure no exchange errors are shown
+        const hasExchangeSuccess = (d as any).exchangeDecryptionSuccess === true || 
+                                   (d as any).exchangeUsable === true || 
+                                   (d as any).exchangeErrorsCleared === true;
+        
+        let cleanedDecision = d.decision;
+        
+        // If exchange was successful but decision shows exchange errors, clean it
+        if (hasExchangeSuccess && cleanedDecision?.reason) {
+          const reason = cleanedDecision.reason;
+          if (reason.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') ||
+              reason.includes('EXCHANGE_ERROR') ||
+              reason.includes('EXCHANGE_CORRUPTED') ||
+              reason.includes('Exchange keys are invalid') ||
+              reason.includes('encryption secret change') ||
+              reason.includes('EXCHANGE_NOT_USABLE') ||
+              reason.includes('NO_EXCHANGE_CREDENTIALS')) {
+            
+            // Clean the reason to remove stale exchange errors
+            cleanedDecision = {
+              ...cleanedDecision,
+              reason: cleanedDecision.action === 'SKIP' ? 'SKIPPED' : cleanedDecision.action
+            };
+            
+            logger.debug({
+              agentId,
+              originalReason: reason,
+              cleanedReason: cleanedDecision.reason,
+              hasExchangeSuccess
+            }, 'DIAGNOSTICS_RETRIEVAL: Cleaned stale exchange error from historical diagnostic');
+          }
+        }
+        
+        return {
+          timestamp: d.timestamp,
+          agentId: d.agentId,
+          tradingPair: d.tradingPair || '',
+          sessionCheck: d.runtimeState?.sessionCheck || { isValidSession: false, currentIST: '' },
+          candleCheck: d.runtimeState?.candleCheck || { isClosed: false, candleTimestamp: new Date(), price: 0 },
+          indicators: d.runtimeState?.indicators || {},
+          supportResistance: d.runtimeState?.supportResistance || { calculated: false },
+          signal: d.signal ? {
+            direction: d.signal.direction,
+            meetsConditions: true,
+            entryPrice: d.signal.entryPrice,
+            stopLoss: d.signal.stopLoss,
+            takeProfit: d.signal.takeProfit,
+            rrRatio: d.signal.rrRatio,
+          } : { direction: null, meetsConditions: false },
+          riskAnalysis: d.runtimeState?.riskAnalysis || {},
+          srValidation: d.runtimeState?.srValidation || {},
+          decision: cleanedDecision as any,
+          execution: d.execution,
+        };
+      }) as TradingDiagnostics[];
     } catch (error: any) {
       logger.error({ error: error.message, agentId }, 'Failed to get diagnostics');
       return [];

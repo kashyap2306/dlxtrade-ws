@@ -2,7 +2,7 @@ import { logger } from '../utils/logger';
 import { TradingAgent, TradingAgentConfig, TradingSignal } from './tradingAgent';
 import { VWAPStrategy, VWAPStrategyConfig } from './vwapStrategy';
 import { TechnicalIndicators, CandleData, IndicatorValues } from './technicalIndicators';
-import { firestoreAdapter } from './firestoreAdapter';
+import { firestoreAdapter, isExchangeUsable } from './firestoreAdapter';
 import { TradingAgentMarketProvider } from './tradingAgentMarketProvider';
 import { ExchangeCredentials } from './exchangeConnector';
 import { CrowdConsensusService } from './crowdConsensusService';
@@ -36,6 +36,173 @@ export class AgentExecutionService {
 
   constructor(marketDataProvider: MarketDataProvider) {
     this.marketDataProvider = marketDataProvider;
+  }
+
+  /**
+   * CRITICAL: Strict diagnostics normalization before Firestore persistence
+   * Enforces invariants to prevent stale exchange errors and undefined field issues
+   */
+  private normalizeDiagnosticsForPersistence(diagnostics: any, agentId: string): any {
+    // Create a clean copy to avoid mutating the original
+    const normalized: any = {};
+
+    // EXECUTION STATUS RULE: success === true → EXECUTED, success === false → FAILED, else → SKIPPED
+    if (diagnostics.execution?.success === true) {
+      normalized.executionStatus = 'EXECUTED';
+    } else if (diagnostics.execution?.success === false) {
+      normalized.executionStatus = 'FAILED';
+    } else {
+      normalized.executionStatus = 'SKIPPED';
+    }
+
+    // CRITICAL INVARIANT: If exchange is usable, NEVER allow exchange error messages
+    const exchangeUsable = diagnostics.exchangeUsable === true;
+    const exchangeDecryptionSuccess = diagnostics.exchangeDecryptionSuccess === true;
+    const exchangeSuccessful = exchangeUsable || exchangeDecryptionSuccess;
+
+    // DECISION NORMALIZATION: Always ensure decision.reason is defined and clean
+    if (diagnostics.decision) {
+      normalized.decision = {
+        action: diagnostics.decision.action || 'SKIP',
+        reason: diagnostics.decision.reason || 'NO_REASON_PROVIDED'
+      };
+
+      // CRITICAL: If exchange is successful, remove ALL exchange error references
+      if (exchangeSuccessful && normalized.decision.reason) {
+        const reason = normalized.decision.reason;
+        if (reason.includes('Exchange keys are invalid') ||
+            reason.includes('encryption secret change') ||
+            reason.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') ||
+            reason.includes('EXCHANGE_ERROR') ||
+            reason.includes('EXCHANGE_CORRUPTED') ||
+            reason.includes('EXCHANGE_NOT_USABLE') ||
+            reason.includes('NO_EXCHANGE_CREDENTIALS')) {
+          
+          // Replace with clean reason based on action
+          normalized.decision.reason = normalized.decision.action === 'SKIP' ? 'SKIPPED' : normalized.decision.action;
+          
+          logger.info({
+            agentId,
+            originalReason: reason,
+            newReason: normalized.decision.reason,
+            exchangeUsable,
+            exchangeDecryptionSuccess
+          }, 'NORMALIZATION: Cleared stale exchange error from decision.reason');
+        }
+      }
+    } else {
+      // Ensure decision always exists
+      normalized.decision = { action: 'SKIP', reason: 'NO_DECISION_PROVIDED' };
+    }
+
+    // EXECUTION NORMALIZATION: Clean execution object
+    if (diagnostics.execution && normalized.executionStatus !== 'SKIPPED') {
+      normalized.execution = {
+        success: diagnostics.execution.success || false,
+        orderId: diagnostics.execution.orderId || undefined,
+        error: diagnostics.execution.error || undefined
+      };
+
+      // CRITICAL: If exchange is successful, remove exchangeErrorReason entirely
+      if (exchangeSuccessful) {
+        // Do NOT include exchangeErrorReason when exchange is usable
+        delete normalized.execution.exchangeErrorReason;
+        delete normalized.execution.exchangeError;
+        
+        logger.debug({
+          agentId,
+          exchangeUsable,
+          exchangeDecryptionSuccess
+        }, 'NORMALIZATION: Removed execution.exchangeErrorReason due to successful exchange state');
+      } else {
+        // Only include exchangeErrorReason if exchange is NOT usable
+        normalized.execution.exchangeErrorReason = diagnostics.execution.exchangeErrorReason || undefined;
+        normalized.execution.exchangeError = diagnostics.execution.exchangeError || undefined;
+      }
+
+      // Remove undefined fields from execution
+      Object.keys(normalized.execution).forEach(key => {
+        if (normalized.execution[key] === undefined) {
+          delete normalized.execution[key];
+        }
+      });
+    }
+
+    // FAILURE NORMALIZATION: Clean failure object
+    if (diagnostics.failure) {
+      normalized.failure = {
+        reasonCode: diagnostics.failure.reasonCode || undefined,
+        reasonText: diagnostics.failure.reasonText || undefined,
+        category: diagnostics.failure.category || undefined
+      };
+
+      // CRITICAL: If exchange is successful, remove exchange-related failures
+      if (exchangeSuccessful && normalized.failure.reasonText) {
+        const reasonText = normalized.failure.reasonText;
+        if (reasonText.includes('Exchange keys are invalid') ||
+            reasonText.includes('encryption secret change') ||
+            reasonText.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') ||
+            reasonText.includes('EXCHANGE_ERROR') ||
+            reasonText.includes('EXCHANGE_CORRUPTED')) {
+          
+          // Clear the entire failure object when exchange is successful
+          delete normalized.failure;
+          
+          logger.info({
+            agentId,
+            originalFailureText: reasonText,
+            exchangeUsable,
+            exchangeDecryptionSuccess
+          }, 'NORMALIZATION: Cleared stale exchange failure due to successful exchange state');
+        }
+      }
+
+      // Remove undefined fields from failure
+      if (normalized.failure) {
+        Object.keys(normalized.failure).forEach(key => {
+          if (normalized.failure[key] === undefined) {
+            delete normalized.failure[key];
+          }
+        });
+        
+        // Remove failure object if it's empty
+        if (Object.keys(normalized.failure).length === 0) {
+          delete normalized.failure;
+        }
+      }
+    }
+
+    // Copy other safe fields
+    if (diagnostics.tradingPair) normalized.tradingPair = diagnostics.tradingPair;
+    if (diagnostics.timestamp) normalized.timestamp = diagnostics.timestamp;
+    if (diagnostics.agentId) normalized.agentId = diagnostics.agentId;
+
+    // Copy signal data for non-skipped cycles
+    if (diagnostics.signal && normalized.executionStatus !== 'SKIPPED') {
+      normalized.signal = {
+        direction: diagnostics.signal.direction || undefined,
+        entryPrice: diagnostics.signal.entryPrice || undefined,
+        stopLoss: diagnostics.signal.stopLoss || undefined,
+        takeProfit: diagnostics.signal.takeProfit || undefined,
+        rrRatio: diagnostics.signal.rrRatio || undefined
+      };
+
+      // Remove undefined fields from signal
+      Object.keys(normalized.signal).forEach(key => {
+        if (normalized.signal[key] === undefined) {
+          delete normalized.signal[key];
+        }
+      });
+    }
+
+    // FINAL CLEANUP: Remove any remaining undefined fields at top level
+    Object.keys(normalized).forEach(key => {
+      if (normalized[key] === undefined) {
+        delete normalized[key];
+      }
+    });
+
+    return normalized;
   }
 
   /**
@@ -427,11 +594,9 @@ export class AgentExecutionService {
       // Decryption success is authoritative; if keys cannot decrypt (e.g. ENCRYPTION_SECRET_CHANGED), we'll skip in the decrypt catch below.
 
       // FIX PART B — EXCHANGE ERROR TRUTH SOURCE
-      // Compute exchange status ONLY from isExchangeUsable() - single source of truth
-      exchangeUsable = exchangeConfig?.exchange && 
-                      exchangeConfig?.apiKeyEncrypted && 
-                      (exchangeConfig?.secretKeyEncrypted || exchangeConfig?.secretEncrypted) &&
-                      exchangeConfig?.disconnected !== true;
+      // Use isExchangeUsable() as single source of truth - this properly handles decryption and caching
+      const exchangeUsabilityResult = await isExchangeUsable(agentConfig.userId, 'background_job');
+      exchangeUsable = exchangeUsabilityResult.usable;
       
       if (isHTFAgent) {
         if (exchangeUsable) {
@@ -440,7 +605,8 @@ export class AgentExecutionService {
           logger.debug({
             agentId,
             exchange: exchangeConfig.exchange,
-            isUsable: true
+            isUsable: true,
+            reason: exchangeUsabilityResult.reason
           }, 'HTF Agent: Exchange is usable - FORCE clearing all previous EXCHANGE_ERROR and EXCHANGE_CREDENTIALS_DECRYPT_FAILED states');
           
           // Clear any cached error states in diagnostics - not stored Firestore history
@@ -451,9 +617,8 @@ export class AgentExecutionService {
           logger.debug({
             agentId,
             exchange: exchangeConfig.exchange,
-            hasApiKey: !!exchangeConfig.apiKeyEncrypted,
-            hasSecret: !!(exchangeConfig.secretKeyEncrypted || exchangeConfig.secretEncrypted),
-            disconnected: exchangeConfig.disconnected
+            isUsable: false,
+            reason: exchangeUsabilityResult.reason
           }, 'HTF Agent: Exchange not usable - will skip with appropriate reason');
         }
       }
@@ -582,13 +747,40 @@ export class AgentExecutionService {
         return;
       }
 
-      // Debug log (temporary)
-      logger.debug({
-        agentId,
-        uid: agentConfig.userId,
-        exchange: exchangeConfig.exchange,
-        credentialsResolved: true
-      }, 'Trading Agent credentials successfully resolved');
+      // CRITICAL: When decryption succeeds, explicitly clear ALL previous exchange error states
+      // This prevents stale "Exchange keys are invalid due to encryption secret change" errors
+      // from persisting after successful decryption
+      if (apiKey && secret) {
+        // Clear any cached exchange failure flags or memory state
+        diagnostics.exchangeDecryptionSuccess = true;
+        diagnostics.exchangeUsable = true;
+        diagnostics.previousExchangeErrorsCleared = true;
+        
+        // CRITICAL FIX: Clear any stale error message from previous failed cycles
+        // This ensures diagnostics.decision.reason reflects CURRENT cycle state only
+        if (diagnostics.decision && diagnostics.decision.reason && 
+            (diagnostics.decision.reason.includes('encryption secret change') || 
+             diagnostics.decision.reason.includes('Exchange keys are invalid'))) {
+          // Reset decision to reflect successful exchange state
+          diagnostics.decision = { action: 'CONTINUE', reason: 'Exchange credentials successfully decrypted and validated' };
+          diagnostics.failure = null; // Clear any previous failure state
+          
+          logger.info({
+            agentId,
+            uid: agentConfig.userId,
+            exchange: exchangeConfig.exchange,
+            previousErrorCleared: true
+          }, 'STALE_ERROR_CLEARED: Removed previous exchange error message after successful decryption');
+        }
+        
+        logger.debug({
+          agentId,
+          uid: agentConfig.userId,
+          exchange: exchangeConfig.exchange,
+          credentialsResolved: true,
+          exchangeUsable: true
+        }, 'Trading Agent credentials successfully resolved - clearing all previous exchange error states');
+      }
 
       const exchangeCredentials: ExchangeCredentials = {
         apiKey,
@@ -1393,51 +1585,12 @@ export class AgentExecutionService {
       // CRITICAL FIX: ALWAYS persist diagnostics, even on early returns or exceptions
       // This guarantees ONE diagnostic entry per execution cycle
       try {
-        // EXECUTION STATUS RULE (KEEP AS IS): success === true → EXECUTED, success === false → FAILED, else → SKIPPED
-        if (diagnostics.execution?.success === true) {
-          diagnostics.executionStatus = 'EXECUTED';
-        } else if (diagnostics.execution?.success === false) {
-          diagnostics.executionStatus = 'FAILED';
-        } else {
-          diagnostics.executionStatus = 'SKIPPED';
-        }
-
-        // FINALLY BLOCK – READ ONLY (STRICT): If diagnostics.failure is missing → DO NOTHING
-        // NEVER invent failure in finally
-
-        // PRESERVE EXCHANGE ERROR - NEVER delete diagnostics.execution.exchangeErrorReason or diagnostics.execution.error
-        // UI must receive RAW exchange error
-
-        // Clean diagnostic payload - remove internal fields not needed by UI
-        delete diagnostics.indicators;
-        delete diagnostics.srValidation;
-        delete diagnostics.supportResistance;
-        delete diagnostics.exchangeErrorCleared;
-        delete diagnostics.previousErrorsCleared;
-        delete diagnostics.executionStateReset;
-        delete diagnostics.lastDecision;
-        delete diagnostics.lastSignal;
-        delete diagnostics.lastErrorReason;
-        delete diagnostics.cycleId;
-        delete diagnostics.exchangeUsable;
-        delete diagnostics.htfTrend;
-        delete diagnostics.ltfSignal;
-        delete diagnostics.sessionCheck;
-        delete diagnostics.candleCheck;
-        delete diagnostics.riskAnalysis;
-        delete diagnostics.signal;
-
-        // Remove old top-level failure fields (now in failure object)
-        delete diagnostics.exchangeErrorReason;
-        delete diagnostics.failureCategory;
-
-        // FINALLY BLOCK – READ ONLY: Remove execution object when SKIPPED
-        if (diagnostics.executionStatus === 'SKIPPED') {
-          delete diagnostics.execution;
-        }
-
-        await agent.storeDiagnostics(diagnostics);
-        logger.debug({ agentId, decision: diagnostics.decision }, 'Agent diagnostics persisted');
+        // STRICT DIAGNOSTICS NORMALIZATION: Enforce invariants before persistence
+        const normalizedDiagnostics = this.normalizeDiagnosticsForPersistence(diagnostics, agentId);
+        
+        await agent.storeDiagnostics(normalizedDiagnostics);
+        
+        logger.debug({ agentId, decision: normalizedDiagnostics.decision }, 'Agent diagnostics persisted with strict normalization');
       } catch (diagError) {
         logger.error({
           agentId,

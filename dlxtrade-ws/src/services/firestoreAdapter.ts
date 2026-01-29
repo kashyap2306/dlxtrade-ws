@@ -4878,6 +4878,171 @@ export class FirestoreAdapter {
   }
 
   /**
+   * Deep clean Firestore payload by recursively removing ALL undefined fields
+   * Prevents Firestore write failures due to undefined values
+   */
+  private deepCleanFirestorePayload(obj: any): any {
+    if (obj === null || obj === undefined) {
+      return null;
+    }
+    
+    if (Array.isArray(obj)) {
+      return obj.map(item => this.deepCleanFirestorePayload(item)).filter(item => item !== undefined);
+    }
+    
+    if (typeof obj === 'object') {
+      const cleaned: any = {};
+      for (const [key, value] of Object.entries(obj)) {
+        if (value !== undefined) {
+          const cleanedValue = this.deepCleanFirestorePayload(value);
+          if (cleanedValue !== undefined) {
+            cleaned[key] = cleanedValue;
+          }
+        }
+      }
+      return Object.keys(cleaned).length > 0 ? cleaned : null;
+    }
+    
+    return obj;
+  }
+
+  /**
+   * CRITICAL: Strict diagnostics normalization to prevent stale exchange errors
+   * Enforces invariants before ANY Firestore write to ensure clean state
+   */
+  private strictNormalizeDiagnosticsForFirestore(diagnostic: any, agentId: string): any {
+    // Check if exchange is successful based on diagnostic flags
+    const exchangeUsable = (diagnostic as any).exchangeUsable === true;
+    const exchangeDecryptionSuccess = (diagnostic as any).exchangeDecryptionSuccess === true;
+    const exchangeSuccessful = exchangeUsable || exchangeDecryptionSuccess;
+
+    const normalized: any = {
+      agentType: diagnostic.agentType,
+      tradingPair: diagnostic.tradingPair || diagnostic.pair || null,
+      pair: diagnostic.tradingPair || diagnostic.pair || null,
+      direction: diagnostic.direction || diagnostic.signal?.direction || null
+    };
+
+    // DECISION NORMALIZATION: Always ensure decision is clean and defined
+    if (diagnostic.decision) {
+      normalized.decision = {
+        action: diagnostic.decision.action || 'SKIP',
+        reason: diagnostic.decision.reason || 'NO_REASON_PROVIDED'
+      };
+
+      // CRITICAL INVARIANT: If exchange is successful, clear ALL exchange error references
+      if (exchangeSuccessful && normalized.decision.reason) {
+        const reason = normalized.decision.reason;
+        if (reason.includes('Exchange keys are invalid') ||
+            reason.includes('encryption secret change') ||
+            reason.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') ||
+            reason.includes('EXCHANGE_ERROR') ||
+            reason.includes('EXCHANGE_CORRUPTED') ||
+            reason.includes('EXCHANGE_NOT_USABLE') ||
+            reason.includes('NO_EXCHANGE_CREDENTIALS')) {
+          
+          // Replace with clean reason based on action
+          normalized.decision.reason = normalized.decision.action === 'SKIP' ? 'SKIPPED' : normalized.decision.action;
+          
+          logger.info({
+            agentId,
+            originalReason: reason,
+            newReason: normalized.decision.reason,
+            exchangeUsable,
+            exchangeDecryptionSuccess
+          }, 'FIRESTORE_NORMALIZATION: Cleared stale exchange error from decision.reason');
+        }
+      }
+
+      // Copy indicator breakdown if present
+      if (diagnostic.decision.indicators) {
+        normalized.decision.indicators = diagnostic.decision.indicators;
+      }
+      if (diagnostic.decision.indicatorBreakdown) {
+        normalized.decision.indicatorBreakdown = diagnostic.decision.indicatorBreakdown;
+      }
+    } else {
+      // Ensure decision always exists
+      normalized.decision = { action: 'SKIP', reason: 'NO_DECISION_PROVIDED' };
+    }
+
+    // EXECUTION NORMALIZATION: Clean execution object
+    if (diagnostic.execution) {
+      normalized.execution = {
+        status: diagnostic.execution.status || (
+          diagnostic.execution.success ? 'EXECUTED' : 
+          diagnostic.execution.exchangeError || diagnostic.execution.exchangeErrorReason ? 'FAILED' : 'SKIPPED'
+        ),
+        success: diagnostic.execution.success || false,
+        orderId: diagnostic.execution.orderId || undefined,
+        error: diagnostic.execution.error || undefined
+      };
+
+      // CRITICAL INVARIANT: If exchange is successful, remove exchangeErrorReason entirely
+      if (exchangeSuccessful) {
+        // Do NOT include exchangeErrorReason when exchange is usable
+        delete normalized.execution.exchangeErrorReason;
+        delete normalized.execution.exchangeError;
+        
+        logger.debug({
+          agentId,
+          exchangeUsable,
+          exchangeDecryptionSuccess
+        }, 'FIRESTORE_NORMALIZATION: Removed execution.exchangeErrorReason due to successful exchange state');
+      } else {
+        // Only include exchangeErrorReason if exchange is NOT usable
+        normalized.execution.exchangeErrorReason = diagnostic.execution.exchangeErrorReason || 
+                                                   diagnostic.execution.exchangeError || 
+                                                   diagnostic.execution.error || undefined;
+        normalized.execution.exchangeError = diagnostic.execution.exchangeError || undefined;
+      }
+
+      // Remove undefined fields from execution
+      Object.keys(normalized.execution).forEach(key => {
+        if (normalized.execution[key] === undefined) {
+          delete normalized.execution[key];
+        }
+      });
+    }
+
+    // SIGNAL NORMALIZATION: Clean signal object
+    if (diagnostic.signal) {
+      normalized.signal = {
+        direction: diagnostic.signal.direction || undefined,
+        entryPrice: diagnostic.signal.entryPrice || undefined,
+        stopLoss: diagnostic.signal.stopLoss || undefined,
+        takeProfit: diagnostic.signal.takeProfit || undefined,
+        rrRatio: diagnostic.signal.rrRatio || undefined
+      };
+
+      // Remove undefined fields from signal
+      Object.keys(normalized.signal).forEach(key => {
+        if (normalized.signal[key] === undefined) {
+          delete normalized.signal[key];
+        }
+      });
+
+      // Remove signal object if it's empty
+      if (Object.keys(normalized.signal).length === 0) {
+        delete normalized.signal;
+      }
+    }
+
+    // Copy other safe fields
+    if (diagnostic.runtimeState) normalized.runtimeState = diagnostic.runtimeState;
+    if (diagnostic.consensusResults) normalized.consensusResults = diagnostic.consensusResults;
+
+    // FINAL CLEANUP: Remove any remaining undefined fields at top level
+    Object.keys(normalized).forEach(key => {
+      if (normalized[key] === undefined) {
+        delete normalized[key];
+      }
+    });
+
+    return normalized;
+  }
+
+  /**
    * Save agent diagnostic log entry
    * Path: users/{uid}/agentDiagnostics/{agentId}/entries/{auto-id}
    */
@@ -4927,18 +5092,21 @@ export class FirestoreAdapter {
       // DEFENSIVE ASSERTION: Ensure we never accidentally access top-level collection
       this.assertNoTopLevelAgentDiagnosticsAccess('saveAgentDiagnostic');
 
+      // CRITICAL: Apply strict diagnostics normalization BEFORE Firestore write
+      const normalizedDiagnostic = this.strictNormalizeDiagnosticsForFirestore(diagnostic, agentId);
+
       const db = getFirebaseAdmin().firestore();
       // Write diagnostics ONLY under user document: users/{uid}/agentDiagnostics/{agentId}/entries/{auto-id}
       const entriesRef = db.collection('users').doc(uid!).collection('agentDiagnostics').doc(agentId).collection('entries');
 
-      // B) PAIR & DIRECTION FIX - Always show evaluated symbols/directions, use "--" only when never evaluated
-      const evaluatedPair = diagnostic.tradingPair || diagnostic.pair || null;
-      const evaluatedDirection = diagnostic.direction || diagnostic.signal?.direction || null;
+      // Use normalized diagnostic data for all processing
+      const evaluatedPair = normalizedDiagnostic.tradingPair || normalizedDiagnostic.pair || null;
+      const evaluatedDirection = normalizedDiagnostic.direction || null;
       
-      // C) DECISION DISPLAY - Enhanced decision summary with indicator confirmations
-      let enhancedDecision = diagnostic.decision;
-      if (diagnostic.decision.indicators) {
-        const indicators = diagnostic.decision.indicators;
+      // Enhanced decision with indicator confirmations (use normalized decision)
+      let enhancedDecision = normalizedDiagnostic.decision;
+      if (normalizedDiagnostic.decision.indicators) {
+        const indicators = normalizedDiagnostic.decision.indicators;
         const confirmations = [];
         const rejections = [];
         
@@ -4962,7 +5130,7 @@ export class FirestoreAdapter {
         if (confirmations.length > 0 || rejections.length > 0) {
           const decisionSummary = [...confirmations, ...rejections].join(', ');
           enhancedDecision = {
-            ...diagnostic.decision,
+            ...normalizedDiagnostic.decision,
             reason: decisionSummary,
             indicatorBreakdown: {
               confirmations,
@@ -4973,38 +5141,73 @@ export class FirestoreAdapter {
         }
       }
 
-      // D) EXECUTION STATUS - Enhanced execution tracking with specific error reasons
-      let enhancedExecution = diagnostic.execution;
-      if (diagnostic.execution) {
-        enhancedExecution = {
-          ...diagnostic.execution,
-          // Map generic errors to specific execution statuses
-          status: diagnostic.execution.status || (
-            diagnostic.execution.success ? 'EXECUTED' : 
-            diagnostic.execution.exchangeError || diagnostic.execution.exchangeErrorReason ? 'FAILED' : 'SKIPPED'
-          ),
-          // Preserve exact exchange error details (never show generic "EXCHANGE ERROR")
-          exchangeErrorReason: diagnostic.execution.exchangeErrorReason || 
-                              diagnostic.execution.exchangeError || 
-                              diagnostic.execution.error
-        };
-      }
+      // Enhanced execution tracking (use normalized execution)
+      let enhancedExecution = normalizedDiagnostic.execution;
 
-      await entriesRef.add({
+      // CRITICAL: Write clean, normalized diagnostic object to Firestore
+      const firestorePayload = {
         timestamp: admin.firestore.Timestamp.now(),
         agentId, // Include agentId in document data
-        agentType: diagnostic.agentType,
+        agentType: normalizedDiagnostic.agentType,
         tradingPair: evaluatedPair,
         pair: evaluatedPair,
         direction: evaluatedDirection,
         decision: enhancedDecision,
-        signal: diagnostic.signal || null,
+        signal: normalizedDiagnostic.signal || null,
         execution: enhancedExecution || null,
-        runtimeState: diagnostic.runtimeState || null,
-        consensusResults: diagnostic.consensusResults || null,
-      });
+        runtimeState: normalizedDiagnostic.runtimeState || null,
+        consensusResults: normalizedDiagnostic.consensusResults || null,
+      };
 
-      logger.debug({ agentId, uid, action: diagnostic.decision.action }, 'Agent diagnostic saved under user document');
+      // FINAL SANITIZATION: Remove any undefined values before Firestore write
+      const sanitizedPayload = this.deepCleanFirestorePayload(firestorePayload);
+
+      // CRITICAL: Additional explicit undefined field removal to prevent Firestore write failures
+      if (sanitizedPayload.execution) {
+        Object.keys(sanitizedPayload.execution).forEach(key => {
+          if (sanitizedPayload.execution[key] === undefined) {
+            delete sanitizedPayload.execution[key];
+          }
+        });
+        // Remove execution object if it becomes empty
+        if (Object.keys(sanitizedPayload.execution).length === 0) {
+          delete sanitizedPayload.execution;
+        }
+      }
+
+      if (sanitizedPayload.decision) {
+        Object.keys(sanitizedPayload.decision).forEach(key => {
+          if (sanitizedPayload.decision[key] === undefined) {
+            delete sanitizedPayload.decision[key];
+          }
+        });
+        // Ensure decision.reason is never undefined
+        if (!sanitizedPayload.decision.reason) {
+          sanitizedPayload.decision.reason = sanitizedPayload.decision.action || 'NO_REASON';
+        }
+      }
+
+      if (sanitizedPayload.failure) {
+        Object.keys(sanitizedPayload.failure).forEach(key => {
+          if (sanitizedPayload.failure[key] === undefined) {
+            delete sanitizedPayload.failure[key];
+          }
+        });
+        // Remove failure object if it becomes empty
+        if (Object.keys(sanitizedPayload.failure).length === 0) {
+          delete sanitizedPayload.failure;
+        }
+      }
+
+      await entriesRef.add(sanitizedPayload);
+
+      logger.debug({ 
+        agentId, 
+        uid, 
+        action: enhancedDecision.action,
+        reason: enhancedDecision.reason,
+        normalized: 'strict_normalization_applied'
+      }, 'Agent diagnostic saved with strict normalization');
 
       // Cleanup old diagnostics (keep last 100)
       await this.cleanupOldDiagnostics(agentId, uid);
@@ -5012,6 +5215,54 @@ export class FirestoreAdapter {
       logger.error({ error: error.message, agentId, uid }, 'Failed to save agent diagnostic');
       // Don't throw - diagnostics are non-critical
     }
+  }
+
+  /**
+   * Clean historical diagnostic data to prevent stale exchange errors from appearing in UI
+   * This ensures that even old diagnostics don't show exchange errors when exchange is currently usable
+   */
+  private cleanHistoricalDiagnostic(data: any, agentId: string): any {
+    if (!data || !data.decision) {
+      return data;
+    }
+
+    // Check if this diagnostic has exchange success markers
+    const hasExchangeSuccess = (data as any).exchangeDecryptionSuccess === true || 
+                               (data as any).exchangeUsable === true || 
+                               (data as any).exchangeErrorsCleared === true;
+    
+    let cleanedDecision = data.decision;
+    
+    // If exchange was successful but decision shows exchange errors, clean it
+    if (hasExchangeSuccess && cleanedDecision?.reason) {
+      const reason = cleanedDecision.reason;
+      if (reason.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') ||
+          reason.includes('EXCHANGE_ERROR') ||
+          reason.includes('EXCHANGE_CORRUPTED') ||
+          reason.includes('Exchange keys are invalid') ||
+          reason.includes('encryption secret change') ||
+          reason.includes('EXCHANGE_NOT_USABLE') ||
+          reason.includes('NO_EXCHANGE_CREDENTIALS')) {
+        
+        // Clean the reason to remove stale exchange errors
+        cleanedDecision = {
+          ...cleanedDecision,
+          reason: cleanedDecision.action === 'SKIP' ? 'SKIPPED' : cleanedDecision.action
+        };
+        
+        logger.debug({
+          agentId,
+          originalReason: reason,
+          cleanedReason: cleanedDecision.reason,
+          hasExchangeSuccess
+        }, 'HISTORICAL_DIAGNOSTIC_CLEANUP: Cleaned stale exchange error from historical diagnostic');
+      }
+    }
+
+    return {
+      ...data,
+      decision: cleanedDecision
+    };
   }
 
   /**
@@ -5054,19 +5305,23 @@ export class FirestoreAdapter {
       const diagnostics: any[] = [];
       snapshot.forEach(doc => {
         const data = doc.data();
+        
+        // CRITICAL: Apply normalization to historical diagnostics to prevent stale exchange errors
+        const cleanedData = this.cleanHistoricalDiagnostic(data, agentId);
+        
         diagnostics.push({
           id: doc.id,
-          timestamp: data.timestamp?.toDate() || new Date(),
-          agentId: data.agentId,
-          agentType: data.agentType,
-          tradingPair: data.tradingPair,
-          pair: data.pair, // B) PAIR & DIRECTION FIX - Include both fields
-          direction: data.direction, // B) PAIR & DIRECTION FIX - Include direction
-          decision: data.decision,
-          signal: data.signal,
-          execution: data.execution,
-          runtimeState: data.runtimeState,
-          consensusResults: data.consensusResults,
+          timestamp: cleanedData.timestamp?.toDate() || new Date(),
+          agentId: cleanedData.agentId,
+          agentType: cleanedData.agentType,
+          tradingPair: cleanedData.tradingPair,
+          pair: cleanedData.pair,
+          direction: cleanedData.direction,
+          decision: cleanedData.decision,
+          signal: cleanedData.signal,
+          execution: cleanedData.execution,
+          runtimeState: cleanedData.runtimeState,
+          consensusResults: cleanedData.consensusResults,
         });
       });
 

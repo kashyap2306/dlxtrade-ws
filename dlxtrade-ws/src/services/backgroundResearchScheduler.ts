@@ -819,49 +819,65 @@ export class BackgroundResearchScheduler {
           // Scheduler should NOT run when exchange is explicitly disconnected
           const exchangeStatus = await this.hasUsableExchangeAPIs(uid);
 
-          // MANDATORY RULES: Handle exchange status based on reason
-          // STRICT INVARIANT:
-          // 1. not_connected → SOFT SKIP ONLY
-          if (exchangeStatus.reason === "not_connected") {
-            // SOFT SKIP: Exchange not usable - DO NOT stop scheduler
-            console.log("🔥 [HARD_LOG] [AUTO_TRADE_SOFT_SKIP]", {
-              uid,
-              reason: "exchange_not_connected",
-              mode: "AUTO_TRADE_RESEARCH_SOFT_SKIP",
-            });
+          // PRIORITY ORDER: isExchangeUsable().usable result > disconnected flags > historical state
+          // If isExchangeUsable() returns usable=true, ALWAYS proceed regardless of reason
+          if (!exchangeStatus.usable) {
+            // MANDATORY RULES: Handle exchange status based on reason
+            // STRICT INVARIANT:
+            // 1. not_connected → SOFT SKIP ONLY
+            if (exchangeStatus.reason === "not_connected") {
+              // SOFT SKIP: Exchange not usable - DO NOT stop scheduler
+              console.log("🔥 [HARD_LOG] [AUTO_TRADE_SOFT_SKIP]", {
+                uid,
+                reason: "exchange_not_connected",
+                usable: exchangeStatus.usable,
+                mode: "AUTO_TRADE_RESEARCH_SOFT_SKIP",
+              });
 
-            logger.warn(
-              { uid },
-              "[SCHEDULER_SOFT_SKIP] exchange not_connected – skipping without stopping",
-            );
+              logger.warn(
+                { uid, usable: exchangeStatus.usable, reason: exchangeStatus.reason },
+                "[SCHEDULER_SOFT_SKIP] exchange not usable (not_connected) – skipping without stopping",
+              );
 
-            // Add to soft-skip cooldown - 2 minute cooldown to avoid thrashing
-            this.softSkipUsers.set(uid, {
-              until: Date.now() + 120000, // 2 minutes
-              reason: "not_connected",
-            });
+              // Add to soft-skip cooldown - 2 minute cooldown to avoid thrashing
+              this.softSkipUsers.set(uid, {
+                until: Date.now() + 120000, // 2 minutes
+                reason: "not_connected",
+              });
 
-            // DO NOT call forceStopUserScheduler
-            // DO NOT clear jobState
-            // Just skip this cycle
-            return null;
-          } else if (exchangeStatus.reason === "disconnected") {
-            console.log(
-              "🔥 [HARD_LOG] [AUTO_TRADE_BLOCKED_EXCHANGE_DISCONNECTED]",
+              // DO NOT call forceStopUserScheduler
+              // DO NOT clear jobState
+              // Just skip this cycle
+              return null;
+            } else if (exchangeStatus.reason === "disconnected") {
+              console.log(
+                "🔥 [HARD_LOG] [AUTO_TRADE_BLOCKED_EXCHANGE_DISCONNECTED]",
+                {
+                  uid,
+                  reason: "exchange_hard_stop_" + exchangeStatus.reason,
+                  usable: exchangeStatus.usable,
+                  mode: "AUTO_TRADE_RESEARCH_BLOCKED",
+                },
+              );
+
+              logger.warn(
+                { uid, reason: exchangeStatus.reason, usable: exchangeStatus.usable },
+                "🚫 [SCHEDULER] Auto-Trade BLOCKED - exchange not usable (disconnected) - scheduler will be stopped",
+              );
+
+              // Do NOT continue with AUTO_TRADE_RESEARCH mode
+              return null;
+            }
+          } else {
+            // Exchange is usable - log success and proceed
+            logger.info(
               {
                 uid,
-                reason: "exchange_hard_stop_" + exchangeStatus.reason,
-                mode: "AUTO_TRADE_RESEARCH_BLOCKED",
+                usable: exchangeStatus.usable,
+                reason: exchangeStatus.reason,
               },
+              "✅ [SCHEDULER] Exchange is usable - proceeding with AUTO_TRADE_RESEARCH mode",
             );
-
-            logger.warn(
-              { uid, reason: exchangeStatus.reason },
-              "🚫 [SCHEDULER] Auto-Trade BLOCKED - exchange disconnected - scheduler will be stopped",
-            );
-
-            // Do NOT continue with AUTO_TRADE_RESEARCH mode
-            return null;
           }
 
           // CRITICAL: Primary API missing should NOT block scheduler
@@ -4424,27 +4440,16 @@ export class BackgroundResearchScheduler {
     uid: string,
   ): Promise<{ usable: boolean; reason: string }> {
     try {
-      // CRITICAL: Exchange is usable if encrypted keys exist - NEVER use decryption to determine usability
-      // This check determines if auto-trade can execute, based on Firestore presence only
+      // CRITICAL: Use isExchangeUsable() as single source of truth
+      // PRIORITY ORDER: isExchangeUsable().usable result > disconnected flags > historical state
       const { isExchangeUsable } = await import("./firestoreAdapter");
       const result = await isExchangeUsable(uid, "background_job");
 
-      // MANDATORY GUARD: ensure reason is normalized to one of the expected values
-      // This prevents any unexpected reason from triggering hard stops
-      const normalizedReason =
-        result.reason === "disconnected"
-          ? "disconnected"
-          : result.reason === "connected"
-            ? "connected"
-            : "not_connected"; // Normalize all other reasons to not_connected
-
-      // STRICT INVARIANT: Make usable flag consistent with reason
-      // This prevents boolean-based checks from causing inconsistent behavior
-      const normalizedUsable = normalizedReason === "connected";
-
+      // CRITICAL: Return the exact result from isExchangeUsable() without modification
+      // Do NOT normalize or override the usable flag - it is authoritative
       return {
-        usable: normalizedUsable, // Now consistent with reason
-        reason: normalizedReason,
+        usable: result.usable, // Use exact result from isExchangeUsable()
+        reason: result.reason,
       };
     } catch (error: any) {
       // Log error but return false - this should not happen with pure Firestore checks

@@ -137,8 +137,9 @@
 
   /* Prevent horizontal scroll & layout shift with performance optimizations */
   html, body, #__next, #root {
-    @apply overflow-x-hidden w-full min-h-screen;
+    @apply w-full min-h-screen;
     /* Performance optimizations for smooth scrolling */
+    overflow-x: hidden;
     overflow-y: auto;
     overscroll-behavior-y: contain;
     scroll-behavior: smooth;

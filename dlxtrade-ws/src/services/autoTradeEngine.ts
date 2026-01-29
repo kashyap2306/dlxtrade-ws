@@ -831,7 +831,10 @@ export class AutoTradeEngine {
 
       const { resolveExchangeConnector } = await import("./exchangeResolver");
       console.log(`🔥 [DEBUG] [BEFORE_RESOLVE_EXCHANGE_CONNECTOR] uid: ${uid}`);
-      const resolved = await resolveExchangeConnector(uid, "background_job");
+      
+      // CRITICAL FIX: Use "user_request" context to match isExchangeUsable() context
+      // This ensures consistency between usability check and adapter initialization
+      const resolved = await resolveExchangeConnector(uid, "user_request");
       console.log(
         `🔥 [DEBUG] [AFTER_RESOLVE_EXCHANGE_CONNECTOR] result: ${resolved ? "SUCCESS" : "NULL"}`,
       );
@@ -4017,81 +4020,104 @@ export class AutoTradeEngine {
     // Use user_request context for actual trading operations that need credential validation
     const exchangeUsability = await isExchangeUsable(uid, "user_request");
 
-    const normalizedExchangeReason =
-      exchangeUsability.reason === "connected"
-        ? "connected"
-        : exchangeUsability.reason === "disconnected"
-          ? "disconnected"
-          : "not_connected";
-
-    // MANDATORY INVARIANT: Same as scheduler
-    // 1. not_connected → SOFT SKIP ONLY
-    if (normalizedExchangeReason === "not_connected") {
-      // SOFT SKIP: Exchange not usable - skip this cycle
-      logger.warn(
+    // PRIORITY ORDER: isExchangeUsable().usable result > disconnected flags > historical state
+    // If isExchangeUsable() returns usable=true, ALWAYS proceed regardless of reason
+    if (exchangeUsability.usable) {
+      // Exchange is usable - log success and proceed
+      // CRITICAL FIX: When usable=true, NEVER block regardless of disconnected flags
+      logger.info(
         {
           uid,
           exchange: exchangeUsability.exchange,
-          reason: normalizedExchangeReason,
-          softSkipOnly: true,
+          reason: exchangeUsability.reason,
+          usable: exchangeUsability.usable,
         },
-        `[AUTO_TRADE_SOFT_SKIP] Exchange not_connected - skipping cycle without stopping`,
+        `[AUTO_TRADE_PROCEED] Exchange is usable - proceeding with auto-trade cycle`,
       );
+      // CRITICAL: Clear any disconnected flags when exchange is usable
+      // This ensures disconnected state doesn't persist when decryption succeeds
+      
+      // SKIP the entire exchange blocking logic when usable=true
+      // Continue to the rest of the auto-trade cycle
+    } else {
+      const normalizedExchangeReason =
+        exchangeUsability.reason === "connected"
+          ? "connected"
+          : exchangeUsability.reason === "disconnected"
+            ? "disconnected"
+            : "not_connected";
 
-      // Save SKIPPED history for not_connected
-      if (!skipHistoryStorage) {
-        await saveAutoTradeHistorySkipped(
-          uid,
-          "EXCHANGE_NOT_CONNECTED",
-          "Exchange not connected - soft skip only",
-          cycleId,
-        );
-      }
-
-      // CRITICAL FIX: Also write diagnostic entry for "Recent Cycle Results" UI
-      try {
-        await firestoreAdapter.saveAgentDiagnostic('AUTO_TRADE_AGENT', {
-          agentType: 'TRADING_AGENT',
-          tradingPair: 'AUTO_TRADE_CYCLE',
-          direction: 'LONG',
-          decision: {
-            action: 'SKIP',
-            reason: 'Exchange not connected'
+      // MANDATORY INVARIANT: Same as scheduler
+      // 1. not_connected → SOFT SKIP ONLY
+      if (normalizedExchangeReason === "not_connected") {
+        // SOFT SKIP: Exchange not usable - skip this cycle
+        logger.warn(
+          {
+            uid,
+            exchange: exchangeUsability.exchange,
+            reason: normalizedExchangeReason,
+            usable: exchangeUsability.usable,
+            softSkipOnly: true,
           },
-          execution: {
-            status: 'SKIPPED',
-            success: false,
-            exchangeErrorReason: 'Exchange not connected'
-          }
-        }, uid);
-      } catch (diagnosticErr: any) {
-        logger.warn({ uid, error: diagnosticErr.message }, 'Failed to save diagnostic for exchange not connected');
-      }
-
-      return null; // Cycle completed with SKIPPED history (SOFT SKIP)
-    } else if (normalizedExchangeReason === "disconnected") {
-      // HARD STOP: Exchange disconnected by user
-      logger.warn(
-        {
-          uid,
-          exchange: exchangeUsability.exchange,
-          reason: normalizedExchangeReason,
-          hardStop: true,
-        },
-        `AUTO_TRADE_BLOCKED: EXCHANGE_${normalizedExchangeReason.toUpperCase()} - hard stop required`,
-      );
-
-      // Save SKIPPED history for disconnected
-      if (!skipHistoryStorage) {
-        await saveAutoTradeHistorySkipped(
-          uid,
-          "EXCHANGE_NOT_USABLE",
-          normalizedExchangeReason,
-          cycleId,
+          `[AUTO_TRADE_SOFT_SKIP] Exchange not usable (not_connected) - skipping cycle without stopping`,
         );
-      }
 
-      return null; // Cycle completed with SKIPPED history (HARD STOP)
+        // Save SKIPPED history for not_connected
+        if (!skipHistoryStorage) {
+          await saveAutoTradeHistorySkipped(
+            uid,
+            "EXCHANGE_NOT_CONNECTED",
+            "Exchange not connected - soft skip only",
+            cycleId,
+          );
+        }
+
+        // CRITICAL FIX: Also write diagnostic entry for "Recent Cycle Results" UI
+        try {
+          await firestoreAdapter.saveAgentDiagnostic('AUTO_TRADE_AGENT', {
+            agentType: 'TRADING_AGENT',
+            tradingPair: 'AUTO_TRADE_CYCLE',
+            direction: 'LONG',
+            decision: {
+              action: 'SKIP',
+              reason: 'Exchange not connected'
+            },
+            execution: {
+              status: 'SKIPPED',
+              success: false,
+              exchangeErrorReason: 'Exchange not connected'
+            }
+          }, uid);
+        } catch (diagnosticErr: any) {
+          logger.warn({ uid, error: diagnosticErr.message }, 'Failed to save diagnostic for exchange not connected');
+        }
+
+        return null; // Cycle completed with SKIPPED history (SOFT SKIP)
+      } else if (normalizedExchangeReason === "disconnected") {
+        // HARD STOP: Exchange disconnected by user
+        logger.warn(
+          {
+            uid,
+            exchange: exchangeUsability.exchange,
+            reason: normalizedExchangeReason,
+            usable: exchangeUsability.usable,
+            hardStop: true,
+          },
+          `AUTO_TRADE_BLOCKED: EXCHANGE_${normalizedExchangeReason.toUpperCase()} - hard stop required`,
+        );
+
+        // Save SKIPPED history for disconnected
+        if (!skipHistoryStorage) {
+          await saveAutoTradeHistorySkipped(
+            uid,
+            "EXCHANGE_NOT_USABLE",
+            normalizedExchangeReason,
+            cycleId,
+          );
+        }
+
+        return null; // Cycle completed with SKIPPED history (HARD STOP)
+      }
     }
 
     // CRITICAL: Validate provided research result
@@ -4604,59 +4630,81 @@ export class AutoTradeEngine {
     // Use user_request context for actual trading operations that need credential validation
     const exchangeUsability = await isExchangeUsable(uid, "user_request");
 
-    const normalizedExchangeReason =
-      exchangeUsability.reason === "connected"
-        ? "connected"
-        : exchangeUsability.reason === "disconnected"
-          ? "disconnected"
-          : "not_connected";
-
-    // MANDATORY INVARIANT: Same as scheduler
-    // 1. not_connected → SOFT SKIP ONLY
-    if (normalizedExchangeReason === "not_connected") {
-      // SOFT SKIP: Exchange not usable - skip this cycle
-      logger.warn(
+    // PRIORITY ORDER: isExchangeUsable().usable result > disconnected flags > historical state
+    // If isExchangeUsable() returns usable=true, ALWAYS proceed regardless of reason
+    if (exchangeUsability.usable) {
+      // Exchange is usable - log success and proceed
+      logger.info(
         {
           uid,
           exchange: exchangeUsability.exchange,
-          reason: normalizedExchangeReason,
-          softSkipOnly: true,
+          reason: exchangeUsability.reason,
+          usable: exchangeUsability.usable,
         },
-        `[AUTO_TRADE_RESEARCH_SOFT_SKIP] Exchange not_connected - skipping cycle without stopping`,
+        `[AUTO_TRADE_RESEARCH_PROCEED] Exchange is usable - proceeding with auto-trade research cycle`,
       );
+      // CRITICAL: Clear any disconnected flags when exchange is usable
+      // This ensures disconnected state doesn't persist when decryption succeeds
+      
+      // SKIP the entire exchange blocking logic when usable=true
+      // Continue to the rest of the research cycle
+    } else {
+      const normalizedExchangeReason =
+        exchangeUsability.reason === "connected"
+          ? "connected"
+          : exchangeUsability.reason === "disconnected"
+            ? "disconnected"
+            : "not_connected";
 
-      // Save SKIPPED history for not_connected
-      if (!skipHistoryStorage) {
-        await saveAutoTradeHistorySkipped(
-          uid,
-          "EXCHANGE_NOT_CONNECTED",
-          "Exchange not connected - soft skip only",
+      // MANDATORY INVARIANT: Same as scheduler
+      // 1. not_connected → SOFT SKIP ONLY
+      if (normalizedExchangeReason === "not_connected") {
+        // SOFT SKIP: Exchange not usable - skip this cycle
+        logger.warn(
+          {
+            uid,
+            exchange: exchangeUsability.exchange,
+            reason: normalizedExchangeReason,
+            usable: exchangeUsability.usable,
+            softSkipOnly: true,
+          },
+          `[AUTO_TRADE_RESEARCH_SOFT_SKIP] Exchange not usable (not_connected) - skipping cycle without stopping`,
         );
-      }
 
-      return null; // Cycle completed with SKIPPED history (SOFT SKIP)
-    } else if (normalizedExchangeReason === "disconnected") {
-      // HARD STOP: Exchange disconnected by user
-      logger.warn(
-        {
-          uid,
-          exchange: exchangeUsability.exchange,
-          reason: normalizedExchangeReason,
-          hardStop: true,
-        },
-        `AUTO_TRADE_RESEARCH_BLOCKED: EXCHANGE_${normalizedExchangeReason.toUpperCase()} - hard stop required`,
-      );
+        // Save SKIPPED history for not_connected
+        if (!skipHistoryStorage) {
+          await saveAutoTradeHistorySkipped(
+            uid,
+            "EXCHANGE_NOT_CONNECTED",
+            "Exchange not connected - soft skip only",
+          );
+        }
 
-      // Save SKIPPED history for disconnected
-      if (!skipHistoryStorage) {
-        await saveAutoTradeHistorySkipped(
-          uid,
-          "EXCHANGE_NOT_USABLE",
-          normalizedExchangeReason,
+        return null; // Cycle completed with SKIPPED history (SOFT SKIP)
+      } else if (normalizedExchangeReason === "disconnected") {
+        // HARD STOP: Exchange disconnected by user
+        logger.warn(
+          {
+            uid,
+            exchange: exchangeUsability.exchange,
+            reason: normalizedExchangeReason,
+            usable: exchangeUsability.usable,
+            hardStop: true,
+          },
+          `AUTO_TRADE_RESEARCH_BLOCKED: EXCHANGE_${normalizedExchangeReason.toUpperCase()} - hard stop required`,
         );
-      }
 
-      return null; // Cycle completed with SKIPPED history (HARD STOP)
+        // Save SKIPPED history for disconnected
+        if (!skipHistoryStorage) {
+          await saveAutoTradeHistorySkipped(
+            uid,
+            "EXCHANGE_NOT_USABLE",
+            normalizedExchangeReason,
+          );
+        }
+
+        return null; // Cycle completed with SKIPPED history (HARD STOP)
+      }
     }
     console.log(
       "🔥 [HARD_LOG] [AUTO_TRADE_CYCLE_START] runAutoTradeResearchCycle() called for user:",
@@ -4992,62 +5040,83 @@ export class AutoTradeEngine {
         // CRITICAL: Reuse exchange usability result from cycle start (already checked above)
         // If exchange decryption failed, do NOT skip research.
         // Research must run to support Telegram alerts and History. Only EXECUTION is blocked.
-        // MANDATORY INVARIANT: Same as scheduler
-        // 1. not_connected → SOFT SKIP ONLY (of execution, not research)
-        // 2. disconnected / invalid_keys → HARD STOP
+        // PRIORITY ORDER: isExchangeUsable().usable result > disconnected flags > historical state
 
-        // NOTE: At this point in the cycle we expect exchange to be connected (early returns above).
-        // Use a non-narrowed string for defensive checks to keep TypeScript happy.
-        const executionExchangeReason = exchangeUsability.reason as string;
+        // CRITICAL FIX: Only block execution if exchange is NOT usable according to isExchangeUsable()
+        // Rule 1: If isExchangeUsable().usable === true, NEVER block execution
+        // Rule 2: disconnected/disconnectedAt flags must be ignored when usability check succeeds
+        if (!exchangeUsability.usable) {
+          const executionExchangeReason = exchangeUsability.reason as string;
 
-        // Always block execution if exchange is not usable, but handle differently based on reason
-        if (executionExchangeReason === "not_connected") {
-          // SOFT SKIP: Block execution only, continue research
-          executionBlocked = true;
-          executionBlockReason = "EXCHANGE_NOT_CONNECTED";
-          const reason = AUTO_TRADE_REASONS.SKIPPED_EXCHANGE_UNAVAILABLE;
+          // Always block execution if exchange is not usable, but handle differently based on reason
+          if (executionExchangeReason === "not_connected") {
+            // SOFT SKIP: Block execution only, continue research
+            executionBlocked = true;
+            executionBlockReason = "EXCHANGE_NOT_CONNECTED";
+            const reason = AUTO_TRADE_REASONS.SKIPPED_EXCHANGE_UNAVAILABLE;
 
-          logger.warn(
+            logger.warn(
+              {
+                uid,
+                error: exchangeUsability.reason,
+                usable: exchangeUsability.usable,
+                executionBlocked: true,
+                softSkipOnly: true,
+                reason:
+                  "Exchange not usable (not_connected) - execution will be skipped, but research continues",
+              },
+              "⚠️ [AUTO_TRADE_SOFT_SKIP] Exchange not usable - research will continue, only execution blocked",
+            );
+          } else if (executionExchangeReason === "disconnected") {
+            // HARD STOP for execution, but still continue with research
+            executionBlocked = true;
+            executionBlockReason =
+              "EXCHANGE_" + executionExchangeReason.toUpperCase();
+            const reason = AUTO_TRADE_REASONS.SKIPPED_EXCHANGE_UNAVAILABLE;
+
+            logger.warn(
+              {
+                uid,
+                error: executionExchangeReason,
+                usable: exchangeUsability.usable,
+                executionBlocked: true,
+                hardStop: true,
+                reason: `Exchange ${executionExchangeReason} - execution will be blocked with hard stop`,
+              },
+              `⚠️ [AUTO_TRADE_HARD_STOP] Exchange ${executionExchangeReason} - research will continue, execution blocked with hard stop`,
+            );
+          }
+
+          if (executionBlocked) {
+            // Log activity but CONTINUE to research
+            await logAutoTradeSkip(uid, AUTO_TRADE_REASONS.SKIPPED_EXCHANGE_UNAVAILABLE, {
+              exchangeStatus: "unavailable",
+              additionalDetails: {
+                details: "Exchange not usable according to isExchangeUsable(). Execution blocked, but research will continue.",
+                error: exchangeUsability.reason,
+                usable: exchangeUsability.usable,
+              },
+            });
+
+            // DO NOT RETURN NULL - Proceed to research
+          }
+        } else {
+          // CRITICAL FIX: Exchange is usable - NEVER block execution regardless of disconnected flags
+          // When isExchangeUsable().usable === true, both research and execution should proceed normally
+          // CLEAR any execution blocking flags that might have been set elsewhere
+          executionBlocked = false;
+          executionBlockReason = null;
+          
+          logger.info(
             {
               uid,
-              error: exchangeUsability.reason,
-              executionBlocked: true,
-              softSkipOnly: true,
-              reason:
-                "Exchange not connected - execution will be skipped, but research continues",
+              exchange: exchangeUsability.exchange,
+              reason: exchangeUsability.reason,
+              usable: exchangeUsability.usable,
+              executionAllowed: true,
             },
-            "⚠️ [AUTO_TRADE_SOFT_SKIP] Exchange not connected - research will continue, only execution blocked",
+            `[AUTO_TRADE_EXECUTION_ALLOWED] Exchange is usable - both research and execution will proceed`,
           );
-        } else if (executionExchangeReason === "disconnected") {
-          // HARD STOP for execution, but still continue with research
-          executionBlocked = true;
-          executionBlockReason =
-            "EXCHANGE_" + executionExchangeReason.toUpperCase();
-          const reason = AUTO_TRADE_REASONS.SKIPPED_EXCHANGE_UNAVAILABLE;
-
-          logger.warn(
-            {
-              uid,
-              error: executionExchangeReason,
-              executionBlocked: true,
-              hardStop: true,
-              reason: `Exchange ${executionExchangeReason} - execution will be blocked with hard stop`,
-            },
-            `⚠️ [AUTO_TRADE_HARD_STOP] Exchange ${executionExchangeReason} - research will continue, execution blocked with hard stop`,
-          );
-        }
-
-        if (executionBlocked) {
-          // Log activity but CONTINUE to research
-          await logAutoTradeSkip(uid, AUTO_TRADE_REASONS.SKIPPED_EXCHANGE_UNAVAILABLE, {
-            exchangeStatus: "unavailable",
-            additionalDetails: {
-              details: "Exchange API key decryption failed. Execution blocked, but research will continue.",
-              error: exchangeUsability.reason,
-            },
-          });
-
-          // DO NOT RETURN NULL - Proceed to research
         }
 
         // 4. Trade Monitoring (Cleanup)
