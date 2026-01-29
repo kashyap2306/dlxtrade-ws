@@ -532,6 +532,36 @@ export class AutoTradeEngine {
 
   // Guard to prevent infinite recursion and redundant default config creation
   private static configCreatedOnce: Set<string> = new Set();
+  
+  // CRITICAL: Track cycleIds that have already written history to prevent duplicates
+  // Map<uid, Set<cycleId>>
+  private cycleHistoryWritten: Map<string, Set<string>> = new Map();
+  
+  /**
+   * Check if history has already been written for this cycleId
+   */
+  private hasHistoryForCycle(uid: string, cycleId: string): boolean {
+    const userCycles = this.cycleHistoryWritten.get(uid);
+    return userCycles ? userCycles.has(cycleId) : false;
+  }
+  
+  /**
+   * Mark that history has been written for this cycleId
+   */
+  private markHistoryWritten(uid: string, cycleId: string): void {
+    if (!this.cycleHistoryWritten.has(uid)) {
+      this.cycleHistoryWritten.set(uid, new Set());
+    }
+    this.cycleHistoryWritten.get(uid)!.add(cycleId);
+    
+    // Clean up old cycleIds (keep only last 100 per user to prevent memory leak)
+    const userCycles = this.cycleHistoryWritten.get(uid)!;
+    if (userCycles.size > 100) {
+      const cyclesArray = Array.from(userCycles);
+      const toRemove = cyclesArray.slice(0, cyclesArray.length - 100);
+      toRemove.forEach(id => userCycles.delete(id));
+    }
+  }
 
   /**
    * Get or create user engine instance
@@ -3861,6 +3891,103 @@ export class AutoTradeEngine {
       cycleId,
     );
 
+    // CRITICAL FIX: HTF agent bypass - IMMEDIATELY return BEFORE any auto-trade logic
+    // HTF agents are research-only and should NOT run auto-trade execution
+    const isHTFAgent = researchResult?.metadata?.agentType === 'HTF_TREND_FILTER' || 
+                       researchResult?.agentId === 'htf-trend-filter-agent' ||
+                       researchResult?.source === 'HTF_AGENT';
+    
+    if (isHTFAgent) {
+      logger.info(
+        { uid, cycleId, agentType: researchResult?.metadata?.agentType },
+        "🔍 [HTF_AGENT_BYPASS] HTF agent detected - bypassing ALL auto-trade logic (research-only mode)"
+      );
+      
+      // CRITICAL: Save HTF diagnostics with correct agentId (NOT AUTO_TRADE_AGENT)
+      // HTF diagnostics must be saved to users/{uid}/agentDiagnostics/HTF_*/entries
+      try {
+        const htfAgentId = researchResult?.agentId || 'htf-trend-filter-agent';
+        const tradingPair = researchResult?.symbol || researchResult?.metadata?.symbol || 'BTC/USDT';
+        const signal = researchResult?.signal || 'HOLD';
+        const accuracy = researchResult?.accuracy || 0;
+        
+        // Determine skip reason from research result
+        let skipReason = 'Research completed';
+        let conditionMatched = false;
+        
+        if (researchResult?.skipReason) {
+          skipReason = researchResult.skipReason;
+        } else if (signal === 'HOLD') {
+          skipReason = `HOLD signal (accuracy: ${(accuracy * 100).toFixed(1)}%)`;
+        } else if (accuracy < 0.75) {
+          skipReason = `Accuracy too low: ${(accuracy * 100).toFixed(1)}% < 75%`;
+        } else if (!researchResult?.tradePlan) {
+          skipReason = 'No valid trade plan generated';
+        } else {
+          conditionMatched = true;
+          skipReason = `${signal} signal (accuracy: ${(accuracy * 100).toFixed(1)}%)`;
+        }
+        
+        await firestoreAdapter.saveAgentDiagnostic(htfAgentId, {
+          agentType: 'HTF_TREND_FILTER_AGENT',
+          tradingPair: tradingPair,
+          direction: signal === 'BUY' ? 'LONG' : signal === 'SELL' ? 'SHORT' : 'LONG',
+          decision: {
+            action: conditionMatched ? 'TRADE' : 'SKIP',
+            reason: skipReason
+          },
+          signal: researchResult?.tradePlan ? {
+            direction: signal === 'BUY' ? 'LONG' : signal === 'SELL' ? 'SHORT' : 'LONG',
+            entryPrice: researchResult.tradePlan.entryPrice || 0,
+            stopLoss: researchResult.tradePlan.stopLoss || 0,
+            takeProfit: researchResult.tradePlan.takeProfit2 || researchResult.tradePlan.takeProfit || 0,
+            rrRatio: researchResult.tradePlan.riskRewardRatio || 0
+          } : undefined,
+          execution: {
+            status: conditionMatched ? 'EXECUTED' : 'SKIPPED',
+            success: conditionMatched,
+            exchangeErrorReason: conditionMatched ? undefined : skipReason
+          },
+          runtimeState: {
+            cycleId: cycleId,
+            researchExecuted: true,
+            accuracy: accuracy,
+            signal: signal,
+            conditionMatched: conditionMatched,
+            skipReason: skipReason,
+            skipDetails: researchResult?.skipDetails || skipReason,
+            researchStatus: researchResult?.status || 'COMPLETED'
+          }
+        }, uid);
+        
+        logger.info(
+          { uid, cycleId, htfAgentId, skipReason, conditionMatched },
+          '✅ [HTF_DIAGNOSTICS] HTF agent diagnostics saved'
+        );
+      } catch (diagnosticError: any) {
+        logger.error(
+          { uid, cycleId, error: diagnosticError.message },
+          '❌ [HTF_DIAGNOSTICS] Failed to save HTF diagnostics - continuing'
+        );
+      }
+      
+      // HTF agents only run research and save diagnostics
+      // They do NOT:
+      // - Check exchange usability
+      // - Write AUTO_TRADE_CYCLE history
+      // - Run AUTO_TRADE_BLOCKED logic
+      // - Call executeTradeWithResearchResult
+      // Return the research result without any auto-trade processing
+      return {
+        symbol: researchResult.symbol,
+        signal: researchResult.signal,
+        accuracy: researchResult.accuracy,
+        result: researchResult.result || researchResult,
+        processingTimeMs: researchResult.processingTimeMs || 0,
+        metadata: researchResult.metadata || { symbol: researchResult.symbol },
+      };
+    }
+
     // CRITICAL: Atomic concurrency guard - ensure only ONE auto-trade cycle runs at a time per user
     const userLoopState = this.autoTradeLoops.get(uid);
     if (userLoopState?.researchInProgress) {
@@ -4016,21 +4143,34 @@ export class AutoTradeEngine {
       return null;
     }
 
-    // CRITICAL: Check exchange usability once at cycle start and reuse result
+    // CRITICAL FIX: Check exchange usability ONCE at cycle start and cache result
+    // This cached result MUST be reused throughout the entire cycle to prevent inconsistencies
     // Use user_request context for actual trading operations that need credential validation
-    const exchangeUsability = await isExchangeUsable(uid, "user_request");
+    const exchangeUsabilityCached = await isExchangeUsable(uid, "user_request");
+    
+    logger.info(
+      {
+        uid,
+        cycleId,
+        exchange: exchangeUsabilityCached.exchange,
+        usable: exchangeUsabilityCached.usable,
+        reason: exchangeUsabilityCached.reason,
+      },
+      `[CYCLE_EXCHANGE_CHECK] Exchange usability checked ONCE at cycle start - result will be cached for entire cycle`,
+    );
 
-    // PRIORITY ORDER: isExchangeUsable().usable result > disconnected flags > historical state
-    // If isExchangeUsable() returns usable=true, ALWAYS proceed regardless of reason
-    if (exchangeUsability.usable) {
+    // PRIORITY ORDER: exchangeUsabilityCached.usable result > disconnected flags > historical state
+    // If exchangeUsabilityCached.usable === true, ALWAYS proceed regardless of reason
+    if (exchangeUsabilityCached.usable) {
       // Exchange is usable - log success and proceed
       // CRITICAL FIX: When usable=true, NEVER block regardless of disconnected flags
       logger.info(
         {
           uid,
-          exchange: exchangeUsability.exchange,
-          reason: exchangeUsability.reason,
-          usable: exchangeUsability.usable,
+          cycleId,
+          exchange: exchangeUsabilityCached.exchange,
+          reason: exchangeUsabilityCached.reason,
+          usable: exchangeUsabilityCached.usable,
         },
         `[AUTO_TRADE_PROCEED] Exchange is usable - proceeding with auto-trade cycle`,
       );
@@ -4041,9 +4181,9 @@ export class AutoTradeEngine {
       // Continue to the rest of the auto-trade cycle
     } else {
       const normalizedExchangeReason =
-        exchangeUsability.reason === "connected"
+        exchangeUsabilityCached.reason === "connected"
           ? "connected"
-          : exchangeUsability.reason === "disconnected"
+          : exchangeUsabilityCached.reason === "disconnected"
             ? "disconnected"
             : "not_connected";
 
@@ -4054,9 +4194,10 @@ export class AutoTradeEngine {
         logger.warn(
           {
             uid,
-            exchange: exchangeUsability.exchange,
+            cycleId,
+            exchange: exchangeUsabilityCached.exchange,
             reason: normalizedExchangeReason,
-            usable: exchangeUsability.usable,
+            usable: exchangeUsabilityCached.usable,
             softSkipOnly: true,
           },
           `[AUTO_TRADE_SOFT_SKIP] Exchange not usable (not_connected) - skipping cycle without stopping`,
@@ -4064,12 +4205,21 @@ export class AutoTradeEngine {
 
         // Save SKIPPED history for not_connected
         if (!skipHistoryStorage) {
-          await saveAutoTradeHistorySkipped(
-            uid,
-            "EXCHANGE_NOT_CONNECTED",
-            "Exchange not connected - soft skip only",
-            cycleId,
-          );
+          // CRITICAL: Check if history already written for this cycleId
+          if (this.hasHistoryForCycle(uid, cycleId)) {
+            logger.warn(
+              { uid, cycleId, reason: "EXCHANGE_NOT_CONNECTED" },
+              "⚠️ [HISTORY_GUARD] History already written for this cycleId - skipping duplicate write"
+            );
+          } else {
+            await saveAutoTradeHistorySkipped(
+              uid,
+              "EXCHANGE_NOT_CONNECTED",
+              "Exchange not connected - soft skip only",
+              cycleId,
+            );
+            this.markHistoryWritten(uid, cycleId);
+          }
         }
 
         // CRITICAL FIX: Also write diagnostic entry for "Recent Cycle Results" UI
@@ -4086,6 +4236,11 @@ export class AutoTradeEngine {
               status: 'SKIPPED',
               success: false,
               exchangeErrorReason: 'Exchange not connected'
+            },
+            runtimeState: {
+              cycleId: cycleId,
+              exchangeUsable: false,
+              exchangeReason: normalizedExchangeReason
             }
           }, uid);
         } catch (diagnosticErr: any) {
@@ -4098,9 +4253,10 @@ export class AutoTradeEngine {
         logger.warn(
           {
             uid,
-            exchange: exchangeUsability.exchange,
+            cycleId,
+            exchange: exchangeUsabilityCached.exchange,
             reason: normalizedExchangeReason,
-            usable: exchangeUsability.usable,
+            usable: exchangeUsabilityCached.usable,
             hardStop: true,
           },
           `AUTO_TRADE_BLOCKED: EXCHANGE_${normalizedExchangeReason.toUpperCase()} - hard stop required`,
@@ -4108,12 +4264,21 @@ export class AutoTradeEngine {
 
         // Save SKIPPED history for disconnected
         if (!skipHistoryStorage) {
-          await saveAutoTradeHistorySkipped(
-            uid,
-            "EXCHANGE_NOT_USABLE",
-            normalizedExchangeReason,
-            cycleId,
-          );
+          // CRITICAL: Check if history already written for this cycleId
+          if (this.hasHistoryForCycle(uid, cycleId)) {
+            logger.warn(
+              { uid, cycleId, reason: "EXCHANGE_NOT_USABLE" },
+              "⚠️ [HISTORY_GUARD] History already written for this cycleId - skipping duplicate write"
+            );
+          } else {
+            await saveAutoTradeHistorySkipped(
+              uid,
+              "EXCHANGE_NOT_USABLE",
+              normalizedExchangeReason,
+              cycleId,
+            );
+            this.markHistoryWritten(uid, cycleId);
+          }
         }
 
         return null; // Cycle completed with SKIPPED history (HARD STOP)
@@ -4127,12 +4292,21 @@ export class AutoTradeEngine {
         "❌ [AUTO_TRADE_CONSUMER] Invalid research result provided by scheduler",
       );
       if (!skipHistoryStorage) {
-        await saveAutoTradeHistorySkipped(
-          uid,
-          "INVALID_RESEARCH_RESULT",
-          "Scheduler provided invalid research result for auto-trade execution",
-          cycleId,
-        );
+        // CRITICAL: Check if history already written for this cycleId
+        if (this.hasHistoryForCycle(uid, cycleId)) {
+          logger.warn(
+            { uid, cycleId, reason: "INVALID_RESEARCH_RESULT" },
+            "⚠️ [HISTORY_GUARD] History already written for this cycleId - skipping duplicate write"
+          );
+        } else {
+          await saveAutoTradeHistorySkipped(
+            uid,
+            "INVALID_RESEARCH_RESULT",
+            "Scheduler provided invalid research result for auto-trade execution",
+            cycleId,
+          );
+          this.markHistoryWritten(uid, cycleId);
+        }
       }
       return null;
     }
@@ -4163,17 +4337,32 @@ export class AutoTradeEngine {
         "🚫 [AUTO_TRADE_CONSUMER] Research result does not meet trade criteria - skipping",
       );
 
-      // CRITICAL FIX: Save actual symbol and accuracy when criteria not met
-      // Instead of generic 'AUTO_TRADE_CYCLE' and 0, save the real research data
+      // CRITICAL FIX: Determine clear skipReason BEFORE writing history
       let skipReason = "";
+      let skipDetails = "";
+      
       if (deepResearchFailed) {
-        skipReason = deepResearchError || "Deep research failed"; // Use specific error reason
+        skipReason = "DEEP_RESEARCH_FAILED";
+        skipDetails = deepResearchError || "Deep research execution failed";
       } else if (!hasValidSignal) {
-        skipReason = "Invalid signal";
+        skipReason = "INVALID_SIGNAL";
+        skipDetails = `Signal ${researchResult.signal} is not BUY or SELL`;
       } else if (!hasValidAccuracy) {
-        skipReason = "Below accuracy threshold";
+        skipReason = "ACCURACY_TOO_LOW";
+        skipDetails = `Accuracy ${(researchResult.accuracy * 100).toFixed(1)}% below 70% threshold`;
       } else if (!hasTradePlan) {
-        skipReason = "Missing trade plan";
+        skipReason = "NO_TRADE_PLAN";
+        skipDetails = "Research did not generate a valid trade plan";
+      }
+      
+      // VALIDATION GUARD: Ensure skipReason is never empty
+      if (!skipReason || skipReason.trim().length === 0) {
+        logger.error(
+          { uid, cycleId, hasValidSignal, hasValidAccuracy, hasTradePlan, deepResearchFailed },
+          "🚨 [HISTORY_VALIDATION_ERROR] skipReason is empty - this should never happen"
+        );
+        skipReason = "UNKNOWN_SKIP_REASON";
+        skipDetails = "Trade criteria not met but reason could not be determined";
       }
 
       const researchData = {
@@ -4184,20 +4373,30 @@ export class AutoTradeEngine {
       const finalResult = researchResult.result || researchResult;
       const finalTradePlan = researchResult.tradePlan;
 
-      await saveAutoTradeHistoryWithExecutionStatus(
-        uid,
-        researchResult,
-        researchData,
-        researchSymbol,
-        finalResult,
-        finalTradePlan,
-        researchResult.accuracy || 0,
-        researchResult.signal || "HOLD",
-        researchResult.price || 0,
-        "SKIPPED",
-        null,
-        null,
-      );
+      // CRITICAL: Check if history already written for this cycleId
+      if (this.hasHistoryForCycle(uid, cycleId)) {
+        logger.warn(
+          { uid, cycleId, skipReason },
+          "⚠️ [HISTORY_GUARD] History already written for this cycleId - skipping duplicate write"
+        );
+      } else {
+        // CRITICAL: Write history with fully resolved skipReason
+        await saveAutoTradeHistoryWithExecutionStatus(
+          uid,
+          researchResult,
+          researchData,
+          researchSymbol,
+          finalResult,
+          finalTradePlan,
+          researchResult.accuracy || 0,
+          researchResult.signal || "HOLD",
+          researchResult.price || 0,
+          "SKIPPED",
+          null,
+          null,
+        );
+        this.markHistoryWritten(uid, cycleId);
+      }
 
       return null;
     }
@@ -4215,6 +4414,7 @@ export class AutoTradeEngine {
     );
 
     // Execute the trade using the existing trade execution logic
+    // CRITICAL: Pass cached exchange usability result to prevent duplicate checks
     return await this.executeTradeWithResearchResult(
       uid,
       userConfig,
@@ -4222,6 +4422,7 @@ export class AutoTradeEngine {
       researchResult,
       cycleId,
       skipHistoryStorage,
+      exchangeUsabilityCached, // Pass cached exchange check result
     );
   }
 
@@ -4236,6 +4437,7 @@ export class AutoTradeEngine {
     researchResult: any,
     cycleId: string,
     skipHistoryStorage: boolean,
+    exchangeUsabilityCached: { usable: boolean; exchange: string | null; reason: string } | { usable: boolean; reason: string; exchange?: string }, // Cached exchange check result
   ): Promise<ResearchDataResult | null> {
     // Convert research result to ResearchDataResult format for execution pipeline
     const researchDataResult: ResearchDataResult = {
@@ -4287,6 +4489,17 @@ export class AutoTradeEngine {
       processingTimeMs: researchResult.processingTimeMs || 0,
       metadata: researchResult.metadata || { symbol: researchResult.symbol },
     };
+
+    // CRITICAL: Log that we're using cached exchange result (no duplicate check)
+    logger.info(
+      {
+        uid,
+        cycleId,
+        exchangeUsable: exchangeUsabilityCached.usable,
+        exchangeReason: exchangeUsabilityCached.reason,
+      },
+      `[CACHED_EXCHANGE_CHECK] Using cached exchange usability result from cycle start - NO duplicate check`,
+    );
 
     // Use the existing trade execution pipeline but with pre-validated research
     const cycleStartTimestamp = Date.now();
@@ -4366,20 +4579,29 @@ export class AutoTradeEngine {
 
       // Save error history
       if (!skipHistoryStorage) {
-        await saveAutoTradeHistoryWithExecutionStatus(
-          uid,
-          researchDataResult,
-          researchData,
-          researchSymbol,
-          finalResult,
-          finalTradePlan,
-          accuracy,
-          signal,
-          finalResult.price || 0,
-          "SKIPPED",
-          null,
-          null,
-        );
+        // CRITICAL: Check if history already written for this cycleId
+        if (this.hasHistoryForCycle(uid, cycleId)) {
+          logger.warn(
+            { uid, cycleId, error: executionError.message },
+            "⚠️ [HISTORY_GUARD] History already written for this cycleId - skipping duplicate write"
+          );
+        } else {
+          await saveAutoTradeHistoryWithExecutionStatus(
+            uid,
+            researchDataResult,
+            researchData,
+            researchSymbol,
+            finalResult,
+            finalTradePlan,
+            accuracy,
+            signal,
+            finalResult.price || 0,
+            "SKIPPED",
+            null,
+            null,
+          );
+          this.markHistoryWritten(uid, cycleId);
+        }
       }
 
       return null;

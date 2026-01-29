@@ -5309,9 +5309,28 @@ export class FirestoreAdapter {
         // CRITICAL: Apply normalization to historical diagnostics to prevent stale exchange errors
         const cleanedData = this.cleanHistoricalDiagnostic(data, agentId);
         
+        // CRITICAL FIX: Safely normalize timestamp to Date object
+        let normalizedTimestamp: Date;
+        if (cleanedData.timestamp && typeof cleanedData.timestamp.toDate === 'function') {
+          // Firestore Timestamp object
+          normalizedTimestamp = cleanedData.timestamp.toDate();
+        } else if (cleanedData.timestamp instanceof Date) {
+          // Already a Date object
+          normalizedTimestamp = cleanedData.timestamp;
+        } else if (typeof cleanedData.timestamp === 'number') {
+          // Unix timestamp (milliseconds)
+          normalizedTimestamp = new Date(cleanedData.timestamp);
+        } else if (typeof cleanedData.timestamp === 'string') {
+          // ISO string
+          normalizedTimestamp = new Date(cleanedData.timestamp);
+        } else {
+          // Fallback to current time
+          normalizedTimestamp = new Date();
+        }
+        
         diagnostics.push({
           id: doc.id,
-          timestamp: cleanedData.timestamp?.toDate() || new Date(),
+          timestamp: normalizedTimestamp,
           agentId: cleanedData.agentId,
           agentType: cleanedData.agentType,
           tradingPair: cleanedData.tradingPair,

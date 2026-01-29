@@ -42,6 +42,7 @@ export default function TradingAgentControl() {
   const [autoTradeEnabled, setAutoTradeEnabled] = useState(false);
   const [togglingAutoTrade, setTogglingAutoTrade] = useState(false);
   const [skippedTrades, setSkippedTrades] = useState<any[]>([]);
+  const [diagnosticsEntries, setDiagnosticsEntries] = useState<any[]>([]); // HTF diagnostics
   const [agentConfig, setAgentConfig] = useState<any | null>(null);
   const [scheduler, setScheduler] = useState<any | null>(null);
   const [loadingData, setLoadingData] = useState(false);
@@ -148,22 +149,39 @@ export default function TradingAgentControl() {
       const tradesResp = await agentsApi.getTradingAgentTrades(slug, 20);
       setTrades(tradesResp.data?.trades || []);
 
-      // Load research history for AUTO_TRADE cycles ONLY
-      const researchResp = await researchApi.deepResearch.getHistory(50);
-      if (researchResp.data?.success) {
-        const researchHistory = researchResp.data.data || [];
-        // SAFE filtering: ONLY by AUTO_TRADE source (no agentId filtering)
-        const autoTradeCycles = researchHistory.filter((entry: any) => 
-          entry.source === "AUTO_TRADE"
-        );
+      // CRITICAL: HTF agents use diagnostics, not research_history
+      if (isHTFTrendFilterAgent) {
+        // Load diagnostics for HTF agent
+        const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 20);
+        setScheduler(diagnosticsResp.data?.scheduler || null);
+        
+        // Extract diagnostics entries for Recent Cycle Results
+        const entries = diagnosticsResp.data?.diagnostics || [];
         // Sort by timestamp descending (latest first)
-        autoTradeCycles.sort((a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-        setSkippedTrades(autoTradeCycles);
-      }
+        entries.sort((a: any, b: any) => {
+          const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+          const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+          return bTime - aTime;
+        });
+        setDiagnosticsEntries(entries);
+      } else {
+        // Load research history for AUTO_TRADE cycles ONLY (non-HTF agents)
+        const researchResp = await researchApi.deepResearch.getHistory(50);
+        if (researchResp.data?.success) {
+          const researchHistory = researchResp.data.data || [];
+          // SAFE filtering: ONLY by AUTO_TRADE source (no agentId filtering)
+          const autoTradeCycles = researchHistory.filter((entry: any) => 
+            entry.source === "AUTO_TRADE"
+          );
+          // Sort by timestamp descending (latest first)
+          autoTradeCycles.sort((a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+          setSkippedTrades(autoTradeCycles);
+        }
 
-      // Load scheduler info
-      const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 20);
-      setScheduler(diagnosticsResp.data?.scheduler || null);
+        // Load scheduler info
+        const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 20);
+        setScheduler(diagnosticsResp.data?.scheduler || null);
+      }
 
     } catch (err: any) {
       console.error('Error loading data:', err);
@@ -234,22 +252,39 @@ export default function TradingAgentControl() {
       const tradesResp = await agentsApi.getTradingAgentTrades(slug, 20);
       setTrades(tradesResp.data?.trades || []);
       
-      // Refresh research history for AUTO_TRADE cycles ONLY
-      const researchResp = await researchApi.deepResearch.getHistory(50);
-      if (researchResp.data?.success) {
-        const researchHistory = researchResp.data.data || [];
-        // SAFE filtering: ONLY by AUTO_TRADE source (no agentId filtering)
-        const autoTradeCycles = researchHistory.filter((entry: any) => 
-          entry.source === "AUTO_TRADE"
-        );
+      // CRITICAL: HTF agents use diagnostics, not research_history
+      if (isHTFTrendFilterAgent) {
+        // Refresh diagnostics for HTF agent
+        const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 20);
+        setScheduler(diagnosticsResp.data?.scheduler || null);
+        
+        // Extract diagnostics entries for Recent Cycle Results
+        const entries = diagnosticsResp.data?.diagnostics || [];
         // Sort by timestamp descending (latest first)
-        autoTradeCycles.sort((a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-        setSkippedTrades(autoTradeCycles);
+        entries.sort((a: any, b: any) => {
+          const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+          const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+          return bTime - aTime;
+        });
+        setDiagnosticsEntries(entries);
+      } else {
+        // Refresh research history for AUTO_TRADE cycles ONLY (non-HTF agents)
+        const researchResp = await researchApi.deepResearch.getHistory(50);
+        if (researchResp.data?.success) {
+          const researchHistory = researchResp.data.data || [];
+          // SAFE filtering: ONLY by AUTO_TRADE source (no agentId filtering)
+          const autoTradeCycles = researchHistory.filter((entry: any) => 
+            entry.source === "AUTO_TRADE"
+          );
+          // Sort by timestamp descending (latest first)
+          autoTradeCycles.sort((a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+          setSkippedTrades(autoTradeCycles);
+        }
+        
+        // Refresh scheduler info
+        const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 20);
+        setScheduler(diagnosticsResp.data?.scheduler || null);
       }
-      
-      // Refresh scheduler info
-      const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 20);
-      setScheduler(diagnosticsResp.data?.scheduler || null);
     } catch (err: any) {
       console.error('[TradingAgentControl] API error:', err);
       const errorCode = err.response?.data?.code;
@@ -755,104 +790,185 @@ export default function TradingAgentControl() {
 
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-xl font-bold text-white">Recent Cycle Results</h3>
-              {isHTFTrendFilterAgent && skippedTrades.length > 3 && (
+              {isHTFTrendFilterAgent && diagnosticsEntries.length > 3 && (
                 <button
                   onClick={() => setShowMoreDiagnostics(!showMoreDiagnostics)}
                   className="text-purple-400 hover:text-purple-300 transition-colors text-sm"
                 >
-                  {showMoreDiagnostics ? 'View Less' : `View More (${skippedTrades.length - 3} more)`}
+                  {showMoreDiagnostics ? 'View Less' : `View More (${diagnosticsEntries.length - 3} more)`}
                 </button>
               )}
             </div>
             <div className="text-sm text-gray-400 mb-6 leading-relaxed">
               Shows execution/skip decisions from recent scheduler cycles (~5 min intervals)
-              {isHTFTrendFilterAgent && !showMoreDiagnostics && skippedTrades.length > 3 && (
+              {isHTFTrendFilterAgent && !showMoreDiagnostics && diagnosticsEntries.length > 3 && (
                 <span className="text-purple-400"> • Showing latest 3 cycles</span>
               )}
               {isHTFTrendFilterAgent && showMoreDiagnostics && (
-                <span className="text-purple-400"> • Showing latest {Math.min(skippedTrades.length, 10)} cycles</span>
+                <span className="text-purple-400"> • Showing latest {Math.min(diagnosticsEntries.length, 10)} cycles</span>
               )}
             </div>
 
-            {skippedTrades.length === 0 ? (
-              <div className="text-center py-8 text-gray-400 bg-slate-800/30 rounded-lg border border-purple-500/10">
-                {autoTradeEnabled 
-                  ? 'Waiting for first cycle...'
-                  : 'No cycle results yet'}
-              </div>
-            ) : (
-              <div className="overflow-x-auto bg-slate-800/30 rounded-lg border border-purple-500/10">
-                <table className="min-w-full">
-                  <thead>
-                    <tr className="text-gray-300 border-b border-purple-500/20 bg-slate-800/50">
-                      <th className="text-left py-3 px-4 font-semibold">Pair</th>
-                      <th className="text-left py-3 px-4 font-semibold">Direction</th>
-                      <th className="text-left py-3 px-4 font-semibold">Decision</th>
-                      <th className="text-left py-3 px-4 font-semibold">Execution Status</th>
-                      <th className="text-left py-3 px-4 font-semibold">Skip Reason</th>
-                      <th className="text-left py-3 px-4 font-semibold">Timestamp</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(isHTFTrendFilterAgent && !showMoreDiagnostics 
-                      ? skippedTrades.slice(0, 3) 
-                      : isHTFTrendFilterAgent && showMoreDiagnostics 
-                      ? skippedTrades.slice(0, 10)
-                      : skippedTrades
-                    ).map((entry, index) => {
-                      // Use research_history schema directly - ONLY AUTO_TRADE entries
-                      const displayPair = "AUTO_TRADE";
-                      const displayDirection = "-";
-                      const displayDecision = entry.decision ?? entry.status;
-                      const displayExecutionStatus = entry.executionStatus ?? entry.status;
-                      // Enhanced skip reason with safe fallback logic
-                      const displaySkipReason = entry.reason ?? entry.skipReason ?? "No reason provided";
-                      const displayTimestamp = new Date(entry.timestamp).toLocaleString();
-                      
-                      let reasonColor = 'bg-gray-500/20 text-gray-400';
-                      if (displayDecision && displayDecision.includes('FINAL')) {
-                        reasonColor = 'bg-green-500/20 text-green-400';
-                      } else if (displayDecision && displayDecision.includes('SKIPPED')) {
-                        reasonColor = 'bg-yellow-500/20 text-yellow-400';
-                      }
+            {/* CRITICAL: HTF agents use diagnostics, non-HTF use research_history */}
+            {isHTFTrendFilterAgent ? (
+              // HTF Agent: Use diagnostics entries
+              diagnosticsEntries.length === 0 ? (
+                <div className="text-center py-8 text-gray-400 bg-slate-800/30 rounded-lg border border-purple-500/10">
+                  {autoTradeEnabled 
+                    ? 'Waiting for first cycle...'
+                    : 'No cycle results yet'}
+                </div>
+              ) : (
+                <div className="overflow-x-auto bg-slate-800/30 rounded-lg border border-purple-500/10">
+                  <table className="min-w-full">
+                    <thead>
+                      <tr className="text-gray-300 border-b border-purple-500/20 bg-slate-800/50">
+                        <th className="text-left py-3 px-4 font-semibold">Pair</th>
+                        <th className="text-left py-3 px-4 font-semibold">Direction</th>
+                        <th className="text-left py-3 px-4 font-semibold">Decision</th>
+                        <th className="text-left py-3 px-4 font-semibold">Execution Status</th>
+                        <th className="text-left py-3 px-4 font-semibold">Skip Reason</th>
+                        <th className="text-left py-3 px-4 font-semibold">Timestamp</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(!showMoreDiagnostics 
+                        ? diagnosticsEntries.slice(0, 3) 
+                        : diagnosticsEntries.slice(0, 10)
+                      ).map((entry, index) => {
+                        // Map diagnostics to table columns
+                        const displayPair = entry.tradingPair || entry.symbol || '—';
+                        const displayDirection = entry.direction || '—';
+                        const displayDecision = entry.decision?.action || '—';
+                        const displayExecutionStatus = entry.execution?.status || '—';
+                        // CRITICAL: Use runtimeState for HTF skip reasons
+                        const displaySkipReason = entry.runtimeState?.skipDetails ?? entry.runtimeState?.skipReason ?? entry.decision?.reason ?? '—';
+                        const displayTimestamp = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : '—';
+                        
+                        let reasonColor = 'bg-gray-500/20 text-gray-400';
+                        if (displayDecision === 'TRADE') {
+                          reasonColor = 'bg-green-500/20 text-green-400';
+                        } else if (displayDecision === 'SKIP') {
+                          reasonColor = 'bg-yellow-500/20 text-yellow-400';
+                        }
 
-                      let executionColor = 'bg-gray-500/20 text-gray-400';
-                      if (displayExecutionStatus === 'EXECUTED') {
-                        executionColor = 'bg-green-500/20 text-green-400';
-                      } else if (displayExecutionStatus === 'FAILED') {
-                        executionColor = 'bg-red-500/20 text-red-400';
-                      }
-                      
-                      return (
-                        <tr key={entry.id || index} className="border-b border-purple-500/10 hover:bg-slate-800/50 transition-colors">
-                          <td className="py-3 px-4 text-white font-semibold">
-                            {displayPair}
-                          </td>
-                          <td className="py-3 px-4 text-gray-400 font-bold text-base">
-                            {displayDirection}
-                          </td>
-                          <td className="py-3 px-4">
-                            <span className={`px-2 py-1 rounded text-xs font-medium ${reasonColor}`}>
-                              {displayDecision || "SKIPPED"}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4">
-                            <span className={`px-2 py-1 rounded text-xs font-medium ${executionColor}`}>
-                              {displayExecutionStatus || "SKIPPED"}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 text-gray-400 text-sm">
-                            {displaySkipReason}
-                          </td>
-                          <td className="py-3 px-4 text-gray-400 text-sm">
-                            {displayTimestamp}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+                        let executionColor = 'bg-gray-500/20 text-gray-400';
+                        if (displayExecutionStatus === 'EXECUTED') {
+                          executionColor = 'bg-green-500/20 text-green-400';
+                        } else if (displayExecutionStatus === 'FAILED') {
+                          executionColor = 'bg-red-500/20 text-red-400';
+                        } else if (displayExecutionStatus === 'SKIPPED') {
+                          executionColor = 'bg-yellow-500/20 text-yellow-400';
+                        }
+                        
+                        return (
+                          <tr key={entry.id || index} className="border-b border-purple-500/10 hover:bg-slate-800/50 transition-colors">
+                            <td className="py-3 px-4 text-white font-semibold">
+                              {displayPair}
+                            </td>
+                            <td className="py-3 px-4 text-gray-400 font-bold text-base">
+                              {displayDirection}
+                            </td>
+                            <td className="py-3 px-4">
+                              <span className={`px-2 py-1 rounded text-xs font-medium ${reasonColor}`}>
+                                {displayDecision}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4">
+                              <span className={`px-2 py-1 rounded text-xs font-medium ${executionColor}`}>
+                                {displayExecutionStatus}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 text-gray-400 text-sm">
+                              {displaySkipReason}
+                            </td>
+                            <td className="py-3 px-4 text-gray-400 text-sm">
+                              {displayTimestamp}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            ) : (
+              // Non-HTF Agent: Use research_history (AUTO_TRADE cycles)
+              skippedTrades.length === 0 ? (
+                <div className="text-center py-8 text-gray-400 bg-slate-800/30 rounded-lg border border-purple-500/10">
+                  {autoTradeEnabled 
+                    ? 'Waiting for first cycle...'
+                    : 'No cycle results yet'}
+                </div>
+              ) : (
+                <div className="overflow-x-auto bg-slate-800/30 rounded-lg border border-purple-500/10">
+                  <table className="min-w-full">
+                    <thead>
+                      <tr className="text-gray-300 border-b border-purple-500/20 bg-slate-800/50">
+                        <th className="text-left py-3 px-4 font-semibold">Pair</th>
+                        <th className="text-left py-3 px-4 font-semibold">Direction</th>
+                        <th className="text-left py-3 px-4 font-semibold">Decision</th>
+                        <th className="text-left py-3 px-4 font-semibold">Execution Status</th>
+                        <th className="text-left py-3 px-4 font-semibold">Skip Reason</th>
+                        <th className="text-left py-3 px-4 font-semibold">Timestamp</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {skippedTrades.map((entry, index) => {
+                        // Use research_history schema directly - ONLY AUTO_TRADE entries
+                        const displayPair = "AUTO_TRADE";
+                        const displayDirection = "-";
+                        const displayDecision = entry.decision ?? entry.status;
+                        const displayExecutionStatus = entry.executionStatus ?? entry.status;
+                        // Enhanced skip reason with safe fallback logic - prioritize skipDetails for human-readable text
+                        const displaySkipReason = entry.skipDetails ?? entry.skipReason ?? entry.reason ?? "No reason provided";
+                        const displayTimestamp = new Date(entry.timestamp).toLocaleString();
+                        
+                        let reasonColor = 'bg-gray-500/20 text-gray-400';
+                        if (displayDecision && displayDecision.includes('FINAL')) {
+                          reasonColor = 'bg-green-500/20 text-green-400';
+                        } else if (displayDecision && displayDecision.includes('SKIPPED')) {
+                          reasonColor = 'bg-yellow-500/20 text-yellow-400';
+                        }
+
+                        let executionColor = 'bg-gray-500/20 text-gray-400';
+                        if (displayExecutionStatus === 'EXECUTED') {
+                          executionColor = 'bg-green-500/20 text-green-400';
+                        } else if (displayExecutionStatus === 'FAILED') {
+                          executionColor = 'bg-red-500/20 text-red-400';
+                        }
+                        
+                        return (
+                          <tr key={entry.id || index} className="border-b border-purple-500/10 hover:bg-slate-800/50 transition-colors">
+                            <td className="py-3 px-4 text-white font-semibold">
+                              {displayPair}
+                            </td>
+                            <td className="py-3 px-4 text-gray-400 font-bold text-base">
+                              {displayDirection}
+                            </td>
+                            <td className="py-3 px-4">
+                              <span className={`px-2 py-1 rounded text-xs font-medium ${reasonColor}`}>
+                                {displayDecision || "SKIPPED"}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4">
+                              <span className={`px-2 py-1 rounded text-xs font-medium ${executionColor}`}>
+                                {displayExecutionStatus || "SKIPPED"}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 text-gray-400 text-sm">
+                              {displaySkipReason}
+                            </td>
+                            <td className="py-3 px-4 text-gray-400 text-sm">
+                              {displayTimestamp}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )
             )}
           </div>
 

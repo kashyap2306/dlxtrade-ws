@@ -242,6 +242,28 @@ export async function saveAutoTradeHistorySkipped(
     }, '🚨 [INVARIANT_VIOLATION] saveAutoTradeHistorySkipped called but researchExecuted=true - BLOCKING WRITE');
     throw new Error('INVARIANT VIOLATION: Cannot call saveAutoTradeHistorySkipped when research executed');
   }
+  
+  // VALIDATION GUARD: Ensure skipReason is never empty
+  if (!skipReason || skipReason.trim().length === 0) {
+    logger.error({
+      uid,
+      skipDetails,
+      cycleId,
+      stack: new Error().stack
+    }, '🚨 [HISTORY_VALIDATION_ERROR] skipReason is empty in saveAutoTradeHistorySkipped - BLOCKING WRITE');
+    throw new Error('VALIDATION ERROR: skipReason cannot be empty when saving skipped history');
+  }
+  
+  // VALIDATION GUARD: Ensure skipDetails is never empty
+  if (!skipDetails || skipDetails.trim().length === 0) {
+    logger.error({
+      uid,
+      skipReason,
+      cycleId,
+      stack: new Error().stack
+    }, '🚨 [HISTORY_VALIDATION_ERROR] skipDetails is empty in saveAutoTradeHistorySkipped - BLOCKING WRITE');
+    throw new Error('VALIDATION ERROR: skipDetails cannot be empty when saving skipped history');
+  }
 
   // ENFORCE: ONE CYCLE = ONE HISTORY ENTRY
   if (cycleId) {
@@ -410,6 +432,47 @@ export async function saveAutoTradeHistoryWithExecutionStatus(
   const storedAccuracy = forceSkipped ? 0 : Math.max(0, Math.min(100, Number(accuracy) || 0));
   const safeTradePlan = finalTradePlan ?? null;
 
+  // CRITICAL FIX: Generate clear, human-readable skipReason when decision is SKIPPED
+  let skipReason: string | undefined = undefined;
+  let skipDetails: string | undefined = undefined;
+  
+  if (finalDecisionStatus === 'SKIPPED') {
+    // Determine skip reason based on the data
+    if (forceSkipped) {
+      if (!historySymbol || historySymbol === 'UNKNOWN') {
+        skipReason = 'INVALID_SYMBOL';
+        skipDetails = 'Research did not return a valid symbol';
+      } else if (typeof accuracy !== 'number' || accuracy < 0) {
+        skipReason = 'INVALID_ACCURACY';
+        skipDetails = 'Research accuracy is invalid or negative';
+      } else if (!signal || signal === 'UNKNOWN' || signal === 'ANALYZING' || signal === 'PENDING') {
+        skipReason = 'INVALID_SIGNAL';
+        skipDetails = 'Research did not return a valid signal';
+      } else {
+        skipReason = 'INVALID_RESEARCH_DATA';
+        skipDetails = 'Research data validation failed';
+      }
+    } else if (finalSignal === 'HOLD') {
+      skipReason = 'HOLD_SIGNAL';
+      skipDetails = `Research returned HOLD signal (accuracy: ${storedAccuracy.toFixed(1)}%)`;
+    } else if (storedAccuracy < 75) {
+      skipReason = 'ACCURACY_TOO_LOW';
+      skipDetails = `Accuracy ${storedAccuracy.toFixed(1)}% below threshold (75%)`;
+    } else if (!safeTradePlan) {
+      skipReason = 'NO_TRADE_PLAN';
+      skipDetails = 'Research did not generate a valid trade plan';
+    } else if (finalExecutionStatus === 'REJECTED') {
+      skipReason = 'EXCHANGE_REJECTED';
+      skipDetails = 'Exchange rejected the order';
+    } else if (finalExecutionStatus === 'CANCELLED') {
+      skipReason = 'ORDER_CANCELLED';
+      skipDetails = 'Order was cancelled before execution';
+    } else {
+      skipReason = 'EXECUTION_SKIPPED';
+      skipDetails = 'Trade execution was skipped';
+    }
+  }
+
   // Build history entry - ALWAYS SAVE when research runs
   const historyEntry: any = {
     symbol: historySymbol,
@@ -424,6 +487,8 @@ export async function saveAutoTradeHistoryWithExecutionStatus(
     isFinal: true,
     decision: finalDecisionStatus,
     executionStatus: finalExecutionStatus || null, // CRITICAL: Include executionStatus
+    skipReason: skipReason, // CRITICAL: Always include skipReason when SKIPPED
+    skipDetails: skipDetails, // CRITICAL: Include detailed skip reason
     entryPrice: safeTradePlan?.entryPrice ?? 0,
     stopLoss: safeTradePlan?.stopLoss ?? 0,
     takeProfit: safeTradePlan?.takeProfit2 ?? 0,
@@ -443,7 +508,7 @@ export async function saveAutoTradeHistoryWithExecutionStatus(
   // If executionStatus is provided, this is an update to existing research history
   // If executionStatus is null, this is the initial research completion history save
   await firestoreAdapter.storeResearchHistory(uid, validatedEntry);
-  logger.info({ uid, symbol: researchResult.symbol, executionStatus, decisionStatus, accuracy: storedAccuracy }, '✅ [HISTORY] Auto-trade history saved after execution');
+  logger.info({ uid, symbol: researchResult.symbol, executionStatus, decisionStatus, accuracy: storedAccuracy, skipReason }, '✅ [HISTORY] Auto-trade history saved after execution');
 
   // CRITICAL FIX: Also write diagnostic entry for "Recent Cycle Results" UI
   try {
@@ -459,9 +524,11 @@ export async function saveAutoTradeHistoryWithExecutionStatus(
                            finalExecutionStatus === 'SKIPPED' ? 'SKIP' : 
                            finalSignal === 'HOLD' ? 'SKIP' : 'SKIP';
 
-    // Build diagnostic reason
+    // Build diagnostic reason - use skipReason if available
     let diagnosticReason = '';
-    if (finalSignal === 'HOLD') {
+    if (skipReason) {
+      diagnosticReason = skipDetails || skipReason;
+    } else if (finalSignal === 'HOLD') {
       diagnosticReason = `HOLD signal (accuracy: ${storedAccuracy.toFixed(1)}%)`;
     } else if (finalExecutionStatus === 'SKIPPED') {
       diagnosticReason = `${finalSignal} signal skipped (accuracy: ${storedAccuracy.toFixed(1)}%)`;
@@ -496,10 +563,12 @@ export async function saveAutoTradeHistoryWithExecutionStatus(
         researchExecuted: true,
         accuracy: storedAccuracy,
         signal: finalSignal,
-        tradeId: tradeId
+        tradeId: tradeId,
+        skipReason: skipReason,
+        skipDetails: skipDetails
       }
     }, uid);
-    logger.info({ uid, symbol: historySymbol, executionStatus: finalExecutionStatus }, '✅ [DIAGNOSTIC] Auto-trade diagnostic saved after execution');
+    logger.info({ uid, symbol: historySymbol, executionStatus: finalExecutionStatus, skipReason }, '✅ [DIAGNOSTIC] Auto-trade diagnostic saved after execution');
   } catch (diagnosticError: any) {
     logger.error({ uid, error: diagnosticError.message }, '❌ [DIAGNOSTIC] Failed to save execution diagnostic - continuing');
   }
