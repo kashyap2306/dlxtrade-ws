@@ -7,7 +7,6 @@ import { getFirebaseAdmin } from "../utils/firebase";
 import { getUserIntegrationsByUid } from "../routes/users/providerConfig";
 import * as admin from "firebase-admin";
 import { checkWhaleAlerts } from "./autoTradeTelegram";
-import { tradingAgentScheduler } from "./tradingAgentScheduler";
 import {
   safeSetInterval,
   shouldRunBackgroundTasks,
@@ -180,7 +179,7 @@ export class BackgroundResearchScheduler {
    *
    * REFACTORED: Uses safe background runner to prevent event loop blocking
    */
-  async start() {
+  start() {
     // 🔥 HARD LOG: Scheduler startup
     console.log(
       "🔥 [HARD_LOG] [SCHEDULER_START] Background research scheduler start() called",
@@ -219,17 +218,6 @@ export class BackgroundResearchScheduler {
     console.log(
       "🔥 [HARD_LOG] [SCHEDULER_RUNNING] Scheduler isRunning set to true",
     );
-
-    // Start Trading Agent Scheduler for HTF execution
-    try {
-      console.log("🔥 [HARD_LOG] [START_TRADING_AGENT_SCHEDULER] Starting TradingAgentScheduler for HTF execution");
-      await tradingAgentScheduler.start();
-      console.log("✅ [TRADING_AGENT_SCHEDULER] Started successfully");
-    } catch (error) {
-      console.error("❌ [TRADING_AGENT_SCHEDULER] Failed to start:", error instanceof Error ? error.message : 'Unknown error');
-      logger.error({ error: error instanceof Error ? error.message : 'Unknown error' }, "Failed to start TradingAgentScheduler");
-    }
-
     logger.info(
       {
         schedulerRunning: this.isRunning,

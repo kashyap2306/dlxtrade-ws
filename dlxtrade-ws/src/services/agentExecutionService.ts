@@ -543,10 +543,6 @@ export class AgentExecutionService {
     const isBBRsiAgent = (agentConfig as any).strategyType === 'MEAN_REVERSION_SCALPER' || 
                          (agentConfig.name && agentConfig.name.includes('BB-RSI'));
 
-    // CRITICAL: Execution flag to track if agent logic actually ran
-    // Diagnostics should ONLY be written when this is true
-    let executionStarted = false;
-
     // CRITICAL: HTF execution source verification
     if (isHTFAgent) {
       console.log('[HTF_EXECUTE_AGENT_START]');
@@ -604,11 +600,6 @@ export class AgentExecutionService {
       htfEvaluated: false
     };
 
-    // CRITICAL FIX #1: Prevent duplicate execution within 5-minute window using existing diagnostics
-    // BUT allow diagnostics to be written even when execution is blocked
-    let shouldExecute = true;
-    // NOTE: Removed HTF throttle logic - diagnostics are now written per scheduler cycle with cycle guard
-
     // Initialize tracking variables for this cycle only - NEVER reuse previous values
     let exchangeUsable = false;
     let marketScanExecuted = false;
@@ -618,30 +609,9 @@ export class AgentExecutionService {
     let htfMarketDataSkip: { reasonCode: string; reasonText: string } | null = null;
     let htfBiasDirection: 'LONG' | 'SHORT' | 'NO_TRADE' = 'NO_TRADE';
 
-    // Only proceed with execution if shouldExecute is true
-    if (!shouldExecute) {
-      // Skip execution but mark as started for diagnostics write
-      executionStarted = true;
-      agentExecutionRan = false; // Track that agent logic did not run
-
-    if (shouldExecute) {
-      // Proceed with normal execution flow
-
-      // FIX PART A — HARD RESET EXECUTION STATE
-      // At the START of EVERY cycle: Force reset execution state
-      // Do NOT reuse any previous cycle data
-      if (isHTFAgent) {
-        logger.debug({
-          agentId,
-          name: agentConfig.name,
-          tradingPair,
-          strategyType: (agentConfig as any).strategyType
-        }, ' HTF AGENT EXECUTION STARTED - HARD RESET execution state');
-        
-        // Force reset all previous cycle data
-        // lastErrorReason, lastDecision, lastSignal - all cleared
-        // This prevents reusing stale state from previous cycles
-      }
+    // CRITICAL HTF FIX: Wrap execution in try-finally to ALWAYS write diagnostics for HTF agents
+    // This ensures diagnostics are written every 5-minute cycle regardless of early returns
+    try {
 
     // INTERNAL HELPER: Single source for skip finalization - THE ONLY SKIP WRITER
     const finalizeSkip = (reasonCode: string, reasonText: string, category: 'SESSION' | 'EXCHANGE' | 'DATA' | 'RISK' | 'SIGNAL') => {
@@ -1036,10 +1006,9 @@ export class AgentExecutionService {
         }
       }
       
+      
       // CRITICAL: Mark that execution has started
       // From this point forward, we're doing actual agent execution logic
-      // Diagnostics should be written if we reach this point
-      executionStarted = true;
       
       let candles: any[] = [];
       let candles15m: any[] = [];
@@ -1946,110 +1915,130 @@ export class AgentExecutionService {
         tradingPair,
         error: error instanceof Error ? error.message : 'Unknown error'
       }, 'Failed to execute agent with hardening');
-    } finally {
-      // Diagnostics are now written outside this finally block
-    }
-  } // Close if (shouldExecute)
-  } // Close main try
-
-  // CRITICAL: Always persist diagnostics for attempted executions
-  try {
-    // CRITICAL HTF FIX: Ensure ALL required fields are populated for HTF agents
-    // This guarantees diagnostics are written even when execution is skipped
-    if (isHTFAgent) {
-      // CRITICAL: HTF diagnostics must be written to 'htf-trend-filter-agent' agentId
-      // This ensures all HTF diagnostics are stored in a single collection per user
-      const htfAgentId = 'htf-trend-filter-agent';
-      
-      // Ensure required fields are set
-      diagnostics.agentId = htfAgentId; // Override to fixed HTF agentId
-      diagnostics.tradingPair = diagnostics.tradingPair || tradingPair;
-      diagnostics.direction = diagnostics.direction || 'NO_TRADE';
-      
-      // CRITICAL: Include runtimeState for HTF diagnostics
-      if (!diagnostics.runtimeState) {
-        diagnostics.runtimeState = {};
-      }
-      
-      // Set final decision and skip reason
-      if (!diagnostics.runtimeState.finalDecision) {
-        diagnostics.runtimeState.finalDecision = diagnostics.decision?.action || 'SKIP';
-      }
-      if (!diagnostics.runtimeState.skipReasonShort && diagnostics.decision?.reason) {
-        diagnostics.runtimeState.skipReasonShort = diagnostics.decision.reason.length > 50 
-          ? diagnostics.decision.reason.substring(0, 47) + '...' 
-          : diagnostics.decision.reason;
-      }
-      
-      // CRITICAL: Ensure execution state is set
-      if (!diagnostics.executionState) {
-        diagnostics.executionState = {
-          researchedOnly: true,
-          eligibleForExecution: false,
-          executionAttempted: false,
-          executionEvaluated: true,
-          executionBlockedReason: diagnostics.decision?.reason || 'UNKNOWN'
-        };
-      }
-      
-      logger.info({
-        agentId: htfAgentId,
-        cycleId: diagnostics.cycleId,
-        finalDecision: diagnostics.runtimeState.finalDecision,
-        skipReasonShort: diagnostics.runtimeState.skipReasonShort,
-        tradingPair: diagnostics.tradingPair,
-        hasIndicators: !!diagnostics.runtimeState.indicators,
-        hasResults: !!diagnostics.runtimeState.indicators?.results,
-        indicatorKeys: diagnostics.runtimeState.indicators?.results ? Object.keys(diagnostics.runtimeState.indicators.results) : []
-      }, '[HTF_DIAGNOSTIC_WRITE] Writing HTF diagnostics for cycle');
-      
-      // Store diagnostics directly using firestoreAdapter with HTF agent ID
-      // Note: Using direct saveAgentDiagnostic call with 'htf-trend-filter-agent' agentId for Firestore path
-      // CRITICAL: Include cycleId and bucketStartMs in runtimeState for per-pair uniqueness and grouping
-      const bucketStartMs = Math.floor((diagnostics.cycleId.split('_').pop() || '0')) * (5 * 60 * 1000);
-      
-      console.log('[HTF_DIAGNOSTIC_WRITE]');
-      await firestoreAdapter.saveAgentDiagnostic(htfAgentId, {
-        agentType: 'HTF_TREND_FILTER_AGENT',
-        tradingPair: diagnostics.tradingPair,
-        direction: diagnostics.direction || 'LONG',
-        decision: diagnostics.decision || { action: 'SKIP', reason: 'No decision' },
-        signal: diagnostics.signal,
-        execution: diagnostics.execution,
-        runtimeState: {
-          ...diagnostics.runtimeState,
-          cycleId: diagnostics.cycleId, // Exact cycleId: ${agentId}_${pair}_${fiveMinuteBucket}
-          bucketStartMs: bucketStartMs, // Reconstructed bucket start time for grouping
-          signalGenerated: signalGenerated // Critical: indicates if HTF signal was generated for this pair
-        }
-      }, agentConfig.userId);
-      
-      // Mark this cycle as written to prevent duplicates
-      if (diagnostics.cycleId) {
-        AgentExecutionService.htfCycleHistoryWritten.add(diagnostics.cycleId);
-        
-        // Cleanup: Keep only last 100 cycleIds in memory to prevent unbounded growth
-        if (AgentExecutionService.htfCycleHistoryWritten.size > 100) {
-          const cyclesArray = Array.from(AgentExecutionService.htfCycleHistoryWritten);
-          const toRemove = cyclesArray.slice(0, cyclesArray.length - 100);
-          toRemove.forEach(id => AgentExecutionService.htfCycleHistoryWritten.delete(id));
-        }
-        
-        logger.debug({ agentId: htfAgentId, cycleId: diagnostics.cycleId }, 'HTF diagnostics persisted with cycle guard protection');
-      }
-    } else {
-      // Non-HTF agents use standard storeDiagnostics method
-      const normalizedDiagnostics = this.normalizeDiagnosticsForPersistence(diagnostics, agentId);
-      await agent.storeDiagnostics(normalizedDiagnostics);
-      logger.debug({ agentId, decision: normalizedDiagnostics.decision }, 'Agent diagnostics persisted with strict normalization');
-    }
-  } catch (diagError) {
+    } // Close inner try-catch (execution logic)
+  } // Close outer try block
+  catch (outerError) {
+    // Catch any errors from the entire execution flow (outer try-catch)
     logger.error({
       agentId,
-      error: diagError instanceof Error ? diagError.message : 'Unknown error'
-    }, 'CRITICAL: Failed to persist agent diagnostics');
-  }
-}
+      tradingPair,
+      error: outerError instanceof Error ? outerError.message : 'Unknown error'
+    }, 'Unexpected error in agent execution flow');
+    
+    // Ensure diagnostics reflect the error
+    if (!diagnostics.decision || diagnostics.decision.action === 'SKIP') {
+      diagnostics.decision = {
+        action: 'SKIP',
+        reason: outerError instanceof Error ? outerError.message : 'Unexpected execution error'
+      };
+    }
+  } finally {
+    // CRITICAL HTF FIX: ALWAYS write diagnostics for HTF agents in finally block
+    // This ensures diagnostics are written EVERY 5-minute cycle regardless of early returns
+    // The finally block executes even when there are return statements in the try block
+    if (isHTFAgent) {
+      try {
+        // CRITICAL: HTF diagnostics must be written to 'htf-trend-filter-agent' agentId
+        // This ensures all HTF diagnostics are stored in a single collection per user
+        const htfAgentId = 'htf-trend-filter-agent';
+        
+        // Ensure required fields are set
+        diagnostics.agentId = htfAgentId; // Override to fixed HTF agentId
+        diagnostics.tradingPair = diagnostics.tradingPair || tradingPair;
+        diagnostics.direction = diagnostics.direction || 'NO_TRADE';
+        
+        // CRITICAL: Include runtimeState for HTF diagnostics
+        if (!diagnostics.runtimeState) {
+          diagnostics.runtimeState = {};
+        }
+        
+        // Set final decision and skip reason
+        if (!diagnostics.runtimeState.finalDecision) {
+          diagnostics.runtimeState.finalDecision = diagnostics.decision?.action || 'SKIP';
+        }
+        if (!diagnostics.runtimeState.skipReasonShort && diagnostics.decision?.reason) {
+          diagnostics.runtimeState.skipReasonShort = diagnostics.decision.reason.length > 50 
+            ? diagnostics.decision.reason.substring(0, 47) + '...' 
+            : diagnostics.decision.reason;
+        }
+        
+        // CRITICAL: Ensure execution state is set
+        if (!diagnostics.executionState) {
+          diagnostics.executionState = {
+            researchedOnly: true,
+            eligibleForExecution: false,
+            executionAttempted: false,
+            executionEvaluated: true,
+            executionBlockedReason: diagnostics.decision?.reason || 'UNKNOWN'
+          };
+        }
+        
+        logger.info({
+          agentId: htfAgentId,
+          cycleId: diagnostics.cycleId,
+          finalDecision: diagnostics.runtimeState.finalDecision,
+          skipReasonShort: diagnostics.runtimeState.skipReasonShort,
+          tradingPair: diagnostics.tradingPair,
+          hasIndicators: !!diagnostics.runtimeState.indicators,
+          hasResults: !!diagnostics.runtimeState.indicators?.results,
+          indicatorKeys: diagnostics.runtimeState.indicators?.results ? Object.keys(diagnostics.runtimeState.indicators.results) : []
+        }, '[HTF_DIAGNOSTIC_WRITE] Writing HTF diagnostics for cycle');
+        
+        // Store diagnostics directly using firestoreAdapter with HTF agent ID
+        // Note: Using direct saveAgentDiagnostic call with 'htf-trend-filter-agent' agentId for Firestore path
+        // CRITICAL: Include cycleId and bucketStartMs in runtimeState for per-pair uniqueness and grouping
+        const bucketStartMs = Math.floor(parseInt(diagnostics.cycleId.split('_').pop() || '0')) * (5 * 60 * 1000);
+        
+        console.log('[HTF_DIAGNOSTIC_WRITE]');
+        await firestoreAdapter.saveAgentDiagnostic(htfAgentId, {
+          agentType: 'HTF_TREND_FILTER_AGENT',
+          tradingPair: diagnostics.tradingPair,
+          direction: diagnostics.direction || 'LONG',
+          decision: diagnostics.decision || { action: 'SKIP', reason: 'No decision' },
+          signal: diagnostics.signal,
+          execution: diagnostics.execution,
+          runtimeState: {
+            ...diagnostics.runtimeState,
+            cycleId: diagnostics.cycleId, // Exact cycleId: ${agentId}_${pair}_${fiveMinuteBucket}
+            bucketStartMs: bucketStartMs, // Reconstructed bucket start time for grouping
+            signalGenerated: signalGenerated // Critical: indicates if HTF signal was generated for this pair
+          }
+        }, agentConfig.userId);
+        
+        // Mark this cycle as written to prevent duplicates
+        if (diagnostics.cycleId) {
+          AgentExecutionService.htfCycleHistoryWritten.add(diagnostics.cycleId);
+          
+          // Cleanup: Keep only last 100 cycleIds in memory to prevent unbounded growth
+          if (AgentExecutionService.htfCycleHistoryWritten.size > 100) {
+            const cyclesArray = Array.from(AgentExecutionService.htfCycleHistoryWritten);
+            const toRemove = cyclesArray.slice(0, cyclesArray.length - 100);
+            toRemove.forEach(id => AgentExecutionService.htfCycleHistoryWritten.delete(id));
+          }
+          
+          logger.debug({ agentId: htfAgentId, cycleId: diagnostics.cycleId }, 'HTF diagnostics persisted with cycle guard protection');
+        }
+      } catch (diagError) {
+        logger.error({
+          agentId,
+          error: diagError instanceof Error ? diagError.message : 'Unknown error'
+        }, 'CRITICAL: Failed to persist HTF agent diagnostics in finally block');
+      }
+    } else {
+      // Non-HTF agents: write diagnostics only if execution started
+      try {
+        const normalizedDiagnostics = this.normalizeDiagnosticsForPersistence(diagnostics, agentId);
+        await agent.storeDiagnostics(normalizedDiagnostics);
+        logger.debug({ agentId, decision: normalizedDiagnostics.decision }, 'Agent diagnostics persisted with strict normalization');
+      } catch (diagError) {
+        logger.error({
+          agentId,
+          error: diagError instanceof Error ? diagError.message : 'Unknown error'
+        }, 'CRITICAL: Failed to persist agent diagnostics');
+      }
+    }
+  } // Close finally block
+  } // Close executeAgent method
 
   /**
    * Place order on exchange with atomic SL/TP attachment
