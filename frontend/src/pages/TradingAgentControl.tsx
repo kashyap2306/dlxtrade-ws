@@ -50,6 +50,7 @@ export default function TradingAgentControl() {
   const [, setTimerTick] = useState(0); // Force re-render for countdown
   const [selectedDiagnosticDetails, setSelectedDiagnosticDetails] = useState<any>(null);
   const [showMoreDiagnostics, setShowMoreDiagnostics] = useState(false);
+  const [hasLoadedMoreDiagnostics, setHasLoadedMoreDiagnostics] = useState(false);
 
   // In-flight request guards to prevent parallel/overlapping API calls
   const [isLoadingControl, setIsLoadingControl] = useState(false);
@@ -111,6 +112,8 @@ export default function TradingAgentControl() {
     console.log('[HTF_DIAGNOSTICS] Agent changed, resetting diagnostics state');
     setDiagnosticsEntries([]);
     setSkippedTrades([]);
+    setHasLoadedMoreDiagnostics(false);
+    setShowMoreDiagnostics(false);
   }, [slug, resolvedAgentId]);
 
   // Helper function: Process HTF diagnostics - show only BTC/USDT and ETH/USDT pairs
@@ -184,6 +187,43 @@ export default function TradingAgentControl() {
 
     // Limit to 50 buckets (one row per pair per 5-min cycle)
     return processedBuckets.slice(0, 50);
+  };
+
+  // Load additional diagnostics for "View more"
+  const loadMoreDiagnostics = async () => {
+    if (isLoadingDiagnostics || hasLoadedMoreDiagnostics) return;
+
+    setIsLoadingDiagnostics(true);
+    try {
+      const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 50);
+      const entries = diagnosticsResp.data?.diagnostics || [];
+      
+      // Process the additional diagnostics
+      const additionalEntries = processDiagnostics(entries);
+      
+      // Append to existing entries (avoid duplicates by timestamp)
+      setDiagnosticsEntries(prev => {
+        const combined = [...prev];
+        additionalEntries.forEach(newEntry => {
+          const exists = combined.some(existing => 
+            existing.bucketKey === newEntry.bucketKey
+          );
+          if (!exists) {
+            combined.push(newEntry);
+          }
+        });
+        // Sort by timestamp descending
+        combined.sort((a, b) => b.bucketStartMs - a.bucketStartMs);
+        return combined;
+      });
+      
+      setHasLoadedMoreDiagnostics(true);
+      setShowMoreDiagnostics(true);
+    } catch (err) {
+      console.error('Error loading more diagnostics:', err);
+    } finally {
+      setIsLoadingDiagnostics(false);
+    }
   };
 
   // NOTE: Diagnostics hash logic removed to preserve full rolling history and ensure state is always updated
@@ -299,7 +339,7 @@ export default function TradingAgentControl() {
         if (!isLoadingDiagnostics) {
           setIsLoadingDiagnostics(true);
           try {
-            const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 50);
+            const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 10);
             setScheduler(diagnosticsResp.data?.scheduler || null);
             
             // Extract diagnostics entries for Recent Cycle Results
@@ -931,22 +971,34 @@ export default function TradingAgentControl() {
 
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-xl font-bold text-white">Recent Cycle Results</h3>
-              {isHTFTrendFilterAgent && diagnosticsEntries.length > 10 && (
+              {isHTFTrendFilterAgent && diagnosticsEntries.length >= 10 && !hasLoadedMoreDiagnostics && (
+                <button
+                  onClick={loadMoreDiagnostics}
+                  disabled={isLoadingDiagnostics}
+                  className="text-purple-400 hover:text-purple-300 transition-colors text-sm disabled:opacity-50"
+                >
+                  {isLoadingDiagnostics ? 'Loading...' : 'View More (50 more)'}
+                </button>
+              )}
+              {isHTFTrendFilterAgent && hasLoadedMoreDiagnostics && (
                 <button
                   onClick={() => setShowMoreDiagnostics(!showMoreDiagnostics)}
                   className="text-purple-400 hover:text-purple-300 transition-colors text-sm"
                 >
-                  {showMoreDiagnostics ? 'View Less' : `View More (${Math.min(diagnosticsEntries.length - 10, 40)} more)`}
+                  {showMoreDiagnostics ? 'View Less' : 'View All'}
                 </button>
               )}
             </div>
             <div className="text-sm text-gray-400 mb-6 leading-relaxed">
               Shows execution/skip decisions from recent scheduler cycles (~5 min intervals)
-              {isHTFTrendFilterAgent && !showMoreDiagnostics && diagnosticsEntries.length > 10 && (
-                <span className="text-purple-400"> • Showing latest 10 cycles</span>
+              {isHTFTrendFilterAgent && !hasLoadedMoreDiagnostics && (
+                <span className="text-purple-400"> • Showing latest {diagnosticsEntries.length} cycles</span>
               )}
-              {isHTFTrendFilterAgent && showMoreDiagnostics && (
-                <span className="text-purple-400"> • Showing latest {Math.min(diagnosticsEntries.length, 50)} cycles</span>
+              {isHTFTrendFilterAgent && hasLoadedMoreDiagnostics && !showMoreDiagnostics && (
+                <span className="text-purple-400"> • Showing latest 10 cycles (more loaded)</span>
+              )}
+              {isHTFTrendFilterAgent && hasLoadedMoreDiagnostics && showMoreDiagnostics && (
+                <span className="text-purple-400"> • Showing all {diagnosticsEntries.length} cycles</span>
               )}
             </div>
 
@@ -967,9 +1019,9 @@ export default function TradingAgentControl() {
                       </tr>
                     </thead>
                     <tbody>
-                      {(!showMoreDiagnostics 
+                      {(hasLoadedMoreDiagnostics && !showMoreDiagnostics 
                         ? diagnosticsEntries.slice(0, 10) 
-                        : diagnosticsEntries.slice(0, 50)
+                        : diagnosticsEntries
                       ).map((entry) => {
                         // Map diagnostics to table columns
                         const displayPair = entry.tradingPair || entry.symbol || '—';

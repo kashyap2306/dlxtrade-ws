@@ -445,7 +445,7 @@ export class TradingAgent {
   /**
    * Get recent diagnostics
    */
-  static async getDiagnostics(agentId: string, limit: number = 20, userId?: string): Promise<TradingDiagnostics[]> {
+  static async getDiagnostics(agentId: string, limit: number = 10, userId?: string): Promise<TradingDiagnostics[]> {
     try {
       // Use unified diagnostics storage via firestoreAdapter
       const diagnostics = await firestoreAdapter.getAgentDiagnostics(agentId, limit, userId);

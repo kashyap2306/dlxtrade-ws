@@ -5425,7 +5425,7 @@ export class FirestoreAdapter {
    * Path: users/{uid}/agentDiagnostics/{agentId}/entries
    * Returns most recent entries ordered by timestamp desc
    */
-  async getAgentDiagnostics(agentId: string, limit: number = 20, uid: string): Promise<Array<{
+  async getAgentDiagnostics(agentId: string, limit: number = 10, uid: string): Promise<Array<{
     id: string;
     timestamp: Date;
     agentId: string;

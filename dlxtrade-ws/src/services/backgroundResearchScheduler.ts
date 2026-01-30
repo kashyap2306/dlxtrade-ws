@@ -7,6 +7,7 @@ import { getFirebaseAdmin } from "../utils/firebase";
 import { getUserIntegrationsByUid } from "../routes/users/providerConfig";
 import * as admin from "firebase-admin";
 import { checkWhaleAlerts } from "./autoTradeTelegram";
+import { tradingAgentScheduler } from "./tradingAgentScheduler";
 import {
   safeSetInterval,
   shouldRunBackgroundTasks,
@@ -54,13 +55,107 @@ export class BackgroundResearchScheduler {
       return (agents || []).some((agent: any) => {
         const strategyType = agent?.strategyType;
         const name = agent?.name;
+        const agentId = agent?.agentId;
         const status = agent?.status;
         return status === 'ACTIVE' &&
-          (strategyType === 'HTF_TREND_FILTER' || (name && name.includes('HTF Trend Filter')));
+          (strategyType === 'HTF_TREND_FILTER' || 
+           agentId === 'htf-trend-filter-agent' ||
+           (name && name.includes('HTF Trend Filter')));
       });
     } catch (error) {
       logger.warn({ uid, error: error instanceof Error ? error.message : 'Unknown error' }, 'Failed to check HTF agent status');
       return false;
+    }
+  }
+
+  /**
+   * HARD CLEANUP: Immediately delete/reset all research-related state for HTF agents
+   * Ensures HTF agents have ZERO active state in backgroundResearchScheduler
+   */
+  private async hardCleanupHTFAgentState(uid: string): Promise<void> {
+    try {
+      console.log(
+        "🔥 [HARD_LOG] [HTF_HARD_CLEANUP] Starting hard cleanup for HTF agent user:",
+        uid
+      );
+      logger.info({ uid }, "🧹 [HTF_HARD_CLEANUP] Performing hard cleanup of all research state for HTF agent");
+
+      // 1. Clear any active scheduler interval
+      const existingInterval = this.userIntervals.get(uid);
+      if (existingInterval) {
+        console.log(
+          "🔥 [HARD_LOG] [HTF_CLEANUP_INTERVAL] Clearing scheduler interval for HTF user:",
+          uid
+        );
+        clearInterval(existingInterval);
+        this.userIntervals.delete(uid);
+      }
+
+      // 2. Clear job state (mode, lastRunAt, nextRunAt)
+      const existingJobState = this.userJobStates.get(uid);
+      if (existingJobState) {
+        console.log(
+          "🔥 [HARD_LOG] [HTF_CLEANUP_JOBSTATE] Clearing job state for HTF user:",
+          uid,
+          "mode was:",
+          existingJobState.mode
+        );
+        this.userJobStates.delete(uid);
+      }
+
+      // 3. Clear any active schedule locks
+      if (this.activeScheduleLocks.has(uid)) {
+        console.log(
+          "🔥 [HARD_LOG] [HTF_CLEANUP_LOCKS] Clearing schedule locks for HTF user:",
+          uid
+        );
+        this.activeScheduleLocks.delete(uid);
+      }
+
+      // 4. Clear any soft-skip state
+      if (this.softSkipUsers.has(uid)) {
+        console.log(
+          "🔥 [HARD_LOG] [HTF_CLEANUP_SOFTSKIP] Clearing soft-skip for HTF user:",
+          uid
+        );
+        this.softSkipUsers.delete(uid);
+      }
+
+      // 5. Clear decryption failure cache if present
+      if (this.decryptionFailureCache.has(uid)) {
+        console.log(
+          "🔥 [HARD_LOG] [HTF_CLEANUP_DECRYPTION] Clearing decryption cache for HTF user:",
+          uid
+        );
+        this.decryptionFailureCache.delete(uid);
+      }
+
+      // 6. Clear user operation locks
+      if (this.userOperationLocks.has(uid)) {
+        console.log(
+          "🔥 [HARD_LOG] [HTF_CLEANUP_OPLOCKS] Clearing operation locks for HTF user:",
+          uid
+        );
+        this.userOperationLocks.delete(uid);
+      }
+
+      console.log(
+        "🔥 [HARD_LOG] [HTF_HARD_CLEANUP_COMPLETE] Hard cleanup completed for HTF user:",
+        uid,
+        "- ZERO active state remaining"
+      );
+      logger.info({ uid }, "✅ [HTF_HARD_CLEANUP] Hard cleanup completed - HTF agent isolated from research scheduler");
+
+    } catch (error) {
+      logger.error(
+        { uid, error: error instanceof Error ? error.message : 'Unknown error' },
+        "❌ [HTF_HARD_CLEANUP] Failed to perform hard cleanup"
+      );
+      console.log(
+        "🔥 [HARD_LOG] [HTF_CLEANUP_ERROR] Hard cleanup failed for:",
+        uid,
+        error instanceof Error ? error.message : 'Unknown error'
+      );
     }
   }
 
@@ -85,7 +180,7 @@ export class BackgroundResearchScheduler {
    *
    * REFACTORED: Uses safe background runner to prevent event loop blocking
    */
-  start() {
+  async start() {
     // 🔥 HARD LOG: Scheduler startup
     console.log(
       "🔥 [HARD_LOG] [SCHEDULER_START] Background research scheduler start() called",
@@ -124,6 +219,17 @@ export class BackgroundResearchScheduler {
     console.log(
       "🔥 [HARD_LOG] [SCHEDULER_RUNNING] Scheduler isRunning set to true",
     );
+
+    // Start Trading Agent Scheduler for HTF execution
+    try {
+      console.log("🔥 [HARD_LOG] [START_TRADING_AGENT_SCHEDULER] Starting TradingAgentScheduler for HTF execution");
+      await tradingAgentScheduler.start();
+      console.log("✅ [TRADING_AGENT_SCHEDULER] Started successfully");
+    } catch (error) {
+      console.error("❌ [TRADING_AGENT_SCHEDULER] Failed to start:", error instanceof Error ? error.message : 'Unknown error');
+      logger.error({ error: error instanceof Error ? error.message : 'Unknown error' }, "Failed to start TradingAgentScheduler");
+    }
+
     logger.info(
       {
         schedulerRunning: this.isRunning,
@@ -309,14 +415,29 @@ export class BackgroundResearchScheduler {
             (settings?.backgroundResearchEnabled === true &&
               settings?.telegramBackgroundResearchEnabled !== false);
 
-          // CRITICAL HTF FIX: Check for active HTF agent
+          // CRITICAL: HTF agents are COMPLETELY ISOLATED - they do NOT participate in research scheduling
+          // HTF agents execute independently via TradingAgentScheduler → AgentExecutionService
           const hasActiveHTF = await this.hasActiveHTFAgent(uid);
+          if (hasActiveHTF) {
+            // HARD CLEANUP: Immediately delete/reset all research state for HTF agents
+            await this.hardCleanupHTFAgentState(uid);
+            logger.info(
+              { uid, hasActiveHTF: true },
+              "🚫 [HTF_ISOLATION] HTF agent detected during bootstrap - COMPLETELY bypassing research scheduling"
+            );
+            console.log(
+              "🔥 [HARD_LOG] [HTF_ISOLATION] HTF agent active for user:",
+              uid,
+              "- NO bootstrap scheduling"
+            );
+            continue; // Skip this user entirely
+          }
 
-          // Bootstrap if either mode is enabled OR HTF agent is active
-          if (autoTradeEnabled || telegramBgResearchEnabled || hasActiveHTF) {
+          // Bootstrap if either mode is enabled
+          if (autoTradeEnabled || telegramBgResearchEnabled) {
             enabledCount++;
             logger.info(
-              { uid, autoTradeEnabled, telegramBgResearchEnabled, hasActiveHTF },
+              { uid, autoTradeEnabled, telegramBgResearchEnabled },
               "📋 [SCHEDULER] Found enabled user during bootstrap",
             );
 
@@ -461,6 +582,25 @@ export class BackgroundResearchScheduler {
             this.softSkipUsers.delete(uid);
           }
 
+          // CRITICAL: HTF agents are COMPLETELY ISOLATED - they do NOT participate in research scheduling
+          // HTF agents execute independently via TradingAgentScheduler → AgentExecutionService
+          // They should NEVER be assigned AUTO_TRADE_RESEARCH or TELEGRAM_BACKGROUND_RESEARCH modes
+          const hasActiveHTF = await this.hasActiveHTFAgent(uid);
+          if (hasActiveHTF) {
+            // HARD CLEANUP: Immediately delete/reset all research state for HTF agents
+            await this.hardCleanupHTFAgentState(uid);
+            logger.info(
+              { uid, hasActiveHTF: true },
+              "🚫 [HTF_ISOLATION] HTF agent detected in checkAndScheduleUserResearch - COMPLETELY bypassing research scheduling"
+            );
+            console.log(
+              "🔥 [HARD_LOG] [HTF_ISOLATION] HTF agent active for user:",
+              uid,
+              "- NO research scheduling in this cycle"
+            );
+            continue; // Skip this user entirely
+          }
+
           // CRITICAL: Determine FINAL MODE ONCE per user per cycle
           // This prevents multiple mode evaluations for the same UID
           let finalMode: "TELEGRAM_BACKGROUND_RESEARCH" | "AUTO_TRADE_RESEARCH" | null = null;
@@ -491,33 +631,18 @@ export class BackgroundResearchScheduler {
               (settings?.backgroundResearchEnabled === true &&
                 settings?.telegramBackgroundResearchEnabled !== false);
 
-            // CRITICAL HTF FIX: Check for active HTF agent first
-            const hasActiveHTF = await this.hasActiveHTFAgent(uid);
-            
-            // HTF BYPASS: If user has active HTF agent, ALWAYS schedule regardless of mode settings
-            if (hasActiveHTF) {
+            // EARLY RETURN: Skip users with both modes disabled
+            if (!autoTradeEnabled && !telegramBgResearchEnabled) {
               console.log(
-                "🔥 [HARD_LOG] [HTF_BYPASS] HTF agent active for user:",
+                "🔥 [HARD_LOG] [EARLY_RETURN] Both modes disabled for user:",
                 uid,
-                "- bypassing all mode checks, forcing AUTO_TRADE_RESEARCH mode",
+                "- skipping user in this cycle",
               );
-              finalMode = "AUTO_TRADE_RESEARCH";
-              finalFrequency = settings?.researchFrequencyMinutes || 5;
-              // Skip all other mode checks - HTF agents always run
-            } else {
-              // EARLY RETURN: Skip users with both modes disabled (only if NO HTF agent)
-              if (!autoTradeEnabled && !telegramBgResearchEnabled) {
-                console.log(
-                  "🔥 [HARD_LOG] [EARLY_RETURN] Both modes disabled for user:",
-                  uid,
-                  "- skipping user in this cycle",
-                );
-                continue; // Skip this user entirely
-              }
+              continue; // Skip this user entirely
             }
 
             // CONFLICT RESOLUTION: Auto-Trade always wins for execution mode
-            if (!hasActiveHTF && autoTradeEnabled) {
+            if (autoTradeEnabled) {
               finalMode = "AUTO_TRADE_RESEARCH";
               finalFrequency = settings?.researchFrequencyMinutes || 5;
 
@@ -548,7 +673,7 @@ export class BackgroundResearchScheduler {
                 await this.forceStopUserScheduler(uid, exchangeStatus.reason);
                 shouldSkipUser = true;
               }
-            } else if (!hasActiveHTF && telegramBgResearchEnabled) {
+            } else if (telegramBgResearchEnabled) {
               finalMode = "TELEGRAM_BACKGROUND_RESEARCH";
               finalFrequency = settings?.researchFrequencyMinutes || 5;
             }
@@ -684,6 +809,25 @@ export class BackgroundResearchScheduler {
         return;
       }
 
+      // CRITICAL: HTF agents are COMPLETELY ISOLATED - they do NOT participate in research scheduling
+      // HTF agents execute independently via TradingAgentScheduler → AgentExecutionService
+      // They should NEVER be assigned AUTO_TRADE_RESEARCH or TELEGRAM_BACKGROUND_RESEARCH modes
+      const hasActiveHTF = await this.hasActiveHTFAgent(uid);
+      if (hasActiveHTF) {
+        // HARD CLEANUP: Immediately delete/reset all research state for HTF agents
+        await this.hardCleanupHTFAgentState(uid);
+        logger.info(
+          { uid, hasActiveHTF: true },
+          "🚫 [HTF_ISOLATION] HTF agent detected - COMPLETELY bypassing research scheduling"
+        );
+        console.log(
+          "🔥 [HARD_LOG] [HTF_ISOLATION] HTF agent active for user:",
+          uid,
+          "- NO research scheduling, NO mode assignment"
+        );
+        return;
+      }
+
       const db = getFirebaseAdmin().firestore();
 
       // Check Auto Trade config first (highest priority)
@@ -734,40 +878,24 @@ export class BackgroundResearchScheduler {
           "- this should be rare",
         );
 
-        // CRITICAL HTF FIX: Check for active HTF agent first
-        const hasActiveHTF = await this.hasActiveHTFAgent(uid);
-        
-        // HTF BYPASS: If user has active HTF agent, ALWAYS schedule regardless of mode settings
-        if (hasActiveHTF) {
+        // EARLY RETURN: Skip users with both modes disabled
+        if (!autoTradeEnabled && !telegramBgResearchEnabled) {
           console.log(
-            "🔥 [HARD_LOG] [HTF_BYPASS_FALLBACK] HTF agent active for user:",
+            "🔥 [HARD_LOG] [EARLY_RETURN] Both modes disabled for user:",
             uid,
-            "- bypassing all mode checks, forcing AUTO_TRADE_RESEARCH mode",
+            "- skipping all processing",
           );
-          mode = RESEARCH_MODE.AUTO_TRADE_RESEARCH;
-          finalFrequency = settings?.researchFrequencyMinutes || 5;
-          shouldSchedule = true;
-          // Skip all other mode checks - HTF agents always run
-        } else {
-          // EARLY RETURN: Skip users with both modes disabled (only if NO HTF agent)
-          if (!autoTradeEnabled && !telegramBgResearchEnabled) {
+          // Remove any existing interval for this user
+          if (this.userIntervals.has(uid)) {
+            clearInterval(this.userIntervals.get(uid)!);
+            this.userIntervals.delete(uid);
+            this.userJobStates.delete(uid);
             console.log(
-              "🔥 [HARD_LOG] [EARLY_RETURN] Both modes disabled for user:",
+              "🔥 [HARD_LOG] [INTERVAL_CLEANUP] Removed interval for disabled user:",
               uid,
-              "- skipping all processing",
             );
-            // Remove any existing interval for this user
-            if (this.userIntervals.has(uid)) {
-              clearInterval(this.userIntervals.get(uid)!);
-              this.userIntervals.delete(uid);
-              this.userJobStates.delete(uid);
-              console.log(
-                "🔥 [HARD_LOG] [INTERVAL_CLEANUP] Removed interval for disabled user:",
-                uid,
-              );
-            }
-            return;
           }
+          return;
         }
 
         // CONFLICT RESOLUTION: Auto-Trade always wins for execution mode
@@ -781,11 +909,9 @@ export class BackgroundResearchScheduler {
           autoTradeEnabled,
           "telegramBgResearchEnabled:",
           telegramBgResearchEnabled,
-          "hasActiveHTF:",
-          hasActiveHTF,
         );
 
-        if (!hasActiveHTF && autoTradeEnabled) {
+        if (autoTradeEnabled) {
           // AUTO_TRADE_RESEARCH mode - HIGHEST PRIORITY
           // CRITICAL: Telegram Background Research engine is COMPLETELY BYPASSED when Auto-Trade is enabled
           mode = RESEARCH_MODE.AUTO_TRADE_RESEARCH;
@@ -907,7 +1033,7 @@ export class BackgroundResearchScheduler {
             },
             "🔍 [SCHEDULER_DEBUG] AUTO_TRADE_RESEARCH mode enabled - scheduler will run regardless of API availability, Telegram engine BYPASSED, alerts from Auto-Trade engine",
           );
-        } else if (!hasActiveHTF && telegramBgResearchEnabled) {
+        } else if (telegramBgResearchEnabled) {
           // TELEGRAM_BACKGROUND_RESEARCH mode (TELEGRAM_ONLY)
           // CRITICAL: This mode ONLY runs when Auto-Trade is DISABLED
           mode = RESEARCH_MODE.TELEGRAM_BACKGROUND_RESEARCH;
@@ -956,22 +1082,21 @@ export class BackgroundResearchScheduler {
             { uid, frequency: finalFrequency },
             "📱 [SCHEDULER] Scheduler running in TELEGRAM_ONLY mode",
           );
-        } else if (!hasActiveHTF) {
-          // BOTH are OFF → do not schedule (only if NO HTF agent)
-          // CRITICAL: Scheduler is disabled ONLY when BOTH autoTradeEnabled AND telegramBgResearchEnabled are false AND no HTF agent
+        } else {
+          // BOTH are OFF → do not schedule
+          // CRITICAL: Scheduler is disabled ONLY when BOTH autoTradeEnabled AND telegramBgResearchEnabled are false
           console.log(
             "🔥 [HARD_LOG] [MODE_BOTH_OFF] Both modes OFF for user:",
             uid,
-            "- disabling scheduler (NO HTF agent)",
+            "- disabling scheduler",
           );
           logger.info(
             {
               uid,
               autoTradeEnabled,
               telegramBgResearchEnabled,
-              hasActiveHTF: false,
             },
-            "⏭️ [SCHEDULER] Both Auto Trade and Telegram Background Research are OFF and no HTF agent - disabling scheduler",
+            "⏭️ [SCHEDULER] Both Auto Trade and Telegram Background Research are OFF - disabling scheduler",
           );
           await this.disableUserScheduler(uid);
           return;
@@ -1529,6 +1654,24 @@ export class BackgroundResearchScheduler {
         return { scheduled: false, reason: "System UID skipped" };
       }
 
+      // CRITICAL: HTF agents are COMPLETELY ISOLATED - they do NOT participate in research scheduling
+      // HTF agents execute independently via TradingAgentScheduler → AgentExecutionService
+      const hasActiveHTF = await this.hasActiveHTFAgent(uid);
+      if (hasActiveHTF) {
+        // HARD CLEANUP: Immediately delete/reset all research state for HTF agents
+        await this.hardCleanupHTFAgentState(uid);
+        logger.info(
+          { uid, hasActiveHTF: true },
+          "🚫 [HTF_ISOLATION] HTF agent detected in ensureUserResearchScheduled - COMPLETELY bypassing research scheduling"
+        );
+        console.log(
+          "🔥 [HARD_LOG] [HTF_ISOLATION] HTF agent active for user:",
+          uid,
+          "- NO ensure scheduling"
+        );
+        return { scheduled: false, reason: "HTF agent - research scheduling bypassed" };
+      }
+
       logger.info(
         { uid },
         "🔒 [SCHEDULER] ensureUserResearchScheduled: Hard guarantee check",
@@ -1593,28 +1736,17 @@ export class BackgroundResearchScheduler {
         (settings?.backgroundResearchEnabled === true &&
           settings?.telegramBackgroundResearchEnabled !== false);
 
-      // CRITICAL HTF FIX: Check for active HTF agent first
-      const hasActiveHTF = await this.hasActiveHTFAgent(uid);
-      
-      // HTF BYPASS: If user has active HTF agent, ALWAYS schedule regardless of mode settings
-      if (hasActiveHTF) {
+      // CRITICAL: User MUST be scheduled if either condition is true
+      if (!autoTradeEnabled && !telegramBgResearchEnabled) {
         logger.info(
-          { uid, hasActiveHTF: true },
-          "🔒 [SCHEDULER] HTF agent active - forcing registration regardless of mode settings",
+          { uid, autoTradeEnabled, telegramBgResearchEnabled },
+          "⏭️ [SCHEDULER] User not eligible for scheduling - both modes disabled",
         );
-      } else {
-        // CRITICAL: User MUST be scheduled if either condition is true (only check if NO HTF agent)
-        if (!autoTradeEnabled && !telegramBgResearchEnabled) {
-          logger.info(
-            { uid, autoTradeEnabled, telegramBgResearchEnabled, hasActiveHTF: false },
-            "⏭️ [SCHEDULER] User not eligible for scheduling - both modes disabled and no HTF agent",
-          );
-          return {
-            scheduled: false,
-            reason:
-              "Both auto-trade and Telegram background research are disabled and no HTF agent",
-          };
-        }
+        return {
+          scheduled: false,
+          reason:
+            "Both auto-trade and Telegram background research are disabled",
+        };
       }
 
       // FORCE registration via updateUserResearchSchedule
@@ -2351,6 +2483,24 @@ export class BackgroundResearchScheduler {
       "🔥 [HARD_LOG] [PROCESS_START] processUserResearch() called for user:",
       uid,
     );
+
+    // CRITICAL SAFETY: HTF agents should NEVER reach processUserResearch
+    // If they do, it's a bug - log and abort immediately
+    const hasActiveHTF = await this.hasActiveHTFAgent(uid);
+    if (hasActiveHTF) {
+      // HARD CLEANUP: Immediately delete/reset all research state for HTF agents
+      await this.hardCleanupHTFAgentState(uid);
+      logger.error(
+        { uid, hasActiveHTF: true },
+        "🚨 [HTF_SAFETY_VIOLATION] HTF agent reached processUserResearch - THIS IS A BUG"
+      );
+      console.log(
+        "🔥 [HARD_LOG] [HTF_SAFETY_VIOLATION] HTF agent in processUserResearch:",
+        uid,
+        "- ABORTING IMMEDIATELY"
+      );
+      return; // Abort immediately - HTF agents should never be here
+    }
 
     // CRITICAL: Read settings at the beginning for all code paths
     const settings = await firestoreAdapter.getBackgroundResearchSettings(uid);

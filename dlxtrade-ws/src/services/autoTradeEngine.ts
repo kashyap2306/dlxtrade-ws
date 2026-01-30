@@ -3933,7 +3933,6 @@ export class AutoTradeEngine {
         { uid, cycleId, agentType: researchResult?.metadata?.agentType },
         "🔍 [HTF_AGENT_BYPASS] HTF agent detected - bypassing AutoTradeEngine (HTF executes from TradingAgentScheduler only)"
       );
-      console.log('🔥 [HARD_LOG] [HTF_BYPASS] AutoTradeEngine skipping HTF agent - execution handled by TradingAgentScheduler only');
       
       // CRITICAL: Return immediately WITHOUT writing diagnostics or executing any logic
       // HTF diagnostics are written by AgentExecutionService during scheduler execution
