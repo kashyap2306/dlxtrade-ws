@@ -43,7 +43,6 @@ export default function TradingAgentControl() {
   const [togglingAutoTrade, setTogglingAutoTrade] = useState(false);
   const [skippedTrades, setSkippedTrades] = useState<any[]>([]);
   const [diagnosticsEntries, setDiagnosticsEntries] = useState<any[]>([]); // HTF diagnostics
-  const [lastDiagnosticsHash, setLastDiagnosticsHash] = useState<string>(''); // Prevent re-processing identical payloads
   const [agentConfig, setAgentConfig] = useState<any | null>(null);
   const [scheduler, setScheduler] = useState<any | null>(null);
   const [loadingData, setLoadingData] = useState(false);
@@ -112,23 +111,39 @@ export default function TradingAgentControl() {
     console.log('[HTF_DIAGNOSTICS] Agent changed, resetting diagnostics state');
     setDiagnosticsEntries([]);
     setSkippedTrades([]);
-    setLastDiagnosticsHash('');
   }, [slug, resolvedAgentId]);
 
-  // Helper function: Process HTF diagnostics - group by 5-minute time-bucket to show ONE row per cycle
+  // Helper function: Process HTF diagnostics - show only BTC/USDT and ETH/USDT pairs
   const processDiagnostics = (rawEntries: any[]): any[] => {
     if (!rawEntries || rawEntries.length === 0) return [];
 
     console.log('[HTF_PROCESS_DEBUG] Processing diagnostics, raw entries:', rawEntries.length);
 
-    // Group entries by 5-minute time-bucket
+    // STRICT REQUIREMENT: Only show BTC/USDT and ETH/USDT pairs
+    const allowedPairs = ['BTC/USDT', 'ETH/USDT'];
+    
+    // Filter entries to only allowed pairs and valid tradingPair
+    const filteredEntries = rawEntries.filter((entry: any) => {
+      const pair = entry.tradingPair || entry.pair;
+      return pair && allowedPairs.includes(pair);
+    });
+
+    console.log('[HTF_PROCESS_DEBUG] Filtered to allowed pairs:', filteredEntries.length);
+
+    // Group by pair + 5-minute time-bucket for per-pair rows
+    // Each row represents exactly ONE pair's analysis for that time bucket
     const bucketMap = new Map<string, any[]>();
     
-    rawEntries.forEach((entry: any) => {
+    filteredEntries.forEach((entry: any) => {
+      const pair = entry.tradingPair || entry.pair;
+      
       // Calculate 5-minute bucket from timestamp
       const timestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : Date.now();
       const fiveMinuteBucket = Math.floor(timestamp / (5 * 60 * 1000));
-      const bucketKey = `bucket_${fiveMinuteBucket}`;
+      const bucketStartMs = fiveMinuteBucket * (5 * 60 * 1000);
+      
+      // Key format: ${pair}_${bucketStartMs} - ensures one row per pair per bucket
+      const bucketKey = `${pair}_${bucketStartMs}`;
       
       if (!bucketMap.has(bucketKey)) {
         bucketMap.set(bucketKey, []);
@@ -136,63 +151,42 @@ export default function TradingAgentControl() {
       bucketMap.get(bucketKey)!.push(entry);
     });
 
-    // Process each bucket to create ONE row per cycle
-    // Prefer HTF Trend Filter as primary, merge AUTO_TRADE as secondary
+    // Process each bucket: each key represents one pair's analysis for one time bucket
     const processedBuckets = Array.from(bucketMap.entries()).map(([bucketKey, entries]) => {
-      // Find HTF entry in this bucket (primary)
-      const htfEntry = entries.find((e: any) => {
-        const agentType = e.agentType;
-        const agentId = e.agentId;
-        return agentType === 'HTF_TREND_FILTER_AGENT' || (agentId && agentId.includes('htf'));
-      });
+      // Each bucket should have exactly one entry (one pair's analysis)
+      // If multiple entries exist for same pair+bucket, use the most recent
+      const primaryEntry = entries.sort((a, b) => 
+        new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      )[0];
 
-      // Find AUTO_TRADE entry in this bucket (secondary)
-      const autoTradeEntry = entries.find((e: any) => {
-        const agentType = e.agentType;
-        const agentId = e.agentId;
-        return agentType === 'AUTO_TRADE_AGENT' || (agentId && agentId.includes('auto'));
-      });
+      // Extract pair and bucketStartMs from the key
+      const [pair, bucketStartMsStr] = bucketKey.split('_');
+      const bucketStartMs = parseInt(bucketStartMsStr, 10);
 
-      // Use HTF as primary, with AUTO_TRADE skip reason as fallback
-      const primaryEntry = htfEntry || autoTradeEntry;
-      
-      if (!primaryEntry) {
-        // Safety fallback - shouldn't happen
-        return entries[0];
-      }
-
-      // Merge data: HTF takes priority, AUTO_TRADE supplements
-      const merged = {
+      // Return individual pair analysis - no aggregation or merging
+      return {
         ...primaryEntry,
-        bucketKey, // Add bucket key for React key stability
-        source: htfEntry ? 'HTF_TREND_FILTER_AGENT' : 'AUTO_TRADE_AGENT',
-        autoTradeSkipReason: autoTradeEntry?.decision?.reason || autoTradeEntry?.runtimeState?.skipReason,
-        htfDetails: htfEntry ? primaryEntry : null,
-        autoTradeDetails: autoTradeEntry || null
+        bucketKey, // React key: ${pair}_${bucketStartMs}
+        pair, // Trading pair (BTC/USDT or ETH/USDT only)
+        timestamp: new Date(bucketStartMs),
+        bucketStartMs, // Bucket start time in ms
+        // No merging of HTF + AUTO_TRADE - each is separate
+        htfDetails: primaryEntry,
+        autoTradeDetails: null, // Not used in strict per-pair mode
+        bucketEntries: entries // All entries for this pair+bucket (usually just one)
       };
-
-      return merged;
     });
 
-    // Sort by bucket key descending (latest first)
+    // Sort by bucket start timestamp descending (latest first)
     processedBuckets.sort((a: any, b: any) => {
-      const aBucket = parseInt(a.bucketKey.replace('bucket_', ''));
-      const bBucket = parseInt(b.bucketKey.replace('bucket_', ''));
-      return bBucket - aBucket;
+      return b.bucketStartMs - a.bucketStartMs;
     });
 
-    // Limit to 50 buckets (one row per 5-min cycle)
+    // Limit to 50 buckets (one row per pair per 5-min cycle)
     return processedBuckets.slice(0, 50);
   };
 
-  // Helper function: Generate hash of diagnostics payload to detect changes
-  const generateDiagnosticsHash = (entries: any[]): string => {
-    if (!entries || entries.length === 0) return 'empty';
-    
-    // Create a simple hash based on entry IDs and timestamps
-    const hashData = entries.map(e => `${e.id}_${e.timestamp}`).join('|');
-    return hashData;
-  };
+  // NOTE: Diagnostics hash logic removed to preserve full rolling history and ensure state is always updated
 
   useEffect(() => {
     if (!user || !pageReady) {
@@ -319,32 +313,13 @@ export default function TradingAgentControl() {
               }
             }
             
-            // Generate hash to detect if payload has changed
-            const currentHash = generateDiagnosticsHash(entries);
-            
+            // Process diagnostics into 5-minute buckets and ALWAYS update state
+            const aggregatedEntries = processDiagnostics(entries);
             console.log('[HTF_DIAGNOSTICS] Received entries:', entries.length);
-            console.log('[HTF_DIAGNOSTICS] Current hash:', currentHash);
-            console.log('[HTF_DIAGNOSTICS] Last hash:', lastDiagnosticsHash);
-            
-            // Only process if payload has changed (prevent re-processing identical data)
-            if (currentHash !== lastDiagnosticsHash) {
-              console.log('[HTF_DIAGNOSTICS] Payload changed, processing...');
-              
-              // Process diagnostics with strict cycle deduplication
-              const aggregatedEntries = processDiagnostics(entries);
-              
-              console.log('[HTF_DIAGNOSTICS] After cycle aggregation:', aggregatedEntries.length);
-              
-              // INVESTIGATION: Log final state before setting
-              console.log('[HTF_STATE_DEBUG] Setting diagnosticsEntries state with:', aggregatedEntries.length, 'entries');
-              console.log('[HTF_STATE_DEBUG] First entry to be set:', aggregatedEntries[0]);
-              
-              // REPLACE state (not append) to prevent duplicates
-              setDiagnosticsEntries(aggregatedEntries);
-              setLastDiagnosticsHash(currentHash);
-            } else {
-              console.log('[HTF_DIAGNOSTICS] Payload unchanged, skipping processing');
-            }
+            console.log('[HTF_DIAGNOSTICS] Aggregated buckets (to set):', aggregatedEntries.length);
+            console.log('[HTF_STATE_DEBUG] Setting diagnosticsEntries state with:', aggregatedEntries.length, 'entries');
+            // Always replace state with processed buckets (latest first)
+            setDiagnosticsEntries(aggregatedEntries);
           } catch (err) {
             console.error('Error loading diagnostics:', err);
           } finally {

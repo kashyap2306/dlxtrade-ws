@@ -35,6 +35,8 @@ export class AgentExecutionService {
   private static manualTradeExecutionGuard: Map<string, number> = new Map(); // userId+agentId -> timestamp
   // CRITICAL: HTF cycle guard to prevent duplicate diagnostics writes per scheduler cycle
   private static htfCycleHistoryWritten: Set<string> = new Set(); // Set of cycleIds already written for HTF agent
+  // CRITICAL: Exchange usability cache per cycle to avoid repeated checks
+  private static exchangeUsabilityCache: Map<string, { usable: boolean; reason: string; exchange?: string; checkedAt: number }> = new Map();
 
   constructor(marketDataProvider: MarketDataProvider) {
     this.marketDataProvider = marketDataProvider;
@@ -216,56 +218,108 @@ export class AgentExecutionService {
       const agentConfigs = await firestoreAdapter.getActiveTradingAgents();
       console.log(`[LOAD_ACTIVE_AGENTS] Found ${agentConfigs.length} active agents`);
 
+      // Deduplicate HTF Trend Filter agents per user + tradingPair + strategyType
+      // Key by userId|tradingPair|strategyType (normalize strategyType/name for HTF)
+      const dedupeMap: Map<string, any> = new Map();
+
+      for (const cfg of agentConfigs) {
+        const strategyType = cfg.strategyType || '';
+        const isHTF = strategyType === 'HTF_TREND_FILTER' || (cfg.name && cfg.name.includes('HTF Trend Filter'));
+        // Only dedupe HTF agents; non-HTF are inserted directly
+        if (!isHTF) {
+          // use unique key to preserve non-HTF
+          const key = `nonhtf_${cfg.id}`;
+          dedupeMap.set(key, cfg);
+          continue;
+        }
+
+        const userId = cfg.userId || 'unknown_user';
+        const pair = (cfg.tradingPair || '').toString().toUpperCase();
+        const key = `${userId}|${pair}|HTF_TREND_FILTER`;
+
+        if (!dedupeMap.has(key)) {
+          dedupeMap.set(key, cfg);
+          continue;
+        }
+
+        // Choose between existing and new candidate:
+        const existing = dedupeMap.get(key);
+
+        // Prefer explicitly active flag if present
+        const existingExplicit = existing.explicitlyActive === true || existing.isPrimary === true;
+        const newExplicit = cfg.explicitlyActive === true || cfg.isPrimary === true;
+        if (newExplicit && !existingExplicit) {
+          dedupeMap.set(key, cfg);
+          continue;
+        }
+
+        if (existingExplicit && !newExplicit) {
+          // keep existing
+          continue;
+        }
+
+        // Prefer most recently created - check common timestamp fields
+        const existingTs = existing.createdAt || existing.created_at || existing.created || existing.createdTimestamp || existing.createdOn || 0;
+        const newTs = cfg.createdAt || cfg.created_at || cfg.created || cfg.createdTimestamp || cfg.createdOn || 0;
+
+        const existingTime = existingTs instanceof Date ? existingTs.getTime() : Number(existingTs) || 0;
+        const newTime = newTs instanceof Date ? newTs.getTime() : Number(newTs) || 0;
+
+        if (newTime >= existingTime) {
+          dedupeMap.set(key, cfg);
+        } else {
+          // keep existing (older wins if explicit)
+        }
+      }
+
+      // Now populate activeAgents from dedupeMap
       this.activeAgents.clear();
 
       let htfCount = 0;
       let bbRsiCount = 0;
       let otherCount = 0;
 
-      for (const config of agentConfigs) {
-        const agent = new TradingAgent(config);
-        this.activeAgents.set(config.id, agent);
+      for (const cfg of dedupeMap.values()) {
+        const agent = new TradingAgent(cfg);
+        this.activeAgents.set(cfg.id, agent);
 
-        // CRITICAL: Log HTF agents specifically to verify they're loaded
-        const isHTFAgent = config.strategyType === 'HTF_TREND_FILTER' || 
-                          (config.name && config.name.includes('HTF Trend Filter'));
-        
-        // Log BB-RSI EMA200 Scalper agents
-        const isBBRsiAgent = config.strategyType === 'MEAN_REVERSION_SCALPER' ||
-                             (config.name && config.name.includes('BB-RSI'));
-        
-        if (isHTFAgent) {
-          htfCount++;
-        } else if (isBBRsiAgent) {
-          bbRsiCount++;
-        } else {
-          otherCount++;
-        }
-        
-        const agentTypeLabel = isHTFAgent ? '🎯 HTF Trend Filter Agent' : 
-                               isBBRsiAgent ? '📊 BB-RSI EMA200 Scalper Pro Agent' : 
-                               'Trading agent';
-        
-        console.log(`[LOAD_ACTIVE_AGENTS] ${agentTypeLabel}: ${config.id} (${config.name}) - ${config.tradingPair}`);
-        
-        logger.info({
-          agentId: config.id,
-          name: config.name,
-          tradingPair: config.tradingPair,
-          strategyType: config.strategyType,
-          isHTFAgent,
-          isBBRsiAgent
-        }, `${agentTypeLabel} loaded and activated`);
+        const isHTFAgent = cfg.strategyType === 'HTF_TREND_FILTER' || (cfg.name && cfg.name.includes('HTF Trend Filter'));
+        const isBBRsiAgent = cfg.strategyType === 'MEAN_REVERSION_SCALPER' || (cfg.name && cfg.name.includes('BB-RSI'));
+
+        if (isHTFAgent) htfCount++;
+        else if (isBBRsiAgent) bbRsiCount++;
+        else otherCount++;
+
+        const agentTypeLabel = isHTFAgent ? '🎯 HTF Trend Filter Agent' : isBBRsiAgent ? '📊 BB-RSI EMA200 Scalper Pro Agent' : 'Trading agent';
+        console.log(`[LOAD_ACTIVE_AGENTS] ${agentTypeLabel}: ${cfg.id} (${cfg.name}) - ${cfg.tradingPair}`);
+        logger.info({ agentId: cfg.id, name: cfg.name, tradingPair: cfg.tradingPair, strategyType: cfg.strategyType, isHTFAgent, isBBRsiAgent }, `${agentTypeLabel} loaded and activated`);
       }
 
-      console.log(`[LOAD_ACTIVE_AGENTS] Summary: ${htfCount} HTF, ${bbRsiCount} BB-RSI, ${otherCount} other agents`);
+      console.log(`[LOAD_ACTIVE_AGENTS] Summary: ${htfCount} HTF, ${bbRsiCount} BB-RSI, ${otherCount} other agents (deduplicated)`);
+      logger.info({ agentCount: this.activeAgents.size, htfCount, bbRsiCount, otherCount }, 'All active trading agents loaded');
 
-      logger.info({
-        agentCount: this.activeAgents.size,
-        htfCount,
-        bbRsiCount,
-        otherCount
-      }, 'All active trading agents loaded');
+      // Detailed per-user HTF counts for verification
+      const perUserHtf: Map<string, Set<string>> = new Map();
+      for (const agent of this.activeAgents.values()) {
+        try {
+          const cfg = agent['config'];
+          const isHTF = cfg.strategyType === 'HTF_TREND_FILTER' || (cfg.name && cfg.name.includes('HTF Trend Filter'));
+          if (!isHTF) continue;
+          const uid = cfg.userId || 'unknown_user';
+          const pair = (cfg.tradingPair || '').toString().toUpperCase();
+          if (!perUserHtf.has(uid)) perUserHtf.set(uid, new Set());
+          perUserHtf.get(uid)!.add(pair || cfg.id);
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      for (const [uid, pairs] of perUserHtf.entries()) {
+        console.log(`[LOAD_ACTIVE_AGENTS] User ${uid} has ${pairs.size} HTF agent(s) for pairs: ${Array.from(pairs).join(', ')}`);
+        if (pairs.size > 1) {
+          logger.warn({ userId: uid, pairs: Array.from(pairs) }, 'Detected >1 HTF agents for same user after deduplication - check configuration');
+        }
+      }
 
       // Load VWAP Strategy agents
       await this.loadActiveVWAPStrategies();
@@ -358,6 +412,9 @@ export class AgentExecutionService {
     const fiveMinuteBucket = Math.floor(now / (5 * 60 * 1000));
     const schedulerCycleId = `scheduler_bucket_${fiveMinuteBucket}`;
     
+    // CRITICAL: Clear exchange usability cache at start of each cycle
+    AgentExecutionService.exchangeUsabilityCache.clear();
+    
     // Log all agents being executed
     const agents = Array.from(this.activeAgents.values());
     logger.info({
@@ -395,15 +452,38 @@ export class AgentExecutionService {
           status: agentConfig.status,
           schedulerCycleId
         }, ' Executing HTF Trend Filter Agent - status=ACTIVE');
+        
+        // CRITICAL: HTF agents execute per enabled trading pair
+        // STRICT REQUIREMENT: Only analyze BTC/USDT and ETH/USDT pairs
+        const agentId = agentConfig.id;
+        const allowedPairs = ['BTC/USDT', 'ETH/USDT'];
+        
+        // Execute HTF for each allowed pair in this cycle
+        // Each pair gets unique cycleId: ${agentId}_${pair}_${fiveMinuteBucket}
+        for (const pair of allowedPairs) {
+          const pairCycleId = `${agentId}_${pair}_${fiveMinuteBucket}`;
+          
+          // Add small delay between pair executions to ensure unique timestamps
+          if (tradingAgentPromises.length > 0) {
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
+          
+          // Pass pair-specific cycleId for HTF execution
+          tradingAgentPromises.push(
+            this.executeAgent(agent, schedulerCycleId, pairCycleId, pair)
+          );
+        }
+      } else {
+        // Non-HTF agents execute once with scheduler cycleId
+        
+        // Add small delay between agent executions to ensure unique timestamps
+        if (tradingAgentPromises.length > 0) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        
+        // Pass scheduler cycleId to each agent execution
+        tradingAgentPromises.push(this.executeAgent(agent, schedulerCycleId));
       }
-      
-      // Add small delay between agent executions to ensure unique timestamps
-      if (tradingAgentPromises.length > 0) {
-        await new Promise(resolve => setTimeout(resolve, 10));
-      }
-      
-      // Pass scheduler cycleId to each agent execution
-      tradingAgentPromises.push(this.executeAgent(agent, schedulerCycleId));
     }
 
     // Execute VWAP strategy agents that are currently running according to runtime service
@@ -416,13 +496,36 @@ export class AgentExecutionService {
   }
 
   /**
+   * Get cached exchange usability result for this cycle
+   * Checks cache first, then calls isExchangeUsable if not cached
+   */
+  private async getCachedExchangeUsability(userId: string, context: 'background_job' | 'user_request'): Promise<{ usable: boolean; reason: string; exchange?: string }> {
+    const cacheKey = `${userId}_${context}`;
+    const cached = AgentExecutionService.exchangeUsabilityCache.get(cacheKey);
+    
+    if (cached) {
+      return { usable: cached.usable, reason: cached.reason, exchange: cached.exchange };
+    }
+    
+    // Not cached, check and cache result
+    const result = await isExchangeUsable(userId, context);
+    AgentExecutionService.exchangeUsabilityCache.set(cacheKey, {
+      ...result,
+      checkedAt: Date.now()
+    });
+    
+    return result;
+  }
+
+  /**
    * Execute trading logic for a single agent with full hardening and diagnostics
    */
-  private async executeAgent(agent: TradingAgent, schedulerCycleId?: string): Promise<void> {
+  private async executeAgent(agent: TradingAgent, schedulerCycleId?: string, pairCycleId?: string, overridePair?: string): Promise<void> {
     console.error("[EXECUTE_AGENT_ENTRY]", "uid=", agent['config']?.userId, "agentId=", agent['config']?.id, "time=", new Date().toISOString());
     const agentId = agent['config'].id;
     const agentConfig = agent['config'];
-    const tradingPair = agentConfig.tradingPair;
+    // CRITICAL: For HTF agents with per-pair execution, use overridePair; otherwise use config.tradingPair
+    const tradingPair = overridePair || agentConfig.tradingPair;
 
     const normalizeSymbol = (value: string) => String(value || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
 
@@ -497,10 +600,11 @@ export class AgentExecutionService {
     // SAFE DECISION INITIALIZATION: Default to SKIP with NO_SIGNAL, never EXCHANGE_ERROR
     const executionTimestamp = new Date();
     
-    // Use scheduler cycleId if provided (all agents in same scheduler tick share this)
+    // Use pair-specific cycleId for HTF per-pair execution (format: ${agentId}_${pair}_${fiveMinuteBucket})
+    // Otherwise use scheduler cycleId if provided (all agents in same scheduler tick share this)
     // Otherwise generate agent-specific cycleId using TIME-BUCKET for stability (for manual execution)
     // CRITICAL FIX: Use time-bucket based cycleId to prevent duplicates from timestamp variance
-    const cycleId = schedulerCycleId || (() => {
+    const cycleId = pairCycleId || schedulerCycleId || (() => {
       const bucketTime = Math.floor(executionTimestamp.getTime() / (5 * 60 * 1000));
       return `manual_bucket_${bucketTime}`;
     })();
@@ -707,8 +811,8 @@ export class AgentExecutionService {
       // Decryption success is authoritative; if keys cannot decrypt (e.g. ENCRYPTION_SECRET_CHANGED), we'll skip in the decrypt catch below.
 
       // FIX PART B — EXCHANGE ERROR TRUTH SOURCE
-      // Use isExchangeUsable() as single source of truth - this properly handles decryption and caching
-      const exchangeUsabilityResult = await isExchangeUsable(agentConfig.userId, 'background_job');
+      // Use cached exchange usability check - checked once per cycle per user
+      const exchangeUsabilityResult = await this.getCachedExchangeUsability(agentConfig.userId, 'background_job');
       exchangeUsable = exchangeUsabilityResult.usable;
       
       if (isHTFAgent) {
@@ -2027,6 +2131,9 @@ export class AgentExecutionService {
           
           // Store diagnostics directly using firestoreAdapter with HTF agent ID
           // Note: Using direct saveAgentDiagnostic call with 'htf-trend-filter-agent' agentId for Firestore path
+          // CRITICAL: Include cycleId and bucketStartMs in runtimeState for per-pair uniqueness and grouping
+          const bucketStartMs = Math.floor((cycleId.split('_').pop() || '0')) * (5 * 60 * 1000);
+          
           await firestoreAdapter.saveAgentDiagnostic(htfAgentId, {
             agentType: 'HTF_TREND_FILTER_AGENT',
             tradingPair: diagnostics.tradingPair,
@@ -2034,7 +2141,12 @@ export class AgentExecutionService {
             decision: diagnostics.decision || { action: 'SKIP', reason: 'No decision' },
             signal: diagnostics.signal,
             execution: diagnostics.execution,
-            runtimeState: diagnostics.runtimeState
+            runtimeState: {
+              ...diagnostics.runtimeState,
+              cycleId: cycleId, // Exact cycleId: ${agentId}_${pair}_${fiveMinuteBucket}
+              bucketStartMs: bucketStartMs, // Reconstructed bucket start time for grouping
+              signalGenerated: signalGenerated // Critical: indicates if HTF signal was generated for this pair
+            }
           }, agentConfig.userId);
           
           // Mark this cycle as written to prevent duplicates
