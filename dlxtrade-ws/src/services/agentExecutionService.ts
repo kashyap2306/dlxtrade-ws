@@ -34,7 +34,7 @@ export class AgentExecutionService {
   private activeVWAPStrategies: Map<string, VWAPStrategy> = new Map();
   private static manualTradeExecutionGuard: Map<string, number> = new Map(); // userId+agentId -> timestamp
   // CRITICAL: HTF cycle guard to prevent duplicate diagnostics writes per scheduler cycle
-  private static htfCycleHistoryWritten: Set<string> = new Set(); // Set of cycleIds already written for HTF agent
+
   // CRITICAL: Exchange usability cache per cycle to avoid repeated checks
   private static exchangeUsabilityCache: Map<string, { usable: boolean; reason: string; exchange?: string; checkedAt: number }> = new Map();
 
@@ -75,16 +75,16 @@ export class AgentExecutionService {
       if (exchangeSuccessful && normalized.decision.reason) {
         const reason = normalized.decision.reason;
         if (reason.includes('Exchange keys are invalid') ||
-            reason.includes('encryption secret change') ||
-            reason.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') ||
-            reason.includes('EXCHANGE_ERROR') ||
-            reason.includes('EXCHANGE_CORRUPTED') ||
-            reason.includes('EXCHANGE_NOT_USABLE') ||
-            reason.includes('NO_EXCHANGE_CREDENTIALS')) {
-          
+          reason.includes('encryption secret change') ||
+          reason.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') ||
+          reason.includes('EXCHANGE_ERROR') ||
+          reason.includes('EXCHANGE_CORRUPTED') ||
+          reason.includes('EXCHANGE_NOT_USABLE') ||
+          reason.includes('NO_EXCHANGE_CREDENTIALS')) {
+
           // Replace with clean reason based on action
           normalized.decision.reason = normalized.decision.action === 'SKIP' ? 'SKIPPED' : normalized.decision.action;
-          
+
           logger.info({
             agentId,
             originalReason: reason,
@@ -112,7 +112,7 @@ export class AgentExecutionService {
         // Do NOT include exchangeErrorReason when exchange is usable
         delete normalized.execution.exchangeErrorReason;
         delete normalized.execution.exchangeError;
-        
+
         logger.debug({
           agentId,
           exchangeUsable,
@@ -144,14 +144,14 @@ export class AgentExecutionService {
       if (exchangeSuccessful && normalized.failure.reasonText) {
         const reasonText = normalized.failure.reasonText;
         if (reasonText.includes('Exchange keys are invalid') ||
-            reasonText.includes('encryption secret change') ||
-            reasonText.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') ||
-            reasonText.includes('EXCHANGE_ERROR') ||
-            reasonText.includes('EXCHANGE_CORRUPTED')) {
-          
+          reasonText.includes('encryption secret change') ||
+          reasonText.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') ||
+          reasonText.includes('EXCHANGE_ERROR') ||
+          reasonText.includes('EXCHANGE_CORRUPTED')) {
+
           // Clear the entire failure object when exchange is successful
           delete normalized.failure;
-          
+
           logger.info({
             agentId,
             originalFailureText: reasonText,
@@ -168,7 +168,7 @@ export class AgentExecutionService {
             delete normalized.failure[key];
           }
         });
-        
+
         // Remove failure object if it's empty
         if (Object.keys(normalized.failure).length === 0) {
           delete normalized.failure;
@@ -234,8 +234,9 @@ export class AgentExecutionService {
         }
 
         const userId = cfg.userId || 'unknown_user';
-        const pair = (cfg.tradingPair || '').toString().toUpperCase();
-        const key = `${userId}|${pair}|HTF_TREND_FILTER`;
+        // Deduplicate to ONE HTF agent per user to avoid double-execution of the multi-pair logic
+        // The strategy executes for ALL allowed pairs regardless of the configured pair
+        const key = `${userId}|HTF_TREND_FILTER`;
 
         if (!dedupeMap.has(key)) {
           dedupeMap.set(key, cfg);
@@ -403,18 +404,17 @@ export class AgentExecutionService {
    * Execute trading logic for all active agents
    * This method is called by the scheduler every 5 minutes
    */
-  async executeAllAgents(): Promise<void> {
+  async executeAllAgents(tickTime: number = Date.now()): Promise<void> {
     // Generate a single scheduler cycleId for this execution tick
     // All agents executed in this tick will share this cycleId
     // CRITICAL FIX: Use TIME-BUCKET based cycleId to ensure stability across multiple diagnostics writes
     // This ensures all diagnostics within the same 5-minute scheduler window use the SAME cycleId
-    const now = Date.now();
-    const fiveMinuteBucket = Math.floor(now / (5 * 60 * 1000));
+    const fiveMinuteBucket = Math.floor(tickTime / (5 * 60 * 1000));
     const schedulerCycleId = `scheduler_bucket_${fiveMinuteBucket}`;
-    
+
     // CRITICAL: Clear exchange usability cache at start of each cycle
     AgentExecutionService.exchangeUsabilityCache.clear();
-    
+
     // Log all agents being executed
     const agents = Array.from(this.activeAgents.values());
     logger.info({
@@ -427,12 +427,12 @@ export class AgentExecutionService {
 
     // Execute all trading agents - HTF agents MUST execute if agent.status === "ACTIVE"
     const tradingAgentPromises = [];
-    
+
     for (const agent of this.activeAgents.values()) {
       const agentConfig = agent['config'];
-      const isHTFAgent = agentConfig.strategyType === 'HTF_TREND_FILTER' || 
-                         (agentConfig.name && agentConfig.name.includes('HTF Trend Filter'));
-      
+      const isHTFAgent = agentConfig.strategyType === 'HTF_TREND_FILTER' ||
+        (agentConfig.name && agentConfig.name.includes('HTF Trend Filter'));
+
       // Check agent status - only execute if ACTIVE
       if (agentConfig.status !== 'ACTIVE') {
         logger.debug({
@@ -443,7 +443,7 @@ export class AgentExecutionService {
         }, 'Agent not RUNNING - skipping execution');
         continue;
       }
-      
+
       if (isHTFAgent) {
         logger.info({
           agentId: agentConfig.id,
@@ -452,44 +452,25 @@ export class AgentExecutionService {
           status: agentConfig.status,
           schedulerCycleId
         }, ' Executing HTF Trend Filter Agent - status=ACTIVE');
-        
-        // CRITICAL: HTF agents execute per enabled trading pair
-        // STRICT REQUIREMENT: Only analyze BTC/USDT and ETH/USDT pairs
-        const agentId = agentConfig.id;
+
         const allowedPairs = ['BTC/USDT', 'ETH/USDT'];
-        
-        // Execute HTF for each allowed pair in this cycle
-        // Each pair gets unique cycleId: ${agentId}_${pair}_${fiveMinuteBucket}
         for (const pair of allowedPairs) {
-          const pairCycleId = `${agentId}_${pair}_${fiveMinuteBucket}`;
-          
-          // Add small delay between pair executions to ensure unique timestamps
-          if (tradingAgentPromises.length > 0) {
-            await new Promise(resolve => setTimeout(resolve, 10));
-          }
-          
-          // Pass pair-specific cycleId for HTF execution
           tradingAgentPromises.push(
-            this.executeAgent(agent, schedulerCycleId, pairCycleId, pair)
+            this.executeAgent(agent, schedulerCycleId, undefined, pair, 'background_job', 'scheduler', tickTime)
           );
         }
       } else {
-        // Non-HTF agents execute once with scheduler cycleId
-        
-        // Add small delay between agent executions to ensure unique timestamps
         if (tradingAgentPromises.length > 0) {
           await new Promise(resolve => setTimeout(resolve, 10));
         }
-        
-        // Pass scheduler cycleId to each agent execution
-        tradingAgentPromises.push(this.executeAgent(agent, schedulerCycleId));
+        tradingAgentPromises.push(this.executeAgent(agent, schedulerCycleId, undefined, undefined, 'background_job', 'scheduler', tickTime));
       }
     }
 
-    // Execute VWAP strategy agents that are currently running according to runtime service
+    // Execute VWAP strategy agents
     const vwapStrategyPromises = Array.from(this.activeVWAPStrategies.entries())
       .filter(([userId, strategy]) => vwapRuntimeService.isAgentRunning(userId))
-      .map(([userId, strategy]) => this.executeVWAPStrategy(strategy));
+      .map(([userId, strategy]) => strategy.execute(this.marketDataProvider));
 
     const allPromises = [...tradingAgentPromises, ...vwapStrategyPromises];
     await Promise.allSettled(allPromises);
@@ -502,46 +483,75 @@ export class AgentExecutionService {
   private async getCachedExchangeUsability(userId: string, context: 'background_job' | 'user_request'): Promise<{ usable: boolean; reason: string; exchange?: string }> {
     const cacheKey = `${userId}_${context}`;
     const cached = AgentExecutionService.exchangeUsabilityCache.get(cacheKey);
-    
+
     if (cached) {
       return { usable: cached.usable, reason: cached.reason, exchange: cached.exchange };
     }
-    
+
     // Not cached, check and cache result
     const result = await isExchangeUsable(userId, context);
     AgentExecutionService.exchangeUsabilityCache.set(cacheKey, {
       ...result,
       checkedAt: Date.now()
     });
-    
+
     return result;
   }
 
   /**
    * Execute trading logic for a single agent with full hardening and diagnostics
    */
-  private async executeAgent(agent: TradingAgent, schedulerCycleId?: string, pairCycleId?: string, overridePair?: string): Promise<void> {
-    console.error("[EXECUTE_AGENT_ENTRY]", "uid=", agent['config']?.userId, "agentId=", agent['config']?.id, "time=", new Date().toISOString());
+  private async executeAgent(
+    agent: TradingAgent,
+    schedulerCycleId?: string,
+    pairCycleId?: string,
+    overridePair?: string,
+    context?: 'background_job' | 'user_request',
+    source?: 'background_job' | 'scheduler' | 'ui',
+    tickTime?: number
+  ): Promise<void> {
     const agentId = agent['config'].id;
     const agentConfig = agent['config'];
-    // CRITICAL: For HTF agents with per-pair execution, use overridePair; otherwise use config.tradingPair
+
+    // Check if this is an HTF Trend Filter agent early for proper scoping
+    const isHTFAgent = (agentConfig as any).strategyType === 'HTF_TREND_FILTER' ||
+      (agentConfig.name && agentConfig.name.includes('HTF Trend Filter'));
+
+    // ABSOLUTE GUARD (STRICT): HTF analysis execution allowed ONLY from scheduler
+    // Blocks page refresh, UI load, diagnostics fetch, control route, and any user_request
+    if (isHTFAgent && source !== 'scheduler') {
+      console.log("[HTF_EXECUTION_BLOCKED] source=" + source + " context=" + context);
+      logger.info({ agentId, source, context }, "[HTF_EXECUTION_BLOCKED] HTF execution blocked from non-scheduler source");
+      return; // RETURN IMMEDIATELY - No logic runs, NO diagnostics written
+    }
+
     const tradingPair = overridePair || agentConfig.tradingPair;
-
     const normalizeSymbol = (value: string) => String(value || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-
-    // Get symbol early for use throughout the function
     const symbol = normalizeSymbol(tradingPair);
+
+    // FIXED 5-MINUTE BUCKET CYCLE ID (LINKED TO TICK TIME)
+    const effectiveTickTime = tickTime || Date.now();
+    const bucketStartMs = Math.floor(effectiveTickTime / (5 * 60 * 1000)) * (5 * 60 * 1000);
+    const htfCycleId = `${agentId}_${symbol}_${bucketStartMs}`;
+
+    if (isHTFAgent) {
+      // Strict DB-based deduplication
+      const exists = await firestoreAdapter.checkAgentDiagnosticExists(agentId, htfCycleId, agentConfig.userId);
+      if (exists) {
+        console.log("[HTF_DUPLICATE_SKIPPED] cycleId=" + htfCycleId);
+        logger.info({ agentId, cycleId: htfCycleId }, '[HTF_DUPLICATE_SKIPPED] Diagnostic already exists in Firestore');
+        return; // Return early if diagnostic already processed in this tick
+      }
+    }
+
+    console.error("[EXECUTE_AGENT_ENTRY]", "uid=", agentConfig?.userId, "agentId=", agentId, "time=", new Date().toISOString());
 
     // Pair key used for all pair checks and per-pair persistence keys
     const pairKey = symbol;
 
-    // Check if this is an HTF Trend Filter agent early for proper scoping
-    const isHTFAgent = (agentConfig as any).strategyType === 'HTF_TREND_FILTER' || 
-                       (agentConfig.name && agentConfig.name.includes('HTF Trend Filter'));
-
     // Check if this is a BB-RSI agent
-    const isBBRsiAgent = (agentConfig as any).strategyType === 'MEAN_REVERSION_SCALPER' || 
-                         (agentConfig.name && agentConfig.name.includes('BB-RSI'));
+    const isBBRsiAgent = (agentConfig as any).strategyType === 'MEAN_REVERSION_SCALPER' ||
+      (agentConfig.name && agentConfig.name.includes('BB-RSI'));
 
     // CRITICAL: HTF execution source verification
     if (isHTFAgent) {
@@ -558,16 +568,16 @@ export class AgentExecutionService {
     // Initialize fresh diagnostics for this cycle only - NO reuse of previous cycle data
     // SAFE DECISION INITIALIZATION: Default to SKIP with NO_SIGNAL, never EXCHANGE_ERROR
     const executionTimestamp = new Date();
-    
+
     // Use pair-specific cycleId for HTF per-pair execution (format: ${agentId}_${pair}_${fiveMinuteBucket})
     // Otherwise use scheduler cycleId if provided (all agents in same scheduler tick share this)
     // Otherwise generate agent-specific cycleId using TIME-BUCKET for stability (for manual execution)
     // CRITICAL FIX: Use time-bucket based cycleId to prevent duplicates from timestamp variance
-    const cycleId = pairCycleId || schedulerCycleId || (() => {
+    const cycleId = isHTFAgent ? htfCycleId : (pairCycleId || schedulerCycleId || (() => {
       const bucketTime = Math.floor(executionTimestamp.getTime() / (5 * 60 * 1000));
       return `manual_bucket_${bucketTime}`;
-    })();
-    
+    })());
+
     const diagnostics: any = {
       timestamp: executionTimestamp,
       agentId,
@@ -613,1431 +623,1448 @@ export class AgentExecutionService {
     // This ensures diagnostics are written every 5-minute cycle regardless of early returns
     try {
 
-    // INTERNAL HELPER: Single source for skip finalization - THE ONLY SKIP WRITER
-    const finalizeSkip = (reasonCode: string, reasonText: string, category: 'SESSION' | 'EXCHANGE' | 'DATA' | 'RISK' | 'SIGNAL') => {
-      diagnostics.decision = { action: 'SKIP', reason: reasonText };
-      diagnostics.failure = {
-        reasonCode,
-        reasonText,
-        category
+      // INTERNAL HELPER: Single source for skip finalization - THE ONLY SKIP WRITER
+      const finalizeSkip = (reasonCode: string, reasonText: string, category: 'SESSION' | 'EXCHANGE' | 'DATA' | 'RISK' | 'SIGNAL') => {
+        diagnostics.decision = { action: 'SKIP', reason: reasonText };
+        diagnostics.failure = {
+          reasonCode,
+          reasonText,
+          category
+        };
+        diagnostics.tradingPair = tradingPair;
       };
-      diagnostics.tradingPair = tradingPair;
-    };
-
-    try {
-      // CRITICAL: Check if agent was manually stopped by user
-      // Manual STOP must override everything - do NOT run any logic
-      const currentAgentConfig = await firestoreAdapter.getTradingAgentConfig(agentId);
-      if (!currentAgentConfig || currentAgentConfig.status === 'STOPPED') {
-        skippedReason = 'AGENT_STOPPED';
-        finalizeSkip('AGENT_STOPPED', 'Agent was manually stopped by user', 'SESSION');
-        
-        // CRITICAL HTF FIX: Populate required diagnostic fields BEFORE early return
-        if (isHTFAgent) {
-          diagnostics.tradingPair = tradingPair;
-          diagnostics.skipReasonShort = 'Agent stopped';
-          diagnostics.runtimeState = diagnostics.runtimeState || {};
-          diagnostics.runtimeState.finalDecision = 'SKIP';
-          diagnostics.runtimeState.skipReasonShort = 'Agent stopped';
-          diagnostics.executionState.researchedOnly = true;
-          diagnostics.executionState.executionEvaluated = true;
-          diagnostics.executionState.executionBlockedReason = 'AGENT_STOPPED';
-          
-          logger.info({
-            agentId,
-            tradingPair,
-            cycleId: diagnostics.cycleId
-          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
-        }
-        
-        logger.debug({
-          agentId,
-          userId: agentConfig.userId,
-          status: currentAgentConfig?.status || 'NOT_FOUND'
-        }, 'Trading Agent is STOPPED - skipping execution cycle');
-        
-        return;
-      }
-
-      // Also check for PAUSED status
-      if (currentAgentConfig.status === 'PAUSED') {
-        skippedReason = 'AGENT_PAUSED';
-        finalizeSkip('AGENT_PAUSED', 'Agent was manually paused by user', 'SESSION');
-
-        // CRITICAL HTF FIX: Populate required diagnostic fields BEFORE early return
-        if (isHTFAgent) {
-          diagnostics.tradingPair = tradingPair;
-          diagnostics.skipReasonShort = 'Agent paused';
-          diagnostics.runtimeState = diagnostics.runtimeState || {};
-          diagnostics.runtimeState.finalDecision = 'SKIP';
-          diagnostics.runtimeState.skipReasonShort = 'Agent paused';
-          diagnostics.executionState.researchedOnly = true;
-          diagnostics.executionState.executionEvaluated = true;
-          diagnostics.executionState.executionBlockedReason = 'AGENT_PAUSED';
-          
-          logger.info({
-            agentId,
-            tradingPair,
-            cycleId: diagnostics.cycleId
-          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
-        }
-
-        logger.debug({ agentId }, 'Trading Agent is PAUSED - skipping execution cycle');
-        return;
-      }
-
-      // HTF agents are COMPLETELY STANDALONE and execute when agent status is ACTIVE
-      // They do NOT depend on global auto-trade or telegram modes
-      if (isHTFAgent) {
-        logger.debug({
-          agentId,
-          uid: agentConfig.userId,
-          status: agentConfig.status
-        }, 'HTF Agent: STANDALONE execution - bypassing all global mode checks');
-      }
-
-      // Create agent-specific market provider using canonical exchange config
-      const exchangeConfig = await firestoreAdapter.getExchangeConfig(agentConfig.userId);
-      if (!exchangeConfig?.exchange) {
-        skippedReason = 'NO_EXCHANGE_CONFIG_FOUND';
-        finalizeSkip('NO_EXCHANGE_CONFIG_FOUND', 'No exchange connected. Please connect your exchange in Settings → Exchange to enable trading.', 'EXCHANGE');
-
-        // CRITICAL HTF FIX: Populate required diagnostic fields BEFORE early return
-        if (isHTFAgent) {
-          diagnostics.tradingPair = tradingPair;
-          diagnostics.skipReasonShort = 'No exchange';
-          diagnostics.runtimeState = diagnostics.runtimeState || {};
-          diagnostics.runtimeState.finalDecision = 'SKIP';
-          diagnostics.runtimeState.skipReasonShort = 'No exchange';
-          diagnostics.executionState.researchedOnly = true;
-          diagnostics.executionState.executionEvaluated = true;
-          diagnostics.executionState.executionBlockedReason = 'NO_EXCHANGE_CONFIG_FOUND';
-          
-          logger.info({
-            agentId,
-            tradingPair,
-            cycleId: diagnostics.cycleId
-          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
-        }
-
-        logger.warn({
-          agentId,
-          uid: agentConfig.userId,
-          exchangeConfigPath: `users/${agentConfig.userId}/exchangeConfig/current`
-        }, 'SKIP: NO_EXCHANGE_CONFIG_FOUND - user must connect exchange in Settings');
-
-        return;
-      }
-
-      // CHECK: If encryption secret has changed, mark exchange as requiring reconnection
-      if (exchangeConfig.encryptionInvalid === true) {
-        skippedReason = 'EXCHANGE_ENCRYPTION_INVALID';
-        finalizeSkip('EXCHANGE_ENCRYPTION_INVALID', 'Exchange keys are invalid due to encryption secret change. Please reconnect exchange.', 'EXCHANGE');
-
-        if (isHTFAgent) {
-          diagnostics.executionState.researchedOnly = true;
-          diagnostics.executionState.executionEvaluated = true;
-          diagnostics.executionState.executionBlockedReason = 'EXCHANGE_ENCRYPTION_INVALID';
-          
-          logger.info({
-            agentId,
-            tradingPair
-          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
-        }
-
-        logger.warn({
-          agentId,
-          uid: agentConfig.userId,
-          exchange: exchangeConfig.exchange,
-          error: exchangeConfig.lastValidationError
-        }, 'SKIP: Exchange encryption invalid - user must reconnect exchange');
-
-        return;
-      }
-
-      // NOTE: Do NOT hard-skip when exchangeStatus === 'CORRUPTED'.
-      // Decryption success is authoritative; if keys cannot decrypt (e.g. ENCRYPTION_SECRET_CHANGED), we'll skip in the decrypt catch below.
-
-      // FIX PART B — EXCHANGE ERROR TRUTH SOURCE
-      // Use cached exchange usability check - checked once per cycle per user
-      const exchangeUsabilityResult = await this.getCachedExchangeUsability(agentConfig.userId, 'background_job');
-      exchangeUsable = exchangeUsabilityResult.usable;
-      
-      if (isHTFAgent) {
-        if (exchangeUsable) {
-          // If isExchangeUsable().usable === true: NEVER allow EXCHANGE_ERROR or EXCHANGE_CREDENTIALS_DECRYPT_FAILED
-          // Force-clear error state before proceeding - UI/diagnostics must reflect ONLY current cycle result
-          logger.debug({
-            agentId,
-            exchange: exchangeConfig.exchange,
-            isUsable: true,
-            reason: exchangeUsabilityResult.reason
-          }, 'HTF Agent: Exchange is usable - FORCE clearing all previous EXCHANGE_ERROR and EXCHANGE_CREDENTIALS_DECRYPT_FAILED states');
-          
-          // Clear any cached error states in diagnostics - not stored Firestore history
-          diagnostics.exchangeErrorCleared = true;
-          diagnostics.exchangeUsable = true;
-          diagnostics.previousErrorsCleared = ['EXCHANGE_ERROR', 'EXCHANGE_CREDENTIALS_DECRYPT_FAILED'];
-        } else {
-          logger.debug({
-            agentId,
-            exchange: exchangeConfig.exchange,
-            isUsable: false,
-            reason: exchangeUsabilityResult.reason
-          }, 'HTF Agent: Exchange not usable - will skip with appropriate reason');
-        }
-      }
-
-      const encryptedApiKey = exchangeConfig.apiKeyEncrypted;
-      const encryptedSecret = exchangeConfig.secretKeyEncrypted || exchangeConfig.secretEncrypted;
-      const encryptedPassphrase = exchangeConfig.passphraseEncrypted;
-
-      if (!encryptedApiKey || !encryptedSecret) {
-        skippedReason = 'NO_EXCHANGE_CREDENTIALS';
-        finalizeSkip('NO_EXCHANGE_CREDENTIALS', 'Exchange credentials not found. Please connect your exchange in Settings → Exchange.', 'EXCHANGE');
-        
-        if (isHTFAgent) {
-          logger.info({
-            agentId,
-            tradingPair
-          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
-        }
-        
-        logger.warn({ 
-          agentId, 
-          uid: agentConfig.userId, 
-          exchange: exchangeConfig.exchange,
-          hasApiKey: !!encryptedApiKey,
-          hasSecret: !!encryptedSecret,
-          exchangeUsable
-        }, `SKIP: ${skippedReason} - encrypted keys missing`);
-        
-        return;
-      }
-
-      let apiKey: string | null = null;
-      let secret: string | null = null;
-      let passphrase: string | undefined = undefined;
 
       try {
-        apiKey = encryptedApiKey ? decrypt(encryptedApiKey, 'exchange') : null;
-        secret = encryptedSecret ? decrypt(encryptedSecret, 'exchange') : null;
-        passphrase = encryptedPassphrase ? decrypt(encryptedPassphrase, 'exchange') : undefined;
-      } catch (decryptError: any) {
-        // Handle ENCRYPTION_SECRET_CHANGED error specifically
-        if (decryptError.message?.includes('ENCRYPTION_SECRET_CHANGED')) {
-          skippedReason = 'EXCHANGE_CORRUPTED';
-          finalizeSkip('EXCHANGE_CORRUPTED', 'Exchange keys are invalid due to encryption secret change. Please reconnect exchange.', 'EXCHANGE');
-          
-          // NOTE: Do NOT attempt to mark exchange as corrupted in Firestore
-          // Exchange status is managed exclusively by /exchange/connect
-          logger.warn({ agentId, uid: agentConfig.userId }, 'ENCRYPTION_SECRET_CHANGED detected - soft skipping cycle without Firestore update');
-          
+        // CRITICAL: Check if agent was manually stopped by user
+        // Manual STOP must override everything - do NOT run any logic
+        const currentAgentConfig = await firestoreAdapter.getTradingAgentConfig(agentId);
+        if (!currentAgentConfig || currentAgentConfig.status === 'STOPPED') {
+          skippedReason = 'AGENT_STOPPED';
+          finalizeSkip('AGENT_STOPPED', 'Agent was manually stopped by user', 'SESSION');
+
+          // CRITICAL HTF FIX: Populate required diagnostic fields BEFORE early return
+          if (isHTFAgent) {
+            diagnostics.tradingPair = tradingPair;
+            diagnostics.skipReasonShort = 'Agent stopped';
+            diagnostics.runtimeState = diagnostics.runtimeState || {};
+            diagnostics.runtimeState.finalDecision = 'SKIP';
+            diagnostics.runtimeState.skipReasonShort = 'Agent stopped';
+            diagnostics.executionState.researchedOnly = true;
+            diagnostics.executionState.executionEvaluated = true;
+            diagnostics.executionState.executionBlockedReason = 'AGENT_STOPPED';
+
+            logger.info({
+              agentId,
+              tradingPair,
+              cycleId: diagnostics.cycleId
+            }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
+          }
+
+          logger.debug({
+            agentId,
+            userId: agentConfig.userId,
+            status: currentAgentConfig?.status || 'NOT_FOUND'
+          }, 'Trading Agent is STOPPED - skipping execution cycle');
+
+          return;
+        }
+
+        // Also check for PAUSED status
+        if (currentAgentConfig.status === 'PAUSED') {
+          skippedReason = 'AGENT_PAUSED';
+          finalizeSkip('AGENT_PAUSED', 'Agent was manually paused by user', 'SESSION');
+
+          // CRITICAL HTF FIX: Populate required diagnostic fields BEFORE early return
+          if (isHTFAgent) {
+            diagnostics.tradingPair = tradingPair;
+            diagnostics.skipReasonShort = 'Agent paused';
+            diagnostics.runtimeState = diagnostics.runtimeState || {};
+            diagnostics.runtimeState.finalDecision = 'SKIP';
+            diagnostics.runtimeState.skipReasonShort = 'Agent paused';
+            diagnostics.executionState.researchedOnly = true;
+            diagnostics.executionState.executionEvaluated = true;
+            diagnostics.executionState.executionBlockedReason = 'AGENT_PAUSED';
+
+            logger.info({
+              agentId,
+              tradingPair,
+              cycleId: diagnostics.cycleId
+            }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
+          }
+
+          logger.debug({ agentId }, 'Trading Agent is PAUSED - skipping execution cycle');
+          return;
+        }
+
+        // HTF agents are COMPLETELY STANDALONE and execute when agent status is ACTIVE
+        // They do NOT depend on global auto-trade or telegram modes
+        if (isHTFAgent) {
+          logger.debug({
+            agentId,
+            uid: agentConfig.userId,
+            status: agentConfig.status
+          }, 'HTF Agent: STANDALONE execution - bypassing all global mode checks');
+        }
+
+        // Create agent-specific market provider using canonical exchange config
+        const exchangeConfig = await firestoreAdapter.getExchangeConfig(agentConfig.userId);
+        if (!exchangeConfig?.exchange) {
+          skippedReason = 'NO_EXCHANGE_CONFIG_FOUND';
+          finalizeSkip('NO_EXCHANGE_CONFIG_FOUND', 'No exchange connected. Please connect your exchange in Settings → Exchange to enable trading.', 'EXCHANGE');
+
+          // CRITICAL HTF FIX: Populate required diagnostic fields BEFORE early return
+          if (isHTFAgent) {
+            diagnostics.tradingPair = tradingPair;
+            diagnostics.skipReasonShort = 'No exchange';
+            diagnostics.runtimeState = diagnostics.runtimeState || {};
+            diagnostics.runtimeState.finalDecision = 'SKIP';
+            diagnostics.runtimeState.skipReasonShort = 'No exchange';
+            diagnostics.executionState.researchedOnly = true;
+            diagnostics.executionState.executionEvaluated = true;
+            diagnostics.executionState.executionBlockedReason = 'NO_EXCHANGE_CONFIG_FOUND';
+
+            logger.info({
+              agentId,
+              tradingPair,
+              cycleId: diagnostics.cycleId
+            }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
+          }
+
+          logger.warn({
+            agentId,
+            uid: agentConfig.userId,
+            exchangeConfigPath: `users/${agentConfig.userId}/exchangeConfig/current`
+          }, 'SKIP: NO_EXCHANGE_CONFIG_FOUND - user must connect exchange in Settings');
+
+          return;
+        }
+
+        // CHECK: If encryption secret has changed, mark exchange as requiring reconnection
+        if (exchangeConfig.encryptionInvalid === true) {
+          skippedReason = 'EXCHANGE_ENCRYPTION_INVALID';
+          finalizeSkip('EXCHANGE_ENCRYPTION_INVALID', 'Exchange keys are invalid due to encryption secret change. Please reconnect exchange.', 'EXCHANGE');
+
+          if (isHTFAgent) {
+            diagnostics.executionState.researchedOnly = true;
+            diagnostics.executionState.executionEvaluated = true;
+            diagnostics.executionState.executionBlockedReason = 'EXCHANGE_ENCRYPTION_INVALID';
+
+            logger.info({
+              agentId,
+              tradingPair
+            }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
+          }
+
+          logger.warn({
+            agentId,
+            uid: agentConfig.userId,
+            exchange: exchangeConfig.exchange,
+            error: exchangeConfig.lastValidationError
+          }, 'SKIP: Exchange encryption invalid - user must reconnect exchange');
+
+          return;
+        }
+
+        // NOTE: Do NOT hard-skip when exchangeStatus === 'CORRUPTED'.
+        // Decryption success is authoritative; if keys cannot decrypt (e.g. ENCRYPTION_SECRET_CHANGED), we'll skip in the decrypt catch below.
+
+        // FIX PART B — EXCHANGE ERROR TRUTH SOURCE
+        // Use cached exchange usability check - checked once per cycle per user
+        const exchangeUsabilityResult = await this.getCachedExchangeUsability(agentConfig.userId, 'background_job');
+        exchangeUsable = exchangeUsabilityResult.usable;
+
+        if (isHTFAgent) {
+          if (exchangeUsable) {
+            // If isExchangeUsable().usable === true: NEVER allow EXCHANGE_ERROR or EXCHANGE_CREDENTIALS_DECRYPT_FAILED
+            // Force-clear error state before proceeding - UI/diagnostics must reflect ONLY current cycle result
+            logger.debug({
+              agentId,
+              exchange: exchangeConfig.exchange,
+              isUsable: true,
+              reason: exchangeUsabilityResult.reason
+            }, 'HTF Agent: Exchange is usable - FORCE clearing all previous EXCHANGE_ERROR and EXCHANGE_CREDENTIALS_DECRYPT_FAILED states');
+
+            // Clear any cached error states in diagnostics - not stored Firestore history
+            diagnostics.exchangeErrorCleared = true;
+            diagnostics.exchangeUsable = true;
+            diagnostics.previousErrorsCleared = ['EXCHANGE_ERROR', 'EXCHANGE_CREDENTIALS_DECRYPT_FAILED'];
+          } else {
+            logger.debug({
+              agentId,
+              exchange: exchangeConfig.exchange,
+              isUsable: false,
+              reason: exchangeUsabilityResult.reason
+            }, 'HTF Agent: Exchange not usable - will skip with appropriate reason');
+          }
+        }
+
+        const encryptedApiKey = exchangeConfig.apiKeyEncrypted;
+        const encryptedSecret = exchangeConfig.secretKeyEncrypted || exchangeConfig.secretEncrypted;
+        const encryptedPassphrase = exchangeConfig.passphraseEncrypted;
+
+        if (!encryptedApiKey || !encryptedSecret) {
+          skippedReason = 'NO_EXCHANGE_CREDENTIALS';
+          finalizeSkip('NO_EXCHANGE_CREDENTIALS', 'Exchange credentials not found. Please connect your exchange in Settings → Exchange.', 'EXCHANGE');
+
           if (isHTFAgent) {
             logger.info({
               agentId,
               tradingPair
             }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
           }
-          
-          logger.error({ 
-            agentId, 
-            uid: agentConfig.userId, 
-            exchange: exchangeConfig.exchange,
-            error: decryptError.message
-          }, `SKIP: ${skippedReason} - encryption secret has changed, exchange marked as corrupted`);
-          
-          return;
-        }
-        
-        // Handle other decryption errors
-        skippedReason = 'EXCHANGE_KEYS_NOT_DECRYPTED';
-        finalizeSkip('EXCHANGE_KEYS_NOT_DECRYPTED', 'Failed to decrypt exchange keys', 'EXCHANGE');
-        
-        if (isHTFAgent) {
-          logger.info({
-            agentId,
-            tradingPair
-          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
-        }
-        
-        logger.error({ 
-          agentId, 
-          uid: agentConfig.userId, 
-          exchange: exchangeConfig.exchange,
-          error: decryptError.message
-        }, `SKIP: ${skippedReason} - decryption failed`);
-        
-        return;
-      }
 
-      // EXECUTION GUARD: Assert keys are not null before proceeding
-      if (!apiKey || !secret) {
-        skippedReason = 'EXCHANGE_KEYS_NOT_DECRYPTED';
-        finalizeSkip('EXCHANGE_KEYS_NOT_DECRYPTED', 'EXCHANGE_KEYS_NOT_DECRYPTED', 'EXCHANGE');
-        
-        // CRITICAL: Log detailed information to diagnose decrypt failure
-        const encryptionKeyStatus = (() => {
-          try {
-            const { getEncryptionKeyStatus } = require('./keyManager');
-            return getEncryptionKeyStatus();
-          } catch {
-            return { initialized: false, keyLength: 0, keyHash: 'unknown', cached: false };
-          }
-        })();
-        
-        if (isHTFAgent) {
-          logger.info({
-            agentId,
-            tradingPair
-          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
-        }
-        
-        logger.error({ 
-          agentId, 
-          uid: agentConfig.userId, 
-          exchange: exchangeConfig.exchange,
-          exchangeUsable,
-          decryptedApiKey: !!apiKey,
-          decryptedSecret: !!secret,
-          hasEncryptedApiKey: !!encryptedApiKey,
-          hasEncryptedSecret: !!encryptedSecret,
-          encryptedApiKeyLength: encryptedApiKey?.length || 0,
-          encryptedSecretLength: encryptedSecret?.length || 0,
-          encryptedApiKeyFormat: encryptedApiKey?.includes(':') ? 'valid' : 'invalid',
-          encryptedSecretFormat: encryptedSecret?.includes(':') ? 'valid' : 'invalid',
-          encryptionKeyStatus
-        }, `SKIP: ${skippedReason} - decryption failed. User needs to reconnect exchange.`);
-        
-        return;
-      }
-
-      // CRITICAL: When decryption succeeds, explicitly clear ALL previous exchange error states
-      // This prevents stale "Exchange keys are invalid due to encryption secret change" errors
-      // from persisting after successful decryption
-      if (apiKey && secret) {
-        // Clear any cached exchange failure flags or memory state
-        diagnostics.exchangeDecryptionSuccess = true;
-        diagnostics.exchangeUsable = true;
-        diagnostics.previousExchangeErrorsCleared = true;
-        
-        // CRITICAL FIX: Clear any stale error message from previous failed cycles
-        // This ensures diagnostics.decision.reason reflects CURRENT cycle state only
-        if (diagnostics.decision && diagnostics.decision.reason && 
-            (diagnostics.decision.reason.includes('encryption secret change') || 
-             diagnostics.decision.reason.includes('Exchange keys are invalid'))) {
-          // Reset decision to reflect successful exchange state
-          diagnostics.decision = { action: 'CONTINUE', reason: 'Exchange credentials successfully decrypted and validated' };
-          diagnostics.failure = null; // Clear any previous failure state
-          
-          logger.info({
+          logger.warn({
             agentId,
             uid: agentConfig.userId,
             exchange: exchangeConfig.exchange,
-            previousErrorCleared: true
-          }, 'STALE_ERROR_CLEARED: Removed previous exchange error message after successful decryption');
-        }
-        
-        logger.debug({
-          agentId,
-          uid: agentConfig.userId,
-          exchange: exchangeConfig.exchange,
-          credentialsResolved: true,
-          exchangeUsable: true
-        }, 'Trading Agent credentials successfully resolved - clearing all previous exchange error states');
-      }
+            hasApiKey: !!encryptedApiKey,
+            hasSecret: !!encryptedSecret,
+            exchangeUsable
+          }, `SKIP: ${skippedReason} - encrypted keys missing`);
 
-      const exchangeCredentials: ExchangeCredentials = {
-        apiKey,
-        secret,
-        passphrase,
-        testnet: exchangeConfig.testnet ?? false,
-      };
-
-      // Normalize exchange name to lowercase
-      const normalizedExchange = String(exchangeConfig.exchange || agentConfig.exchange).toLowerCase();
-      const marketProvider = new TradingAgentMarketProvider(exchangeCredentials, normalizedExchange as any, 'futures');
-
-      // SINGLE SOURCE OF TRUTH: If keys decrypt successfully (and user didn't disconnect), exchange is usable.
-      exchangeUsable = exchangeConfig.disconnected !== true && !!apiKey && !!secret && (normalizedExchange !== 'bitget' || !!passphrase);
-
-      if (!exchangeUsable) {
-        skippedReason = 'EXCHANGE_NOT_USABLE';
-        finalizeSkip('EXCHANGE_NOT_USABLE', normalizedExchange === 'bitget' && !passphrase
-          ? 'Bitget passphrase missing or failed to decrypt'
-          : 'Exchange connection is not usable - check credentials and connection', 'EXCHANGE');
-        return;
-      }
-
-      // CRITICAL: HTF agents can ONLY trade BTC/USDT and ETH/USDT
-      if (isHTFAgent) {
-        const allowedSymbols = ['BTCUSDT', 'ETHUSDT'];
-        if (!allowedSymbols.includes(symbol)) {
-          skippedReason = `HTF agents restricted to BTC/USDT, ETH/USDT only`;
-          finalizeSkip('PAIR_RESTRICTION', `HTF Trend Filter agents are restricted to BTC/USDT, ETH/USDT only. Current pair: ${tradingPair}`, 'RISK');
-          
-          logger.info({
-            agentId,
-            tradingPair
-          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
-          
-          logger.warn({
-            agentId,
-            tradingPair,
-            allowedSymbols
-          }, 'HTF Trend Filter: Trading pair not allowed');
           return;
         }
-      }
 
-      // CRITICAL: BB-RSI agents can trade BTC, ETH, SOL, BNB, XRP ONLY
-      if (isBBRsiAgent) {
-        const allowedSymbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT'];
-        if (!allowedSymbols.includes(symbol)) {
-          skippedReason = `BB-RSI agents restricted to BTC/USDT, ETH/USDT, SOL/USDT, BNB/USDT, XRP/USDT only`;
-          finalizeSkip('PAIR_RESTRICTION', `BB-RSI EMA200 Scalper agents are restricted to: BTC/USDT, ETH/USDT, SOL/USDT, BNB/USDT, XRP/USDT. Current pair: ${tradingPair}`, 'RISK');
-          
-          logger.warn({
-            agentId,
-            tradingPair,
-            allowedSymbols
-          }, 'BB-RSI Scalper: Trading pair not allowed');
-          return;
-        }
-      }
-      
-      
-      // CRITICAL: Mark that execution has started
-      // From this point forward, we're doing actual agent execution logic
-      
-      let candles: any[] = [];
-      let candles15m: any[] = [];
-      
-      if (isHTFAgent) {
-        // FIX PART C — BAN FALLBACK SIGNALS (CRITICAL)
-        // If ANY of these is true: market data fetch failed, candle data empty, indicator calc skipped, scanExecuted === false
-        // THEN: DO NOT generate signal, DO NOT default to BTC/USDT, DO NOT reuse previous signal
+        let apiKey: string | null = null;
+        let secret: string | null = null;
+        let passphrase: string | undefined = undefined;
+
         try {
-          // Fetch 15m candles for HTF trend analysis (need 200+ for EMA 200)
-          candles15m = await marketProvider.getCandles(symbol, '15m', 250);
-          
-          // Fetch 1m candles for LTF entry signals (need 200+ for indicators)
-          candles = await marketProvider.getCandles(symbol, '1m', 250);
-          
-          // FIX PART C — BAN FALLBACK SIGNALS (CRITICAL)
-          // Validate candle data is not empty - CRITICAL CHECK
-          if (!candles15m || candles15m.length === 0 || !candles || candles.length === 0) {
-            skippedReason = 'MARKET_DATA_NOT_READY';
-            finalizeSkip('MARKET_DATA_NOT_READY', 'Candle data empty - market data not available', 'DATA');
-            
+          apiKey = encryptedApiKey ? decrypt(encryptedApiKey, 'exchange') : null;
+          secret = encryptedSecret ? decrypt(encryptedSecret, 'exchange') : null;
+          passphrase = encryptedPassphrase ? decrypt(encryptedPassphrase, 'exchange') : undefined;
+        } catch (decryptError: any) {
+          // Handle ENCRYPTION_SECRET_CHANGED error specifically
+          if (decryptError.message?.includes('ENCRYPTION_SECRET_CHANGED')) {
+            skippedReason = 'EXCHANGE_CORRUPTED';
+            finalizeSkip('EXCHANGE_CORRUPTED', 'Exchange keys are invalid due to encryption secret change. Please reconnect exchange.', 'EXCHANGE');
+
+            // NOTE: Do NOT attempt to mark exchange as corrupted in Firestore
+            // Exchange status is managed exclusively by /exchange/connect
+            logger.warn({ agentId, uid: agentConfig.userId }, 'ENCRYPTION_SECRET_CHANGED detected - soft skipping cycle without Firestore update');
+
+            if (isHTFAgent) {
+              logger.info({
+                agentId,
+                tradingPair
+              }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
+            }
+
+            logger.error({
+              agentId,
+              uid: agentConfig.userId,
+              exchange: exchangeConfig.exchange,
+              error: decryptError.message
+            }, `SKIP: ${skippedReason} - encryption secret has changed, exchange marked as corrupted`);
+
+            return;
+          }
+
+          // Handle other decryption errors
+          skippedReason = 'EXCHANGE_KEYS_NOT_DECRYPTED';
+          finalizeSkip('EXCHANGE_KEYS_NOT_DECRYPTED', 'Failed to decrypt exchange keys', 'EXCHANGE');
+
+          if (isHTFAgent) {
             logger.info({
               agentId,
               tradingPair
             }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
-            
-            logger.error({
-              agentId,
-              candles15mCount: candles15m?.length || 0,
-              candles1mCount: candles?.length || 0
-            }, 'HTF Trend Filter: Candle data empty - BANNED fallback signals, NO default BTC/USDT, NO reuse previous signal');
-            return;
-          }
-          
-          if (candles15m.length < 200) {
-            htfMarketDataSkip = {
-              reasonCode: 'MARKET_DATA_NOT_READY',
-              reasonText: `Insufficient 15m candle data: ${candles15m.length}/200 required`
-            };
-          } else if (candles.length < 200) {
-            htfMarketDataSkip = {
-              reasonCode: 'MARKET_DATA_NOT_READY',
-              reasonText: `Insufficient 1m candle data: ${candles.length}/200 required`
-            };
           }
 
-          // Sort candles (most recent first)
-          candles15m.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-          candles.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-          
-          // Mark that market scan was successfully executed - CRITICAL for signal generation
-          marketScanExecuted = !htfMarketDataSkip;
-          
-          // CRITICAL: Calculate HTF bias direction AFTER validation and candle fetch
-          // This ensures HTF logic only runs when execution has officially started
-          if (marketScanExecuted && candles15m.length >= 200) {
+          logger.error({
+            agentId,
+            uid: agentConfig.userId,
+            exchange: exchangeConfig.exchange,
+            error: decryptError.message
+          }, `SKIP: ${skippedReason} - decryption failed`);
+
+          return;
+        }
+
+        // EXECUTION GUARD: Assert keys are not null before proceeding
+        if (!apiKey || !secret) {
+          skippedReason = 'EXCHANGE_KEYS_NOT_DECRYPTED';
+          finalizeSkip('EXCHANGE_KEYS_NOT_DECRYPTED', 'EXCHANGE_KEYS_NOT_DECRYPTED', 'EXCHANGE');
+
+          // CRITICAL: Log detailed information to diagnose decrypt failure
+          const encryptionKeyStatus = (() => {
             try {
-              const { HTFTrendFilterStrategy } = await import('./htfTrendFilterStrategy');
-              const htfTrend = HTFTrendFilterStrategy.analyzeHTFTrend(candles15m);
-              
-              // Set htfBiasDirection based on HTF trend
-              if (htfTrend.direction === 'LONG_ONLY') {
-                htfBiasDirection = 'LONG';
-              } else if (htfTrend.direction === 'SHORT_ONLY') {
-                htfBiasDirection = 'SHORT';
-              } else {
-                htfBiasDirection = 'NO_TRADE';
-              }
-              
-              // CRITICAL: Set direction to HTF bias and NEVER change it
-              // This ensures direction is visible even when decision = SKIP
-              diagnostics.direction = htfBiasDirection;
-              diagnostics.htfBias = htfBiasDirection;
-              
-              // CRITICAL HTF GUARD: Mark that HTF logic actually evaluated
-              diagnostics.htfEvaluated = true;
-              
-              logger.debug({
-                agentId,
-                htfDirection: htfBiasDirection,
-                htfTrendDirection: htfTrend.direction
-              }, 'HTF Agent: HTF bias direction calculated after validation');
-            } catch (error) {
-              logger.warn({
-                agentId,
-                error: error instanceof Error ? error.message : 'Unknown error'
-              }, 'HTF Agent: Failed to calculate HTF bias direction');
-              htfBiasDirection = 'NO_TRADE';
-              diagnostics.direction = 'NO_TRADE';
-              diagnostics.htfBias = 'NO_TRADE';
+              const { getEncryptionKeyStatus } = require('./keyManager');
+              return getEncryptionKeyStatus();
+            } catch {
+              return { initialized: false, keyLength: 0, keyHash: 'unknown', cached: false };
             }
-          }
-          
-        } catch (marketDataError) {
-          // FIX PART C — BAN FALLBACK SIGNALS (CRITICAL)
-          // If market data fetch failed - DO NOT generate signal, DO NOT default to BTC/USDT, DO NOT reuse previous signal
-          // Mark cycle as SKIPPED with reason = MARKET_DATA_NOT_READY
-          skippedReason = 'MARKET_DATA_NOT_READY';
-          finalizeSkip('MARKET_DATA_NOT_READY', marketDataError instanceof Error ? marketDataError.message : 'Market data fetch failed', 'DATA');
-          
-          logger.info({
-            agentId,
-            tradingPair
-          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
-          
-          logger.error({
-            agentId,
-            error: marketDataError instanceof Error ? marketDataError.message : 'Unknown error'
-          }, 'HTF Trend Filter: Market scan failed - BANNED fallback signals, NO default BTC/USDT, NO reuse previous signal');
-          return;
-        }
-      } else if (isBBRsiAgent) {
-        // BB-RSI Scalper uses 3m primary + 5m confirmation
-        try {
-          // Fetch 3m candles for primary signal (need 250+ for BB/RSI/EMA200)
-          candles = await marketProvider.getCandles(symbol, '3m', 250);
-          
-          // Fetch 5m candles for confirmation (need 250+ for BB/RSI/EMA200)
-          candles15m = await marketProvider.getCandles(symbol, '5m', 250);
-          
-          if (!candles || candles.length === 0 || !candles15m || candles15m.length === 0) {
-            skippedReason = 'MARKET_DATA_NOT_READY';
-            finalizeSkip('MARKET_DATA_NOT_READY', 'Candle data empty - market data not available', 'DATA');
-            
-            logger.warn({
+          })();
+
+          if (isHTFAgent) {
+            logger.info({
               agentId,
-              candles3mCount: candles?.length || 0,
-              candles5mCount: candles15m?.length || 0
-            }, 'BB-RSI Scalper: Candle data empty');
-            
-            return;
-          }
-          
-          if (candles.length < 250) {
-            htfMarketDataSkip = {
-              reasonCode: 'MARKET_DATA_NOT_READY',
-              reasonText: `Insufficient 3m candle data: ${candles.length}/250 required`
-            };
-          } else if (candles15m.length < 250) {
-            htfMarketDataSkip = {
-              reasonCode: 'MARKET_DATA_NOT_READY',
-              reasonText: `Insufficient 5m candle data: ${candles15m.length}/250 required`
-            };
+              tradingPair
+            }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
           }
 
-          // Sort candles (most recent first)
-          candles.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-          candles15m.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-          
-          // Mark that market scan was successfully executed
-          marketScanExecuted = !htfMarketDataSkip;
-          
-        } catch (marketDataError) {
-          skippedReason = 'MARKET_DATA_NOT_READY';
-          finalizeSkip('MARKET_DATA_NOT_READY', marketDataError instanceof Error ? marketDataError.message : 'Market data fetch failed', 'DATA');
-          
           logger.error({
             agentId,
-            error: marketDataError instanceof Error ? marketDataError.message : 'Unknown error'
-          }, 'BB-RSI Scalper: Market scan failed');
-          
+            uid: agentConfig.userId,
+            exchange: exchangeConfig.exchange,
+            exchangeUsable,
+            decryptedApiKey: !!apiKey,
+            decryptedSecret: !!secret,
+            hasEncryptedApiKey: !!encryptedApiKey,
+            hasEncryptedSecret: !!encryptedSecret,
+            encryptedApiKeyLength: encryptedApiKey?.length || 0,
+            encryptedSecretLength: encryptedSecret?.length || 0,
+            encryptedApiKeyFormat: encryptedApiKey?.includes(':') ? 'valid' : 'invalid',
+            encryptedSecretFormat: encryptedSecret?.includes(':') ? 'valid' : 'invalid',
+            encryptionKeyStatus
+          }, `SKIP: ${skippedReason} - decryption failed. User needs to reconnect exchange.`);
+
           return;
         }
-      } else {
-        // Regular agents use 5m candles
-        candles = await marketProvider.getCandles(
-          symbol,
-          '5m',
-          50 // Need enough candles for indicator calculation
-        );
-        
-        if (candles.length < 50) {
-          finalizeSkip('MARKET_DATA_NOT_READY', `Insufficient 5m candles: ${candles.length}/50`, 'DATA');
-          logger.warn({
-            agentId,
-            candlesCount: candles.length
-          }, 'Insufficient candle data for agent execution');
-          return;
-        }
-        
-        // IMPORTANT: Our indicator library expects candles in "most recent first" order.
-        // Many exchanges return klines oldest->newest.
-        candles.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-      }
 
-      // Get latest candle (most recent)
-      const latestCandle = candles[0];
-      
-      // CRITICAL FIX: Validate and safely create candleTimestamp
-      // Ensure timestamp is valid before creating Date object to prevent Firestore errors
-      let candleTimestamp: Date;
-      try {
-        const rawTimestamp = latestCandle.timestamp;
-        
-        // Validate timestamp exists and is a valid number
-        if (!rawTimestamp || typeof rawTimestamp !== 'number' || !Number.isFinite(rawTimestamp) || isNaN(rawTimestamp)) {
-          logger.warn(
-            { agentId, pairKey, rawTimestamp, type: typeof rawTimestamp },
-            '⚠️ [CANDLE_TIMESTAMP_VALIDATION] Invalid candle timestamp - using current time as fallback'
-          );
-          candleTimestamp = new Date();
-        } else {
-          // Create Date from valid timestamp
-          candleTimestamp = new Date(rawTimestamp);
-          
-          // Verify the Date object is valid
-          if (isNaN(candleTimestamp.getTime())) {
-            logger.warn(
-              { agentId, pairKey, rawTimestamp },
-              '⚠️ [CANDLE_TIMESTAMP_VALIDATION] Created invalid Date object - using current time as fallback'
-            );
-            candleTimestamp = new Date();
-          }
-        }
-      } catch (timestampError: any) {
-        logger.warn(
-          { agentId, pairKey, error: timestampError.message },
-          '⚠️ [CANDLE_TIMESTAMP_VALIDATION] Failed to create candleTimestamp - using current time as fallback'
-        );
-        candleTimestamp = new Date();
-      }
+        // CRITICAL: When decryption succeeds, explicitly clear ALL previous exchange error states
+        // This prevents stale "Exchange keys are invalid due to encryption secret change" errors
+        // from persisting after successful decryption
+        if (apiKey && secret) {
+          // Clear any cached exchange failure flags or memory state
+          diagnostics.exchangeDecryptionSuccess = true;
+          diagnostics.exchangeUsable = true;
+          diagnostics.previousExchangeErrorsCleared = true;
 
-      // Update diagnostics with candle info
-      diagnostics.candleCheck = {
-        isClosed: true, // Assuming we only get closed candles
-        candleTimestamp,
-        price: latestCandle.close
-      };
+          // CRITICAL FIX: Clear any stale error message from previous failed cycles
+          // This ensures diagnostics.decision.reason reflects CURRENT cycle state only
+          if (diagnostics.decision && diagnostics.decision.reason &&
+            (diagnostics.decision.reason.includes('encryption secret change') ||
+              diagnostics.decision.reason.includes('Exchange keys are invalid'))) {
+            // Reset decision to reflect successful exchange state
+            diagnostics.decision = { action: 'CONTINUE', reason: 'Exchange credentials successfully decrypted and validated' };
+            diagnostics.failure = null; // Clear any previous failure state
 
-      // ===== OPEN TRADE MANAGEMENT (SL/TP) =====
-      // If there's an open position for this agent+pair, manage exits first.
-      try {
-        const recentAgentTrades = await firestoreAdapter.getAgentTrades(agentId, 25);
-        const openTradesForPair = (recentAgentTrades || []).filter((t: any) => {
-          return t?.status === 'OPEN' && normalizeSymbol(t?.tradingPair) === pairKey;
-        });
-
-        if (openTradesForPair.length > 0) {
-          const openTrade = openTradesForPair[0];
-          const currentPrice = Number(latestCandle.close) || 0;
-          const entryPrice = Number(openTrade.entryPrice) || 0;
-          const qty = Number(openTrade.quantity) || 0;
-          const sl = Number(openTrade.stopLoss);
-          const tp = Number(openTrade.takeProfit);
-
-          if (currentPrice > 0 && entryPrice > 0 && qty > 0 && isFinite(sl) && isFinite(tp)) {
-            const isLong = openTrade.direction === 'LONG';
-            const hitSL = isLong ? currentPrice <= sl : currentPrice >= sl;
-            const hitTP = isLong ? currentPrice >= tp : currentPrice <= tp;
-
-            if (hitSL || hitTP) {
-              const closeSide: 'BUY' | 'SELL' = isLong ? 'SELL' : 'BUY';
-              await marketProvider.placeOrder({
-                symbol,
-                side: closeSide,
-                type: 'MARKET',
-                quantity: qty,
-              });
-
-              const pnl = isLong ? (currentPrice - entryPrice) * qty : (entryPrice - currentPrice) * qty;
-              await firestoreAdapter.updateTradeStatus(openTrade.id, 'CLOSED');
-
-              if (openTrade.tradeDocId) {
-                await firestoreAdapter.updateTradeDocDelta(openTrade.tradeDocId, {
-                  status: 'closed',
-                  exitPrice: currentPrice,
-                  pnl,
-                });
-              }
-
-              // Update daily counters: consecutive losses stop at 2
-              const counters = await firestoreAdapter.getDailySafetyCounters(agentId);
-              const nextDailyPnL = (Number(counters.dailyPnL) || 0) + pnl;
-              const nextConsecutiveLosses = pnl < 0 ? (Number(counters.consecutiveLosses) || 0) + 1 : 0;
-              await firestoreAdapter.updateDailySafetyCounters(agentId, {
-                dailyPnL: nextDailyPnL,
-                consecutiveLosses: nextConsecutiveLosses,
-              });
-
-              logger.info({ agentId, tradingPair, openTradeId: openTrade.id, pnl }, 'Closed open trade by SL/TP');
-            }
+            logger.info({
+              agentId,
+              uid: agentConfig.userId,
+              exchange: exchangeConfig.exchange,
+              previousErrorCleared: true
+            }, 'STALE_ERROR_CLEARED: Removed previous exchange error message after successful decryption');
           }
 
-          // Do not open a new trade while one is open/managed
-          finalizeSkip('MANAGING_OPEN_POSITION', 'Managing existing open position - no new trades allowed', 'RISK');
-          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
-          return;
-        }
-      } catch (error) {
-        // Non-fatal - continue with normal flow
-      }
-
-      // ===== CLOSED-CANDLE DETERMINISM =====
-      // Check if this candle was already processed
-      const lastProcessedCandle = await firestoreAdapter.getLastProcessedCandle(agentId, pairKey);
-      if (lastProcessedCandle && candleTimestamp.getTime() === lastProcessedCandle.getTime()) {
-        finalizeSkip('CANDLE_ALREADY_PROCESSED', 'This candle was already processed in a previous cycle', 'DATA');
-        
-        logger.info({
-          agentId,
-          candleTimestamp: candleTimestamp.toISOString(),
-          reason: 'CANDLE_ALREADY_PROCESSED'
-        }, 'Execution blocked: candle already processed');
-        return;
-      }
-
-      // Calculate indicators
-      const indicators = TechnicalIndicators.calculateAllIndicators(candles);
-
-      // Update diagnostics with indicators
-      diagnostics.indicators = indicators;
-
-      // Validate indicators
-      if (!TechnicalIndicators.validateIndicators(indicators)) {
-        finalizeSkip('INVALID_INDICATORS', 'Technical indicators could not be calculated properly', 'DATA');
-        logger.error({
-          agentId,
-          indicators
-        }, 'Invalid indicators calculated');
-        return;
-      }
-
-      // Generate trading signal with S/R validation
-      let signal;
-      
-      if (isBBRsiAgent) {
-        // BB-RSI EMA200 Scalper mean reversion strategy
-        
-        if (!marketScanExecuted) {
-          skippedReason = htfMarketDataSkip?.reasonText || 'Market scan not executed';
-          finalizeSkip(htfMarketDataSkip?.reasonCode || 'MARKET_SCAN_NOT_EXECUTED', htfMarketDataSkip?.reasonText || 'Market scan was not executed - preventing signal generation', 'DATA');
-          
           logger.debug({
             agentId,
-            tradingPair,
-            reason: skippedReason
-          }, 'BB-RSI Scalper: Market scan not executed');
-          
-          // Update last processed candle even with no signal
-          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
+            uid: agentConfig.userId,
+            exchange: exchangeConfig.exchange,
+            credentialsResolved: true,
+            exchangeUsable: true
+          }, 'Trading Agent credentials successfully resolved - clearing all previous exchange error states');
+        }
+
+        const exchangeCredentials: ExchangeCredentials = {
+          apiKey,
+          secret,
+          passphrase,
+          testnet: exchangeConfig.testnet ?? false,
+        };
+
+        // Normalize exchange name to lowercase
+        const normalizedExchange = String(exchangeConfig.exchange || agentConfig.exchange).toLowerCase();
+        const marketProvider = new TradingAgentMarketProvider(exchangeCredentials, normalizedExchange as any, 'futures');
+
+        // SINGLE SOURCE OF TRUTH: If keys decrypt successfully (and user didn't disconnect), exchange is usable.
+        exchangeUsable = exchangeConfig.disconnected !== true && !!apiKey && !!secret && (normalizedExchange !== 'bitget' || !!passphrase);
+
+        if (!exchangeUsable) {
+          skippedReason = 'EXCHANGE_NOT_USABLE';
+          finalizeSkip('EXCHANGE_NOT_USABLE', normalizedExchange === 'bitget' && !passphrase
+            ? 'Bitget passphrase missing or failed to decrypt'
+            : 'Exchange connection is not usable - check credentials and connection', 'EXCHANGE');
           return;
         }
 
-        // Get account balance for position sizing
-        try {
-          const accountInfo = await marketProvider.getAccountBalance();
-          const accountBalance = accountInfo?.equity || 10000; // Default to 10k if unavailable
+        // CRITICAL: HTF agents can ONLY trade BTC/USDT and ETH/USDT
+        if (isHTFAgent) {
+          const allowedSymbols = ['BTCUSDT', 'ETHUSDT'];
+          if (!allowedSymbols.includes(symbol)) {
+            skippedReason = `HTF agents restricted to BTC/USDT, ETH/USDT only`;
+            finalizeSkip('PAIR_RESTRICTION', `HTF Trend Filter agents are restricted to BTC/USDT, ETH/USDT only. Current pair: ${tradingPair}`, 'RISK');
 
-          // Generate BB-RSI mean reversion signal
-          const bbRsiSignal = BBRsiEma200ScalperStrategy.generateSignal(candles, accountBalance);
-          
-          diagnostics.signal = bbRsiSignal;
-          diagnostics.tradeSetup = bbRsiSignal.tradeSetup;
-          
-          if (!bbRsiSignal.isValid) {
-            skippedReason = bbRsiSignal.reason;
-            finalizeSkip('NO_MEAN_REVERSION_SIGNAL', bbRsiSignal.reason || 'No mean reversion setup detected', 'SIGNAL');
-            
+            logger.info({
+              agentId,
+              tradingPair
+            }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
+
+            logger.warn({
+              agentId,
+              tradingPair,
+              allowedSymbols
+            }, 'HTF Trend Filter: Trading pair not allowed');
+            return;
+          }
+        }
+
+        // CRITICAL: BB-RSI agents can trade BTC, ETH, SOL, BNB, XRP ONLY
+        if (isBBRsiAgent) {
+          const allowedSymbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT'];
+          if (!allowedSymbols.includes(symbol)) {
+            skippedReason = `BB-RSI agents restricted to BTC/USDT, ETH/USDT, SOL/USDT, BNB/USDT, XRP/USDT only`;
+            finalizeSkip('PAIR_RESTRICTION', `BB-RSI EMA200 Scalper agents are restricted to: BTC/USDT, ETH/USDT, SOL/USDT, BNB/USDT, XRP/USDT. Current pair: ${tradingPair}`, 'RISK');
+
+            logger.warn({
+              agentId,
+              tradingPair,
+              allowedSymbols
+            }, 'BB-RSI Scalper: Trading pair not allowed');
+            return;
+          }
+        }
+
+
+        // CRITICAL: Mark that execution has started
+        // From this point forward, we're doing actual agent execution logic
+
+        let candles: any[] = [];
+        let candles15m: any[] = [];
+
+        if (isHTFAgent) {
+          // FIX PART C — BAN FALLBACK SIGNALS (CRITICAL)
+          // If ANY of these is true: market data fetch failed, candle data empty, indicator calc skipped, scanExecuted === false
+          // THEN: DO NOT generate signal, DO NOT default to BTC/USDT, DO NOT reuse previous signal
+          try {
+            // Fetch 15m candles for HTF trend analysis (need 200+ for EMA 200)
+            candles15m = await marketProvider.getCandles(symbol, '15m', 250);
+
+            // Fetch 1m candles for LTF entry signals (need 200+ for indicators)
+            candles = await marketProvider.getCandles(symbol, '1m', 250);
+
+            // FIX PART C — BAN FALLBACK SIGNALS (CRITICAL)
+            // Validate candle data is not empty - CRITICAL CHECK
+            if (!candles15m || candles15m.length === 0 || !candles || candles.length === 0) {
+              skippedReason = 'MARKET_DATA_NOT_READY';
+              finalizeSkip('MARKET_DATA_NOT_READY', 'Candle data empty - market data not available', 'DATA');
+
+              logger.info({
+                agentId,
+                tradingPair
+              }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
+
+              logger.error({
+                agentId,
+                candles15mCount: candles15m?.length || 0,
+                candles1mCount: candles?.length || 0
+              }, 'HTF Trend Filter: Candle data empty - BANNED fallback signals, NO default BTC/USDT, NO reuse previous signal');
+              return;
+            }
+
+            if (candles15m.length < 200) {
+              htfMarketDataSkip = {
+                reasonCode: 'MARKET_DATA_NOT_READY',
+                reasonText: `Insufficient 15m candle data: ${candles15m.length}/200 required`
+              };
+            } else if (candles.length < 200) {
+              htfMarketDataSkip = {
+                reasonCode: 'MARKET_DATA_NOT_READY',
+                reasonText: `Insufficient 1m candle data: ${candles.length}/200 required`
+              };
+            }
+
+            // Sort candles (most recent first)
+            candles15m.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+            candles.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+            // Mark that market scan was successfully executed - CRITICAL for signal generation
+            marketScanExecuted = !htfMarketDataSkip;
+
+            // CRITICAL: Calculate HTF bias direction AFTER validation and candle fetch
+            // This ensures HTF logic only runs when execution has officially started
+            if (marketScanExecuted && candles15m.length >= 200) {
+              try {
+                const { HTFTrendFilterStrategy } = await import('./htfTrendFilterStrategy');
+                const htfTrend = HTFTrendFilterStrategy.analyzeHTFTrend(candles15m);
+
+                // Set htfBiasDirection based on HTF trend
+                if (htfTrend.direction === 'LONG_ONLY') {
+                  htfBiasDirection = 'LONG';
+                } else if (htfTrend.direction === 'SHORT_ONLY') {
+                  htfBiasDirection = 'SHORT';
+                } else {
+                  htfBiasDirection = 'NO_TRADE';
+                }
+
+                // CRITICAL: Set direction to HTF bias and NEVER change it
+                // This ensures direction is visible even when decision = SKIP
+                diagnostics.direction = htfBiasDirection;
+                diagnostics.htfBias = htfBiasDirection;
+
+                // CRITICAL HTF GUARD: Mark that HTF logic actually evaluated
+                diagnostics.htfEvaluated = true;
+
+                logger.debug({
+                  agentId,
+                  htfDirection: htfBiasDirection,
+                  htfTrendDirection: htfTrend.direction
+                }, 'HTF Agent: HTF bias direction calculated after validation');
+              } catch (error) {
+                logger.warn({
+                  agentId,
+                  error: error instanceof Error ? error.message : 'Unknown error'
+                }, 'HTF Agent: Failed to calculate HTF bias direction');
+                htfBiasDirection = 'NO_TRADE';
+                diagnostics.direction = 'NO_TRADE';
+                diagnostics.htfBias = 'NO_TRADE';
+              }
+            }
+
+          } catch (marketDataError) {
+            // FIX PART C — BAN FALLBACK SIGNALS (CRITICAL)
+            // If market data fetch failed - DO NOT generate signal, DO NOT default to BTC/USDT, DO NOT reuse previous signal
+            // Mark cycle as SKIPPED with reason = MARKET_DATA_NOT_READY
+            skippedReason = 'MARKET_DATA_NOT_READY';
+            finalizeSkip('MARKET_DATA_NOT_READY', marketDataError instanceof Error ? marketDataError.message : 'Market data fetch failed', 'DATA');
+
+            logger.info({
+              agentId,
+              tradingPair
+            }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
+
+            logger.error({
+              agentId,
+              error: marketDataError instanceof Error ? marketDataError.message : 'Unknown error'
+            }, 'HTF Trend Filter: Market scan failed - BANNED fallback signals, NO default BTC/USDT, NO reuse previous signal');
+            return;
+          }
+        } else if (isBBRsiAgent) {
+          // BB-RSI Scalper uses 3m primary + 5m confirmation
+          try {
+            // Fetch 3m candles for primary signal (need 250+ for BB/RSI/EMA200)
+            candles = await marketProvider.getCandles(symbol, '3m', 250);
+
+            // Fetch 5m candles for confirmation (need 250+ for BB/RSI/EMA200)
+            candles15m = await marketProvider.getCandles(symbol, '5m', 250);
+
+            if (!candles || candles.length === 0 || !candles15m || candles15m.length === 0) {
+              skippedReason = 'MARKET_DATA_NOT_READY';
+              finalizeSkip('MARKET_DATA_NOT_READY', 'Candle data empty - market data not available', 'DATA');
+
+              logger.warn({
+                agentId,
+                candles3mCount: candles?.length || 0,
+                candles5mCount: candles15m?.length || 0
+              }, 'BB-RSI Scalper: Candle data empty');
+
+              return;
+            }
+
+            if (candles.length < 250) {
+              htfMarketDataSkip = {
+                reasonCode: 'MARKET_DATA_NOT_READY',
+                reasonText: `Insufficient 3m candle data: ${candles.length}/250 required`
+              };
+            } else if (candles15m.length < 250) {
+              htfMarketDataSkip = {
+                reasonCode: 'MARKET_DATA_NOT_READY',
+                reasonText: `Insufficient 5m candle data: ${candles15m.length}/250 required`
+              };
+            }
+
+            // Sort candles (most recent first)
+            candles.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+            candles15m.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+            // Mark that market scan was successfully executed
+            marketScanExecuted = !htfMarketDataSkip;
+
+          } catch (marketDataError) {
+            skippedReason = 'MARKET_DATA_NOT_READY';
+            finalizeSkip('MARKET_DATA_NOT_READY', marketDataError instanceof Error ? marketDataError.message : 'Market data fetch failed', 'DATA');
+
+            logger.error({
+              agentId,
+              error: marketDataError instanceof Error ? marketDataError.message : 'Unknown error'
+            }, 'BB-RSI Scalper: Market scan failed');
+
+            return;
+          }
+        } else {
+          // Regular agents use 5m candles
+          candles = await marketProvider.getCandles(
+            symbol,
+            '5m',
+            50 // Need enough candles for indicator calculation
+          );
+
+          if (candles.length < 50) {
+            finalizeSkip('MARKET_DATA_NOT_READY', `Insufficient 5m candles: ${candles.length}/50`, 'DATA');
+            logger.warn({
+              agentId,
+              candlesCount: candles.length
+            }, 'Insufficient candle data for agent execution');
+            return;
+          }
+
+          // IMPORTANT: Our indicator library expects candles in "most recent first" order.
+          // Many exchanges return klines oldest->newest.
+          candles.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        }
+
+        // Get latest candle (most recent)
+        const latestCandle = candles[0];
+
+        // CRITICAL FIX: Validate and safely create candleTimestamp
+        // Ensure timestamp is valid before creating Date object to prevent Firestore errors
+        let candleTimestamp: Date;
+        try {
+          const rawTimestamp = latestCandle.timestamp;
+
+          // Validate timestamp exists and is a valid number
+          if (!rawTimestamp || typeof rawTimestamp !== 'number' || !Number.isFinite(rawTimestamp) || isNaN(rawTimestamp)) {
+            logger.warn(
+              { agentId, pairKey, rawTimestamp, type: typeof rawTimestamp },
+              '⚠️ [CANDLE_TIMESTAMP_VALIDATION] Invalid candle timestamp - using current time as fallback'
+            );
+            candleTimestamp = new Date();
+          } else {
+            // Create Date from valid timestamp
+            candleTimestamp = new Date(rawTimestamp);
+
+            // Verify the Date object is valid
+            if (isNaN(candleTimestamp.getTime())) {
+              logger.warn(
+                { agentId, pairKey, rawTimestamp },
+                '⚠️ [CANDLE_TIMESTAMP_VALIDATION] Created invalid Date object - using current time as fallback'
+              );
+              candleTimestamp = new Date();
+            }
+          }
+        } catch (timestampError: any) {
+          logger.warn(
+            { agentId, pairKey, error: timestampError.message },
+            '⚠️ [CANDLE_TIMESTAMP_VALIDATION] Failed to create candleTimestamp - using current time as fallback'
+          );
+          candleTimestamp = new Date();
+        }
+
+        // Update diagnostics with candle info
+        diagnostics.candleCheck = {
+          isClosed: true, // Assuming we only get closed candles
+          candleTimestamp,
+          price: latestCandle.close
+        };
+
+        // ===== OPEN TRADE MANAGEMENT (SL/TP) =====
+        // If there's an open position for this agent+pair, manage exits first.
+        try {
+          const recentAgentTrades = await firestoreAdapter.getAgentTrades(agentId, 25);
+          const openTradesForPair = (recentAgentTrades || []).filter((t: any) => {
+            return t?.status === 'OPEN' && normalizeSymbol(t?.tradingPair) === pairKey;
+          });
+
+          if (openTradesForPair.length > 0) {
+            const openTrade = openTradesForPair[0];
+            const currentPrice = Number(latestCandle.close) || 0;
+            const entryPrice = Number(openTrade.entryPrice) || 0;
+            const qty = Number(openTrade.quantity) || 0;
+            const sl = Number(openTrade.stopLoss);
+            const tp = Number(openTrade.takeProfit);
+
+            if (currentPrice > 0 && entryPrice > 0 && qty > 0 && isFinite(sl) && isFinite(tp)) {
+              const isLong = openTrade.direction === 'LONG';
+              const hitSL = isLong ? currentPrice <= sl : currentPrice >= sl;
+              const hitTP = isLong ? currentPrice >= tp : currentPrice <= tp;
+
+              if (hitSL || hitTP) {
+                const closeSide: 'BUY' | 'SELL' = isLong ? 'SELL' : 'BUY';
+                await marketProvider.placeOrder({
+                  symbol,
+                  side: closeSide,
+                  type: 'MARKET',
+                  quantity: qty,
+                });
+
+                const pnl = isLong ? (currentPrice - entryPrice) * qty : (entryPrice - currentPrice) * qty;
+                await firestoreAdapter.updateTradeStatus(openTrade.id, 'CLOSED');
+
+                if (openTrade.tradeDocId) {
+                  await firestoreAdapter.updateTradeDocDelta(openTrade.tradeDocId, {
+                    status: 'closed',
+                    exitPrice: currentPrice,
+                    pnl,
+                  });
+                }
+
+                // Update daily counters: consecutive losses stop at 2
+                const counters = await firestoreAdapter.getDailySafetyCounters(agentId);
+                const nextDailyPnL = (Number(counters.dailyPnL) || 0) + pnl;
+                const nextConsecutiveLosses = pnl < 0 ? (Number(counters.consecutiveLosses) || 0) + 1 : 0;
+                await firestoreAdapter.updateDailySafetyCounters(agentId, {
+                  dailyPnL: nextDailyPnL,
+                  consecutiveLosses: nextConsecutiveLosses,
+                });
+
+                logger.info({ agentId, tradingPair, openTradeId: openTrade.id, pnl }, 'Closed open trade by SL/TP');
+              }
+            }
+
+            // Do not open a new trade while one is open/managed
+            finalizeSkip('MANAGING_OPEN_POSITION', 'Managing existing open position - no new trades allowed', 'RISK');
+            await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
+            return;
+          }
+        } catch (error) {
+          // Non-fatal - continue with normal flow
+        }
+
+        // ===== CLOSED-CANDLE DETERMINISM =====
+        // Check if this candle was already processed
+        const lastProcessedCandle = await firestoreAdapter.getLastProcessedCandle(agentId, pairKey);
+        if (lastProcessedCandle && candleTimestamp.getTime() === lastProcessedCandle.getTime()) {
+          finalizeSkip('CANDLE_ALREADY_PROCESSED', 'This candle was already processed in a previous cycle', 'DATA');
+
+          logger.info({
+            agentId,
+            candleTimestamp: candleTimestamp.toISOString(),
+            reason: 'CANDLE_ALREADY_PROCESSED'
+          }, 'Execution blocked: candle already processed');
+          return;
+        }
+
+        // Calculate indicators
+        const indicators = TechnicalIndicators.calculateAllIndicators(candles);
+
+        // Update diagnostics with indicators
+        diagnostics.indicators = indicators;
+
+        // Validate indicators
+        if (!TechnicalIndicators.validateIndicators(indicators)) {
+          finalizeSkip('INVALID_INDICATORS', 'Technical indicators could not be calculated properly', 'DATA');
+          logger.error({
+            agentId,
+            indicators
+          }, 'Invalid indicators calculated');
+          return;
+        }
+
+        // Generate trading signal with S/R validation
+        let signal;
+
+        if (isBBRsiAgent) {
+          // BB-RSI EMA200 Scalper mean reversion strategy
+
+          if (!marketScanExecuted) {
+            skippedReason = htfMarketDataSkip?.reasonText || 'Market scan not executed';
+            finalizeSkip(htfMarketDataSkip?.reasonCode || 'MARKET_SCAN_NOT_EXECUTED', htfMarketDataSkip?.reasonText || 'Market scan was not executed - preventing signal generation', 'DATA');
+
             logger.debug({
               agentId,
               tradingPair,
-              reason: bbRsiSignal.reason,
-              indicators: bbRsiSignal.indicators
-            }, 'BB-RSI Scalper: No valid signal');
-            
-            // Update last processed candle
+              reason: skippedReason
+            }, 'BB-RSI Scalper: Market scan not executed');
+
+            // Update last processed candle even with no signal
             await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
             return;
           }
 
-          // Valid signal - continue with execution
-          signal = {
-            direction: bbRsiSignal.direction,
-            entryPrice: bbRsiSignal.entryPrice,
-            stopLoss: bbRsiSignal.stopLoss,
-            takeProfit: bbRsiSignal.takeProfit2, // Use TP2 as primary target
-            takeProfit1: bbRsiSignal.takeProfit1, // Intermediate TP
-            confidence: bbRsiSignal.confidence,
-            reason: bbRsiSignal.reason
+          // Get account balance for position sizing
+          try {
+            const accountInfo = await marketProvider.getAccountBalance();
+            const accountBalance = accountInfo?.equity || 10000; // Default to 10k if unavailable
+
+            // Generate BB-RSI mean reversion signal
+            const bbRsiSignal = BBRsiEma200ScalperStrategy.generateSignal(candles, accountBalance);
+
+            diagnostics.signal = bbRsiSignal;
+            diagnostics.tradeSetup = bbRsiSignal.tradeSetup;
+
+            if (!bbRsiSignal.isValid) {
+              skippedReason = bbRsiSignal.reason;
+              finalizeSkip('NO_MEAN_REVERSION_SIGNAL', bbRsiSignal.reason || 'No mean reversion setup detected', 'SIGNAL');
+
+              logger.debug({
+                agentId,
+                tradingPair,
+                reason: bbRsiSignal.reason,
+                indicators: bbRsiSignal.indicators
+              }, 'BB-RSI Scalper: No valid signal');
+
+              // Update last processed candle
+              await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
+              return;
+            }
+
+            // Valid signal - continue with execution
+            signal = {
+              direction: bbRsiSignal.direction,
+              entryPrice: bbRsiSignal.entryPrice,
+              stopLoss: bbRsiSignal.stopLoss,
+              takeProfit: bbRsiSignal.takeProfit2, // Use TP2 as primary target
+              takeProfit1: bbRsiSignal.takeProfit1, // Intermediate TP
+              confidence: bbRsiSignal.confidence,
+              reason: bbRsiSignal.reason
+            };
+
+            signalGenerated = true;
+            agentExecutionRan = true;
+
+            logger.info({
+              agentId,
+              tradingPair,
+              signal: signal.direction,
+              entryPrice: signal.entryPrice,
+              stopLoss: signal.stopLoss,
+              tp1: signal.takeProfit1,
+              tp2: signal.takeProfit,
+              confidence: signal.confidence
+            }, 'BB-RSI Scalper: Valid mean reversion signal generated');
+
+          } catch (error) {
+            skippedReason = 'BB_RSI_SIGNAL_ERROR';
+            finalizeSkip('BB_RSI_SIGNAL_ERROR', error instanceof Error ? error.message : 'Error generating BB-RSI signal', 'SIGNAL');
+
+            logger.error({
+              agentId,
+              error: error instanceof Error ? error.message : 'Unknown error'
+            }, 'BB-RSI Scalper: Signal generation failed');
+
+            await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
+            return;
+          }
+        } else if (isHTFAgent) {
+          // FIX PART D — REQUIRE REAL DATA CONFIRMATION
+          // HTF agent may generate signal ONLY if ALL true:
+          // - exchange usable, marketScanExecuted === true, indicators evaluated (EMA / RSI / HTF trend), result is not NO_TRADE
+          // Else → SKIP
+
+          if (!marketScanExecuted) {
+            skippedReason = htfMarketDataSkip?.reasonText || 'Market scan not executed';
+            finalizeSkip(htfMarketDataSkip?.reasonCode || 'MARKET_SCAN_NOT_EXECUTED', htfMarketDataSkip?.reasonText || 'Market scan was not executed - preventing signal generation', 'DATA');
+
+            logger.info({
+              agentId,
+              tradingPair
+            }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
+
+            logger.warn({
+              agentId
+            }, 'HTF Trend Filter: Market scan not executed - preventing signal generation');
+
+            // Update last processed candle even with no signal
+            await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
+            return;
+          }
+
+          // exchangeUsable is guaranteed true here due to earlier gate
+
+          // For HTF agents, use HTF trend computed earlier (avoid re-running HTF bias calculation)
+          // diagnostics.htfEvaluated MUST only be set when HTF candles were fetched and HTF bias calculated
+          let htfTrend: any = null;
+          if (diagnostics.htfTrend) {
+            htfTrend = diagnostics.htfTrend;
+          } else if (htfBiasDirection) {
+            htfTrend = {
+              direction: htfBiasDirection === 'LONG' ? 'LONG_ONLY' : htfBiasDirection === 'SHORT' ? 'SHORT_ONLY' : 'NO_TRADE',
+              reason: 'Derived from precomputed HTF bias'
+            };
+            diagnostics.htfTrend = htfTrend;
+          } else {
+            // No HTF bias available (should not happen if marketScanExecuted === true)
+            htfTrend = { direction: 'NO_TRADE', reason: 'HTF not evaluated' };
+            diagnostics.htfTrend = htfTrend;
+          }
+
+          // LOGIC FIX (MANDATORY): If direction === NO_TRADE, do NOT start execution pipeline
+          if (htfTrend.direction === 'NO_TRADE') {
+            skippedReason = htfTrend.reason;
+
+            // CRITICAL: skipReasonShort will be derived from htfTrend.reason in finally block
+            diagnostics.executionState.researchedOnly = true;
+            diagnostics.executionState.executionEvaluated = true;
+            diagnostics.executionState.executionBlockedReason = 'HTF_CONDITION_NOT_MET';
+
+            finalizeSkip('HTF_CONDITION_NOT_MET', htfTrend.reason || 'HTF trend conditions not met - no trade opportunity', 'SIGNAL');
+
+            logger.info({
+              agentId,
+              tradingPair
+            }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
+
+            logger.debug({
+              agentId,
+              htfTrend
+            }, 'HTF Trend Filter: No valid trend');
+
+            // Update last processed candle even with no signal
+            await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
+            return;
+          }
+
+          // Analyze LTF entry with HTF trend filter
+          // Import strategy module here to avoid re-running HTF trend analysis
+          const { HTFTrendFilterStrategy } = await import('./htfTrendFilterStrategy');
+          const ltfSignal = HTFTrendFilterStrategy.analyzeLTFEntry(candles, htfTrend.direction);
+          diagnostics.ltfSignal = ltfSignal;
+
+          // CRITICAL: Store indicator results for frontend modal display
+          // Ensure indicators are ALWAYS populated, never left as empty {}
+          if (ltfSignal.indicators?.results && Object.keys(ltfSignal.indicators.results).length > 0) {
+            diagnostics.indicators.results = ltfSignal.indicators.results;
+          } else {
+            // If no results, create placeholder to show evaluation happened
+            diagnostics.indicators.results = {
+              evaluated: false,
+              reason: 'No indicator results available'
+            };
+          }
+
+          if (!ltfSignal.isValid) {
+            skippedReason = ltfSignal.reason;
+
+            // CRITICAL: Generate skipReasonShort (3-4 words) from FIRST rejected indicator
+            let skipReasonShort = 'Conditions not met';
+            if (ltfSignal.indicators?.results) {
+              const results = ltfSignal.indicators.results;
+              if (results.ema?.status === 'rejected') {
+                skipReasonShort = 'EMA rejected';
+              } else if (results.rsi?.status === 'rejected') {
+                skipReasonShort = 'RSI rejected';
+              } else if (results.vwap?.status === 'rejected') {
+                skipReasonShort = 'VWAP rejected';
+              } else if (results.volume?.status === 'rejected') {
+                skipReasonShort = 'Volume rejected';
+              } else if (results.sr?.status === 'rejected') {
+                skipReasonShort = 'SR rejected';
+              }
+            }
+
+            // Store skipReasonShort in diagnostics for frontend
+            diagnostics.skipReasonShort = skipReasonShort;
+            diagnostics.executionState.researchedOnly = true;
+            diagnostics.executionState.executionEvaluated = true;
+            diagnostics.executionState.executionBlockedReason = 'LTF_CONDITIONS_NOT_MET';
+
+            finalizeSkip('LTF_CONDITIONS_NOT_MET', ltfSignal.reason || 'LTF entry conditions not met despite valid HTF trend', 'SIGNAL');
+
+            logger.info({
+              agentId,
+              tradingPair,
+              skipReasonShort
+            }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
+
+            logger.debug({
+              agentId,
+              ltfSignal
+            }, 'HTF Trend Filter: LTF entry conditions not met');
+
+            // Update last processed candle even with no signal
+            await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
+            return;
+          }
+
+          // Convert LTF signal to TradingSignal format
+          const createSignalId = (direction: 'LONG' | 'SHORT') => {
+            const signalData = `${agentId}:${candleTimestamp.getTime()}:${direction}:${ltfSignal.entryPrice}`;
+            let hash = 0;
+            for (let i = 0; i < signalData.length; i++) {
+              const char = signalData.charCodeAt(i);
+              hash = ((hash << 5) - hash) + char;
+              hash = hash & hash;
+            }
+            return `htf_trend_filter_${Math.abs(hash).toString(36)}`;
           };
-          
+
+          // Calculate RR ratio for diagnostics
+          const riskPerUnit = Math.abs(ltfSignal.entryPrice - ltfSignal.stopLoss);
+          const rewardPerUnit = Math.abs(ltfSignal.takeProfit - ltfSignal.entryPrice);
+          const calculatedRR = riskPerUnit > 0 ? rewardPerUnit / riskPerUnit : 0;
+
+          signal = {
+            signalId: createSignalId(ltfSignal.direction!),
+            direction: ltfSignal.direction!,
+            entryPrice: ltfSignal.entryPrice,
+            stopLoss: ltfSignal.stopLoss,
+            takeProfit: ltfSignal.takeProfit,
+            calculatedRR,
+            timestamp: new Date(),
+            candleTimestamp: candleTimestamp,
+            indicators: {
+              rsi: ltfSignal.indicators.rsi,
+              ema50: ltfSignal.indicators.ema50,
+              bbUpper: ltfSignal.indicators.bbUpper,
+              bbLower: ltfSignal.indicators.bbLower,
+              atr: indicators.atr
+            },
+          };
           signalGenerated = true;
-          agentExecutionRan = true;
-          
+          console.log(`[HTF_AGENT] signalGenerated=${signalGenerated}`);
+
+          // HTF Agent execution fix: ALWAYS attach tradingPair for diagnostics
+          diagnostics.tradingPair = tradingPair;
+
+          // CRITICAL: For successful signals, set skipReasonShort to indicate all conditions met
+          diagnostics.skipReasonShort = 'All conditions met';
+
+          // CRITICAL: Store indicator results for TRADE cases too (not just SKIP)
+          if (ltfSignal.indicators?.results) {
+            diagnostics.indicators.results = ltfSignal.indicators.results;
+          }
+
+          // Mark as eligible for execution
+          diagnostics.executionState.researchedOnly = false;
+          diagnostics.executionState.eligibleForExecution = true;
+
+          // CRITICAL: Direction was already set early - do NOT overwrite it here
+        } else {
+          // Regular agents use standard signal generation
+          signal = agent.generateSignal(latestCandle, {
+            rsi: indicators.rsi,
+            ema50: indicators.ema50,
+            bbUpper: indicators.bbUpper,
+            bbLower: indicators.bbLower,
+            atr: indicators.atr
+          }, candles);
+
+          // For regular agents, attach tradingPair if signal is generated
+          if (signal) {
+            diagnostics.tradingPair = tradingPair;
+          }
+        }
+
+        if (!signal) {
+          finalizeSkip('NO_SIGNAL', 'No trading signal generated - market conditions not met', 'SIGNAL');
+          // Mark as research-only
+          diagnostics.executionState.researchedOnly = true;
+          diagnostics.executionState.eligibleForExecution = false;
+          diagnostics.executionState.executionBlockedReason = 'NO_SIGNAL';
+
+          // CRITICAL: Add single diagnostic log line for HTF agents
+          if (isHTFAgent) {
+            logger.info({
+              agentId,
+              tradingPair
+            }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}`);
+          }
+
+          logger.debug({
+            agentId,
+            indicators
+          }, 'No trading signal generated');
+
+          // Update last processed candle even with no signal
+          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
+          return;
+        }
+
+        // ===== EXECUTION IDEMPOTENCY =====
+        // Check if this signal was already executed
+        const signalAlreadyExecuted = await firestoreAdapter.isSignalExecuted(agentId, signal.signalId);
+        if (signalAlreadyExecuted) {
+          finalizeSkip('SIGNAL_ALREADY_EXECUTED', 'This signal was already executed in a previous cycle', 'RISK');
+          diagnostics.executionState.executionEvaluated = true;
+          diagnostics.executionState.executionBlockedReason = 'SIGNAL_ALREADY_EXECUTED';
+          logger.info({
+            agentId,
+            signalId: signal.signalId,
+            reason: 'SIGNAL_IDEMPOTENCY'
+          }, 'Execution blocked: signal already executed');
+
+          // Update last processed candle
+          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
+          return;
+        }
+
+        // ===== DAILY SAFETY RULE ENFORCEMENT =====
+        const dailyCounters = await firestoreAdapter.getDailySafetyCounters(agentId);
+
+        // CRITICAL: HTF Trend Filter agents have STRICT HARD LIMITS that cannot be overridden
+        // These limits are enforced regardless of agent config settings
+        let maxTradesPerDay: number;
+        let enforcedRiskPerTrade: number;
+        let enforcedLeverage: number;
+
+        if (isHTFAgent) {
+          // HTF HARD LIMITS - CANNOT BE CHANGED
+          maxTradesPerDay = 5; // Strict maximum: 5 trades per day
+          enforcedRiskPerTrade = 0.01; // Strict risk: 1% per trade
+          enforcedLeverage = 5; // Strict leverage: 5x
+
+          logger.debug({
+            agentId,
+            maxTradesPerDay,
+            riskPerTrade: enforcedRiskPerTrade,
+            leverage: enforcedLeverage
+          }, 'HTF Trend Filter Agent: Enforcing strict hard limits');
+        } else {
+          // Regular agents use config with cap
+          maxTradesPerDay = Math.min(Number(agentConfig.maxTradesPerDay) || 5, 5);
+          enforcedRiskPerTrade = Number(agentConfig.riskPerTrade) || 0.02;
+          enforcedLeverage = Number(agentConfig.leverage) || 8;
+        }
+
+        // Check daily trade limit
+        if (dailyCounters.tradesToday >= maxTradesPerDay) {
+          finalizeSkip('DAILY_TRADE_LIMIT', `Daily trade limit reached: ${dailyCounters.tradesToday}/${maxTradesPerDay}`, 'RISK');
+          diagnostics.executionState.executionEvaluated = true;
+          diagnostics.executionState.executionBlockedReason = 'DAILY_TRADE_LIMIT';
+          logger.info({
+            agentId,
+            tradesToday: dailyCounters.tradesToday,
+            maxTrades: maxTradesPerDay,
+            reason: 'DAILY_TRADE_LIMIT'
+          }, 'Execution blocked: daily trade limit reached');
+          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
+          return;
+        }
+
+        // Check consecutive losses limit
+        if (dailyCounters.consecutiveLosses >= 2) {
+          finalizeSkip('CONSECUTIVE_LOSSES_LIMIT', 'Consecutive losses limit reached - trading paused for risk management', 'RISK');
+          diagnostics.executionState.executionEvaluated = true;
+          diagnostics.executionState.executionBlockedReason = 'CONSECUTIVE_LOSSES_LIMIT';
+          logger.info({
+            agentId,
+            consecutiveLosses: dailyCounters.consecutiveLosses,
+            reason: 'CONSECUTIVE_LOSSES_LIMIT'
+          }, 'Execution blocked: consecutive losses limit reached');
+          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
+          return;
+        }
+
+        // Check daily profit target
+        if (!isHTFAgent && dailyCounters.dailyPnL >= 2.0) {
+          finalizeSkip('DAILY_PROFIT_TARGET', `Daily profit target reached: ${dailyCounters.dailyPnL.toFixed(2)}R`, 'RISK');
+          logger.info({
+            agentId,
+            dailyPnL: dailyCounters.dailyPnL,
+            reason: 'DAILY_PROFIT_TARGET'
+          }, 'Execution blocked: daily profit target reached');
+          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
+          return;
+        }
+
+        // ===== COOLDOWN PRECISION =====
+        // Check per-pair cooldown
+        const pairCooldown = await firestoreAdapter.getPairCooldown(agentId, pairKey);
+        if (!isHTFAgent && pairCooldown && new Date() < pairCooldown) {
+          finalizeSkip('PAIR_COOLDOWN_ACTIVE', `Pair cooldown active until ${pairCooldown.toISOString()}`, 'RISK');
           logger.info({
             agentId,
             tradingPair,
-            signal: signal.direction,
-            entryPrice: signal.entryPrice,
-            stopLoss: signal.stopLoss,
-            tp1: signal.takeProfit1,
-            tp2: signal.takeProfit,
-            confidence: signal.confidence
-          }, 'BB-RSI Scalper: Valid mean reversion signal generated');
-          
-        } catch (error) {
-          skippedReason = 'BB_RSI_SIGNAL_ERROR';
-          finalizeSkip('BB_RSI_SIGNAL_ERROR', error instanceof Error ? error.message : 'Error generating BB-RSI signal', 'SIGNAL');
-          
+            cooldownUntil: pairCooldown.toISOString(),
+            reason: 'PAIR_COOLDOWN_ACTIVE'
+          }, 'Execution blocked: pair cooldown active');
+          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
+          return;
+        }
+
+        // ===== MAX POSITION RACE PROTECTION =====
+        // Check position limits with current counts
+        const positionTrades = await firestoreAdapter.getAgentTrades(agentId, 50);
+        const openTrades = (positionTrades || []).filter((t: any) => t?.status === 'OPEN');
+        const pairOpenTrades = openTrades.filter((t: any) => normalizeSymbol(t?.tradingPair) === pairKey);
+        const positionCounts = {
+          pairPositions: pairOpenTrades.length,
+          totalPositions: openTrades.length,
+        };
+
+        // Max 1 open trade per pair
+        if (positionCounts.pairPositions >= 1) {
+          finalizeSkip('PAIR_POSITION_LIMIT', `Pair position limit reached: ${positionCounts.pairPositions}/1`, 'RISK');
+          diagnostics.executionState.executionEvaluated = true;
+          diagnostics.executionState.executionBlockedReason = 'PAIR_POSITION_LIMIT';
+          logger.info({
+            agentId,
+            tradingPair,
+            currentPositions: positionCounts.pairPositions,
+            reason: 'PAIR_POSITION_LIMIT'
+          }, 'Execution blocked: pair position limit reached');
+          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
+          return;
+        }
+
+        // Max 2 total open trades
+        if (positionCounts.totalPositions >= 2) {
+          finalizeSkip('TOTAL_POSITION_LIMIT', `Total position limit reached: ${positionCounts.totalPositions}/2`, 'RISK');
+          diagnostics.executionState.executionEvaluated = true;
+          diagnostics.executionState.executionBlockedReason = 'TOTAL_POSITION_LIMIT';
+          logger.info({
+            agentId,
+            totalPositions: positionCounts.totalPositions,
+            reason: 'TOTAL_POSITION_LIMIT'
+          }, 'Execution blocked: total position limit reached');
+          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
+          return;
+        }
+
+        // Get COIN-M account balance
+        const balance = await marketProvider.getAccountBalance();
+
+        // Update diagnostics with balance info
+        diagnostics.riskAnalysis = {
+          accountBalance: balance.equity,
+          riskPercent: isHTFAgent ? enforcedRiskPerTrade : agentConfig.riskPerTrade,
+          positionSize: 0, // Will be calculated below
+          maxPositionSize: 0, // Will be calculated below
+          availableMargin: true
+        };
+
+        // Position sizing (validation-only)
+        // For HTF agents, use enforced limits; for regular agents, use config
+        const positionCalc = agent.calculatePositionSize(
+          balance.equity,
+          signal.entryPrice,
+          signal.stopLoss,
+          isHTFAgent ? enforcedLeverage : (agentConfig.leverage || 8),
+        );
+
+        if (!positionCalc.isSafe || !isFinite(positionCalc.positionSize) || positionCalc.positionSize <= 0) {
+          finalizeSkip('POSITION_SIZING_REJECTED', `Position sizing rejected: ${positionCalc.reason || 'UNKNOWN'}`, 'RISK');
+          diagnostics.executionState.executionEvaluated = true;
+          diagnostics.executionState.executionBlockedReason = 'POSITION_SIZING_REJECTED';
+          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
+          return;
+        }
+
+        const tradeRecord: any = {
+          id: `trade_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+          signalId: signal.signalId,
+          agentId: agentId,
+          tradingPair: agentConfig.tradingPair,
+          symbol: symbol,
+          direction: signal.direction,
+          entryPrice: signal.entryPrice,
+          stopLoss: signal.stopLoss,
+          takeProfit: signal.takeProfit,
+          calculatedRR: signal.calculatedRR || 0,
+          quantity: positionCalc.positionSize,
+          leverage: isHTFAgent ? enforcedLeverage : (agentConfig.leverage || 8),
+          riskPerTrade: isHTFAgent ? enforcedRiskPerTrade : agentConfig.riskPerTrade,
+          status: 'OPEN',
+          entryTime: signal.timestamp,
+          candleTimestamp: signal.candleTimestamp,
+          indicators: signal.indicators,
+        };
+
+        // Update diagnostics with risk analysis
+        diagnostics.riskAnalysis.positionSize = tradeRecord.quantity;
+
+        // Mark execution as attempted
+        diagnostics.executionState.executionEvaluated = true;
+        diagnostics.executionState.executionAttempted = true;
+
+        // Place actual order on exchange (MARKET entry) and persist to trades collection
+        const orderSuccess = await this.placeOrderFromTradeAtomic(tradeRecord, agentConfig, marketProvider, diagnostics, agent);
+
+        if (orderSuccess) {
+          // Also persist to agentTrades for idempotency / position count enforcement
+          await firestoreAdapter.saveAgentTrade(tradeRecord);
+
+          // Update daily counters
+          await firestoreAdapter.updateDailySafetyCounters(agentId, {
+            tradesToday: dailyCounters.tradesToday + 1
+          });
+
+          // Set pair cooldown (30 minutes from trade execution)
+          const cooldownUntil = new Date(Date.now() + 30 * 60 * 1000);
+          await firestoreAdapter.setPairCooldown(agentId, pairKey, cooldownUntil);
+
+          logger.info({
+            agentId,
+            tradeId: tradeRecord.id,
+            signalId: tradeRecord.signalId,
+            direction: tradeRecord.direction,
+            entryPrice: tradeRecord.entryPrice,
+            stopLoss: tradeRecord.stopLoss,
+            takeProfit: tradeRecord.takeProfit,
+            calculatedRR: tradeRecord.calculatedRR,
+            quantity: tradeRecord.quantity,
+            slTpPlacedOnExchange: true
+          }, 'Trade executed successfully with SL/TP placed on exchange');
+        } else {
+          // CRITICAL: Exchange failure MUST count as an attempt to prevent retry loops
+          tradeRecord.status = 'FAILED';
+          tradeRecord.error = diagnostics?.execution?.error || 'ORDER_PLACEMENT_FAILED';
+          tradeRecord.exchangeErrorReason = diagnostics?.execution?.exchangeErrorReason || diagnostics?.execution?.error || 'ORDER_PLACEMENT_FAILED';
+          await firestoreAdapter.saveAgentTrade(tradeRecord);
+
+          // CRITICAL: Apply cooldown even on exchange failure to prevent immediate retry
+          // This prevents the same signal from being attempted every cycle
+          const cooldownUntil = new Date(Date.now() + 30 * 60 * 1000);
+          await firestoreAdapter.setPairCooldown(agentId, pairKey, cooldownUntil);
+
+          // Update diagnostics decision to reflect exchange failure with cooldown
+          diagnostics.decision = {
+            action: 'EXCHANGE_FAILED_COOLDOWN',
+            reason: `Exchange order failed: ${tradeRecord.error}. Cooldown applied until ${cooldownUntil.toISOString()}`,
+            exchangeErrorReason: tradeRecord.exchangeErrorReason
+          };
+
           logger.error({
             agentId,
-            error: error instanceof Error ? error.message : 'Unknown error'
-          }, 'BB-RSI Scalper: Signal generation failed');
-          
-          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
-          return;
+            tradeId: tradeRecord.id,
+            signalId: tradeRecord.signalId,
+            cooldownUntil: cooldownUntil.toISOString(),
+            error: tradeRecord.error,
+            exchangeErrorReason: tradeRecord.exchangeErrorReason
+          }, 'Order placement failed, trade marked as failed, cooldown applied to prevent retry loop');
         }
-      } else if (isHTFAgent) {
-        // FIX PART D — REQUIRE REAL DATA CONFIRMATION
-        // HTF agent may generate signal ONLY if ALL true:
-        // - exchange usable, marketScanExecuted === true, indicators evaluated (EMA / RSI / HTF trend), result is not NO_TRADE
-        // Else → SKIP
-        
-        if (!marketScanExecuted) {
-          skippedReason = htfMarketDataSkip?.reasonText || 'Market scan not executed';
-          finalizeSkip(htfMarketDataSkip?.reasonCode || 'MARKET_SCAN_NOT_EXECUTED', htfMarketDataSkip?.reasonText || 'Market scan was not executed - preventing signal generation', 'DATA');
-          
-          logger.info({
-            agentId,
-            tradingPair
-          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
-          
-          logger.warn({
-            agentId
-          }, 'HTF Trend Filter: Market scan not executed - preventing signal generation');
-          
-          // Update last processed candle even with no signal
-          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
-          return;
-        }
-        
-        // exchangeUsable is guaranteed true here due to earlier gate
-        
-        // For HTF agents, use HTF trend computed earlier (avoid re-running HTF bias calculation)
-        // diagnostics.htfEvaluated MUST only be set when HTF candles were fetched and HTF bias calculated
-        let htfTrend: any = null;
-        if (diagnostics.htfTrend) {
-          htfTrend = diagnostics.htfTrend;
-        } else if (htfBiasDirection) {
-          htfTrend = {
-            direction: htfBiasDirection === 'LONG' ? 'LONG_ONLY' : htfBiasDirection === 'SHORT' ? 'SHORT_ONLY' : 'NO_TRADE',
-            reason: 'Derived from precomputed HTF bias'
-          };
-          diagnostics.htfTrend = htfTrend;
-        } else {
-          // No HTF bias available (should not happen if marketScanExecuted === true)
-          htfTrend = { direction: 'NO_TRADE', reason: 'HTF not evaluated' };
-          diagnostics.htfTrend = htfTrend;
-        }
-        
-        // LOGIC FIX (MANDATORY): If direction === NO_TRADE, do NOT start execution pipeline
-        if (htfTrend.direction === 'NO_TRADE') {
-          skippedReason = htfTrend.reason;
-          
-          // CRITICAL: Set skipReasonShort for NO_TRADE
-          diagnostics.skipReasonShort = 'HTF no trade';
-          diagnostics.executionState.researchedOnly = true;
-          diagnostics.executionState.executionEvaluated = true;
-          diagnostics.executionState.executionBlockedReason = 'HTF_CONDITION_NOT_MET';
-          
-          finalizeSkip('HTF_CONDITION_NOT_MET', htfTrend.reason || 'HTF trend conditions not met - no trade opportunity', 'SIGNAL');
-          
-          logger.info({
-            agentId,
-            tradingPair
-          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
-          
-          logger.debug({
-            agentId,
-            htfTrend
-          }, 'HTF Trend Filter: No valid trend');
-          
-          // Update last processed candle even with no signal
-          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
-          return;
-        }
-        
-        // Analyze LTF entry with HTF trend filter
-        // Import strategy module here to avoid re-running HTF trend analysis
-        const { HTFTrendFilterStrategy } = await import('./htfTrendFilterStrategy');
-        const ltfSignal = HTFTrendFilterStrategy.analyzeLTFEntry(candles, htfTrend.direction);
-        diagnostics.ltfSignal = ltfSignal;
-        
-        // CRITICAL: Store indicator results for frontend modal display
-        // Ensure indicators are ALWAYS populated, never left as empty {}
-        if (ltfSignal.indicators?.results && Object.keys(ltfSignal.indicators.results).length > 0) {
-          diagnostics.indicators.results = ltfSignal.indicators.results;
-        } else {
-          // If no results, create placeholder to show evaluation happened
-          diagnostics.indicators.results = {
-            evaluated: false,
-            reason: 'No indicator results available'
-          };
-        }
-        
-        if (!ltfSignal.isValid) {
-          skippedReason = ltfSignal.reason;
-          
-          // CRITICAL: Generate skipReasonShort (3-4 words) from FIRST rejected indicator
-          let skipReasonShort = 'Conditions not met';
-          if (ltfSignal.indicators?.results) {
-            const results = ltfSignal.indicators.results;
-            if (results.ema?.status === 'rejected') {
-              skipReasonShort = 'EMA rejected';
-            } else if (results.rsi?.status === 'rejected') {
-              skipReasonShort = 'RSI rejected';
-            } else if (results.vwap?.status === 'rejected') {
-              skipReasonShort = 'VWAP rejected';
-            } else if (results.volume?.status === 'rejected') {
-              skipReasonShort = 'Volume rejected';
-            } else if (results.sr?.status === 'rejected') {
-              skipReasonShort = 'SR rejected';
-            }
-          }
-          
-          // Store skipReasonShort in diagnostics for frontend
-          diagnostics.skipReasonShort = skipReasonShort;
-          diagnostics.executionState.researchedOnly = true;
-          diagnostics.executionState.executionEvaluated = true;
-          diagnostics.executionState.executionBlockedReason = 'LTF_CONDITIONS_NOT_MET';
-          
-          finalizeSkip('LTF_CONDITIONS_NOT_MET', ltfSignal.reason || 'LTF entry conditions not met despite valid HTF trend', 'SIGNAL');
-          
-          logger.info({
-            agentId,
-            tradingPair,
-            skipReasonShort
-          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}, skippedReason=${skippedReason}`);
-          
-          logger.debug({
-            agentId,
-            ltfSignal
-          }, 'HTF Trend Filter: LTF entry conditions not met');
-          
-          // Update last processed candle even with no signal
-          await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
-          return;
-        }
-        
-        // Convert LTF signal to TradingSignal format
-        const createSignalId = (direction: 'LONG' | 'SHORT') => {
-          const signalData = `${agentId}:${candleTimestamp.getTime()}:${direction}:${ltfSignal.entryPrice}`;
-          let hash = 0;
-          for (let i = 0; i < signalData.length; i++) {
-            const char = signalData.charCodeAt(i);
-            hash = ((hash << 5) - hash) + char;
-            hash = hash & hash;
-          }
-          return `htf_trend_filter_${Math.abs(hash).toString(36)}`;
-        };
-        
-        // Calculate RR ratio for diagnostics
-        const riskPerUnit = Math.abs(ltfSignal.entryPrice - ltfSignal.stopLoss);
-        const rewardPerUnit = Math.abs(ltfSignal.takeProfit - ltfSignal.entryPrice);
-        const calculatedRR = riskPerUnit > 0 ? rewardPerUnit / riskPerUnit : 0;
-        
-        signal = {
-          signalId: createSignalId(ltfSignal.direction!),
-          direction: ltfSignal.direction!,
-          entryPrice: ltfSignal.entryPrice,
-          stopLoss: ltfSignal.stopLoss,
-          takeProfit: ltfSignal.takeProfit,
-          calculatedRR,
-          timestamp: new Date(),
-          candleTimestamp: candleTimestamp,
-          indicators: {
-            rsi: ltfSignal.indicators.rsi,
-            ema50: ltfSignal.indicators.ema50,
-            bbUpper: ltfSignal.indicators.bbUpper,
-            bbLower: ltfSignal.indicators.bbLower,
-            atr: indicators.atr
-          },
-        };
-        signalGenerated = true;
-        console.log(`[HTF_AGENT] signalGenerated=${signalGenerated}`);
-        
-        // HTF Agent execution fix: ALWAYS attach tradingPair for diagnostics
-        diagnostics.tradingPair = tradingPair;
-        
-        // CRITICAL: For successful signals, set skipReasonShort to indicate all conditions met
-        diagnostics.skipReasonShort = 'All conditions met';
-        
-        // CRITICAL: Store indicator results for TRADE cases too (not just SKIP)
-        if (ltfSignal.indicators?.results) {
-          diagnostics.indicators.results = ltfSignal.indicators.results;
-        }
-        
-        // Mark as eligible for execution
-        diagnostics.executionState.researchedOnly = false;
-        diagnostics.executionState.eligibleForExecution = true;
-        
-        // CRITICAL: Direction was already set early - do NOT overwrite it here
-      } else {
-        // Regular agents use standard signal generation
-        signal = agent.generateSignal(latestCandle, {
-          rsi: indicators.rsi,
-          ema50: indicators.ema50,
-          bbUpper: indicators.bbUpper,
-          bbLower: indicators.bbLower,
-          atr: indicators.atr
-        }, candles);
-        
-        // For regular agents, attach tradingPair if signal is generated
-        if (signal) {
-          diagnostics.tradingPair = tradingPair;
-        }
-      }
-
-      if (!signal) {
-        finalizeSkip('NO_SIGNAL', 'No trading signal generated - market conditions not met', 'SIGNAL');
-        // Mark as research-only
-        diagnostics.executionState.researchedOnly = true;
-        diagnostics.executionState.eligibleForExecution = false;
-        diagnostics.executionState.executionBlockedReason = 'NO_SIGNAL';
-        
-        // CRITICAL: Add single diagnostic log line for HTF agents
-        if (isHTFAgent) {
-          logger.info({
-            agentId,
-            tradingPair
-          }, `[HTF_AGENT] usable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}`);
-        }
-
-        logger.debug({
-          agentId,
-          indicators
-        }, 'No trading signal generated');
-
-        // Update last processed candle even with no signal
-        await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
-        return;
-      }
-
-      // ===== EXECUTION IDEMPOTENCY =====
-      // Check if this signal was already executed
-      const signalAlreadyExecuted = await firestoreAdapter.isSignalExecuted(agentId, signal.signalId);
-      if (signalAlreadyExecuted) {
-        finalizeSkip('SIGNAL_ALREADY_EXECUTED', 'This signal was already executed in a previous cycle', 'RISK');
-        diagnostics.executionState.executionEvaluated = true;
-        diagnostics.executionState.executionBlockedReason = 'SIGNAL_ALREADY_EXECUTED';
-        logger.info({
-          agentId,
-          signalId: signal.signalId,
-          reason: 'SIGNAL_IDEMPOTENCY'
-        }, 'Execution blocked: signal already executed');
 
         // Update last processed candle
         await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
-        return;
-      }
 
-      // ===== DAILY SAFETY RULE ENFORCEMENT =====
-      const dailyCounters = await firestoreAdapter.getDailySafetyCounters(agentId);
+        // CRITICAL: Add single diagnostic log line for HTF agents at end of successful execution
+        if (isHTFAgent) {
+          logger.info({
+            agentId,
+            tradingPair,
+            orderSuccess,
+            signalDirection: signal?.direction
+          }, `[HTF_AGENT] cycle evaluated: exchangeUsable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}`);
+        }
 
-      // CRITICAL: HTF Trend Filter agents have STRICT HARD LIMITS that cannot be overridden
-      // These limits are enforced regardless of agent config settings
-      let maxTradesPerDay: number;
-      let enforcedRiskPerTrade: number;
-      let enforcedLeverage: number;
-      
-      if (isHTFAgent) {
-        // HTF HARD LIMITS - CANNOT BE CHANGED
-        maxTradesPerDay = 5; // Strict maximum: 5 trades per day
-        enforcedRiskPerTrade = 0.01; // Strict risk: 1% per trade
-        enforcedLeverage = 5; // Strict leverage: 5x
-        
-        logger.debug({
-          agentId,
-          maxTradesPerDay,
-          riskPerTrade: enforcedRiskPerTrade,
-          leverage: enforcedLeverage
-        }, 'HTF Trend Filter Agent: Enforcing strict hard limits');
-      } else {
-        // Regular agents use config with cap
-        maxTradesPerDay = Math.min(Number(agentConfig.maxTradesPerDay) || 5, 5);
-        enforcedRiskPerTrade = Number(agentConfig.riskPerTrade) || 0.02;
-        enforcedLeverage = Number(agentConfig.leverage) || 8;
-      }
-
-      // Check daily trade limit
-      if (dailyCounters.tradesToday >= maxTradesPerDay) {
-        finalizeSkip('DAILY_TRADE_LIMIT', `Daily trade limit reached: ${dailyCounters.tradesToday}/${maxTradesPerDay}`, 'RISK');
-        diagnostics.executionState.executionEvaluated = true;
-        diagnostics.executionState.executionBlockedReason = 'DAILY_TRADE_LIMIT';
-        logger.info({
-          agentId,
-          tradesToday: dailyCounters.tradesToday,
-          maxTrades: maxTradesPerDay,
-          reason: 'DAILY_TRADE_LIMIT'
-        }, 'Execution blocked: daily trade limit reached');
-        await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
-        return;
-      }
-
-      // Check consecutive losses limit
-      if (dailyCounters.consecutiveLosses >= 2) {
-        finalizeSkip('CONSECUTIVE_LOSSES_LIMIT', 'Consecutive losses limit reached - trading paused for risk management', 'RISK');
-        diagnostics.executionState.executionEvaluated = true;
-        diagnostics.executionState.executionBlockedReason = 'CONSECUTIVE_LOSSES_LIMIT';
-        logger.info({
-          agentId,
-          consecutiveLosses: dailyCounters.consecutiveLosses,
-          reason: 'CONSECUTIVE_LOSSES_LIMIT'
-        }, 'Execution blocked: consecutive losses limit reached');
-        await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
-        return;
-      }
-
-      // Check daily profit target
-      if (!isHTFAgent && dailyCounters.dailyPnL >= 2.0) {
-        finalizeSkip('DAILY_PROFIT_TARGET', `Daily profit target reached: ${dailyCounters.dailyPnL.toFixed(2)}R`, 'RISK');
-        logger.info({
-          agentId,
-          dailyPnL: dailyCounters.dailyPnL,
-          reason: 'DAILY_PROFIT_TARGET'
-        }, 'Execution blocked: daily profit target reached');
-        await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
-        return;
-      }
-
-      // ===== COOLDOWN PRECISION =====
-      // Check per-pair cooldown
-      const pairCooldown = await firestoreAdapter.getPairCooldown(agentId, pairKey);
-      if (!isHTFAgent && pairCooldown && new Date() < pairCooldown) {
-        finalizeSkip('PAIR_COOLDOWN_ACTIVE', `Pair cooldown active until ${pairCooldown.toISOString()}`, 'RISK');
-        logger.info({
-          agentId,
-          tradingPair,
-          cooldownUntil: pairCooldown.toISOString(),
-          reason: 'PAIR_COOLDOWN_ACTIVE'
-        }, 'Execution blocked: pair cooldown active');
-        await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
-        return;
-      }
-
-      // ===== MAX POSITION RACE PROTECTION =====
-      // Check position limits with current counts
-      const positionTrades = await firestoreAdapter.getAgentTrades(agentId, 50);
-      const openTrades = (positionTrades || []).filter((t: any) => t?.status === 'OPEN');
-      const pairOpenTrades = openTrades.filter((t: any) => normalizeSymbol(t?.tradingPair) === pairKey);
-      const positionCounts = {
-        pairPositions: pairOpenTrades.length,
-        totalPositions: openTrades.length,
-      };
-
-      // Max 1 open trade per pair
-      if (positionCounts.pairPositions >= 1) {
-        finalizeSkip('PAIR_POSITION_LIMIT', `Pair position limit reached: ${positionCounts.pairPositions}/1`, 'RISK');
-        diagnostics.executionState.executionEvaluated = true;
-        diagnostics.executionState.executionBlockedReason = 'PAIR_POSITION_LIMIT';
-        logger.info({
-          agentId,
-          tradingPair,
-          currentPositions: positionCounts.pairPositions,
-          reason: 'PAIR_POSITION_LIMIT'
-        }, 'Execution blocked: pair position limit reached');
-        await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
-        return;
-      }
-
-      // Max 2 total open trades
-      if (positionCounts.totalPositions >= 2) {
-        finalizeSkip('TOTAL_POSITION_LIMIT', `Total position limit reached: ${positionCounts.totalPositions}/2`, 'RISK');
-        diagnostics.executionState.executionEvaluated = true;
-        diagnostics.executionState.executionBlockedReason = 'TOTAL_POSITION_LIMIT';
-        logger.info({
-          agentId,
-          totalPositions: positionCounts.totalPositions,
-          reason: 'TOTAL_POSITION_LIMIT'
-        }, 'Execution blocked: total position limit reached');
-        await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
-        return;
-      }
-
-      // Get COIN-M account balance
-      const balance = await marketProvider.getAccountBalance();
-
-      // Update diagnostics with balance info
-      diagnostics.riskAnalysis = {
-        accountBalance: balance.equity,
-        riskPercent: isHTFAgent ? enforcedRiskPerTrade : agentConfig.riskPerTrade,
-        positionSize: 0, // Will be calculated below
-        maxPositionSize: 0, // Will be calculated below
-        availableMargin: true
-      };
-
-      // Position sizing (validation-only)
-      // For HTF agents, use enforced limits; for regular agents, use config
-      const positionCalc = agent.calculatePositionSize(
-        balance.equity,
-        signal.entryPrice,
-        signal.stopLoss,
-        isHTFAgent ? enforcedLeverage : (agentConfig.leverage || 8),
-      );
-
-      if (!positionCalc.isSafe || !isFinite(positionCalc.positionSize) || positionCalc.positionSize <= 0) {
-        finalizeSkip('POSITION_SIZING_REJECTED', `Position sizing rejected: ${positionCalc.reason || 'UNKNOWN'}`, 'RISK');
-        diagnostics.executionState.executionEvaluated = true;
-        diagnostics.executionState.executionBlockedReason = 'POSITION_SIZING_REJECTED';
-        await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
-        return;
-      }
-
-      const tradeRecord: any = {
-        id: `trade_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
-        signalId: signal.signalId,
-        agentId: agentId,
-        tradingPair: agentConfig.tradingPair,
-        symbol: symbol,
-        direction: signal.direction,
-        entryPrice: signal.entryPrice,
-        stopLoss: signal.stopLoss,
-        takeProfit: signal.takeProfit,
-        calculatedRR: signal.calculatedRR || 0,
-        quantity: positionCalc.positionSize,
-        leverage: isHTFAgent ? enforcedLeverage : (agentConfig.leverage || 8),
-        riskPerTrade: isHTFAgent ? enforcedRiskPerTrade : agentConfig.riskPerTrade,
-        status: 'OPEN',
-        entryTime: signal.timestamp,
-        candleTimestamp: signal.candleTimestamp,
-        indicators: signal.indicators,
-      };
-
-      // Update diagnostics with risk analysis
-      diagnostics.riskAnalysis.positionSize = tradeRecord.quantity;
-
-      // Mark execution as attempted
-      diagnostics.executionState.executionEvaluated = true;
-      diagnostics.executionState.executionAttempted = true;
-
-      // Place actual order on exchange (MARKET entry) and persist to trades collection
-      const orderSuccess = await this.placeOrderFromTradeAtomic(tradeRecord, agentConfig, marketProvider, diagnostics, agent);
-
-      if (orderSuccess) {
-        // Also persist to agentTrades for idempotency / position count enforcement
-        await firestoreAdapter.saveAgentTrade(tradeRecord);
-
-        // Update daily counters
-        await firestoreAdapter.updateDailySafetyCounters(agentId, {
-          tradesToday: dailyCounters.tradesToday + 1
-        });
-
-        // Set pair cooldown (30 minutes from trade execution)
-        const cooldownUntil = new Date(Date.now() + 30 * 60 * 1000);
-        await firestoreAdapter.setPairCooldown(agentId, pairKey, cooldownUntil);
-
-        logger.info({
-          agentId,
-          tradeId: tradeRecord.id,
-          signalId: tradeRecord.signalId,
-          direction: tradeRecord.direction,
-          entryPrice: tradeRecord.entryPrice,
-          stopLoss: tradeRecord.stopLoss,
-          takeProfit: tradeRecord.takeProfit,
-          calculatedRR: tradeRecord.calculatedRR,
-          quantity: tradeRecord.quantity,
-          slTpPlacedOnExchange: true
-        }, 'Trade executed successfully with SL/TP placed on exchange');
-      } else {
-        // CRITICAL: Exchange failure MUST count as an attempt to prevent retry loops
-        tradeRecord.status = 'FAILED';
-        tradeRecord.error = diagnostics?.execution?.error || 'ORDER_PLACEMENT_FAILED';
-        tradeRecord.exchangeErrorReason = diagnostics?.execution?.exchangeErrorReason || diagnostics?.execution?.error || 'ORDER_PLACEMENT_FAILED';
-        await firestoreAdapter.saveAgentTrade(tradeRecord);
-
-        // CRITICAL: Apply cooldown even on exchange failure to prevent immediate retry
-        // This prevents the same signal from being attempted every cycle
-        const cooldownUntil = new Date(Date.now() + 30 * 60 * 1000);
-        await firestoreAdapter.setPairCooldown(agentId, pairKey, cooldownUntil);
-
-        // Update diagnostics decision to reflect exchange failure with cooldown
-        diagnostics.decision = {
-          action: 'EXCHANGE_FAILED_COOLDOWN',
-          reason: `Exchange order failed: ${tradeRecord.error}. Cooldown applied until ${cooldownUntil.toISOString()}`,
-          exchangeErrorReason: tradeRecord.exchangeErrorReason
-        };
-
+      } catch (error) {
         logger.error({
           agentId,
-          tradeId: tradeRecord.id,
-          signalId: tradeRecord.signalId,
-          cooldownUntil: cooldownUntil.toISOString(),
-          error: tradeRecord.error,
-          exchangeErrorReason: tradeRecord.exchangeErrorReason
-        }, 'Order placement failed, trade marked as failed, cooldown applied to prevent retry loop');
-      }
-
-      // Update last processed candle
-      await firestoreAdapter.updateLastProcessedCandle(agentId, pairKey, candleTimestamp);
-
-      // CRITICAL: Add single diagnostic log line for HTF agents at end of successful execution
-      if (isHTFAgent) {
-        logger.info({
-          agentId,
           tradingPair,
-          orderSuccess,
-          signalDirection: signal?.direction
-        }, `[HTF_AGENT] cycle evaluated: exchangeUsable=${exchangeUsable}, scanExecuted=${marketScanExecuted}, signalGenerated=${signalGenerated}`);
-      }
-
-    } catch (error) {
+          error: error instanceof Error ? error.message : 'Unknown error'
+        }, 'Failed to execute agent with hardening');
+      } // Close inner try-catch (execution logic)
+    } // Close outer try block
+    catch (outerError) {
+      // Catch any errors from the entire execution flow (outer try-catch)
       logger.error({
         agentId,
         tradingPair,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      }, 'Failed to execute agent with hardening');
-    } // Close inner try-catch (execution logic)
-  } // Close outer try block
-  catch (outerError) {
-    // Catch any errors from the entire execution flow (outer try-catch)
-    logger.error({
-      agentId,
-      tradingPair,
-      error: outerError instanceof Error ? outerError.message : 'Unknown error'
-    }, 'Unexpected error in agent execution flow');
-    
-    // Ensure diagnostics reflect the error
-    if (!diagnostics.decision || diagnostics.decision.action === 'SKIP') {
-      diagnostics.decision = {
-        action: 'SKIP',
-        reason: outerError instanceof Error ? outerError.message : 'Unexpected execution error'
-      };
-    }
-  } finally {
-    // CRITICAL HTF FIX: ALWAYS write diagnostics for HTF agents in finally block
-    // This ensures diagnostics are written EVERY 5-minute cycle regardless of early returns
-    // The finally block executes even when there are return statements in the try block
-    if (isHTFAgent) {
-      try {
-        // CRITICAL: HTF diagnostics must be written to 'htf-trend-filter-agent' agentId
-        // This ensures all HTF diagnostics are stored in a single collection per user
-        const htfAgentId = 'htf-trend-filter-agent';
-        
-        // Ensure required fields are set
-        diagnostics.agentId = htfAgentId; // Override to fixed HTF agentId
-        diagnostics.tradingPair = diagnostics.tradingPair || tradingPair;
-        diagnostics.direction = diagnostics.direction || 'NO_TRADE';
-        
-        // CRITICAL: Include runtimeState for HTF diagnostics
-        if (!diagnostics.runtimeState) {
-          diagnostics.runtimeState = {};
-        }
-        
-        // Set final decision and skip reason
-        if (!diagnostics.runtimeState.finalDecision) {
-          diagnostics.runtimeState.finalDecision = diagnostics.decision?.action || 'SKIP';
-        }
-        if (!diagnostics.runtimeState.skipReasonShort && diagnostics.decision?.reason) {
-          diagnostics.runtimeState.skipReasonShort = diagnostics.decision.reason.length > 50 
-            ? diagnostics.decision.reason.substring(0, 47) + '...' 
-            : diagnostics.decision.reason;
-        }
-        
-        // CRITICAL: Ensure execution state is set
-        if (!diagnostics.executionState) {
-          diagnostics.executionState = {
-            researchedOnly: true,
-            eligibleForExecution: false,
-            executionAttempted: false,
-            executionEvaluated: true,
-            executionBlockedReason: diagnostics.decision?.reason || 'UNKNOWN'
+        error: outerError instanceof Error ? outerError.message : 'Unknown error'
+      }, 'Unexpected error in agent execution flow');
+
+      // Ensure diagnostics reflect the error
+      if (!diagnostics.decision || diagnostics.decision.action === 'SKIP') {
+        diagnostics.decision = {
+          action: 'SKIP',
+          reason: outerError instanceof Error ? outerError.message : 'Unexpected execution error'
+        };
+      }
+    } finally {
+      // CRITICAL HTF FIX: ALWAYS write diagnostics for HTF agents in finally block
+      // This ensures diagnostics are written EVERY 5-minute cycle regardless of early returns
+      // The finally block executes even when there are return statements in the try block
+      if (isHTFAgent) {
+        try {
+          const htfAgentId = agentConfig.id;
+
+
+
+          // 3. ENFORCE CANONICAL INDICATOR STRUCTURE (MANDATORY)
+          // Strictly derive from strategy output - NO fallbacks to defaults if data is missing
+          const ltfResults = diagnostics.ltfSignal?.indicators?.results;
+          const htfTrend = diagnostics.htfTrend || {};
+
+          // HARD SAFETY ASSERTION: If indicators are missing, we CANNOT save a valid HTF diagnostic
+          // This prevents "empty" or "default" diagnostics from polluting the history
+          if (!ltfResults || Object.keys(ltfResults).length === 0) {
+            logger.warn({ agentId: htfAgentId, cycleId: diagnostics.cycleId }, 'HTF diagnostic skipped: No indicator results available (execution likely blocked early)');
+
+            // Mark as written to prevent retries in this tick, effectively skipping this cycle
+            // This is safer than writing a broken record
+
+            return;
+          }
+
+          const canonicalIndicators: any = {
+            ema: {
+              confirmed: ltfResults.ema?.status === 'confirmed',
+              reason: ltfResults.ema?.details || ltfResults.ema?.reason || 'EMA condition not met'
+            },
+            rsi: {
+              confirmed: ltfResults.rsi?.status === 'confirmed',
+              reason: ltfResults.rsi?.details || ltfResults.rsi?.reason || 'RSI condition not met'
+            },
+            vwap: {
+              confirmed: ltfResults.vwap?.status === 'confirmed',
+              reason: ltfResults.vwap?.details || ltfResults.vwap?.reason || 'VWAP condition not met'
+            },
+            sr: {
+              confirmed: ltfResults.sr?.status === 'confirmed',
+              reason: ltfResults.sr?.details || ltfResults.sr?.reason || 'S/R condition not met'
+            },
+            volume: {
+              confirmed: ltfResults.volume?.status === 'confirmed',
+              reason: ltfResults.volume?.details || ltfResults.volume?.reason || 'Volume condition not met'
+            },
+            trend: {
+              confirmed: htfTrend?.direction !== 'NO_TRADE',
+              reason: htfTrend?.reason || 'Trend alignment failed'
+            }
           };
-        }
-        
-        logger.info({
-          agentId: htfAgentId,
-          cycleId: diagnostics.cycleId,
-          finalDecision: diagnostics.runtimeState.finalDecision,
-          skipReasonShort: diagnostics.runtimeState.skipReasonShort,
-          tradingPair: diagnostics.tradingPair,
-          hasIndicators: !!diagnostics.runtimeState.indicators,
-          hasResults: !!diagnostics.runtimeState.indicators?.results,
-          indicatorKeys: diagnostics.runtimeState.indicators?.results ? Object.keys(diagnostics.runtimeState.indicators.results) : []
-        }, '[HTF_DIAGNOSTIC_WRITE] Writing HTF diagnostics for cycle');
-        
-        // Store diagnostics directly using firestoreAdapter with HTF agent ID
-        // Note: Using direct saveAgentDiagnostic call with 'htf-trend-filter-agent' agentId for Firestore path
-        // CRITICAL: Include cycleId and bucketStartMs in runtimeState for per-pair uniqueness and grouping
-        const bucketStartMs = Math.floor(parseInt(diagnostics.cycleId.split('_').pop() || '0')) * (5 * 60 * 1000);
-        
-        console.log('[HTF_DIAGNOSTIC_WRITE]');
-        await firestoreAdapter.saveAgentDiagnostic(htfAgentId, {
-          agentType: 'HTF_TREND_FILTER_AGENT',
-          tradingPair: diagnostics.tradingPair,
-          direction: diagnostics.direction || 'LONG',
-          decision: diagnostics.decision || { action: 'SKIP', reason: 'No decision' },
-          signal: diagnostics.signal,
-          execution: diagnostics.execution,
-          runtimeState: {
-            ...diagnostics.runtimeState,
-            cycleId: diagnostics.cycleId, // Exact cycleId: ${agentId}_${pair}_${fiveMinuteBucket}
-            bucketStartMs: bucketStartMs, // Reconstructed bucket start time for grouping
-            signalGenerated: signalGenerated // Critical: indicates if HTF signal was generated for this pair
+
+          // Persist in runtimeState as requested
+          if (!diagnostics.runtimeState) diagnostics.runtimeState = {};
+          diagnostics.runtimeState.indicators = canonicalIndicators;
+
+          // Mirror top-level flags for UI safety
+          diagnostics.runtimeState.emaConfirmed = canonicalIndicators.ema.confirmed;
+          diagnostics.runtimeState.rsiConfirmed = canonicalIndicators.rsi.confirmed;
+          diagnostics.runtimeState.vwapConfirmed = canonicalIndicators.vwap.confirmed;
+          diagnostics.runtimeState.srConfirmed = canonicalIndicators.sr.confirmed;
+          diagnostics.runtimeState.volumeConfirmed = canonicalIndicators.volume.confirmed;
+          diagnostics.runtimeState.trendConfirmed = canonicalIndicators.trend.confirmed;
+
+          // Set existence flags strictly based on data presence
+          diagnostics.runtimeState.hasIndicators = true;
+          diagnostics.runtimeState.hasResults = true;
+
+          // 4. derivation of skipReasonShort
+          // STRICT: Use existing reason, never infer
+          const rawReason = diagnostics.decision?.reason || 'Conditions not met';
+          const skipReasonShort = rawReason.length > 50
+            ? rawReason.substring(0, 47) + '...'
+            : rawReason;
+
+          diagnostics.runtimeState.skipReasonShort = skipReasonShort;
+          diagnostics.runtimeState.finalDecision = diagnostics.decision?.action || 'SKIP';
+
+          // 5. Save diagnostic using determinisitic ID for hard deduplication
+          // Format: ${agentId}_${normalizedTradingPair}_${bucketStartMs}
+          await firestoreAdapter.saveAgentDiagnostic(htfAgentId, {
+            id: htfCycleId,
+            agentType: 'HTF_TREND_FILTER_AGENT',
+            tradingPair: tradingPair,
+            direction: diagnostics.direction || 'NO_TRADE',
+            decision: {
+              ...(diagnostics.decision || { action: 'SKIP', reason: 'No decision' }),
+              indicators: canonicalIndicators
+            },
+            signal: diagnostics.signal,
+            execution: diagnostics.execution,
+            runtimeState: {
+              ...diagnostics.runtimeState,
+              cycleId: htfCycleId,
+              bucketStartMs,
+              signalGenerated: !!diagnostics.signal?.direction
+            }
+          }, diagnostics.userId || agentConfig.userId);
+
+          // 7. Mark cycle as written to prevent duplicate writes within the same scheduler tick
+          if (diagnostics.cycleId) {
+            logger.debug({ agentId: htfAgentId, cycleId: diagnostics.cycleId }, 'HTF evaluation record successfully persisted');
           }
-        }, agentConfig.userId);
-        
-        // Mark this cycle as written to prevent duplicates
-        if (diagnostics.cycleId) {
-          AgentExecutionService.htfCycleHistoryWritten.add(diagnostics.cycleId);
-          
-          // Cleanup: Keep only last 100 cycleIds in memory to prevent unbounded growth
-          if (AgentExecutionService.htfCycleHistoryWritten.size > 100) {
-            const cyclesArray = Array.from(AgentExecutionService.htfCycleHistoryWritten);
-            const toRemove = cyclesArray.slice(0, cyclesArray.length - 100);
-            toRemove.forEach(id => AgentExecutionService.htfCycleHistoryWritten.delete(id));
-          }
-          
-          logger.debug({ agentId: htfAgentId, cycleId: diagnostics.cycleId }, 'HTF diagnostics persisted with cycle guard protection');
+        } catch (diagError) {
+          logger.error({
+            agentId,
+            error: diagError instanceof Error ? diagError.message : 'Unknown error'
+          }, 'CRITICAL: Failed to persist HTF agent diagnostics in finally block');
         }
-      } catch (diagError) {
-        logger.error({
-          agentId,
-          error: diagError instanceof Error ? diagError.message : 'Unknown error'
-        }, 'CRITICAL: Failed to persist HTF agent diagnostics in finally block');
+      } else {
+        // Non-HTF agents: write diagnostics only if execution started
+        try {
+          const normalizedDiagnostics = this.normalizeDiagnosticsForPersistence(diagnostics, agentId);
+          await agent.storeDiagnostics(normalizedDiagnostics);
+          logger.debug({ agentId, decision: normalizedDiagnostics.decision }, 'Agent diagnostics persisted with strict normalization');
+        } catch (diagError) {
+          logger.error({
+            agentId,
+            error: diagError instanceof Error ? diagError.message : 'Unknown error'
+          }, 'CRITICAL: Failed to persist agent diagnostics');
+        }
       }
-    } else {
-      // Non-HTF agents: write diagnostics only if execution started
-      try {
-        const normalizedDiagnostics = this.normalizeDiagnosticsForPersistence(diagnostics, agentId);
-        await agent.storeDiagnostics(normalizedDiagnostics);
-        logger.debug({ agentId, decision: normalizedDiagnostics.decision }, 'Agent diagnostics persisted with strict normalization');
-      } catch (diagError) {
-        logger.error({
-          agentId,
-          error: diagError instanceof Error ? diagError.message : 'Unknown error'
-        }, 'CRITICAL: Failed to persist agent diagnostics');
-      }
-    }
-  } // Close finally block
+    } // Close finally block
   } // Close executeAgent method
 
   /**
@@ -2066,8 +2093,8 @@ export class AgentExecutionService {
       // CRITICAL: HTF Trend Filter Agent REAL ORDER PLACEMENT
       // For HTF auto-execution, this is ALWAYS a real order (testMode = false)
       // Manual test endpoints use executeManualTrade with testMode = true
-      const isHTFAgent = (agentConfig as any).strategyType === 'HTF_TREND_FILTER' || 
-                         (agentConfig.name && agentConfig.name.includes('HTF Trend Filter'));
+      const isHTFAgent = (agentConfig as any).strategyType === 'HTF_TREND_FILTER' ||
+        (agentConfig.name && agentConfig.name.includes('HTF Trend Filter'));
 
       if (isHTFAgent) {
         logger.info({
@@ -2244,7 +2271,7 @@ export class AgentExecutionService {
         return { success: false, message: 'Agent not found or not active' };
       }
 
-      await this.executeAgent(agent);
+      await this.executeAgent(agent, undefined, undefined, undefined, 'user_request', 'ui');
       return { success: true, message: 'Agent executed successfully' };
     } catch (error) {
       return {
@@ -2390,13 +2417,13 @@ export class AgentExecutionService {
           srValidation: {},
           decision: { action: 'SKIP', reason: 'EXCHANGE_NOT_CONNECTED' },
         });
-        
+
         logger.warn({
           agentId: `vwap_${userId}`,
           userId,
           reason: 'EXCHANGE_NOT_CONNECTED'
         }, 'SKIP: VWAP execution - exchange not connected (agent remains RUNNING)');
-        
+
         // Update heartbeat to keep agent alive
         await vwapRuntimeService.updateHeartbeat(userId);
         return;
@@ -2651,7 +2678,7 @@ export class AgentExecutionService {
           agentId: context.agentId,
           reason: 'Test mode is not supported for manual trades in production'
         }, 'Manual trade execution rejected - test mode not allowed');
-        
+
         return {
           success: false,
           message: 'Test mode is not supported. Manual trades execute on real Bitget Futures only.',
@@ -2674,7 +2701,7 @@ export class AgentExecutionService {
           lastExecutionTime,
           remainingWaitSeconds: remainingWait
         }, `Manual trade blocked - please wait ${remainingWait}s before next trade`);
-        
+
         return {
           success: false,
           message: `Too many manual trades. Please wait ${remainingWait} seconds before executing another trade.`,
@@ -2726,23 +2753,23 @@ export class AgentExecutionService {
         try {
           decryptedApiKey = decrypt(exchangeConfig.apiKeyEncrypted, 'exchange');
           decryptedApiSecret = decrypt(exchangeConfig.secretKeyEncrypted || exchangeConfig.secretEncrypted, 'exchange');
-          decryptedPassphrase = exchangeConfig.passphraseEncrypted ? 
+          decryptedPassphrase = exchangeConfig.passphraseEncrypted ?
             decrypt(exchangeConfig.passphraseEncrypted, 'exchange') : null;
         } catch (decryptError: any) {
           // Handle ENCRYPTION_SECRET_CHANGED error specifically
           if (decryptError.message?.includes('ENCRYPTION_SECRET_CHANGED')) {
             logger.warn({ userId, agentId: context.agentId, error: decryptError.message }, 'Exchange keys corrupted due to encryption secret change');
-            
+
             // NOTE: Do NOT attempt to mark exchange as corrupted in Firestore
             // Exchange status is managed exclusively by /exchange/connect
-            
+
             return {
               success: false,
               message: 'Exchange keys are invalid due to encryption secret change. Please reconnect exchange.',
               error: 'EXCHANGE_CORRUPTED'
             };
           }
-          
+
           // Handle other decryption errors
           throw decryptError;
         }
@@ -2751,7 +2778,7 @@ export class AgentExecutionService {
         if (!decryptedApiKey || decryptedApiKey.trim() === '') {
           throw new Error('EXCHANGE_KEYS_NOT_DECRYPTED: API key decryption failed or returned empty');
         }
-        
+
         if (!decryptedApiSecret || decryptedApiSecret.trim() === '') {
           throw new Error('EXCHANGE_KEYS_NOT_DECRYPTED: Secret key decryption failed or returned empty');
         }
@@ -2772,7 +2799,7 @@ export class AgentExecutionService {
           if (exchangeConfig.passphraseEncrypted && (!decryptedPassphrase || decryptedPassphrase.trim() === '')) {
             throw new Error('EXCHANGE_KEYS_NOT_DECRYPTED: Passphrase decryption failed or returned empty');
           }
-          
+
           // For bitget/weex a real passphrase is required; do not default to 'test'
           if (!decryptedPassphrase || decryptedPassphrase.trim() === '') {
             throw new Error('Passphrase is required for ' + exchangeKey);
@@ -2801,7 +2828,7 @@ export class AgentExecutionService {
             testMode: context.testMode,
             executionMode: context.testMode ? 'SIMULATION' : 'REAL_BITGET_FUTURES'
           }, 'Determining execution mode for manual trade');
-          
+
           const orderParams = {
             symbol: context.tradingPair.replace('/', ''),
             side: context.side === 'LONG' ? 'BUY' as const : 'SELL' as const,
@@ -2810,7 +2837,7 @@ export class AgentExecutionService {
           };
 
           const orderResult = await connector.placeOrder(orderParams);
-          
+
           logger.warn({
             tag: '[REAL_MANUAL_TRADE_EXECUTION]',
             testMode: context.testMode,
@@ -2820,7 +2847,7 @@ export class AgentExecutionService {
             quantity: context.quantity,
             exchange: exchangeKey
           }, 'REAL manual trade executed - order placed on Bitget Futures');
-          
+
           return {
             success: true,
             message: `Manual trade executed successfully: ${context.side} ${context.quantity} ${context.tradingPair}`,
@@ -2844,10 +2871,10 @@ export class AgentExecutionService {
 
       } catch (err: any) {
         logger.error({ err, userId, context }, 'Manual trade execution failed');
-        
+
         // Map specific errors to exact error codes for UI
         let errorCode = err.message || 'Unknown execution error';
-        
+
         if (err.message?.includes('ENCRYPTION_SECRET_CHANGED')) {
           errorCode = 'EXCHANGE_CORRUPTED';
         } else if (err.message?.includes('EXCHANGE_KEYS_NOT_DECRYPTED')) {
@@ -2863,7 +2890,7 @@ export class AgentExecutionService {
         } else if (err.message?.includes('Secret') || err.message?.includes('secret')) {
           errorCode = 'EXCHANGE_KEYS_NOT_DECRYPTED';
         }
-        
+
         return {
           success: false,
           message: 'Trade execution failed',
@@ -2874,16 +2901,16 @@ export class AgentExecutionService {
 
     } catch (err: any) {
       logger.error({ err, userId, context }, 'Manual trade setup failed');
-      
+
       // Map specific errors to exact error codes for UI
       let errorCode = err.message || 'Unknown setup error';
-      
+
       if (err.message?.includes('EXCHANGE_KEYS_NOT_DECRYPTED')) {
         errorCode = 'EXCHANGE_KEYS_NOT_DECRYPTED';
       } else if (err.message?.includes('EXCHANGE_NOT_CONFIGURED')) {
         errorCode = 'EXCHANGE_NOT_CONFIGURED';
       }
-      
+
       return {
         success: false,
         message: 'Trade setup failed',

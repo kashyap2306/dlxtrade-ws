@@ -18,18 +18,18 @@ export default function TradingAgentControl() {
 
   const isLiquiditySweepAgent = (location.pathname || '').includes('liquidity_sniper_arbitrage');
   const isHTFTrendFilterAgent = (location.pathname || '').includes('htf-trend-filter-agent');
-  const approvalKey = isLiquiditySweepAgent ? 'LIQUIDITY_SWEEP_AGENT' : 
-                      isHTFTrendFilterAgent ? 'HTF_TREND_FILTER_AGENT' : 
-                      'TRADING_AGENT';
+  const approvalKey = isLiquiditySweepAgent ? 'LIQUIDITY_SWEEP_AGENT' :
+    isHTFTrendFilterAgent ? 'HTF_TREND_FILTER_AGENT' :
+      'TRADING_AGENT';
   const slug = agentKeyToSlug(approvalKey);
-  const pageTitle = isLiquiditySweepAgent ? 'Liquidity Sweep Agent' : 
-                    isHTFTrendFilterAgent ? 'HTF Trend Filter Scalping Agent' :
-                    'Trading Agent';
+  const pageTitle = isLiquiditySweepAgent ? 'Liquidity Sweep Agent' :
+    isHTFTrendFilterAgent ? 'HTF Trend Filter Scalping Agent' :
+      'Trading Agent';
   const pageSubtitle = isLiquiditySweepAgent
     ? 'Liquidity Sweep • Unified Execution'
     : isHTFTrendFilterAgent
-    ? 'BTC/USDT • ETH/USDT • HTF Trend Filter + EMA Pullback + RSI + Bollinger Bands'
-    : 'BTC/USDT • ETH/USDT • Automated Trading Strategy';
+      ? 'BTC/USDT • ETH/USDT • HTF Trend Filter + EMA Pullback + RSI + Bollinger Bands'
+      : 'BTC/USDT • ETH/USDT • Automated Trading Strategy';
 
   const [trades, setTrades] = useState<any[]>([]);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -49,9 +49,7 @@ export default function TradingAgentControl() {
   const [showExecutionCriteria, setShowExecutionCriteria] = useState(false);
   const [, setTimerTick] = useState(0); // Force re-render for countdown
   const [selectedDiagnosticDetails, setSelectedDiagnosticDetails] = useState<any>(null);
-  const [showMoreDiagnostics, setShowMoreDiagnostics] = useState(false);
-  const [totalDiagnosticsAvailable, setTotalDiagnosticsAvailable] = useState(0);
-  const [currentDiagnosticsOffset, setCurrentDiagnosticsOffset] = useState(10); // Track pagination offset
+  const [diagnosticsLimit, setDiagnosticsLimit] = useState(10); // Start with exactly 10
 
   // In-flight request guards to prevent parallel/overlapping API calls
   const [isLoadingControl, setIsLoadingControl] = useState(false);
@@ -113,9 +111,7 @@ export default function TradingAgentControl() {
     console.log('[HTF_DIAGNOSTICS] Agent changed, resetting diagnostics state');
     setDiagnosticsEntries([]);
     setSkippedTrades([]);
-    setShowMoreDiagnostics(false);
-    setTotalDiagnosticsAvailable(0);
-    setCurrentDiagnosticsOffset(10);
+    setDiagnosticsLimit(10); // Reset to initial limit
   }, [slug, resolvedAgentId]);
 
   // Helper function: Process HTF diagnostics - show only BTC/USDT and ETH/USDT pairs
@@ -126,7 +122,7 @@ export default function TradingAgentControl() {
 
     // STRICT REQUIREMENT: Only show BTC/USDT and ETH/USDT pairs
     const allowedPairs = ['BTC/USDT', 'ETH/USDT'];
-    
+
     // Filter entries to only allowed pairs and valid tradingPair
     const filteredEntries = rawEntries.filter((entry: any) => {
       const pair = entry.tradingPair || entry.pair;
@@ -135,60 +131,44 @@ export default function TradingAgentControl() {
 
     console.log('[HTF_PROCESS_DEBUG] Filtered to allowed pairs:', filteredEntries.length);
 
-    // Group by pair + 5-minute time-bucket for per-pair rows
-    // Each row represents exactly ONE pair's analysis for that time bucket
-    const bucketMap = new Map<string, any[]>();
-    
+    // Group by 5-minute cycle to keep only LAST/FINAL diagnostic per cycle
+    const cycleMap = new Map<string, any>();
+
     filteredEntries.forEach((entry: any) => {
-      const pair = entry.tradingPair || entry.pair;
-      
       // Calculate 5-minute bucket from timestamp
       const timestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : Date.now();
       const fiveMinuteBucket = Math.floor(timestamp / (5 * 60 * 1000));
       const bucketStartMs = fiveMinuteBucket * (5 * 60 * 1000);
-      
-      // Key format: ${pair}_${bucketStartMs} - ensures one row per pair per bucket
-      const bucketKey = `${pair}_${bucketStartMs}`;
-      
-      if (!bucketMap.has(bucketKey)) {
-        bucketMap.set(bucketKey, []);
+      const pair = entry.tradingPair || entry.pair;
+
+      // Use bucket + pair as unique cycle key to allow one entry per pair per cycle
+      const cycleKey = `cycle_${fiveMinuteBucket}_${pair}`;
+
+      // Keep only the LAST diagnostic per cycle per pair
+      const existing = cycleMap.get(cycleKey);
+      if (!existing || timestamp > new Date(existing.timestamp).getTime()) {
+        cycleMap.set(cycleKey, {
+          ...entry,
+          cycleKey,
+          bucketStartMs,
+          pair
+        });
       }
-      bucketMap.get(bucketKey)!.push(entry);
     });
 
-    // Process each bucket: each key represents one pair's analysis for one time bucket
-    const processedBuckets = Array.from(bucketMap.entries()).map(([bucketKey, entries]) => {
-      // Each bucket should have exactly one entry (one pair's analysis)
-      // If multiple entries exist for same pair+bucket, use the most recent
-      const primaryEntry = entries.sort((a, b) => 
-        new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-      )[0];
+    // Convert to array - one diagnostic per cycle
+    const processedEntries = Array.from(cycleMap.values());
 
-      // Extract pair and bucketStartMs from the key
-      const [pair, bucketStartMsStr] = bucketKey.split('_');
-      const bucketStartMs = parseInt(bucketStartMsStr, 10);
-
-      // Return individual pair analysis - no aggregation or merging
-      return {
-        ...primaryEntry,
-        bucketKey, // React key: ${pair}_${bucketStartMs}
-        pair, // Trading pair (BTC/USDT or ETH/USDT only)
-        timestamp: new Date(bucketStartMs),
-        bucketStartMs, // Bucket start time in ms
-        // No merging of HTF + AUTO_TRADE - each is separate
-        htfDetails: primaryEntry,
-        autoTradeDetails: null, // Not used in strict per-pair mode
-        bucketEntries: entries // All entries for this pair+bucket (usually just one)
-      };
+    // Sort by timestamp descending (latest first)
+    processedEntries.sort((a: any, b: any) => {
+      const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+      const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+      return bTime - aTime;
     });
 
-    // Sort by bucket start timestamp descending (latest first)
-    processedBuckets.sort((a: any, b: any) => {
-      return b.bucketStartMs - a.bucketStartMs;
-    });
+    console.log('[HTF_PROCESS_DEBUG] Processed entries (one per cycle):', processedEntries.length);
 
-    // Limit to 50 buckets (one row per pair per 5-min cycle)
-    return processedBuckets.slice(0, 50);
+    return processedEntries;
   };
 
   // Load additional diagnostics for "View more"
@@ -197,19 +177,24 @@ export default function TradingAgentControl() {
 
     setIsLoadingDiagnostics(true);
     try {
-      // Calculate next batch: fetch 50 more entries starting from current offset
-      const nextLimit = currentDiagnosticsOffset + 50;
-      const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, nextLimit);
+      // Increase limit by 50
+      const newLimit = diagnosticsLimit + 50;
+      console.log('[HTF_VIEW_MORE] Increasing limit from', diagnosticsLimit, 'to', newLimit);
+
+      // Fetch with new limit
+      const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, newLimit);
       const entries = diagnosticsResp.data?.diagnostics || [];
-      
+
+      console.log('[HTF_VIEW_MORE] Received', entries.length, 'entries from API');
+
       // Process all diagnostics
       const processedEntries = processDiagnostics(entries);
-      
-      // APPEND new entries to existing ones (not replace)
+
+      console.log('[HTF_VIEW_MORE] Processed', processedEntries.length, 'entries');
+
+      // Update state with new entries
       setDiagnosticsEntries(processedEntries);
-      setTotalDiagnosticsAvailable(processedEntries.length);
-      setCurrentDiagnosticsOffset(nextLimit);
-      setShowMoreDiagnostics(true);
+      setDiagnosticsLimit(newLimit); // Update limit for next fetch
     } catch (err) {
       console.error('Error loading more diagnostics:', err);
     } finally {
@@ -275,11 +260,18 @@ export default function TradingAgentControl() {
     if (!user || !resolvedAgentId) {
       return;
     }
-    
+
     setLoadingData(true);
-    
+
     try {
-      // Load agent status and config ONCE (with guard)
+      // For HTF Trend Filter Agent, we strictly use ONLY the diagnostics endpoint
+      // for both data and status, satisfying the "ONLY GET /diagnostics" requirement.
+      if (isHTFTrendFilterAgent) {
+        await loadDiagnosticsAndTrades();
+        return;
+      }
+
+      // Load agent status and config ONCE (with guard) - Non-HTF agents only
       if (!isLoadingControl && !controlDataLoaded) {
         setIsLoadingControl(true);
         try {
@@ -311,8 +303,10 @@ export default function TradingAgentControl() {
     }
 
     try {
-      // Load trades with guard
-      if (!isLoadingTrades) {
+      // For HTF, skip loading trades from explicit trades endpoint to minimize API surface
+      // HTF trades are either shown via diagnostics or as a separate section if needed
+      if (!isHTFTrendFilterAgent) {
+        // Load trades
         setIsLoadingTrades(true);
         try {
           const tradesResp = await agentsApi.getTradingAgentTrades(slug, 20);
@@ -326,39 +320,45 @@ export default function TradingAgentControl() {
 
       // CRITICAL: HTF agents use diagnostics, not research_history
       if (isHTFTrendFilterAgent) {
-        // Load diagnostics with guard
-        if (!isLoadingDiagnostics) {
-          setIsLoadingDiagnostics(true);
-          try {
-            // Default: fetch 10 diagnostics for initial view
-            const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 10);
-            setScheduler(diagnosticsResp.data?.scheduler || null);
-            
-            // Extract diagnostics entries for Recent Cycle Results
-            const entries = diagnosticsResp.data?.diagnostics || [];
-            
-            console.log('[HTF_API_DEBUG] Received', entries.length, 'entries from API');
-            if (entries.length > 0) {
-              console.log('[HTF_API_DEBUG] First entry has indicators:', !!entries[0]?.runtimeState?.indicators?.results);
-              if (entries[0]?.runtimeState?.indicators?.results) {
-                console.log('[HTF_API_DEBUG] Indicator keys:', Object.keys(entries[0].runtimeState.indicators.results));
-              }
-            }
-            
-            // Process diagnostics into 5-minute buckets and ALWAYS update state
-            const aggregatedEntries = processDiagnostics(entries);
-            console.log('[HTF_DIAGNOSTICS] Received entries:', entries.length);
-            console.log('[HTF_DIAGNOSTICS] Aggregated buckets (to set):', aggregatedEntries.length);
-            console.log('[HTF_STATE_DEBUG] Setting diagnosticsEntries state with:', aggregatedEntries.length, 'entries');
-            // Always replace state with processed buckets (latest first)
-            setDiagnosticsEntries(aggregatedEntries);
-            setTotalDiagnosticsAvailable(aggregatedEntries.length);
-            setCurrentDiagnosticsOffset(10); // Reset offset to 10
-          } catch (err) {
-            console.error('Error loading diagnostics:', err);
-          } finally {
-            setIsLoadingDiagnostics(false);
+        // Load diagnostics - ALWAYS fetch to ensure fresh data
+        setIsLoadingDiagnostics(true);
+        try {
+          // Use current diagnosticsLimit state (starts at 10)
+          const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, diagnosticsLimit);
+          setScheduler(diagnosticsResp.data?.scheduler || null);
+
+          // SYNC AGENT STATE: Update status and config from diagnostics response
+          // This allows us to skip the /control API call entirely for HTF
+          if (diagnosticsResp.data?.agentStatus) {
+            setAutoTradeEnabled(diagnosticsResp.data.agentStatus === 'ACTIVE');
           }
+          if (diagnosticsResp.data?.agentConfig) {
+            setAgentConfig(diagnosticsResp.data.agentConfig);
+          }
+          setControlDataLoaded(true);
+
+          // Extract diagnostics entries for Recent Cycle Results
+          const entries = diagnosticsResp.data?.diagnostics || [];
+
+          console.log('[HTF_API_DEBUG] Received', entries.length, 'entries from API with limit:', diagnosticsLimit);
+          if (entries.length > 0) {
+            console.log('[HTF_API_DEBUG] First entry has indicators:', !!entries[0]?.runtimeState?.indicators?.results);
+            if (entries[0]?.runtimeState?.indicators?.results) {
+              console.log('[HTF_API_DEBUG] Indicator keys:', Object.keys(entries[0].runtimeState.indicators.results));
+            }
+          }
+
+          // Process diagnostics into entries
+          const aggregatedEntries = processDiagnostics(entries);
+          console.log('[HTF_DIAGNOSTICS] Received entries:', entries.length);
+          console.log('[HTF_DIAGNOSTICS] Processed entries:', aggregatedEntries.length);
+          console.log('[HTF_STATE_DEBUG] Setting diagnosticsEntries state with:', aggregatedEntries.length, 'entries');
+          // Set processed entries
+          setDiagnosticsEntries(aggregatedEntries);
+        } catch (err) {
+          console.error('Error loading diagnostics:', err);
+        } finally {
+          setIsLoadingDiagnostics(false);
         }
       } else {
         // Load research history for AUTO_TRADE cycles ONLY (non-HTF agents)
@@ -366,7 +366,7 @@ export default function TradingAgentControl() {
         if (researchResp.data?.success) {
           const researchHistory = researchResp.data.data || [];
           // SAFE filtering: ONLY by AUTO_TRADE source (no agentId filtering)
-          const autoTradeCycles = researchHistory.filter((entry: any) => 
+          const autoTradeCycles = researchHistory.filter((entry: any) =>
             entry.source === "AUTO_TRADE"
           );
           // Sort by timestamp descending (latest first)
@@ -403,15 +403,15 @@ export default function TradingAgentControl() {
     if (!scheduler?.nextExecutionAt) {
       return null;
     }
-    
+
     const now = new Date().getTime();
     const nextExecution = new Date(scheduler.nextExecutionAt).getTime();
     const remainingMs = Math.max(0, nextExecution - now);
     const remainingSeconds = Math.floor(remainingMs / 1000);
-    
+
     const minutes = Math.floor(remainingSeconds / 60);
     const seconds = remainingSeconds % 60;
-    
+
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   };
 
@@ -428,7 +428,7 @@ export default function TradingAgentControl() {
       showToast('Agent not approved. Please request approval from admin first.', 'error');
       return;
     }
-    
+
     if (!resolvedAgentId) {
       showToast('Agent not configured. Please contact admin.', 'error');
       return;
@@ -444,7 +444,7 @@ export default function TradingAgentControl() {
         await agentsApi.startTradingAgent(slug);
         showToast('Auto trading started', 'success');
       }
-      
+
       // CRITICAL: Refetch status from backend after API call (with guard)
       if (!isLoadingControl) {
         setIsLoadingControl(true);
@@ -456,15 +456,15 @@ export default function TradingAgentControl() {
           setIsLoadingControl(false);
         }
       }
-      
+
       // Refresh diagnostics and trades (uses guards internally)
       await loadDiagnosticsAndTrades();
-      
+
     } catch (err: any) {
       console.error('[TradingAgentControl] API error:', err);
       const errorCode = err.response?.data?.code;
       const errorMessage = err.response?.data?.error;
-      
+
       if (errorCode === 'AGENT_NOT_APPROVED') {
         showToast('Please request agent approval from admin first.', 'error');
       } else if (errorCode === 'AGENT_DOCUMENT_MISSING') {
@@ -561,8 +561,8 @@ export default function TradingAgentControl() {
                   onClick={handleToggleAutoTrade}
                   title={
                     !hasAgentAccess ? 'Request approval from admin first' :
-                    !resolvedAgentId ? 'Agent not configured' :
-                    autoTradeEnabled ? 'Stop trading' : 'Start trading'
+                      !resolvedAgentId ? 'Agent not configured' :
+                        autoTradeEnabled ? 'Stop trading' : 'Start trading'
                   }
                 >
                   {togglingAutoTrade ? 'Updating…' : autoTradeEnabled ? 'Stop Trading' : 'Start Trading'}
@@ -828,8 +828,8 @@ export default function TradingAgentControl() {
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-gray-300">Strategy Conditions Met</span>
                     {(() => {
-                      const hasNoSignal = skippedTrades.some(t => 
-                        t.decision?.reason?.includes('NO_SIGNAL') || 
+                      const hasNoSignal = skippedTrades.some(t =>
+                        t.decision?.reason?.includes('NO_SIGNAL') ||
                         t.decision?.reason?.includes('Invalid indicators')
                       );
                       return !hasNoSignal ? (
@@ -850,8 +850,8 @@ export default function TradingAgentControl() {
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-gray-300">No SR Block</span>
                     {(() => {
-                      const hasSRBlock = skippedTrades.some(t => 
-                        t.decision?.reason?.includes('SR') || 
+                      const hasSRBlock = skippedTrades.some(t =>
+                        t.decision?.reason?.includes('SR') ||
                         t.decision?.reason?.includes('support') ||
                         t.decision?.reason?.includes('resistance')
                       );
@@ -873,8 +873,8 @@ export default function TradingAgentControl() {
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-gray-300">Entry Not Late</span>
                     {(() => {
-                      const hasEntryLate = skippedTrades.some(t => 
-                        t.decision?.reason?.includes('late') || 
+                      const hasEntryLate = skippedTrades.some(t =>
+                        t.decision?.reason?.includes('late') ||
                         t.decision?.reason?.includes('already processed')
                       );
                       return !hasEntryLate ? (
@@ -895,8 +895,8 @@ export default function TradingAgentControl() {
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-gray-300">RR Ratio Acceptable</span>
                     {(() => {
-                      const hasRRTooLow = skippedTrades.some(t => 
-                        t.decision?.reason?.includes('RR') || 
+                      const hasRRTooLow = skippedTrades.some(t =>
+                        t.decision?.reason?.includes('RR') ||
                         t.decision?.reason?.includes('risk')
                       );
                       return !hasRRTooLow ? (
@@ -917,8 +917,8 @@ export default function TradingAgentControl() {
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-gray-300">Risk Check Passed</span>
                     {(() => {
-                      const hasRiskFailure = skippedTrades.some(t => 
-                        t.decision?.reason?.includes('daily') || 
+                      const hasRiskFailure = skippedTrades.some(t =>
+                        t.decision?.reason?.includes('daily') ||
                         t.decision?.reason?.includes('limit') ||
                         t.decision?.reason?.includes('consecutive')
                       );
@@ -965,7 +965,7 @@ export default function TradingAgentControl() {
 
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-xl font-bold text-white">Recent Diagnostic Entries</h3>
-              {isHTFTrendFilterAgent && diagnosticsEntries.length >= currentDiagnosticsOffset && (
+              {isHTFTrendFilterAgent && diagnosticsEntries.length >= diagnosticsLimit && (
                 <button
                   onClick={loadMoreDiagnostics}
                   disabled={isLoadingDiagnostics}
@@ -976,7 +976,7 @@ export default function TradingAgentControl() {
               )}
             </div>
             <div className="text-sm text-gray-400 mb-6 leading-relaxed">
-              Shows pair-level analysis from recent scheduler cycles (~5 min intervals)
+              Shows one diagnostic per 5-minute scheduler cycle
               {isHTFTrendFilterAgent && diagnosticsEntries.length > 0 && (
                 <span className="text-purple-400">
                   {' • '}
@@ -1002,32 +1002,21 @@ export default function TradingAgentControl() {
                       </tr>
                     </thead>
                     <tbody>
-                      {diagnosticsEntries.map((entry) => {
-                        // Map diagnostics to table columns
-                        const displayPair = entry.tradingPair || entry.symbol || '—';
-                        // CANONICAL: Use HTF bias as primary source, fallback to direction only if bias missing
+                      {diagnosticsEntries.map((entry, idx) => {
+                        const displayPair = entry.tradingPair || entry.pair || '—';
                         const htfBias = entry.runtimeState?.htfBias || entry.htfBias || entry.direction;
                         const displayDirection = htfBias === 'NO_TRADE' ? 'NO TRADE' : (htfBias || '—');
                         const displayDecision = entry.decision?.action || '—';
-                        
-                        // ALWAYS show info icon - full diagnostics are expected to be present
-                        const hasFullDiagnostics = !!(
-                          entry.runtimeState?.indicators?.results && 
-                          Object.keys(entry.runtimeState.indicators.results).length > 0
-                        );
-                        
+
                         // Build skip reason - ONLY show for SKIP decisions
                         let shortSkipReason = '—';
-                        
-                        // Only populate skip reason if decision is SKIP
+
                         if (displayDecision === 'SKIP') {
                           const runtimeState = entry.runtimeState;
                           const executionState = runtimeState?.executionState;
-                          
-                          // Shorten skip reasons to concise, generic messages
+
                           if (executionState?.executionBlockedReason) {
                             const blockedReason = executionState.executionBlockedReason;
-                            // Map to concise messages
                             if (blockedReason.includes('AGENT_STOPPED')) {
                               shortSkipReason = 'Agent stopped';
                             } else if (blockedReason.includes('AGENT_PAUSED')) {
@@ -1042,14 +1031,11 @@ export default function TradingAgentControl() {
                           } else if (entry.execution?.blockDetails) {
                             shortSkipReason = 'Execution blocked';
                           } else if (runtimeState?.indicators?.results) {
-                            // Check if we have indicator results for breakdown
                             const results = runtimeState.indicators.results;
-                            
-                            // Count rejected indicators
                             const rejectedCount = Object.values(results).filter(
                               (r: any) => r?.status === 'rejected'
                             ).length;
-                            
+
                             if (rejectedCount === 1) {
                               shortSkipReason = 'Condition not met';
                             } else if (rejectedCount > 1) {
@@ -1058,13 +1044,11 @@ export default function TradingAgentControl() {
                               shortSkipReason = 'Condition not met';
                             }
                           } else {
-                            // Generic fallback
-                            const rawReason = runtimeState?.skipDetails || 
-                                            runtimeState?.skipReason || 
-                                            entry.decision?.reason || 
-                                            '';
-                            
-                            // Map common patterns to concise messages
+                            const rawReason = runtimeState?.skipDetails ||
+                              runtimeState?.skipReason ||
+                              entry.decision?.reason ||
+                              '';
+
                             if (rawReason.includes('NO_TRADE') || rawReason.includes('NO TRADE')) {
                               shortSkipReason = 'Trend rejected';
                             } else if (rawReason.includes('RR_FAIL') || rawReason.includes('risk')) {
@@ -1078,32 +1062,34 @@ export default function TradingAgentControl() {
                             }
                           }
                         }
-                        // For TRADE decisions, shortSkipReason remains "—"
-                        
-                        // Display cycle time (5-minute bucket) - format as HH:MM for grouping clarity
-                        const cycleTime = entry.timestamp 
-                          ? new Date(entry.timestamp).toLocaleString('en-US', { 
-                              month: 'short', 
-                              day: 'numeric', 
-                              hour: '2-digit', 
-                              minute: '2-digit',
-                              hour12: false 
-                            })
-                          : '—';
-                        
+
                         let reasonColor = 'bg-gray-500/20 text-gray-400';
                         if (displayDecision === 'TRADE') {
                           reasonColor = 'bg-green-500/20 text-green-400';
                         } else if (displayDecision === 'SKIP') {
                           reasonColor = 'bg-yellow-500/20 text-yellow-400';
                         }
-                        
+
+                        // Display cycle time
+                        const cycleTime = entry.timestamp
+                          ? new Date(entry.timestamp).toLocaleString('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            hour12: false
+                          })
+                          : '—';
+
                         return (
-                          <tr key={entry.bucketKey || entry.id || `row_${entry.timestamp}`} className="border-b border-purple-500/10 hover:bg-slate-800/50 transition-colors">
+                          <tr
+                            key={`diagnostic_${idx}`}
+                            className="border-b border-purple-500/10 hover:bg-slate-800/50 transition-colors"
+                          >
                             <td className="py-3 px-4 text-white font-semibold">
                               {displayPair}
                             </td>
-                            <td className="py-3 px-4 text-gray-400 font-bold text-base">
+                            <td className="py-3 px-4 text-gray-400 font-bold">
                               {displayDirection}
                             </td>
                             <td className="py-3 px-4">
@@ -1111,19 +1097,20 @@ export default function TradingAgentControl() {
                                 <span className={`px-2 py-1 rounded text-xs font-medium ${reasonColor}`}>
                                   {displayDecision}
                                 </span>
-                                {/* Info icon ALWAYS visible - shows full diagnostic breakdown */}
                                 <button
-                                  onClick={() => setSelectedDiagnosticDetails(entry)}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedDiagnosticDetails(entry);
+                                  }}
                                   className="flex-shrink-0 text-purple-400 hover:text-purple-300 transition-colors"
-                                  title="View full diagnostic breakdown and skip reasons"
-                                  aria-label="View diagnostic details"
+                                  title="View full diagnostic breakdown"
                                 >
-                                  <InformationCircleIcon className="w-5 h-5" />
+                                  <InformationCircleIcon className="w-4 h-4" />
                                 </button>
                               </div>
                             </td>
                             <td className="py-3 px-4 text-gray-400 text-sm">
-                              <span className="leading-tight">{shortSkipReason}</span>
+                              {shortSkipReason}
                             </td>
                             <td className="py-3 px-4 text-gray-400 text-sm font-mono">
                               {cycleTime}
@@ -1136,7 +1123,7 @@ export default function TradingAgentControl() {
                 </div>
               ) : (
                 <div className="text-center py-8 text-gray-400 bg-slate-800/30 rounded-lg border border-purple-500/10">
-                  {autoTradeEnabled 
+                  {autoTradeEnabled
                     ? 'Waiting for first diagnostic entries...'
                     : 'No diagnostic entries yet. Start the agent to begin analysis.'}
                 </div>
@@ -1145,7 +1132,7 @@ export default function TradingAgentControl() {
               // Non-HTF Agent: Use research_history (AUTO_TRADE cycles)
               skippedTrades.length === 0 ? (
                 <div className="text-center py-8 text-gray-400 bg-slate-800/30 rounded-lg border border-purple-500/10">
-                  {autoTradeEnabled 
+                  {autoTradeEnabled
                     ? 'Waiting for first analysis cycle...'
                     : 'No analysis results yet. Start the agent to begin.'}
                 </div>
@@ -1172,7 +1159,7 @@ export default function TradingAgentControl() {
                         // Enhanced skip reason with safe fallback logic - prioritize skipDetails for human-readable text
                         const displaySkipReason = entry.skipDetails ?? entry.skipReason ?? entry.reason ?? "No reason provided";
                         const displayTimestamp = new Date(entry.timestamp).toLocaleString();
-                        
+
                         let reasonColor = 'bg-gray-500/20 text-gray-400';
                         if (displayDecision && displayDecision.includes('FINAL')) {
                           reasonColor = 'bg-green-500/20 text-green-400';
@@ -1186,7 +1173,7 @@ export default function TradingAgentControl() {
                         } else if (displayExecutionStatus === 'FAILED') {
                           executionColor = 'bg-red-500/20 text-red-400';
                         }
-                        
+
                         return (
                           <tr key={entry.id || index} className="border-b border-purple-500/10 hover:bg-slate-800/50 transition-colors">
                             <td className="py-3 px-4 text-white font-semibold">
@@ -1230,7 +1217,7 @@ export default function TradingAgentControl() {
                 <div className="text-sm text-gray-400 mb-4">
                   Test exchange order execution endpoint without placing real trades
                 </div>
-                
+
                 <ExchangeHealthCheck agentId={slug} />
               </div>
 
@@ -1240,7 +1227,7 @@ export default function TradingAgentControl() {
                 <div className="text-sm text-gray-400 mb-4">
                   Execute a test trade using the same execution path as the agent
                 </div>
-                
+
                 <ManualTradeTrigger agentId={slug} />
               </div>
             </div>
@@ -1265,22 +1252,21 @@ export default function TradingAgentControl() {
                 </svg>
               </button>
             </div>
-            
+
             <div className="space-y-6">
               {/* Source Badge - Show HTF or AUTO_TRADE source */}
               {selectedDiagnosticDetails.source && (
                 <div className="flex items-center gap-2 p-2 bg-slate-800/50 rounded-lg w-fit">
                   <span className="text-xs font-semibold text-gray-400">Source:</span>
-                  <span className={`px-2 py-1 rounded text-xs font-bold ${
-                    selectedDiagnosticDetails.source === 'HTF_TREND_FILTER_AGENT'
-                      ? 'bg-blue-500/20 text-blue-400'
-                      : 'bg-orange-500/20 text-orange-400'
-                  }`}>
+                  <span className={`px-2 py-1 rounded text-xs font-bold ${selectedDiagnosticDetails.source === 'HTF_TREND_FILTER_AGENT'
+                    ? 'bg-blue-500/20 text-blue-400'
+                    : 'bg-orange-500/20 text-orange-400'
+                    }`}>
                     {selectedDiagnosticDetails.source === 'HTF_TREND_FILTER_AGENT' ? 'HTF Trend Filter' : 'Auto-Trade Engine'}
                   </span>
                 </div>
               )}
-              
+
               {/* Summary Section */}
               <div className="bg-slate-800/50 rounded-lg p-4 space-y-3">
                 <div className="flex justify-between items-center">
@@ -1289,164 +1275,44 @@ export default function TradingAgentControl() {
                     {selectedDiagnosticDetails.tradingPair || selectedDiagnosticDetails.symbol || '—'}
                   </span>
                 </div>
-                
+
                 <div className="flex justify-between items-center">
                   <span className="text-gray-400 font-medium">Direction</span>
-                  <span className={`font-bold text-lg ${
-                    selectedDiagnosticDetails.direction === 'LONG' ? 'text-green-400' : 
-                    selectedDiagnosticDetails.direction === 'SHORT' ? 'text-red-400' : 
-                    'text-gray-300'
-                  }`}>{selectedDiagnosticDetails.direction || '—'}</span>
+                  <span className={`font-bold text-lg ${selectedDiagnosticDetails.direction === 'LONG' ? 'text-green-400' :
+                    selectedDiagnosticDetails.direction === 'SHORT' ? 'text-red-400' :
+                      'text-gray-300'
+                    }`}>{selectedDiagnosticDetails.direction || '—'}</span>
                 </div>
-                
+
                 <div className="flex justify-between items-center">
                   <span className="text-gray-400 font-medium">Final Decision</span>
-                  <span className={`px-4 py-2 rounded-lg text-base font-bold ${
-                    selectedDiagnosticDetails.decision?.action === 'TRADE' 
-                      ? 'bg-green-500/20 text-green-400 border border-green-500/30' 
-                      : 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
-                  }`}>
+                  <span className={`px-4 py-2 rounded-lg text-base font-bold ${selectedDiagnosticDetails.decision?.action === 'TRADE'
+                    ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+                    : 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+                    }`}>
                     {selectedDiagnosticDetails.decision?.action || 'SKIP'}
                   </span>
                 </div>
-                
+
                 <div className="flex justify-between items-start pt-2 border-t border-slate-700">
                   <span className="text-gray-500 text-sm">Timestamp</span>
                   <span className="text-gray-400 text-sm">
-                    {selectedDiagnosticDetails.timestamp 
-                      ? new Date(selectedDiagnosticDetails.timestamp).toLocaleString() 
+                    {selectedDiagnosticDetails.timestamp
+                      ? new Date(selectedDiagnosticDetails.timestamp).toLocaleString()
                       : '—'}
                   </span>
                 </div>
               </div>
-              
-              {/* HTF Indicator Breakdown - Grouped by Category */}
-              {selectedDiagnosticDetails.runtimeState?.indicators?.results ? (
-                <div className="space-y-4">
-                  <div className="text-base font-bold text-purple-400 flex items-center gap-2">
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                    </svg>
-                    HTF Condition Analysis
-                  </div>
-                  
-                  {(() => {
-                    const results = selectedDiagnosticDetails.runtimeState.indicators.results;
-                    
-                    // Group indicators by category
-                    const trendIndicators = [];
-                    const momentumIndicators = [];
-                    const volumeIndicators = [];
-                    const structureIndicators = [];
-                    
-                    if (results.ema) trendIndicators.push({ key: 'ema', name: 'EMA (Exponential Moving Average)', data: results.ema, description: 'Trend alignment check' });
-                    if (results.rsi) momentumIndicators.push({ key: 'rsi', name: 'RSI (Relative Strength Index)', data: results.rsi, description: 'Momentum and overbought/oversold check' });
-                    if (results.vwap) volumeIndicators.push({ key: 'vwap', name: 'VWAP (Volume Weighted Average Price)', data: results.vwap, description: 'Price position relative to volume' });
-                    if (results.volume) volumeIndicators.push({ key: 'volume', name: 'Volume Confirmation', data: results.volume, description: 'Trading volume validation' });
-                    if (results.sr) structureIndicators.push({ key: 'sr', name: 'Support/Resistance', data: results.sr, description: 'Key price level analysis' });
-                    
-                    const renderIndicator = (indicator: any) => (
-                      <div key={indicator.key} className="flex justify-between items-start bg-slate-800/30 rounded-lg p-3 hover:bg-slate-800/50 transition-colors">
-                        <div className="flex-1">
-                          <div className="font-medium text-gray-200">{indicator.name}</div>
-                          <div className="text-xs text-gray-500 mt-1">
-                            {indicator.data.reason || indicator.description}
-                          </div>
-                        </div>
-                        <span className={`flex items-center gap-2 text-sm font-bold ml-4 flex-shrink-0 ${
-                          indicator.data.status === 'confirmed' 
-                            ? 'text-green-400' 
-                            : 'text-red-400'
-                        }`}>
-                          {indicator.data.status === 'confirmed' ? (
-                            <>
-                              <CheckCircleIcon className="w-5 h-5" />
-                              <span>Pass</span>
-                            </>
-                          ) : (
-                            <>
-                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                              </svg>
-                              <span>Fail</span>
-                            </>
-                          )}
-                        </span>
-                      </div>
-                    );
-                    
-                    return (
-                      <>
-                        {/* Trend Indicators */}
-                        {trendIndicators.length > 0 && (
-                          <div className="space-y-2">
-                            <div className="text-sm font-semibold text-blue-400 flex items-center gap-2">
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-                              </svg>
-                              Trend Analysis
-                            </div>
-                            {trendIndicators.map(renderIndicator)}
-                          </div>
-                        )}
-                        
-                        {/* Momentum Indicators */}
-                        {momentumIndicators.length > 0 && (
-                          <div className="space-y-2">
-                            <div className="text-sm font-semibold text-orange-400 flex items-center gap-2">
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                              </svg>
-                              Momentum Analysis
-                            </div>
-                            {momentumIndicators.map(renderIndicator)}
-                          </div>
-                        )}
-                        
-                        {/* Volume Indicators */}
-                        {volumeIndicators.length > 0 && (
-                          <div className="space-y-2">
-                            <div className="text-sm font-semibold text-cyan-400 flex items-center gap-2">
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" />
-                              </svg>
-                              Volume Analysis
-                            </div>
-                            {volumeIndicators.map(renderIndicator)}
-                          </div>
-                        )}
-                        
-                        {/* Structure Indicators */}
-                        {structureIndicators.length > 0 && (
-                          <div className="space-y-2">
-                            <div className="text-sm font-semibold text-purple-400 flex items-center gap-2">
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
-                              </svg>
-                              Structure Analysis
-                            </div>
-                            {structureIndicators.map(renderIndicator)}
-                          </div>
-                        )}
-                      </>
-                    );
-                  })()}
-                </div>
-              ) : (
-                <div className="bg-slate-800/30 rounded-lg p-4 text-center text-gray-400">
-                  No detailed indicator breakdown available for this cycle
-                </div>
-              )}
-              
+
               {/* HTF Skip Reason Summary - Visual Checklist */}
               <div className="bg-slate-800/50 rounded-lg p-4 border-l-4 border-blue-500/50">
                 <div className="text-sm font-semibold text-blue-400 mb-3">HTF Filter Analysis</div>
                 {(() => {
-                  const analysisText = selectedDiagnosticDetails.runtimeState?.skipDetails || 
-                                      selectedDiagnosticDetails.runtimeState?.skipReason || 
-                                      selectedDiagnosticDetails.decision?.reason || 
-                                      'No detailed reason provided';
-                  
+                  const analysisText = selectedDiagnosticDetails.runtimeState?.skipDetails ||
+                    selectedDiagnosticDetails.runtimeState?.skipReason ||
+                    selectedDiagnosticDetails.decision?.reason ||
+                    'No detailed reason provided';
+
                   // Parse the analysis string for condition keywords
                   const conditions = [
                     { name: 'VWAP', keyword: 'VWAP' },
@@ -1455,13 +1321,13 @@ export default function TradingAgentControl() {
                     { name: 'SR', keyword: 'SR' },
                     { name: 'Volume', keyword: 'Volume' }
                   ];
-                  
+
                   // Check if the text contains structured condition info
-                  const hasStructuredConditions = conditions.some(c => 
-                    analysisText.includes(`${c.keyword} confirmed`) || 
+                  const hasStructuredConditions = conditions.some(c =>
+                    analysisText.includes(`${c.keyword} confirmed`) ||
                     analysisText.includes(`${c.keyword} rejected`)
                   );
-                  
+
                   if (hasStructuredConditions) {
                     // Parse and display as visual checklist
                     return (
@@ -1469,50 +1335,49 @@ export default function TradingAgentControl() {
                         {conditions.map(condition => {
                           const confirmedPattern = new RegExp(`${condition.keyword}\\s+confirmed`, 'i');
                           const rejectedPattern = new RegExp(`${condition.keyword}\\s+rejected`, 'i');
-                          
+
                           const isConfirmed = confirmedPattern.test(analysisText);
                           const isRejected = rejectedPattern.test(analysisText);
-                          
+
                           // Only show conditions that are mentioned in the text
                           if (!isConfirmed && !isRejected) return null;
-                          
+
                           return (
-                            <div 
+                            <div
                               key={condition.name}
                               className="flex items-center gap-3 py-2 px-3 bg-slate-800/30 rounded-lg"
                             >
                               {isConfirmed ? (
-                                <svg 
-                                  className="w-5 h-5 flex-shrink-0" 
-                                  fill="none" 
-                                  stroke="#22c55e" 
+                                <svg
+                                  className="w-5 h-5 flex-shrink-0"
+                                  fill="none"
+                                  stroke="#22c55e"
                                   viewBox="0 0 24 24"
                                 >
-                                  <path 
-                                    strokeLinecap="round" 
-                                    strokeLinejoin="round" 
-                                    strokeWidth={2.5} 
-                                    d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" 
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2.5}
+                                    d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
                                   />
                                 </svg>
                               ) : (
-                                <svg 
-                                  className="w-5 h-5 flex-shrink-0" 
-                                  fill="none" 
-                                  stroke="#ef4444" 
+                                <svg
+                                  className="w-5 h-5 flex-shrink-0"
+                                  fill="none"
+                                  stroke="#ef4444"
                                   viewBox="0 0 24 24"
                                 >
-                                  <path 
-                                    strokeLinecap="round" 
-                                    strokeLinejoin="round" 
-                                    strokeWidth={2.5} 
-                                    d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" 
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2.5}
+                                    d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"
                                   />
                                 </svg>
                               )}
-                              <span className={`font-medium ${
-                                isConfirmed ? 'text-green-400' : 'text-red-400'
-                              }`}>
+                              <span className={`font-medium ${isConfirmed ? 'text-green-400' : 'text-red-400'
+                                }`}>
                                 {condition.name}
                               </span>
                               <span className="text-gray-400 text-sm ml-auto">

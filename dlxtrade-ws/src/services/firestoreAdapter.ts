@@ -36,13 +36,13 @@ export function validateDiagnosticWritePath(path: string, operation: string): vo
     }, errorMsg);
     throw new Error(errorMsg);
   }
-  
+
   // VALIDATE: Must follow exact pattern users/{uid}/agentDiagnostics/{agentId}/entries/{doc}
   const pathParts = path.split('/');
-  if (pathParts.length < 6 || 
-      pathParts[0] !== 'users' || 
-      pathParts[2] !== 'agentDiagnostics' || 
-      pathParts[4] !== 'entries') {
+  if (pathParts.length < 6 ||
+    pathParts[0] !== 'users' ||
+    pathParts[2] !== 'agentDiagnostics' ||
+    pathParts[4] !== 'entries') {
     const errorMsg = `🚨 [DIAGNOSTIC_PATH_FORMAT] ${operation} blocked - invalid path format. Required: users/{uid}/agentDiagnostics/{agentId}/entries/{doc}, Got: ${path}`;
     console.error(errorMsg);
     logger.error({
@@ -157,52 +157,16 @@ export async function getDailySafetyCounters(agentId: string): Promise<{
   tradesToday: number;
   lastResetDate: Date;
 }> {
-    try {
-      const db = getFirebaseAdmin().firestore();
-      const doc = await db
-        .collection('tradingAgents')
-        .doc(agentId)
-        .collection('dailyCounters')
-        .doc('current')
-        .get();
+  try {
+    const db = getFirebaseAdmin().firestore();
+    const doc = await db
+      .collection('tradingAgents')
+      .doc(agentId)
+      .collection('dailyCounters')
+      .doc('current')
+      .get();
 
-      if (!doc.exists) {
-        return {
-          consecutiveLosses: 0,
-          dailyPnL: 0,
-          tradesToday: 0,
-          lastResetDate: new Date()
-        };
-      }
-
-      const data = doc.data();
-      const lastResetDate = data?.lastResetDate ? data.lastResetDate.toDate() : new Date();
-
-      // Check if we need to reset counters (UTC day change)
-      const now = new Date();
-      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const lastReset = new Date(lastResetDate.getFullYear(), lastResetDate.getMonth(), lastResetDate.getDate());
-
-      if (today > lastReset) {
-        // Reset counters for new day
-        await resetDailySafetyCounters(agentId);
-        return {
-          consecutiveLosses: 0,
-          dailyPnL: 0,
-          tradesToday: 0,
-          lastResetDate: now
-        };
-      }
-
-      return {
-        consecutiveLosses: data?.consecutiveLosses || 0,
-        dailyPnL: data?.dailyPnL || 0,
-        tradesToday: data?.tradesToday || 0,
-        lastResetDate
-      };
-    } catch (error: any) {
-      logger.error({ error: error.message, agentId }, 'Failed to get daily safety counters');
-      // Return safe defaults
+    if (!doc.exists) {
       return {
         consecutiveLosses: 0,
         dailyPnL: 0,
@@ -210,7 +174,43 @@ export async function getDailySafetyCounters(agentId: string): Promise<{
         lastResetDate: new Date()
       };
     }
+
+    const data = doc.data();
+    const lastResetDate = data?.lastResetDate ? data.lastResetDate.toDate() : new Date();
+
+    // Check if we need to reset counters (UTC day change)
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const lastReset = new Date(lastResetDate.getFullYear(), lastResetDate.getMonth(), lastResetDate.getDate());
+
+    if (today > lastReset) {
+      // Reset counters for new day
+      await resetDailySafetyCounters(agentId);
+      return {
+        consecutiveLosses: 0,
+        dailyPnL: 0,
+        tradesToday: 0,
+        lastResetDate: now
+      };
+    }
+
+    return {
+      consecutiveLosses: data?.consecutiveLosses || 0,
+      dailyPnL: data?.dailyPnL || 0,
+      tradesToday: data?.tradesToday || 0,
+      lastResetDate
+    };
+  } catch (error: any) {
+    logger.error({ error: error.message, agentId }, 'Failed to get daily safety counters');
+    // Return safe defaults
+    return {
+      consecutiveLosses: 0,
+      dailyPnL: 0,
+      tradesToday: 0,
+      lastResetDate: new Date()
+    };
   }
+}
 
 export async function updateDailySafetyCounters(
   agentId: string,
@@ -218,207 +218,207 @@ export async function updateDailySafetyCounters(
     consecutiveLosses?: number;
     dailyPnL?: number;
     tradesToday?: number;
-    }
-  ): Promise<void> {
+  }
+): Promise<void> {
+  try {
+    const db = getFirebaseAdmin().firestore();
+    const now = new Date();
+
+    // CRITICAL FIX: Validate timestamp before creating Firestore Timestamp
+    let validTimestamp: admin.firestore.Timestamp;
+
     try {
-      const db = getFirebaseAdmin().firestore();
-      const now = new Date();
-      
-      // CRITICAL FIX: Validate timestamp before creating Firestore Timestamp
-      let validTimestamp: admin.firestore.Timestamp;
-      
-      try {
-        const ms = now.getTime();
-        if (!Number.isFinite(ms) || isNaN(ms)) {
-          logger.warn(
-            { agentId, ms },
-            '⚠️ [TIMESTAMP_VALIDATION] Invalid timestamp in updateDailySafetyCounters, using Timestamp.now()'
-          );
-          validTimestamp = admin.firestore.Timestamp.now();
-        } else {
-          const seconds = Math.floor(ms / 1000);
-          if (!Number.isFinite(seconds) || isNaN(seconds) || !Number.isInteger(seconds)) {
-            logger.warn(
-              { agentId, seconds, ms },
-              '⚠️ [TIMESTAMP_VALIDATION] Invalid seconds in updateDailySafetyCounters, using Timestamp.now()'
-            );
-            validTimestamp = admin.firestore.Timestamp.now();
-          } else {
-            validTimestamp = new admin.firestore.Timestamp(seconds, 0);
-          }
-        }
-      } catch (timestampError: any) {
+      const ms = now.getTime();
+      if (!Number.isFinite(ms) || isNaN(ms)) {
         logger.warn(
-          { agentId, error: timestampError.message },
-          '⚠️ [TIMESTAMP_VALIDATION] Failed to create timestamp in updateDailySafetyCounters, using Timestamp.now()'
+          { agentId, ms },
+          '⚠️ [TIMESTAMP_VALIDATION] Invalid timestamp in updateDailySafetyCounters, using Timestamp.now()'
         );
         validTimestamp = admin.firestore.Timestamp.now();
-      }
-
-      await db
-        .collection('tradingAgents')
-        .doc(agentId)
-        .collection('dailyCounters')
-        .doc('current')
-        .set({
-          ...updates,
-          lastResetDate: validTimestamp,
-          updatedAt: admin.firestore.Timestamp.now()
-        }, { merge: true });
-
-      logger.debug({ agentId, updates }, 'Daily safety counters updated');
-    } catch (error: any) {
-      logger.error({ error: error.message, agentId }, 'Failed to update daily safety counters');
-      throw error;
-    }
-  }
-
-export async function resetDailySafetyCounters(agentId: string): Promise<void> {
-    try {
-      const db = getFirebaseAdmin().firestore();
-      const now = new Date();
-      
-      // CRITICAL FIX: Validate timestamp before creating Firestore Timestamp
-      let validTimestamp: admin.firestore.Timestamp;
-      
-      try {
-        const ms = now.getTime();
-        if (!Number.isFinite(ms) || isNaN(ms)) {
-          logger.warn(
-            { agentId, ms },
-            '⚠️ [TIMESTAMP_VALIDATION] Invalid timestamp in resetDailySafetyCounters, using Timestamp.now()'
-          );
-          validTimestamp = admin.firestore.Timestamp.now();
-        } else {
-          const seconds = Math.floor(ms / 1000);
-          if (!Number.isFinite(seconds) || isNaN(seconds) || !Number.isInteger(seconds)) {
-            logger.warn(
-              { agentId, seconds, ms },
-              '⚠️ [TIMESTAMP_VALIDATION] Invalid seconds in resetDailySafetyCounters, using Timestamp.now()'
-            );
-            validTimestamp = admin.firestore.Timestamp.now();
-          } else {
-            validTimestamp = new admin.firestore.Timestamp(seconds, 0);
-          }
-        }
-      } catch (timestampError: any) {
-        logger.warn(
-          { agentId, error: timestampError.message },
-          '⚠️ [TIMESTAMP_VALIDATION] Failed to create timestamp in resetDailySafetyCounters, using Timestamp.now()'
-        );
-        validTimestamp = admin.firestore.Timestamp.now();
-      }
-
-      await db
-        .collection('tradingAgents')
-        .doc(agentId)
-        .collection('dailyCounters')
-        .doc('current')
-        .set({
-          consecutiveLosses: 0,
-          dailyPnL: 0,
-          tradesToday: 0,
-          lastResetDate: validTimestamp,
-          updatedAt: admin.firestore.Timestamp.now()
-        });
-
-      logger.info({ agentId }, 'Daily safety counters reset');
-    } catch (error: any) {
-      logger.error({ error: error.message, agentId }, 'Failed to reset daily safety counters');
-      throw error;
-    }
-  }
-
-  /**
-   * Get per-pair cooldown timestamp
-   */
-export async function getPairCooldown(agentId: string, tradingPair: string): Promise<Date | null> {
-    try {
-      const db = getFirebaseAdmin().firestore();
-      const doc = await db
-        .collection('tradingAgents')
-        .doc(agentId)
-        .collection('cooldowns')
-        .doc(tradingPair)
-        .get();
-
-      if (!doc.exists) return null;
-
-      const data = doc.data();
-      return data?.cooldownUntil ? data.cooldownUntil.toDate() : null;
-    } catch (error: any) {
-      logger.error({ error: error.message, agentId, tradingPair }, 'Failed to get pair cooldown');
-      return null;
-    }
-  }
-
-  /**
-   * Set per-pair cooldown timestamp
-   */
-export async function setPairCooldown(agentId: string, tradingPair: string, cooldownUntil: Date): Promise<void> {
-    try {
-      const db = getFirebaseAdmin().firestore();
-      
-      // CRITICAL FIX: Validate and convert timestamp to ensure valid integer seconds
-      let validTimestamp: admin.firestore.Timestamp;
-      
-      try {
-        // Ensure cooldownUntil is a valid Date object
-        if (!cooldownUntil || !(cooldownUntil instanceof Date)) {
-          logger.warn(
-            { agentId, tradingPair, cooldownUntil, type: typeof cooldownUntil },
-            '⚠️ [TIMESTAMP_VALIDATION] Invalid cooldownUntil - not a Date object, skipping cooldown update'
-          );
-          return; // Skip update safely instead of throwing
-        }
-        
-        // Get milliseconds and validate
-        const ms = cooldownUntil.getTime();
-        if (!Number.isFinite(ms) || isNaN(ms)) {
-          logger.warn(
-            { agentId, tradingPair, ms, cooldownUntil },
-            '⚠️ [TIMESTAMP_VALIDATION] Invalid cooldown milliseconds (NaN or not finite), skipping update'
-          );
-          return; // Skip update safely instead of throwing
-        }
-        
-        // Convert milliseconds to seconds (MUST be integer for Firestore)
+      } else {
         const seconds = Math.floor(ms / 1000);
         if (!Number.isFinite(seconds) || isNaN(seconds) || !Number.isInteger(seconds)) {
           logger.warn(
-            { agentId, tradingPair, seconds, ms },
-            '⚠️ [TIMESTAMP_VALIDATION] Invalid cooldown seconds (NaN, not finite, or not integer), skipping update'
+            { agentId, seconds, ms },
+            '⚠️ [TIMESTAMP_VALIDATION] Invalid seconds in updateDailySafetyCounters, using Timestamp.now()'
           );
-          return; // Skip update safely instead of throwing
+          validTimestamp = admin.firestore.Timestamp.now();
+        } else {
+          validTimestamp = new admin.firestore.Timestamp(seconds, 0);
         }
-        
-        // Create Firestore Timestamp with validated integer seconds
-        validTimestamp = new admin.firestore.Timestamp(seconds, 0);
-        
-      } catch (timestampError: any) {
+      }
+    } catch (timestampError: any) {
+      logger.warn(
+        { agentId, error: timestampError.message },
+        '⚠️ [TIMESTAMP_VALIDATION] Failed to create timestamp in updateDailySafetyCounters, using Timestamp.now()'
+      );
+      validTimestamp = admin.firestore.Timestamp.now();
+    }
+
+    await db
+      .collection('tradingAgents')
+      .doc(agentId)
+      .collection('dailyCounters')
+      .doc('current')
+      .set({
+        ...updates,
+        lastResetDate: validTimestamp,
+        updatedAt: admin.firestore.Timestamp.now()
+      }, { merge: true });
+
+    logger.debug({ agentId, updates }, 'Daily safety counters updated');
+  } catch (error: any) {
+    logger.error({ error: error.message, agentId }, 'Failed to update daily safety counters');
+    throw error;
+  }
+}
+
+export async function resetDailySafetyCounters(agentId: string): Promise<void> {
+  try {
+    const db = getFirebaseAdmin().firestore();
+    const now = new Date();
+
+    // CRITICAL FIX: Validate timestamp before creating Firestore Timestamp
+    let validTimestamp: admin.firestore.Timestamp;
+
+    try {
+      const ms = now.getTime();
+      if (!Number.isFinite(ms) || isNaN(ms)) {
         logger.warn(
-          { agentId, tradingPair, error: timestampError.message, cooldownUntil },
-          '⚠️ [TIMESTAMP_VALIDATION] Failed to create valid Firestore Timestamp for cooldown, skipping update'
+          { agentId, ms },
+          '⚠️ [TIMESTAMP_VALIDATION] Invalid timestamp in resetDailySafetyCounters, using Timestamp.now()'
+        );
+        validTimestamp = admin.firestore.Timestamp.now();
+      } else {
+        const seconds = Math.floor(ms / 1000);
+        if (!Number.isFinite(seconds) || isNaN(seconds) || !Number.isInteger(seconds)) {
+          logger.warn(
+            { agentId, seconds, ms },
+            '⚠️ [TIMESTAMP_VALIDATION] Invalid seconds in resetDailySafetyCounters, using Timestamp.now()'
+          );
+          validTimestamp = admin.firestore.Timestamp.now();
+        } else {
+          validTimestamp = new admin.firestore.Timestamp(seconds, 0);
+        }
+      }
+    } catch (timestampError: any) {
+      logger.warn(
+        { agentId, error: timestampError.message },
+        '⚠️ [TIMESTAMP_VALIDATION] Failed to create timestamp in resetDailySafetyCounters, using Timestamp.now()'
+      );
+      validTimestamp = admin.firestore.Timestamp.now();
+    }
+
+    await db
+      .collection('tradingAgents')
+      .doc(agentId)
+      .collection('dailyCounters')
+      .doc('current')
+      .set({
+        consecutiveLosses: 0,
+        dailyPnL: 0,
+        tradesToday: 0,
+        lastResetDate: validTimestamp,
+        updatedAt: admin.firestore.Timestamp.now()
+      });
+
+    logger.info({ agentId }, 'Daily safety counters reset');
+  } catch (error: any) {
+    logger.error({ error: error.message, agentId }, 'Failed to reset daily safety counters');
+    throw error;
+  }
+}
+
+/**
+ * Get per-pair cooldown timestamp
+ */
+export async function getPairCooldown(agentId: string, tradingPair: string): Promise<Date | null> {
+  try {
+    const db = getFirebaseAdmin().firestore();
+    const doc = await db
+      .collection('tradingAgents')
+      .doc(agentId)
+      .collection('cooldowns')
+      .doc(tradingPair)
+      .get();
+
+    if (!doc.exists) return null;
+
+    const data = doc.data();
+    return data?.cooldownUntil ? data.cooldownUntil.toDate() : null;
+  } catch (error: any) {
+    logger.error({ error: error.message, agentId, tradingPair }, 'Failed to get pair cooldown');
+    return null;
+  }
+}
+
+/**
+ * Set per-pair cooldown timestamp
+ */
+export async function setPairCooldown(agentId: string, tradingPair: string, cooldownUntil: Date): Promise<void> {
+  try {
+    const db = getFirebaseAdmin().firestore();
+
+    // CRITICAL FIX: Validate and convert timestamp to ensure valid integer seconds
+    let validTimestamp: admin.firestore.Timestamp;
+
+    try {
+      // Ensure cooldownUntil is a valid Date object
+      if (!cooldownUntil || !(cooldownUntil instanceof Date)) {
+        logger.warn(
+          { agentId, tradingPair, cooldownUntil, type: typeof cooldownUntil },
+          '⚠️ [TIMESTAMP_VALIDATION] Invalid cooldownUntil - not a Date object, skipping cooldown update'
         );
         return; // Skip update safely instead of throwing
       }
-      
-      await db
-        .collection('tradingAgents')
-        .doc(agentId)
-        .collection('cooldowns')
-        .doc(tradingPair)
-        .set({
-          cooldownUntil: validTimestamp,
-          setAt: admin.firestore.Timestamp.now()
-        });
 
-      logger.debug({ agentId, tradingPair, cooldownUntil: cooldownUntil.toISOString() }, 'Pair cooldown set');
-    } catch (error: any) {
-      logger.error({ error: error.message, agentId, tradingPair }, 'Failed to set pair cooldown');
-      throw error;
+      // Get milliseconds and validate
+      const ms = cooldownUntil.getTime();
+      if (!Number.isFinite(ms) || isNaN(ms)) {
+        logger.warn(
+          { agentId, tradingPair, ms, cooldownUntil },
+          '⚠️ [TIMESTAMP_VALIDATION] Invalid cooldown milliseconds (NaN or not finite), skipping update'
+        );
+        return; // Skip update safely instead of throwing
+      }
+
+      // Convert milliseconds to seconds (MUST be integer for Firestore)
+      const seconds = Math.floor(ms / 1000);
+      if (!Number.isFinite(seconds) || isNaN(seconds) || !Number.isInteger(seconds)) {
+        logger.warn(
+          { agentId, tradingPair, seconds, ms },
+          '⚠️ [TIMESTAMP_VALIDATION] Invalid cooldown seconds (NaN, not finite, or not integer), skipping update'
+        );
+        return; // Skip update safely instead of throwing
+      }
+
+      // Create Firestore Timestamp with validated integer seconds
+      validTimestamp = new admin.firestore.Timestamp(seconds, 0);
+
+    } catch (timestampError: any) {
+      logger.warn(
+        { agentId, tradingPair, error: timestampError.message, cooldownUntil },
+        '⚠️ [TIMESTAMP_VALIDATION] Failed to create valid Firestore Timestamp for cooldown, skipping update'
+      );
+      return; // Skip update safely instead of throwing
     }
+
+    await db
+      .collection('tradingAgents')
+      .doc(agentId)
+      .collection('cooldowns')
+      .doc(tradingPair)
+      .set({
+        cooldownUntil: validTimestamp,
+        setAt: admin.firestore.Timestamp.now()
+      });
+
+    logger.debug({ agentId, tradingPair, cooldownUntil: cooldownUntil.toISOString() }, 'Pair cooldown set');
+  } catch (error: any) {
+    logger.error({ error: error.message, agentId, tradingPair }, 'Failed to set pair cooldown');
+    throw error;
   }
+}
 
 // SHARED exchange usability guard for all major code paths
 /**
@@ -470,139 +470,139 @@ export async function updateCachedFlags(uid: string): Promise<void> {
 
 // Trading Agent Methods (standalone exported functions)
 export async function getLastProcessedCandle(agentId: string, tradingPair: string): Promise<Date | null> {
-    try {
-      const db = getFirebaseAdmin().firestore();
-      // FIX: Replace slashes with underscores to create valid Firestore document ID
-      const safeDocumentId = `candle_${tradingPair.replace(/\//g, '_')}`;
-      const doc = await db
-        .collection('tradingAgents')
-        .doc(agentId)
-        .collection('executionState')
-        .doc(safeDocumentId)
-        .get();
+  try {
+    const db = getFirebaseAdmin().firestore();
+    // FIX: Replace slashes with underscores to create valid Firestore document ID
+    const safeDocumentId = `candle_${tradingPair.replace(/\//g, '_')}`;
+    const doc = await db
+      .collection('tradingAgents')
+      .doc(agentId)
+      .collection('executionState')
+      .doc(safeDocumentId)
+      .get();
 
-      if (!doc.exists) return null;
+    if (!doc.exists) return null;
 
-      const data = doc.data();
-      return data?.lastProcessedCandle ? new Date(data.lastProcessedCandle.toDate()) : null;
-    } catch (error: any) {
-      logger.error({ error: error.message, agentId, tradingPair }, 'Failed to get last processed candle');
-      return null;
-    }
+    const data = doc.data();
+    return data?.lastProcessedCandle ? new Date(data.lastProcessedCandle.toDate()) : null;
+  } catch (error: any) {
+    logger.error({ error: error.message, agentId, tradingPair }, 'Failed to get last processed candle');
+    return null;
+  }
 }
 
 export async function updateLastProcessedCandle(agentId: string, tradingPair: string, candleTimestamp: Date): Promise<void> {
+  try {
+    const db = getFirebaseAdmin().firestore();
+    // FIX: Replace slashes with underscores to create valid Firestore document ID
+    const safeDocumentId = `candle_${tradingPair.replace(/\//g, '_')}`;
+
+    // CRITICAL FIX: Validate and convert timestamp to ensure valid integer seconds
+    // Firestore Timestamp requires seconds to be a valid integer
+    let validTimestamp: admin.firestore.Timestamp;
+
     try {
-      const db = getFirebaseAdmin().firestore();
-      // FIX: Replace slashes with underscores to create valid Firestore document ID
-      const safeDocumentId = `candle_${tradingPair.replace(/\//g, '_')}`;
-      
-      // CRITICAL FIX: Validate and convert timestamp to ensure valid integer seconds
-      // Firestore Timestamp requires seconds to be a valid integer
-      let validTimestamp: admin.firestore.Timestamp;
-      
-      try {
-        // Ensure candleTimestamp is a valid Date object
-        if (!candleTimestamp || !(candleTimestamp instanceof Date)) {
-          logger.warn(
-            { agentId, tradingPair, candleTimestamp, type: typeof candleTimestamp },
-            '⚠️ [TIMESTAMP_VALIDATION] Invalid candleTimestamp - not a Date object, skipping update'
-          );
-          return; // Skip update safely instead of throwing
-        }
-        
-        // Get milliseconds and validate
-        const ms = candleTimestamp.getTime();
-        if (!Number.isFinite(ms) || isNaN(ms)) {
-          logger.warn(
-            { agentId, tradingPair, ms, candleTimestamp },
-            '⚠️ [TIMESTAMP_VALIDATION] Invalid timestamp milliseconds (NaN or not finite), skipping update'
-          );
-          return; // Skip update safely instead of throwing
-        }
-        
-        // Convert milliseconds to seconds (MUST be integer for Firestore)
-        const seconds = Math.floor(ms / 1000);
-        if (!Number.isFinite(seconds) || isNaN(seconds)) {
-          logger.warn(
-            { agentId, tradingPair, seconds, ms },
-            '⚠️ [TIMESTAMP_VALIDATION] Invalid timestamp seconds (NaN or not finite), skipping update'
-          );
-          return; // Skip update safely instead of throwing
-        }
-        
-        // Create Firestore Timestamp with validated integer seconds
-        validTimestamp = new admin.firestore.Timestamp(seconds, 0);
-        
-      } catch (timestampError: any) {
+      // Ensure candleTimestamp is a valid Date object
+      if (!candleTimestamp || !(candleTimestamp instanceof Date)) {
         logger.warn(
-          { agentId, tradingPair, error: timestampError.message, candleTimestamp },
-          '⚠️ [TIMESTAMP_VALIDATION] Failed to create valid Firestore Timestamp, skipping update'
+          { agentId, tradingPair, candleTimestamp, type: typeof candleTimestamp },
+          '⚠️ [TIMESTAMP_VALIDATION] Invalid candleTimestamp - not a Date object, skipping update'
         );
         return; // Skip update safely instead of throwing
       }
-      
-      await db
-        .collection('tradingAgents')
-        .doc(agentId)
-        .collection('executionState')
-        .doc(safeDocumentId)
-        .set({
-          lastProcessedCandle: validTimestamp,
-          updatedAt: admin.firestore.Timestamp.now(),
-        }, { merge: true });
 
-      logger.debug({ agentId, tradingPair, candleTimestamp: candleTimestamp.toISOString() }, 'Last processed candle updated');
-    } catch (error: any) {
-      logger.error({ error: error.message, agentId, tradingPair }, 'Failed to update last processed candle');
-      throw error;
+      // Get milliseconds and validate
+      const ms = candleTimestamp.getTime();
+      if (!Number.isFinite(ms) || isNaN(ms)) {
+        logger.warn(
+          { agentId, tradingPair, ms, candleTimestamp },
+          '⚠️ [TIMESTAMP_VALIDATION] Invalid timestamp milliseconds (NaN or not finite), skipping update'
+        );
+        return; // Skip update safely instead of throwing
+      }
+
+      // Convert milliseconds to seconds (MUST be integer for Firestore)
+      const seconds = Math.floor(ms / 1000);
+      if (!Number.isFinite(seconds) || isNaN(seconds)) {
+        logger.warn(
+          { agentId, tradingPair, seconds, ms },
+          '⚠️ [TIMESTAMP_VALIDATION] Invalid timestamp seconds (NaN or not finite), skipping update'
+        );
+        return; // Skip update safely instead of throwing
+      }
+
+      // Create Firestore Timestamp with validated integer seconds
+      validTimestamp = new admin.firestore.Timestamp(seconds, 0);
+
+    } catch (timestampError: any) {
+      logger.warn(
+        { agentId, tradingPair, error: timestampError.message, candleTimestamp },
+        '⚠️ [TIMESTAMP_VALIDATION] Failed to create valid Firestore Timestamp, skipping update'
+      );
+      return; // Skip update safely instead of throwing
     }
+
+    await db
+      .collection('tradingAgents')
+      .doc(agentId)
+      .collection('executionState')
+      .doc(safeDocumentId)
+      .set({
+        lastProcessedCandle: validTimestamp,
+        updatedAt: admin.firestore.Timestamp.now(),
+      }, { merge: true });
+
+    logger.debug({ agentId, tradingPair, candleTimestamp: candleTimestamp.toISOString() }, 'Last processed candle updated');
+  } catch (error: any) {
+    logger.error({ error: error.message, agentId, tradingPair }, 'Failed to update last processed candle');
+    throw error;
+  }
 }
 
 export async function isSignalExecuted(agentId: string, signalId: string): Promise<boolean> {
-    try {
-      const db = getFirebaseAdmin().firestore();
-      const signalDoc = await db
-        .collection('agentTrades')
-        .where('agentId', '==', agentId)
-        .where('signalId', '==', signalId)
-        .limit(1)
-        .get();
+  try {
+    const db = getFirebaseAdmin().firestore();
+    const signalDoc = await db
+      .collection('agentTrades')
+      .where('agentId', '==', agentId)
+      .where('signalId', '==', signalId)
+      .limit(1)
+      .get();
 
-      return !signalDoc.empty;
-    } catch (error: any) {
-      logger.error({ error: error.message, agentId, signalId }, 'Failed to check signal execution');
-      return false;
-    }
+    return !signalDoc.empty;
+  } catch (error: any) {
+    logger.error({ error: error.message, agentId, signalId }, 'Failed to check signal execution');
+    return false;
+  }
 }
 
 export async function getCurrentPositionCount(agentId: string): Promise<{ pairPositions: number; totalPositions: number }> {
-    try {
-      const db = getFirebaseAdmin().firestore();
-      const openTradesSnapshot = await db
-        .collection('agentTrades')
-        .where('agentId', '==', agentId)
-        .where('status', '==', 'OPEN')
-        .get();
+  try {
+    const db = getFirebaseAdmin().firestore();
+    const openTradesSnapshot = await db
+      .collection('agentTrades')
+      .where('agentId', '==', agentId)
+      .where('status', '==', 'OPEN')
+      .get();
 
-      let totalPositions = 0;
-      const pairPositions: { [pair: string]: number } = {};
+    let totalPositions = 0;
+    const pairPositions: { [pair: string]: number } = {};
 
-      openTradesSnapshot.forEach(doc => {
-        const trade = doc.data();
-        totalPositions++;
-        const pair = trade.tradingPair || 'UNKNOWN';
-        pairPositions[pair] = (pairPositions[pair] || 0) + 1;
-      });
+    openTradesSnapshot.forEach(doc => {
+      const trade = doc.data();
+      totalPositions++;
+      const pair = trade.tradingPair || 'UNKNOWN';
+      pairPositions[pair] = (pairPositions[pair] || 0) + 1;
+    });
 
-      return {
-        pairPositions: Object.keys(pairPositions).length,
-        totalPositions,
-      };
-    } catch (error: any) {
-      logger.error({ error: error.message, agentId }, 'Failed to get current position count');
-      return { pairPositions: 0, totalPositions: 0 };
-    }
+    return {
+      pairPositions: Object.keys(pairPositions).length,
+      totalPositions,
+    };
+  } catch (error: any) {
+    logger.error({ error: error.message, agentId }, 'Failed to get current position count');
+    return { pairPositions: 0, totalPositions: 0 };
+  }
 }
 
 export async function isExchangeUsable(
@@ -879,7 +879,7 @@ export async function isExchangeUsable(
     // CRITICAL: Decryption exceptions are NOT credential validation failures
     // NEVER write INVALID_KEYS here - only in POST /exchange/connect
     // NEVER write CORRUPTED status here - that violates Firestore guard
-    
+
     // Check if this is an ENCRYPTION_SECRET_CHANGED error (bad decrypt)
     if (error.message && error.message.includes("ENCRYPTION_SECRET_CHANGED")) {
       logger.warn(
@@ -890,7 +890,7 @@ export async function isExchangeUsable(
         },
         "⚠️ ENCRYPTION_SECRET_CHANGED: Encryption secret was changed - exchange keys cannot be decrypted. User must reconnect exchange via /exchange/connect to re-encrypt keys."
       );
-      
+
       // DO NOT write to Firestore - background jobs and isExchangeUsable are READ-ONLY
       // User must manually reconnect exchange through UI to fix encryption issue
       return {
@@ -899,7 +899,7 @@ export async function isExchangeUsable(
         exchange,
       };
     }
-    
+
     logger.warn(
       {
         uid,
@@ -1012,7 +1012,7 @@ export async function safeExchangeConfigWrite(
  */
 export function assertNoInvalidKeysWrite(data: any, operation: string): void {
   if (!data || typeof data !== 'object') return;
-  
+
   // Check for direct INVALID_KEYS assignment
   for (const [key, value] of Object.entries(data)) {
     if (value === 'INVALID_KEYS') {
@@ -1023,7 +1023,7 @@ export function assertNoInvalidKeysWrite(data: any, operation: string): void {
       throw new Error(errorMsg);
     }
   }
-  
+
   // Check for forbidden field names
   const forbiddenFields = ['exchangeStatus', 'keysClearedAt', 'keysClearedReason'];
   for (const field of forbiddenFields) {
@@ -1689,7 +1689,7 @@ export class FirestoreAdapter {
   }>> {
     try {
       const db = getFirebaseAdmin().firestore();
-      
+
       // Use collection group query to find all vwap_strategy documents across all users
       const snapshot = await db.collectionGroup('agents')
         .where('strategyType', '==', 'VWAP_MEAN_REVERSION')
@@ -4441,7 +4441,7 @@ export class FirestoreAdapter {
             { uid },
             "ENCRYPTION_SECRET_CHANGED detected - exchange config is corrupted. Do not attempt Firestore update."
           );
-          
+
           // ADD FLAG: Mark config as having invalid encryption so frontend knows to display reconnection prompt
           return {
             ...data,
@@ -5018,9 +5018,9 @@ export class FirestoreAdapter {
   private static installGlobalAgentDiagnosticsGuard(): void {
     // This guard is a permanent protection against top-level collection access
     const originalCollection = getFirebaseAdmin().firestore().collection;
-    
+
     // Override collection method to intercept agentDiagnostics access
-    getFirebaseAdmin().firestore().collection = function(collectionPath: string) {
+    getFirebaseAdmin().firestore().collection = function (collectionPath: string) {
       if (collectionPath === 'agentDiagnostics') {
         const errorMsg = '🚨 [GLOBAL_GUARD] Blocked attempt to access top-level agentDiagnostics collection. Use users/{uid}/agentDiagnostics/{agentId}/entries path only.';
         console.error(errorMsg);
@@ -5038,11 +5038,11 @@ export class FirestoreAdapter {
     if (obj === null || obj === undefined) {
       return null;
     }
-    
+
     if (Array.isArray(obj)) {
       return obj.map(item => this.deepCleanFirestorePayload(item)).filter(item => item !== undefined);
     }
-    
+
     if (typeof obj === 'object') {
       const cleaned: any = {};
       for (const [key, value] of Object.entries(obj)) {
@@ -5055,7 +5055,7 @@ export class FirestoreAdapter {
       }
       return Object.keys(cleaned).length > 0 ? cleaned : null;
     }
-    
+
     return obj;
   }
 
@@ -5087,16 +5087,16 @@ export class FirestoreAdapter {
       if (exchangeSuccessful && normalized.decision.reason) {
         const reason = normalized.decision.reason;
         if (reason.includes('Exchange keys are invalid') ||
-            reason.includes('encryption secret change') ||
-            reason.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') ||
-            reason.includes('EXCHANGE_ERROR') ||
-            reason.includes('EXCHANGE_CORRUPTED') ||
-            reason.includes('EXCHANGE_NOT_USABLE') ||
-            reason.includes('NO_EXCHANGE_CREDENTIALS')) {
-          
+          reason.includes('encryption secret change') ||
+          reason.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') ||
+          reason.includes('EXCHANGE_ERROR') ||
+          reason.includes('EXCHANGE_CORRUPTED') ||
+          reason.includes('EXCHANGE_NOT_USABLE') ||
+          reason.includes('NO_EXCHANGE_CREDENTIALS')) {
+
           // Replace with clean reason based on action
           normalized.decision.reason = normalized.decision.action === 'SKIP' ? 'SKIPPED' : normalized.decision.action;
-          
+
           logger.info({
             agentId,
             originalReason: reason,
@@ -5123,8 +5123,8 @@ export class FirestoreAdapter {
     if (diagnostic.execution) {
       normalized.execution = {
         status: diagnostic.execution.status || (
-          diagnostic.execution.success ? 'EXECUTED' : 
-          diagnostic.execution.exchangeError || diagnostic.execution.exchangeErrorReason ? 'FAILED' : 'SKIPPED'
+          diagnostic.execution.success ? 'EXECUTED' :
+            diagnostic.execution.exchangeError || diagnostic.execution.exchangeErrorReason ? 'FAILED' : 'SKIPPED'
         ),
         success: diagnostic.execution.success || false,
         orderId: diagnostic.execution.orderId || undefined,
@@ -5136,7 +5136,7 @@ export class FirestoreAdapter {
         // Do NOT include exchangeErrorReason when exchange is usable
         delete normalized.execution.exchangeErrorReason;
         delete normalized.execution.exchangeError;
-        
+
         logger.debug({
           agentId,
           exchangeUsable,
@@ -5144,9 +5144,9 @@ export class FirestoreAdapter {
         }, 'FIRESTORE_NORMALIZATION: Removed execution.exchangeErrorReason due to successful exchange state');
       } else {
         // Only include exchangeErrorReason if exchange is NOT usable
-        normalized.execution.exchangeErrorReason = diagnostic.execution.exchangeErrorReason || 
-                                                   diagnostic.execution.exchangeError || 
-                                                   diagnostic.execution.error || undefined;
+        normalized.execution.exchangeErrorReason = diagnostic.execution.exchangeErrorReason ||
+          diagnostic.execution.exchangeError ||
+          diagnostic.execution.error || undefined;
         normalized.execution.exchangeError = diagnostic.execution.exchangeError || undefined;
       }
 
@@ -5196,6 +5196,25 @@ export class FirestoreAdapter {
   }
 
   /**
+   * Check if an agent diagnostic exists given its deterministic ID
+   * Used for deduplication BEFORE execution logic runs
+   */
+  async checkAgentDiagnosticExists(agentId: string, diagnosticId: string, uid: string): Promise<boolean> {
+    try {
+      if (!uid) return false;
+      this.validateUserScopedDiagnosticsPath('checkAgentDiagnosticExists', uid);
+
+      const db = getFirebaseAdmin().firestore();
+      const docRef = db.collection('users').doc(uid).collection('agentDiagnostics').doc(agentId).collection('entries').doc(diagnosticId);
+      const doc = await docRef.get();
+      return doc.exists;
+    } catch (error: any) {
+      logger.error({ error: error.message, agentId, diagnosticId }, 'Failed to check diagnostic existence');
+      return false;
+    }
+  }
+
+  /**
    * Save agent diagnostic log entry
    * Path: users/{uid}/agentDiagnostics/{agentId}/entries/{auto-id}
    */
@@ -5237,6 +5256,7 @@ export class FirestoreAdapter {
     };
     runtimeState?: any;
     consensusResults?: any;
+    id?: string;
   }, uid: string): Promise<void> {
     try {
       // HARD RUNTIME GUARD: Validate user-scoped path
@@ -5255,30 +5275,30 @@ export class FirestoreAdapter {
       // Use normalized diagnostic data for all processing
       const evaluatedPair = normalizedDiagnostic.tradingPair || normalizedDiagnostic.pair || null;
       const evaluatedDirection = normalizedDiagnostic.direction || null;
-      
+
       // Enhanced decision with indicator confirmations (use normalized decision)
       let enhancedDecision = normalizedDiagnostic.decision;
       if (normalizedDiagnostic.decision.indicators) {
         const indicators = normalizedDiagnostic.decision.indicators;
         const confirmations = [];
         const rejections = [];
-        
+
         // Check each indicator result and build confirmation-style summary
         if (indicators.ema?.status === 'confirmed') confirmations.push('EMA confirmed');
         else if (indicators.ema?.status === 'rejected') rejections.push('EMA rejected');
-        
+
         if (indicators.rsi?.status === 'confirmed') confirmations.push('RSI confirmed');
         else if (indicators.rsi?.status === 'rejected') rejections.push('RSI rejected');
-        
+
         if (indicators.vwap?.status === 'confirmed') confirmations.push('VWAP confirmed');
         else if (indicators.vwap?.status === 'rejected') rejections.push('VWAP rejected');
-        
+
         if (indicators.sr?.status === 'confirmed') confirmations.push('SR confirmed');
         else if (indicators.sr?.status === 'rejected') rejections.push('SR rejected');
-        
+
         if (indicators.volume?.status === 'confirmed') confirmations.push('Volume confirmed');
         else if (indicators.volume?.status === 'rejected') rejections.push('Volume rejected');
-        
+
         // Create confirmation-style summary if we have indicator results
         if (confirmations.length > 0 || rejections.length > 0) {
           const decisionSummary = [...confirmations, ...rejections].join(', ');
@@ -5354,15 +5374,30 @@ export class FirestoreAdapter {
         }
       }
 
-      await entriesRef.add(sanitizedPayload);
+      if (diagnostic.id) {
+        // ID-based write for single-write guarantee (STRICT HTF REQUIREMENT)
+        const docRef = entriesRef.doc(diagnostic.id);
+        const doc = await docRef.get();
+        if (doc.exists) {
+          logger.info({ agentId, docId: diagnostic.id }, 'HTF diagnostic document already exists, skipping write');
+          return;
+        }
 
-      logger.debug({ 
-        agentId, 
-        uid, 
+        // Write using deterministic ID with merge: false (overwrite protection)
+        await docRef.set(sanitizedPayload, { merge: false });
+      } else {
+        await entriesRef.add(sanitizedPayload);
+      }
+
+      logger.info({
+        agentId,
+        uid,
         action: enhancedDecision.action,
         reason: enhancedDecision.reason,
+        tradingPair: sanitizedPayload.tradingPair,
+        timestamp: sanitizedPayload.timestamp,
         normalized: 'strict_normalization_applied'
-      }, 'Agent diagnostic saved with strict normalization');
+      }, 'Agent diagnostic saved with strict normalization - NEW document created');
 
       // Cleanup old diagnostics (keep last 100)
       await this.cleanupOldDiagnostics(agentId, uid);
@@ -5382,29 +5417,29 @@ export class FirestoreAdapter {
     }
 
     // Check if this diagnostic has exchange success markers
-    const hasExchangeSuccess = (data as any).exchangeDecryptionSuccess === true || 
-                               (data as any).exchangeUsable === true || 
-                               (data as any).exchangeErrorsCleared === true;
-    
+    const hasExchangeSuccess = (data as any).exchangeDecryptionSuccess === true ||
+      (data as any).exchangeUsable === true ||
+      (data as any).exchangeErrorsCleared === true;
+
     let cleanedDecision = data.decision;
-    
+
     // If exchange was successful but decision shows exchange errors, clean it
     if (hasExchangeSuccess && cleanedDecision?.reason) {
       const reason = cleanedDecision.reason;
       if (reason.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') ||
-          reason.includes('EXCHANGE_ERROR') ||
-          reason.includes('EXCHANGE_CORRUPTED') ||
-          reason.includes('Exchange keys are invalid') ||
-          reason.includes('encryption secret change') ||
-          reason.includes('EXCHANGE_NOT_USABLE') ||
-          reason.includes('NO_EXCHANGE_CREDENTIALS')) {
-        
+        reason.includes('EXCHANGE_ERROR') ||
+        reason.includes('EXCHANGE_CORRUPTED') ||
+        reason.includes('Exchange keys are invalid') ||
+        reason.includes('encryption secret change') ||
+        reason.includes('EXCHANGE_NOT_USABLE') ||
+        reason.includes('NO_EXCHANGE_CREDENTIALS')) {
+
         // Clean the reason to remove stale exchange errors
         cleanedDecision = {
           ...cleanedDecision,
           reason: cleanedDecision.action === 'SKIP' ? 'SKIPPED' : cleanedDecision.action
         };
-        
+
         logger.debug({
           agentId,
           originalReason: reason,
@@ -5460,10 +5495,10 @@ export class FirestoreAdapter {
       const diagnostics: any[] = [];
       snapshot.forEach(doc => {
         const data = doc.data();
-        
+
         // CRITICAL: Apply normalization to historical diagnostics to prevent stale exchange errors
         const cleanedData = this.cleanHistoricalDiagnostic(data, agentId);
-        
+
         // CRITICAL FIX: Safely normalize timestamp to Date object
         let normalizedTimestamp: Date;
         if (cleanedData.timestamp && typeof cleanedData.timestamp.toDate === 'function') {
@@ -5482,7 +5517,7 @@ export class FirestoreAdapter {
           // Fallback to current time
           normalizedTimestamp = new Date();
         }
-        
+
         diagnostics.push({
           id: doc.id,
           timestamp: normalizedTimestamp,
@@ -5513,11 +5548,12 @@ export class FirestoreAdapter {
     try {
       // CRITICAL: NEVER cleanup AUTO_TRADE_AGENT or HTF diagnostics
       // These diagnostics must be preserved for history tracking
-      if (agentId === 'AUTO_TRADE_AGENT' || agentId.includes('htf-trend-filter')) {
+      // Robust check handles both 'htf-trend-filter-agent' and unique IDs like 'htf_trend_filter_...'
+      if (agentId === 'AUTO_TRADE_AGENT' || agentId.toLowerCase().includes('htf')) {
         logger.debug({ agentId, uid }, 'Skipping cleanup for AUTO_TRADE_AGENT/HTF - diagnostics preserved');
         return;
       }
-      
+
       // DEFENSIVE ASSERTION: Ensure we never accidentally access top-level collection
       this.validateUserScopedDiagnosticsPath('cleanupOldDiagnostics', uid);
       this.assertNoTopLevelAgentDiagnosticsAccess('cleanupOldDiagnostics');

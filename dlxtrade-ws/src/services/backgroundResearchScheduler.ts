@@ -57,9 +57,9 @@ export class BackgroundResearchScheduler {
         const agentId = agent?.agentId;
         const status = agent?.status;
         return status === 'ACTIVE' &&
-          (strategyType === 'HTF_TREND_FILTER' || 
-           agentId === 'htf-trend-filter-agent' ||
-           (name && name.includes('HTF Trend Filter')));
+          (strategyType === 'HTF_TREND_FILTER' ||
+            agentId === 'htf-trend-filter-agent' ||
+            (name && name.includes('HTF Trend Filter')));
       });
     } catch (error) {
       logger.warn({ uid, error: error instanceof Error ? error.message : 'Unknown error' }, 'Failed to check HTF agent status');
@@ -70,14 +70,16 @@ export class BackgroundResearchScheduler {
   /**
    * HARD CLEANUP: Immediately delete/reset all research-related state for HTF agents
    * Ensures HTF agents have ZERO active state in backgroundResearchScheduler
+   * CRITICAL: Must NEVER delete diagnostics entries or Firestore history
    */
   private async hardCleanupHTFAgentState(uid: string): Promise<void> {
     try {
       console.log(
         "🔥 [HARD_LOG] [HTF_HARD_CLEANUP] Starting hard cleanup for HTF agent user:",
-        uid
+        uid,
+        "(Diagnostics EXCLUDED)"
       );
-      logger.info({ uid }, "🧹 [HTF_HARD_CLEANUP] Performing hard cleanup of all research state for HTF agent");
+      logger.info({ uid }, "🧹 [HTF_HARD_CLEANUP] Performing hard cleanup of all in-memory research state for HTF agent - Firestore diagnostics preserved");
 
       // 1. Clear any active scheduler interval
       const existingInterval = this.userIntervals.get(uid);
@@ -141,9 +143,9 @@ export class BackgroundResearchScheduler {
       console.log(
         "🔥 [HARD_LOG] [HTF_HARD_CLEANUP_COMPLETE] Hard cleanup completed for HTF user:",
         uid,
-        "- ZERO active state remaining"
+        "- ZERO active state remaining (Diagnostics preserved)"
       );
-      logger.info({ uid }, "✅ [HTF_HARD_CLEANUP] Hard cleanup completed - HTF agent isolated from research scheduler");
+      logger.info({ uid }, "✅ [HTF_HARD_CLEANUP] Hard cleanup completed - HTF agent isolated from research scheduler (Diagnostics preserved)");
 
     } catch (error) {
       logger.error(
@@ -407,7 +409,7 @@ export class BackgroundResearchScheduler {
           // HTF agents execute independently via TradingAgentScheduler → AgentExecutionService
           const hasActiveHTF = await this.hasActiveHTFAgent(uid);
           if (hasActiveHTF) {
-            // HARD CLEANUP: Immediately delete/reset all research state for HTF agents
+            // HARD CLEANUP: Immediately delete/reset all research state for HTF agents (Diagnostics EXCLUDED)
             await this.hardCleanupHTFAgentState(uid);
             logger.info(
               { uid, hasActiveHTF: true },
@@ -575,7 +577,7 @@ export class BackgroundResearchScheduler {
           // They should NEVER be assigned AUTO_TRADE_RESEARCH or TELEGRAM_BACKGROUND_RESEARCH modes
           const hasActiveHTF = await this.hasActiveHTFAgent(uid);
           if (hasActiveHTF) {
-            // HARD CLEANUP: Immediately delete/reset all research state for HTF agents
+            // HARD CLEANUP: Immediately delete/reset all research state for HTF agents (Diagnostics EXCLUDED)
             await this.hardCleanupHTFAgentState(uid);
             logger.info(
               { uid, hasActiveHTF: true },
@@ -802,7 +804,7 @@ export class BackgroundResearchScheduler {
       // They should NEVER be assigned AUTO_TRADE_RESEARCH or TELEGRAM_BACKGROUND_RESEARCH modes
       const hasActiveHTF = await this.hasActiveHTFAgent(uid);
       if (hasActiveHTF) {
-        // HARD CLEANUP: Immediately delete/reset all research state for HTF agents
+        // HARD CLEANUP: Immediately delete/reset all research state for HTF agents (Diagnostics EXCLUDED)
         await this.hardCleanupHTFAgentState(uid);
         logger.info(
           { uid, hasActiveHTF: true },
@@ -1203,14 +1205,14 @@ export class BackgroundResearchScheduler {
           (existingState as any).frequencyMinutes = finalFrequency;
           (existingState as any).mode = mode;
         }
-        
+
         // CRITICAL FIX: When interval is reused, the existing setInterval callback
         // will continue to fire every intervalMs. We don't need to manually trigger
         // execution here - the interval tick will handle it automatically.
         // Just ensure nextRunAt is calculated correctly for diagnostic purposes.
         const now = new Date();
         const intervalMs = finalFrequency * 60 * 1000;
-        
+
         if (existingState) {
           if (!existingState.lastRunAt) {
             // Never run before - next run is now (interval will fire soon)
@@ -1238,7 +1240,7 @@ export class BackgroundResearchScheduler {
             );
           }
         }
-        
+
         // CRITICAL: The existing interval callback (created at line ~1132) will continue
         // to fire every intervalMs and call processUserResearchSafe(uid).
         // That callback is responsible for:
@@ -1246,14 +1248,14 @@ export class BackgroundResearchScheduler {
         // 2. Updating lastRunAt after each execution
         // 3. Calculating nextRunAt for the next cycle
         // We don't need to manually trigger execution here - the interval handles it.
-        
+
         console.log(
           "🔥 [HARD_LOG] [INTERVAL_REUSE_COMPLETE] Interval reuse complete for:",
           uid,
           "- existing interval will continue to fire every",
           Math.round(intervalMs / 1000) + "s",
         );
-        
+
         // Return early - interval already exists and will continue to fire
         return;
       }
@@ -1305,7 +1307,7 @@ export class BackgroundResearchScheduler {
             uid,
             "- calling processUserResearchSafe()",
           );
-          
+
           // CRITICAL FIX: Update lastRunAt BEFORE execution to prove interval is firing
           // This ensures diagnostic detects execution even if research fails/skips
           const tickTime = new Date();
@@ -1320,7 +1322,7 @@ export class BackgroundResearchScheduler {
               tickTime.toISOString(),
             );
           }
-          
+
           // CRITICAL FIX: Update Firestore lastRunAt IMMEDIATELY when interval fires
           // This ensures diagnostics always see the latest execution time
           // even if processUserResearch() fails or returns early
@@ -1345,10 +1347,10 @@ export class BackgroundResearchScheduler {
               "Failed to update Firestore lastRunAt on interval tick",
             );
           }
-          
+
           // Execute research (may skip if paused, but lastRunAt is already updated)
           await this.processUserResearchSafe(uid);
-          
+
           // Update nextRunAt after execution completes
           if (state) {
             const frequencyMinutes = (state as any).frequencyMinutes || 5;
@@ -1646,7 +1648,7 @@ export class BackgroundResearchScheduler {
       // HTF agents execute independently via TradingAgentScheduler → AgentExecutionService
       const hasActiveHTF = await this.hasActiveHTFAgent(uid);
       if (hasActiveHTF) {
-        // HARD CLEANUP: Immediately delete/reset all research state for HTF agents
+        // HARD CLEANUP: Immediately delete/reset all research state for HTF agents (Diagnostics EXCLUDED)
         await this.hardCleanupHTFAgentState(uid);
         logger.info(
           { uid, hasActiveHTF: true },
@@ -2243,8 +2245,8 @@ export class BackgroundResearchScheduler {
       // CoinGecko is optional - do NOT require it for READY status
       const readinessVerdict: "READY" | "NOT_READY" =
         telegramSetupStatus === "Connected" &&
-        cryptocompareStatus === "OK" &&
-        providerAPIsValid
+          cryptocompareStatus === "OK" &&
+          providerAPIsValid
           ? "READY"
           : "NOT_READY";
 
@@ -2476,7 +2478,7 @@ export class BackgroundResearchScheduler {
     // If they do, it's a bug - log and abort immediately
     const hasActiveHTF = await this.hasActiveHTFAgent(uid);
     if (hasActiveHTF) {
-      // HARD CLEANUP: Immediately delete/reset all research state for HTF agents
+      // HARD CLEANUP: Immediately delete/reset all research state for HTF agents (Diagnostics EXCLUDED)
       await this.hardCleanupHTFAgentState(uid);
       logger.error(
         { uid, hasActiveHTF: true },
@@ -3553,13 +3555,13 @@ export class BackgroundResearchScheduler {
                 } else {
                   // CRITICAL: Save history for ALL research cycles, regardless of signal or tradePlan
                   // History must reflect every research attempt, including HOLD signals
-                  
+
                   const historyPrice = metadata?.price || fullResult.price || 0;
-                  
+
                   // Determine status based on signal and tradePlan
                   let historyStatus: "EXECUTABLE" | "REJECTED" | "HOLD" = "HOLD";
                   let rejectionReason: string | undefined = undefined;
-                  
+
                   if (signal === "BUY" || signal === "SELL") {
                     if (tradePlan) {
                       historyStatus = "EXECUTABLE";

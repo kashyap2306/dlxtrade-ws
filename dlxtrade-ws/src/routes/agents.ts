@@ -84,9 +84,9 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
       // A) ROUTE FIX - Reuse existing exchange config / exchange status logic
       const exchangeStatus = await CrowdConsensusService.getExchangeConnectionStatus(uid);
-      
+
       const data = await CrowdConsensusService.getExchangeConsensusBreakdown();
-      
+
       // Ensure the route returns proper format with connection status and reason
       const response = {
         ...data,
@@ -96,7 +96,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
           reason: exchangeStatus.connected ? undefined : exchangeStatus.message
         }
       };
-      
+
       return reply.code(200).send(response);
     } catch (err: any) {
       console.error('[CROWD CONSENSUS] exchange-breakdown ERROR:', err);
@@ -150,7 +150,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
       // Get global scheduler status
       const globalSchedulerStatus = CrowdConsensusScheduler.getStatus();
-      
+
       // Determine per-user scheduler status based on auto-trade state
       const userSchedulerStatus = {
         isRunning: autoTradeEnabled && globalSchedulerStatus.isRunning,
@@ -613,7 +613,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
         const userAgents = await firestoreAdapter.getUserTradingAgents(uid);
         const activeAgent = userAgents.find((a: any) => a.status === 'ACTIVE') || userAgents[0];
-        
+
         // Get scheduler status
         let scheduler: any = null;
         try {
@@ -629,34 +629,34 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
         const { TradingAgent } = await import('../services/tradingAgent');
         const rawDiagnostics = await TradingAgent.getDiagnostics(activeAgent.id, limit, uid);
-        
+
         // FILTER OUT system-level AUTO_TRADE diagnostics that don't evaluate real trading pairs
         const diagnostics = rawDiagnostics.filter((diag: any) => {
           // Exclude system-level auto-trade cycle diagnostics
-          if (diag.symbol === 'AUTO_TRADE_CYCLE' || 
-              diag.agentId === 'AUTO_TRADE_AGENT' ||
-              diag.pair === 'AUTO_TRADE_CYCLE' ||
-              diag.tradingPair === 'AUTO_TRADE_CYCLE') {
+          if (diag.symbol === 'AUTO_TRADE_CYCLE' ||
+            diag.agentId === 'AUTO_TRADE_AGENT' ||
+            diag.pair === 'AUTO_TRADE_CYCLE' ||
+            diag.tradingPair === 'AUTO_TRADE_CYCLE') {
             return false;
           }
-          
+
           // Only show diagnostics that evaluated real trading symbols or have valid trading data
-          const hasRealSymbol = diag.tradingPair && 
-                               diag.tradingPair !== 'AUTO_TRADE_CYCLE' && 
-                               diag.tradingPair !== '--';
+          const hasRealSymbol = diag.tradingPair &&
+            diag.tradingPair !== 'AUTO_TRADE_CYCLE' &&
+            diag.tradingPair !== '--';
           const hasValidDirection = diag.direction && diag.direction !== '--';
           const hasSignalData = diag.signal?.direction;
-          
+
           // Include if it has real trading pair OR valid direction OR signal data
           return hasRealSymbol || hasValidDirection || hasSignalData;
         });
-        
+
         // Get real-time agent status from Firestore
         const currentAgentConfig = await firestoreAdapter.getTradingAgentConfig(activeAgent.id);
         const agentStatus = currentAgentConfig?.status || 'UNKNOWN';
-        
-        return { 
-          diagnostics, 
+
+        return {
+          diagnostics,
           scheduler,
           agentStatus,
           agentConfig: currentAgentConfig
@@ -671,7 +671,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
         const userAgents = await firestoreAdapter.getUserTradingAgents(uid);
         const targetAgent = selectBBRsiAgent(userAgents);
-        
+
         // Get scheduler status
         let scheduler: any = null;
         try {
@@ -687,28 +687,28 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
         const { TradingAgent } = await import('../services/tradingAgent');
         const rawDiagnostics = await TradingAgent.getDiagnostics(targetAgent.id, limit, uid);
-        
+
         // FILTER OUT system-level AUTO_TRADE diagnostics that don't evaluate real trading pairs
         const diagnostics = rawDiagnostics.filter((diag: any) => {
           // Exclude system-level auto-trade cycle diagnostics
-          if (diag.symbol === 'AUTO_TRADE_CYCLE' || 
-              diag.agentId === 'AUTO_TRADE_AGENT' ||
-              diag.pair === 'AUTO_TRADE_CYCLE' ||
-              diag.tradingPair === 'AUTO_TRADE_CYCLE') {
+          if (diag.symbol === 'AUTO_TRADE_CYCLE' ||
+            diag.agentId === 'AUTO_TRADE_AGENT' ||
+            diag.pair === 'AUTO_TRADE_CYCLE' ||
+            diag.tradingPair === 'AUTO_TRADE_CYCLE') {
             return false;
           }
-          
+
           // Only show diagnostics that evaluated real trading symbols or have valid trading data
-          const hasRealSymbol = diag.tradingPair && 
-                               diag.tradingPair !== 'AUTO_TRADE_CYCLE' && 
-                               diag.tradingPair !== '--';
+          const hasRealSymbol = diag.tradingPair &&
+            diag.tradingPair !== 'AUTO_TRADE_CYCLE' &&
+            diag.tradingPair !== '--';
           const hasValidDirection = diag.direction && diag.direction !== '--';
           const hasSignalData = diag.signal?.direction;
-          
+
           // Include if it has real trading pair OR valid direction OR signal data
           return hasRealSymbol || hasValidDirection || hasSignalData;
         });
-        
+
         return { diagnostics, scheduler };
       }
 
@@ -720,8 +720,12 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         }
 
         const userAgents = await firestoreAdapter.getUserTradingAgents(uid);
-        const targetAgent = userAgents.find((a: any) => String(a?.name || '').toLowerCase().includes('htf trend filter'));
-        
+        // CRITICAL: Resolve by strategyType, fall back to name-based lookup
+        const targetAgent = userAgents.find((a: any) =>
+          a.strategyType === 'HTF_TREND_FILTER' ||
+          String(a?.name || '').toLowerCase().includes('htf trend filter')
+        );
+
         // Get scheduler status
         let scheduler: any = null;
         try {
@@ -735,42 +739,41 @@ export async function agentsRoutes(fastify: FastifyInstance) {
           return reply.code(200).send({ diagnostics: [], scheduler, agentStatus: 'NOT_FOUND' });
         }
 
-        // CRITICAL FIX: HTF diagnostics are saved with FIXED agentId 'htf-trend-filter-agent'
-        // NOT with the individual agent ID like 'htf_trend_filter_HLNfoLg8thRFmi90Y6wuZBdMENP2_1769076615353'
-        // This ensures all HTF diagnostics are stored in a single collection per user
+        // CRITICAL FIX: Use actual targetAgent.id for diagnostics fetch
+        // This ensures compatibility with the unique agentId-based storage in AgentExecutionService
         const { TradingAgent } = await import('../services/tradingAgent');
-        const rawDiagnostics = await TradingAgent.getDiagnostics('htf-trend-filter-agent', limit, uid);
-        
+        const rawDiagnostics = await TradingAgent.getDiagnostics(targetAgent.id, limit, uid);
+
         // FILTER OUT system-level AUTO_TRADE diagnostics that don't evaluate real trading pairs
         const filteredDiagnostics = rawDiagnostics.filter((diag: any) => {
           // Exclude system-level auto-trade cycle diagnostics
-          if (diag.symbol === 'AUTO_TRADE_CYCLE' || 
-              diag.agentId === 'AUTO_TRADE_AGENT' ||
-              diag.pair === 'AUTO_TRADE_CYCLE' ||
-              diag.tradingPair === 'AUTO_TRADE_CYCLE') {
+          if (diag.symbol === 'AUTO_TRADE_CYCLE' ||
+            diag.agentId === 'AUTO_TRADE_AGENT' ||
+            diag.pair === 'AUTO_TRADE_CYCLE' ||
+            diag.tradingPair === 'AUTO_TRADE_CYCLE') {
             return false;
           }
-          
+
           // Only show diagnostics that evaluated real trading symbols or have valid trading data
-          const hasRealSymbol = diag.tradingPair && 
-                               diag.tradingPair !== 'AUTO_TRADE_CYCLE' && 
-                               diag.tradingPair !== '--';
+          const hasRealSymbol = diag.tradingPair &&
+            diag.tradingPair !== 'AUTO_TRADE_CYCLE' &&
+            diag.tradingPair !== '--';
           const hasValidDirection = diag.direction && diag.direction !== '--';
           const hasSignalData = diag.signal?.direction;
-          
+
           // Include if it has real trading pair OR valid direction OR signal data
           return hasRealSymbol || hasValidDirection || hasSignalData;
         });
-        
+
         // Apply comprehensive UI contract filtering and enhancement
         const enhancedDiagnostics = filteredDiagnostics.map((diag: any) => {
           const isSkipped = diag.decision?.action === 'SKIP';
           const reason = diag.decision?.reason || '';
-          
+
           // B) PAIR & DIRECTION FIX - Always show evaluated symbols/directions
           let displayPair = diag.tradingPair || diag.pair;
           let displayDirection = diag.direction || diag.signal?.direction;
-          
+
           // Use "--" ONLY when symbol/direction was never evaluated
           if (!displayPair && !diag.signal?.direction && !diag.direction) {
             displayPair = '--';
@@ -778,7 +781,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
           if (!displayDirection && !diag.signal?.direction && !diag.direction) {
             displayDirection = '--';
           }
-          
+
           // C) DECISION DISPLAY - Enhanced decision with indicator breakdown
           let enhancedDecision = diag.decision;
           if (diag.decision?.indicatorBreakdown) {
@@ -790,14 +793,14 @@ export async function agentsRoutes(fastify: FastifyInstance) {
               breakdown: diag.decision.indicatorBreakdown
             };
           }
-          
+
           // D) EXECUTION STATUS - Enhanced execution status tracking
           let executionStatus = 'SKIPPED'; // Default
           let executionReason = null;
-          
+
           if (diag.execution) {
             executionStatus = diag.execution.status || 'SKIPPED';
-            
+
             // Show EXACT exchange error details (never generic "EXCHANGE ERROR")
             if (diag.execution.exchangeErrorReason) {
               executionReason = diag.execution.exchangeErrorReason;
@@ -810,7 +813,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
             // If we have a valid signal but no execution, it should have been executed
             executionStatus = 'EXECUTED';
           }
-          
+
           if (isSkipped) {
             // SKIPPED cycles: Clean up trading-related data but preserve evaluation results
             return {
@@ -821,19 +824,19 @@ export async function agentsRoutes(fastify: FastifyInstance) {
               signal: null, // Remove signal data for skipped cycles
               execution: {
                 status: 'SKIPPED',
-                reason: reason.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') || 
-                       reason.includes('EXCHANGE_ERROR') ? 'Exchange connection failed' : null
+                reason: reason.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') ||
+                  reason.includes('EXCHANGE_ERROR') ? 'Exchange connection failed' : null
               },
               decision: {
                 action: 'SKIP',
-                reason: reason.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') || 
-                       reason.includes('EXCHANGE_ERROR') ? 'SKIPPED' : reason,
+                reason: reason.includes('EXCHANGE_CREDENTIALS_DECRYPT_FAILED') ||
+                  reason.includes('EXCHANGE_ERROR') ? 'SKIPPED' : reason,
                 hasBreakdown: enhancedDecision.hasBreakdown || false,
                 breakdown: enhancedDecision.breakdown || null
               }
             };
           }
-          
+
           // For non-skipped cycles, validate and enhance data
           return {
             ...diag,
@@ -854,9 +857,9 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         // Get real-time agent status from Firestore
         const currentAgentConfig = await firestoreAdapter.getTradingAgentConfig(targetAgent.id);
         const agentStatus = currentAgentConfig?.status || 'UNKNOWN';
-        
-        return reply.code(200).send({ 
-          diagnostics: enhancedDiagnostics, 
+
+        return reply.code(200).send({
+          diagnostics: enhancedDiagnostics,
           scheduler,
           agentStatus,
           agentConfig: currentAgentConfig
@@ -1304,7 +1307,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
         const { firestoreAdapter } = await import('../services/firestoreAdapter');
         let userAgents = await firestoreAdapter.getUserTradingAgents(uid);
-        
+
         // Auto-create default agent if none exists
         if (userAgents.length === 0) {
           logger.info({ uid }, 'No trading agents found in /control, creating default agent');
@@ -1323,7 +1326,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
           await db.collection('tradingAgents').doc(defaultAgent.id).set(defaultAgent);
           userAgents = [defaultAgent];
         }
-        
+
         const activeAgent = userAgents.find((agent: any) => agent.status === 'ACTIVE') || userAgents[0];
 
         return {
@@ -1341,7 +1344,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
         const { firestoreAdapter } = await import('../services/firestoreAdapter');
         let userAgents = await firestoreAdapter.getUserTradingAgents(uid);
-        
+
         // Auto-create default agent if none exists
         if (userAgents.length === 0) {
           logger.info({ uid }, 'No BB-RSI Scalper agents found in /control, creating default agent');
@@ -1360,7 +1363,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
           await db.collection('tradingAgents').doc(defaultAgent.id).set(defaultAgent);
           userAgents = [defaultAgent];
         }
-        
+
         const activeAgent = selectBBRsiAgent(userAgents) || userAgents[0];
 
         return {
@@ -1405,35 +1408,12 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         }
 
         const { firestoreAdapter } = await import('../services/firestoreAdapter');
-        let userAgents = await firestoreAdapter.getUserTradingAgents(uid);
-        
-        // Auto-create default agent if none exists
-        if (userAgents.length === 0 || !userAgents.find((a: any) => a.strategyType === 'HTF_TREND_FILTER')) {
-          logger.info({ uid }, 'No HTF Trend Filter agents found in /control, creating default agent');
-          const db = (await import('../utils/firebase')).getFirebaseAdmin().firestore();
-          const defaultAgent = {
-            id: `htf_trend_filter_${uid}_${Date.now()}`,
-            userId: uid,
-            name: 'HTF Trend Filter Agent',
-            tradingPair: 'BTC/USDT',
-            marketType: 'futures',
-            strategyType: 'HTF_TREND_FILTER',
-            status: 'STOPPED',
-            riskPerTrade: 0.01, // 1% risk per trade (HARD LIMIT)
-            leverage: 5, // 5x leverage (HARD LIMIT)
-            maxTradesPerDay: 5, // 5 trades per day (HARD LIMIT)
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          };
-          await db.collection('tradingAgents').doc(defaultAgent.id).set(defaultAgent);
-          userAgents = [defaultAgent];
-        }
-        
-        const activeAgent = userAgents.find((a: any) => a.strategyType === 'HTF_TREND_FILTER') || userAgents[0];
+        const userAgents = await firestoreAdapter.getUserTradingAgents(uid);
+        const activeAgent = userAgents.find((a: any) => a.strategyType === 'HTF_TREND_FILTER');
 
         return {
           agentId: 'htf-trend-filter-agent',
-          status: activeAgent.status || 'STOPPED',
+          status: activeAgent?.status || 'STOPPED',
           config: activeAgent || null,
         };
       }
@@ -1566,7 +1546,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       if (agentId === 'trading-agent') {
         const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'trading-agent');
         if (!hasAccess) {
-          return reply.code(403).send({ 
+          return reply.code(403).send({
             error: 'Trading Agent access not granted yet. Please request approval from admin first.',
             code: 'AGENT_NOT_APPROVED'
           });
@@ -1576,9 +1556,9 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
         const activeAgent = userAgents.find((a: any) => a.status === 'ACTIVE');
         const targetAgent = activeAgent || userAgents[0];
-        
+
         if (!targetAgent?.id) {
-          return reply.code(400).send({ 
+          return reply.code(400).send({
             error: 'Agent document missing. Please contact admin to recreate your agent.',
             code: 'AGENT_DOCUMENT_MISSING'
           });
@@ -1587,7 +1567,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         // Check exchange connection for manual start
         const exchangeConfig = await firestoreAdapter.getExchangeConfig(user.uid);
         if (!exchangeConfig?.exchange) {
-          return reply.code(400).send({ 
+          return reply.code(400).send({
             error: 'Exchange not connected. Please connect an exchange in Settings first.',
             code: 'EXCHANGE_NOT_CONNECTED'
           });
@@ -1616,15 +1596,15 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
         const exchangeConfig = await firestoreAdapter.getExchangeConfig(user.uid);
         if (!exchangeConfig) {
-          return reply.code(400).send({ 
-            error: 'EXCHANGE_NOT_FOUND - No exchange configuration found. Please connect your exchange in Settings.' 
+          return reply.code(400).send({
+            error: 'EXCHANGE_NOT_FOUND - No exchange configuration found. Please connect your exchange in Settings.'
           });
         }
 
         const exchange = exchangeConfig.exchange;
         if (!exchange) {
-          return reply.code(400).send({ 
-            error: 'EXCHANGE_NOT_FOUND - Invalid exchange configuration. Please reconnect your exchange in Settings.' 
+          return reply.code(400).send({
+            error: 'EXCHANGE_NOT_FOUND - Invalid exchange configuration. Please reconnect your exchange in Settings.'
           });
         }
 
@@ -1633,7 +1613,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         const encryptedPassphrase = exchangeConfig.passphraseEncrypted;
 
         if (!encryptedApiKey || !encryptedSecret) {
-          return reply.code(400).send({ 
+          return reply.code(400).send({
             error: 'EXCHANGE_CREDENTIALS_NOT_FOUND - Encrypted keys missing. Please reconnect your exchange in Settings.',
             hasApiKey: !!encryptedApiKey,
             hasSecret: !!encryptedSecret
@@ -1645,7 +1625,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         const passphrase = encryptedPassphrase ? decrypt(encryptedPassphrase, 'user_request') : undefined;
 
         if (!apiKey || !secret) {
-          return reply.code(400).send({ 
+          return reply.code(400).send({
             error: 'EXCHANGE_CREDENTIALS_DECRYPT_FAILED - Exchange key decryption failed. Please reconnect your exchange in Settings.',
             decryptedApiKey: !!apiKey,
             decryptedSecret: !!secret
@@ -1679,7 +1659,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         const hasAccess = await AgentApprovalService.userHasAgentAccess(user.uid, 'htf-trend-filter-agent');
         console.log('[HTF START] Access check result:', hasAccess);
         if (!hasAccess) {
-          return reply.code(403).send({ 
+          return reply.code(403).send({
             error: 'HTF Trend Filter Agent access not granted yet. Please request approval from admin first.',
             code: 'AGENT_NOT_APPROVED'
           });
@@ -1688,7 +1668,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         const { firestoreAdapter } = await import('../services/firestoreAdapter');
         const exchangeConfig = await firestoreAdapter.getExchangeConfig(user.uid);
         if (!exchangeConfig?.exchange) {
-          return reply.code(400).send({ 
+          return reply.code(400).send({
             error: 'Exchange not connected. Please connect an exchange in Settings first.',
             code: 'EXCHANGE_NOT_CONNECTED'
           });
@@ -1697,7 +1677,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         // Get or create agent document
         let userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
         let targetAgent = userAgents.find((a: any) => a.strategyType === 'HTF_TREND_FILTER');
-        
+
         // Auto-create default agent if none exists
         if (!targetAgent) {
           const db = (await import('../utils/firebase')).getFirebaseAdmin().firestore();
@@ -1722,11 +1702,11 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
         // Update agent status to ACTIVE
         await firestoreAdapter.updateAgentStatus(targetAgent.id, 'ACTIVE');
-        
+
         // CRITICAL: Reload agents in scheduler so it picks up the newly activated agent
         const { tradingAgentScheduler } = await import('../services/tradingAgentScheduler');
         await tradingAgentScheduler.reloadAgents();
-        
+
         logger.info({ uid: user.uid, agentId: targetAgent.id, mode: 'manual' }, 'HTF Trend Filter Agent started in manual mode - ARMED and waiting for signals');
         return { success: true, message: 'HTF Trend Filter Agent started successfully', mode: 'manual', status: 'ARMED' };
       }
@@ -1779,7 +1759,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
         const activeAgent = userAgents.find((a: any) => a.status === 'ACTIVE');
         const targetAgent = activeAgent || userAgents[0];
-        
+
         // IDEMPOTENT: If no agent found, treat as already stopped
         if (!targetAgent?.id) {
           logger.info({ uid: user.uid, agentId }, 'Trading Agent stop called but no agent found - treating as already stopped');
@@ -1801,7 +1781,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         const { firestoreAdapter } = await import('../services/firestoreAdapter');
         const userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
         const targetAgent = userAgents.find((a: any) => a.strategyType === 'HTF_TREND_FILTER');
-        
+
         // IDEMPOTENT: If no agent found, treat as already stopped
         if (!targetAgent?.id) {
           logger.info({ uid: user.uid, agentId }, 'HTF Trend Filter Agent stop called but no agent found - treating as already stopped');
@@ -1975,7 +1955,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
         const { firestoreAdapter } = await import('../services/firestoreAdapter');
         let userAgents = await firestoreAdapter.getUserTradingAgents(user.uid);
-        
+
         // Auto-create default agent if none exists
         if (userAgents.length === 0 || !userAgents.find((a: any) => a.strategyType === 'HTF_TREND_FILTER')) {
           logger.info({ uid: user.uid }, 'No HTF Trend Filter agents found in /trades, creating default agent');
@@ -1997,7 +1977,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
           await db.collection('tradingAgents').doc(defaultAgent.id).set(defaultAgent);
           userAgents = [defaultAgent];
         }
-        
+
         const targetAgent = userAgents.find((a: any) => a.strategyType === 'HTF_TREND_FILTER') || userAgents[0];
         if (!targetAgent?.id) {
           return { trades: [] };
@@ -2449,10 +2429,10 @@ export async function agentsRoutes(fastify: FastifyInstance) {
           // Handle ENCRYPTION_SECRET_CHANGED error specifically
           if (decryptError.message?.includes('ENCRYPTION_SECRET_CHANGED')) {
             logger.warn({ uid, agentId, error: decryptError.message }, 'Exchange keys corrupted due to encryption secret change');
-            
+
             // NOTE: Do NOT attempt to mark exchange as corrupted in Firestore
             // Exchange status is managed exclusively by /exchange/connect
-            
+
             return reply.code(200).send({
               orderEndpointReachable: false,
               permissionsOk: false,
@@ -2463,7 +2443,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
               message: 'Exchange keys are invalid due to encryption secret change. Please reconnect exchange.'
             });
           }
-          
+
           // Handle other decryption errors
           throw decryptError;
         }
@@ -2472,7 +2452,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         if (!decryptedApiKey || decryptedApiKey.trim() === '') {
           throw new Error('EXCHANGE_KEYS_NOT_DECRYPTED: API key decryption failed or returned empty');
         }
-        
+
         if (!decryptedApiSecret || decryptedApiSecret.trim() === '') {
           throw new Error('EXCHANGE_KEYS_NOT_DECRYPTED: Secret key decryption failed or returned empty');
         }
@@ -2499,10 +2479,10 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
       } catch (err: any) {
         logger.error({ err, uid, agentId }, 'Exchange execution test failed');
-        
+
         // Return specific error messages based on error type
         let errorMessage = err.message || 'Exchange connection failed';
-        
+
         // Map specific errors to user-friendly messages
         if (err.message?.includes('ENCRYPTION_SECRET_CHANGED')) {
           errorMessage = 'EXCHANGE_CORRUPTED';
@@ -2515,7 +2495,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         } else if (err.message?.includes('SYMBOL_NOT_TRADABLE')) {
           errorMessage = 'SYMBOL_NOT_TRADABLE';
         }
-        
+
         return reply.code(200).send({
           orderEndpointReachable: false,
           permissionsOk: false,
@@ -2536,16 +2516,16 @@ export async function agentsRoutes(fastify: FastifyInstance) {
   // POST /api/agents/:agentId/execute-manual-trade - Execute manual trade (test or real)
   fastify.post('/:agentId/execute-manual-trade', {
     preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ 
-    Params: { agentId: string }; 
-    Body: { pair: string; side: 'LONG' | 'SHORT'; quantity: number; executeRealTrade?: boolean } 
+  }, async (request: FastifyRequest<{
+    Params: { agentId: string };
+    Body: { pair: string; side: 'LONG' | 'SHORT'; quantity: number; executeRealTrade?: boolean }
   }>, reply: FastifyReply) => {
     try {
       const user = (request as any).user;
       const uid = user?.uid;
       const { agentId } = request.params;
       const { pair, side, quantity, executeRealTrade } = request.body;
-      
+
       // Log full request body at route entry
       logger.info({
         tag: '[HTF_MANUAL_TRADE_REQUEST]',
@@ -2581,7 +2561,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       // Get user's trading agent
       const userAgents = await firestoreAdapter.getUserTradingAgents(uid);
       const targetAgent = userAgents.find((a: any) => String(a?.name || '').toLowerCase().includes('htf trend filter'));
-      
+
       if (!targetAgent?.id) {
         return reply.code(404).send({ error: 'HTF Trend Filter Agent not found' });
       }
@@ -2591,7 +2571,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
 
       // Call the SAME execution path used by the agent
       const { AgentExecutionService } = await import('../services/agentExecutionService');
-      
+
       // Create manual execution context
       const manualExecutionContext = {
         agentId: targetAgent.id,
@@ -2611,7 +2591,7 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         side: validatedTrade.side,
         quantity: validatedTrade.quantity
       }, 'Real manual trade request - order will be placed on Bitget Futures');
-      
+
       const executionResult = await AgentExecutionService.executeManualTrade(uid, manualExecutionContext);
 
       return reply.code(200).send({
@@ -2627,9 +2607,9 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       if (err instanceof z.ZodError) {
         return reply.code(400).send({ error: 'Invalid trade parameters', details: err.errors });
       }
-      
+
       logger.error({ err }, 'Error executing manual trade');
-      return reply.code(500).send({ 
+      return reply.code(500).send({
         success: false,
         error: err.message || 'Error executing manual trade',
         rawError: err.toString()
