@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import Toast from '../components/Toast';
 import { useAuth } from '../hooks/useAuth';
@@ -56,6 +56,7 @@ export default function TradingAgentControl() {
   const [isLoadingDiagnostics, setIsLoadingDiagnostics] = useState(false);
   const [isLoadingTrades, setIsLoadingTrades] = useState(false);
   const [controlDataLoaded, setControlDataLoaded] = useState(false); // Track if control was loaded once
+  const hasFetchedOnceRef = useRef(false); // ONE-SHOT GUARD: Prevent multiple fetches on mount/refresh
 
   // Check Firestore approval (users/{uid}.approvedAgents) and resolve agent ID
   useEffect(() => {
@@ -109,6 +110,7 @@ export default function TradingAgentControl() {
   // This prevents stale data from previous agent being shown
   useEffect(() => {
     console.log('[HTF_DIAGNOSTICS] Agent changed, resetting diagnostics state');
+    hasFetchedOnceRef.current = false; // ONE-SHOT GUARD RESET: Allow fresh fetch for new agent
     setDiagnosticsEntries([]);
     setSkippedTrades([]);
     setDiagnosticsLimit(10); // Reset to initial limit
@@ -118,23 +120,36 @@ export default function TradingAgentControl() {
   const processDiagnostics = (rawEntries: any[]): any[] => {
     if (!rawEntries || rawEntries.length === 0) return [];
 
-    // STRICT REQUIREMENT: Only show BTC/USDT and ETH/USDT pairs
     const allowedPairs = ['BTC/USDT', 'ETH/USDT'];
+    const bucketSizeMs = 300000; // 5 minute bucket normalization
 
-    // Filter entries to only allowed pairs and valid tradingPair
-    const filteredEntries = rawEntries.filter((entry: any) => {
+    // Use Map to group by bucketId - ensures exactly ONE entry per 5-minute cycle globally
+    const bucketMap = new Map<number, any>();
+
+    rawEntries.forEach((entry: any) => {
       const pair = entry.tradingPair || entry.pair;
-      return pair && allowedPairs.includes(pair);
+      if (pair && allowedPairs.includes(pair)) {
+        const timestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : 0;
+        // Normalize to floor of 5-minute interval (00, 05, 10...)
+        const bucketId = Math.floor(timestamp / bucketSizeMs) * bucketSizeMs;
+
+        const existing = bucketMap.get(bucketId);
+        // Requirement: Keep ONLY the latest entry for this bucket cycle
+        // and ensure same 5-minute timestamp never appears twice
+        const existingTs = existing ? new Date(existing._rawTimestamp || existing.timestamp).getTime() : 0;
+        if (!existing || timestamp > existingTs) {
+          bucketMap.set(bucketId, {
+            ...entry,
+            timestamp: new Date(bucketId).toISOString(), // Force exact bucket timestamp
+            _rawTimestamp: entry.timestamp, // Keep raw for comparison
+            bucketId // Attach for stable React key
+          });
+        }
+      }
     });
 
-    // Sort by timestamp descending (latest first)
-    filteredEntries.sort((a: any, b: any) => {
-      const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
-      const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
-      return bTime - aTime;
-    });
-
-    return filteredEntries;
+    // Convert map to array and sort by bucketId descending (most recent cycle first)
+    return Array.from(bucketMap.values()).sort((a, b) => b.bucketId - a.bucketId);
   };
 
   // Load additional diagnostics for "View more"
@@ -143,24 +158,27 @@ export default function TradingAgentControl() {
 
     setIsLoadingDiagnostics(true);
     try {
-      // Increase limit by 50
-      const newLimit = diagnosticsLimit + 50;
-      console.log('[HTF_VIEW_MORE] Increasing limit from', diagnosticsLimit, 'to', newLimit);
+      // Requirement: Slice EXACTLY 50 unique cycles for "View More"
+      const newLimit = 50;
+      console.log('[HTF_VIEW_MORE] Setting limit to EXACTLY', newLimit);
 
-      // Fetch with new limit
-      const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, newLimit);
+      // Requirement: For View More (50 cycles) fetch AT LEAST 150 raw entries
+      const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 150);
       const entries = diagnosticsResp.data?.diagnostics || [];
 
-      console.log('[HTF_VIEW_MORE] Received', entries.length, 'entries from API');
+      console.log('[HTF_VIEW_MORE] Received', entries.length, 'raw entries from API');
 
-      // Process all diagnostics
-      const processedEntries = processDiagnostics(entries);
+      // Process diagnostics into unique cycles (one per 5-min bucket)
+      const processedBuckets = processDiagnostics(entries);
 
-      console.log('[HTF_VIEW_MORE] Processed', processedEntries.length, 'entries');
+      // Slice to EXACTLY the requested limit of 50 unique cycles
+      const finalEntries = processedBuckets.slice(0, newLimit);
+
+      console.log('[HTF_VIEW_MORE] Resulting unique cycles:', finalEntries.length);
 
       // Update state with new entries
-      setDiagnosticsEntries(processedEntries);
-      setDiagnosticsLimit(newLimit); // Update limit for next fetch
+      setDiagnosticsEntries(finalEntries);
+      setDiagnosticsLimit(newLimit);
     } catch (err) {
       console.error('Error loading more diagnostics:', err);
     } finally {
@@ -174,6 +192,12 @@ export default function TradingAgentControl() {
     if (!user || !pageReady) {
       return;
     }
+
+    // ONE-SHOT GUARD: Only load data once on mount to prevent double-calls on refresh
+    if (hasFetchedOnceRef.current) {
+      return;
+    }
+    hasFetchedOnceRef.current = true;
 
     // Load data ONCE on mount
     loadData();
@@ -196,18 +220,8 @@ export default function TradingAgentControl() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, pageReady]); // Stable dependencies - do NOT include autoTradeEnabled or loadData
 
-  // Separate effect to handle autoTradeEnabled changes
-  useEffect(() => {
-    if (!user || !pageReady || !controlDataLoaded) {
-      return;
-    }
-
-    // When autoTradeEnabled changes, refresh diagnostics and trades
-    if (autoTradeEnabled) {
-      loadDiagnosticsAndTrades();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoTradeEnabled]); // Only trigger when autoTradeEnabled changes
+  // REMOVED: Redundant effect that caused double-fetches on initial status load
+  // autoTradeEnabled is handled manually in handleToggleAutoTrade and loadDiagnosticsAndTrades
 
   // Update countdown display every second (based on backend timestamps)
   useEffect(() => {
@@ -223,11 +237,17 @@ export default function TradingAgentControl() {
   }, [scheduler?.nextExecutionAt, autoTradeEnabled]);
 
   const loadData = async () => {
-    if (!user || !resolvedAgentId) {
+    if (!user || !resolvedAgentId || loadingData) {
       return;
     }
 
     setLoadingData(true);
+
+    // ONE-SHOT FIX: Clear existing state on manual refresh or initial load
+    // This prevents blending of old data with new data
+    setDiagnosticsEntries([]);
+    setSkippedTrades([]);
+    setTrades([]);
 
     try {
       // For HTF Trend Filter Agent, we strictly use ONLY the diagnostics endpoint
@@ -289,12 +309,13 @@ export default function TradingAgentControl() {
         // Load diagnostics - ALWAYS fetch to ensure fresh data
         setIsLoadingDiagnostics(true);
         try {
-          // Use current diagnosticsLimit state (starts at 10)
-          const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, diagnosticsLimit);
+          // Requirement: For main table (10 cycles) fetch AT LEAST 30 raw entries.
+          // For View More (50 cycles) fetch AT LEAST 150 raw entries.
+          const rawFetchLimit = diagnosticsLimit === 10 ? 30 : 150;
+          const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, rawFetchLimit);
           setScheduler(diagnosticsResp.data?.scheduler || null);
 
           // SYNC AGENT STATE: Update status and config from diagnostics response
-          // This allows us to skip the /control API call entirely for HTF
           if (diagnosticsResp.data?.agentStatus) {
             setAutoTradeEnabled(diagnosticsResp.data.agentStatus === 'ACTIVE');
           }
@@ -306,21 +327,17 @@ export default function TradingAgentControl() {
           // Extract diagnostics entries for Recent Cycle Results
           const entries = diagnosticsResp.data?.diagnostics || [];
 
-          console.log('[HTF_API_DEBUG] Received', entries.length, 'entries from API with limit:', diagnosticsLimit);
-          if (entries.length > 0) {
-            console.log('[HTF_API_DEBUG] First entry has indicators:', !!entries[0]?.runtimeState?.indicators?.results);
-            if (entries[0]?.runtimeState?.indicators?.results) {
-              console.log('[HTF_API_DEBUG] Indicator keys:', Object.keys(entries[0].runtimeState.indicators.results));
-            }
-          }
+          // Process diagnostics into unique cycles (one per 5-min bucket)
+          // Threshold slicing to EXACTLY the requested limit (10 or 50) of unique cycles
+          const aggregatedBuckets = processDiagnostics(entries);
+          const finalEntries = aggregatedBuckets.slice(0, diagnosticsLimit);
 
-          // Process diagnostics into entries
-          const aggregatedEntries = processDiagnostics(entries);
-          console.log('[HTF_DIAGNOSTICS] Received entries:', entries.length);
-          console.log('[HTF_DIAGNOSTICS] Processed entries:', aggregatedEntries.length);
-          console.log('[HTF_STATE_DEBUG] Setting diagnosticsEntries state with:', aggregatedEntries.length, 'entries');
-          // Set processed entries
-          setDiagnosticsEntries(aggregatedEntries);
+          console.log('“HTF diagnostics fetch triggered”'); // MANDATORY DEBUG LOG
+          console.log('[HTF_DIAGNOSTICS] Received raw entries:', entries.length);
+          console.log('[HTF_DIAGNOSTICS] Processed unique cycles:', finalEntries.length);
+
+          // Set processed entries - ALWAYS REPLACE, NEVER APPEND
+          setDiagnosticsEntries(finalEntries);
         } catch (err) {
           console.error('Error loading diagnostics:', err);
         } finally {
@@ -570,7 +587,7 @@ export default function TradingAgentControl() {
                   </thead>
                   <tbody>
                     {trades.map((trade) => (
-                      <tr key={trade.id} className="border-b border-purple-500/10 hover:bg-slate-700/30 transition-colors">
+                      <tr key={trade.id || `trade_${trade.entryTime || Math.random()}`} className="border-b border-purple-500/10 hover:bg-slate-700/30 transition-colors">
                         <td className="py-3 pr-6 text-gray-300">{trade.symbol || 'BTC/USDT'}</td>
                         <td className={`py-3 pr-6 font-medium ${trade.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>{trade.direction || 'BUY'}</td>
                         <td className="py-3 pr-6 text-gray-300">{typeof trade.entryPrice === 'number' ? `$${trade.entryPrice.toFixed(2)}` : '-'}</td>
@@ -1049,7 +1066,7 @@ export default function TradingAgentControl() {
 
                         return (
                           <tr
-                            key={`diagnostic_${idx}`}
+                            key={`htf_cycle_${entry.bucketId}`}
                             className="border-b border-purple-500/10 hover:bg-slate-800/50 transition-colors"
                           >
                             <td className="py-3 px-4 text-white font-semibold">
@@ -1116,7 +1133,7 @@ export default function TradingAgentControl() {
                       </tr>
                     </thead>
                     <tbody>
-                      {skippedTrades.map((entry, index) => {
+                      {skippedTrades.map((entry) => {
                         // Use research_history schema directly - ONLY AUTO_TRADE entries
                         const displayPair = "AUTO_TRADE";
                         const displayDirection = "-";
@@ -1141,7 +1158,7 @@ export default function TradingAgentControl() {
                         }
 
                         return (
-                          <tr key={entry.id || index} className="border-b border-purple-500/10 hover:bg-slate-800/50 transition-colors">
+                          <tr key={entry.id || `skipped_${entry.timestamp || Math.random()}`} className="border-b border-purple-500/10 hover:bg-slate-800/50 transition-colors">
                             <td className="py-3 px-4 text-white font-semibold">
                               {displayPair}
                             </td>

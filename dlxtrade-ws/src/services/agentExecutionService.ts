@@ -38,10 +38,6 @@ export class AgentExecutionService {
   // CRITICAL: Exchange usability cache per cycle to avoid repeated checks
   private static exchangeUsabilityCache: Map<string, { usable: boolean; reason: string; exchange?: string; checkedAt: number }> = new Map();
 
-  // ONE-SHOT FIX: Global execution lock for HTF agents
-  private static htfCycleLocks: Set<string> = new Set();
-  // CRITICAL: Write lock for diagnostics to prevent duplicates per cycle
-  private static htfDiagnosticWriteLock: Set<string> = new Set();
   private static lastSchedulerCycleId: string = '';
 
   constructor(marketDataProvider: MarketDataProvider) {
@@ -418,12 +414,10 @@ export class AgentExecutionService {
     const fiveMinuteBucket = Math.floor(tickTime / (5 * 60 * 1000));
     const schedulerCycleId = `scheduler_bucket_${fiveMinuteBucket}`;
 
-    // ONE-SHOT FIX: Clear HTF execution locks when cycle changes
+    // ONE-SHOT FIX: Update lastSchedulerCycleId when cycle changes
     if (schedulerCycleId !== AgentExecutionService.lastSchedulerCycleId) {
-      AgentExecutionService.htfCycleLocks.clear();
-      AgentExecutionService.htfDiagnosticWriteLock.clear();
-      AgentExecutionService.lastSchedulerCycleId = schedulerCycleId;
-      logger.info({ schedulerCycleId }, 'New scheduler cycle started - cleared HTF execution and write locks');
+      AgentExecutionService.lastSchedulerCycleId = schedulerCycleId || '';
+      logger.info({ schedulerCycleId }, 'New scheduler cycle started');
     }
 
     // CRITICAL: Clear exchange usability cache at start of each cycle
@@ -532,22 +526,14 @@ export class AgentExecutionService {
   ): Promise<void> {
     const agentId = agent['config'].id;
     const agentConfig = agent['config'];
+    // FIX: Define triggerType early to avoid ReferenceError in trace logs
+    const triggerType = context === 'background_job' ? 'scheduler' : 'manual';
 
     // Check if this is an HTF Trend Filter agent early for proper scoping
     const isHTFAgent = (agentConfig as any).strategyType === 'HTF_TREND_FILTER' ||
       (agentConfig.name && agentConfig.name.includes('HTF Trend Filter'));
 
-    // ONE-SHOT FIX: Global in-memory execution lock
-    // Prevents duplicate executions in the same scheduler cycle across ALL paths
-    if (isHTFAgent && schedulerCycleId) {
-      const lockKey = `${agentId}_${schedulerCycleId}`;
-      if (AgentExecutionService.htfCycleLocks.has(lockKey)) {
-        console.log(`[HTF_CYCLE_LOCK] Blocking duplicate execution for ${lockKey}`);
-        return; // RETURN IMMEDIATELY - No logic, NO writes
-      }
-      AgentExecutionService.htfCycleLocks.add(lockKey);
-      console.log(`[HTF_CYCLE_LOCK] Acquired execution lock for ${lockKey}`);
-    }
+
 
     // ABSOLUTE GUARD (STRICT): HTF analysis execution allowed ONLY from scheduler
     // Blocks page refresh, UI load, diagnostics fetch, control route, and any user_request
@@ -566,66 +552,84 @@ export class AgentExecutionService {
     const bucketStartMs = Math.floor(effectiveTickTime / (5 * 60 * 1000)) * (5 * 60 * 1000);
     const htfCycleId = `${agentId}_${symbol}_${bucketStartMs}`;
 
-    // STRICT 5-MINUTE BUCKET GUARD: Prevent duplicate HTF executions within same bucket
-    // Check if diagnostic already exists for this agentId + userId + tradingPair + bucket
-    // CRITICAL: Query the CORRECT collection path (users/{uid}/agentDiagnostics/{agentId}/entries)
+    let wasLockAcquired = false;
+    let bucketGuardPassed = false; // Guard to track if query-based bucket check passed
+
+    // ATOMIC WRITE-TIME BUCKET LOCK (PAIR-AWARE): Prevent duplicate HTF executions across any overlap
+    // This provides a hard atomic guarantee even across multiple instances or concurrent calls
     if (isHTFAgent) {
-      try {
-        const db = getFirebaseAdmin().firestore();
-        const bucketEndMs = bucketStartMs + (5 * 60 * 1000);
-        const userId = agentConfig.userId;
+      const userId = agentConfig.userId;
+      if (!userId) {
+        logger.warn({ agentId }, '[HTF_ATOMIC_LOCK] No userId found - skipping lock');
+        // If no userId, we can't lock, but we shouldn't allow the writer either without identity
+        return;
+      } else {
+        try {
+          const db = getFirebaseAdmin().firestore();
+          // Lock path: users/{uid}/agentDiagnostics/{agentId}/locks/htf_{symbol}_{bucketStartMs}
+          // CRITICAL: symbol included in path to allow multiple pairs per agent but block same-pair duplicates
+          const lockDocPath = `users/${userId}/agentDiagnostics/${agentId}/locks/htf_${symbol}_${bucketStartMs}`;
+          const lockDocRef = db.doc(lockDocPath);
 
-        if (!userId) {
-          logger.warn({ agentId }, '[HTF_BUCKET_GUARD] No userId found - skipping bucket check');
-        } else {
-          // Query for existing diagnostics in this exact 5-minute bucket
-          // CRITICAL: Use correct collection path: users/{uid}/agentDiagnostics/{agentId}/entries
-          const entriesRef = db
-            .collection('users')
-            .doc(userId)
-            .collection('agentDiagnostics')
-            .doc(agentId)
-            .collection('entries');
-
-          // PERFORMANCE OPTIMIZATION: Use single-field timestamp filter to avoid FAILED_PRECONDITION
-          // while composite indexes are building or missing. Filter tradingPair in-memory.
-          const snapshot = await entriesRef
-            .where('timestamp', '>=', new Date(bucketStartMs))
-            .where('timestamp', '<', new Date(bucketEndMs))
-            .get();
-
-          const hasDuplicate = snapshot.docs.some(doc => {
-            const data = doc.data();
-            const entryPair = data.tradingPair || data.pair;
-            return entryPair === tradingPair;
+          wasLockAcquired = await db.runTransaction(async (transaction) => {
+            const lockDoc = await transaction.get(lockDocRef);
+            if (lockDoc.exists) {
+              return false;
+            }
+            transaction.set(lockDocRef, {
+              createdAt: new Date(),
+              pid: process.pid,
+              schedulerCycleId: schedulerCycleId || 'manual',
+              bucketStartMs,
+              tradingPair,
+              symbol
+            });
+            return true;
           });
 
-          if (hasDuplicate) {
-            logger.info({
-              agentId,
-              userId,
-              tradingPair,
-              bucketStartMs,
-              bucketEndMs,
-              existingCount: snapshot.size
-            }, '[HTF_BUCKET_GUARD] Diagnostic already exists for this 5-minute bucket - skipping execution');
-            return; // EXIT EXECUTION: Guard blocks duplicate per 5-min bucket
+          if (!wasLockAcquired) {
+            logger.info({ agentId, userId, symbol, bucketStartMs }, '[HTF_ATOMIC_LOCK] Lock already exists for this 5-minute bucket and symbol - skipping execution');
+            return; // EXIT: Another process/instance already acquired the lock
           }
 
-          logger.debug({
+          logger.debug({ agentId, lockDocPath }, '[HTF_ATOMIC_LOCK] Lock acquired successfully');
+
+          // 5. HTF_BUCKET_GUARD: Secondary query-based check for existing diagnostics
+          // This ensures that even if we have the lock doc, we don't proceed if a diagnostic exists
+          // CRITICAL: Change from fail-open to FAIL-CLOSE as per requirements
+          try {
+            const entriesRef = db.collection('users').doc(userId).collection('agentDiagnostics').doc(agentId).collection('entries');
+
+            // This query requires a composite index on (tradingPair, runtimeState.bucketStartMs)
+            const existing = await entriesRef
+              .where('tradingPair', '==', tradingPair)
+              .where('runtimeState.bucketStartMs', '==', bucketStartMs)
+              .limit(1)
+              .get();
+
+            if (!existing.empty) {
+              logger.info({ agentId, userId, tradingPair, bucketStartMs }, '[HTF_BUCKET_GUARD] Diagnostic already exists for this bucket - skipping execution');
+              return; // Already executed and saved
+            }
+
+            // Mark as passed only if query successfully verified no existing diagnostic
+            bucketGuardPassed = true;
+          } catch (guardError: any) {
+            // FAIL-CLOSE: If the query fails (missing index/FAILED_PRECONDITION), we stop
+            logger.error({
+              agentId,
+              error: guardError.message,
+              code: guardError.code
+            }, '[HTF_BUCKET_GUARD] Guard failed (likely missing index) - FAIL CLOSED');
+            return; // EXIT IMMEDIATELY - No logic runs, NO diagnostics written
+          }
+        } catch (lockError) {
+          logger.error({
             agentId,
-            userId,
-            tradingPair,
-            bucketStartMs,
-            bucketEndMs
-          }, '[HTF_BUCKET_GUARD] No existing diagnostic found - proceeding with execution');
+            error: lockError instanceof Error ? lockError.message : String(lockError)
+          }, '[HTF_ATOMIC_LOCK] Transaction failed while acquiring lock - skipping for safety');
+          return; // Skip on error to ensure we never allow duplicates under contention
         }
-      } catch (bucketCheckError) {
-        logger.error({
-          agentId,
-          error: bucketCheckError instanceof Error ? bucketCheckError.message : 'Unknown error'
-        }, '[HTF_BUCKET_GUARD] Failed to check for existing diagnostics - proceeding with execution');
-        // Continue execution on error to avoid blocking legitimate executions
       }
     }
 
@@ -2037,8 +2041,20 @@ export class AgentExecutionService {
       // This ensures diagnostics are written EVERY 5-minute cycle regardless of early returns
       // The finally block executes even when there are return statements in the try block
       if (isHTFAgent) {
+        // HARD GUARD: Only write HTF diagnostics if BOTH the atomic lock and bucket guard passed
+        // This prevents threads that lost the atomic race or encountered guard errors from writing "skipped" diagnostics in finally
+        if (!wasLockAcquired || !bucketGuardPassed) {
+          logger.debug({
+            agentId: agentId,
+            pair: tradingPair,
+            bucketStartMs,
+            wasLockAcquired,
+            bucketGuardPassed
+          }, 'HTF diagnostic write SKIPPED - lock not acquired or bucket guard failed');
+          return;
+        }
+
         try {
-          const htfAgentId = agentConfig.id;
 
 
 
@@ -2050,7 +2066,7 @@ export class AgentExecutionService {
           // HARD SAFETY ASSERTION: If indicators are missing, we CANNOT save a valid HTF diagnostic
           // This prevents "empty" or "default" diagnostics from polluting the history
           if (!ltfResults || Object.keys(ltfResults).length === 0) {
-            logger.warn({ agentId: htfAgentId, cycleId: diagnostics.cycleId }, 'HTF diagnostic skipped: No indicator results available (execution likely blocked early)');
+            logger.warn({ agentId: agentId, cycleId: diagnostics.cycleId }, 'HTF diagnostic skipped: No indicator results available (execution likely blocked early)');
 
             // Mark as written to prevent retries in this tick, effectively skipping this cycle
             // This is safer than writing a broken record
@@ -2116,19 +2132,9 @@ export class AgentExecutionService {
           const normalizedPair = (tradingPair || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
           const deterministicId = `htf_${normalizedPair}_${bucketStartMs}`;
 
-          // ONE-SHOT FIX: HARD GUARD against multiple diagnostic writes
-          // Ensure strictly ONE write per agent per scheduler cycle
-          // If schedulerCycleId is present, use it to lock.
-          if (schedulerCycleId) {
-            const diagnosticWriteKey = `${htfAgentId}_${schedulerCycleId}`;
-            if (AgentExecutionService.htfDiagnosticWriteLock.has(diagnosticWriteKey)) {
-              logger.warn({ agentId: htfAgentId, key: diagnosticWriteKey }, 'HTF diagnostic write BLOCKED - already written for this cycle');
-              return;
-            }
-            AgentExecutionService.htfDiagnosticWriteLock.add(diagnosticWriteKey);
-          }
 
-          await firestoreAdapter.saveAgentDiagnostic(htfAgentId, {
+
+          await firestoreAdapter.saveAgentDiagnostic(agentId, {
             id: deterministicId, // CRITICAL: Deterministic ID prevents duplicate writes
             agentType: 'HTF_TREND_FILTER_AGENT',
             tradingPair: tradingPair,
@@ -2149,7 +2155,7 @@ export class AgentExecutionService {
 
           // 7. Mark cycle as written to prevent duplicate writes within the same scheduler tick
           if (diagnostics.cycleId) {
-            logger.debug({ agentId: htfAgentId, cycleId: diagnostics.cycleId }, 'HTF evaluation record successfully persisted');
+            logger.debug({ agentId: agentId, cycleId: diagnostics.cycleId }, 'HTF evaluation record successfully persisted');
           }
         } catch (diagError) {
           logger.error({

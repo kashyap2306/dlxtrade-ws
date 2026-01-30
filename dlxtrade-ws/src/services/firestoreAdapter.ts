@@ -5376,15 +5376,28 @@ export class FirestoreAdapter {
 
       if (diagnostic.id) {
         // ID-based write for single-write guarantee (STRICT HTF REQUIREMENT)
+        // CRITICAL: Now using transaction to ensure ATOMIC check-and-set
         const docRef = entriesRef.doc(diagnostic.id);
-        const doc = await docRef.get();
-        if (doc.exists) {
-          logger.info({ agentId, docId: diagnostic.id }, 'HTF diagnostic document already exists, skipping write');
+
+        try {
+          const writeSuccess = await db.runTransaction(async (transaction) => {
+            const doc = await transaction.get(docRef);
+            if (doc.exists) {
+              return false; // Already written
+            }
+            transaction.set(docRef, sanitizedPayload, { merge: false });
+            return true;
+          });
+
+          if (!writeSuccess) {
+            logger.info({ agentId, docId: diagnostic.id }, 'HTF diagnostic document already exists, skipping write');
+            return;
+          }
+        } catch (transactionError) {
+          logger.error({ agentId, docId: diagnostic.id, error: transactionError instanceof Error ? transactionError.message : String(transactionError) }, 'Transaction failed in saveAgentDiagnostic');
+          // On failure we don't proceed to avoid duplicates
           return;
         }
-
-        // Write using deterministic ID with merge: false (overwrite protection)
-        await docRef.set(sanitizedPayload, { merge: false });
       } else {
         await entriesRef.add(sanitizedPayload);
       }
