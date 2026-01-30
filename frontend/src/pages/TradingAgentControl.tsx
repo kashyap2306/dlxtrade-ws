@@ -50,7 +50,8 @@ export default function TradingAgentControl() {
   const [, setTimerTick] = useState(0); // Force re-render for countdown
   const [selectedDiagnosticDetails, setSelectedDiagnosticDetails] = useState<any>(null);
   const [showMoreDiagnostics, setShowMoreDiagnostics] = useState(false);
-  const [hasLoadedMoreDiagnostics, setHasLoadedMoreDiagnostics] = useState(false);
+  const [totalDiagnosticsAvailable, setTotalDiagnosticsAvailable] = useState(0);
+  const [currentDiagnosticsOffset, setCurrentDiagnosticsOffset] = useState(10); // Track pagination offset
 
   // In-flight request guards to prevent parallel/overlapping API calls
   const [isLoadingControl, setIsLoadingControl] = useState(false);
@@ -112,8 +113,9 @@ export default function TradingAgentControl() {
     console.log('[HTF_DIAGNOSTICS] Agent changed, resetting diagnostics state');
     setDiagnosticsEntries([]);
     setSkippedTrades([]);
-    setHasLoadedMoreDiagnostics(false);
     setShowMoreDiagnostics(false);
+    setTotalDiagnosticsAvailable(0);
+    setCurrentDiagnosticsOffset(10);
   }, [slug, resolvedAgentId]);
 
   // Helper function: Process HTF diagnostics - show only BTC/USDT and ETH/USDT pairs
@@ -191,33 +193,22 @@ export default function TradingAgentControl() {
 
   // Load additional diagnostics for "View more"
   const loadMoreDiagnostics = async () => {
-    if (isLoadingDiagnostics || hasLoadedMoreDiagnostics) return;
+    if (isLoadingDiagnostics) return;
 
     setIsLoadingDiagnostics(true);
     try {
-      const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 50);
+      // Calculate next batch: fetch 50 more entries starting from current offset
+      const nextLimit = currentDiagnosticsOffset + 50;
+      const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, nextLimit);
       const entries = diagnosticsResp.data?.diagnostics || [];
       
-      // Process the additional diagnostics
-      const additionalEntries = processDiagnostics(entries);
+      // Process all diagnostics
+      const processedEntries = processDiagnostics(entries);
       
-      // Append to existing entries (avoid duplicates by timestamp)
-      setDiagnosticsEntries(prev => {
-        const combined = [...prev];
-        additionalEntries.forEach(newEntry => {
-          const exists = combined.some(existing => 
-            existing.bucketKey === newEntry.bucketKey
-          );
-          if (!exists) {
-            combined.push(newEntry);
-          }
-        });
-        // Sort by timestamp descending
-        combined.sort((a, b) => b.bucketStartMs - a.bucketStartMs);
-        return combined;
-      });
-      
-      setHasLoadedMoreDiagnostics(true);
+      // APPEND new entries to existing ones (not replace)
+      setDiagnosticsEntries(processedEntries);
+      setTotalDiagnosticsAvailable(processedEntries.length);
+      setCurrentDiagnosticsOffset(nextLimit);
       setShowMoreDiagnostics(true);
     } catch (err) {
       console.error('Error loading more diagnostics:', err);
@@ -339,6 +330,7 @@ export default function TradingAgentControl() {
         if (!isLoadingDiagnostics) {
           setIsLoadingDiagnostics(true);
           try {
+            // Default: fetch 10 diagnostics for initial view
             const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, 10);
             setScheduler(diagnosticsResp.data?.scheduler || null);
             
@@ -360,6 +352,8 @@ export default function TradingAgentControl() {
             console.log('[HTF_STATE_DEBUG] Setting diagnosticsEntries state with:', aggregatedEntries.length, 'entries');
             // Always replace state with processed buckets (latest first)
             setDiagnosticsEntries(aggregatedEntries);
+            setTotalDiagnosticsAvailable(aggregatedEntries.length);
+            setCurrentDiagnosticsOffset(10); // Reset offset to 10
           } catch (err) {
             console.error('Error loading diagnostics:', err);
           } finally {
@@ -970,35 +964,24 @@ export default function TradingAgentControl() {
             </div>
 
             <div className="flex items-center justify-between mb-2">
-              <h3 className="text-xl font-bold text-white">Recent Cycle Results</h3>
-              {isHTFTrendFilterAgent && diagnosticsEntries.length >= 10 && !hasLoadedMoreDiagnostics && (
+              <h3 className="text-xl font-bold text-white">Recent Diagnostic Entries</h3>
+              {isHTFTrendFilterAgent && diagnosticsEntries.length >= currentDiagnosticsOffset && (
                 <button
                   onClick={loadMoreDiagnostics}
                   disabled={isLoadingDiagnostics}
                   className="text-purple-400 hover:text-purple-300 transition-colors text-sm disabled:opacity-50"
                 >
-                  {isLoadingDiagnostics ? 'Loading...' : 'View More (50 more)'}
-                </button>
-              )}
-              {isHTFTrendFilterAgent && hasLoadedMoreDiagnostics && (
-                <button
-                  onClick={() => setShowMoreDiagnostics(!showMoreDiagnostics)}
-                  className="text-purple-400 hover:text-purple-300 transition-colors text-sm"
-                >
-                  {showMoreDiagnostics ? 'View Less' : 'View All'}
+                  {isLoadingDiagnostics ? 'Loading...' : 'View More'}
                 </button>
               )}
             </div>
             <div className="text-sm text-gray-400 mb-6 leading-relaxed">
-              Shows execution/skip decisions from recent scheduler cycles (~5 min intervals)
-              {isHTFTrendFilterAgent && !hasLoadedMoreDiagnostics && (
-                <span className="text-purple-400"> • Showing latest {diagnosticsEntries.length} cycles</span>
-              )}
-              {isHTFTrendFilterAgent && hasLoadedMoreDiagnostics && !showMoreDiagnostics && (
-                <span className="text-purple-400"> • Showing latest 10 cycles (more loaded)</span>
-              )}
-              {isHTFTrendFilterAgent && hasLoadedMoreDiagnostics && showMoreDiagnostics && (
-                <span className="text-purple-400"> • Showing all {diagnosticsEntries.length} cycles</span>
+              Shows pair-level analysis from recent scheduler cycles (~5 min intervals)
+              {isHTFTrendFilterAgent && diagnosticsEntries.length > 0 && (
+                <span className="text-purple-400">
+                  {' • '}
+                  Showing latest {diagnosticsEntries.length} entries
+                </span>
               )}
             </div>
 
@@ -1015,14 +998,11 @@ export default function TradingAgentControl() {
                         <th className="text-left py-3 px-4 font-semibold">Direction</th>
                         <th className="text-left py-3 px-4 font-semibold">Decision</th>
                         <th className="text-left py-3 px-4 font-semibold">Skip Reason</th>
-                        <th className="text-left py-3 px-4 font-semibold">Timestamp</th>
+                        <th className="text-left py-3 px-4 font-semibold">Cycle Time</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {(hasLoadedMoreDiagnostics && !showMoreDiagnostics 
-                        ? diagnosticsEntries.slice(0, 10) 
-                        : diagnosticsEntries
-                      ).map((entry) => {
+                      {diagnosticsEntries.map((entry) => {
                         // Map diagnostics to table columns
                         const displayPair = entry.tradingPair || entry.symbol || '—';
                         // CANONICAL: Use HTF bias as primary source, fallback to direction only if bias missing
@@ -1036,76 +1016,77 @@ export default function TradingAgentControl() {
                           Object.keys(entry.runtimeState.indicators.results).length > 0
                         );
                         
-                        // Build skip reason - prioritize HTF details, fallback to AUTO_TRADE
-                        let shortSkipReason = '';
-                        const runtimeState = entry.runtimeState;
-                        const executionState = runtimeState?.executionState;
+                        // Build skip reason - ONLY show for SKIP decisions
+                        let shortSkipReason = '—';
                         
-                        // First check execution state for clarity
-                        if (executionState?.executionBlockedReason) {
-                          shortSkipReason = executionState.executionBlockedReason.replace(/_/g, ' ').toLowerCase();
-                          if (shortSkipReason.length > 40) {
-                            shortSkipReason = shortSkipReason.substring(0, 37) + '...';
-                          }
-                        } else if (entry.execution?.blockDetails) {
-                          shortSkipReason = entry.execution.blockDetails;
-                          if (shortSkipReason.length > 40) {
-                            shortSkipReason = shortSkipReason.substring(0, 37) + '...';
-                          }
-                        } else if (runtimeState?.indicators?.results) {
-                          // Check if we have indicator results for breakdown
-                          const results = runtimeState.indicators.results;
+                        // Only populate skip reason if decision is SKIP
+                        if (displayDecision === 'SKIP') {
+                          const runtimeState = entry.runtimeState;
+                          const executionState = runtimeState?.executionState;
                           
-                          // Show ONLY FIRST rejected indicator (3-4 words max)
-                          if (results.ema?.status === 'rejected') {
-                            shortSkipReason = 'EMA rejected';
-                          } else if (results.rsi?.status === 'rejected') {
-                            shortSkipReason = 'RSI rejected';
-                          } else if (results.vwap?.status === 'rejected') {
-                            shortSkipReason = 'VWAP rejected';
-                          } else if (results.sr?.status === 'rejected') {
-                            shortSkipReason = 'SR rejected';
-                          } else if (results.volume?.status === 'rejected') {
-                            shortSkipReason = 'Volume rejected';
-                          } else {
-                            // All confirmed - show success message
-                            shortSkipReason = 'All conditions met';
-                          }
-                        } else {
-                          // Fallback: Check AUTO_TRADE skip reason if HTF has none
-                          if (entry.autoTradeSkipReason) {
-                            shortSkipReason = entry.autoTradeSkipReason;
-                            if (shortSkipReason.length > 40) {
-                              shortSkipReason = shortSkipReason.substring(0, 37) + '...';
+                          // Shorten skip reasons to concise, generic messages
+                          if (executionState?.executionBlockedReason) {
+                            const blockedReason = executionState.executionBlockedReason;
+                            // Map to concise messages
+                            if (blockedReason.includes('AGENT_STOPPED')) {
+                              shortSkipReason = 'Agent stopped';
+                            } else if (blockedReason.includes('AGENT_PAUSED')) {
+                              shortSkipReason = 'Agent paused';
+                            } else if (blockedReason.includes('EXCHANGE')) {
+                              shortSkipReason = 'Exchange issue';
+                            } else if (blockedReason.includes('SESSION')) {
+                              shortSkipReason = 'Session invalid';
+                            } else {
+                              shortSkipReason = 'Condition not met';
+                            }
+                          } else if (entry.execution?.blockDetails) {
+                            shortSkipReason = 'Execution blocked';
+                          } else if (runtimeState?.indicators?.results) {
+                            // Check if we have indicator results for breakdown
+                            const results = runtimeState.indicators.results;
+                            
+                            // Count rejected indicators
+                            const rejectedCount = Object.values(results).filter(
+                              (r: any) => r?.status === 'rejected'
+                            ).length;
+                            
+                            if (rejectedCount === 1) {
+                              shortSkipReason = 'Condition not met';
+                            } else if (rejectedCount > 1) {
+                              shortSkipReason = 'Indicators not aligned';
+                            } else {
+                              shortSkipReason = 'Condition not met';
                             }
                           } else {
-                            // No indicator breakdown - use strict fallback chain
-                            if (displayDecision === 'TRADE') {
-                              shortSkipReason = 'All conditions met';
-                            } else {
-                              // Get raw reason and trim
-                              let rawReason = runtimeState?.skipDetails || 
+                            // Generic fallback
+                            const rawReason = runtimeState?.skipDetails || 
                                             runtimeState?.skipReason || 
                                             entry.decision?.reason || 
-                                            'Skipped';
-                              
-                              if (rawReason.length > 40) {
-                                shortSkipReason = rawReason.substring(0, 37) + '...';
-                              } else {
-                                shortSkipReason = rawReason;
-                              }
+                                            '';
+                            
+                            // Map common patterns to concise messages
+                            if (rawReason.includes('NO_TRADE') || rawReason.includes('NO TRADE')) {
+                              shortSkipReason = 'Trend rejected';
+                            } else if (rawReason.includes('RR_FAIL') || rawReason.includes('risk')) {
+                              shortSkipReason = 'Risk/reward poor';
+                            } else if (rawReason.includes('STRUCTURE') || rawReason.includes('structure')) {
+                              shortSkipReason = 'Structure invalid';
+                            } else if (rawReason.includes('rejected')) {
+                              shortSkipReason = 'Condition not met';
+                            } else {
+                              shortSkipReason = 'Condition not met';
                             }
                           }
                         }
+                        // For TRADE decisions, shortSkipReason remains "—"
                         
-                        // Display timestamp with seconds for differentiation
-                        const displayTimestamp = entry.timestamp 
+                        // Display cycle time (5-minute bucket) - format as HH:MM for grouping clarity
+                        const cycleTime = entry.timestamp 
                           ? new Date(entry.timestamp).toLocaleString('en-US', { 
                               month: 'short', 
                               day: 'numeric', 
                               hour: '2-digit', 
-                              minute: '2-digit', 
-                              second: '2-digit',
+                              minute: '2-digit',
                               hour12: false 
                             })
                           : '—';
@@ -1144,8 +1125,8 @@ export default function TradingAgentControl() {
                             <td className="py-3 px-4 text-gray-400 text-sm">
                               <span className="leading-tight">{shortSkipReason}</span>
                             </td>
-                            <td className="py-3 px-4 text-gray-400 text-sm">
-                              {displayTimestamp}
+                            <td className="py-3 px-4 text-gray-400 text-sm font-mono">
+                              {cycleTime}
                             </td>
                           </tr>
                         );
@@ -1156,8 +1137,8 @@ export default function TradingAgentControl() {
               ) : (
                 <div className="text-center py-8 text-gray-400 bg-slate-800/30 rounded-lg border border-purple-500/10">
                   {autoTradeEnabled 
-                    ? 'Waiting for first cycle...'
-                    : 'No cycle results yet'}
+                    ? 'Waiting for first diagnostic entries...'
+                    : 'No diagnostic entries yet. Start the agent to begin analysis.'}
                 </div>
               )
             ) : (
@@ -1165,8 +1146,8 @@ export default function TradingAgentControl() {
               skippedTrades.length === 0 ? (
                 <div className="text-center py-8 text-gray-400 bg-slate-800/30 rounded-lg border border-purple-500/10">
                   {autoTradeEnabled 
-                    ? 'Waiting for first cycle...'
-                    : 'No cycle results yet'}
+                    ? 'Waiting for first analysis cycle...'
+                    : 'No analysis results yet. Start the agent to begin.'}
                 </div>
               ) : (
                 <div className="overflow-x-auto bg-slate-800/30 rounded-lg border border-purple-500/10">
@@ -1457,15 +1438,100 @@ export default function TradingAgentControl() {
                 </div>
               )}
               
-              {/* HTF Skip Reason Summary */}
+              {/* HTF Skip Reason Summary - Visual Checklist */}
               <div className="bg-slate-800/50 rounded-lg p-4 border-l-4 border-blue-500/50">
-                <div className="text-sm font-semibold text-blue-400 mb-2">HTF Filter Analysis</div>
-                <div className="text-gray-300 leading-relaxed">
-                  {selectedDiagnosticDetails.runtimeState?.skipDetails || 
-                   selectedDiagnosticDetails.runtimeState?.skipReason || 
-                   selectedDiagnosticDetails.decision?.reason || 
-                   'No detailed reason provided'}
-                </div>
+                <div className="text-sm font-semibold text-blue-400 mb-3">HTF Filter Analysis</div>
+                {(() => {
+                  const analysisText = selectedDiagnosticDetails.runtimeState?.skipDetails || 
+                                      selectedDiagnosticDetails.runtimeState?.skipReason || 
+                                      selectedDiagnosticDetails.decision?.reason || 
+                                      'No detailed reason provided';
+                  
+                  // Parse the analysis string for condition keywords
+                  const conditions = [
+                    { name: 'VWAP', keyword: 'VWAP' },
+                    { name: 'EMA', keyword: 'EMA' },
+                    { name: 'RSI', keyword: 'RSI' },
+                    { name: 'SR', keyword: 'SR' },
+                    { name: 'Volume', keyword: 'Volume' }
+                  ];
+                  
+                  // Check if the text contains structured condition info
+                  const hasStructuredConditions = conditions.some(c => 
+                    analysisText.includes(`${c.keyword} confirmed`) || 
+                    analysisText.includes(`${c.keyword} rejected`)
+                  );
+                  
+                  if (hasStructuredConditions) {
+                    // Parse and display as visual checklist
+                    return (
+                      <div className="space-y-2">
+                        {conditions.map(condition => {
+                          const confirmedPattern = new RegExp(`${condition.keyword}\\s+confirmed`, 'i');
+                          const rejectedPattern = new RegExp(`${condition.keyword}\\s+rejected`, 'i');
+                          
+                          const isConfirmed = confirmedPattern.test(analysisText);
+                          const isRejected = rejectedPattern.test(analysisText);
+                          
+                          // Only show conditions that are mentioned in the text
+                          if (!isConfirmed && !isRejected) return null;
+                          
+                          return (
+                            <div 
+                              key={condition.name}
+                              className="flex items-center gap-3 py-2 px-3 bg-slate-800/30 rounded-lg"
+                            >
+                              {isConfirmed ? (
+                                <svg 
+                                  className="w-5 h-5 flex-shrink-0" 
+                                  fill="none" 
+                                  stroke="#22c55e" 
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path 
+                                    strokeLinecap="round" 
+                                    strokeLinejoin="round" 
+                                    strokeWidth={2.5} 
+                                    d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" 
+                                  />
+                                </svg>
+                              ) : (
+                                <svg 
+                                  className="w-5 h-5 flex-shrink-0" 
+                                  fill="none" 
+                                  stroke="#ef4444" 
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path 
+                                    strokeLinecap="round" 
+                                    strokeLinejoin="round" 
+                                    strokeWidth={2.5} 
+                                    d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" 
+                                  />
+                                </svg>
+                              )}
+                              <span className={`font-medium ${
+                                isConfirmed ? 'text-green-400' : 'text-red-400'
+                              }`}>
+                                {condition.name}
+                              </span>
+                              <span className="text-gray-400 text-sm ml-auto">
+                                {isConfirmed ? 'Confirmed' : 'Rejected'}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  } else {
+                    // Fallback: show plain text if no structured conditions found
+                    return (
+                      <div className="text-gray-300 leading-relaxed">
+                        {analysisText}
+                      </div>
+                    );
+                  }
+                })()}
               </div>
 
               {/* AUTO_TRADE Skip Reason (if present in same cycle) */}
