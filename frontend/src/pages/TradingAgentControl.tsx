@@ -118,8 +118,6 @@ export default function TradingAgentControl() {
   const processDiagnostics = (rawEntries: any[]): any[] => {
     if (!rawEntries || rawEntries.length === 0) return [];
 
-    console.log('[HTF_PROCESS_DEBUG] Processing diagnostics, raw entries:', rawEntries.length);
-
     // STRICT REQUIREMENT: Only show BTC/USDT and ETH/USDT pairs
     const allowedPairs = ['BTC/USDT', 'ETH/USDT'];
 
@@ -129,46 +127,14 @@ export default function TradingAgentControl() {
       return pair && allowedPairs.includes(pair);
     });
 
-    console.log('[HTF_PROCESS_DEBUG] Filtered to allowed pairs:', filteredEntries.length);
-
-    // Group by 5-minute cycle to keep only LAST/FINAL diagnostic per cycle
-    const cycleMap = new Map<string, any>();
-
-    filteredEntries.forEach((entry: any) => {
-      // Calculate 5-minute bucket from timestamp
-      const timestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : Date.now();
-      const fiveMinuteBucket = Math.floor(timestamp / (5 * 60 * 1000));
-      const bucketStartMs = fiveMinuteBucket * (5 * 60 * 1000);
-      const pair = entry.tradingPair || entry.pair;
-
-      // Use bucket + pair as unique cycle key to allow one entry per pair per cycle
-      const cycleKey = `cycle_${fiveMinuteBucket}_${pair}`;
-
-      // Keep only the LAST diagnostic per cycle per pair
-      const existing = cycleMap.get(cycleKey);
-      if (!existing || timestamp > new Date(existing.timestamp).getTime()) {
-        cycleMap.set(cycleKey, {
-          ...entry,
-          cycleKey,
-          bucketStartMs,
-          pair
-        });
-      }
-    });
-
-    // Convert to array - one diagnostic per cycle
-    const processedEntries = Array.from(cycleMap.values());
-
     // Sort by timestamp descending (latest first)
-    processedEntries.sort((a: any, b: any) => {
+    filteredEntries.sort((a: any, b: any) => {
       const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
       const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
       return bTime - aTime;
     });
 
-    console.log('[HTF_PROCESS_DEBUG] Processed entries (one per cycle):', processedEntries.length);
-
-    return processedEntries;
+    return filteredEntries;
   };
 
   // Load additional diagnostics for "View more"

@@ -600,6 +600,12 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       const { agentId } = request.params;
       const limit = request.query.limit ? parseInt(request.query.limit) : 20;
 
+      try {
+        const fs = require('fs');
+        const traceLog = `\n[${new Date().toISOString()}] ROUTE_DIAGNOSTICS hit for ${agentId}\nUser: ${uid}\nStack: ${new Error().stack}\n`;
+        fs.appendFileSync('c:/Users/yash/dlxtrade/trace.log', traceLog);
+      } catch (e) { }
+
       if (!uid) {
         return reply.code(403).send({ error: 'Authentication required' });
       }
@@ -1538,6 +1544,12 @@ export async function agentsRoutes(fastify: FastifyInstance) {
       let { agentId } = request.params;
 
       logger.info({ uid: user.uid, agentId }, 'Agent start request received');
+
+      try {
+        const fs = require('fs');
+        const traceLog = `\n[${new Date().toISOString()}] ROUTE_START hit for ${agentId}\nUser: ${user.uid}\nStack: ${new Error().stack}\n`;
+        fs.appendFileSync('c:/Users/yash/dlxtrade/trace.log', traceLog);
+      } catch (e) { }
 
       // MANUAL START MODE: User-initiated start from UI
       // No signal/accuracy/tradePlan validation required

@@ -5,6 +5,7 @@ import { ExchangeCredentials } from './exchangeConnector';
 
 export class TradingAgentScheduler {
   private executionService: AgentExecutionService;
+  private readonly instanceId: string = Math.random().toString(36).substring(7);
   private intervalId: NodeJS.Timeout | null = null;
   private isRunning = false;
   private readonly intervalMs = 5 * 60 * 1000;
@@ -13,6 +14,7 @@ export class TradingAgentScheduler {
   private lastExecutionError: string | null = null;
 
   constructor() {
+    console.log(`[SCHEDULER_DEBUG] CONSTRUCTED Instance: ${this.instanceId} PID: ${process.pid}`);
     this.executionService = new AgentExecutionService({
       getCandles: async () => [],
       getAccountBalance: async () => ({ equity: 0, available: 0 }),
@@ -24,6 +26,7 @@ export class TradingAgentScheduler {
    * Start the trading agent scheduler
    */
   async start(): Promise<void> {
+    console.log(`[SCHEDULER_DEBUG] STARTING Instance: ${this.instanceId} PID: ${process.pid}`);
     if (this.isRunning) {
       logger.warn('Trading agent scheduler is already running');
       return;
@@ -79,6 +82,13 @@ export class TradingAgentScheduler {
    * Execute all active agents manually (for testing)
    */
   async executeAllAgents(): Promise<void> {
+    console.log(`[SCHEDULER_DEBUG] EXECUTING_CYCLE Instance: ${this.instanceId} PID: ${process.pid}`);
+    try {
+      const fs = require('fs');
+      const traceLog = `\n[${new Date().toISOString()}] TRADING_SCHEDULER_EXECUTE_ALL hit\nInstance: ${this.instanceId}\nPID: ${process.pid}\nStack: ${new Error().stack}\n`;
+      fs.appendFileSync('c:/Users/yash/dlxtrade/trace.log', traceLog);
+    } catch (e) { }
+
     if (!this.isRunning) {
       logger.warn('Trading agent scheduler is not running');
       return;
@@ -89,19 +99,19 @@ export class TradingAgentScheduler {
       // This ensures HTF agents created after scheduler startup are executed
       console.log('[SCHEDULER_TICK] Reloading active agents from Firestore...');
       await this.executionService.loadActiveAgents();
-      
+
       // FIX PART 4: Scheduler-level safety net for HTF agents
       // Before executing agents, check if any HTF agents should be skipped due to disabled modes
       await this.preExecutionHTFCheck();
-      
+
       // Add HTF scheduling log as requested
       const allAgents = this.executionService.getAllActiveAgents();
       console.log(`[SCHEDULER_TICK] Total active agents loaded: ${allAgents.length}`);
-      
+
       const htfAgents = allAgents.filter(agent => {
         const config = agent['config'];
-        return config.strategyType === 'HTF_TREND_FILTER' || 
-               (config.name && config.name.includes('HTF Trend Filter'));
+        return config.strategyType === 'HTF_TREND_FILTER' ||
+          (config.name && config.name.includes('HTF Trend Filter'));
       });
 
       console.log(`[SCHEDULER_TICK] HTF agents found: ${htfAgents.length}`);
@@ -117,7 +127,7 @@ export class TradingAgentScheduler {
         const config = agent['config'];
         console.log("[SCHEDULER_AGENT_PICKED]", config.id, config.status, config.name);
       }
-      
+
       console.log('[SCHEDULER_TICK] Executing all agents...');
       await this.executionService.executeAllAgents();
       console.log('[SCHEDULER_TICK] Execution completed');
@@ -139,8 +149,8 @@ export class TradingAgentScheduler {
       const allAgents = this.executionService.getAllActiveAgents();
       const htfAgents = allAgents.filter(agent => {
         const config = agent['config'];
-        return config.strategyType === 'HTF_TREND_FILTER' || 
-               (config.name && config.name.includes('HTF Trend Filter'));
+        return config.strategyType === 'HTF_TREND_FILTER' ||
+          (config.name && config.name.includes('HTF Trend Filter'));
       });
 
       if (htfAgents.length === 0) {
