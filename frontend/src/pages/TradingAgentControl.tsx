@@ -116,40 +116,50 @@ export default function TradingAgentControl() {
     setDiagnosticsLimit(10); // Reset to initial limit
   }, [slug, resolvedAgentId]);
 
-  // Helper function: Process HTF diagnostics - show only BTC/USDT and ETH/USDT pairs
+  // Helper function: Process HTF diagnostics
+  // STRICTLY groups by schedulerCycleId to ensure one row per cycle
   const processDiagnostics = (rawEntries: any[]): any[] => {
     if (!rawEntries || rawEntries.length === 0) return [];
 
     const allowedPairs = ['BTC/USDT', 'ETH/USDT'];
-    const bucketSizeMs = 300000; // 5 minute bucket normalization
 
-    // Use Map to group by bucketId - ensures exactly ONE entry per 5-minute cycle globally
-    const bucketMap = new Map<number, any>();
+    // 1. Filter valid pairs
+    // 2. Sort all entries by createdAt DESC initially
+    const validEntries = rawEntries
+      .filter((e: any) => {
+        const pair = e.tradingPair || e.pair;
+        return pair && allowedPairs.includes(pair);
+      })
+      .sort((a: any, b: any) => {
+        const tA = new Date(a.createdAt || a.timestamp || 0).getTime();
+        const tB = new Date(b.createdAt || b.timestamp || 0).getTime();
+        return tB - tA;
+      });
 
-    rawEntries.forEach((entry: any) => {
-      const pair = entry.tradingPair || entry.pair;
-      if (pair && allowedPairs.includes(pair)) {
-        const timestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : 0;
-        // Normalize to floor of 5-minute interval (00, 05, 10...)
-        const bucketId = Math.floor(timestamp / bucketSizeMs) * bucketSizeMs;
+    // 3. Deduplicate by schedulerCycleId
+    const seenCycles = new Set<string>();
+    const uniqueCycles: any[] = [];
 
-        const existing = bucketMap.get(bucketId);
-        // Requirement: Keep ONLY the latest entry for this bucket cycle
-        // and ensure same 5-minute timestamp never appears twice
-        const existingTs = existing ? new Date(existing._rawTimestamp || existing.timestamp).getTime() : 0;
-        if (!existing || timestamp > existingTs) {
-          bucketMap.set(bucketId, {
-            ...entry,
-            timestamp: new Date(bucketId).toISOString(), // Force exact bucket timestamp
-            _rawTimestamp: entry.timestamp, // Keep raw for comparison
-            bucketId // Attach for stable React key
-          });
-        }
+    for (const entry of validEntries) {
+      // Primary Key: schedulerCycleId
+      // Fallback: cycleBucketTs -> id -> timestamp
+      // This ensures we group multiple agent executions in the same tick into ONE row
+      const cycleKey = entry.schedulerCycleId || entry.cycleBucketTs || entry.id || new Date(entry.createdAt || entry.timestamp).getTime().toString();
+
+      if (!seenCycles.has(String(cycleKey))) {
+        seenCycles.add(String(cycleKey));
+        uniqueCycles.push({
+          ...entry,
+          // Ensure timestamp is valid string for display
+          timestamp: new Date(entry.createdAt || entry.timestamp || 0).toISOString(),
+          // Stable key for React rendering
+          _uiKey: String(cycleKey)
+        });
       }
-    });
+    }
 
-    // Convert map to array and sort by bucketId descending (most recent cycle first)
-    return Array.from(bucketMap.values()).sort((a, b) => b.bucketId - a.bucketId);
+    // 4. Return sorted list (already sorted by virtue of initial sort + insertion order)
+    return uniqueCycles;
   };
 
   // Load additional diagnostics for "View more"
@@ -309,9 +319,9 @@ export default function TradingAgentControl() {
         // Load diagnostics - ALWAYS fetch to ensure fresh data
         setIsLoadingDiagnostics(true);
         try {
-          // Requirement: For main table (10 cycles) fetch AT LEAST 30 raw entries.
+          // Requirement: For main table (10 cycles) fetch AT LEAST 60 raw entries to ensure 10 unique cycles.
           // For View More (50 cycles) fetch AT LEAST 150 raw entries.
-          const rawFetchLimit = diagnosticsLimit === 10 ? 30 : 150;
+          const rawFetchLimit = diagnosticsLimit === 10 ? 60 : 150;
           const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, rawFetchLimit);
           setScheduler(diagnosticsResp.data?.scheduler || null);
 
@@ -1066,7 +1076,7 @@ export default function TradingAgentControl() {
 
                         return (
                           <tr
-                            key={`htf_cycle_${entry.bucketId}`}
+                            key={entry._uiKey || entry.schedulerCycleId || `htf_cycle_${entry.bucketId || Math.random()}`}
                             className="border-b border-purple-500/10 hover:bg-slate-800/50 transition-colors"
                           >
                             <td className="py-3 px-4 text-white font-semibold">

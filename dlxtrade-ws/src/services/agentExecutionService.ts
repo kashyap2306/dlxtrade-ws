@@ -566,9 +566,9 @@ export class AgentExecutionService {
       } else {
         try {
           const db = getFirebaseAdmin().firestore();
-          // Lock path: users/{uid}/agentDiagnostics/{agentId}/locks/htf_{symbol}_{bucketStartMs}
-          // CRITICAL: symbol included in path to allow multiple pairs per agent but block same-pair duplicates
-          const lockDocPath = `users/${userId}/agentDiagnostics/${agentId}/locks/htf_${symbol}_${bucketStartMs}`;
+          // CRITICAL: Lock path is now PAIR-AGNOSTIC per cycle to ensure exactly ONE HTF execution per user per cycle
+          // Lock path: users/{uid}/agentDiagnostics/HTF_GLOBAL/locks/cycle_${schedulerCycleId || bucketStartMs}
+          const lockDocPath = `users/${userId}/agentDiagnostics/HTF_GLOBAL/locks/cycle_${schedulerCycleId || bucketStartMs}`;
           const lockDocRef = db.doc(lockDocPath);
 
           wasLockAcquired = await db.runTransaction(async (transaction) => {
@@ -582,7 +582,8 @@ export class AgentExecutionService {
               schedulerCycleId: schedulerCycleId || 'manual',
               bucketStartMs,
               tradingPair,
-              symbol
+              symbol,
+              agentId // Track which agent specifically won the lock
             });
             return true;
           });
@@ -1440,7 +1441,7 @@ export class AgentExecutionService {
         let signal;
 
         if (isBBRsiAgent) {
-          // BB-RSI EMA200 Scalper mean reversion strategy
+          // BB-RSI Scalper uses 3m primary + 5m confirmation
 
           if (!marketScanExecuted) {
             skippedReason = htfMarketDataSkip?.reasonText || 'Market scan not executed';
@@ -2060,40 +2061,36 @@ export class AgentExecutionService {
 
           // 3. ENFORCE CANONICAL INDICATOR STRUCTURE (MANDATORY)
           // Strictly derive from strategy output - NO fallbacks to defaults if data is missing
-          const ltfResults = diagnostics.ltfSignal?.indicators?.results;
+          // CRITICAL FIX: Default to empty object to allow persistence of operational skips (Stopped/Paused/No Signal)
+          const ltfResults = diagnostics.ltfSignal?.indicators?.results || {};
           const htfTrend = diagnostics.htfTrend || {};
 
-          // HARD SAFETY ASSERTION: If indicators are missing, we CANNOT save a valid HTF diagnostic
-          // This prevents "empty" or "default" diagnostics from polluting the history
-          if (!ltfResults || Object.keys(ltfResults).length === 0) {
-            logger.warn({ agentId: agentId, cycleId: diagnostics.cycleId }, 'HTF diagnostic skipped: No indicator results available (execution likely blocked early)');
-
-            // Mark as written to prevent retries in this tick, effectively skipping this cycle
-            // This is safer than writing a broken record
-
-            return;
+          // HARD SAFETY ASSERTION: If indicators are missing, we warning but PROCEED for HTF agents
+          // This ensures we capture "Agent Stopped", "Market Data Error", and "No Signal" states in diagnostics
+          if (Object.keys(ltfResults).length === 0) {
+            logger.warn({ agentId: agentId, cycleId: diagnostics.cycleId }, 'HTF diagnostic: No indicator results available - persisting operational state only');
           }
 
           const canonicalIndicators: any = {
             ema: {
-              confirmed: ltfResults.ema?.status === 'confirmed',
-              reason: ltfResults.ema?.details || ltfResults.ema?.reason || 'EMA condition not met'
+              confirmed: ltfResults?.ema?.status === 'confirmed',
+              reason: ltfResults?.ema?.details || ltfResults?.ema?.reason || 'EMA condition not met'
             },
             rsi: {
-              confirmed: ltfResults.rsi?.status === 'confirmed',
-              reason: ltfResults.rsi?.details || ltfResults.rsi?.reason || 'RSI condition not met'
+              confirmed: ltfResults?.rsi?.status === 'confirmed',
+              reason: ltfResults?.rsi?.details || ltfResults?.rsi?.reason || 'RSI condition not met'
             },
             vwap: {
-              confirmed: ltfResults.vwap?.status === 'confirmed',
-              reason: ltfResults.vwap?.details || ltfResults.vwap?.reason || 'VWAP condition not met'
+              confirmed: ltfResults?.vwap?.status === 'confirmed',
+              reason: ltfResults?.vwap?.details || ltfResults?.vwap?.reason || 'VWAP condition not met'
             },
             sr: {
-              confirmed: ltfResults.sr?.status === 'confirmed',
-              reason: ltfResults.sr?.details || ltfResults.sr?.reason || 'S/R condition not met'
+              confirmed: ltfResults?.sr?.status === 'confirmed',
+              reason: ltfResults?.sr?.details || ltfResults?.sr?.reason || 'S/R condition not met'
             },
             volume: {
-              confirmed: ltfResults.volume?.status === 'confirmed',
-              reason: ltfResults.volume?.details || ltfResults.volume?.reason || 'Volume condition not met'
+              confirmed: ltfResults?.volume?.status === 'confirmed',
+              reason: ltfResults?.volume?.details || ltfResults?.volume?.reason || 'Volume condition not met'
             },
             trend: {
               confirmed: htfTrend?.direction !== 'NO_TRADE',
@@ -2114,30 +2111,31 @@ export class AgentExecutionService {
           diagnostics.runtimeState.trendConfirmed = canonicalIndicators.trend.confirmed;
 
           // Set existence flags strictly based on data presence
-          diagnostics.runtimeState.hasIndicators = true;
-          diagnostics.runtimeState.hasResults = true;
+          const hasKeys = Object.keys(ltfResults).length > 0;
+          diagnostics.runtimeState.hasIndicators = hasKeys;
+          diagnostics.runtimeState.hasResults = hasKeys;
 
           // 4. derivation of skipReasonShort
           // STRICT: Use existing reason, never infer
           const rawReason = diagnostics.decision?.reason || 'Conditions not met';
-          const skipReasonShort = rawReason.length > 50
+          // PREFER explicitly set skipReasonShort (e.g. "RSI rejected"), otherwise derive from rawReason
+          const skipReasonShort = diagnostics.skipReasonShort || (rawReason.length > 50
             ? rawReason.substring(0, 47) + '...'
-            : rawReason;
+            : rawReason);
 
           diagnostics.runtimeState.skipReasonShort = skipReasonShort;
           diagnostics.runtimeState.finalDecision = diagnostics.decision?.action || 'SKIP';
 
-          // 5. Save diagnostic with DETERMINISTIC ID for bucket-based deduplication
-          // ID format: htf_{pair}_{bucketStartMs} ensures exactly 1 diagnostic per pair per 5-minute bucket
-          const normalizedPair = (tradingPair || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-          const deterministicId = `htf_${normalizedPair}_${bucketStartMs}`;
+          // 5. Save diagnostic with DETERMINISTIC ID based on cycle
+          // This ensures: userId + schedulerCycleId = SINGLE diagnostic write
+          const htfDiagnosticId = `htf_cycle_${diagnostics.schedulerCycleId || bucketStartMs}`;
 
-
-
-          await firestoreAdapter.saveAgentDiagnostic(agentId, {
-            id: deterministicId, // CRITICAL: Deterministic ID prevents duplicate writes
+          await firestoreAdapter.saveAgentDiagnostic('htf-trend-filter-agent', {
+            id: htfDiagnosticId, // STRICT: One doc per cycle
             agentType: 'HTF_TREND_FILTER_AGENT',
             tradingPair: tradingPair,
+            cycleBucketTs: bucketStartMs, // Field for 5-minute bucket grouping
+            schedulerCycleId: diagnostics.schedulerCycleId, // Traceability to scheduler tick
             direction: diagnostics.direction || 'NO_TRADE',
             decision: {
               ...(diagnostics.decision || { action: 'SKIP', reason: 'No decision' }),

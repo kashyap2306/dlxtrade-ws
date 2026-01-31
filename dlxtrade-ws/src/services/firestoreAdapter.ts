@@ -5257,6 +5257,8 @@ export class FirestoreAdapter {
     runtimeState?: any;
     consensusResults?: any;
     id?: string;
+    cycleBucketTs?: number; // ADDED: 5-min bucket timestamp
+    schedulerCycleId?: string; // ADDED: Scheduler traceability
   }, uid: string): Promise<void> {
     try {
       // HARD RUNTIME GUARD: Validate user-scoped path
@@ -5322,6 +5324,9 @@ export class FirestoreAdapter {
       const executionTimestamp = normalizedDiagnostic.timestamp || new Date();
       const firestorePayload = {
         timestamp: admin.firestore.Timestamp.fromDate(executionTimestamp),
+        createdAt: admin.firestore.FieldValue.serverTimestamp(), // ADDED: Server timestamp for creation
+        cycleBucketTs: normalizedDiagnostic.cycleBucketTs || null, // ADDED: 5-min bucket timestamp
+        schedulerCycleId: normalizedDiagnostic.schedulerCycleId || null, // ADDED: Scheduler traceability
         agentId, // Include agentId in document data
         agentType: normalizedDiagnostic.agentType,
         tradingPair: evaluatedPair,
@@ -5476,6 +5481,9 @@ export class FirestoreAdapter {
   async getAgentDiagnostics(agentId: string, limit: number = 10, uid: string): Promise<Array<{
     id: string;
     timestamp: Date;
+    createdAt?: Date; // ADDED
+    cycleBucketTs?: number; // ADDED
+    schedulerCycleId?: string; // ADDED
     agentId: string;
     agentType: string;
     tradingPair?: string;
@@ -5501,7 +5509,7 @@ export class FirestoreAdapter {
       const entriesRef = db.collection('users').doc(uid).collection('agentDiagnostics').doc(agentId).collection('entries');
 
       const snapshot = await entriesRef
-        .orderBy('timestamp', 'desc')
+        .orderBy('createdAt', 'desc') // CHANGED: Order by creation time for strict history
         .limit(limit)
         .get();
 
@@ -5531,9 +5539,20 @@ export class FirestoreAdapter {
           normalizedTimestamp = new Date();
         }
 
+        // Normalize createdAt
+        let normalizedCreatedAt: Date | undefined;
+        if (cleanedData.createdAt && typeof cleanedData.createdAt.toDate === 'function') {
+          normalizedCreatedAt = cleanedData.createdAt.toDate();
+        } else if (cleanedData.createdAt instanceof Date) {
+          normalizedCreatedAt = cleanedData.createdAt;
+        }
+
         diagnostics.push({
           id: doc.id,
           timestamp: normalizedTimestamp,
+          createdAt: normalizedCreatedAt,
+          cycleBucketTs: cleanedData.cycleBucketTs,
+          schedulerCycleId: cleanedData.schedulerCycleId,
           agentId: cleanedData.agentId,
           agentType: cleanedData.agentType,
           tradingPair: cleanedData.tradingPair,
