@@ -43,6 +43,11 @@ export default function TradingAgentControl() {
   const [togglingAutoTrade, setTogglingAutoTrade] = useState(false);
   const [skippedTrades, setSkippedTrades] = useState<any[]>([]);
   const [diagnosticsEntries, setDiagnosticsEntries] = useState<any[]>([]); // HTF diagnostics
+
+  useEffect(() => {
+    console.log('[HTF_DIAGNOSTICS] diagnosticsEntries state updated, length:', diagnosticsEntries.length);
+  }, [diagnosticsEntries]);
+
   const [agentConfig, setAgentConfig] = useState<any | null>(null);
   const [scheduler, setScheduler] = useState<any | null>(null);
   const [loadingData, setLoadingData] = useState(false);
@@ -109,7 +114,7 @@ export default function TradingAgentControl() {
   // CRITICAL STATE RESET: Clear diagnostics when agentId changes
   // This prevents stale data from previous agent being shown
   useEffect(() => {
-    console.log('[HTF_DIAGNOSTICS] Agent changed, resetting diagnostics state');
+    console.log('[HTF_DIAGNOSTICS] Agent changed, resetting diagnostics state', { slug, resolvedAgentId });
     hasFetchedOnceRef.current = false; // ONE-SHOT GUARD RESET: Allow fresh fetch for new agent
     setDiagnosticsEntries([]);
     setSkippedTrades([]);
@@ -118,23 +123,17 @@ export default function TradingAgentControl() {
 
   // Helper function: Process HTF diagnostics
   // STRICTLY groups by schedulerCycleId to ensure one row per cycle
+  // FIXED: Accept ALL diagnostics including SKIP actions with empty/placeholder pairs
   const processDiagnostics = (rawEntries: any[]): any[] => {
-    if (!rawEntries || rawEntries.length === 0) return [];
+    if (!rawEntries || !Array.isArray(rawEntries) || rawEntries.length === 0) return [];
 
-    const allowedPairs = ['BTC/USDT', 'ETH/USDT'];
-
-    // 1. Filter valid pairs
+    // 1. Accept ALL HTF diagnostics - ZERO filtering
     // 2. Sort all entries by createdAt DESC initially
-    const validEntries = rawEntries
-      .filter((e: any) => {
-        const pair = e.tradingPair || e.pair;
-        return pair && allowedPairs.includes(pair);
-      })
-      .sort((a: any, b: any) => {
-        const tA = new Date(a.createdAt || a.timestamp || 0).getTime();
-        const tB = new Date(b.createdAt || b.timestamp || 0).getTime();
-        return tB - tA;
-      });
+    const validEntries = [...rawEntries].sort((a: any, b: any) => {
+      const tA = new Date(a.createdAt || a.timestamp || 0).getTime() || 0;
+      const tB = new Date(b.createdAt || b.timestamp || 0).getTime() || 0;
+      return tB - tA;
+    });
 
     // 3. Deduplicate by schedulerCycleId
     const seenCycles = new Set<string>();
@@ -143,22 +142,39 @@ export default function TradingAgentControl() {
     for (const entry of validEntries) {
       // Primary Key: schedulerCycleId
       // Fallback: cycleBucketTs -> id -> timestamp
-      // This ensures we group multiple agent executions in the same tick into ONE row
-      const cycleKey = entry.schedulerCycleId || entry.cycleBucketTs || entry.id || new Date(entry.createdAt || entry.timestamp).getTime().toString();
+      let timestampVal = 0;
+      try {
+        const d = new Date(entry.createdAt || entry.timestamp || 0);
+        timestampVal = isNaN(d.getTime()) ? 0 : d.getTime();
+      } catch (e) {
+        timestampVal = 0;
+      }
 
-      if (!seenCycles.has(String(cycleKey))) {
-        seenCycles.add(String(cycleKey));
+      const cycleKey = String(entry.schedulerCycleId || entry.cycleBucketTs || entry.id || timestampVal);
+
+      if (!seenCycles.has(cycleKey)) {
+        seenCycles.add(cycleKey);
+
+        // Safe ISO string conversion to prevent crashes
+        let isoTimestamp = new Date(0).toISOString();
+        try {
+          const d = new Date(timestampVal);
+          if (!isNaN(d.getTime())) {
+            isoTimestamp = d.toISOString();
+          }
+        } catch (e) {
+          // Fallback to epoch
+        }
+
         uniqueCycles.push({
           ...entry,
-          // Ensure timestamp is valid string for display
-          timestamp: new Date(entry.createdAt || entry.timestamp || 0).toISOString(),
+          timestamp: isoTimestamp,
           // Stable key for React rendering
-          _uiKey: String(cycleKey)
+          _uiKey: cycleKey
         });
       }
     }
 
-    // 4. Return sorted list (already sorted by virtue of initial sort + insertion order)
     return uniqueCycles;
   };
 
@@ -198,37 +214,37 @@ export default function TradingAgentControl() {
 
   // NOTE: Diagnostics hash logic removed to preserve full rolling history and ensure state is always updated
 
+  // 1. Initial Data Load - Always fetch on mount/agent change
+  useEffect(() => {
+    if (!user || !pageReady) {
+      return;
+    }
+    // but the safest way to fix the "not rendering" bug is to ensure loadData() runs at least once when ready.
+    console.log('[HTF_DIAGNOSTICS] Initial load triggered for:', slug);
+    loadData();
+  }, [user, pageReady, slug]);
+
+  // 2. Continuous Polling - Ensures UI updates regardless of initial load state
   useEffect(() => {
     if (!user || !pageReady) {
       return;
     }
 
-    // ONE-SHOT GUARD: Only load data once on mount to prevent double-calls on refresh
-    if (hasFetchedOnceRef.current) {
-      return;
-    }
-    hasFetchedOnceRef.current = true;
+    // Determine polling interval - every 5 minutes (300,000ms)
+    const intervalMs = 300000;
 
-    // Load data ONCE on mount
-    loadData();
+    console.log('[HTF_DIAGNOSTICS] Polling interval setup', { autoTradeEnabled });
 
-    // Auto-refresh diagnostics and trades every 5 minutes when agent is running
-    // Do NOT reload control data (agent status) - that's loaded once on mount
-    let intervalId: number | null = null;
-    if (autoTradeEnabled) {
-      intervalId = setInterval(() => {
-        // Only refresh diagnostics and trades, NOT control data
-        loadDiagnosticsAndTrades();
-      }, 300000); // 5 minutes
-    }
+    const intervalId = setInterval(() => {
+      console.log('[HTF_DIAGNOSTICS] Polling tick');
+      loadDiagnosticsAndTrades();
+    }, intervalMs);
 
     return () => {
-      if (intervalId) {
-        clearInterval(intervalId);
-      }
+      console.log('[HTF_DIAGNOSTICS] Cleaning up polling interval');
+      clearInterval(intervalId);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, pageReady]); // Stable dependencies - do NOT include autoTradeEnabled or loadData
+  }, [user, pageReady, slug, autoTradeEnabled]); // Re-setup if agent status or identity changes
 
   // REMOVED: Redundant effect that caused double-fetches on initial status load
   // autoTradeEnabled is handled manually in handleToggleAutoTrade and loadDiagnosticsAndTrades
@@ -252,12 +268,6 @@ export default function TradingAgentControl() {
     }
 
     setLoadingData(true);
-
-    // ONE-SHOT FIX: Clear existing state on manual refresh or initial load
-    // This prevents blending of old data with new data
-    setDiagnosticsEntries([]);
-    setSkippedTrades([]);
-    setTrades([]);
 
     try {
       // For HTF Trend Filter Agent, we strictly use ONLY the diagnostics endpoint
@@ -323,6 +333,11 @@ export default function TradingAgentControl() {
           // For View More (50 cycles) fetch AT LEAST 150 raw entries.
           const rawFetchLimit = diagnosticsLimit === 10 ? 60 : 150;
           const diagnosticsResp = await agentsApi.getTradingAgentDiagnostics(slug, rawFetchLimit);
+          console.log(
+            "[HTF_DEBUG] API diagnostics length:",
+            diagnosticsResp?.data?.diagnostics?.length,
+            diagnosticsResp?.data?.diagnostics
+          );
           setScheduler(diagnosticsResp.data?.scheduler || null);
 
           // SYNC AGENT STATE: Update status and config from diagnostics response
@@ -336,18 +351,30 @@ export default function TradingAgentControl() {
 
           // Extract diagnostics entries for Recent Cycle Results
           const entries = diagnosticsResp.data?.diagnostics || [];
+          console.log('[HTF_DIAGNOSTICS] Raw entries:', entries);
 
           // Process diagnostics into unique cycles (one per 5-min bucket)
           // Threshold slicing to EXACTLY the requested limit (10 or 50) of unique cycles
           const aggregatedBuckets = processDiagnostics(entries);
-          const finalEntries = aggregatedBuckets.slice(0, diagnosticsLimit);
+          console.log('[HTF_DIAGNOSTICS] processed unique cycles:', aggregatedBuckets.length);
 
-          console.log('“HTF diagnostics fetch triggered”'); // MANDATORY DEBUG LOG
-          console.log('[HTF_DIAGNOSTICS] Received raw entries:', entries.length);
-          console.log('[HTF_DIAGNOSTICS] Processed unique cycles:', finalEntries.length);
+          const finalEntries = aggregatedBuckets.slice(0, diagnosticsLimit);
+          console.log('[HTF_DIAGNOSTICS] final entries after limit slicing:', finalEntries.length);
 
           // Set processed entries - ALWAYS REPLACE, NEVER APPEND
+          console.log(
+            "[HTF_DEBUG] setting diagnostics entries length:",
+            finalEntries.length,
+            finalEntries
+          );
           setDiagnosticsEntries(finalEntries);
+          setTimeout(() => {
+            console.log(
+              "[HTF_DEBUG] state AFTER setDiagnosticsEntries:",
+              diagnosticsEntries.length,
+              diagnosticsEntries
+            );
+          }, 0);
         } catch (err) {
           console.error('Error loading diagnostics:', err);
         } finally {
@@ -979,6 +1006,16 @@ export default function TradingAgentControl() {
             </div>
 
             {/* CRITICAL: HTF agents use diagnostics, non-HTF use research_history */}
+            {console.log('[HTF_DIAGNOSTICS] Rendering HTF block, diagnosticsEntries.length:', diagnosticsEntries.length)}
+            {console.log(
+              "[HTF_DEBUG_RENDER]",
+              "diagnosticsEntries.length =",
+              diagnosticsEntries.length,
+              "pageReady =",
+              pageReady,
+              "isHTF =",
+              isHTFTrendFilterAgent
+            )}
             {isHTFTrendFilterAgent ? (
               // HTF Agent: Use diagnostics entries ONLY
               // Show table if ANY diagnostic exists (even SKIP entries)

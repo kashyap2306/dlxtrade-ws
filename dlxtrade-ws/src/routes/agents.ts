@@ -8,6 +8,7 @@ import { logger } from '../utils/logger';
 import { agentAccessMiddleware } from '../middleware/agentAuth';
 import { firestoreAdapter } from '../services/firestoreAdapter';
 import { decrypt } from '../services/keyManager';
+import { withRouteTimeout } from '../utils/routeGuards';
 
 const unlockAgentSchema = z.object({
   agentName: z.string().min(1),
@@ -740,17 +741,20 @@ export async function agentsRoutes(fastify: FastifyInstance) {
         } catch {
           scheduler = null;
         }
-
         if (!targetAgent?.id) {
           return reply.code(200).send({ diagnostics: [], scheduler, agentStatus: 'NOT_FOUND' });
         }
 
-        // CRITICAL FIX: Use actual targetAgent.id for diagnostics fetch
-        // This ensures compatibility with the unique agentId-based storage in AgentExecutionService
-        const { TradingAgent } = await import('../services/tradingAgent');
-        const rawDiagnostics = await TradingAgent.getDiagnostics(targetAgent.id, limit, uid);
+        // Security guard operation name: "getHTFDiagnostics"
+        // CRITICAL: Call getHTFDiagnostics directly to bypass generic getAgentDiagnostics logic
+        // This ensures the canonical path and security override are used as required
+        const rawDiagnostics = await withRouteTimeout('getHTFDiagnostics',
+          async () => await firestoreAdapter.getHTFDiagnostics(limit, uid),
+          reply
+        ) || [];
 
-        // FILTER OUT system-level AUTO_TRADE diagnostics that don't evaluate real trading pairs
+        // FILTER: For HTF, accept ALL diagnostics (including SKIP with empty pairs)
+        // Only exclude system-level AUTO_TRADE_CYCLE entries
         const filteredDiagnostics = rawDiagnostics.filter((diag: any) => {
           // Exclude system-level auto-trade cycle diagnostics
           if (diag.symbol === 'AUTO_TRADE_CYCLE' ||
@@ -760,15 +764,8 @@ export async function agentsRoutes(fastify: FastifyInstance) {
             return false;
           }
 
-          // Only show diagnostics that evaluated real trading symbols or have valid trading data
-          const hasRealSymbol = diag.tradingPair &&
-            diag.tradingPair !== 'AUTO_TRADE_CYCLE' &&
-            diag.tradingPair !== '--';
-          const hasValidDirection = diag.direction && diag.direction !== '--';
-          const hasSignalData = diag.signal?.direction;
-
-          // Include if it has real trading pair OR valid direction OR signal data
-          return hasRealSymbol || hasValidDirection || hasSignalData;
+          // Accept ALL other HTF diagnostics (SKIP, EXECUTE, any pair/direction)
+          return true;
         });
 
         // Apply comprehensive UI contract filtering and enhancement
